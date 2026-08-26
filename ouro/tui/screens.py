@@ -35,6 +35,7 @@ class Choice:
     group_trailing: str = ""
     disabled: bool = False
     marker: str = ""
+    selection_marker: str = ""
     edit_value: str | None = None
     edit_placeholder: str = ""
     loading: bool = False
@@ -137,8 +138,9 @@ def _choice_option(
 
     label = Text(overflow="ellipsis", no_wrap=True)
     marker = TUI_DESIGN.spinner_frames[spinner_frame] if choice.loading else choice.marker
-    if marker:
-        label.append(f"{marker} ", style=f"bold {group_accent}")
+    markers = tuple(value for value in (choice.selection_marker, marker) if value)
+    if markers:
+        label.append(f"{' '.join(markers)} ", style=f"bold {group_accent}")
     label.append(choice.label, style=choice.accent or "")
     if choice.trailing:
         row = Table.grid(expand=True, padding=0)
@@ -1253,16 +1255,19 @@ class MultiChoiceScreen(ChoiceScreen):
         choices: tuple[Choice, ...],
         on_confirm: MultiChoiceConfirmationHandler,
         selected_marker: str,
+        unselected_marker: str = "",
         confirm_label: str = "Confirm",
     ) -> None:
         super().__init__(title=title, placeholder=placeholder, choices=choices)
         self._on_confirm = on_confirm
         self._selected: set[str] = set()
         self._selected_marker = selected_marker
+        self._unselected_marker = unselected_marker
         self._confirm_label = confirm_label
         self._confirmation_values: tuple[str, ...] = ()
         self._catalog_choices: tuple[Choice, ...] = ()
         self._catalog_filter = ""
+        self._choices = self._project_markers(self._choices)
 
     def _filter_input(self) -> Input:
         return _MultiChoiceFilterInput(
@@ -1359,7 +1364,11 @@ class MultiChoiceScreen(ChoiceScreen):
         return tuple(
             replace(
                 choice,
-                marker=(self._selected_marker if choice.value in self._selected else ""),
+                selection_marker=(
+                    self._selected_marker
+                    if choice.value in self._selected
+                    else self._unselected_marker
+                ),
             )
             for choice in choices
         )

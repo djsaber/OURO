@@ -116,6 +116,7 @@ from ouro.tui.screens import (
     ConfirmationScreen,
     EditableChoiceScreen,
     HelpScreen,
+    MultiChoiceScreen,
 )
 from ouro.tui.state import (
     PendingInteraction,
@@ -264,6 +265,24 @@ def test_session_choices_group_by_local_last_activity_date(tmp_path: Path) -> No
         "Archived",
     ]
     assert [choice.value for choice in choices[-2:]] == ["ses_2", "ses_30"]
+
+
+def test_session_choices_mark_only_the_selected_session(tmp_path: Path) -> None:
+    application = _application(tmp_path)
+    first = application.runtime.sessions.create(session_id="ses_first", title="First").session
+    second = application.runtime.sessions.create(session_id="ses_second", title="Second").session
+    sessions = application.runtime.sessions.catalog().entries
+
+    choices = {
+        choice.value: choice
+        for choice in _session_choices(
+            sessions,
+            selected_session_id=second.session_id,
+        )
+    }
+
+    assert choices[first.session_id].marker == ""
+    assert choices[second.session_id].marker == TUI_DESIGN.selected_choice_marker
 
 
 def test_choice_screen_projects_group_headers_as_disabled_options() -> None:
@@ -2024,7 +2043,7 @@ async def test_reasoning_stream_lines_match_whole_block_rendering(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_fork_command_opens_boundary_menu_on_first_enter_and_branches_selection(
+async def test_fork_command_uses_inline_targets_for_full_and_user_boundary(
     tmp_path: Path,
 ) -> None:
     application = _application(tmp_path)
@@ -2042,32 +2061,54 @@ async def test_fork_command_opens_boundary_menu_on_first_enter_and_branches_sele
         )
         source_session_id = app._controller.session_id
         assert source_session_id is not None
+        source = application.runtime.store.load_session(source_session_id)
+
         await pilot.press("slash", *"fork", "enter")
-        await _wait_for_screen(app, ChoiceScreen, title="FORK SESSION")
+        await pilot.pause()
+        popup = app.query_one(CommandPopup)
+        assert popup.argument_command is not None
+        assert popup.argument_command.name == "/fork"
+        assert [argument.value for argument in popup._arguments] == ["full", "#1"]
+        assert [argument.display_label for argument in popup._arguments] == [
+            "Full session",
+            "#1",
+        ]
+        popup_text = popup.query_one("#command-popup-content", Static).render().plain
+        assert "Fork the complete current session" in popup_text
+        assert "fork" in popup_text
+        assert not isinstance(app.screen, ChoiceScreen)
         assert app._controller.session_id == source_session_id
 
         await pilot.press("enter")
         await _wait_until(
             lambda: app._controller.session_id not in {None, source_session_id},
             pilot,
-            description="forked session",
+            description="fully forked session",
         )
-        await _wait_until(
-            lambda: app.query_one(Composer).text == "fork"
-            and app.query_one(Composer).has_focus,
-            pilot,
-            description="restored composer after fork",
-        )
+        full_session_id = app._controller.session_id
+        assert full_session_id is not None
+        full_branch = application.runtime.store.load_session(full_session_id)
+        assert full_branch.session.parent_session_id == source_session_id
+        assert full_branch.session.forked_from_message_id == source.messages[-1].message_id
+        assert [message.text_content for message in full_branch.messages] == [
+            message.text_content for message in source.messages
+        ]
 
-        branch_session_id = app._controller.session_id
-        assert branch_session_id is not None
-        assert branch_session_id != source_session_id
-        branch = application.runtime.store.load_session(branch_session_id)
-        assert branch.session.parent_session_id == source_session_id
-        assert branch.session.forked_from_message_id is None
-        assert branch.messages == []
+        await pilot.press("slash", *"fork", "enter", "down", "enter")
+        await _wait_until(
+            lambda: app._controller.session_id not in {None, full_session_id},
+            pilot,
+            description="user-boundary forked session",
+        )
+        boundary_session_id = app._controller.session_id
+        assert boundary_session_id is not None
+        boundary_branch = application.runtime.store.load_session(boundary_session_id)
+        assert boundary_branch.session.parent_session_id == full_session_id
+        assert boundary_branch.session.forked_from_message_id is None
+        assert boundary_branch.messages == []
         assert app.query_one(Composer).text == "fork"
         assert app.query_one(Composer).has_focus is True
+        assert not isinstance(app.screen, ChoiceScreen)
         assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
 
 
@@ -2094,11 +2135,11 @@ async def test_fork_command_refuses_active_tui_session(
         assert app._projection is not None
         app._projection.activity = app._projection.activity.model_copy(update={"status": "running"})
 
-        def unexpected_branch(_message_id: str) -> None:
+        def unexpected_branch(_message_id: str | None = None) -> None:
             raise AssertionError("active TUI session reached the branch service")
 
         monkeypatch.setattr(app._controller, "branch_session", unexpected_branch)
-        app._fork_session()
+        app._fork_session("full")
         await pilot.pause()
 
         assert app._controller.session_id == source_session_id
@@ -3467,6 +3508,43 @@ async def test_session_picker_hides_route_identity_and_truncates_long_titles(
         assert "…" in session_choice.label
         assert session_choice.description == ""
         assert session_choice.trailing == "idle"
+        assert session_choice.marker == ""
+
+
+@pytest.mark.asyncio
+async def test_session_picker_marks_the_session_open_on_the_conversation_page(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    current = application.runtime.sessions.create(
+        session_id="ses_current",
+        title="Current session",
+    ).session
+    other = application.runtime.sessions.create(
+        session_id="ses_other",
+        title="Other session",
+    ).session
+    application.runtime.store.append_message(
+        MessageRecord.text(
+            session_id=current.session_id,
+            role="user",
+            text="Current conversation",
+            sequence=1,
+        )
+    )
+    app = OuroTuiApp(
+        application=application,
+        resume_session_id=current.session_id,
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await _wait_for_active_session(app, pilot, current.session_id)
+        await pilot.press("ctrl+s")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+
+        choices = {choice.value: choice for choice in app.screen._choices}
+        assert choices[current.session_id].marker == TUI_DESIGN.selected_choice_marker
+        assert choices[other.session_id].marker == ""
 
 
 @pytest.mark.asyncio
@@ -3617,10 +3695,21 @@ async def test_session_picker_and_archive_menu_project_and_toggle_archived_group
         title="Archived session",
     ).session
     application.runtime.sessions.set_archived(archived.session_id, True)
-    app = OuroTuiApp(application=application)
+    application.runtime.store.append_message(
+        MessageRecord.text(
+            session_id=active.session_id,
+            role="user",
+            text="Visible active session",
+            sequence=1,
+        )
+    )
+    app = OuroTuiApp(
+        application=application,
+        resume_session_id=active.session_id,
+    )
 
     async with app.run_test(size=(100, 34), notifications=True) as pilot:
-        await pilot.pause()
+        await _wait_for_active_session(app, pilot, active.session_id)
         await pilot.press("ctrl+s")
         await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
         groups = {choice.value: choice.group for choice in app.screen._choices}
@@ -3635,6 +3724,9 @@ async def test_session_picker_and_archive_menu_project_and_toggle_archived_group
         await pilot.press("enter")
         await pilot.pause()
         archive_screen = app.screen
+        initial = {choice.value: choice for choice in archive_screen._choices}
+        assert initial[active.session_id].marker == TUI_DESIGN.selected_choice_marker
+        assert initial[archived.session_id].marker == ""
 
         archive_screen.query_one("#choice-filter", Input).value = "Active session"
         await pilot.pause()
@@ -3644,6 +3736,7 @@ async def test_session_picker_and_archive_menu_project_and_toggle_archived_group
         choices = {choice.value: choice for choice in archive_screen._choices}
         assert choices[active.session_id].group == "Archived"
         assert choices[archived.session_id].group == "Archived"
+        assert choices[active.session_id].marker == TUI_DESIGN.selected_choice_marker
 
         archive_screen.query_one("#choice-filter", Input).value = "Archived session"
         await pilot.pause()
@@ -3673,6 +3766,14 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         title="Archived title",
     ).session
     application.runtime.sessions.set_archived(archived.session_id, True)
+    application.runtime.store.append_message(
+        MessageRecord.text(
+            session_id=active.session_id,
+            role="user",
+            text="Visible rename session",
+            sequence=1,
+        )
+    )
     app = OuroTuiApp(
         application=application,
         resume_session_id=active.session_id,
@@ -3698,6 +3799,7 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         assert rename_screen.styles.background.a == 0.45
         assert [choice.value for choice in rename_screen._choices] == [active.session_id]
         assert {choice.group for choice in rename_screen._choices} == {"Today"}
+        assert rename_screen._choices[0].marker == TUI_DESIGN.selected_choice_marker
 
         rename_screen.query_one("#choice-filter", Input).value = "Original title"
         await pilot.pause()
@@ -3734,6 +3836,7 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         )
         assert rename_screen.query_one("#choice-filter", Input).value == ""
         assert rename_screen._choices[0].edit_value == "Renamed title"
+        assert rename_screen._choices[0].marker == TUI_DESIGN.selected_choice_marker
         assert application.runtime.sessions.open(active.session_id).session.title == (
             "Renamed title"
         )
@@ -3761,6 +3864,71 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         assert app.screen is action_screen
         assert action_screen.query_one("#choice-panel", Vertical).display is True
         assert action_screen.styles.background.a == 0.45
+
+
+@pytest.mark.asyncio
+async def test_delete_session_menu_keeps_current_marker_separate_from_multi_selection(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    current = application.runtime.sessions.create(
+        session_id="ses_delete_current",
+        title="Current archived session",
+    ).session
+    other = application.runtime.sessions.create(
+        session_id="ses_delete_other",
+        title="Other archived session",
+    ).session
+    application.runtime.sessions.set_archived(current.session_id, True)
+    application.runtime.sessions.set_archived(other.session_id, True)
+    application.runtime.store.append_message(
+        MessageRecord.text(
+            session_id=current.session_id,
+            role="user",
+            text="Visible archived session",
+            sequence=1,
+        )
+    )
+    app = OuroTuiApp(
+        application=application,
+        resume_session_id=current.session_id,
+    )
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await _wait_for_active_session(app, pilot, current.session_id)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        app.screen.query_one("#choice-filter", Input).value = "Delete session"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, MultiChoiceScreen, title="DELETE SESSIONS")
+
+        delete_screen = app.screen
+        choices = {choice.value: choice for choice in delete_screen._choices}
+        assert choices[current.session_id].marker == TUI_DESIGN.selected_choice_marker
+        assert choices[other.session_id].marker == ""
+        assert choices[current.session_id].selection_marker == (
+            TUI_DESIGN.unselected_choice_marker
+        )
+        assert choices[other.session_id].selection_marker == (
+            TUI_DESIGN.unselected_choice_marker
+        )
+
+        options = delete_screen.query_one("#choice-list", OptionList)
+        options.highlighted = options.get_option_index(other.session_id)
+        options.focus()
+        await pilot.press("space")
+        await pilot.pause()
+
+        choices = {choice.value: choice for choice in delete_screen._choices}
+        assert choices[current.session_id].marker == TUI_DESIGN.selected_choice_marker
+        assert choices[current.session_id].selection_marker == (
+            TUI_DESIGN.unselected_choice_marker
+        )
+        assert choices[other.session_id].selection_marker == TUI_DESIGN.selected_choice_marker
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await pilot.press("escape")
 
 
 @pytest.mark.asyncio
@@ -5576,6 +5744,65 @@ async def test_mcp_actions_open_operation_specific_server_selection(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_mcp_connection_menus_show_all_servers_and_disable_unavailable_actions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    for server_id in ("connected", "stopped"):
+        configuration.save_mcp_server(
+            server_id,
+            MCPServerConfigUpdate(command="unused-in-test", auto_start=False),
+        )
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    def runtime_servers() -> tuple[McpServerStatus, ...]:
+        return (
+            McpServerStatus(
+                server_id="connected",
+                name="connected",
+                transport="stdio",
+                status="connected",
+            ),
+            McpServerStatus(
+                server_id="stopped",
+                name="stopped",
+                transport="stdio",
+                status="stopped",
+            ),
+        )
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app._controller, "mcp_servers", runtime_servers)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        actions = app.screen
+
+        actions.query_one("#choice-filter", Input).value = "Connect MCP server"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="CONNECT MCP SERVER")
+        connect_choices = {choice.value: choice for choice in app.screen._choices}
+        assert set(connect_choices) == {"connected", "stopped"}
+        assert connect_choices["connected"].disabled is True
+        assert connect_choices["stopped"].disabled is False
+
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        actions.query_one("#choice-filter", Input).value = "Disconnect MCP server"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="DISCONNECT MCP SERVER")
+        disconnect_choices = {choice.value: choice for choice in app.screen._choices}
+        assert set(disconnect_choices) == {"connected", "stopped"}
+        assert disconnect_choices["connected"].disabled is False
+        assert disconnect_choices["stopped"].disabled is True
+
+        await pilot.press("escape", "escape")
+
+
+@pytest.mark.asyncio
 async def test_mcp_connect_runs_in_background_and_contains_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5588,6 +5815,7 @@ async def test_mcp_connect_runs_in_background_and_contains_failures(
     operation_started = asyncio.Event()
     release_operation = asyncio.Event()
     runtime_status = "configured"
+    start_calls = 0
 
     def runtime_servers() -> tuple[McpServerStatus, ...]:
         return (
@@ -5600,7 +5828,8 @@ async def test_mcp_connect_runs_in_background_and_contains_failures(
         )
 
     async def failing_start(_server_id: str) -> McpServerStatus:
-        nonlocal runtime_status
+        nonlocal runtime_status, start_calls
+        start_calls += 1
         runtime_status = "starting"
         operation_started.set()
         await release_operation.wait()
@@ -5641,16 +5870,17 @@ async def test_mcp_connect_runs_in_background_and_contains_failures(
         assert failed.trailing == "enabled · failed"
         assert app.screen is menu
 
-        # A runtime refresh may invalidate the backing candidate map before an
-        # already-rendered row delivers its selection event. Treat it as stale
-        # input instead of letting a KeyError escape through Textual.
+        # A runtime refresh keeps the full server catalog visible while making
+        # an already connected server non-selectable.
         runtime_status = "connected"
-        assert menu._on_refresh is not None
-        assert await menu._on_refresh() == ()
+        await menu.refresh_choices()
+        connected = next(choice for choice in menu._choices if choice.value == "local")
+        assert connected.disabled is True
+        assert connected.trailing == "enabled · connected"
         options.highlighted = options.get_option_index("local")
         await pilot.press("enter")
         await pilot.pause()
-        assert menu._choices == ()
+        assert start_calls == 1
 
 
 @pytest.mark.asyncio

@@ -667,8 +667,6 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
 
-        candidates = _mcp_action_candidates(action, configs, runtime)
-
         action_label = {
             "connect": "CONNECT",
             "disconnect": "DISCONNECT",
@@ -676,11 +674,11 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             "edit": "EDIT",
             "remove": "REMOVE",
         }[action]
-        if not candidates:
+        if not configs:
             return
-        choices = _mcp_action_choices(action, candidates, runtime)
+        choices = _mcp_action_choices(action, configs, runtime)
         if action == "toggle":
-            servers = {config.server_id: config for config in candidates}
+            servers = {config.server_id: config for config in configs}
 
             async def toggle_mcp(server_id: str) -> tuple[Choice, ...] | None:
                 config = servers[server_id]
@@ -733,7 +731,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 )
             return
         if menu is not None:
-            servers = {config.server_id: config for config in candidates}
+            servers = {config.server_id: config for config in configs}
             loading_servers: set[str] = set()
 
             def current_action_choices(
@@ -755,15 +753,8 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 except Exception as exc:  # noqa: BLE001
                     await self.query_one(ConversationView).add_notice(str(exc), error=True)
                     return None
-                refreshed_candidates = _mcp_action_candidates(
-                    action,
-                    refreshed_configs,
-                    refreshed_runtime,
-                )
                 servers.clear()
-                servers.update(
-                    {config.server_id: config for config in refreshed_candidates}
-                )
+                servers.update({config.server_id: config for config in refreshed_configs})
                 return current_action_choices(refreshed_runtime)
 
             async def finish_runtime_action(
@@ -840,7 +831,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         )
         if selected is None:
             return
-        config = next(item for item in candidates if item.server_id == selected)
+        config = next(item for item in configs if item.server_id == selected)
         if action == "edit":
             await self._edit_mcp(config)
         elif action == "remove":
@@ -1616,30 +1607,25 @@ def _mcp_labels(
     return TUI_DESIGN.inline_separator.join((enabled, runtime))
 
 
-def _mcp_action_candidates(
+def _mcp_action_available(
     action: str,
-    configs: tuple[MCPServerConfigView, ...],
+    config: MCPServerConfigView,
     runtime: dict[str, McpServerStatus],
-) -> tuple[MCPServerConfigView, ...]:
+) -> bool:
+    status = runtime.get(config.server_id)
     if action == "connect":
-        return tuple(
-            config
-            for config in configs
-            if config.enabled
-            and (
-                (status := runtime.get(config.server_id)) is not None
-                and status.status
-                not in {"connected", "starting", "reconnecting", "stopping"}
-            )
+        return (
+            config.enabled
+            and status is not None
+            and status.status
+            not in {"connected", "starting", "reconnecting", "stopping"}
         )
     if action == "disconnect":
-        return tuple(
-            config
-            for config in configs
-            if (status := runtime.get(config.server_id)) is not None
+        return (
+            status is not None
             and status.status in {"connected", "starting", "reconnecting", "stopping"}
         )
-    return configs
+    return True
 
 
 def _mcp_action_choices(
@@ -1657,7 +1643,7 @@ def _mcp_action_choices(
             trailing=_mcp_labels(config, runtime.get(config.server_id)),
             disabled=(
                 action in {"connect", "disconnect"}
-                and config not in _mcp_action_candidates(action, (config,), runtime)
+                and not _mcp_action_available(action, config, runtime)
             ),
             loading=(
                 config.server_id in loading

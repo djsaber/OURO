@@ -1862,7 +1862,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         elif command.name == "/actions":
             self.action_actions()
         elif command.name == "/fork":
-            self._fork_session()
+            if argument:
+                self._fork_session(argument.casefold())
         elif command.name == "/model":
             if argument:
                 await self._select_model(argument)
@@ -1902,6 +1903,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             for command in TUI_COMMANDS
             if command.name != "/workspace" or self._controller.session_id is None
         ]
+        fork_options = self._fork_arguments()
         navigate_options = self._navigate_options()
         for index, command in enumerate(catalog):
             if command.name == "/workspace":
@@ -1911,6 +1913,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 )
             elif command.name == "/navigate":
                 catalog[index] = replace(command, argument_options=navigate_options)
+            elif command.name == "/fork":
+                catalog[index] = replace(command, argument_options=fork_options)
             elif command.name == "/thinking" and self._reasoning_state is not None:
                 options = _reasoning_arguments(self._reasoning_state)
                 catalog[index] = replace(
@@ -2027,17 +2031,37 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def _navigate_options(self) -> tuple[TuiCommandArgument, ...]:
         """Build /navigate argument options from the live dialogue state."""
-        options = [
+        return (
             TuiCommandArgument("top", "Jump to the first message"),
             TuiCommandArgument("bottom", "Jump to the latest message"),
-        ]
+            *self._user_message_arguments(),
+        )
+
+    def _fork_arguments(self) -> tuple[TuiCommandArgument, ...]:
+        """Build /fork targets through the same numbered user-message projection."""
+
+        if self._controller.session_id is None:
+            return ()
+        return (
+            TuiCommandArgument(
+                "full",
+                "Fork the complete current session",
+                label="Full session",
+            ),
+            *self._user_message_arguments(),
+        )
+
+    def _user_message_arguments(self) -> tuple[TuiCommandArgument, ...]:
+        """Project visible user turns as stable numbered command options."""
+
         try:
             conversation = self.query_one(ConversationView)
         except Exception:  # noqa: BLE001 — app may not have mounted the view yet.
-            return tuple(options)
-        for index, text in enumerate(conversation.user_turn_summaries(), start=1):
-            options.append(TuiCommandArgument(f"#{index}", _summarize(text)))
-        return tuple(options)
+            return ()
+        return tuple(
+            TuiCommandArgument(f"#{index}", _summarize(text))
+            for index, text in enumerate(conversation.user_turn_summaries(), start=1)
+        )
 
     def _plugin_commands(self) -> tuple[TuiCommand, ...]:
         try:
@@ -2207,6 +2231,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def action_next_user_message(self) -> None:
         self.query_one(ConversationView).scroll_to_next_user_turn()
 
+    def _visible_session_id(self) -> str | None:
+        """Return the Session that currently owns the conversation surface."""
+
+        projection = self._projection
+        if projection is None or self.query_one(ConversationView).showing_welcome:
+            return None
+        return projection.session_id
+
     def _navigate_to(self, target: str) -> None:
         """Scroll the conversation to the target identified by the /navigate argument."""
         conversation = self.query_one(ConversationView)
@@ -2228,7 +2260,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         if not self._sessions:
             return
-        choices = _session_choices(self._sessions)
+        choices = _session_choices(
+            self._sessions,
+            selected_session_id=self._visible_session_id(),
+        )
         session_menu: ChoiceScreen
 
         async def select_session(session_id: str) -> tuple[Choice, ...] | None:
@@ -2285,12 +2320,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 return None
             sessions.clear()
             sessions.update({session.session_id: session for session in self._sessions})
-            return _session_choices(self._sessions)
+            return _session_choices(
+                self._sessions,
+                selected_session_id=self._visible_session_id(),
+            )
 
         menu.push_page(
             title="ARCHIVE SESSIONS",
             placeholder="Filter sessions…",
-            choices=_session_choices(self._sessions),
+            choices=_session_choices(
+                self._sessions,
+                selected_session_id=self._visible_session_id(),
+            ),
             on_select=toggle_archive,
             retain_focus_position_on_select=True,
         )
@@ -2317,12 +2358,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if not await self._refresh_sessions():
                 return None
             active_sessions = tuple(session for session in self._sessions if not session.archived)
-            return _rename_session_choices(active_sessions)
+            return _rename_session_choices(
+                active_sessions,
+                selected_session_id=self._visible_session_id(),
+            )
 
         screen = EditableChoiceScreen(
             title="RENAME SESSION",
             placeholder="Filter sessions…",
-            choices=_rename_session_choices(active),
+            choices=_rename_session_choices(
+                active,
+                selected_session_id=self._visible_session_id(),
+            ),
             on_save=rename_session,
         )
         await menu.open_child(screen)
@@ -2348,14 +2395,21 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if not await self._refresh_sessions():
                 return None
             archived_sessions = tuple(session for session in self._sessions if session.archived)
-            return _session_choices(archived_sessions)
+            return _session_choices(
+                archived_sessions,
+                selected_session_id=self._visible_session_id(),
+            )
 
         delete_screen = MultiChoiceScreen(
             title="DELETE SESSIONS",
             placeholder="Filter archived sessions…",
-            choices=_session_choices(archived),
+            choices=_session_choices(
+                archived,
+                selected_session_id=self._visible_session_id(),
+            ),
             on_confirm=delete_selected,
             selected_marker=TUI_DESIGN.selected_choice_marker,
+            unselected_marker=TUI_DESIGN.unselected_choice_marker,
             confirm_label="Delete",
         )
         await menu.open_child(delete_screen)
@@ -2435,54 +2489,32 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     @work(exclusive=True, group="navigation")
     async def _fork_session(
         self,
-        message_id: str | None = None,
+        target: str,
     ) -> None:
         if self._has_active_run():
             self.notify("Abort the active run before forking the session", severity="warning")
             return
         if self._controller.session_id is None:
             return
+        selected_message: MessageRecord | None = None
         try:
-            points = await self._controller.branch_points()
-        except Exception as exc:  # noqa: BLE001 - branch validation is user-visible.
-            self.notify(str(exc), severity="error", markup=False)
-            return
-        if not points:
-            return
-        points_by_id = {point.message_id: point for point in points}
-        selected = message_id
-        if selected is None:
-            selected = await self.push_screen_wait(
-                ChoiceScreen(
-                    title="FORK SESSION",
-                    placeholder="Filter user messages…",
-                    choices=_branch_point_choices(points),
-                )
-            )
-        if selected is None:
-            return
-        await self._fork_from_message(selected, points_by_id)
-
-    async def _fork_from_message(
-        self,
-        message_id: str,
-        points_by_id: dict[str, MessageRecord],
-    ) -> None:
-        selected_message = points_by_id.get(message_id)
-        if selected_message is None:
-            self.notify(
-                f"user message is not a fork point in this session: {message_id}",
-                severity="error",
-                markup=False,
-            )
-            return
-        try:
-            result = await self._controller.branch_session(message_id)
+            if target == "full":
+                result = await self._controller.branch_session()
+            else:
+                points = await self._controller.branch_points()
+                if not target.startswith("#") or not target[1:].isdigit():
+                    raise ValueError(f"unknown fork target: {target}")
+                index = int(target[1:]) - 1
+                if not 0 <= index < len(points):
+                    raise ValueError(f"user message is not a fork point: {target}")
+                selected_message = points[index]
+                result = await self._controller.branch_session(selected_message.message_id)
             await self._open_session(result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - branch validation is user-visible.
             self.notify(str(exc), severity="error", markup=False)
             return
-        self._edit_draft(user_message_text(selected_message))
+        if selected_message is not None:
+            self._edit_draft(user_message_text(selected_message))
 
     async def _restore_projection(self, loaded: LoadedSession) -> None:
         projection = TuiSessionProjection(loaded.detail.session.session_id)
@@ -3145,6 +3177,7 @@ def _truncate_session_title(title: str) -> str:
 def _session_choices(
     sessions: tuple[SessionCatalogEntry, ...],
     *,
+    selected_session_id: str | None = None,
     today: date | None = None,
 ) -> tuple[Choice, ...]:
     local_today = today or datetime.now().astimezone().date()
@@ -3157,6 +3190,11 @@ def _session_choices(
             value=item.session_id,
             label=_truncate_session_title(("★ " if item.pinned else "") + item.title),
             trailing=item.status,
+            marker=(
+                TUI_DESIGN.selected_choice_marker
+                if item.session_id == selected_session_id
+                else ""
+            ),
             group=(
                 "Archived"
                 if item.archived
@@ -3169,10 +3207,16 @@ def _session_choices(
 
 def _rename_session_choices(
     sessions: tuple[SessionCatalogEntry, ...],
+    *,
+    selected_session_id: str | None = None,
 ) -> tuple[Choice, ...]:
     titles = {session.session_id: session.title for session in sessions}
     return tuple(
-        replace(choice, edit_value=titles[choice.value]) for choice in _session_choices(sessions)
+        replace(choice, edit_value=titles[choice.value])
+        for choice in _session_choices(
+            sessions,
+            selected_session_id=selected_session_id,
+        )
     )
 
 
@@ -3188,26 +3232,6 @@ def _session_date_group(activity_at: datetime, *, today: date) -> str:
     if age < 30:
         return "Previous 30 days"
     return f"{month_name[activity_date.month]} {activity_date.year}"
-
-
-def _branch_point_label(message: MessageRecord) -> str:
-    preview = " ".join(message.text_content.split())
-    if not preview:
-        preview = "empty message"
-    return _truncate_session_title(preview)
-
-
-def _branch_point_choices(
-    points: tuple[MessageRecord, ...],
-) -> tuple[Choice, ...]:
-    return tuple(
-        Choice(
-            value=message.message_id,
-            label=_branch_point_label(message),
-            trailing=message.created_at.astimezone().strftime("%H:%M"),
-        )
-        for message in points
-    )
 
 
 def _queued_input_draft(item: QueuedUserInputView) -> str:

@@ -526,8 +526,9 @@ SessionRepository 拥有，文件实现保存 Session 子记录，SQLite 实现�
 因此源会话删除或资源移除必须在线性化点之后执行，垃圾回收不会删除正在复制的最后一份可达内容。
 
 Session 的通用 `branch` 只表达 canonical history 边界：传入任意 message id 时包含该边界，传入空边界时
-创建空历史分支，不限制 Host 可选择的消息角色。TUI 的“只列 user message、复制所选请求之前的历史并把请求
-回填为草稿”完全属于 TUI 交互规则，由 TUI 把所选 user message 映射为其前一个 canonical message 边界。
+创建空历史分支，不限制 Host 可选择的消息角色。TUI 的 `/fork` 在会话输入框命令菜单中统一投影分支目标：首项
+`Full session` 复制完整当前历史，后续 `#N` 项显示对应 user message 文本，并将所选 user message 映射为其
+前一个 canonical message 边界后回填为草稿。上述选择与映射完全属于 TUI 交互规则。
 分支只继承 active compaction lineage 中对新历史仍然可用的前缀：`covered_message_ids` 必须精确匹配新分支
 canonical prefix，且 `history_boundary_message_id` 也必须位于分支内。复制时统一重建 message/compaction identity、
 previous 指针和 source digest，并与 Session、资源引用、扩展状态在同一个新 Session 快照中原子发布；最新

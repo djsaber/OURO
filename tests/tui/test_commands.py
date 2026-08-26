@@ -40,7 +40,7 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
     thinking, thinking_argument = resolve_command("/reasoning high")
     compact, compact_argument = resolve_command("/compact")
     skill, skill_argument = resolve_command("/skill reviewer inspect app.py")
-    fork, fork_argument = resolve_command("/branch msg_123")
+    fork, fork_argument = resolve_command("/branch #1")
     unqueue, unqueue_argument = resolve_command("/unqueue queued_123")
     workspace, workspace_argument = resolve_command("/workspace C:/work/project")
     quit_command, quit_argument = resolve_command("/exit")
@@ -66,7 +66,7 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
     assert skill is not None and skill.name == "/skill"
     assert skill_argument == "reviewer inspect app.py"
     assert fork is not None and fork.name == "/fork"
-    assert fork_argument == "msg_123"
+    assert fork_argument == "#1"
     assert unqueue is not None and unqueue.name == "/unqueue"
     assert unqueue_argument == "queued_123"
     assert workspace is not None and workspace.name == "/workspace"

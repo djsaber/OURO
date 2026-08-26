@@ -6,6 +6,12 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- The TUI MCP connect and disconnect menus now show every configured server and express
+  operation availability by disabling servers that are already in the target state.
+- `/fork` now selects either the full Session or a numbered user-message boundary through the
+  composer command menu; the former centered fork dialog and its duplicate projection were removed.
+- The TUI Session picker and Session-management lists now mark the Session currently visible
+  on the conversation page, while welcome-page lists remain unselected.
 - TUI keyboard help now lists active runtime plugin commands in a dedicated searchable group,
   using the same command names, usage, and descriptions as the composer slash-command catalog;
   the welcome-page tips now point to that help entry instead of repeating the Sessions shortcut.
