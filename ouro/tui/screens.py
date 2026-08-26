@@ -19,7 +19,7 @@ from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
-from ouro.tui.commands import TUI_COMMANDS
+from ouro.tui.commands import TUI_COMMANDS, TuiCommand
 from ouro.tui.text_inputs import TuiInput
 from ouro.tui.theme import TUI_DESIGN, theme_for
 
@@ -53,7 +53,10 @@ _HELP_SHORTCUTS = (
 )
 
 
-def help_choices() -> tuple[Choice, ...]:
+def help_choices(
+    *,
+    plugin_commands: tuple[TuiCommand, ...] = (),
+) -> tuple[Choice, ...]:
     """Project help onto the shared searchable menu surface."""
 
     shortcuts = tuple(
@@ -75,7 +78,16 @@ def help_choices() -> tuple[Choice, ...]:
         )
         for command in TUI_COMMANDS
     )
-    return (*shortcuts, *commands)
+    plugins = tuple(
+        Choice(
+            f"plugin-command:{command.name}",
+            command.usage,
+            trailing=command.title,
+            group="PLUGIN SLASH COMMANDS",
+        )
+        for command in plugin_commands
+    )
+    return (*shortcuts, *commands, *plugins)
 
 
 ChoiceSelectionHandler = Callable[[str], Awaitable[tuple[Choice, ...] | None]]
@@ -1390,11 +1402,11 @@ class HelpScreen(ChoiceScreen):
     DEFAULT_HINT = TUI_DESIGN.inline_separator.join(("↑/↓ move", "←/→ group", "Esc close"))
     BACK_HINT = TUI_DESIGN.inline_separator.join(("↑/↓ move", "←/→ group", "Esc back"))
 
-    def __init__(self) -> None:
+    def __init__(self, *, plugin_commands: tuple[TuiCommand, ...] = ()) -> None:
         super().__init__(
             title="KEYBOARD HELP",
             placeholder="Filter shortcuts and commands…",
-            choices=help_choices(),
+            choices=help_choices(plugin_commands=plugin_commands),
         )
 
     async def _select_choice(self, selected: str) -> None:

@@ -6,6 +6,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- TUI keyboard help now lists active runtime plugin commands in a dedicated searchable group,
+  using the same command names, usage, and descriptions as the composer slash-command catalog;
+  the welcome-page tips now point to that help entry instead of repeating the Sessions shortcut.
 - TUI compaction summaries now use persisted elapsed durations and the same typography,
   separators, and semantic marker colors as run summaries; failed reloaded runs retain
   their failure-colored marker.

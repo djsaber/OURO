@@ -717,7 +717,7 @@ def _tool_elapsed_seconds(tool: RuntimeToolCallActivity) -> int | None:
 _INPUT_TIPS = (
     ("/", "Commands"),
     ("Ctrl+P", "Actions"),
-    ("Ctrl+S", "Sessions"),
+    ("Ctrl+H", "Help"),
 )
 
 

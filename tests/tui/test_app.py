@@ -1421,6 +1421,21 @@ async def test_welcome_refreshes_live_system_status_each_time_it_opens(tmp_path:
         assert "1 available • live-skill" in welcome._system._skills.render().plain
 
 
+@pytest.mark.asyncio
+async def test_welcome_tips_point_to_keyboard_help_instead_of_sessions(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
+        tips = "\n".join(
+            getattr(widget.render(), "plain", "") for widget in welcome._tips.query(Static)
+        )
+
+        assert "Ctrl+H\nHelp" in tips
+        assert "Ctrl+S" not in tips
+        assert "Sessions" not in tips
+
+
 def test_plugin_skill_choice_is_visible_but_not_selectable() -> None:
     choice = _skill_choice(
         SkillView(
@@ -5377,6 +5392,40 @@ async def test_question_mark_remains_composer_input_after_help_shortcut_migratio
 
 
 @pytest.mark.asyncio
+async def test_root_help_groups_runtime_plugin_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(
+            app._controller,
+            "plugin_commands",
+            lambda: (
+                PluginCommandView(
+                    command_id="dev.ouro.demo:hello",
+                    plugin_id="dev.ouro.demo",
+                    name="hello",
+                    description="Say hello",
+                    usage="<name>",
+                ),
+            ),
+        )
+
+        await pilot.press("ctrl+h")
+        await _wait_for_screen(app, HelpScreen, title="KEYBOARD HELP")
+
+        plugins = tuple(
+            choice for choice in app.screen._choices if choice.group == "PLUGIN SLASH COMMANDS"
+        )
+        assert [(choice.label, choice.trailing) for choice in plugins] == [
+            ("/hello <name>", "Say hello")
+        ]
+
+
+@pytest.mark.asyncio
 async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
     tmp_path: Path,
 ) -> None:
@@ -5399,6 +5448,7 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         assert {choice.group for choice in menu._choices} == {
             "SHORTCUTS",
             "BUILT-IN SLASH COMMANDS",
+            "PLUGIN SLASH COMMANDS",
         }
         shortcuts = {
             choice.label: choice.trailing
@@ -5407,6 +5457,13 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         }
         assert shortcuts["Alt+T"] == "cycle model thinking"
         assert shortcuts["Alt+A"] == "cycle session approval"
+        plugin_commands = tuple(
+            choice for choice in menu._choices if choice.group == "PLUGIN SLASH COMMANDS"
+        )
+        goal = next(choice for choice in plugin_commands if choice.label.startswith("/goal "))
+        plan = next(choice for choice in plugin_commands if choice.label == "/plan [on|off|status]")
+        assert goal.trailing == "Create and control the latest Goal for this conversation."
+        assert plan.trailing == "Enter plan mode for the current Session."
 
         await pilot.press("ctrl+h")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")

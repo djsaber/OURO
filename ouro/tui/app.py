@@ -3027,7 +3027,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         menu = self._active_navigation_menu()
         if menu is None:
             if len(self.screen_stack) == 1:
-                self.push_screen(HelpScreen())
+                self.push_screen(HelpScreen(plugin_commands=self._plugin_commands()))
             return
         if menu.page_title == "KEYBOARD HELP":
             self.run_worker(menu.action_cancel(), exclusive=True, group="navigation")
@@ -3035,7 +3035,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._show_help_page(menu)
 
     def _show_help_page(self, menu: ChoiceScreen) -> None:
-        choices = help_choices()
+        choices = help_choices(plugin_commands=self._plugin_commands())
 
         async def keep_help_open(_selected: str) -> tuple[Choice, ...]:
             return choices
