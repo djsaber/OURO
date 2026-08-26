@@ -1001,7 +1001,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def on_mount(self) -> None:
         self.query_one(StatusLine).set_activity("starting")
-        self.query_one(Composer).disabled = True
+        composer = self.query_one(Composer)
+        popup = self.query_one(CommandPopup)
+        composer.set_suggestion_resolver(
+            lambda: self._command_suggestion(composer, popup)
+        )
+        composer.disabled = True
         self._mcp_status_timer = self.set_interval(
             _MCP_STATUS_SYNC_INTERVAL_SECONDS,
             self._sync_mcp_status,
@@ -1455,7 +1460,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         composer = message.text_area
         value = composer.text
         command_context = composer.observe_command_change()
-        message.text_area.suggestion = ""
         popup = self.query_one(CommandPopup)
         ask_user = self.query_one(AskUserPanel)
         plan_panel = self.query_one(PlanConfirmationPanel)
@@ -1463,18 +1467,21 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             plan_panel.display and plan_panel.awaiting_feedback
         ):
             popup.hide()
+            self._sync_command_suggestion(composer, popup)
             return
         if value == self._dismissed_command_text:
             return
         self._dismissed_command_text = None
         if command_context is None:
             popup.hide()
+            self._sync_command_suggestion(composer, popup)
             return
         command_value, _draft = command_context
         _command_text, separator, argument = command_value.partition(" ")
         if not separator:
             commands = matching_commands(command_value, self._command_catalog())
             popup.show_commands(tuple(sorted(commands, key=lambda item: item.name)))
+            self._sync_command_suggestion(composer, popup)
             return
         static_command, _normalized_argument = resolve_command(_command_text, TUI_COMMANDS)
         if (
@@ -1490,6 +1497,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await self._refresh_models()
             except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
                 popup.hide()
+                self._sync_command_suggestion(composer, popup)
                 self.notify(
                     f"Could not refresh models: {exc}",
                     severity="error",
@@ -1502,6 +1510,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
         if command is None or not command.takes_arguments:
             popup.hide()
+            self._sync_command_suggestion(composer, popup)
             return
         arguments = matching_arguments(command, argument)
         popup.show_arguments(command, arguments)
@@ -1512,20 +1521,42 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if message.text_area is composer:
             self._sync_command_suggestion(composer, self.query_one(CommandPopup))
 
-    @staticmethod
-    def _sync_command_suggestion(composer: Composer, popup: CommandPopup) -> None:
-        composer.suggestion = ""
-        command = popup.argument_command
+    def _command_suggestion(self, composer: Composer, popup: CommandPopup) -> str:
+        ask_user = self.query_one(AskUserPanel)
+        plan_panel = self.query_one(PlanConfirmationPanel)
+        if (ask_user.display and ask_user.awaiting_freeform) or (
+            plan_panel.display and plan_panel.awaiting_feedback
+        ):
+            return ""
         context = composer.command_context()
-        if command is None or context is None or not composer.command_cursor_at_end():
-            return
+        if context is None or not composer.command_cursor_at_end():
+            return ""
         command_text, _draft = context
-        _command_name, _separator, argument = command_text.partition(" ")
-        composer.suggestion = argument_suggestion(
-            command,
-            argument,
-            popup.selected_argument,
+        if command_text == self._dismissed_command_text:
+            return ""
+        _command_name, separator, argument = command_text.partition(" ")
+        if not separator:
+            return ""
+        command, _normalized_argument = resolve_command(
+            command_text,
+            self._command_catalog(),
         )
+        if command is None or not command.takes_arguments:
+            return ""
+        arguments = matching_arguments(command, argument)
+        selected_value = (
+            popup.selected_argument.value
+            if popup.selected_argument is not None
+            else None
+        )
+        selected = next(
+            (item for item in arguments if item.value == selected_value),
+            arguments[0] if arguments else None,
+        )
+        return argument_suggestion(command, argument, selected)
+
+    def _sync_command_suggestion(self, composer: Composer, popup: CommandPopup) -> None:
+        composer.suggestion = self._command_suggestion(composer, popup)
 
     async def on_composer_command_submitted(self, message: Composer.CommandSubmitted) -> None:
         popup = self.query_one(CommandPopup)

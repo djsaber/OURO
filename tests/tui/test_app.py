@@ -77,7 +77,7 @@ from ouro.tools import (
     builtin_tools,
 )
 from ouro.tui.app import OuroTuiApp, _session_choices
-from ouro.tui.commands import TUI_COMMANDS
+from ouro.tui.commands import TUI_COMMANDS, TuiCommand, TuiCommandArgument
 from ouro.tui.configuration_screens import (
     AgentDefinitionConfigurationScreen,
     AgentDispatchPolicyScreen,
@@ -7577,6 +7577,84 @@ async def test_parameterized_command_opens_argument_menu_and_executes_selection(
         await pilot.pause()
         assert composer.text == ""
         assert executed == [("goal", "pause")]
+
+
+@pytest.mark.asyncio
+async def test_deleting_command_argument_updates_suggestion_in_same_edit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    hint = "--token-budget N <objective>"
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(
+            app,
+            "_command_catalog",
+            lambda: (
+                TuiCommand(
+                    "/goal",
+                    "Goal",
+                    "Control a Goal",
+                    "<objective> | replace [--token-budget N] <objective>",
+                    argument_options=(
+                        TuiCommandArgument(
+                            "replace",
+                            "Replace the current Goal",
+                            "[--token-budget N] <objective>",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        composer = app.query_one(Composer)
+        composer.load_command("/goal replace")
+        await pilot.pause()
+        assert composer.suggestion == f" {hint}"
+
+        transitions: list[tuple[str, str]] = []
+        app.watch(
+            composer,
+            "suggestion",
+            lambda old, new: transitions.append((old, new)),
+            init=False,
+        )
+
+        previous = f" {hint}"
+        expected_suggestions = (
+            f"e {hint}",
+            f"ce {hint}",
+            f"ace {hint}",
+            f"lace {hint}",
+            f"place {hint}",
+            f"eplace {hint}",
+            "<objective>",
+        )
+        for expected in expected_suggestions:
+            transitions.clear()
+            composer.action_delete_left()
+            assert composer.suggestion == expected
+            await pilot.pause()
+            assert composer.suggestion == expected
+            assert transitions == [(previous, expected)]
+            previous = expected
+
+        transitions.clear()
+        composer.action_delete_left()
+        assert composer.suggestion == ""
+        await pilot.pause()
+        assert composer.text == "/goal"
+        assert composer.suggestion == ""
+        assert transitions == [(previous, "")]
+
+        transitions.clear()
+        composer.action_delete_left()
+        assert composer.suggestion == ""
+        await pilot.pause()
+        assert composer.text == "/goa"
+        assert composer.suggestion == ""
+        assert transitions == []
 
 
 @pytest.mark.asyncio

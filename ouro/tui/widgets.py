@@ -2344,6 +2344,19 @@ class Composer(TuiTextArea):
         self._clipboard_reader = clipboard_reader
         self._observed_text = ""
         self._command_draft: str | None = None
+        self._suggestion_resolver: Callable[[], str] | None = None
+
+    def set_suggestion_resolver(self, resolver: Callable[[], str]) -> None:
+        """Resolve inline suggestions synchronously with text edits."""
+
+        self._suggestion_resolver = resolver
+        self.update_suggestion()
+
+    def update_suggestion(self) -> None:
+        """Keep the suggestion aligned with the document before it is redrawn."""
+
+        if self._suggestion_resolver is not None:
+            self.suggestion = self._suggestion_resolver()
 
     def observe_command_change(self) -> tuple[str, str] | None:
         """Return the active command fragment and the draft behind it."""

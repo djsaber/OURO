@@ -6,6 +6,8 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- TUI inline command suggestions now update in the same edit cycle as their text and cursor,
+  keeping placeholders horizontally stable during backspace input.
 - OpenAI-compatible requests now merge the base system prompt and all system-role messages into one
   leading system message after semantic-envelope projection, preserving tagged scaffold content
   while supporting endpoints that reject multiple system messages.
