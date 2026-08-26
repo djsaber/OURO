@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,7 @@ from ouro.tui.preferences import (
     TuiPreferences,
     TuiPreferencesStore,
 )
-from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
+from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_DESIGN, TUI_THEMES
 
 
 def test_tui_theme_catalog_uses_distinct_restrained_palettes() -> None:
@@ -32,6 +33,38 @@ def test_tui_theme_catalog_uses_distinct_restrained_palettes() -> None:
     assert len({theme.accent for theme in TUI_THEMES.values()}) == len(TUI_THEMES)
     assert all(theme.accent.startswith("#") for theme in TUI_THEMES.values())
     assert all(theme.accent_bright.startswith("#") for theme in TUI_THEMES.values())
+
+
+def test_tui_design_tokens_own_shared_symbols_colors_and_animation() -> None:
+    assert TUI_DESIGN.section_separator == " • "
+    assert TUI_DESIGN.inline_separator == " · "
+    assert TUI_DESIGN.brand_mark == "▣"
+    assert TUI_DESIGN.selected_choice_marker == "●"
+    assert len(TUI_DESIGN.spinner_frames) == 10
+    assert len(set(TUI_DESIGN.spinner_frames)) == len(TUI_DESIGN.spinner_frames)
+    assert all(value.startswith("#") for value in TUI_DESIGN.css_variables().values())
+
+
+def test_tui_components_do_not_hardcode_shared_design_tokens() -> None:
+    tui_root = Path(__file__).parents[2] / "ouro" / "tui"
+    forbidden_symbols = {
+        TUI_DESIGN.section_separator_mark,
+        TUI_DESIGN.inline_separator_mark,
+        TUI_DESIGN.brand_mark,
+        TUI_DESIGN.selected_choice_marker,
+        *TUI_DESIGN.spinner_frames,
+    }
+    violations: list[str] = []
+    for path in tui_root.glob("*.py"):
+        if path.name == "theme.py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        if any(symbol in source for symbol in forbidden_symbols) or re.search(
+            r"#[0-9a-fA-F]{6}", source
+        ):
+            violations.append(path.name)
+
+    assert violations == []
 
 
 def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> None:

@@ -17,7 +17,7 @@ from ouro.config import (
 from ouro.config.provider_models import validate_reasoning_protocol_compatibility
 from ouro.tui.controller import TuiEndpointConfiguration, TuiProviderConfiguration
 from ouro.tui.screens import Choice, ChoiceScreen, EditableChoiceScreen
-from ouro.tui.theme import SELECTED_CHOICE_MARKER
+from ouro.tui.theme import TUI_DESIGN
 
 _REASONING_PRESET_LABELS = {
     "none": "None",
@@ -142,7 +142,7 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
 
     def _editor_display_text(self, value: str) -> str:
         if self._editing_value == "provider-api-key":
-            return "•" * len(value)
+            return TUI_DESIGN.mask_character * len(value)
         return value
 
     def _submit(self) -> None:
@@ -203,9 +203,9 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
             self._existing is not None and self._existing.credential.reference != "none"
         )
         api_key_display = (
-            "•" * 8
+            TUI_DESIGN.mask_character * 8
             if api_key
-            else "Configured · preserved"
+            else TUI_DESIGN.inline_separator.join(("Configured", "preserved"))
             if existing_credential and not self._values["provider-api-key-env"]
             else "Not set"
         )
@@ -373,7 +373,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                     trailing=_reasoning_summary(self._values["endpoint-reasoning-config"]),
                     group="CURRENT",
                     disabled=True,
-                    marker=SELECTED_CHOICE_MARKER,
+                    marker=TUI_DESIGN.selected_choice_marker,
                 )
             )
         for name in REASONING_PRESETS:
@@ -398,7 +398,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                     ),
                     group="PRESETS",
                     disabled=incompatible,
-                    marker=(SELECTED_CHOICE_MARKER if name == current_name else ""),
+                    marker=(TUI_DESIGN.selected_choice_marker if name == current_name else ""),
                 )
             )
         return tuple(choices)
@@ -662,7 +662,11 @@ def _reasoning_capability_summary(value: EndpointReasoningConfig) -> str:
         return "Unsupported"
     activation = "Always on" if capability.activation == "always_on" else "Toggle"
     effort_count = len(capability.supported_efforts)
-    return activation if not effort_count else f"{activation} · {effort_count} efforts"
+    return (
+        activation
+        if not effort_count
+        else TUI_DESIGN.inline_separator.join((activation, f"{effort_count} efforts"))
+    )
 
 
 def _positive_int(raw: str, label: str) -> int:

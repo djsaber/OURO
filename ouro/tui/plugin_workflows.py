@@ -13,7 +13,7 @@ from ouro.tui.controller import (
 )
 from ouro.tui.provider_workflows import ProviderConfigurationWorkflows
 from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
-from ouro.tui.theme import SELECTED_CHOICE_MARKER
+from ouro.tui.theme import TUI_DESIGN
 from ouro.tui.widgets import ConversationView
 
 
@@ -223,7 +223,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                     return None
 
             menu.push_page(
-                title=f"PLUGIN · {plugin.name}",
+                title=TUI_DESIGN.inline_separator.join(("PLUGIN", plugin.name)),
                 placeholder="Choose an action…",
                 choices=choices,
                 on_select=select_action,
@@ -233,7 +233,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             return
         selected = await self.push_screen_wait(
             ChoiceScreen(
-                title=f"PLUGIN · {plugin.name}",
+                title=TUI_DESIGN.inline_separator.join(("PLUGIN", plugin.name)),
                 placeholder="Choose an action…",
                 choices=choices,
             )
@@ -258,7 +258,11 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             return
         self._refresh_plugin_system_status()
         suffix = "installed" if result.changed else "already installed"
-        self.notify(f"Plugin {suffix}: {result.plugin_id} · {result.status}")
+        self.notify(
+            TUI_DESIGN.inline_separator.join(
+                (f"Plugin {suffix}: {result.plugin_id}", result.status)
+            )
+        )
 
     async def _configure_plugin(
         self,
@@ -307,10 +311,20 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             return
         messages = "; ".join(item.message for item in result.diagnostics)
         if result.status in {"active", "ready", "disabled"} and not messages:
-            self.notify(f"Plugin check passed: {plugin_id} · {result.status}")
+            self.notify(
+                TUI_DESIGN.inline_separator.join(
+                    (f"Plugin check passed: {plugin_id}", result.status)
+                )
+            )
             return
         await self.query_one(ConversationView).add_notice(
-            f"Plugin check: {plugin_id} · {result.status}" + (f" · {messages}" if messages else ""),
+            TUI_DESIGN.inline_separator.join(
+                (
+                    f"Plugin check: {plugin_id}",
+                    result.status,
+                    *((messages,) if messages else ()),
+                )
+            ),
             error=result.status in {"invalid", "incompatible", "blocked", "failed"},
         )
 
@@ -390,7 +404,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 install.package_digest,
                 install.version,
                 trailing=("selected" if install.selected else install.package_digest[:12]),
-                marker=SELECTED_CHOICE_MARKER if install.selected else "",
+                marker=TUI_DESIGN.selected_choice_marker if install.selected else "",
             )
             for install in plugin.installs
         )
@@ -409,7 +423,9 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 replace(
                     choice,
                     marker=(
-                        SELECTED_CHOICE_MARKER if choice.value == result.package_digest else ""
+                        TUI_DESIGN.selected_choice_marker
+                        if choice.value == result.package_digest
+                        else ""
                     ),
                     trailing=(
                         "selected" if choice.value == result.package_digest else choice.value[:12]
@@ -420,7 +436,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
 
         if menu is not None:
             menu.push_page(
-                title=f"PLUGIN VERSIONS · {plugin.name}",
+                title=TUI_DESIGN.inline_separator.join(("PLUGIN VERSIONS", plugin.name)),
                 placeholder="Filter versions…",
                 choices=choices,
                 on_select=select_install,
@@ -428,7 +444,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             return
         await self.push_screen_wait(
             ChoiceScreen(
-                title=f"PLUGIN VERSIONS · {plugin.name}",
+                title=TUI_DESIGN.inline_separator.join(("PLUGIN VERSIONS", plugin.name)),
                 placeholder="Filter versions…",
                 choices=choices,
                 on_select=select_install,
@@ -500,7 +516,7 @@ def _plugin_choices(plugins: tuple[PluginSummary, ...]) -> tuple[Choice, ...]:
             plugin.name,
             description=plugin.plugin_id,
             group="Built-in" if plugin.plugin_class == "builtin" else "Installed",
-            trailing=f"v{plugin.version} · {plugin.status}",
+            trailing=TUI_DESIGN.inline_separator.join((f"v{plugin.version}", plugin.status)),
         )
         for plugin in sorted(
             plugins,

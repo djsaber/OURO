@@ -18,6 +18,7 @@ from ouro.core.messages import (
     ProviderContinuationArtifact,
     SkillActivationContent,
     TextContent,
+    ToolExecutionTiming,
     ToolResultReference,
 )
 from ouro.core.provider import ModelMetadata, Usage
@@ -276,6 +277,10 @@ class RunLifecycle:
                     tool_call_id=result.tool_call_id,
                     tool_name=result.tool_name,
                     is_error=result.is_error,
+                ),
+                "tool_execution": ToolExecutionTiming(
+                    started_at=result.started_at,
+                    ended_at=result.ended_at or result.started_at,
                 ),
             }
         )

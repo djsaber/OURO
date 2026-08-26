@@ -106,6 +106,19 @@ class ModelResponseRecord(OuroModel):
         return self
 
 
+class ToolExecutionTiming(OuroModel):
+    """Durable execution timing attached to a canonical tool-result message."""
+
+    started_at: datetime
+    ended_at: datetime
+
+    @model_validator(mode="after")
+    def validate_timing(self) -> ToolExecutionTiming:
+        if self.ended_at < self.started_at:
+            raise ValueError("tool execution ended_at cannot precede started_at")
+        return self
+
+
 class ModelMessage(OuroModel):
     """Provider-neutral message containing only model-visible semantics.
 
@@ -177,6 +190,7 @@ class MessageRecord(VersionedOuroModel):
     tool_result: ToolResultReference | None = None
     reasoning_content: str = ""
     model_response: ModelResponseRecord | None = None
+    tool_execution: ToolExecutionTiming | None = None
     provider_continuation: ProviderContinuationArtifact | None = None
     metadata: Metadata = MetadataField
 
@@ -189,6 +203,7 @@ class MessageRecord(VersionedOuroModel):
             "is_error",
             "reasoning_content",
             "model_response",
+            "tool_execution",
             "provider_continuation",
             "semantic_tag",
             "scaffold",
@@ -211,6 +226,10 @@ class MessageRecord(VersionedOuroModel):
             raise ValueError("only assistant messages may contain reasoning state")
         if self.model_response is not None and self.role != "assistant":
             raise ValueError("only assistant messages may contain model response state")
+        if self.tool_execution is not None and (
+            self.role != "tool_result" or self.tool_result is None
+        ):
+            raise ValueError("tool execution timing requires a tool_result message")
         _validate_skill_activation_blocks(self.role, self.content)
         return self
 

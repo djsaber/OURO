@@ -37,7 +37,7 @@ from ouro.tui.controller import (
 )
 from ouro.tui.model_menus import model_choices
 from ouro.tui.screens import Choice, ChoiceScreen, EditableChoiceScreen
-from ouro.tui.theme import SELECTED_CHOICE_MARKER
+from ouro.tui.theme import TUI_DESIGN
 
 _RUNTIME_MODEL = "__ouro_runtime_model__"
 _NO_FALLBACK = "__ouro_no_fallback__"
@@ -308,10 +308,12 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
             Choice(
                 definition.agent_id,
                 definition.name,
-                trailing=f"{definition.agent_id} · {definition.compatibility}",
+                trailing=TUI_DESIGN.inline_separator.join(
+                    (definition.agent_id, definition.compatibility)
+                ),
                 group="BUILT-IN" if definition.source == "builtin" else "USER",
                 marker=(
-                    SELECTED_CHOICE_MARKER
+                    TUI_DESIGN.selected_choice_marker
                     if definition.agent_id in self._allowed_agent_ids
                     else ""
                 ),
@@ -324,7 +326,7 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
             replace(
                 choice,
                 marker=(
-                    SELECTED_CHOICE_MARKER
+                    TUI_DESIGN.selected_choice_marker
                     if choice.value in self._allowed_model_keys
                     else ""
                 ),
@@ -431,7 +433,9 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
             **{model.key: model.display_name or model.model_id for model in models},
         }
         if configured_model not in self._model_labels:
-            self._model_labels[configured_model] = f"Unavailable · {configured_model}"
+            self._model_labels[configured_model] = TUI_DESIGN.inline_separator.join(
+                ("Unavailable", configured_model)
+            )
         self._values = {
             "agent-definition-id": existing.agent_id if existing is not None else "",
             "agent-definition-name": existing.name if existing is not None else "",
@@ -603,11 +607,9 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
                     Choice(
                         f"{self._TOOL_PREFIX}{tool_name}",
                         tool_name,
-                        trailing=(
-                            "Unavailable" if tool is None else tool.effect.replace("_", " ")
-                        ),
+                        trailing=("Unavailable" if tool is None else tool.effect.replace("_", " ")),
                         group="SELECTED TOOLS",
-                        marker=SELECTED_CHOICE_MARKER if selected else "",
+                        marker=TUI_DESIGN.selected_choice_marker if selected else "",
                     )
                 )
         choices.append(
@@ -627,7 +629,7 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
             Choice(
                 _RUNTIME_MODEL,
                 "Inherit session model",
-                marker=SELECTED_CHOICE_MARKER if selected == _RUNTIME_MODEL else "",
+                marker=(TUI_DESIGN.selected_choice_marker if selected == _RUNTIME_MODEL else ""),
                 group="SESSION",
             )
         ]
@@ -637,7 +639,7 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
                 Choice(
                     selected,
                     self._model_labels[selected],
-                    marker=SELECTED_CHOICE_MARKER,
+                    marker=TUI_DESIGN.selected_choice_marker,
                     group="UNAVAILABLE",
                     disabled=True,
                 )
@@ -676,7 +678,9 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
             **{model.key: model.display_name or model.key for model in models},
         }
         if configured_model not in self._model_labels:
-            self._model_labels[configured_model] = f"Unavailable · {configured_model}"
+            self._model_labels[configured_model] = TUI_DESIGN.inline_separator.join(
+                ("Unavailable", configured_model)
+            )
         reasoning = _reasoning_value(config.model.reasoning)
         configured_capability = self._model(configured_model)
         reasoning_options = _compaction_reasoning_options(configured_capability)
@@ -766,7 +770,7 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
             Choice(
                 _RUNTIME_MODEL,
                 "Session runtime model",
-                marker=SELECTED_CHOICE_MARKER if selected == _RUNTIME_MODEL else "",
+                marker=(TUI_DESIGN.selected_choice_marker if selected == _RUNTIME_MODEL else ""),
                 group="SESSION",
             )
         ]
@@ -776,7 +780,7 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
                 Choice(
                     selected,
                     self._model_labels[selected],
-                    marker=SELECTED_CHOICE_MARKER,
+                    marker=TUI_DESIGN.selected_choice_marker,
                     group="UNAVAILABLE",
                     disabled=True,
                 )
@@ -1033,7 +1037,9 @@ class MCPConfigurationScreen(EditableChoiceScreen):
         return self._mcp_choices()
 
     def _editor_display_text(self, value: str) -> str:
-        return "•" * len(value) if self._editing_value in self._MASKED else value
+        return (
+            TUI_DESIGN.mask_character * len(value) if self._editing_value in self._MASKED else value
+        )
 
     def _refresh(self, selected: str) -> None:
         self._replace_choices(self._mcp_choices(), selected=selected)
@@ -1105,7 +1111,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
     def _mcp_choices(self) -> tuple[Choice, ...]:
         error = self._validation_error()
         existing = self._existing
-        preserved = "Configured · preserved"
+        preserved = TUI_DESIGN.inline_separator.join(("Configured", "preserved"))
         return (
             Choice(
                 "mcp-server-id",
@@ -1370,7 +1376,7 @@ class PluginConfigurationScreen(EditableChoiceScreen):
             ),
         }
         super().__init__(
-            title=f"PLUGIN CONFIGURATION · {plugin.name}",
+            title=TUI_DESIGN.inline_separator.join(("PLUGIN CONFIGURATION", plugin.name)),
             placeholder="Filter plugin configuration…",
             choices=self._configuration_choices(),
             on_save=self._save_field,

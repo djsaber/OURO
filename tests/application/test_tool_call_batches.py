@@ -169,6 +169,11 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(t
         for message in snapshot.messages[2:4]
         if message.tool_result is not None
     ] == ["call_1", "call_2"]
+    tool_timings = [message.tool_execution for message in snapshot.messages[2:4]]
+    assert all(timing is not None for timing in tool_timings)
+    assert all(
+        timing.ended_at >= timing.started_at for timing in tool_timings if timing is not None
+    )
     event_types = [event.event_type for event in snapshot.events]
     committing_index = event_types.index("tool_batch_results_committing")
     assert committing_index > max(

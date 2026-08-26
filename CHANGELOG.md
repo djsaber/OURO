@@ -6,6 +6,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- TUI design tokens now own shared separators, symbols, animation frames, text tones,
+  surfaces, and semantic colors across Textual CSS and Rich-rendered components.
+- Reloaded tool calls retain execution timing, and compaction transcript summaries now show
+  themed markers, reduced token counts, and local completion times.
 - TUI inline command suggestions now update in the same edit cycle as their text and cursor,
   keeping placeholders horizontally stable during backspace input.
 - OpenAI-compatible requests now merge the base system prompt and all system-role messages into one

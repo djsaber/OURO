@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import JsonValue
 
 from ouro.application.supervisor_models import RuntimeToolCallActivity
+from ouro.tui.theme import TUI_DESIGN
 
 ToolLineState = Literal["pending", "active", "done", "muted"]
 ToolTextTone = Literal["default", "muted", "added", "removed"]
@@ -79,13 +80,13 @@ def _present_write(arguments: dict[str, JsonValue]) -> ToolPresentation:
     mode = arguments.get("mode", "overwrite")
     detail = list(_path_parts(path))
     if detail and (line_count is not None or mode in {"overwrite", "append"}):
-        detail.append(ToolPresentationPart(" · ", "muted"))
+        detail.append(ToolPresentationPart(TUI_DESIGN.inline_separator, "muted"))
     if line_count is not None:
         detail.append(ToolPresentationPart(f"+{line_count}", "added"))
         detail.append(ToolPresentationPart(f" {_plural_noun(line_count, 'line')}", "muted"))
     if mode in {"overwrite", "append"}:
         if line_count is not None:
-            detail.append(ToolPresentationPart(" · ", "muted"))
+            detail.append(ToolPresentationPart(TUI_DESIGN.inline_separator, "muted"))
         detail.append(ToolPresentationPart(str(mode), "muted"))
     return ToolPresentation(
         lines=(ToolPresentationLine("└", tuple(detail)),) if detail else (),
@@ -100,7 +101,7 @@ def _present_edit(arguments: dict[str, JsonValue]) -> ToolPresentation:
         return ToolPresentation(lines=_file_detail_line(path))
     detail = list(_path_parts(path))
     if detail:
-        detail.append(ToolPresentationPart(" · ", "muted"))
+        detail.append(ToolPresentationPart(TUI_DESIGN.inline_separator, "muted"))
     detail.extend(
         (
             ToolPresentationPart(f"+{_text_line_count(new)}", "added"),
@@ -110,7 +111,7 @@ def _present_edit(arguments: dict[str, JsonValue]) -> ToolPresentation:
         )
     )
     if arguments.get("replace_all") is True:
-        detail.append(ToolPresentationPart(" · replace all", "muted"))
+        detail.append(ToolPresentationPart(f"{TUI_DESIGN.inline_separator}replace all", "muted"))
     return ToolPresentation(lines=(ToolPresentationLine("└", tuple(detail)),))
 
 
@@ -154,11 +155,11 @@ def _present_todos(
         state: ToolLineState
         if status == "done":
             done_count += 1
-            marker, state = "●", "done"
+            marker, state = TUI_DESIGN.completed_item_marker, "done"
         elif status == "in_progress":
-            marker, state = "◉", "active"
+            marker, state = TUI_DESIGN.active_item_marker, "active"
         else:
-            marker, state = "○", "pending"
+            marker, state = TUI_DESIGN.pending_item_marker, "pending"
         if len(lines) < _MAX_TODO_LINES:
             lines.append(ToolPresentationLine(marker, (ToolPresentationPart(title),), state))
 
@@ -191,7 +192,7 @@ def _file_detail_line(
     parts = list(_path_parts(path))
     if summary:
         if parts:
-            parts.append(ToolPresentationPart(" · ", "muted"))
+            parts.append(ToolPresentationPart(TUI_DESIGN.inline_separator, "muted"))
         parts.append(ToolPresentationPart(summary, "muted"))
     return (ToolPresentationLine("└", tuple(parts)),) if parts else ()
 

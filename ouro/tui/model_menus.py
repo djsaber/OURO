@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from ouro.application.models import AvailableModel
 from ouro.tui.screens import Choice
-from ouro.tui.theme import SELECTED_CHOICE_MARKER
+from ouro.tui.theme import TUI_DESIGN
 
 
 def model_choices(
@@ -17,7 +17,7 @@ def model_choices(
             model.key,
             model.display_name or model.model_id,
             trailing=model.endpoint_id,
-            marker=SELECTED_CHOICE_MARKER if model.key == selected else "",
+            marker=TUI_DESIGN.selected_choice_marker if model.key == selected else "",
             group=model.provider_id,
         )
         for model in models

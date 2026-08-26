@@ -6,11 +6,97 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
-SELECTED_CHOICE_MARKER = "●"
-ASCII_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
-WELCOME_BULLET = "•"
-WELCOME_SEPARATOR = f" {WELCOME_BULLET} "
-FAILURE_TONE = "#d87575"
+
+@dataclass(frozen=True, slots=True)
+class TuiDesignTokens:
+    """Theme-independent visual vocabulary shared by CSS and Rich content."""
+
+    section_separator_mark: str = "•"
+    inline_separator_mark: str = "·"
+    brand_mark: str = "▣"
+    mask_character: str = "•"
+    selected_choice_marker: str = "●"
+    unselected_choice_marker: str = "○"
+    active_item_marker: str = "◉"
+    completed_item_marker: str = "●"
+    pending_item_marker: str = "○"
+    spinner_frames: tuple[str, ...] = (
+        "⠋",
+        "⠙",
+        "⠹",
+        "⠸",
+        "⠼",
+        "⠴",
+        "⠦",
+        "⠧",
+        "⠇",
+        "⠏",
+    )
+    background: str = "#0c0c0c"
+    panel: str = "#171717"
+    highlight: str = "#242424"
+    input_highlight: str = "#2a2a2a"
+    progress_track: str = "#34373d"
+    border_focus: str = "#3f4650"
+    separator_tone: str = "#4d5560"
+    border: str = "#505967"
+    text_disabled: str = "#626b78"
+    text_faint: str = "#647180"
+    scrollbar_hover: str = "#6a7482"
+    text_lowlight: str = "#6f7a87"
+    text_metadata: str = "#777f8b"
+    text_detail: str = "#788492"
+    text_choice: str = "#7d8794"
+    text_muted: str = "#8f9aa8"
+    warning: str = "#968264"
+    text_secondary: str = "#aeb5bf"
+    danger: str = "#b97878"
+    text_primary: str = "#d6d9df"
+    failure: str = "#d87575"
+    critical: str = "#e08a8a"
+    text_highlight: str = "#e5e7eb"
+    warning_bright: str = "#facc15"
+    success: str = "#77b083"
+
+    @property
+    def section_separator(self) -> str:
+        return f" {self.section_separator_mark} "
+
+    @property
+    def inline_separator(self) -> str:
+        return f" {self.inline_separator_mark} "
+
+    @property
+    def idle_mark(self) -> str:
+        return self.inline_separator_mark
+
+    def css_variables(self) -> dict[str, str]:
+        """Project design colors into Textual's CSS token namespace."""
+
+        return {
+            "ouro-background": self.background,
+            "ouro-panel": self.panel,
+            "ouro-highlight": self.highlight,
+            "ouro-input-highlight": self.input_highlight,
+            "ouro-progress-track": self.progress_track,
+            "ouro-border-focus": self.border_focus,
+            "ouro-separator": self.separator_tone,
+            "ouro-border": self.border,
+            "ouro-text-disabled": self.text_disabled,
+            "ouro-text-faint": self.text_faint,
+            "ouro-scrollbar-hover": self.scrollbar_hover,
+            "ouro-text-lowlight": self.text_lowlight,
+            "ouro-text-detail": self.text_detail,
+            "ouro-text-muted": self.text_muted,
+            "ouro-text-secondary": self.text_secondary,
+            "ouro-text-primary": self.text_primary,
+            "ouro-text-highlight": self.text_highlight,
+            "ouro-danger": self.danger,
+            "ouro-warning-bright": self.warning_bright,
+        }
+
+
+TUI_DESIGN = TuiDesignTokens()
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,13 +205,10 @@ def theme_for(node: object) -> TuiTheme:
 
 
 __all__ = [
-    "ASCII_SPINNER_FRAMES",
     "DEFAULT_TUI_THEME",
-    "FAILURE_TONE",
-    "SELECTED_CHOICE_MARKER",
+    "TUI_DESIGN",
     "TUI_THEMES",
+    "TuiDesignTokens",
     "TuiTheme",
-    "WELCOME_BULLET",
-    "WELCOME_SEPARATOR",
     "theme_for",
 ]

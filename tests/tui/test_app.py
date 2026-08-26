@@ -43,6 +43,7 @@ from ouro.core.messages import (
     ModelMessage,
     ModelResponseRecord,
     TextContent,
+    ToolExecutionTiming,
     ToolResultReference,
 )
 from ouro.core.provider import (
@@ -120,11 +121,7 @@ from ouro.tui.state import (
     TuiSessionProjection,
     project_run_presentation,
 )
-from ouro.tui.theme import (
-    ASCII_SPINNER_FRAMES,
-    SELECTED_CHOICE_MARKER,
-    TUI_THEMES,
-)
+from ouro.tui.theme import TUI_DESIGN, TUI_THEMES
 from ouro.tui.widgets import (
     ActivityIndicator,
     AskUserPanel,
@@ -139,6 +136,7 @@ from ouro.tui.widgets import (
     QueuedInputPanel,
     StatusLine,
     WelcomePanel,
+    _tool_activities_from_messages,
 )
 
 
@@ -1722,7 +1720,7 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         mcp_label = welcome.query_one("#welcome-mcp-label", Static)
         connecting_label = mcp_label.render().plain
         assert connecting_label.endswith(" MCP")
-        assert connecting_label[0] in ASCII_SPINNER_FRAMES
+        assert connecting_label[0] in TUI_DESIGN.spinner_frames
         starting_status = welcome._system._mcp.render()
         assert "0/1 connected • 0 tool(s) • 1 connecting" in starting_status.plain
         assert starting_status.get_style_at_offset(
@@ -2737,6 +2735,8 @@ async def test_history_restores_compaction_boundaries_in_chronological_order(
             covered_message_ids=[messages[0].message_id],
             history_boundary_message_id=messages[0].message_id,
             source_digest="sha256:" + "1" * 64,
+            estimated_tokens_before=800,
+            estimated_tokens_after=300,
             # The durable boundary, not wall-clock ordering, owns placement.
             created_at=datetime(2026, 1, 1, 11, 0, tzinfo=UTC),
         ),
@@ -2748,6 +2748,8 @@ async def test_history_restores_compaction_boundaries_in_chronological_order(
             covered_message_ids=[messages[0].message_id, messages[1].message_id],
             history_boundary_message_id=messages[1].message_id,
             source_digest="sha256:" + "2" * 64,
+            estimated_tokens_before=1_500,
+            estimated_tokens_after=500,
             created_at=datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
         ),
     )
@@ -2759,13 +2761,31 @@ async def test_history_restores_compaction_boundaries_in_chronological_order(
         await pilot.pause()
 
         history = conversation.query_one(ConversationHistory)
+        first_time = compactions[0].created_at.astimezone().strftime("%H:%M")
+        second_time = compactions[1].created_at.astimezone().strftime("%H:%M")
         assert [(entry.kind, entry.text) for entry in history.entries] == [
             ("user", "First question"),
-            ("notice", "Context compacted · 1 message summarized"),
+            (
+                "compaction",
+                TUI_DESIGN.section_separator.join(
+                    ("Context compacted", "1 message summarized", "500 tokens reduced", first_time)
+                ),
+            ),
             ("assistant", "First answer"),
-            ("notice", "Context compacted · 2 messages summarized"),
+            (
+                "compaction",
+                TUI_DESIGN.section_separator.join(
+                    (
+                        "Context compacted",
+                        "2 messages summarized",
+                        "1.0K tokens reduced",
+                        second_time,
+                    )
+                ),
+            ),
             ("user", "Second question"),
         ]
+        assert f"{TUI_DESIGN.brand_mark} Context compacted" in history.rendered_text
 
         invalid = compactions[0].model_copy(update={"history_boundary_message_id": "msg_missing"})
         with pytest.raises(ValueError, match="references missing history boundary"):
@@ -2791,25 +2811,35 @@ async def test_compaction_completion_updates_context_and_transcript_without_next
         await pilot.pause()
         session_id = "ses_live_compaction"
         app._projection = TuiSessionProjection(session_id)
+        completed = EventRecord(
+            session_id=session_id,
+            run_id="run_compaction",
+            event_type="compaction_completed",
+            sequence=1,
+            payload={
+                "compaction_id": "cmp_live",
+                "covered_message_count": 4,
+                "tokens_before": 800,
+                "tokens_after": 250,
+                "context_metrics_after": metrics.model_dump(mode="json"),
+            },
+        )
         await app._apply_runtime_events(
-            (
-                EventRecord(
-                    session_id=session_id,
-                    run_id="run_compaction",
-                    event_type="compaction_completed",
-                    sequence=1,
-                    payload={
-                        "compaction_id": "cmp_live",
-                        "covered_message_count": 4,
-                        "context_metrics_after": metrics.model_dump(mode="json"),
-                    },
-                ),
-            )
+            (completed,)
         )
         await pilot.pause()
 
         history = app.query_one(ConversationHistory)
-        assert history.entries[-1].text == "Context compacted · 4 messages summarized"
+        assert history.entries[-1].kind == "compaction"
+        assert history.entries[-1].text == TUI_DESIGN.section_separator.join(
+            (
+                "Context compacted",
+                "4 messages summarized",
+                "550 tokens reduced",
+                completed.created_at.astimezone().strftime("%H:%M"),
+            )
+        )
+        assert f"{TUI_DESIGN.brand_mark} Context compacted" in history.rendered_text
         assert app.query_one("#context-detail", Static).render().plain.startswith("250 ")
 
 
@@ -2909,6 +2939,7 @@ async def test_history_load_renders_tool_calls_between_messages(tmp_path: Path) 
     """
     app = OuroTuiApp(application=_application(tmp_path))
     tool_call_id = "tool_history_read"
+    tool_started_at = datetime(2026, 8, 26, 10, 0, tzinfo=UTC)
     messages = (
         MessageRecord(
             session_id="ses_tools",
@@ -2935,6 +2966,10 @@ async def test_history_load_renders_tool_calls_between_messages(tmp_path: Path) 
                 tool_name="read",
                 is_error=False,
             ),
+            tool_execution=ToolExecutionTiming(
+                started_at=tool_started_at,
+                ended_at=tool_started_at + timedelta(seconds=3),
+            ),
         ),
         MessageRecord(
             session_id="ses_tools",
@@ -2954,14 +2989,39 @@ async def test_history_load_renders_tool_calls_between_messages(tmp_path: Path) 
         assert len(tools) == 1
         assert tools[0].tool_call_id == tool_call_id
         assert tools[0].status == "completed"
+        assert tools[0].started_at == tool_started_at
+        assert tools[0].ended_at == tool_started_at + timedelta(seconds=3)
 
         rendered = history.rendered_text
         assert "read" in rendered
         assert "config.json" in rendered
+        assert "3s" in rendered
 
         # Dialogue order: user text, tool row, assistant text — interleaved.
         kinds = [entry.kind for entry in history.entries]
         assert kinds == ["user", "tool", "assistant"]
+
+
+def test_history_recovers_legacy_tool_timing_from_message_boundaries() -> None:
+    started_at = datetime(2026, 8, 26, 10, 0, tzinfo=UTC)
+    call_id = "legacy_call"
+    request = MessageRecord(
+        session_id="ses_legacy_tools",
+        role="assistant",
+        created_at=started_at,
+        tool_calls=[ToolCallRequest(id=call_id, name="read")],
+    )
+    result = MessageRecord(
+        session_id="ses_legacy_tools",
+        role="tool_result",
+        created_at=started_at + timedelta(seconds=4),
+        tool_result=ToolResultReference(tool_call_id=call_id, tool_name="read"),
+    )
+
+    activity = _tool_activities_from_messages((request, result))[call_id]
+
+    assert activity.started_at == started_at
+    assert activity.ended_at == started_at + timedelta(seconds=4)
 
 
 @pytest.mark.asyncio
@@ -4571,7 +4631,7 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
         ]
         assert [choice.label for choice in app.screen._choices] == ["shared", "shared"]
         assert [choice.marker for choice in app.screen._choices] == [
-            SELECTED_CHOICE_MARKER,
+            TUI_DESIGN.selected_choice_marker,
             "",
         ]
         assert [choice.group for choice in app.screen._choices] == [
@@ -4701,7 +4761,7 @@ async def test_setting_default_endpoint_also_switches_default_provider(tmp_path:
         assert choices["primary/primary-chat"].label == "primary-chat"
         assert choices["primary/primary-chat"].marker == ""
         assert choices["secondary/secondary-chat"].label == "secondary-chat"
-        assert choices["secondary/secondary-chat"].marker == SELECTED_CHOICE_MARKER
+        assert choices["secondary/secondary-chat"].marker == TUI_DESIGN.selected_choice_marker
         assert all(choice.trailing == "" for choice in choices.values())
         catalog = ConfigurationFacade(tmp_path).provider_catalog()
         assert catalog.default_provider_id == "secondary"
@@ -5704,7 +5764,7 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
         current = next(choice for choice in app.screen._choices if choice.value == "default")
         assert current.label == "default"
-        assert current.marker == SELECTED_CHOICE_MARKER
+        assert current.marker == TUI_DESIGN.selected_choice_marker
         assert current.trailing == "approval"
         assert all(choice.trailing != "current" for choice in app.screen._choices)
         app.screen.query_one("#choice-filter", Input).value = "auto"
@@ -6618,7 +6678,7 @@ async def test_subagent_policy_uses_shared_grouped_inline_menu(tmp_path: Path) -
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="ALLOWED SUBAGENTS")
         general = next(choice for choice in app.screen._choices if choice.value == "general")
-        assert general.marker == SELECTED_CHOICE_MARKER
+        assert general.marker == TUI_DESIGN.selected_choice_marker
         await pilot.press("enter")
         await pilot.pause()
         general = next(choice for choice in app.screen._choices if choice.value == "general")
@@ -6637,7 +6697,7 @@ async def test_subagent_policy_uses_shared_grouped_inline_menu(tmp_path: Path) -
         await _wait_for_screen(app, ChoiceScreen, title="ALLOWED SUBAGENT MODELS")
         assert next(
             choice for choice in app.screen._choices if choice.value == models[0].key
-        ).marker == SELECTED_CHOICE_MARKER
+        ).marker == TUI_DESIGN.selected_choice_marker
         await pilot.press("escape")
         await _wait_for_screen(
             app,
@@ -6702,7 +6762,7 @@ async def test_subagent_definition_editor_does_not_limit_selected_tool_count(
         await _wait_for_screen(app, ChoiceScreen, title="SUBAGENT MODEL")
         assert next(
             choice for choice in app.screen._choices if choice.value == "__ouro_runtime_model__"
-        ).marker == SELECTED_CHOICE_MARKER
+        ).marker == TUI_DESIGN.selected_choice_marker
         model_options = app.screen.query_one("#choice-list", OptionList)
         model_options.highlighted = model_options.get_option_index(models[0].key)
         model_options.focus()
@@ -8172,7 +8232,7 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         assert isinstance(app.screen, ChoiceScreen)
         assert (
             next(choice for choice in app.screen._choices if choice.value == "sage").marker
-            == SELECTED_CHOICE_MARKER
+            == TUI_DESIGN.selected_choice_marker
         )
         assert app.tui_theme == sage
         header = app.query_one(BrandHeader).render()
@@ -8231,7 +8291,7 @@ async def test_action_menu_updates_thought_display_without_closing_picker(
             "MODEL THOUGHT DISPLAY"
         )
         choices = {choice.value: choice for choice in thought_screen._choices}
-        assert choices["collapse"].marker == SELECTED_CHOICE_MARKER
+        assert choices["collapse"].marker == TUI_DESIGN.selected_choice_marker
         assert choices["expand"].marker == ""
 
         thought_screen.query_one("#choice-filter", Input).value = "Expand"
@@ -8240,7 +8300,7 @@ async def test_action_menu_updates_thought_display_without_closing_picker(
         await pilot.pause()
         assert app.screen is thought_screen
         choices = {choice.value: choice for choice in thought_screen._choices}
-        assert choices["expand"].marker == SELECTED_CHOICE_MARKER
+        assert choices["expand"].marker == TUI_DESIGN.selected_choice_marker
         assert choices["collapse"].marker == ""
         assert preferences.load().reasoning_expanded is True
         assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))

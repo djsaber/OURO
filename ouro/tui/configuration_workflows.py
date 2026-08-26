@@ -35,7 +35,7 @@ from ouro.tui.controller import (
 )
 from ouro.tui.plugin_workflows import PluginManagementWorkflows
 from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
-from ouro.tui.theme import SELECTED_CHOICE_MARKER
+from ouro.tui.theme import TUI_DESIGN
 from ouro.tui.widgets import ConversationView
 
 
@@ -252,7 +252,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 active_tool = tool
                 current = tool.permission_override or "default"
                 screen.replace_page(
-                    title=f"TOOL PERMISSION · {tool.name}",
+                    title=f"TOOL PERMISSION{TUI_DESIGN.inline_separator}{tool.name}",
                     placeholder="Filter permission modes…",
                     choices=_tool_permission_choices(
                         current,
@@ -440,7 +440,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return None
 
         menu.push_page(
-            title=f"SUBAGENT · {definition.name}",
+            title=f"SUBAGENT{TUI_DESIGN.inline_separator}{definition.name}",
             placeholder="Choose an action…",
             choices=(
                 Choice("edit", "Edit subagent"),
@@ -966,7 +966,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 return None
 
             menu.push_page(
-                title=f"MCP · {config.name}",
+                title=f"MCP{TUI_DESIGN.inline_separator}{config.name}",
                 placeholder="Choose an action…",
                 choices=actions,
                 on_select=select_action,
@@ -975,7 +975,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return
         selected = await self.push_screen_wait(
             ChoiceScreen(
-                title=f"MCP · {config.name}",
+                title=f"MCP{TUI_DESIGN.inline_separator}{config.name}",
                 placeholder="Choose an action…",
                 choices=actions,
             )
@@ -1011,7 +1011,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return
         self._refresh_mcp_system_status()
         self.notify(
-            f"MCP configuration saved: {saved.server_id} · "
+            f"MCP configuration saved: {saved.server_id}{TUI_DESIGN.inline_separator}"
             "tool policy active; restart for connection changes"
         )
 
@@ -1022,10 +1022,14 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         if result.ok:
-            self.notify(f"MCP check passed: {server_id} · {len(result.tool_names)} tool(s)")
+            self.notify(
+                f"MCP check passed: {server_id}{TUI_DESIGN.inline_separator}"
+                f"{len(result.tool_names)} tool(s)"
+            )
         else:
             await self.query_one(ConversationView).add_notice(
-                f"MCP check failed: {server_id} · {result.error or result.status}",
+                f"MCP check failed: {server_id}{TUI_DESIGN.inline_separator}"
+                f"{result.error or result.status}",
                 error=True,
             )
 
@@ -1048,7 +1052,8 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         self._refresh_mcp_system_status()
         if status.status == "failed":
             self.notify(
-                f"MCP {server_id}: {status.status} · {status.tool_count} tool(s)",
+                f"MCP {server_id}: {status.status}{TUI_DESIGN.inline_separator}"
+                f"{status.tool_count} tool(s)",
                 severity="error",
             )
         return status
@@ -1408,7 +1413,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 return None
 
             menu.push_page(
-                title=f"SKILL · {name}",
+                title=f"SKILL{TUI_DESIGN.inline_separator}{name}",
                 placeholder="Choose an action…",
                 choices=actions,
                 on_select=select_action,
@@ -1417,7 +1422,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return
         selected = await self.push_screen_wait(
             ChoiceScreen(
-                title=f"SKILL · {name}",
+                title=f"SKILL{TUI_DESIGN.inline_separator}{name}",
                 placeholder="Choose an action…",
                 choices=actions,
             )
@@ -1476,7 +1481,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return
         messages = "; ".join(item.message for item in result.diagnostics) or "invalid skill"
         await self.query_one(ConversationView).add_notice(
-            f"Skill validation failed: {name} · {messages}",
+            f"Skill validation failed: {name}{TUI_DESIGN.inline_separator}{messages}",
             error=True,
         )
 
@@ -1560,7 +1565,9 @@ def _agent_definition_choices(
             definition.agent_id,
             definition.name,
             group="BUILT-IN" if definition.source == "builtin" else "USER",
-            trailing=f"{definition.agent_id} · {definition.compatibility}",
+            trailing=TUI_DESIGN.inline_separator.join(
+                (definition.agent_id, definition.compatibility)
+            ),
             disabled=not definition.editable,
         )
         for definition in sorted(definitions, key=lambda item: item.name.casefold())
@@ -1579,7 +1586,7 @@ def _tool_permission_choices(
             trailing=(
                 default_permission if value == "default" and default_permission is not None else ""
             ),
-            marker=SELECTED_CHOICE_MARKER if value == current else "",
+            marker=TUI_DESIGN.selected_choice_marker if value == current else "",
         )
         for value in _TOOL_PERMISSION_CHOICES
     )
@@ -1589,14 +1596,14 @@ def _tool_labels(tool: TuiToolConfiguration) -> str:
     permission: str
     if tool.permission_control == "tool":
         permission = tool.effective_permission or "unavailable"
-        return f"contract · {permission}"
+        return TUI_DESIGN.inline_separator.join(("contract", permission))
     elif tool.permission_override is not None:
         permission = tool.permission_override
     elif tool.effective_permission is not None:
-        permission = f"default · {tool.effective_permission}"
+        permission = TUI_DESIGN.inline_separator.join(("default", tool.effective_permission))
     else:
         permission = "unavailable"
-    availability = "" if tool.available else " · unavailable"
+    availability = "" if tool.available else f"{TUI_DESIGN.inline_separator}unavailable"
     return f"{permission}{availability}"
 
 
@@ -1606,7 +1613,7 @@ def _mcp_labels(
 ) -> str:
     enabled = "enabled" if config.enabled else "disabled"
     runtime = status.status if status is not None else "next restart"
-    return f"{enabled} · {runtime}"
+    return TUI_DESIGN.inline_separator.join((enabled, runtime))
 
 
 def _mcp_action_candidates(
@@ -1746,12 +1753,16 @@ def _mcp_status_is_loading(status: McpServerStatus | None) -> bool:
 def _skill_choice(skill: SkillView) -> Choice:
     plugin_id = _plugin_skill_owner(skill)
     source_label = (
-        "plugin" if skill.source == "plugin" else f"{skill.origin} · {skill.source}"
+        "plugin"
+        if skill.source == "plugin"
+        else TUI_DESIGN.inline_separator.join((skill.origin, skill.source))
     )
     return Choice(
         skill.name,
         skill.name,
-        trailing=f"{source_label} · {'enabled' if skill.enabled else 'disabled'}",
+        trailing=TUI_DESIGN.inline_separator.join(
+            (source_label, "enabled" if skill.enabled else "disabled")
+        ),
         disabled=plugin_id is not None,
     )
 
@@ -1768,7 +1779,7 @@ def _skill_source_choices(policy: SkillPolicyView) -> tuple[Choice, ...]:
     choices.extend(
         Choice(
             source.source_id,
-            f"{source.origin} · {source.scope}",
+            TUI_DESIGN.inline_separator.join((source.origin, source.scope)),
             trailing="enabled" if source.enabled else "disabled",
             group=f"{source.scope.upper()} DIRECTORIES",
         )

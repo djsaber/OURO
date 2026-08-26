@@ -18,7 +18,7 @@ from ouro.tui.provider_screens import (
     profile_for_provider,
 )
 from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
-from ouro.tui.theme import SELECTED_CHOICE_MARKER
+from ouro.tui.theme import TUI_DESIGN
 from ouro.tui.widgets import ConversationView
 
 
@@ -152,7 +152,9 @@ class ProviderConfigurationWorkflows(App[int]):
             if provider.endpoint_count
             else "add an endpoint to make it usable"
         )
-        self.notify(f"Provider added: {provider.provider_id} · {suffix}")
+        self.notify(
+            TUI_DESIGN.inline_separator.join((f"Provider added: {provider.provider_id}", suffix))
+        )
 
     async def _choose_provider_action(
         self,
@@ -330,7 +332,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 return None
 
             menu.push_page(
-                title=f"PROVIDER · {provider.provider_id}",
+                title=TUI_DESIGN.inline_separator.join(("PROVIDER", provider.provider_id)),
                 placeholder="Choose an action…",
                 choices=choices,
                 on_select=select_action,
@@ -339,7 +341,7 @@ class ProviderConfigurationWorkflows(App[int]):
             return
         selected = await self.push_screen_wait(
             ChoiceScreen(
-                title=f"PROVIDER · {provider.provider_id}",
+                title=TUI_DESIGN.inline_separator.join(("PROVIDER", provider.provider_id)),
                 placeholder="Choose an action…",
                 choices=choices,
             )
@@ -467,7 +469,7 @@ class ProviderConfigurationWorkflows(App[int]):
                     return None
 
                 menu.push_page(
-                    title="ADD ENDPOINT · PROVIDER",
+                    title=TUI_DESIGN.inline_separator.join(("ADD ENDPOINT", "PROVIDER")),
                     placeholder="Choose a provider…",
                     choices=tuple(_provider_choice(provider) for provider in providers),
                     on_select=select_provider,
@@ -476,7 +478,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 return
             provider_id = await self.push_screen_wait(
                 ChoiceScreen(
-                    title="ADD ENDPOINT · PROVIDER",
+                    title=TUI_DESIGN.inline_separator.join(("ADD ENDPOINT", "PROVIDER")),
                     placeholder="Choose a provider…",
                     choices=tuple(_provider_choice(provider) for provider in providers),
                 )
@@ -690,7 +692,9 @@ class ProviderConfigurationWorkflows(App[int]):
                 return None
 
             menu.push_page(
-                title=f"{_endpoint_action_label(action)} · {provider.provider_id}",
+                title=TUI_DESIGN.inline_separator.join(
+                    (_endpoint_action_label(action), provider.provider_id)
+                ),
                 placeholder="Filter endpoints…",
                 choices=choices,
                 on_select=select_endpoint,
@@ -699,7 +703,9 @@ class ProviderConfigurationWorkflows(App[int]):
             return
         selected = await self.push_screen_wait(
             ChoiceScreen(
-                title=f"{_endpoint_action_label(action)} · {provider.provider_id}",
+                title=TUI_DESIGN.inline_separator.join(
+                    (_endpoint_action_label(action), provider.provider_id)
+                ),
                 placeholder="Filter endpoints…",
                 choices=choices,
             )
@@ -778,7 +784,9 @@ class ProviderConfigurationWorkflows(App[int]):
                 return None
 
             menu.push_page(
-                title=f"ENDPOINT · {provider.provider_id}/{endpoint.endpoint_id}",
+                title=TUI_DESIGN.inline_separator.join(
+                    ("ENDPOINT", f"{provider.provider_id}/{endpoint.endpoint_id}")
+                ),
                 placeholder="Choose an action…",
                 choices=tuple(choices),
                 on_select=select_action,
@@ -787,7 +795,9 @@ class ProviderConfigurationWorkflows(App[int]):
             return
         selected = await self.push_screen_wait(
             ChoiceScreen(
-                title=f"ENDPOINT · {provider.provider_id}/{endpoint.endpoint_id}",
+                title=TUI_DESIGN.inline_separator.join(
+                    ("ENDPOINT", f"{provider.provider_id}/{endpoint.endpoint_id}")
+                ),
                 placeholder="Choose an action…",
                 choices=tuple(choices),
             )
@@ -863,8 +873,10 @@ def _provider_choice(provider: ProviderView, *, disabled: bool = False) -> Choic
     return Choice(
         provider.provider_id,
         provider.provider_id,
-        marker=SELECTED_CHOICE_MARKER if provider.default else "",
-        trailing=f"{provider.provider_type} · {provider.endpoint_count} · {state}",
+        marker=TUI_DESIGN.selected_choice_marker if provider.default else "",
+        trailing=TUI_DESIGN.inline_separator.join(
+            (provider.provider_type, str(provider.endpoint_count), state)
+        ),
         disabled=disabled,
     )
 
@@ -892,7 +904,7 @@ def _endpoint_choice(
     return Choice(
         endpoint.endpoint_id,
         endpoint.endpoint_id,
-        marker=SELECTED_CHOICE_MARKER if default else "",
+        marker=TUI_DESIGN.selected_choice_marker if default else "",
         disabled=not available,
     )
 

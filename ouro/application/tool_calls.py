@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable, Mapping
+from datetime import datetime
 from typing import Literal, Protocol, cast
 
 from pydantic import JsonValue, TypeAdapter
@@ -362,6 +363,7 @@ class ToolCallCoordinator:
         checkpoint_batch = batch
         checkpoint_lock = asyncio.Lock()
         unattended_resolutions: dict[str, UnattendedResolution] = {}
+        execution_started_at: dict[str, datetime] = {}
 
         async def recheck_before_execute(
             invocation: ToolInvocation,
@@ -421,6 +423,7 @@ class ToolCallCoordinator:
         async def checkpoint_started(invocation: ToolInvocation) -> None:
             nonlocal checkpoint_batch, sequence
             async with checkpoint_lock:
+                execution_started_at[invocation.tool_call_id] = utc_now()
                 started_call: ToolBatchCall | None = None
                 calls: list[ToolBatchCall] = []
                 for item in checkpoint_batch.calls:
@@ -464,6 +467,19 @@ class ToolCallCoordinator:
 
         async def checkpoint_outcome(outcome: ToolExecutionOutcome) -> None:
             nonlocal checkpoint_batch, sequence
+            if outcome.result is not None:
+                ended_at = utc_now()
+                started_at = execution_started_at.pop(
+                    outcome.invocation.tool_call_id,
+                    outcome.result.started_at,
+                )
+                outcome = outcome.model_copy(
+                    update={
+                        "result": outcome.result.model_copy(
+                            update={"started_at": started_at, "ended_at": ended_at}
+                        )
+                    }
+                )
             outcome = await self._apply_control_transitions(
                 outcome,
                 session=session,

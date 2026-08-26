@@ -26,7 +26,7 @@ from textual.widgets import RichLog
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.tui.selection import RangeSelectionOnly
 from ouro.tui.state import RunPresentation, format_duration
-from ouro.tui.theme import FAILURE_TONE, TuiTheme, theme_for
+from ouro.tui.theme import TUI_DESIGN, TuiTheme, theme_for
 
 
 class ToolActivityRenderer(Protocol):
@@ -39,9 +39,8 @@ class ToolActivityRenderer(Protocol):
     ) -> Text: ...
 
 
-TranscriptEntryKind = Literal["user", "assistant", "tool", "notice", "run"]
+TranscriptEntryKind = Literal["user", "assistant", "tool", "notice", "compaction", "run"]
 
-_PANEL_BACKGROUND = "#171717"
 _REASONING_ENTRY_META = "ouro_reasoning_entry"
 
 
@@ -52,12 +51,10 @@ class _PanelCodeTheme(SyntaxTheme):
         self._base = Syntax.get_theme("monokai")
 
     def get_style_for_token(self, token_type: Any) -> Style:
-        return self._base.get_style_for_token(token_type) + Style(
-            bgcolor=_PANEL_BACKGROUND
-        )
+        return self._base.get_style_for_token(token_type) + Style(bgcolor=TUI_DESIGN.panel)
 
     def get_background_style(self) -> Style:
-        return Style(bgcolor=_PANEL_BACKGROUND)
+        return Style(bgcolor=TUI_DESIGN.panel)
 
 
 _PANEL_CODE_THEME = _PanelCodeTheme()
@@ -194,11 +191,11 @@ def split_markdown_blocks(text: str) -> tuple[str, ...]:
 def _thought_label(reasoning_seconds: float | None, *, entry_index: int) -> Text:
     label = "Thought"
     if reasoning_seconds is not None:
-        label += f" · {format_duration(reasoning_seconds)}"
+        label += f"{TUI_DESIGN.inline_separator}{format_duration(reasoning_seconds)}"
     return Text(
         label,
         style=Style(
-            color="#aeb5bf",
+            color=TUI_DESIGN.text_secondary,
             bold=True,
             meta={_REASONING_ENTRY_META: entry_index},
         ),
@@ -238,8 +235,8 @@ class _UserMessageContent:
         right_width = min(right, interior_width - left_width)
         content_width = interior_width - left_width - right_width
         content_options = options.update_width(max(1, content_width))
-        panel_style = Style(bgcolor=_PANEL_BACKGROUND)
-        content = Text(self.text, style="#e5e7eb")
+        panel_style = Style(bgcolor=TUI_DESIGN.panel)
+        content = Text(self.text, style=TUI_DESIGN.text_highlight)
         lines = console.render_lines(content, content_options, pad=False)
         border = Segment("│", Style(color=self.accent))
 
@@ -283,9 +280,9 @@ class _ReasoningContent:
     ) -> RenderResult:
         prefix_width = 2
         content_options = options.update_width(max(1, options.max_width - prefix_width))
-        content = Text(self.text, style="dim italic #8f9aa8")
+        content = Text(self.text, style=f"dim italic {TUI_DESIGN.text_muted}")
         lines = console.render_lines(content, content_options, pad=False)
-        border = Segment("│", Style(color="#505967"))
+        border = Segment("│", Style(color=TUI_DESIGN.border))
         gap = Segment(" ")
         for line in lines:
             yield border
@@ -884,28 +881,51 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 )
             ]
         if entry.kind == "notice":
-            tone = "#e08a8a" if entry.error else theme.accent
+            tone = TUI_DESIGN.critical if entry.error else theme.accent
             top = 1 if previous_kind == "tool" else 0
             return [(Padding(Text(entry.text, style=tone), (top, 1, 1, 1)), "body")]
+        if entry.kind == "compaction":
+            top = 1 if previous_kind == "tool" else 0
+            summary = Text()
+            summary.append(
+                f"{TUI_DESIGN.brand_mark} ",
+                style=f"bold {theme.accent}",
+            )
+            summary.append(entry.text, style=TUI_DESIGN.text_lowlight)
+            return [(Padding(summary, (top, 1, 1, 2)), "body")]
         if entry.kind == "run":
             assert entry.run is not None
-            tone = theme.accent if entry.run.status == "completed" else "#8f9aa8"
+            tone = theme.accent if entry.run.status == "completed" else TUI_DESIGN.text_muted
             summary = Text()
-            summary.append("▣ ", style=f"bold {tone}")
-            summary.append(entry.run.model, style="bold #aeb5bf")
+            summary.append(f"{TUI_DESIGN.brand_mark} ", style=f"bold {tone}")
+            summary.append(entry.run.model, style=f"bold {TUI_DESIGN.text_secondary}")
             if entry.run.duration_seconds is not None:
-                summary.append(" • ", style="#4d5560")
+                summary.append(
+                    TUI_DESIGN.section_separator,
+                    style=TUI_DESIGN.separator_tone,
+                )
                 summary.append(
                     format_duration(entry.run.duration_seconds),
-                    style="#777f8b",
+                    style=TUI_DESIGN.text_metadata,
                 )
             if entry.run.status != "completed":
-                summary.append(" • ", style="#4d5560")
-                status_tone = FAILURE_TONE if entry.run.status == "failed" else "#777f8b"
+                summary.append(
+                    TUI_DESIGN.section_separator,
+                    style=TUI_DESIGN.separator_tone,
+                )
+                status_tone = (
+                    TUI_DESIGN.failure if entry.run.status == "failed" else TUI_DESIGN.text_metadata
+                )
                 summary.append(entry.run.status, style=status_tone)
             if entry.run.status == "failed" and entry.run.error:
-                summary.append(" • ", style="#4d5560")
-                summary.append(" ".join(entry.run.error.split()), style=FAILURE_TONE)
+                summary.append(
+                    TUI_DESIGN.section_separator,
+                    style=TUI_DESIGN.separator_tone,
+                )
+                summary.append(
+                    " ".join(entry.run.error.split()),
+                    style=TUI_DESIGN.failure,
+                )
             return [(Padding(summary, (0, 1, 1, 2)), "body")]
 
         pieces: list[tuple[RenderableType, _PieceTag]] = []

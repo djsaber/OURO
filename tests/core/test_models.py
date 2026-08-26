@@ -1,7 +1,16 @@
+from datetime import timedelta
+
 import pytest
 
 from ouro.core.events import EventRecord
-from ouro.core.messages import MessageRecord, ModelResponseRecord, TextContent
+from ouro.core.messages import (
+    MessageRecord,
+    ModelMessage,
+    ModelResponseRecord,
+    TextContent,
+    ToolExecutionTiming,
+    ToolResultReference,
+)
 from ouro.core.state import RunRecord, SessionRecord
 
 
@@ -71,6 +80,30 @@ def test_model_response_state_belongs_only_to_assistant_messages() -> None:
             session_id="ses_1",
             role="user",
             model_response=response,
+        )
+
+
+def test_tool_execution_timing_is_durable_but_not_model_visible() -> None:
+    started_at = EventRecord(session_id="ses_time", event_type="diagnostic").created_at
+    timing = ToolExecutionTiming(
+        started_at=started_at,
+        ended_at=started_at + timedelta(seconds=3),
+    )
+    message = MessageRecord(
+        session_id="ses_1",
+        role="tool_result",
+        tool_result=ToolResultReference(tool_call_id="call_1", tool_name="Read"),
+        tool_execution=timing,
+    )
+
+    loaded = MessageRecord.model_validate_json(message.model_dump_json())
+
+    assert loaded.tool_execution == timing
+    assert "tool_execution" not in ModelMessage.from_record(loaded).model_dump()
+    with pytest.raises(ValueError, match="cannot precede"):
+        ToolExecutionTiming(
+            started_at=timing.ended_at,
+            ended_at=timing.started_at,
         )
 
 

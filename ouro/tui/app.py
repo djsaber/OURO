@@ -83,7 +83,7 @@ from ouro.tui.state import (
     project_run_presentation,
     project_run_presentations,
 )
-from ouro.tui.theme import SELECTED_CHOICE_MARKER, TUI_THEMES, TuiTheme
+from ouro.tui.theme import TUI_DESIGN, TUI_THEMES, TuiTheme
 from ouro.tui.widgets import (
     AskUserPanel,
     BrandHeader,
@@ -198,12 +198,6 @@ _OURO_TUI_CSS = """
        active highlights all derive from it, so the whole TUI recolors by
        changing one value. The owning app injects the persisted TUI palette so
        CSS and Rich-text styling share one source of truth (see theme.py). */
-    $ouro-background: #0c0c0c;
-    $ouro-panel: #171717;
-    $ouro-border-left: #4d5560;
-    $ouro-border-right: #34373d;
-    $ouro-border-focus: #3f4650;
-    $ouro-highlight: #242424;
     $conversation-left-gutter: 2;
     $conversation-right-gutter: 1;
     $welcome-width: 72%;
@@ -223,7 +217,7 @@ _OURO_TUI_CSS = """
         margin: 0;
         padding: 0;
         background: $ouro-background;
-        color: #d6d9df;
+        color: $ouro-text-primary;
         layout: vertical;
     }
 
@@ -250,10 +244,10 @@ _OURO_TUI_CSS = """
         height: auto;
         margin: 0 1 1 0;
         padding: 1 2;
-        color: #d6d9df;
+        color: $ouro-text-primary;
         background: $ouro-panel;
         border-top: none;
-        border-right: solid $ouro-border-right;
+        border-right: solid $ouro-progress-track;
         border-bottom: none;
         border-left: solid $ouro-theme;
     }
@@ -263,17 +257,17 @@ _OURO_TUI_CSS = """
     }
 
     Toast.-warning {
-        border-left: solid #facc15;
+        border-left: solid $ouro-warning-bright;
     }
 
     Toast.-error {
-        border-left: solid #b97878;
+        border-left: solid $ouro-danger;
     }
 
     VerticalScroll, TextArea, OptionList {
         scrollbar-background: $ouro-background;
-        scrollbar-color: #505967;
-        scrollbar-color-hover: #6a7482;
+        scrollbar-color: $ouro-border;
+        scrollbar-color-hover: $ouro-scrollbar-hover;
         scrollbar-size-vertical: 1;
         scrollbar-gutter: stable;
     }
@@ -283,7 +277,7 @@ _OURO_TUI_CSS = """
         height: 1;
         dock: top;
         background: $ouro-background;
-        color: #d6d9df;
+        color: $ouro-text-primary;
     }
 
     #main {
@@ -334,7 +328,7 @@ _OURO_TUI_CSS = """
         height: auto;
         margin: 0;
         padding: 0;
-        color: #aeb5bf;
+        color: $ouro-text-secondary;
         background: $ouro-background;
     }
 
@@ -400,7 +394,7 @@ _OURO_TUI_CSS = """
     .welcome-title {
         width: auto;
         height: 1;
-        color: #788492;
+        color: $ouro-text-detail;
         text-style: bold;
     }
 
@@ -413,7 +407,7 @@ _OURO_TUI_CSS = """
     .welcome-label {
         width: $welcome-label-width;
         height: 1;
-        color: #788492;
+        color: $ouro-text-detail;
     }
 
     .welcome-value {
@@ -456,19 +450,19 @@ _OURO_TUI_CSS = """
     .welcome-tip-key {
         width: 8;
         height: 1;
-        color: #788492;
+        color: $ouro-text-detail;
     }
 
     .welcome-tip-description {
         width: auto;
         height: 1;
-        color: #8f9aa8;
+        color: $ouro-text-muted;
     }
 
     .welcome-version {
         width: 1fr;
         height: 1;
-        color: #d6d9df;
+        color: $ouro-text-primary;
         text-style: bold;
         text-align: left;
     }
@@ -522,13 +516,13 @@ _OURO_TUI_CSS = """
         height: auto;
         margin: 0 0 1 0;
         padding: 0;
-        color: #8f9aa8;
+        color: $ouro-text-muted;
         background: transparent;
     }
 
     .reasoning-label {
         height: 1;
-        color: #aeb5bf;
+        color: $ouro-text-secondary;
         text-style: bold;
     }
 
@@ -539,7 +533,7 @@ _OURO_TUI_CSS = """
         height: auto;
         margin: 1 0 0 0;
         padding: 0 1 0 0;
-        color: #8f9aa8;
+        color: $ouro-text-muted;
         background: transparent;
     }
 
@@ -551,7 +545,7 @@ _OURO_TUI_CSS = """
     .tool-row {
         height: auto;
         margin: 0 0 0 2;
-        color: #aeb5bf;
+        color: $ouro-text-secondary;
         background: transparent;
     }
 
@@ -560,12 +554,12 @@ _OURO_TUI_CSS = """
         max-height: 10;
         margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         padding: 1 2;
-        color: #d6d9df;
+        color: $ouro-text-primary;
         background: $ouro-panel;
         border-top: none;
-        border-right: solid $ouro-border-right;
+        border-right: solid $ouro-progress-track;
         border-bottom: none;
-        border-left: solid $ouro-border-left;
+        border-left: solid $ouro-separator;
     }
 
     #interaction-bar:focus {
@@ -578,12 +572,12 @@ _OURO_TUI_CSS = """
         max-height: 18;
         margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         padding: 1 2;
-        color: #d6d9df;
+        color: $ouro-text-primary;
         background: $ouro-panel;
         border-top: none;
-        border-right: solid $ouro-border-right;
+        border-right: solid $ouro-progress-track;
         border-bottom: none;
-        border-left: solid $ouro-border-left;
+        border-left: solid $ouro-separator;
     }
 
     #ask-user-panel:focus {
@@ -596,12 +590,12 @@ _OURO_TUI_CSS = """
         max-height: 24;
         margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         padding: 1 2;
-        color: #d6d9df;
+        color: $ouro-text-primary;
         background: $ouro-panel;
         border-top: none;
-        border-right: solid $ouro-border-right;
+        border-right: solid $ouro-progress-track;
         border-bottom: none;
-        border-left: solid $ouro-border-left;
+        border-left: solid $ouro-separator;
         overflow: hidden;
     }
 
@@ -640,12 +634,12 @@ _OURO_TUI_CSS = """
         max-height: 14;
         margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         padding: 1 2;
-        color: #d6d9df;
+        color: $ouro-text-primary;
         background: $ouro-panel;
         border-top: none;
-        border-right: solid $ouro-border-right;
+        border-right: solid $ouro-progress-track;
         border-bottom: none;
-        border-left: solid $ouro-border-left;
+        border-left: solid $ouro-separator;
         overflow-y: hidden;
         scrollbar-gutter: auto;
     }
@@ -659,12 +653,12 @@ _OURO_TUI_CSS = """
         height: 3;
         margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         padding: 1 2;
-        color: #e5e7eb;
+        color: $ouro-text-highlight;
         background: $ouro-panel;
         border-top: none;
-        border-right: solid $ouro-border-right;
+        border-right: solid $ouro-progress-track;
         border-bottom: none;
-        border-left: solid $ouro-border-left;
+        border-left: solid $ouro-separator;
         scrollbar-background: transparent;
         scrollbar-color: transparent;
         scrollbar-color-hover: transparent;
@@ -678,7 +672,7 @@ _OURO_TUI_CSS = """
     }
 
     #composer .text-area--suggestion {
-        color: #626b78;
+        color: $ouro-text-disabled;
     }
 
     #composer .text-area--cursor-line {
@@ -690,12 +684,12 @@ _OURO_TUI_CSS = """
         max-height: 8;
         margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         padding: 1 2 0 2;
-        color: #d6d9df;
+        color: $ouro-text-primary;
         background: $ouro-panel;
         border-top: none;
-        border-right: solid $ouro-border-right;
+        border-right: solid $ouro-progress-track;
         border-bottom: none;
-        border-left: solid $ouro-border-left;
+        border-left: solid $ouro-separator;
     }
 
     #queued-input-content {
@@ -707,7 +701,7 @@ _OURO_TUI_CSS = """
         height: 1;
         margin: 0;
         padding: 0 $conversation-right-gutter 0 $conversation-left-gutter;
-        color: #6f7a87;
+        color: $ouro-text-lowlight;
         background: $ouro-background;
     }
 
@@ -738,7 +732,7 @@ _OURO_TUI_CSS = """
         max-height: 27;
         background: $ouro-panel;
         border-top: none;
-        border-right: solid $ouro-border-right;
+        border-right: solid $ouro-progress-track;
         border-bottom: none;
         border-left: none;
     }
@@ -776,7 +770,7 @@ _OURO_TUI_CSS = """
     .grouped-menu-list {
         background: transparent;
         border: none;
-        border-left: solid $ouro-border-left;
+        border-left: solid $ouro-separator;
         /* The menu is keyboard-first: arrow navigation keeps the highlighted
            option in view, so the scrollbar is pure chrome and is hidden to
            match the flat panels used elsewhere. */
@@ -795,17 +789,17 @@ _OURO_TUI_CSS = """
 
     .grouped-menu-list:focus .option-list--option-highlighted {
         color: $ouro-theme;
-        background: #2a2a2a;
+        background: $ouro-input-highlight;
         text-style: not bold;
     }
 
     #choice-hint {
         height: 2;
         padding: 0 2 1 2;
-        color: #6f7a87;
+        color: $ouro-text-lowlight;
         background: transparent;
         border: none;
-        border-left: solid $ouro-border-left;
+        border-left: solid $ouro-separator;
     }
 
 """
@@ -968,7 +962,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return self._tui_theme
 
     def get_css_variables(self) -> dict[str, str]:
-        return {**super().get_css_variables(), "ouro-theme": self._tui_theme.accent}
+        return {
+            **super().get_css_variables(),
+            **TUI_DESIGN.css_variables(),
+            "ouro-theme": self._tui_theme.accent,
+        }
 
     def compose(self) -> ComposeResult:
         header = BrandHeader(
@@ -1279,7 +1277,22 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await flush_stream()
                 covered = event.payload.get("covered_message_count")
                 if isinstance(covered, int) and covered >= 0:
-                    await conversation.add_compaction(covered_message_count=covered)
+                    tokens_before = event.payload.get("tokens_before")
+                    tokens_after = event.payload.get("tokens_after")
+                    await conversation.add_compaction(
+                        covered_message_count=covered,
+                        tokens_before=(
+                            tokens_before
+                            if isinstance(tokens_before, int) and tokens_before >= 0
+                            else None
+                        ),
+                        tokens_after=(
+                            tokens_after
+                            if isinstance(tokens_after, int) and tokens_after >= 0
+                            else None
+                        ),
+                        created_at=event.created_at,
+                    )
             if event.event_type in {
                 "follow_up_input_queued",
                 "steering_input_queued",
@@ -2026,7 +2039,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
             command = TuiCommand(
                 name=name,
-                title=item.description or f"Plugin command · {item.plugin_id}",
+                title=(
+                    item.description
+                    or f"Plugin command{TUI_DESIGN.inline_separator}{item.plugin_id}"
+                ),
                 description=f"Plugin: {item.plugin_id}",
                 argument_hint=item.usage or None,
                 argument_options=tuple(
@@ -2309,7 +2325,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             placeholder="Filter archived sessions…",
             choices=_session_choices(archived),
             on_confirm=delete_selected,
-            selected_marker=SELECTED_CHOICE_MARKER,
+            selected_marker=TUI_DESIGN.selected_choice_marker,
             confirm_label="Delete",
         )
         await menu.open_child(delete_screen)
@@ -2479,7 +2495,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         status_line.set_context_metrics(metrics)
         if applies_to_next_request:
             reasoning = (
-                f" · {_format_reasoning_state(self._reasoning_state)}"
+                f"{TUI_DESIGN.inline_separator}{_format_reasoning_state(self._reasoning_state)}"
                 if self._reasoning_state is not None
                 else ""
             )
@@ -2507,7 +2523,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             Choice(
                 value=mode,
                 label=mode,
-                marker=SELECTED_CHOICE_MARKER if mode == current else "",
+                marker=TUI_DESIGN.selected_choice_marker if mode == current else "",
                 trailing="current" if mode == current else "",
             )
             for mode in TUI_APPROVAL_PRESETS
@@ -2574,7 +2590,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             Choice(
                 value=argument.value,
                 label=argument.value,
-                marker=(SELECTED_CHOICE_MARKER if argument.value == current else ""),
+                marker=(TUI_DESIGN.selected_choice_marker if argument.value == current else ""),
                 trailing="current" if argument.value == current else "",
             )
             for argument in arguments
@@ -2839,7 +2855,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     theme.theme_id,
                     theme.label,
                     accent=theme.accent,
-                    marker=SELECTED_CHOICE_MARKER if theme == selected else "",
+                    marker=TUI_DESIGN.selected_choice_marker if theme == selected else "",
                 )
                 for theme in TUI_THEMES.values()
             )
@@ -2885,7 +2901,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     value,
                     label,
                     marker=(
-                        SELECTED_CHOICE_MARKER
+                        TUI_DESIGN.selected_choice_marker
                         if _THOUGHT_DISPLAY_OPTIONS[value] == expanded
                         else ""
                     ),
