@@ -236,6 +236,7 @@ class ActivityIndicator(Static):
         self._model_max_attempts: int | None = None
         self._reasoning: str | None = None
         self._reasoning_peak = False
+        self._session_control_labels: tuple[str, ...] = ()
         self._timer: Timer | None = None
 
     def on_mount(self) -> None:
@@ -278,6 +279,10 @@ class ActivityIndicator(Static):
         self._reasoning_peak = peak
         self._render_indicator()
 
+    def set_session_controls(self, labels: tuple[str, ...]) -> None:
+        self._session_control_labels = tuple(dict.fromkeys(labels))
+        self._render_indicator()
+
     def refresh_theme(self) -> None:
         self._render_indicator()
 
@@ -303,6 +308,12 @@ class ActivityIndicator(Static):
             f" {mark} ",
             style=f"bold {accent}" if busy or ready else TUI_DESIGN.text_muted,
         )
+        for control_label in self._session_control_labels:
+            content.append(control_label, style=f"bold {accent}")
+            content.append(
+                TUI_DESIGN.section_separator,
+                style=TUI_DESIGN.separator_tone,
+            )
         content.append(label, style=accent if ready else TUI_DESIGN.text_muted)
         content.append(
             TUI_DESIGN.section_separator,
@@ -2674,6 +2685,9 @@ class StatusLine(Horizontal):
 
     def set_approval_mode(self, mode: TuiApprovalPreset) -> None:
         self.query_one(ActivityIndicator).set_approval_mode(mode)
+
+    def set_session_controls(self, labels: tuple[str, ...]) -> None:
+        self.query_one(ActivityIndicator).set_session_controls(labels)
 
     def set_context(self, status: SessionContextStatus | None) -> None:
         self.set_context_metrics(status.metrics if status is not None else None)

@@ -1601,6 +1601,25 @@ async def test_status_line_shows_only_the_model_endpoint_name(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_status_line_projects_arbitrary_session_control_label_first(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        status_line = app.query_one(StatusLine)
+        indicator = status_line.query_one(ActivityIndicator)
+
+        status_line.set_session_controls(("Review Harness",))
+        assert indicator.render().plain.startswith(" ▣ Review Harness • Ready")
+
+        status_line.set_session_controls(())
+        assert indicator.render().plain.startswith(" ▣ Ready")
+        assert "Review Harness" not in indicator.render().plain
+
+
+@pytest.mark.asyncio
 async def test_model_switch_keeps_context_usage_and_updates_model_capacity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -7754,7 +7773,9 @@ async def test_deleting_command_argument_updates_suggestion_in_same_edit(
 
 
 @pytest.mark.asyncio
-async def test_plan_command_without_run_restores_idle_tui_state(tmp_path: Path) -> None:
+async def test_plan_command_without_dialogue_keeps_welcome_and_updates_status_line(
+    tmp_path: Path,
+) -> None:
     application = _application(tmp_path)
     await application.start()
     assert application.plugins is not None
@@ -7765,21 +7786,90 @@ async def test_plan_command_without_run_restores_idle_tui_state(tmp_path: Path) 
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press("slash", "p", "l", "a", "n", "space", "o", "n", "enter")
+        await _wait_for_worker_group(app, pilot, group="plugin-command")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.activity.status == "idle",
+            lambda: "Plan Mode" in app.query_one(ActivityIndicator).render().plain,
             pilot,
-            description="idle plan-mode command",
+            description="active plan-mode status",
         )
 
-        assert app._projection is not None
-        assert app._projection.activity.status == "idle"
-        assert app._projection.activity.activity == "idle"
+        conversation = app.query_one(ConversationView)
+        indicator = app.query_one(ActivityIndicator)
+        assert app._projection is None
+        assert conversation.showing_welcome is True
+        assert conversation.query_one(ConversationHistory).entries == ()
         assert app._has_active_run() is False
         assert app.query_one(Composer).disabled is False
-        indicator = app.query_one(StatusLine).query_one(ActivityIndicator)
-        assert "Ready" in indicator.render().plain
-        assert "Queued" not in indicator.render().plain
+        assert indicator.render().plain.startswith(" ▣ Plan Mode • Ready")
+
+        await pilot.press("slash", "p", "l", "a", "n", "space", "o", "f", "f", "enter")
+        await _wait_for_worker_group(app, pilot, group="plugin-command")
+
+        assert app._projection is None
+        assert conversation.showing_welcome is True
+        assert conversation.query_one(ConversationHistory).entries == ()
+        assert indicator.render().plain.startswith(" ▣ Ready")
+        assert "Plan Mode" not in indicator.render().plain
+
+
+@pytest.mark.asyncio
+async def test_plan_status_keeps_its_conversation_notice(tmp_path: Path) -> None:
+    application = _application(tmp_path)
+    await application.start()
+    assert application.plugins is not None
+    assert (await application.plugins.enable("dev.ouro.plan_mode")).status == "active"
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        await pilot.press("slash", *"plan status", "enter")
+        await _wait_for_worker_group(app, pilot, group="plugin-command")
+
+        notices = tuple(
+            entry.text
+            for entry in app.query_one(ConversationHistory).entries
+            if entry.kind == "notice"
+        )
+        assert notices == ("Plan mode phase: inactive.",)
+        assert app.query_one(ConversationView).showing_welcome is False
+
+
+@pytest.mark.asyncio
+async def test_loaded_session_projects_active_harness_into_status_line(tmp_path: Path) -> None:
+    application = _application(tmp_path)
+    await application.start()
+    assert application.plugins is not None
+    assert (await application.plugins.enable("dev.ouro.plan_mode")).status == "active"
+    session = application.runtime.create_session(title="Active harness")
+    await application.plugins.execute_command(
+        "dev.ouro.plan_mode:plan",
+        "on",
+        session_id=session.session_id,
+        workspace=str(tmp_path),
+    )
+    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await _wait_for_active_session(app, pilot, session.session_id)
+
+        indicator = app.query_one(ActivityIndicator)
+        await _wait_until(
+            lambda: "Plan Mode" in indicator.render().plain,
+            pilot,
+            description="restored harness status",
+        )
+        assert indicator.render().plain.startswith(" ▣ Plan Mode • Ready")
+
+        await pilot.press("slash", *"plan off", "enter")
+        await _wait_for_worker_group(app, pilot, group="plugin-command")
+
+        assert "Plan Mode" not in indicator.render().plain
+        notices = tuple(
+            entry.text
+            for entry in app.query_one(ConversationHistory).entries
+            if entry.kind == "notice"
+        )
+        assert not any("Plan mode deactivated" in notice for notice in notices)
 
 
 @pytest.mark.asyncio
@@ -8169,6 +8259,11 @@ async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_opti
         await _wait_for_worker_group(app, pilot, group="interaction")
 
         assert app._projection is not None
+        await _wait_until(
+            lambda: "Plan Mode" not in app.query_one(ActivityIndicator).render().plain,
+            pilot,
+            description="released plan-mode status",
+        )
         events = application.runtime.sessions.event_page(
             app._projection.session_id,
             cursor=0,

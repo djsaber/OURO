@@ -113,6 +113,8 @@ class PluginCommandExecutionView(OuroModel):
     command_id: str
     output: str = ""
     data: dict[str, object] = Field(default_factory=dict)
+    command_output: str | None = None
+    command_data: dict[str, object] | None = None
     session_inputs: list[AttributedSessionInput] = Field(default_factory=list)
     session_input_batches: list[AttributedSessionInputBatch] = Field(default_factory=list)
 

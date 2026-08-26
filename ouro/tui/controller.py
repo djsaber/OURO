@@ -331,9 +331,16 @@ class TuiCompactionConfiguration:
 
 
 @dataclass(frozen=True)
+class TuiSessionControlStatus:
+    controller_id: str
+    label: str
+
+
+@dataclass(frozen=True)
 class TuiPluginCommandExecution:
     execution: PluginCommandExecutionView
     run_results: tuple[RunResult, ...] = ()
+    session_controls: tuple[TuiSessionControlStatus, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -356,6 +363,7 @@ class LoadedSession:
     effective_context_metrics: ContextMetrics | None = None
     compactions: tuple[CompactionRecord, ...] = ()
     queued_inputs: tuple[QueuedUserInputView, ...] = ()
+    session_controls: tuple[TuiSessionControlStatus, ...] = ()
 
 
 class TuiController:
@@ -1686,7 +1694,55 @@ class TuiController:
                 results.append(
                     await runtime.submit_plugin_input(session_input, session_id=self._session_id)
                 )
-        return TuiPluginCommandExecution(execution=execution, run_results=tuple(results))
+        return TuiPluginCommandExecution(
+            execution=execution,
+            run_results=tuple(results),
+            session_controls=await self.session_control_statuses(),
+        )
+
+    async def session_control_statuses(self) -> tuple[TuiSessionControlStatus, ...]:
+        session_id = self._session_id
+        if session_id is None:
+            return ()
+        return await asyncio.to_thread(self._session_control_statuses, session_id)
+
+    def _session_control_statuses(
+        self,
+        session_id: str | None,
+    ) -> tuple[TuiSessionControlStatus, ...]:
+        if session_id is None:
+            return ()
+        application = self._application
+        if application is None:
+            return ()
+        plugin_names: dict[str, str] = {}
+        if application.plugins is not None:
+            try:
+                plugin_names = {
+                    item.plugin_id: item.name for item in application.plugins.list()
+                }
+            except Exception:  # noqa: BLE001 - labels have a stable identity fallback.
+                # Session-control state remains present even when plugin catalog
+                # presentation metadata is temporarily unavailable.
+                pass
+        statuses: list[TuiSessionControlStatus] = []
+        seen_labels: set[str] = set()
+        for activation in self._runtime().session_control_activations(session_id):
+            if activation.phase != "active":
+                continue
+            label = plugin_names.get(activation.plugin_id) or _session_control_fallback_label(
+                activation.plugin_id
+            )
+            if label in seen_labels:
+                continue
+            seen_labels.add(label)
+            statuses.append(
+                TuiSessionControlStatus(
+                    controller_id=activation.controller_id,
+                    label=label,
+                )
+            )
+        return tuple(statuses)
 
     async def usage_totals(self) -> UsageTotals:
         return await asyncio.to_thread(self._usage_totals)
@@ -1909,6 +1965,7 @@ class TuiController:
             effective_context_metrics=runtime.session_context_metrics(session_id),
             compactions=sessions.compactions(session_id),
             queued_inputs=self._queued_user_inputs(session_id),
+            session_controls=self._session_control_statuses(session_id),
         )
 
     def _session_messages(self, session_id: str) -> list[MessageRecord]:
@@ -1966,6 +2023,11 @@ class TuiController:
 def _plugin_session_title(name: str, argument: str) -> str:
     normalized = " ".join(argument.split())
     return normalized[:60] if normalized else f"/{name}"
+
+
+def _session_control_fallback_label(plugin_id: str) -> str:
+    local_id = plugin_id.rsplit(".", 1)[-1]
+    return local_id.replace("_", " ").replace("-", " ").title()
 
 
 def _tool_plugin_id(metadata: Metadata) -> str | None:

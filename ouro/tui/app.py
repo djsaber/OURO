@@ -120,6 +120,10 @@ _RUNTIME_RENDER_BOUNDARY_EVENTS = {
     "run_failed",
     "run_paused",
 }
+_SESSION_CONTROL_REFRESH_EVENTS = {
+    "tool_call_completed",
+    *_RUNTIME_RENDER_BOUNDARY_EVENTS,
+}
 _SESSION_INPUT_MESSAGE_EVENTS = {
     "user_message_added",
     "host_message_added",
@@ -1094,6 +1098,17 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         self._apply_reasoning_state(state)
 
+    async def _refresh_session_controls(self) -> None:
+        """Project the current durable harness state onto the status line."""
+
+        try:
+            statuses = await self._controller.session_control_statuses()
+        except Exception:  # noqa: BLE001 - status projection must not interrupt the Session.
+            return
+        self.query_one(StatusLine).set_session_controls(
+            tuple(status.label for status in statuses)
+        )
+
     def _publish_runtime_event(self, event: EventRecord) -> None:
         if self._host_closing:
             return
@@ -1228,6 +1243,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         stream_kind: str | None = None
         stream_parts: list[str] = []
         stream_started_at: datetime | None = None
+        refresh_session_controls = any(
+            event.event_type in _SESSION_CONTROL_REFRESH_EVENTS for event in events
+        )
 
         async def flush_stream() -> None:
             nonlocal stream_kind, stream_started_at
@@ -1326,6 +1344,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 diagnostics.append(update.diagnostic)
 
         await flush_stream()
+
+        if refresh_session_controls:
+            await self._refresh_session_controls()
 
         if self._host_closing or not conversation.is_attached:
             return
@@ -1441,6 +1462,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
         await self._refresh_usage_status()
         await self._refresh_interaction()
+        await self._refresh_session_controls()
 
     async def _refresh_usage_status(self) -> None:
         usage = await self._controller.usage_totals()
@@ -2082,21 +2104,34 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 )
                 return
             execution = result.execution
-            if execution.output:
-                await self.query_one(ConversationView).add_notice(execution.output)
-            elif execution.data:
-                await self.query_one(ConversationView).add_notice(
-                    json.dumps(execution.data, ensure_ascii=False, indent=2)
-                )
-            for run_result in result.run_results:
-                await self._apply_run_result(run_result)
-                await self._sync_queued_inputs(run_result.session.session_id)
+            self.query_one(StatusLine).set_session_controls(
+                tuple(status.label for status in result.session_controls)
+            )
+            command_output = (
+                execution.output
+                if execution.command_output is None
+                else execution.command_output
+            )
+            command_data = (
+                execution.data if execution.command_data is None else execution.command_data
+            )
+            has_command_presentation = bool(command_output or command_data)
             if (
-                not result.run_results
+                has_command_presentation
+                and not result.run_results
                 and self._projection is None
                 and self._controller.session_id is not None
             ):
                 await self._open_session(self._controller.session_id)
+            if command_output:
+                await self.query_one(ConversationView).add_notice(command_output)
+            elif command_data:
+                await self.query_one(ConversationView).add_notice(
+                    json.dumps(command_data, ensure_ascii=False, indent=2)
+                )
+            for run_result in result.run_results:
+                await self._apply_run_result(run_result)
+                await self._sync_queued_inputs(run_result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - plugin failures are user-visible.
             self.notify(str(exc), severity="error", markup=False)
         finally:
@@ -2152,6 +2187,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         status_line.set_model(self._active_model)
         status_line.set_activity("idle")
         status_line.set_context(None)
+        status_line.set_session_controls(())
         self._sync_interaction(None)
         await self._refresh_approval_indicator()
         await self._refresh_reasoning_indicator()
@@ -2379,6 +2415,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 workspace=self._active_workspace,
             )
             status_line.set_model(self._active_model)
+            status_line.set_session_controls(
+                tuple(status.label for status in loaded.session_controls)
+            )
             await self._refresh_approval_indicator()
             await self._refresh_reasoning_indicator()
         except Exception:

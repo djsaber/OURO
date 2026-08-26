@@ -363,6 +363,8 @@ class PluginService:
             command_id=result.command_id,
             output="\n".join(output_parts),
             data=data,
+            command_output=result.output,
+            command_data=dict(result.data),
             session_inputs=list(result.attributed_session_inputs),
             session_input_batches=list(result.attributed_session_input_batches),
         )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import cast
 
@@ -22,6 +23,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
 
     _controller: TuiController
     _system_status: TuiSystemStatus
+    _refresh_session_controls: Callable[[], Awaitable[None]]
 
     async def _choose_plugins(
         self,
@@ -301,6 +303,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return False
         self._refresh_plugin_system_status()
+        await self._refresh_session_controls()
         return True
 
     async def _check_plugin(self, plugin_id: str) -> None:
@@ -335,6 +338,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         self._refresh_plugin_system_status()
+        await self._refresh_session_controls()
 
     async def _change_plugin_grants(
         self,
@@ -419,6 +423,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
             self._refresh_plugin_system_status()
+            await self._refresh_session_controls()
             return tuple(
                 replace(
                     choice,
@@ -487,6 +492,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         self._refresh_plugin_system_status()
+        await self._refresh_session_controls()
         if menu is not None:
             if return_to_catalog:
                 menu.pop_page(
