@@ -1,11 +1,14 @@
 import asyncio
 import json
+from datetime import timedelta
 
 import pytest
 
+import ouro.application.tool_calls as tool_calls_module
 from ouro.application.runtime import RuntimeService
 from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.base import utc_now
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
 from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.plugins.api import adapt_sdk_contributions
@@ -67,6 +70,20 @@ def test_runtime_reuses_one_tool_coordinator_for_each_run(tmp_path) -> None:
     second = runtime._tool_calls_for_run("run_scope")
 
     assert first is second
+
+
+def test_completed_tool_result_timing_uses_monotonic_elapsed(monkeypatch) -> None:
+    started_at = utc_now()
+    result = ToolResult(tool_call_id="call_timed", tool_name="TimedTool")
+    monkeypatch.setattr(tool_calls_module, "monotonic", lambda: 104.25)
+
+    completed = tool_calls_module._complete_tool_result_timing(
+        result,
+        started=(started_at, 100.0),
+    )
+
+    assert completed.started_at == started_at
+    assert completed.ended_at == started_at + timedelta(seconds=4.25)
 
 
 def test_runtime_publishes_permission_updates_to_existing_and_future_coordinators(

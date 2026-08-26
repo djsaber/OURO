@@ -3,6 +3,7 @@ import threading
 
 import pytest
 
+from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.tools import (
     Tool,
@@ -30,6 +31,19 @@ def _command_tool_name() -> str:
     shell = detect_command_shell()
     assert shell is not None
     return shell.tool_name
+
+
+def test_terminal_tool_result_without_start_has_zero_duration() -> None:
+    ended_at = utc_now()
+
+    result = ToolResult(
+        tool_call_id="call_terminal",
+        tool_name="GuardedTool",
+        ended_at=ended_at,
+    )
+
+    assert result.started_at == ended_at
+    assert result.ended_at == ended_at
 
 
 @pytest.mark.asyncio

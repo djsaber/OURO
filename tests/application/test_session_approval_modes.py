@@ -151,6 +151,10 @@ async def test_deny_mode_rejects_automatic_tools_without_requesting_approval(tmp
     assert result.session.approval_mode == "deny"
     assert not target.exists()
     assert result.tool_results[0].structured["error_type"] == "ToolPermissionDenied"
+    snapshot = runtime.store.load_runtime_session(result.session.session_id)
+    tool_message = next(message for message in snapshot.messages if message.role == "tool_result")
+    assert tool_message.tool_execution is not None
+    assert tool_message.tool_execution.started_at == tool_message.tool_execution.ended_at
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable, Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
+from time import monotonic
 from typing import Literal, Protocol, cast
 
 from pydantic import JsonValue, TypeAdapter
@@ -363,7 +364,7 @@ class ToolCallCoordinator:
         checkpoint_batch = batch
         checkpoint_lock = asyncio.Lock()
         unattended_resolutions: dict[str, UnattendedResolution] = {}
-        execution_started_at: dict[str, datetime] = {}
+        execution_started_at: dict[str, tuple[datetime, float]] = {}
 
         async def recheck_before_execute(
             invocation: ToolInvocation,
@@ -423,7 +424,6 @@ class ToolCallCoordinator:
         async def checkpoint_started(invocation: ToolInvocation) -> None:
             nonlocal checkpoint_batch, sequence
             async with checkpoint_lock:
-                execution_started_at[invocation.tool_call_id] = utc_now()
                 started_call: ToolBatchCall | None = None
                 calls: list[ToolBatchCall] = []
                 for item in checkpoint_batch.calls:
@@ -464,22 +464,10 @@ class ToolCallCoordinator:
                         "source_index": started_call.request.source_index,
                     },
                 )
+                execution_started_at[invocation.tool_call_id] = (utc_now(), monotonic())
 
         async def checkpoint_outcome(outcome: ToolExecutionOutcome) -> None:
             nonlocal checkpoint_batch, sequence
-            if outcome.result is not None:
-                ended_at = utc_now()
-                started_at = execution_started_at.pop(
-                    outcome.invocation.tool_call_id,
-                    outcome.result.started_at,
-                )
-                outcome = outcome.model_copy(
-                    update={
-                        "result": outcome.result.model_copy(
-                            update={"started_at": started_at, "ended_at": ended_at}
-                        )
-                    }
-                )
             outcome = await self._apply_control_transitions(
                 outcome,
                 session=session,
@@ -489,6 +477,18 @@ class ToolCallCoordinator:
                 session=session,
                 run=run,
             )
+            if outcome.result is not None:
+                outcome = outcome.model_copy(
+                    update={
+                        "result": _complete_tool_result_timing(
+                            outcome.result,
+                            started=execution_started_at.pop(
+                                outcome.invocation.tool_call_id,
+                                None,
+                            ),
+                        )
+                    }
+                )
             async with checkpoint_lock:
                 checkpoint_calls: list[ToolBatchCall] = []
                 completed_call: ToolBatchCall | None = None
@@ -1042,6 +1042,7 @@ class ToolCallCoordinator:
             definition = self.registry.get(call.request.name).definition
             if definition.resumable:
                 assert call.input_request is not None
+                resume_started = (utc_now(), monotonic())
                 outcome = await self.executor.resume(
                     call.invocation,
                     resolution=resolution,
@@ -1057,6 +1058,15 @@ class ToolCallCoordinator:
                     outcome,
                     session=session,
                 )
+                if outcome.result is not None:
+                    outcome = outcome.model_copy(
+                        update={
+                            "result": _complete_tool_result_timing(
+                                outcome.result,
+                                started=resume_started,
+                            )
+                        }
+                    )
                 result = outcome.result
                 status = _tool_call_status_for_outcome(outcome)
                 waiting_for_more = outcome.status == "waiting_user"
@@ -1505,6 +1515,24 @@ def _tool_input_result_content(answer: object) -> str:
     if isinstance(answer, str):
         return answer
     return json.dumps(answer, ensure_ascii=False, separators=(",", ":"))
+
+
+def _complete_tool_result_timing(
+    result: ToolResult,
+    *,
+    started: tuple[datetime, float] | None,
+) -> ToolResult:
+    if started is None:
+        instant = result.ended_at or result.started_at
+        return result.model_copy(update={"started_at": instant, "ended_at": instant})
+    started_at, monotonic_started_at = started
+    elapsed = max(monotonic() - monotonic_started_at, 0.0)
+    return result.model_copy(
+        update={
+            "started_at": started_at,
+            "ended_at": started_at + timedelta(seconds=elapsed),
+        }
+    )
 
 
 def _tool_call_status_for_outcome(outcome: ToolExecutionOutcome) -> ToolCallStatus:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Literal, Self
 
@@ -122,6 +123,19 @@ class ToolResult(OuroModel):
     metadata: Metadata = MetadataField
     session_control_transitions: list[SessionControlTransitionRequest] = Field(default_factory=list)
     agent_control_request: AgentControlRequest | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_unknown_duration_to_instant(cls, value: Any) -> Any:
+        """Keep terminal-only results from inventing an execution interval."""
+
+        if (
+            isinstance(value, Mapping)
+            and "started_at" not in value
+            and value.get("ended_at") is not None
+        ):
+            return {**value, "started_at": value["ended_at"]}
+        return value
 
 
 class ToolInputRequest(OuroModel):
