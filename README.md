@@ -177,7 +177,7 @@ continuation policy 可在每轮完成后请求继续、完成、暂停或失败
 插件 manifest 是工具权限的授权契约，运行时 SDK 贡献必须与之相同；受信插件与内置工具使用相同权限语义，
 不会因来源降级。`tool_policies` 可把 Host 控制的工具提升为审批或拒绝，但不能批准或改写参数，失败时默认拒绝。
 
-内置 `dev.ouro.goal_mode` 插件提供跨多个有界 Run 的持久目标模式，并随其他 OURO 内置插件
+内置 `dev.ouro.goal` Goal 插件提供跨多个有界 Run 的持久目标模式，并随其他 OURO 内置插件
 默认启用。可直接使用：
 
 ```text

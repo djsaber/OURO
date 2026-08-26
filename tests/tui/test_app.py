@@ -7054,7 +7054,7 @@ async def test_slash_popup_loads_active_runtime_plugin_commands(tmp_path: Path) 
     application = _application(tmp_path)
     await application.start()
     assert application.plugins is not None
-    enabled = await application.plugins.enable("dev.ouro.goal_mode")
+    enabled = await application.plugins.enable("dev.ouro.goal")
     assert enabled.status == "active"
     goal = next(item for item in application.plugins.list_commands() if item.name == "goal")
     assert [item.value for item in goal.argument_options] == [
@@ -7557,7 +7557,7 @@ async def test_command_selection_executes_complete_argument(
     async def execute(selector: str, argument: str) -> TuiPluginCommandExecution:
         executed.append((selector, argument))
         return TuiPluginCommandExecution(
-            execution=PluginCommandExecutionView(command_id="dev.ouro.plan_mode:plan")
+            execution=PluginCommandExecutionView(command_id="dev.ouro.plan:plan")
         )
 
     async with app.run_test(size=(100, 32)) as pilot:
@@ -7567,8 +7567,8 @@ async def test_command_selection_executes_complete_argument(
             "plugin_commands",
             lambda: (
                 PluginCommandView(
-                    command_id="dev.ouro.plan_mode:plan",
-                    plugin_id="dev.ouro.plan_mode",
+                    command_id="dev.ouro.plan:plan",
+                    plugin_id="dev.ouro.plan",
                     name="plan",
                     description="Enter Plan mode",
                     usage="[on|off|status]",
@@ -7612,7 +7612,7 @@ async def test_parameterized_command_opens_argument_menu_and_executes_selection(
     async def execute(selector: str, argument: str) -> TuiPluginCommandExecution:
         executed.append((selector, argument))
         return TuiPluginCommandExecution(
-            execution=PluginCommandExecutionView(command_id="dev.ouro.goal_mode:goal")
+            execution=PluginCommandExecutionView(command_id="dev.ouro.goal:goal")
         )
 
     async with app.run_test(size=(100, 32)) as pilot:
@@ -7622,8 +7622,8 @@ async def test_parameterized_command_opens_argument_menu_and_executes_selection(
             "plugin_commands",
             lambda: (
                 PluginCommandView(
-                    command_id="dev.ouro.goal_mode:goal",
-                    plugin_id="dev.ouro.goal_mode",
+                    command_id="dev.ouro.goal:goal",
+                    plugin_id="dev.ouro.goal",
                     name="goal",
                     description="Control a Goal",
                     usage=(
@@ -7782,7 +7782,7 @@ async def test_plan_command_without_dialogue_keeps_welcome_and_updates_status_li
     application = _application(tmp_path)
     await application.start()
     assert application.plugins is not None
-    enabled = await application.plugins.enable("dev.ouro.plan_mode")
+    enabled = await application.plugins.enable("dev.ouro.plan")
     assert enabled.status == "active"
     app = OuroTuiApp(application=application)
 
@@ -7791,7 +7791,7 @@ async def test_plan_command_without_dialogue_keeps_welcome_and_updates_status_li
         await pilot.press("slash", "p", "l", "a", "n", "space", "o", "n", "enter")
         await _wait_for_worker_group(app, pilot, group="plugin-command")
         await _wait_until(
-            lambda: "Plan Mode" in app.query_one(ActivityIndicator).render().plain,
+            lambda: "Plan" in app.query_one(ActivityIndicator).render().plain,
             pilot,
             description="active plan-mode status",
         )
@@ -7803,7 +7803,7 @@ async def test_plan_command_without_dialogue_keeps_welcome_and_updates_status_li
         assert conversation.query_one(ConversationHistory).entries == ()
         assert app._has_active_run() is False
         assert app.query_one(Composer).disabled is False
-        assert indicator.render().plain.startswith(" ▣ Plan Mode • Ready")
+        assert indicator.render().plain.startswith(" ▣ Plan • Ready")
 
         await pilot.press("slash", "p", "l", "a", "n", "space", "o", "f", "f", "enter")
         await _wait_for_worker_group(app, pilot, group="plugin-command")
@@ -7812,7 +7812,7 @@ async def test_plan_command_without_dialogue_keeps_welcome_and_updates_status_li
         assert conversation.showing_welcome is True
         assert conversation.query_one(ConversationHistory).entries == ()
         assert indicator.render().plain.startswith(" ▣ Ready")
-        assert "Plan Mode" not in indicator.render().plain
+        assert "Plan" not in indicator.render().plain
 
 
 @pytest.mark.asyncio
@@ -7820,7 +7820,7 @@ async def test_plan_status_keeps_its_conversation_notice(tmp_path: Path) -> None
     application = _application(tmp_path)
     await application.start()
     assert application.plugins is not None
-    assert (await application.plugins.enable("dev.ouro.plan_mode")).status == "active"
+    assert (await application.plugins.enable("dev.ouro.plan")).status == "active"
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 32)) as pilot:
@@ -7842,10 +7842,10 @@ async def test_loaded_session_projects_active_harness_into_status_line(tmp_path:
     application = _application(tmp_path)
     await application.start()
     assert application.plugins is not None
-    assert (await application.plugins.enable("dev.ouro.plan_mode")).status == "active"
+    assert (await application.plugins.enable("dev.ouro.plan")).status == "active"
     session = application.runtime.create_session(title="Active harness")
     await application.plugins.execute_command(
-        "dev.ouro.plan_mode:plan",
+        "dev.ouro.plan:plan",
         "on",
         session_id=session.session_id,
         workspace=str(tmp_path),
@@ -7857,16 +7857,16 @@ async def test_loaded_session_projects_active_harness_into_status_line(tmp_path:
 
         indicator = app.query_one(ActivityIndicator)
         await _wait_until(
-            lambda: "Plan Mode" in indicator.render().plain,
+            lambda: "Plan" in indicator.render().plain,
             pilot,
             description="restored harness status",
         )
-        assert indicator.render().plain.startswith(" ▣ Plan Mode • Ready")
+        assert indicator.render().plain.startswith(" ▣ Plan • Ready")
 
         await pilot.press("slash", *"plan off", "enter")
         await _wait_for_worker_group(app, pilot, group="plugin-command")
 
-        assert "Plan Mode" not in indicator.render().plain
+        assert "Plan" not in indicator.render().plain
         notices = tuple(
             entry.text
             for entry in app.query_one(ConversationHistory).entries
@@ -8157,7 +8157,7 @@ async def test_plan_mode_write_approval_keeps_focus_on_approval_panel(tmp_path: 
     application = _plan_confirmation_application(tmp_path)
     await application.start()
     assert application.plugins is not None
-    assert (await application.plugins.enable("dev.ouro.plan_mode")).status == "active"
+    assert (await application.plugins.enable("dev.ouro.plan")).status == "active"
     app = OuroTuiApp(application=application, approval_mode="approval")
 
     async with app.run_test(size=(100, 42)) as pilot:
@@ -8196,7 +8196,7 @@ async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedbac
     application = _plan_confirmation_application(tmp_path)
     await application.start()
     assert application.plugins is not None
-    assert (await application.plugins.enable("dev.ouro.plan_mode")).status == "active"
+    assert (await application.plugins.enable("dev.ouro.plan")).status == "active"
     app = OuroTuiApp(application=application, approval_mode="auto")
 
     async with app.run_test(size=(100, 42)) as pilot:
@@ -8261,7 +8261,7 @@ async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedbac
         ).events
         requested = next(event for event in events if event.event_type == "ask_user_requested")
         resolved = next(event for event in events if event.event_type == "ask_user_resolved")
-        assert requested.payload["canonical_tool_id"] == "dev.ouro.plan_mode/tools/exit"
+        assert requested.payload["canonical_tool_id"] == "dev.ouro.plan/tools/exit"
         assert resolved.payload["answer"] == {
             "action": "revise",
             "feedback": "Add rollback checks.",
@@ -8281,7 +8281,7 @@ async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_opti
     )
     await application.start()
     assert application.plugins is not None
-    assert (await application.plugins.enable("dev.ouro.plan_mode")).status == "active"
+    assert (await application.plugins.enable("dev.ouro.plan")).status == "active"
     app = OuroTuiApp(application=application, approval_mode="auto")
 
     async with app.run_test(size=(100, 42)) as pilot:
@@ -8321,7 +8321,7 @@ async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_opti
 
         assert app._projection is not None
         await _wait_until(
-            lambda: "Plan Mode" not in app.query_one(ActivityIndicator).render().plain,
+            lambda: "Plan" not in app.query_one(ActivityIndicator).render().plain,
             pilot,
             description="released plan-mode status",
         )

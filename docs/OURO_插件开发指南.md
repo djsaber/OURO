@@ -32,7 +32,7 @@ composition root 的 builtin registry 显式装配。插件机制层不得 impor
 `RuntimeService`、`SessionStore` 或可变 registry。Builtin 使用 in-process、空配置形态，并只承载产品内建能力。
 
 用户可用普通管理入口查询、启用、关闭、重启和检查 builtin，例如
-`ouro plugin enable dev.ouro.plan_mode`。Builtin 不经过 install/authorize/trust-code/configure/update/remove；这些操作会
+`ouro plugin enable dev.ouro.plan`。Builtin 不经过 install/authorize/trust-code/configure/update/remove；这些操作会
 明确返回 operation-not-allowed。关闭后可以显式清理其私有 data，但不能删除随 OURO 分发的 definition/code。
 
 ## 2. 最小本地闭环
@@ -369,7 +369,7 @@ uv run ouro plugin import-report ./community-package --json
 - [`inprocess-command`](../examples/plugins/inprocess-command)：Python Command；
 - [`inprocess-observer`](../examples/plugins/inprocess-observer)：非阻塞类型化 Observer；
 - [`inprocess-prompt-policy`](../examples/plugins/inprocess-prompt-policy)：持久化前拒绝提示的 Prompt Policy；
-- 内置 Plan 模式位于 `ouro/builtin_plugins/plan_mode`，展示了产品内置插件如何复用与用户插件相同的 Context/Tool Policy、Generation 与可恢复工具契约；
+- 内置 Plan 插件位于 `ouro/builtin_plugins/plan`，展示了产品内置插件如何复用与用户插件相同的 Context/Tool Policy、Generation 与可恢复工具契约；
 - 内置 Agent Context 插件位于 `ouro/builtin_plugins/agent_context`，展示了分层 `AGENTS.md`、请求级 system
   prompt fragment、运行环境边界和默认启用 builtin 的组合方式；
 - [`worker-tool`](../examples/plugins/worker-tool)：stdio worker Tool。

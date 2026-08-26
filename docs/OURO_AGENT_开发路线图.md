@@ -62,7 +62,7 @@ Marketplace、签名/publisher trust root、worker OS sandbox、每插件依赖�
 
 ### Durable Task/Workflow
 
-- builtin Goal mode 已提供用户显式创建、Run continuation、状态、预算和控制权仲裁；本阶段不复制它；
+- builtin Goal 已提供用户显式创建、Run continuation、状态、预算和控制权仲裁；本阶段不复制它；
 - 在出现真实多任务需求后，再定义独立的 durable task/workflow 记录与状态；
 - ready task 选择、依赖、重试与跨 Run 调度；
 - 与当前 durable Delegation 建立显式关联，不复制 Agent 状态机；

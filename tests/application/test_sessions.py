@@ -630,7 +630,7 @@ def test_branch_rejects_reset_projection_as_branch_point(tmp_path) -> None:
     store.save_session_extension_state(
         SessionExtensionStateRecord(
             session_id=source.session_id,
-            owner_id="dev.ouro.plan_mode",
+            owner_id="dev.ouro.plan",
             state_schema_version=1,
             branch_policy="reset",
             projection_semantic_tags=("plan-context",),

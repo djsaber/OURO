@@ -6,14 +6,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from ouro.builtin_plugins.plan_mode.state import SessionPlanState
+from ouro.builtin_plugins.plan.state import SessionPlanState
 from ouro.builtin_plugins.toolkit.todos import TodoItem
 from ouro.core.errors import MigrationRequiredError, PersistenceError
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.sdk.plugins.v1 import JsonValue
 from ouro.sessions.base import SessionRepository
 
-_PLAN_OWNER = "dev.ouro.plan_mode"
+_PLAN_OWNER = "dev.ouro.plan"
 _TODO_OWNER = "dev.ouro.toolkit"
 
 

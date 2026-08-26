@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from ouro.builtin_plugins.plan_mode.interaction import (
+from ouro.builtin_plugins.plan.interaction import (
     PlanConfirmationAnswer,
     PlanConfirmationRequest,
     PlanOption,
@@ -135,8 +135,8 @@ def test_plan_confirmation_adapter_requires_official_builtin_provenance() -> Non
         session_id="ses_1",
         run_id="run_1",
         tool_name="ExitPlanMode",
-        canonical_tool_id="dev.ouro.plan_mode/tools/exit",
-        plugin_id="dev.ouro.plan_mode",
+        canonical_tool_id="dev.ouro.plan/tools/exit",
+        plugin_id="dev.ouro.plan",
         plugin_class="builtin",
     )
     user_plugin = official.model_copy(update={"plugin_class": "user"})

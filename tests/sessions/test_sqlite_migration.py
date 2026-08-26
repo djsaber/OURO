@@ -54,7 +54,7 @@ def test_import_sessions_to_sqlite_is_exact_and_verified(tmp_path) -> None:
     source.save_session_extension_state(
         SessionExtensionStateRecord(
             session_id=first.session_id,
-            owner_id="dev.ouro.goal_mode",
+            owner_id="dev.ouro.goal",
             state_schema_version=2,
             payload={"status": "active"},
         )

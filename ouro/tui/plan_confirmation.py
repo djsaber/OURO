@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ouro.builtin_plugins.plan_mode.interaction import (
+from ouro.builtin_plugins.plan.interaction import (
     PlanConfirmationRequest,
     parse_builtin_plan_confirmation,
 )

@@ -5,26 +5,26 @@ from pathlib import Path
 from ouro.plugins.builtin import BuiltinPluginDefinition
 from ouro.plugins.manifest import PluginManifest
 
-from .goal_mode_plugin import create_plugin
+from .goal_plugin import create_plugin
 from .prompts import (
     CREATE_GOAL_DESCRIPTION,
     GET_GOAL_DESCRIPTION,
     UPDATE_GOAL_DESCRIPTION,
 )
 
-GOAL_MODE_PLUGIN = BuiltinPluginDefinition(
+GOAL_PLUGIN = BuiltinPluginDefinition(
     manifest=PluginManifest.model_validate(
         {
             "schema_version": 3,
-            "plugin_id": "dev.ouro.goal_mode",
-            "name": "Goal Mode",
+            "plugin_id": "dev.ouro.goal",
+            "name": "Goal",
             "version": "2.0.0",
             "description": "Maintains and advances the latest user-owned Goal.",
-            "namespace": "goal_mode",
+            "namespace": "goal",
             "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
             "runtime": {
                 "kind": "python-inprocess",
-                "entrypoint": "goal_mode_plugin:create_plugin",
+                "entrypoint": "goal_plugin:create_plugin",
             },
             "contributes": {
                 "tools": [
@@ -157,4 +157,4 @@ GOAL_MODE_PLUGIN = BuiltinPluginDefinition(
     default_enabled=True,
 )
 
-__all__ = ["GOAL_MODE_PLUGIN"]
+__all__ = ["GOAL_PLUGIN"]

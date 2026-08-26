@@ -82,7 +82,7 @@ This project records user-visible and framework-contract changes in this file.
   discovery across user, OURO home, Git-root, and workspace scopes; strict UTF-8 and bounded
   context assembly; and the unchanged runtime-facts injection from the renamed System Information
   builtin.
-- Builtin `dev.ouro.goal_mode` plugin with `/goal` create/status/pause/resume/replace/cancel
+- Builtin `dev.ouro.goal` plugin with `/goal` create/status/pause/resume/replace/cancel
   lifecycle commands, explicit model create/read/settle tools, durable Goal state, bounded-Run
   continuation, canonical token accounting, optional user-owned budgets, and Plan-mode claim
   arbitration.

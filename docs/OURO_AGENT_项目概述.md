@@ -266,7 +266,7 @@ result/delivery identity 和 revision，不镜像 running/waiting/terminal 状�
 - 插件扩展：只有真实 user plugin 证明现有 13 类 extension point 无法表达 Agent、provider、resource 或 UI 能力时
   才增加类型。Marketplace、签名、publisher policy、OS sandbox、项目插件与历史兼容层不在当前范围。
 - 长期记忆：来源可追踪、可查看、可编辑、可删除的记忆提取与检索。
-- Durable Task/Workflow：在 builtin Goal mode 之外表达多任务依赖、跨 Run 调度、重试和用户可见任务图；它可以
+- Durable Task/Workflow：在 builtin Goal 之外表达多任务依赖、跨 Run 调度、重试和用户可见任务图；它可以
   关联 Delegation，但不复制 Goal 或子智能体状态机。
 - SQLite 产品化：Desktop 后端选择、迁移 CLI/UI、备份恢复、版本升级和真实规模性能基准。
 

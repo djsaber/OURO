@@ -5,25 +5,25 @@ from pathlib import Path
 from ouro.plugins.builtin import BuiltinPluginDefinition
 from ouro.plugins.manifest import PluginManifest
 
-from .plan_mode_plugin import (
+from .plan_plugin import (
     ENTER_PLAN_MODE_DESCRIPTION,
     EXIT_PLAN_MODE_DESCRIPTION,
     create_plugin,
 )
 
-PLAN_MODE_PLUGIN = BuiltinPluginDefinition(
+PLAN_PLUGIN = BuiltinPluginDefinition(
     manifest=PluginManifest.model_validate(
         {
             "schema_version": 3,
-            "plugin_id": "dev.ouro.plan_mode",
-            "name": "Plan Mode",
+            "plugin_id": "dev.ouro.plan",
+            "name": "Plan",
             "version": "1.0.0",
             "description": "Implements plan mode as composable OURO harness contributions.",
-            "namespace": "plan_mode",
+            "namespace": "plan",
             "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
             "runtime": {
                 "kind": "python-inprocess",
-                "entrypoint": "plan_mode_plugin:create_plugin",
+                "entrypoint": "plan_plugin:create_plugin",
             },
             "contributes": {
                 "tools": [
@@ -113,4 +113,4 @@ PLAN_MODE_PLUGIN = BuiltinPluginDefinition(
 )
 
 
-__all__ = ["PLAN_MODE_PLUGIN"]
+__all__ = ["PLAN_PLUGIN"]

@@ -1,6 +1,6 @@
-# Goal builtin plugin
+# Goal 内置插件
 
-`dev.ouro.goal_mode` maintains a capacity-one slot containing the latest Goal for a primary
+`dev.ouro.goal` maintains a capacity-one slot containing the latest Goal for a primary
 conversation. A completed Goal is retained for status queries; creating a new Goal replaces that
 completed record, while `/goal cancel` empties the slot.
 

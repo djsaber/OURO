@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from ouro.builtin_plugins.plan_mode.interaction import PlanConfirmationRequest
+from ouro.builtin_plugins.plan.interaction import PlanConfirmationRequest
 from ouro.tui.plan_confirmation import project_plan_confirmation
 from ouro.tui.state import PendingInteraction
 
@@ -22,8 +22,8 @@ def _interaction(
         tool_call_id="call_exit",
         tool_name="ExitPlanMode",
         request=request.to_json(),
-        canonical_tool_id="dev.ouro.plan_mode/tools/exit",
-        plugin_id="dev.ouro.plan_mode",
+        canonical_tool_id="dev.ouro.plan/tools/exit",
+        plugin_id="dev.ouro.plan",
         plugin_class=plugin_class,
     )
 

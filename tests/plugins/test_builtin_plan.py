@@ -8,7 +8,7 @@ import pytest
 
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
-from ouro.builtin_plugins.plan_mode import PLAN_MODE_PLUGIN
+from ouro.builtin_plugins.plan import PLAN_PLUGIN
 from ouro.cli.interactive import run_interactive
 from ouro.cli.interactive_commands import handle_command
 from ouro.core.adapter import RuntimeAdapter
@@ -35,11 +35,12 @@ from ouro.tools import (
     builtin_tools,
 )
 
-PLUGIN_ID = "dev.ouro.plan_mode"
+PLUGIN_ID = "dev.ouro.plan"
 
 
-def test_plan_mode_is_enabled_by_default() -> None:
-    assert PLAN_MODE_PLUGIN.default_enabled is True
+def test_plan_plugin_has_minimal_name_and_is_enabled_by_default() -> None:
+    assert PLAN_PLUGIN.manifest.name == "Plan"
+    assert PLAN_PLUGIN.default_enabled is True
 
 
 class PlanBuildProvider:
@@ -865,7 +866,7 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     assert enter.definition.active_when_controller_id is None
     assert exit_plan.definition.active_when_controller_id is None
     assert exit_plan.definition.interaction_controller_id == (
-        "dev.ouro.plan_mode/session_controllers/mode"
+        "dev.ouro.plan/session_controllers/mode"
     )
     assert enter.definition.description.startswith("Use this tool before")
     assert "Do not call it" in enter.definition.description
@@ -875,7 +876,7 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     assert "description" in exit_properties["options"]
     option_properties = exit_properties["options"]["items"]["properties"]
     assert all("description" in schema for schema in option_properties.values())
-    controller = catalog.session_controllers.get("dev.ouro.plan_mode/session_controllers/mode")
+    controller = catalog.session_controllers.get("dev.ouro.plan/session_controllers/mode")
     context = ToolExecutionContext(workspace=workspace, workspace_only=True)
     session_id = "ses_plan_contract"
     run_id = "run_plan_contract"

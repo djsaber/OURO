@@ -28,7 +28,7 @@ from ouro.application.queued_inputs import (
 )
 from ouro.application.session_models import SessionContextStatus
 from ouro.application.supervisor_models import RuntimeToolCallActivity
-from ouro.builtin_plugins.plan_mode.interaction import (
+from ouro.builtin_plugins.plan.interaction import (
     PlanConfirmationAction,
     PlanConfirmationAnswer,
     PlanConfirmationRequest,

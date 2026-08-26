@@ -49,7 +49,7 @@ def test_legacy_builtin_state_migrates_and_orphans_move_to_trash(tmp_path) -> No
         repository.create_session(session)
 
     legacy = {
-        "dev.ouro.plan_mode/sessions/ses_plan.json": {
+        "dev.ouro.plan/sessions/ses_plan.json": {
             "schema_version": 1,
             "state": {},
         },
@@ -90,13 +90,13 @@ def test_legacy_migration_refuses_to_overwrite_conflicting_canonical_state(tmp_p
     repository.save_session_extension_state(
         SessionExtensionStateRecord(
             session_id=session.session_id,
-            owner_id="dev.ouro.plan_mode",
+            owner_id="dev.ouro.plan",
             state_schema_version=1,
             payload={"phase": "active", "canonical": True},
         )
     )
     path = (
-        home / "plugins" / "data" / "dev.ouro.plan_mode" / "sessions" / f"{session.session_id}.json"
+        home / "plugins" / "data" / "dev.ouro.plan" / "sessions" / f"{session.session_id}.json"
     )
     path.parent.mkdir(parents=True)
     path.write_text(

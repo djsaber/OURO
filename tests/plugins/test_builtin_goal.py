@@ -7,10 +7,10 @@ import pytest
 
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
-from ouro.builtin_plugins.goal_mode import GOAL_MODE_PLUGIN
-from ouro.builtin_plugins.goal_mode.commands import parse_goal_command
-from ouro.builtin_plugins.goal_mode.goal_mode_plugin import GoalModePlugin
-from ouro.builtin_plugins.goal_mode.state import GoalStateRepository, SessionGoalState
+from ouro.builtin_plugins.goal import GOAL_PLUGIN
+from ouro.builtin_plugins.goal.commands import parse_goal_command
+from ouro.builtin_plugins.goal.goal_plugin import GoalPlugin
+from ouro.builtin_plugins.goal.state import GoalStateRepository, SessionGoalState
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import (
     ModelMetadata,
@@ -25,7 +25,7 @@ from ouro.sdk.plugins import v1 as sdk
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
 
-PLUGIN_ID = "dev.ouro.goal_mode"
+PLUGIN_ID = "dev.ouro.goal"
 
 
 class _EndToEndGoalProvider:
@@ -113,7 +113,7 @@ class _MemorySessionStateStore:
         self.values.pop(session_id, None)
 
 
-def _plugin(tmp_path: Path) -> tuple[GoalModePlugin, _MemorySessionStateStore]:
+def _plugin(tmp_path: Path) -> tuple[GoalPlugin, _MemorySessionStateStore]:
     state = _MemorySessionStateStore()
     context = sdk.PluginContext(
         identity=sdk.PluginIdentity(
@@ -138,8 +138,8 @@ def _plugin(tmp_path: Path) -> tuple[GoalModePlugin, _MemorySessionStateStore]:
         permissions=frozenset({"sessions.write", "background.run", "sessions.prompt.inspect"}),
         session_state=state,
     )
-    plugin = GOAL_MODE_PLUGIN.factory(context)
-    assert isinstance(plugin, GoalModePlugin)
+    plugin = GOAL_PLUGIN.factory(context)
+    assert isinstance(plugin, GoalPlugin)
     return plugin, state
 
 
@@ -159,7 +159,7 @@ def _tool_call(
 
 
 def _activate(
-    plugin: GoalModePlugin,
+    plugin: GoalPlugin,
     *,
     activation_id: str,
     payload: sdk.JsonValue,
@@ -177,7 +177,7 @@ def _activate(
 
 
 def _deactivate(
-    plugin: GoalModePlugin,
+    plugin: GoalPlugin,
     *,
     activation_id: str,
     payload: sdk.JsonValue,
@@ -195,7 +195,7 @@ def _deactivate(
 
 
 def _create(
-    plugin: GoalModePlugin,
+    plugin: GoalPlugin,
     *,
     objective: str = "Ship the feature",
     token_budget: int | None = None,
@@ -217,8 +217,9 @@ def _goal(state: _MemorySessionStateStore):
 
 
 def test_manifest_and_tool_contract_are_minimal_and_generic() -> None:
-    manifest = GOAL_MODE_PLUGIN.manifest
+    manifest = GOAL_PLUGIN.manifest
 
+    assert manifest.name == "Goal"
     assert manifest.version == "2.0.0"
     assert {item.id for item in manifest.contributes.tools} == {
         "get-goal",

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from enum import Enum
 
-from ouro.builtin_plugins.plan_mode.interaction import (
+from ouro.builtin_plugins.plan.interaction import (
     PlanConfirmationAction,
     PlanConfirmationAnswer,
     PlanConfirmationRequest,

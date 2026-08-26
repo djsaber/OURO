@@ -44,8 +44,8 @@ from .state import (
 
 _ACTIVE_PHASES = {"active", "awaiting_approval"}
 _OWN_TOOLS = {
-    "dev.ouro.plan_mode/tools/enter",
-    "dev.ouro.plan_mode/tools/exit",
+    "dev.ouro.plan/tools/enter",
+    "dev.ouro.plan/tools/exit",
 }
 _PLAN_WRITERS = {
     "ouro.host/tools/Write",
@@ -108,7 +108,7 @@ All other state-changing or unknown-effect tool calls are denied while plan
 mode is active. Approval cannot override this restriction."""
 
 
-class PlanModePlugin:
+class PlanPlugin:
     def __init__(self, context: PluginContext) -> None:
         if context.artifact_root is None:
             raise RuntimeError("plan mode requires a Host-managed artifact root")
@@ -765,5 +765,5 @@ def _tool_output_from_json(raw: Mapping[str, object]) -> ToolOutput:
     )
 
 
-def create_plugin(context: PluginContext) -> PlanModePlugin:
-    return PlanModePlugin(context)
+def create_plugin(context: PluginContext) -> PlanPlugin:
+    return PlanPlugin(context)

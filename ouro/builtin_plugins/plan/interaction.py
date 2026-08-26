@@ -17,8 +17,8 @@ PLAN_CONFIRMATION_ACTIONS: tuple[PlanConfirmationAction, ...] = (
     "revise",
     "reject",
 )
-_PLAN_MODE_PLUGIN_ID = "dev.ouro.plan_mode"
-_EXIT_PLAN_MODE_TOOL_ID = f"{_PLAN_MODE_PLUGIN_ID}/tools/exit"
+_PLAN_PLUGIN_ID = "dev.ouro.plan"
+_EXIT_PLAN_MODE_TOOL_ID = f"{_PLAN_PLUGIN_ID}/tools/exit"
 
 
 @dataclass(frozen=True)
@@ -149,7 +149,7 @@ def parse_builtin_plan_confirmation(
     recognized = (
         invocation is not None
         and invocation.plugin_class == "builtin"
-        and invocation.plugin_id == _PLAN_MODE_PLUGIN_ID
+        and invocation.plugin_id == _PLAN_PLUGIN_ID
         and invocation.canonical_tool_id == _EXIT_PLAN_MODE_TOOL_ID
         and isinstance(data, dict)
         and data.get("type") == PLAN_CONFIRMATION_TYPE

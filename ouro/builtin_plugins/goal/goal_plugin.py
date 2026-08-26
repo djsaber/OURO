@@ -47,16 +47,16 @@ from .state import (
 _TERMINAL_RUN_STATUSES = {"completed", "aborted", "failed", "paused", "recoverable"}
 
 
-class GoalModePlugin:
+class GoalPlugin:
     def __init__(self, context: PluginContext) -> None:
         required = {"sessions.write", "background.run", "sessions.prompt.inspect"}
         missing = required - context.permissions
         if missing:
             raise RuntimeError(
-                "Goal mode requires authorized permissions: " + ", ".join(sorted(missing))
+                "Goal requires authorized permissions: " + ", ".join(sorted(missing))
             )
         if context.session_state is None:
-            raise RuntimeError("Goal mode requires conversation state storage")
+            raise RuntimeError("Goal requires conversation state storage")
         self._state = GoalStateRepository(context.session_state)
         self._lock = threading.RLock()
         self._commands = GoalCommandService(self._state, self._lock)
@@ -297,7 +297,7 @@ class GoalModePlugin:
 
     def activate_goal_controller(self, call: SessionControllerCall) -> SessionControllerOutput:
         if call.session_kind != "primary":
-            raise RuntimeError("Goal mode is only supported for primary conversations")
+            raise RuntimeError("Goal is only supported for primary conversations")
         payload = _mapping_payload(call.payload)
         operation = _required_payload_text(payload, "operation")
         with self._lock:
@@ -692,8 +692,8 @@ def _canonical_usage_tokens(usage: Mapping[str, int | float]) -> int | None:
     return sum(int(value) for value in values)
 
 
-def create_plugin(context: PluginContext) -> GoalModePlugin:
-    return GoalModePlugin(context)
+def create_plugin(context: PluginContext) -> GoalPlugin:
+    return GoalPlugin(context)
 
 
-__all__ = ["GoalModePlugin", "create_plugin"]
+__all__ = ["GoalPlugin", "create_plugin"]
