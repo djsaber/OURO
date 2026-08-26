@@ -100,6 +100,7 @@ from ouro.tui.controller import (
 )
 from ouro.tui.conversation_history import (
     AssistantTailLines,
+    CompactionPresentation,
     ReasoningLines,
     _ReasoningContent,
 )
@@ -2465,7 +2466,7 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
         assert answer.text == "Final answer"
         rendered_lines = history.rendered_text.splitlines()
         thought_line = next(
-            index for index, line in enumerate(rendered_lines) if line.strip() == "Thought"
+            index for index, line in enumerate(rendered_lines) if line.strip() == "- Thought"
         )
         answer_line = next(
             index for index, line in enumerate(rendered_lines) if line.strip() == "Final answer"
@@ -2505,11 +2506,11 @@ async def test_thought_display_command_applies_to_history_and_live_output_and_pe
         conversation = app.query_one(ConversationView)
         await conversation.load_messages((message,))
         history = conversation.query_one(ConversationHistory)
-        assert "Thought" in history.rendered_text
+        assert "+ Thought" in history.rendered_text
         assert "Historical private thought" not in history.rendered_text
         collapsed_lines = history.rendered_text.splitlines()
         collapsed_thought = next(
-            index for index, line in enumerate(collapsed_lines) if line.strip() == "Thought"
+            index for index, line in enumerate(collapsed_lines) if line.strip() == "+ Thought"
         )
         collapsed_answer = next(
             index for index, line in enumerate(collapsed_lines) if line.strip() == "Final answer"
@@ -2528,6 +2529,7 @@ async def test_thought_display_command_applies_to_history_and_live_output_and_pe
         await pilot.press("enter")
         await pilot.pause()
         assert app.query_one(Composer).text == ""
+        assert "- Thought" in history.rendered_text
         assert "Historical private thought" in history.rendered_text
         assert preferences.load().reasoning_expanded is True
 
@@ -2540,6 +2542,7 @@ async def test_thought_display_command_applies_to_history_and_live_output_and_pe
         await pilot.pause()
         assert "Historical private thought" not in history.rendered_text
         assert live_reasoning.expanded is False
+        assert live_reasoning.label.render().plain.startswith("+ Thinking")
 
         await conversation.append_assistant("Live final answer")
         await pilot.pause()
@@ -2617,9 +2620,49 @@ async def test_history_restores_each_model_call_timing_with_one_run_summary(
         assert summaries[0].run == presentation
         assert presentation.model == "chat-endpoint"
         assert presentation.duration_seconds == 3
-        assert history.rendered_text.count("Thought · 500ms") == 2
+        assert history.rendered_text.count("+ Thought · 500ms") == 2
         assert "chat-endpoint" in history.rendered_text
         assert "3.0s" in history.rendered_text
+
+
+@pytest.mark.asyncio
+async def test_history_loads_failed_run_summary_with_failure_semantics(tmp_path: Path) -> None:
+    started_at = datetime(2026, 8, 11, tzinfo=UTC)
+    run = RunRecord(
+        session_id="ses_failed_run",
+        run_id="run_failed",
+        status="failed",
+        started_at=started_at,
+        ended_at=started_at + timedelta(seconds=316.4),
+        model="deepseek-v4-flash",
+        error="provider returned an empty assistant message",
+    )
+    message = MessageRecord.text(
+        session_id=run.session_id,
+        run_id=run.run_id,
+        role="assistant",
+        text="Partial answer",
+    )
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        conversation = app.query_one(ConversationView)
+        await conversation.load_messages(
+            (message,),
+            runs=(project_run_presentation(run, (message,)),),
+        )
+        await pilot.pause()
+
+        history = conversation.query_one(ConversationHistory)
+        summary = next(entry for entry in history.entries if entry.kind == "run")
+        assert summary.run is not None
+        assert summary.run.status == "failed"
+        assert (
+            f"{TUI_DESIGN.brand_mark} deepseek-v4-flash"
+            f"{TUI_DESIGN.section_separator}5m 16.4s"
+            f"{TUI_DESIGN.section_separator}failed"
+            f"{TUI_DESIGN.section_separator}provider returned an empty assistant message"
+        ) in history.rendered_text
 
 
 @pytest.mark.asyncio
@@ -2737,6 +2780,7 @@ async def test_history_restores_compaction_boundaries_in_chronological_order(
             source_digest="sha256:" + "1" * 64,
             estimated_tokens_before=800,
             estimated_tokens_after=300,
+            duration_seconds=3_425.4,
             # The durable boundary, not wall-clock ordering, owns placement.
             created_at=datetime(2026, 1, 1, 11, 0, tzinfo=UTC),
         ),
@@ -2750,6 +2794,7 @@ async def test_history_restores_compaction_boundaries_in_chronological_order(
             source_digest="sha256:" + "2" * 64,
             estimated_tokens_before=1_500,
             estimated_tokens_after=500,
+            duration_seconds=5.4,
             created_at=datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
         ),
     )
@@ -2761,31 +2806,19 @@ async def test_history_restores_compaction_boundaries_in_chronological_order(
         await pilot.pause()
 
         history = conversation.query_one(ConversationHistory)
-        first_time = compactions[0].created_at.astimezone().strftime("%H:%M")
-        second_time = compactions[1].created_at.astimezone().strftime("%H:%M")
-        assert [(entry.kind, entry.text) for entry in history.entries] == [
-            ("user", "First question"),
-            (
-                "compaction",
-                TUI_DESIGN.section_separator.join(
-                    ("Context compacted", "1 message summarized", "500 tokens reduced", first_time)
-                ),
-            ),
-            ("assistant", "First answer"),
-            (
-                "compaction",
-                TUI_DESIGN.section_separator.join(
-                    (
-                        "Context compacted",
-                        "2 messages summarized",
-                        "1.0K tokens reduced",
-                        second_time,
-                    )
-                ),
-            ),
-            ("user", "Second question"),
+        assert [(entry.kind, entry.compaction) for entry in history.entries] == [
+            ("user", None),
+            ("compaction", CompactionPresentation(1, 500, 3_425.4)),
+            ("assistant", None),
+            ("compaction", CompactionPresentation(2, 1_000, 5.4)),
+            ("user", None),
         ]
-        assert f"{TUI_DESIGN.brand_mark} Context compacted" in history.rendered_text
+        assert (
+            f"{TUI_DESIGN.brand_mark} Context compacted"
+            f"{TUI_DESIGN.section_separator}1 message summarized"
+            f"{TUI_DESIGN.section_separator}500 tokens reduced"
+            f"{TUI_DESIGN.section_separator}57m 05.4s"
+        ) in history.rendered_text
 
         invalid = compactions[0].model_copy(update={"history_boundary_message_id": "msg_missing"})
         with pytest.raises(ValueError, match="references missing history boundary"):
@@ -2821,6 +2854,7 @@ async def test_compaction_completion_updates_context_and_transcript_without_next
                 "covered_message_count": 4,
                 "tokens_before": 800,
                 "tokens_after": 250,
+                "duration_seconds": 65.4,
                 "context_metrics_after": metrics.model_dump(mode="json"),
             },
         )
@@ -2831,15 +2865,17 @@ async def test_compaction_completion_updates_context_and_transcript_without_next
 
         history = app.query_one(ConversationHistory)
         assert history.entries[-1].kind == "compaction"
-        assert history.entries[-1].text == TUI_DESIGN.section_separator.join(
-            (
-                "Context compacted",
-                "4 messages summarized",
-                "550 tokens reduced",
-                completed.created_at.astimezone().strftime("%H:%M"),
-            )
+        assert history.entries[-1].compaction == CompactionPresentation(
+            covered_message_count=4,
+            tokens_reduced=550,
+            duration_seconds=65.4,
         )
-        assert f"{TUI_DESIGN.brand_mark} Context compacted" in history.rendered_text
+        assert (
+            f"{TUI_DESIGN.brand_mark} Context compacted"
+            f"{TUI_DESIGN.section_separator}4 messages summarized"
+            f"{TUI_DESIGN.section_separator}550 tokens reduced"
+            f"{TUI_DESIGN.section_separator}1m 05.4s"
+        ) in history.rendered_text
         assert app.query_one("#context-detail", Static).render().plain.startswith("250 ")
 
 

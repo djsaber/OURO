@@ -5,6 +5,7 @@ import hashlib
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from time import monotonic
 from typing import Protocol, cast
 
 from ouro.application.events import RuntimeEventRecorder
@@ -1003,6 +1004,7 @@ class ContextPreparationService:
             return CompactionExecution(record=None, sequence=sequence, skipped=True)
 
         compaction_id = new_id("cmp")
+        compaction_started_clock = monotonic()
         sequence = await self.events.emit(
             emitted,
             sequence,
@@ -1094,6 +1096,10 @@ class ContextPreparationService:
                 update={
                     "estimated_tokens_after": after_tokens,
                     "context_metrics_after": final_view.metrics,
+                    "duration_seconds": max(
+                        0.0,
+                        monotonic() - compaction_started_clock,
+                    ),
                 }
             )
             self.store.append_compaction(record)
@@ -1141,6 +1147,7 @@ class ContextPreparationService:
                 "covered_message_count": len(record.covered_message_ids),
                 "tokens_before": before_tokens,
                 "tokens_after": record.estimated_tokens_after,
+                "duration_seconds": record.duration_seconds,
                 "context_metrics_after": final_view.metrics.model_dump(mode="json"),
                 "model_provider": record.model_provider,
                 "model_endpoint_id": record.model_endpoint_id,

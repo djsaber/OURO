@@ -131,6 +131,7 @@ class CompactionRecord(VersionedOuroModel):
     source_digest: str
     history_boundary_message_id: str = Field(min_length=1)
     created_at: datetime = Field(default_factory=utc_now)
+    duration_seconds: float | None = Field(default=None, ge=0.0)
     model_provider: str | None = None
     model_endpoint_id: str | None = None
     model_id: str | None = None

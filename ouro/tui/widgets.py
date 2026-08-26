@@ -42,6 +42,7 @@ from ouro.tui.controller import TuiApprovalPreset, TuiSystemStatus
 from ouro.tui.conversation_history import (
     AssistantMarkdownStream,
     AssistantTailLines,
+    CompactionPresentation,
     ConversationHistory,
     ReasoningLines,
     TranscriptEntry,
@@ -49,7 +50,12 @@ from ouro.tui.conversation_history import (
 )
 from ouro.tui.question_forms import QuestionField, QuestionForm
 from ouro.tui.selection import RangeSelectionOnly
-from ouro.tui.state import PendingInteraction, RunPresentation, format_duration
+from ouro.tui.state import (
+    PendingInteraction,
+    RunPresentation,
+    format_compact_count,
+    format_reasoning_label,
+)
 from ouro.tui.text_inputs import TuiTextArea
 from ouro.tui.theme import (
     TUI_DESIGN,
@@ -120,15 +126,6 @@ def _compact_names(names: tuple[str, ...], *, limit: int = 3) -> str:
     if remaining:
         summary += f", +{remaining}"
     return summary
-
-
-def _compact_count(value: int) -> str:
-    for divisor, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
-        if value >= divisor:
-            scaled = value / divisor
-            precision = 0 if scaled >= 100 else 1
-            return f"{scaled:.{precision}f}{suffix}"
-    return str(value)
 
 
 class BrandHeader(Static):
@@ -353,7 +350,7 @@ class ReasoningView(RangeSelectionOnly, Vertical):
         super().__init__(classes="reasoning-view")
         self.display = False
         self.label = ReasoningLabel(
-            _completed_reasoning_label(None),
+            _completed_reasoning_label(None, expanded=expanded),
             classes="reasoning-label",
         )
         self._timer: Timer | None = None
@@ -384,6 +381,7 @@ class ReasoningView(RangeSelectionOnly, Vertical):
 
     def set_expanded(self, expanded: bool) -> None:
         self._content.set_class(not expanded, "collapsed")
+        self._render_label()
 
     async def append(self, text: str, *, started_at: datetime | None = None) -> None:
         if not text:
@@ -408,14 +406,31 @@ class ReasoningView(RangeSelectionOnly, Vertical):
             else:
                 elapsed = self._elapsed_seconds()
             self._completed_seconds = elapsed
-            self.label.update(_completed_reasoning_label(elapsed))
+            self.label.update(_completed_reasoning_label(elapsed, expanded=self.expanded))
         self._stop_timer()
 
     def _tick(self) -> None:
         self._render_live_label()
 
     def _render_live_label(self) -> None:
-        self.label.update(f"Thinking{TUI_DESIGN.inline_separator}{self._elapsed_seconds():.1f}s")
+        self.label.update(
+            format_reasoning_label(
+                "Thinking",
+                self._elapsed_seconds(),
+                expanded=self.expanded,
+            )
+        )
+
+    def _render_label(self) -> None:
+        if self._clock_started_at is not None:
+            self._render_live_label()
+            return
+        self.label.update(
+            _completed_reasoning_label(
+                self._completed_seconds,
+                expanded=self.expanded,
+            )
+        )
 
     def _elapsed_seconds(self) -> float:
         if self._clock_started_at is None:
@@ -512,10 +527,12 @@ class AssistantTurn(RangeSelectionOnly, Vertical):
         return self.reasoning.expanded
 
 
-def _completed_reasoning_label(duration_seconds: float | None) -> str:
-    if duration_seconds is None:
-        return "Thought"
-    return f"Thought{TUI_DESIGN.inline_separator}{format_duration(duration_seconds)}"
+def _completed_reasoning_label(
+    duration_seconds: float | None,
+    *,
+    expanded: bool,
+) -> str:
+    return format_reasoning_label("Thought", duration_seconds, expanded=expanded)
 
 
 class ToolActivityRow(RangeSelectionOnly, Static):
@@ -632,7 +649,7 @@ def _tool_activity_text(
         theme.accent if active else TUI_DESIGN.text_muted,
     )
     presentation = present_tool(tool)
-    text = Text()
+    text = Text(no_wrap=True, overflow="ellipsis")
     text.append(f"  {mark} ", style=f"bold {accent}")
     text.append(tool.tool_name, style=f"bold {TUI_DESIGN.text_primary}")
     if presentation.subject:
@@ -656,7 +673,7 @@ def _tool_activity_text(
         "muted": TUI_DESIGN.text_faint,
     }
     part_styles: dict[ToolTextTone, str] = {
-        "default": TUI_DESIGN.text_muted,
+        "default": TUI_DESIGN.text_faint,
         "muted": TUI_DESIGN.text_faint,
         "added": TUI_DESIGN.success,
         "removed": TUI_DESIGN.failure,
@@ -665,8 +682,6 @@ def _tool_activity_text(
         text.append(f"\n    {line.marker} ", style=line_styles[line.state])
         for part in line.parts:
             style = part_styles[part.tone]
-            if line.state == "done" and part.tone == "default":
-                style = TUI_DESIGN.text_detail
             text.append(part.text, style=style)
     return text
 
@@ -923,8 +938,8 @@ class _WelcomeUsageBlock(Vertical):
         self._requests.update(requests)
         self._tokens.update(
             Text(
-                f"{_compact_count(status.usage_input_tokens)} in"
-                f" / {_compact_count(status.usage_output_tokens)} out",
+                f"{format_compact_count(status.usage_input_tokens)} in"
+                f" / {format_compact_count(status.usage_output_tokens)} out",
                 style=TUI_DESIGN.text_faint,
             )
         )
@@ -1054,27 +1069,25 @@ def _tool_activities_from_messages(
     return activities
 
 
-def _compaction_notice(
+def _compaction_presentation(
     *,
     covered_message_count: int,
     tokens_before: int | None,
     tokens_after: int | None,
-    created_at: datetime,
-) -> str:
-    noun = "message" if covered_message_count == 1 else "messages"
-    details = [
-        "Context compacted",
-        f"{covered_message_count} {noun} summarized",
-    ]
+    duration_seconds: float | None,
+) -> CompactionPresentation:
+    tokens_reduced: int | None = None
     if (
         tokens_before is not None
         and tokens_after is not None
         and (tokens_before > 0 or tokens_after > 0)
     ):
-        reduced = max(0, tokens_before - tokens_after)
-        details.append(f"{_compact_count(reduced)} tokens reduced")
-    details.append(created_at.astimezone().strftime("%H:%M"))
-    return TUI_DESIGN.section_separator.join(details)
+        tokens_reduced = max(0, tokens_before - tokens_after)
+    return CompactionPresentation(
+        covered_message_count=covered_message_count,
+        tokens_reduced=tokens_reduced,
+        duration_seconds=duration_seconds,
+    )
 
 
 class _ConversationTranscript(RangeSelectionOnly, Vertical):
@@ -1308,11 +1321,11 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                     len(chronological),
                     TranscriptEntry(
                         kind="compaction",
-                        text=_compaction_notice(
+                        compaction=_compaction_presentation(
                             covered_message_count=len(compaction.covered_message_ids),
                             tokens_before=compaction.estimated_tokens_before,
                             tokens_after=compaction.estimated_tokens_after,
-                            created_at=compaction.created_at,
+                            duration_seconds=compaction.duration_seconds,
                         ),
                     ),
                 )
@@ -1515,18 +1528,18 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         covered_message_count: int,
         tokens_before: int | None,
         tokens_after: int | None,
-        created_at: datetime,
+        duration_seconds: float | None,
     ) -> None:
         await self._dismiss_welcome()
         await self.finish_assistant()
         self._history.append(
             TranscriptEntry(
                 kind="compaction",
-                text=_compaction_notice(
+                compaction=_compaction_presentation(
                     covered_message_count=covered_message_count,
                     tokens_before=tokens_before,
                     tokens_after=tokens_after,
-                    created_at=created_at,
+                    duration_seconds=duration_seconds,
                 ),
             )
         )
@@ -2680,12 +2693,12 @@ class StatusLine(Horizontal):
             used = metrics.estimated_input_tokens
             budget = metrics.input_budget_tokens
             if budget is None:
-                content = Text(_compact_count(used))
+                content = Text(format_compact_count(used))
             else:
                 ratio = used / budget
                 bounded_ratio = min(ratio, 1.0)
                 completed = ceil(bounded_ratio * _CONTEXT_PROGRESS_WIDTH)
-                content = Text(f"{_compact_count(used)} ")
+                content = Text(f"{format_compact_count(used)} ")
                 content.append("█" * completed, style=theme_for(self).accent)
                 content.append(
                     "▒" * (_CONTEXT_PROGRESS_WIDTH - completed),

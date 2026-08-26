@@ -1,8 +1,15 @@
+from rich.console import Console
+
 import ouro.tui.conversation_history as conversation_history
 from ouro.tui.conversation_history import (
     AssistantMarkdownStream,
+    CompactionPresentation,
+    _compaction_summary,
+    _run_summary,
     split_markdown_blocks,
 )
+from ouro.tui.state import RunPresentation
+from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_DESIGN
 
 _MULTIBLOCK_ANSWER = """Here is the plan:
 
@@ -26,6 +33,54 @@ Setext Title
 
 Final paragraph.
 """
+
+
+def _style_at(text, fragment: str):
+    return text.get_style_at_offset(Console(), text.plain.index(fragment))
+
+
+def test_compaction_and_run_summaries_share_visual_structure_and_failure_semantics() -> None:
+    compaction = _compaction_summary(
+        CompactionPresentation(
+            covered_message_count=8,
+            tokens_reduced=1_200,
+            duration_seconds=3_425.4,
+        ),
+        DEFAULT_TUI_THEME,
+    )
+    failed = _run_summary(
+        RunPresentation(
+            run_id="run_failed",
+            status="failed",
+            model="deepseek-v4-flash",
+            duration_seconds=316.4,
+            error="provider returned an empty assistant message",
+        ),
+        DEFAULT_TUI_THEME,
+    )
+
+    assert compaction.plain == (
+        "▣ Context compacted • 8 messages summarized • 1.2K tokens reduced • 57m 05.4s"
+    )
+    assert failed.plain == (
+        "▣ deepseek-v4-flash • 5m 16.4s • failed"
+        " • provider returned an empty assistant message"
+    )
+    assert _style_at(compaction, "Context compacted") == _style_at(
+        failed, "deepseek-v4-flash"
+    )
+    assert _style_at(compaction, "Context compacted").bold is True
+    assert _style_at(compaction, "Context compacted").color is not None
+    assert _style_at(compaction, "Context compacted").color.triplet.hex == (
+        TUI_DESIGN.text_secondary
+    )
+    compaction_separator = compaction.plain.index(TUI_DESIGN.section_separator_mark)
+    failed_separator = failed.plain.index(TUI_DESIGN.section_separator_mark)
+    assert compaction.get_style_at_offset(Console(), compaction_separator) == (
+        failed.get_style_at_offset(Console(), failed_separator)
+    )
+    assert _style_at(failed, TUI_DESIGN.brand_mark).color is not None
+    assert _style_at(failed, TUI_DESIGN.brand_mark).color.triplet.hex == TUI_DESIGN.failure
 
 
 def test_split_markdown_blocks_preserves_every_block() -> None:

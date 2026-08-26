@@ -847,6 +847,8 @@ async def test_manual_compaction_uses_same_pipeline_without_adding_messages(tmp_
     assert result.run.status == "completed"
     assert result.compaction is not None
     assert result.compaction.context_metrics_after is not None
+    assert result.compaction.duration_seconds is not None
+    assert result.compaction.duration_seconds >= 0
     assert result.compaction.trigger == "manual"
     assert before.messages == after.messages
     assert after.active_compaction == result.compaction
@@ -863,6 +865,7 @@ async def test_manual_compaction_uses_same_pipeline_without_adding_messages(tmp_
     assert completed.payload["context_metrics_after"] == (
         result.compaction.context_metrics_after.model_dump(mode="json")
     )
+    assert completed.payload["duration_seconds"] == result.compaction.duration_seconds
 
 
 @pytest.mark.asyncio

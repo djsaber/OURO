@@ -25,7 +25,12 @@ from textual.widgets import RichLog
 
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.tui.selection import RangeSelectionOnly
-from ouro.tui.state import RunPresentation, format_duration
+from ouro.tui.state import (
+    RunPresentation,
+    format_compact_count,
+    format_duration,
+    format_reasoning_label,
+)
 from ouro.tui.theme import TUI_DESIGN, TuiTheme, theme_for
 
 
@@ -188,10 +193,13 @@ def split_markdown_blocks(text: str) -> tuple[str, ...]:
     return tuple(blocks)
 
 
-def _thought_label(reasoning_seconds: float | None, *, entry_index: int) -> Text:
-    label = "Thought"
-    if reasoning_seconds is not None:
-        label += f"{TUI_DESIGN.inline_separator}{format_duration(reasoning_seconds)}"
+def _thought_label(
+    reasoning_seconds: float | None,
+    *,
+    entry_index: int,
+    expanded: bool,
+) -> Text:
+    label = format_reasoning_label("Thought", reasoning_seconds, expanded=expanded)
     return Text(
         label,
         style=Style(
@@ -200,6 +208,13 @@ def _thought_label(reasoning_seconds: float | None, *, entry_index: int) -> Text
             meta={_REASONING_ENTRY_META: entry_index},
         ),
     )
+
+
+@dataclass(frozen=True)
+class CompactionPresentation:
+    covered_message_count: int
+    tokens_reduced: int | None
+    duration_seconds: float | None
 
 
 @dataclass(frozen=True)
@@ -213,6 +228,7 @@ class TranscriptEntry:
     reasoning_seconds: float | None = None
     tool: RuntimeToolCallActivity | None = None
     run: RunPresentation | None = None
+    compaction: CompactionPresentation | None = None
     error: bool = False
 
 
@@ -519,6 +535,73 @@ class _Piece:
     entry_index: int = -1
 
 
+def _summary_line(
+    title: str,
+    *,
+    marker_tone: str,
+    details: Iterable[tuple[str, str]],
+) -> Text:
+    summary = Text()
+    summary.append(f"{TUI_DESIGN.brand_mark} ", style=f"bold {marker_tone}")
+    summary.append(title, style=f"bold {TUI_DESIGN.text_secondary}")
+    for value, tone in details:
+        summary.append(TUI_DESIGN.section_separator, style=TUI_DESIGN.separator_tone)
+        summary.append(value, style=tone)
+    return summary
+
+
+def _compaction_summary(compaction: CompactionPresentation, theme: TuiTheme) -> Text:
+    noun = "message" if compaction.covered_message_count == 1 else "messages"
+    details = [
+        (
+            f"{compaction.covered_message_count} {noun} summarized",
+            TUI_DESIGN.text_metadata,
+        )
+    ]
+    if compaction.tokens_reduced is not None:
+        details.append(
+            (
+                f"{format_compact_count(compaction.tokens_reduced)} tokens reduced",
+                TUI_DESIGN.text_metadata,
+            )
+        )
+    if compaction.duration_seconds is not None:
+        details.append(
+            (
+                format_duration(compaction.duration_seconds),
+                TUI_DESIGN.text_metadata,
+            )
+        )
+    return _summary_line(
+        "Context compacted",
+        marker_tone=theme.accent,
+        details=details,
+    )
+
+
+def _run_summary(run: RunPresentation, theme: TuiTheme) -> Text:
+    marker_tone = (
+        TUI_DESIGN.failure
+        if run.status == "failed"
+        else theme.accent
+        if run.status == "completed"
+        else TUI_DESIGN.text_muted
+    )
+    details: list[tuple[str, str]] = []
+    if run.duration_seconds is not None:
+        details.append((format_duration(run.duration_seconds), TUI_DESIGN.text_metadata))
+    if run.status != "completed":
+        status_tone = TUI_DESIGN.failure if run.status == "failed" else TUI_DESIGN.text_metadata
+        details.append((run.status, status_tone))
+    if run.status == "failed" and run.error:
+        details.append((" ".join(run.error.split()), TUI_DESIGN.failure))
+    return _summary_line(
+        run.model,
+        marker_tone=marker_tone,
+        details=details,
+    )
+
+
 def _reasoning_area(
     entry: TranscriptEntry,
     *,
@@ -531,7 +614,11 @@ def _reasoning_area(
     The area always ends in exactly one blank line — the gap belongs between
     reasoning and its answer whether or not an answer follows.
     """
-    label = _thought_label(entry.reasoning_seconds, entry_index=entry_index)
+    label = _thought_label(
+        entry.reasoning_seconds,
+        entry_index=entry_index,
+        expanded=expanded,
+    )
     if expanded:
         area: RenderableType = Group(
             label,
@@ -885,47 +972,13 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             top = 1 if previous_kind == "tool" else 0
             return [(Padding(Text(entry.text, style=tone), (top, 1, 1, 1)), "body")]
         if entry.kind == "compaction":
+            assert entry.compaction is not None
             top = 1 if previous_kind == "tool" else 0
-            summary = Text()
-            summary.append(
-                f"{TUI_DESIGN.brand_mark} ",
-                style=f"bold {theme.accent}",
-            )
-            summary.append(entry.text, style=TUI_DESIGN.text_lowlight)
+            summary = _compaction_summary(entry.compaction, theme)
             return [(Padding(summary, (top, 1, 1, 2)), "body")]
         if entry.kind == "run":
             assert entry.run is not None
-            tone = theme.accent if entry.run.status == "completed" else TUI_DESIGN.text_muted
-            summary = Text()
-            summary.append(f"{TUI_DESIGN.brand_mark} ", style=f"bold {tone}")
-            summary.append(entry.run.model, style=f"bold {TUI_DESIGN.text_secondary}")
-            if entry.run.duration_seconds is not None:
-                summary.append(
-                    TUI_DESIGN.section_separator,
-                    style=TUI_DESIGN.separator_tone,
-                )
-                summary.append(
-                    format_duration(entry.run.duration_seconds),
-                    style=TUI_DESIGN.text_metadata,
-                )
-            if entry.run.status != "completed":
-                summary.append(
-                    TUI_DESIGN.section_separator,
-                    style=TUI_DESIGN.separator_tone,
-                )
-                status_tone = (
-                    TUI_DESIGN.failure if entry.run.status == "failed" else TUI_DESIGN.text_metadata
-                )
-                summary.append(entry.run.status, style=status_tone)
-            if entry.run.status == "failed" and entry.run.error:
-                summary.append(
-                    TUI_DESIGN.section_separator,
-                    style=TUI_DESIGN.separator_tone,
-                )
-                summary.append(
-                    " ".join(entry.run.error.split()),
-                    style=TUI_DESIGN.failure,
-                )
+            summary = _run_summary(entry.run, theme)
             return [(Padding(summary, (0, 1, 1, 2)), "body")]
 
         pieces: list[tuple[RenderableType, _PieceTag]] = []

@@ -11,8 +11,18 @@ from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, RunStatus
+from ouro.tui.theme import TUI_DESIGN
 
 InteractionKind = Literal["approval", "question"]
+
+
+def format_compact_count(value: int) -> str:
+    for divisor, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if value >= divisor:
+            scaled = value / divisor
+            precision = 0 if scaled >= 100 else 1
+            return f"{scaled:.{precision}f}{suffix}"
+    return str(value)
 
 
 def format_duration(seconds: float) -> str:
@@ -23,6 +33,23 @@ def format_duration(seconds: float) -> str:
         return f"{seconds:.1f}s"
     minutes, remaining = divmod(seconds, 60)
     return f"{int(minutes)}m {remaining:04.1f}s"
+
+
+def format_reasoning_label(
+    label: str,
+    duration_seconds: float | None,
+    *,
+    expanded: bool,
+) -> str:
+    state_mark = (
+        TUI_DESIGN.expanded_disclosure_marker
+        if expanded
+        else TUI_DESIGN.collapsed_disclosure_marker
+    )
+    text = f"{state_mark} {label}"
+    if duration_seconds is not None:
+        text += f"{TUI_DESIGN.inline_separator}{format_duration(duration_seconds)}"
+    return text
 
 
 @dataclass(frozen=True)

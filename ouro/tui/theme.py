@@ -20,6 +20,8 @@ class TuiDesignTokens:
     active_item_marker: str = "◉"
     completed_item_marker: str = "●"
     pending_item_marker: str = "○"
+    expanded_disclosure_marker: str = "-"
+    collapsed_disclosure_marker: str = "+"
     spinner_frames: tuple[str, ...] = (
         "⠋",
         "⠙",

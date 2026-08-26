@@ -6,6 +6,11 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- TUI compaction summaries now use persisted elapsed durations and the same typography,
+  separators, and semantic marker colors as run summaries; failed reloaded runs retain
+  their failure-colored marker.
+- Tool detail lines now keep their full source text and truncate to the terminal width
+  without wrapping, while thought labels show `+`/`-` for collapsed/expanded state.
 - TUI design tokens now own shared separators, symbols, animation frames, text tones,
   surfaces, and semantic colors across Textual CSS and Rich-rendered components.
 - Reloaded tool calls retain execution timing, and compaction transcript summaries now show

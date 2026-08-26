@@ -40,6 +40,8 @@ def test_tui_design_tokens_own_shared_symbols_colors_and_animation() -> None:
     assert TUI_DESIGN.inline_separator == " · "
     assert TUI_DESIGN.brand_mark == "▣"
     assert TUI_DESIGN.selected_choice_marker == "●"
+    assert TUI_DESIGN.expanded_disclosure_marker == "-"
+    assert TUI_DESIGN.collapsed_disclosure_marker == "+"
     assert len(TUI_DESIGN.spinner_frames) == 10
     assert len(set(TUI_DESIGN.spinner_frames)) == len(TUI_DESIGN.spinner_frames)
     assert all(value.startswith("#") for value in TUI_DESIGN.css_variables().values())

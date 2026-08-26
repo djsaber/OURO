@@ -1279,6 +1279,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 if isinstance(covered, int) and covered >= 0:
                     tokens_before = event.payload.get("tokens_before")
                     tokens_after = event.payload.get("tokens_after")
+                    duration_seconds = event.payload.get("duration_seconds")
                     await conversation.add_compaction(
                         covered_message_count=covered,
                         tokens_before=(
@@ -1291,7 +1292,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                             if isinstance(tokens_after, int) and tokens_after >= 0
                             else None
                         ),
-                        created_at=event.created_at,
+                        duration_seconds=(
+                            float(duration_seconds)
+                            if isinstance(duration_seconds, (int, float))
+                            and not isinstance(duration_seconds, bool)
+                            and duration_seconds >= 0
+                            else None
+                        ),
                     )
             if event.event_type in {
                 "follow_up_input_queued",

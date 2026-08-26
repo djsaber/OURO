@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import pytest
+from rich.console import Console
 from textual.app import App, ComposeResult
 
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.tui.conversation_history import ConversationHistory, TranscriptEntry
+from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_DESIGN
 from ouro.tui.tool_presentations import present_tool
 from ouro.tui.widgets import _tool_activity_text
 
@@ -73,15 +75,27 @@ def test_file_tool_presentations_expose_target_and_line_semantics() -> None:
     ]
 
 
-def test_command_presentation_flattens_and_truncates_long_commands() -> None:
+def test_command_presentation_keeps_full_flattened_command_for_layout_time() -> None:
+    command = "Get-ChildItem\n" + "x" * 180
     presentation = present_tool(
-        _tool("PowerShell", arguments={"command": "Get-ChildItem\n" + "x" * 180})
+        _tool("PowerShell", arguments={"command": command})
     )
 
     assert len(presentation.lines) == 1
-    assert presentation.lines[0].text.startswith("Get-ChildItem ↵ ")
-    assert presentation.lines[0].text.endswith("…")
-    assert len(presentation.lines[0].text) <= 120
+    assert presentation.lines[0].text == "Get-ChildItem ↵ " + "x" * 180
+
+    rendered = _tool_activity_text(
+        _tool("PowerShell", arguments={"command": command}),
+        frame=0,
+        theme=DEFAULT_TUI_THEME,
+    )
+    command_offset = rendered.plain.index("Get-ChildItem")
+    command_style = rendered.get_style_at_offset(Console(), command_offset)
+    assert rendered.no_wrap is True
+    assert rendered.overflow == "ellipsis"
+    assert command_style.color is not None
+    assert command_style.color.triplet is not None
+    assert command_style.color.triplet.hex == TUI_DESIGN.text_faint
 
 
 def test_todolist_presentation_exposes_progress_and_item_states() -> None:
@@ -148,6 +162,31 @@ async def test_tool_groups_only_add_spacing_at_non_tool_boundaries() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_detail_uses_available_width_without_wrapping() -> None:
+    tool = _tool(
+        "PowerShell",
+        arguments={"command": "Get-ChildItem " + "long-segment-" * 20},
+    )
+    app = _HistoryApp()
+
+    async with app.run_test(size=(44, 12)) as pilot:
+        app.history.append(TranscriptEntry(kind="tool", tool=tool))
+        await app.history.wait_until_rendered()
+
+        narrow_lines = [line.strip() for line in app.history.rendered_text.splitlines()]
+        narrow_detail = next(line for line in narrow_lines if line.startswith("└ Get-ChildItem"))
+        assert narrow_detail.endswith("…")
+        assert len([line for line in narrow_lines if "long-segment" in line]) == 1
+
+        await pilot.resize_terminal(80, 12)
+        await pilot.pause()
+        wide_lines = [line.strip() for line in app.history.rendered_text.splitlines()]
+        wide_detail = next(line for line in wide_lines if line.startswith("└ Get-ChildItem"))
+        assert wide_detail.endswith("…")
+        assert len(wide_detail) > len(narrow_detail)
+
+
+@pytest.mark.asyncio
 async def test_reasoning_only_turn_adds_one_message_boundary_before_tool() -> None:
     tool = _tool("Read", arguments={"path": "after-thought.py"})
     app = _HistoryApp()
@@ -159,7 +198,7 @@ async def test_reasoning_only_turn_adds_one_message_boundary_before_tool() -> No
         await app.history.wait_until_rendered()
 
         lines = [line.strip() for line in app.history.rendered_text.splitlines()]
-        reasoning = lines.index("Thought")
+        reasoning = lines.index("+ Thought")
         tool_header = next(index for index, line in enumerate(lines) if "✓ Read" in line)
 
         assert lines[reasoning + 1 : tool_header] == [""]

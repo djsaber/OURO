@@ -12,8 +12,6 @@ ToolLineState = Literal["pending", "active", "done", "muted"]
 ToolTextTone = Literal["default", "muted", "added", "removed"]
 
 _COMMAND_TOOLS = frozenset({"bash", "commandprompt", "powershell", "sh"})
-_MAX_COMMAND_LENGTH = 120
-_MAX_PATH_LENGTH = 64
 _MAX_TODO_LINES = 12
 
 
@@ -124,7 +122,7 @@ def _present_command(arguments: dict[str, JsonValue]) -> ToolPresentation:
         lines=(
             ToolPresentationLine(
                 "└",
-                (ToolPresentationPart(_truncate_end(flattened, _MAX_COMMAND_LENGTH)),),
+                (ToolPresentationPart(flattened),),
             ),
         )
     )
@@ -178,7 +176,7 @@ def _present_todos(
 def _path(value: JsonValue | None) -> str | None:
     if not isinstance(value, str) or not value:
         return None
-    return _truncate_middle(value, _MAX_PATH_LENGTH)
+    return value
 
 
 def _path_parts(path: str | None) -> tuple[ToolPresentationPart, ...]:
@@ -215,20 +213,6 @@ def _plural(count: int, noun: str) -> str:
 
 def _plural_noun(count: int, noun: str) -> str:
     return noun if count == 1 else noun + "s"
-
-
-def _truncate_end(value: str, limit: int) -> str:
-    if len(value) <= limit:
-        return value
-    return value[: limit - 1].rstrip() + "…"
-
-
-def _truncate_middle(value: str, limit: int) -> str:
-    if len(value) <= limit:
-        return value
-    left = (limit - 1) // 2
-    right = limit - left - 1
-    return value[:left] + "…" + value[-right:]
 
 
 __all__ = [

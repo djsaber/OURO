@@ -6,7 +6,13 @@ import pytest
 
 from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord
-from ouro.tui.state import TuiSessionProjection, project_run_presentation, question_text
+from ouro.tui.state import (
+    TuiSessionProjection,
+    format_duration,
+    format_reasoning_label,
+    project_run_presentation,
+    question_text,
+)
 
 
 def _event(sequence: int, event_type: str, **payload: object) -> EventRecord:
@@ -25,6 +31,12 @@ def test_projection_without_run_is_idle() -> None:
     assert projection.activity.status == "idle"
     assert projection.activity.activity == "idle"
     assert projection.activity.run_id is None
+
+
+def test_duration_and_reasoning_labels_share_explicit_state_format() -> None:
+    assert format_duration(3_425.4) == "57m 05.4s"
+    assert format_reasoning_label("Thought", 2.5, expanded=False) == "+ Thought · 2.5s"
+    assert format_reasoning_label("Thought", 2.5, expanded=True) == "- Thought · 2.5s"
 
 
 def test_run_presentation_preserves_failure_information() -> None:
