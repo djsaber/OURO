@@ -2345,7 +2345,10 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(tmp_path: P
         assert interaction.tool_name == "Danger"
         approval_panel = app.query_one(InteractionBar)
         assert approval_panel.display is True
-        assert "Subagent General" in approval_panel.render().plain
+        assert (
+            "Subagent General"
+            in approval_panel.query_one("#interaction-summary", Static).render().plain
+        )
 
         await pilot.press("enter")
         await asyncio.wait_for(provider.queued_input_consumed.wait(), timeout=5)
@@ -7899,6 +7902,17 @@ async def test_approval_panel_selects_with_arrows_and_resumes_run(tmp_path: Path
         assert panel.has_focus is True
         assert panel.selected_approved is True
         assert composer.disabled is True
+        title = panel.query_one("#interaction-title", Static).render().plain
+        controls = panel.query_one("#interaction-controls", Static).render().plain
+        assert title == "APPROVAL"
+        assert "1. Allow" not in controls
+        assert "2. Deny" not in controls
+        assert "Y/N direct" not in controls
+
+        await pilot.press("n")
+        await pilot.pause()
+        assert app._projection.pending_interaction is not None
+        assert panel.selected_approved is True
 
         await pilot.press("down")
         assert panel.selected_approved is False
@@ -8139,6 +8153,43 @@ async def test_plugin_question_uses_common_form_and_returns_scalar_answer(
 
 
 @pytest.mark.asyncio
+async def test_plan_mode_write_approval_keeps_focus_on_approval_panel(tmp_path: Path) -> None:
+    application = _plan_confirmation_application(tmp_path)
+    await application.start()
+    assert application.plugins is not None
+    assert (await application.plugins.enable("dev.ouro.plan_mode")).status == "active"
+    app = OuroTuiApp(application=application, approval_mode="approval")
+
+    async with app.run_test(size=(100, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("slash", *"plan", "space", "o", "n", "enter")
+        await pilot.pause()
+        await pilot.click("#composer")
+        await pilot.press("p", "l", "a", "n", "enter")
+
+        panel = app.query_one(InteractionBar)
+        await _wait_until(
+            lambda: panel.display and panel.has_focus,
+            pilot,
+            description="plan file write approval",
+        )
+        composer = app.query_one(Composer)
+        assert composer.disabled is True
+        assert panel.has_focus is True
+
+        await pilot.click("#composer")
+        await pilot.pause()
+        assert composer.has_focus is False
+        assert panel.has_focus is True
+
+        await pilot.press("tab")
+        await pilot.pause()
+
+        assert composer.has_focus is False
+        assert panel.has_focus is True
+
+
+@pytest.mark.asyncio
 async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedback(
     tmp_path: Path,
 ) -> None:
@@ -8157,7 +8208,7 @@ async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedbac
 
         panel = app.query_one(PlanConfirmationPanel)
         await _wait_until(
-            lambda: panel.display,
+            lambda: panel.display and panel.has_focus,
             pilot,
             description="plan confirmation",
         )
@@ -8175,7 +8226,12 @@ async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedbac
         assert "Accept" in controls
         assert "Revise" in controls
         assert "Reject" in controls
-        assert "↑/↓ or ←/→ move · Enter choose · 1-3 direct" in controls
+        assert "↑/↓ or ←/→ move · Enter choose" in controls
+        assert "1. Accept" not in controls
+        assert "2. Revise" not in controls
+        assert "3. Reject" not in controls
+        assert "direct" not in controls
+        assert panel.query_one("#plan-confirmation-title", Static).render().plain == "PLAN APPROVAL"
         assert panel.selected_action == "accept"
 
         await pilot.press("down", "enter")
@@ -8250,6 +8306,11 @@ async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_opti
         assert "Direct rollout" in controls
 
         await pilot.press("2")
+        await pilot.pause()
+        assert app._projection is not None
+        assert app._projection.pending_interaction is not None
+
+        await pilot.press("down", "enter")
         await _wait_until(
             lambda: app._projection is not None
             and app._projection.pending_interaction is None,

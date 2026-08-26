@@ -1557,21 +1557,93 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         await self._history.wait_until_rendered()
 
 
-class InteractionBar(Static):
-    """Keyboard-first approval choice with an explicit selected option."""
+class ApprovalPanel(Vertical):
+    """Shared keyboard and visual skeleton for inline approval workflows."""
 
     can_focus = True
+    can_focus_children = False
     BINDINGS = [
         Binding("up", "previous_option", show=False),
         Binding("down", "next_option", show=False),
         Binding("left", "previous_option", show=False),
         Binding("right", "next_option", show=False),
         Binding("enter", "accept", "Choose", show=False),
-        Binding("y", "approve", "Allow", show=False),
-        Binding("shift+y", "approve", "Allow", show=False),
-        Binding("n", "reject", "Deny", show=False),
-        Binding("shift+n", "reject", "Deny", show=False),
+        Binding("tab,shift+tab", "retain_focus", show=False, priority=True),
     ]
+
+    def __init__(self, *, panel_id: str, title_id: str, controls_id: str) -> None:
+        super().__init__(id=panel_id, classes="approval-panel")
+        self._title = Static(id=title_id, classes="approval-title")
+        self._controls = Static(id=controls_id, classes="approval-controls")
+        self._cursor = 0
+
+    def action_previous_option(self) -> None:
+        self._move_approval_cursor(-1)
+
+    def action_next_option(self) -> None:
+        self._move_approval_cursor(1)
+
+    def action_retain_focus(self) -> None:
+        self.focus()
+
+    def _move_approval_cursor(self, offset: int) -> None:
+        choice_count = self._approval_choice_count()
+        if not choice_count or self.disabled:
+            return
+        self._cursor = (self._cursor + offset) % choice_count
+        self._render_approval_controls()
+
+    def _render_approval_title(self, title: str) -> None:
+        theme = theme_for(self)
+        self._title.update(Text(title, style=f"bold {theme.accent_bright}"))
+
+    def _append_approval_option(
+        self,
+        content: Text,
+        *,
+        index: int,
+        label: str,
+        description: str,
+        tone: str,
+    ) -> None:
+        active = index == self._cursor
+        theme = theme_for(self)
+        content.append("› " if active else "  ", style=theme.accent if active else "")
+        content.append(
+            label,
+            style=f"bold {tone}" if active else f"bold {TUI_DESIGN.text_primary}",
+        )
+        if description:
+            content.append(
+                f"  {description}",
+                style=(TUI_DESIGN.text_primary if active else TUI_DESIGN.text_lowlight),
+            )
+        content.append("\n")
+
+    @staticmethod
+    def _append_approval_hint(
+        content: Text,
+        *,
+        leading: tuple[str, ...] = (),
+        trailing: tuple[str, ...] = (),
+    ) -> None:
+        content.append(
+            "\n"
+            + TUI_DESIGN.inline_separator.join(
+                (*leading, "↑/↓ or ←/→ move", "Enter choose", *trailing)
+            ),
+            style=TUI_DESIGN.text_lowlight,
+        )
+
+    def _approval_choice_count(self) -> int:
+        raise NotImplementedError
+
+    def _render_approval_controls(self) -> None:
+        raise NotImplementedError
+
+
+class InteractionBar(ApprovalPanel):
+    """Tool approval projected through the shared approval panel."""
 
     class Decision(Message):
         def __init__(self, interaction: PendingInteraction, approved: bool) -> None:
@@ -1580,16 +1652,25 @@ class InteractionBar(Static):
             self.approved = approved
 
     def __init__(self) -> None:
-        super().__init__(id="interaction-bar")
+        super().__init__(
+            panel_id="interaction-bar",
+            title_id="interaction-title",
+            controls_id="interaction-controls",
+        )
+        self._summary = Static(id="interaction-summary")
         self.display = False
         self.disabled = True
         self._interaction: PendingInteraction | None = None
         self._identity: tuple[str, str] | None = None
-        self._selected = 0
+
+    def compose(self) -> ComposeResult:
+        yield self._title
+        yield self._summary
+        yield self._controls
 
     @property
     def selected_approved(self) -> bool:
-        return self._selected == 0
+        return self._cursor == 0
 
     def show_interaction(self, interaction: PendingInteraction | None) -> None:
         with self.app.batch_update():
@@ -1597,11 +1678,11 @@ class InteractionBar(Static):
                 self.display = False
                 self._interaction = None
                 self._identity = None
-                self._selected = 0
+                self._cursor = 0
                 return
             identity = (interaction.run_id, interaction.request_id or interaction.tool_call_id)
             if identity != self._identity:
-                self._selected = 0
+                self._cursor = 0
             self._interaction = interaction
             self._identity = identity
             self.disabled = False
@@ -1620,29 +1701,13 @@ class InteractionBar(Static):
     def refresh_theme(self) -> None:
         self._render_approval()
 
-    def action_previous_option(self) -> None:
-        self._move_selection(-1)
-
-    def action_next_option(self) -> None:
-        self._move_selection(1)
-
     def action_accept(self) -> None:
         self._decide(self.selected_approved)
 
-    def action_approve(self) -> None:
-        self._selected = 0
-        self._render_approval()
-        self._decide(True)
+    def _approval_choice_count(self) -> int:
+        return 2 if self._interaction is not None else 0
 
-    def action_reject(self) -> None:
-        self._selected = 1
-        self._render_approval()
-        self._decide(False)
-
-    def _move_selection(self, offset: int) -> None:
-        if self._interaction is None or self.disabled:
-            return
-        self._selected = (self._selected + offset) % 2
+    def _render_approval_controls(self) -> None:
         self._render_approval()
 
     def _decide(self, approved: bool) -> None:
@@ -1656,39 +1721,33 @@ class InteractionBar(Static):
         interaction = self._interaction
         if interaction is None:
             return
-        theme = theme_for(self)
-        content = Text()
-        content.append("? APPROVAL\n", style=f"bold {theme.accent_bright}")
+        self._render_approval_title("APPROVAL")
+        summary = Text()
         if interaction.is_subagent:
-            content.append(
+            summary.append(
                 f"Subagent {interaction.agent_name or interaction.delegation_id}\n",
                 style=TUI_DESIGN.text_lowlight,
             )
-        content.append(
-            f"{interaction.tool_name} wants to run\n\n",
+        summary.append(
+            f"{interaction.tool_name} wants to run",
             style=f"bold {TUI_DESIGN.text_primary}",
         )
+        self._summary.update(summary)
+        content = Text()
         options = (
             ("Allow", "Run this tool", TUI_DESIGN.success),
             ("Deny", "Reject this tool", TUI_DESIGN.failure),
         )
         for index, (label, description, tone) in enumerate(options):
-            active = index == self._selected
-            content.append("› " if active else "  ", style=theme.accent if active else "")
-            content.append(
-                f"{index + 1}. {label}",
-                style=f"bold {tone}" if active else f"bold {TUI_DESIGN.text_primary}",
+            self._append_approval_option(
+                content,
+                index=index,
+                label=label,
+                description=description,
+                tone=tone,
             )
-            content.append(
-                f"  {description}\n",
-                style=(TUI_DESIGN.text_primary if active else TUI_DESIGN.text_lowlight),
-            )
-        content.append(
-            "\n"
-            + TUI_DESIGN.inline_separator.join(("↑/↓ or ←/→ move", "Enter choose", "Y/N direct")),
-            style=TUI_DESIGN.text_lowlight,
-        )
-        self.update(content)
+        self._append_approval_hint(content)
+        self._controls.update(content)
 
 
 class AskUserPanel(Static):
@@ -1908,23 +1967,14 @@ class AskUserPanel(Static):
         self._render_question()
 
 
-class PlanConfirmationPanel(Vertical):
+class PlanConfirmationPanel(ApprovalPanel):
     """Keyboard-first decision workflow for the builtin ExitPlanMode request."""
 
-    can_focus = True
-    can_focus_children = False
     BINDINGS = [
-        Binding("up", "previous_option", show=False),
-        Binding("down", "next_option", show=False),
-        Binding("left", "previous_option", show=False),
-        Binding("right", "next_option", show=False),
+        *ApprovalPanel.BINDINGS,
         Binding("pageup", "scroll_plan_up", show=False),
         Binding("pagedown", "scroll_plan_down", show=False),
-        Binding("enter", "accept", show=False),
         Binding("escape", "back", show=False),
-        Binding("1", "choose(0)", show=False),
-        Binding("2", "choose(1)", show=False),
-        Binding("3", "choose(2)", show=False),
     ]
 
     class Completed(Message):
@@ -1936,20 +1986,21 @@ class PlanConfirmationPanel(Vertical):
         pass
 
     def __init__(self) -> None:
-        super().__init__(id="plan-confirmation-panel")
+        super().__init__(
+            panel_id="plan-confirmation-panel",
+            title_id="plan-confirmation-title",
+            controls_id="plan-confirmation-controls",
+        )
         self.display = False
         self.disabled = True
-        self._title = Static(id="plan-confirmation-title")
         self._plan_body = Static(id="plan-confirmation-body")
         self._document = VerticalScroll(
             self._plan_body,
             id="plan-confirmation-document",
             can_focus=False,
         )
-        self._controls = Static(id="plan-confirmation-controls")
         self._request: PlanConfirmationRequest | None = None
         self._stage: Literal["action", "option", "feedback"] = "action"
-        self._cursor = 0
         self._awaiting_feedback = False
 
     def compose(self) -> ComposeResult:
@@ -2009,23 +2060,11 @@ class PlanConfirmationPanel(Vertical):
         self._stage = "action"
         self._complete(PlanConfirmationAnswer(action="revise", feedback=feedback))
 
-    def action_previous_option(self) -> None:
-        self._move_cursor(-1)
-
-    def action_next_option(self) -> None:
-        self._move_cursor(1)
-
     def action_scroll_plan_up(self) -> None:
         self._document.scroll_page_up(animate=False)
 
     def action_scroll_plan_down(self) -> None:
         self._document.scroll_page_down(animate=False)
-
-    def action_choose(self, index: int) -> None:
-        if index < 0 or index >= len(self._choices()):
-            return
-        self._cursor = index
-        self.action_accept()
 
     def action_accept(self) -> None:
         request = self._request
@@ -2066,14 +2105,6 @@ class PlanConfirmationPanel(Vertical):
     def refresh_theme(self) -> None:
         self._render_panel()
 
-    def _move_cursor(self, offset: int) -> None:
-        choices = self._choices()
-        if not choices or self.disabled or self._stage == "feedback":
-            return
-        self._cursor = (self._cursor + offset) % len(choices)
-        assert self._request is not None
-        self._render_controls(self._request)
-
     def _choices(self) -> tuple[object, ...]:
         if self._request is None:
             return ()
@@ -2082,6 +2113,13 @@ class PlanConfirmationPanel(Vertical):
         if self._stage == "option":
             return self._request.options
         return ()
+
+    def _approval_choice_count(self) -> int:
+        return len(self._choices())
+
+    def _render_approval_controls(self) -> None:
+        if self._request is not None:
+            self._render_controls(self._request)
 
     def _complete(self, answer: PlanConfirmationAnswer) -> None:
         self.disabled = True
@@ -2092,9 +2130,7 @@ class PlanConfirmationPanel(Vertical):
         if request is None:
             return
         with self.app.batch_update():
-            theme = theme_for(self)
-            title = Text("? PLAN APPROVAL", style=f"bold {theme.accent_bright}")
-            self._title.update(title)
+            self._render_approval_title("PLAN APPROVAL")
             self._plan_body.update(Text(request.plan, style=TUI_DESIGN.text_primary))
             self._render_controls(request)
 
@@ -2119,19 +2155,16 @@ class PlanConfirmationPanel(Vertical):
             }
             for index, action in enumerate(request.actions):
                 label, description, tone = presentations[action]
-                self._append_option(
+                self._append_approval_option(
                     content,
                     index=index,
                     label=label,
                     description=description,
                     tone=tone,
                 )
-            content.append(
-                "\n"
-                + TUI_DESIGN.inline_separator.join(
-                    ("PgUp/PgDn plan", "↑/↓ or ←/→ move", "Enter choose", "1-3 direct")
-                ),
-                style=TUI_DESIGN.text_lowlight,
+            self._append_approval_hint(
+                content,
+                leading=("PgUp/PgDn plan",),
             )
         elif self._stage == "option":
             content.append(
@@ -2139,25 +2172,17 @@ class PlanConfirmationPanel(Vertical):
                 style=TUI_DESIGN.text_secondary,
             )
             for index, option in enumerate(request.options):
-                self._append_option(
+                self._append_approval_option(
                     content,
                     index=index,
                     label=option.label,
                     description=option.description,
                     tone=theme.accent,
                 )
-            content.append(
-                "\n"
-                + TUI_DESIGN.inline_separator.join(
-                    (
-                        "PgUp/PgDn plan",
-                        "↑/↓ or ←/→ move",
-                        "Enter choose",
-                        "1-3 direct",
-                        "Esc back",
-                    )
-                ),
-                style=TUI_DESIGN.text_lowlight,
+            self._append_approval_hint(
+                content,
+                leading=("PgUp/PgDn plan",),
+                trailing=("Esc back",),
             )
         else:
             content.append("REVISION FEEDBACK\n", style=f"bold {theme.accent_bright}")
@@ -2166,29 +2191,6 @@ class PlanConfirmationPanel(Vertical):
                 style=TUI_DESIGN.text_lowlight,
             )
         self._controls.update(content)
-
-    def _append_option(
-        self,
-        content: Text,
-        *,
-        index: int,
-        label: str,
-        description: str,
-        tone: str,
-    ) -> None:
-        active = index == self._cursor
-        theme = theme_for(self)
-        content.append("› " if active else "  ", style=theme.accent if active else "")
-        content.append(
-            f"{index + 1}. {label}",
-            style=f"bold {tone}" if active else f"bold {TUI_DESIGN.text_primary}",
-        )
-        if description:
-            content.append(
-                f"  {description}",
-                style=(TUI_DESIGN.text_primary if active else TUI_DESIGN.text_lowlight),
-            )
-        content.append("\n")
 
 
 class CommandPopup(VerticalScroll):

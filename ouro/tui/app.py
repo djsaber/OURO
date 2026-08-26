@@ -553,9 +553,8 @@ _OURO_TUI_CSS = """
         background: transparent;
     }
 
-    #interaction-bar {
+    .approval-panel {
         height: auto;
-        max-height: 10;
         margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         padding: 1 2;
         color: $ouro-text-primary;
@@ -566,9 +565,27 @@ _OURO_TUI_CSS = """
         border-left: solid $ouro-separator;
     }
 
-    #interaction-bar:focus {
+    .approval-panel:focus {
         border-left: solid $ouro-theme;
         border-right: solid $ouro-border-focus;
+    }
+
+    .approval-title {
+        height: 1;
+    }
+
+    .approval-controls {
+        height: auto;
+    }
+
+    #interaction-bar {
+        max-height: 10;
+        overflow: hidden;
+    }
+
+    #interaction-summary {
+        height: auto;
+        margin-bottom: 1;
     }
 
     #ask-user-panel {
@@ -590,16 +607,7 @@ _OURO_TUI_CSS = """
     }
 
     #plan-confirmation-panel {
-        height: auto;
         max-height: 24;
-        margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
-        padding: 1 2;
-        color: $ouro-text-primary;
-        background: $ouro-panel;
-        border-top: none;
-        border-right: solid $ouro-progress-track;
-        border-bottom: none;
-        border-left: solid $ouro-separator;
         overflow: hidden;
     }
 
@@ -624,13 +632,7 @@ _OURO_TUI_CSS = """
     }
 
     #plan-confirmation-controls {
-        height: auto;
         margin-top: 1;
-    }
-
-    #plan-confirmation-panel:focus {
-        border-left: solid $ouro-theme;
-        border-right: solid $ouro-border-focus;
     }
 
     #command-popup {
@@ -1425,19 +1427,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         finally:
             self._waiting_for_session_event = False
             if not self._host_closing and self.query(Composer):
-                composer = self.query_one(Composer)
-                interaction = self._interaction
-                composer.disabled = interaction is not None and interaction.kind == "approval"
-                if interaction is not None and interaction.kind == "approval":
-                    self.query_one(InteractionBar).focus()
-                elif interaction is not None and interaction.kind == "question":
-                    panel = self.query_one(AskUserPanel)
-                    if panel.awaiting_freeform:
-                        composer.focus()
-                    else:
-                        panel.focus()
-                else:
-                    composer.focus()
+                self._sync_interaction_focus(self._interaction)
 
     async def _apply_run_result(self, result: RunResult) -> None:
         await self._flush_pending_runtime_events()
@@ -1713,23 +1703,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             else:
                 self.query_one(AskUserPanel).resume()
         finally:
-            composer = self.query_one(Composer)
-            composer.disabled = False
-            current = self._interaction
-            ask_user = self.query_one(AskUserPanel)
-            plan_panel = self.query_one(PlanConfirmationPanel)
-            if current is not None and current.kind == "question" and plan_panel.display:
-                if plan_panel.awaiting_feedback:
-                    composer.focus()
-                else:
-                    plan_panel.focus()
-            elif current is not None and current.kind == "question" and ask_user.display:
-                if ask_user.awaiting_freeform:
-                    composer.focus()
-                else:
-                    ask_user.focus()
-            else:
-                composer.focus()
+            self._sync_interaction_focus(self._interaction)
 
     def on_interaction_bar_decision(self, message: InteractionBar.Decision) -> None:
         self._resolve_approval(message.interaction, message.approved)
@@ -1743,9 +1717,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self,
         _message: AskUserPanel.FreeformRequested,
     ) -> None:
-        composer = self.query_one(Composer)
         self._sync_composer_placeholder()
-        composer.focus()
+        self._sync_interaction_focus(self._interaction)
 
     def on_plan_confirmation_panel_completed(
         self,
@@ -1759,9 +1732,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self,
         _message: PlanConfirmationPanel.FeedbackRequested,
     ) -> None:
-        composer = self.query_one(Composer)
         self._sync_composer_placeholder()
-        composer.focus()
+        self._sync_interaction_focus(self._interaction)
 
     def _sync_activity(self, activity: RuntimeActivitySnapshot) -> None:
         status_line = self.query_one(StatusLine)
@@ -1791,6 +1763,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if interaction != self._interaction:
             self._interaction = interaction
             self._sync_interaction(interaction)
+        else:
+            self._sync_interaction_focus(interaction)
         return interaction
 
     def _sync_interaction(self, interaction: PendingInteraction | None) -> None:
@@ -1798,7 +1772,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             interaction_bar = self.query_one(InteractionBar)
             ask_user = self.query_one(AskUserPanel)
             plan_panel = self.query_one(PlanConfirmationPanel)
-            composer = self.query_one(Composer)
             if interaction is not None and interaction.kind == "question":
                 interaction_bar.show_interaction(None)
                 plan_request = project_plan_confirmation(interaction)
@@ -1810,19 +1783,36 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     ask_user.show_request(
                         project_question_form(interaction.tool_name, interaction.request)
                     )
-                composer.disabled = False
                 self._sync_composer_placeholder()
+                self._sync_interaction_focus(interaction)
                 return
             ask_user.hide_panel()
             plan_panel.hide_panel()
             interaction_bar.show_interaction(interaction)
             self._sync_composer_placeholder()
-            if interaction is not None and interaction.kind == "approval":
-                composer.disabled = True
-                interaction_bar.focus()
-            else:
-                composer.disabled = False
-                composer.focus()
+            self._sync_interaction_focus(interaction)
+
+    def _sync_interaction_focus(self, interaction: PendingInteraction | None) -> None:
+        """Give the active interaction exclusive ownership of keyboard input."""
+
+        composer = self.query_one(Composer)
+        if interaction is not None and interaction.kind == "approval":
+            composer.disabled = True
+            self.query_one(InteractionBar).focus()
+            return
+        if interaction is not None and interaction.kind == "question":
+            plan_panel = self.query_one(PlanConfirmationPanel)
+            ask_user = self.query_one(AskUserPanel)
+            if plan_panel.display:
+                composer.disabled = not plan_panel.awaiting_feedback
+                (composer if plan_panel.awaiting_feedback else plan_panel).focus()
+                return
+            if ask_user.display:
+                composer.disabled = not ask_user.awaiting_freeform
+                (composer if ask_user.awaiting_freeform else ask_user).focus()
+                return
+        composer.disabled = False
+        composer.focus()
 
     def _sync_composer_placeholder(self) -> None:
         """Project run and interaction state onto the composer hint."""
@@ -2137,9 +2127,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         finally:
             if creating_projection:
                 self._waiting_for_session_event = False
-                composer = self.query_one(Composer)
-                composer.disabled = False
-                composer.focus()
+                self._sync_interaction_focus(self._interaction)
 
     @work(exclusive=True, group="compaction")
     async def _compact_session(self) -> None:
@@ -2160,8 +2148,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.query_one(StatusLine).set_activity("failed")
             self.notify(str(exc), severity="error", markup=False)
         finally:
-            composer.disabled = False
-            composer.focus()
+            self._sync_interaction_focus(self._interaction)
 
     async def _new_session(self) -> None:
         if self._has_active_run():
