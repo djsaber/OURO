@@ -88,6 +88,7 @@ class SessionView(ApplicationDTO):
     session_kind: Literal["primary", "subagent"] = "primary"
     root_session_id: str
     parent_session_id: str | None = None
+    delegation_id: str | None = None
     forked_from_message_id: str | None = None
     forked_from_run_id: str | None = None
     title: str
@@ -119,6 +120,7 @@ class SessionView(ApplicationDTO):
             session_kind=session.session_kind,
             root_session_id=session.root_session_id or session.session_id,
             parent_session_id=session.parent_session_id,
+            delegation_id=session.delegation_id,
             forked_from_message_id=session.forked_from_message_id,
             forked_from_run_id=session.forked_from_run_id,
             title=session.title,
@@ -225,6 +227,17 @@ class SessionEventPage(ApplicationDTO):
     session_id: str
     events: tuple[EventRecord, ...] = ()
     next_cursor: int | None = None
+
+
+class SessionObservationSnapshot(ApplicationDTO):
+    """One atomic durable boundary from which a Host can attach a live stream."""
+
+    session: SessionView
+    messages: tuple[MessageRecord, ...] = ()
+    events: tuple[EventRecord, ...] = ()
+    runs: tuple[RunRecord, ...] = ()
+    compactions: tuple[CompactionRecord, ...] = ()
+    event_high_water: int = Field(default=0, ge=0)
 
 
 class SessionMutationResult(ApplicationDTO):

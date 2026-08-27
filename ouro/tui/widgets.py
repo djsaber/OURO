@@ -45,6 +45,7 @@ from ouro.tui.conversation_history import (
     CompactionPresentation,
     ConversationHistory,
     ReasoningLines,
+    ToolNavigationRequested,
     TranscriptEntry,
     split_markdown_blocks,
 )
@@ -547,9 +548,10 @@ def _completed_reasoning_label(
 
 
 class ToolActivityRow(RangeSelectionOnly, Static):
-    def __init__(self, tool: RuntimeToolCallActivity) -> None:
+    def __init__(self, tool: RuntimeToolCallActivity, *, run_id: str | None) -> None:
         super().__init__(classes="tool-row")
         self.tool_call_id = tool.tool_call_id
+        self.run_id = run_id
         self._tool = tool
         self._frame = 0
         self._timer: Timer | None = None
@@ -598,6 +600,16 @@ class ToolActivityRow(RangeSelectionOnly, Static):
 
     def refresh_theme(self) -> None:
         self._render_tool()
+
+    def on_click(self, event: events.Click) -> None:
+        if event.button == 1 and self.run_id is not None and self._tool.tool_name == "SpawnAgent":
+            self.post_message(
+                ToolNavigationRequested(
+                    parent_run_id=self.run_id,
+                    parent_tool_call_id=self.tool_call_id,
+                )
+            )
+            event.stop()
 
     def _render_tool(self) -> None:
         self.update(_tool_activity_text(self._tool, frame=self._frame, theme=theme_for(self)))
@@ -1299,7 +1311,11 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                         continue
                     append_entry(
                         message_index,
-                        TranscriptEntry(kind="tool", tool=activity),
+                        TranscriptEntry(
+                            kind="tool",
+                            run_id=message.run_id,
+                            tool=activity,
+                        ),
                     )
 
         last_message_by_run: dict[str, int] = {}
@@ -1495,7 +1511,10 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
 
     async def sync_tools(self, tools: tuple[RuntimeToolCallActivity, ...]) -> None:
         await self._dismiss_welcome()
-        historical_tool_ids = self._history.update_tools(tools)
+        historical_tool_ids = self._history.update_tools(
+            tools,
+            run_id=self._current_run_id,
+        )
         has_new_tool = any(
             tool.tool_call_id not in historical_tool_ids and tool.tool_call_id not in self._tools
             for tool in tools
@@ -1509,7 +1528,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                 continue
             row = self._tools.get(tool.tool_call_id)
             if row is None:
-                row = ToolActivityRow(tool)
+                row = ToolActivityRow(tool, run_id=self._current_run_id)
                 self._tools[tool.tool_call_id] = row
                 await self._transcript.mount(row)
             else:
@@ -1522,7 +1541,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             terminal_rows = tuple(self._tools.values())
             self._tools.clear()
             for row in terminal_rows:
-                self._history.append(TranscriptEntry(kind="tool", tool=row.tool))
+                self._history.append(TranscriptEntry(kind="tool", run_id=row.run_id, tool=row.tool))
                 await row.remove()
 
     async def add_notice(self, message: str, *, error: bool = False) -> None:

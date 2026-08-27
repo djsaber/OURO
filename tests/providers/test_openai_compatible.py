@@ -195,8 +195,7 @@ async def test_httpx_stream_falls_back_before_first_response_item() -> None:
         route_attempts.append("direct")
         return httpx.Response(
             200,
-            text='data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'
-            "data: [DONE]\n\n",
+            text='data: {"choices":[{"delta":{"content":"hello"}}]}\n\ndata: [DONE]\n\n',
         )
 
     async with (
@@ -1280,7 +1279,7 @@ async def test_openai_compatible_provider_prefers_reasoning_content_over_bare_re
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_emits_reasoning_delta_from_bare_reasoning_stream_chunks() -> None:
+async def test_openai_compatible_provider_emits_bare_reasoning_stream_delta() -> None:
     transport = FakeStreamingTransport(
         [
             {"choices": [{"delta": {"reasoning": "Thinking"}}]},

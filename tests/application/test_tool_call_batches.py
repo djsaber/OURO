@@ -789,7 +789,10 @@ async def test_parallel_batch_marks_only_handlers_that_actually_started(tmp_path
     )
 
     run_task = asyncio.create_task(runtime.run("run three"))
-    await asyncio.wait_for(two_started.wait(), timeout=1)
+    # This is a synchronization guard, not a one-second product SLA. Reaching
+    # the handlers includes real durable Session I/O and can exceed one second
+    # on Windows while still making normal forward progress.
+    await asyncio.wait_for(two_started.wait(), timeout=5)
     session = runtime.store.list_sessions()[0]
     snapshot = runtime.store.load_session(session.session_id)
     active = next(run for run in snapshot.runs if run.status == "running")

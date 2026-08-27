@@ -15,6 +15,7 @@ from ouro.application.agent_models import (
     AgentHandleView,
     AgentInteractionView,
     AgentReadView,
+    AgentTreeNode,
     AgentTreeSnapshot,
     AgentWaitResultView,
     SpawnAgentRequest,
@@ -656,6 +657,10 @@ class AgentService:
             run_id=parent_run.run_id,
             event_type="agent_spawned",
             payload={
+                "root_session_id": relation.root_session_id,
+                "parent_session_id": relation.parent_session_id,
+                "parent_run_id": relation.parent_run_id,
+                "parent_tool_call_id": relation.parent_tool_call_id,
                 "delegation_id": relation.delegation_id,
                 "child_session_id": child.session_id,
                 "child_run_id": run.run_id,
@@ -993,6 +998,52 @@ class AgentService:
     def agent_tree_snapshot(self, root_session_id: str) -> AgentTreeSnapshot:
         return self._tree_projector.snapshot(root_session_id)
 
+    def resolve_agent_navigation(
+        self,
+        *,
+        parent_session_id: str,
+        parent_run_id: str,
+        parent_tool_call_id: str,
+    ) -> AgentTreeNode | None:
+        """Resolve one parent ToolCall to its durable child Session projection.
+
+        ToolCall ids are scoped by their parent Session and Run.  Keeping this
+        join inside the application boundary lets Hosts navigate without
+        reading Delegation records or inferring identity from tool output.
+        """
+
+        parent = self.store.load_session_record(parent_session_id)
+        matches = [
+            relation
+            for relation in self.store.list_delegations(parent.agent_root_session_id)
+            if relation.parent_session_id == parent_session_id
+            and relation.parent_run_id == parent_run_id
+            and relation.parent_tool_call_id == parent_tool_call_id
+        ]
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise PersistenceError(
+                "parent ToolCall resolves to multiple Delegations: "
+                f"{parent_session_id}/{parent_run_id}/{parent_tool_call_id}"
+            )
+        relation = matches[0]
+        if relation.child_session_id is None:
+            return None
+        node = next(
+            (
+                item
+                for item in self.agent_tree_snapshot(parent.agent_root_session_id).nodes
+                if item.delegation_id == relation.delegation_id
+            ),
+            None,
+        )
+        if node is None:
+            raise PersistenceError(
+                f"Delegation {relation.delegation_id} has no child Session projection"
+            )
+        return node
+
     def subscribe_agent_tree(
         self,
         root_session_id: str,
@@ -1151,9 +1202,7 @@ class AgentService:
             for relation in relations
             if relation.child_session_id is not None
         )
-        return tuple(
-            dict.fromkeys((root_session_id, session.session_id, *child_session_ids))
-        )
+        return tuple(dict.fromkeys((root_session_id, session.session_id, *child_session_ids)))
 
     async def reconcile_root(
         self,
@@ -1962,6 +2011,10 @@ class AgentService:
         return AgentHandleView(
             revision=relation.revision,
             delegation_id=relation.delegation_id,
+            root_session_id=relation.root_session_id,
+            parent_session_id=relation.parent_session_id,
+            parent_run_id=relation.parent_run_id,
+            parent_tool_call_id=relation.parent_tool_call_id,
             child_session_id=relation.child_session_id,
             child_run_id=relation.current_child_run_id,
             agent_id=relation.agent_id,

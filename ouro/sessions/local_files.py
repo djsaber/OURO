@@ -4,7 +4,8 @@ import json
 import os
 import re
 import shutil
-from collections.abc import Sequence
+import struct
+from collections.abc import Iterator, Sequence
 from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import TypeVar
@@ -32,7 +33,11 @@ from ouro.core.session_extensions import (
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.local_io import read_text_atomic, write_json_atomic, write_model_atomic
 from ouro.local_locks import is_lock_held
-from ouro.sessions.base import RuntimeSessionSnapshot, SessionSnapshot
+from ouro.sessions.base import (
+    RuntimeSessionSnapshot,
+    SessionObservationState,
+    SessionSnapshot,
+)
 from ouro.sessions.index import SessionIndex
 from ouro.sessions.layout import DATA_LAYOUT_VERSION, DataLayoutManifest
 from ouro.sessions.local_index import LocalSessionIndex
@@ -40,6 +45,8 @@ from ouro.sessions.locks import SessionMutationLock, SessionRunLock
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _JournalRecord = TypeVar("_JournalRecord", MessageRecord, EventRecord)
+_EVENT_SEQUENCE_INDEX_RECORD = struct.Struct(">QQ")
+_EVENT_SEQUENCE_INDEX_STRIDE = 256
 
 
 class LocalSessionStore:
@@ -51,6 +58,8 @@ class LocalSessionStore:
         self.session_mutation_locks_dir = self.root / "locks" / "session-mutations"
         self.trash_sessions_dir = self.root / "trash" / "sessions"
         self._event_sequence_cache: dict[str, tuple[int, int]] = {}
+        self._event_sequence_index_cache: dict[str, tuple[int, int] | None] = {}
+        self._event_run_offset_cache: dict[tuple[str, str], int] = {}
         self._layout_path = self.root / "layout.json"
         self._catalog = LocalSessionIndex(
             self.sessions_dir,
@@ -210,6 +219,7 @@ class LocalSessionStore:
         staging_dir = self.sessions_dir / f".{session.session_id}.{new_id('stage')}.staging"
         try:
             (staging_dir / "runs").mkdir(parents=True)
+            (staging_dir / "event-index" / "runs").mkdir(parents=True)
             (staging_dir / "resources").mkdir(parents=True)
             (staging_dir / "extensions").mkdir(parents=True)
             self._write_model_atomic(staging_dir / "session.json", session)
@@ -228,8 +238,7 @@ class LocalSessionStore:
                     f"compaction does not belong to session {session.session_id}"
                 )
             if session.active_compaction_id is not None and not any(
-                item.compaction_id == session.active_compaction_id
-                for item in compaction_records
+                item.compaction_id == session.active_compaction_id for item in compaction_records
             ):
                 raise PersistenceError(
                     f"active compaction {session.active_compaction_id} is missing from "
@@ -256,6 +265,7 @@ class LocalSessionStore:
             )
             staging_dir.replace(session_dir)
             self._event_sequence_cache[session.session_id] = (0, 0)
+            self._event_sequence_index_cache[session.session_id] = None
         except (OSError, PersistenceError) as exc:
             with suppress(OSError):
                 shutil.rmtree(staging_dir)
@@ -358,7 +368,15 @@ class LocalSessionStore:
     def append_event(self, event: EventRecord) -> None:
         with self.session_mutation(event.session_id):
             session_dir = self._require_session_dir(event.session_id)
-            self._append_jsonl(session_dir / "events.jsonl", event)
+            path = session_dir / "events.jsonl"
+            if event.run_id is not None:
+                self._event_run_offset(event.session_id, event.run_id, path)
+            self._prepare_event_sequence_index(
+                event.session_id,
+                path,
+                sequence=event.sequence,
+            )
+            self._append_jsonl(path, event)
             self._event_sequence_cache.pop(event.session_id, None)
 
     def append_ordered_event(self, event: EventRecord) -> EventRecord:
@@ -370,6 +388,13 @@ class LocalSessionStore:
                 self._max_event_sequence(event.session_id, path) + 1,
             )
             ordered = event.model_copy(update={"sequence": sequence})
+            if ordered.run_id is not None:
+                self._event_run_offset(event.session_id, ordered.run_id, path)
+            self._prepare_event_sequence_index(
+                event.session_id,
+                path,
+                sequence=sequence,
+            )
             # Delta events are group-committed by the next durable boundary
             # event. This preserves ordered live replay without one fsync per token.
             self._append_jsonl(
@@ -382,10 +407,23 @@ class LocalSessionStore:
 
     def save_run(self, run: RunRecord) -> None:
         with self.session_mutation(run.session_id):
-            run_dir = self._require_session_dir(run.session_id) / "runs"
+            session_dir = self._require_session_dir(run.session_id)
+            run_dir = session_dir / "runs"
             run_dir.mkdir(parents=True, exist_ok=True)
             run_id = _validated_record_id(run.run_id, kind="run")
-            self._write_model_atomic(run_dir / f"{run_id}.json", run)
+            run_path = run_dir / f"{run_id}.json"
+            if not run_path.exists():
+                journal = session_dir / "events.jsonl"
+                offset_path = self._event_run_offset_path(run.session_id, run_id)
+                if (run.session_id, run_id) in self._event_run_offset_cache or offset_path.exists():
+                    self._event_run_offset(run.session_id, run_id, journal)
+                else:
+                    self._write_event_run_offset(
+                        run.session_id,
+                        run_id,
+                        journal.stat().st_size if journal.exists() else 0,
+                    )
+            self._write_model_atomic(run_path, run)
 
     def save_latest_context(self, context: ContextSnapshotRecord) -> None:
         with self.session_mutation(context.session_id):
@@ -445,7 +483,7 @@ class LocalSessionStore:
                         line,
                         label=f"event in session {session_id}",
                     )
-                    for line in self._read_jsonl(session_dir / "events.jsonl")
+                    for line in self._iter_jsonl(session_dir / "events.jsonl")
                 ]
             except (OSError, ValidationError, ValueError) as exc:
                 raise PersistenceError(f"could not load session {session_id}: {exc}") from exc
@@ -459,6 +497,28 @@ class LocalSessionStore:
     def load_runtime_session(self, session_id: str) -> RuntimeSessionSnapshot:
         with self.session_mutation(session_id):
             return self._load_runtime_session(session_id)
+
+    def load_session_observation(self, session_id: str) -> SessionObservationState:
+        with self.session_mutation(session_id):
+            runtime = self._load_runtime_session(session_id)
+            active_run_id = runtime.session.active_run_id
+            path = self._session_dir(session_id) / "events.jsonl"
+            event_high_water = self._max_event_sequence(session_id, path)
+            active_events = (
+                self._read_events_for_run(
+                    path,
+                    session_id=session_id,
+                    run_id=active_run_id,
+                    offset=self._event_run_offset(session_id, active_run_id, path),
+                )
+                if active_run_id is not None
+                else []
+            )
+            return SessionObservationState(
+                **runtime.model_dump(),
+                active_run_events=active_events,
+                event_high_water=event_high_water,
+            )
 
     def load_runs(self, session_id: str) -> list[RunRecord]:
         with self.session_mutation(session_id):
@@ -490,7 +550,7 @@ class LocalSessionStore:
                     line,
                     label=f"message in session {session_id}",
                 )
-                for line in self._read_jsonl(session_dir / "messages.jsonl")
+                for line in self._iter_jsonl(session_dir / "messages.jsonl")
             ]
             compactions = self._load_compactions(session_dir)
         except FileNotFoundError:
@@ -578,7 +638,7 @@ class LocalSessionStore:
         with self.session_mutation(session_id):
             path = self._require_session_dir(session_id) / "messages.jsonl"
             try:
-                for line in self._read_jsonl(path):
+                for line in self._iter_jsonl(path):
                     message = decode_versioned_record_json(
                         MessageRecord,
                         line,
@@ -603,6 +663,8 @@ class LocalSessionStore:
         cursor, limit = _validated_page_args(cursor, limit)
         with self.session_mutation(session_id):
             path = self._require_session_dir(session_id) / "events.jsonl"
+            if run_id is not None and cursor == 0:
+                cursor = self._event_run_offset(session_id, run_id, path)
             return self._read_record_page(
                 path,
                 EventRecord,
@@ -619,23 +681,32 @@ class LocalSessionStore:
         limit: int = 100,
     ) -> tuple[list[EventRecord], bool]:
         after_sequence, limit = _validated_page_args(after_sequence, limit)
-        path = self._require_session_dir(session_id) / "events.jsonl"
         records: list[EventRecord] = []
         try:
-            with self.session_mutation(session_id), path.open("rb") as file:
-                for raw in file:
-                    if not raw.strip():
-                        continue
-                    event = decode_versioned_record_json(
-                        EventRecord,
-                        raw,
-                        label=f"event in session {session_id}",
-                    )
-                    if event.sequence <= after_sequence:
-                        continue
-                    records.append(event)
-                    if len(records) > limit:
-                        return records[:limit], True
+            with self.session_mutation(session_id):
+                path = self._require_session_dir(session_id) / "events.jsonl"
+                if after_sequence >= self._max_event_sequence(session_id, path):
+                    return [], False
+                offset = self._event_offset_after_sequence(
+                    session_id,
+                    path,
+                    after_sequence=after_sequence,
+                )
+                with path.open("rb") as file:
+                    file.seek(offset)
+                    for raw in file:
+                        if not raw.strip():
+                            continue
+                        event = decode_versioned_record_json(
+                            EventRecord,
+                            raw,
+                            label=f"event in session {session_id}",
+                        )
+                        if event.sequence <= after_sequence:
+                            continue
+                        records.append(event)
+                        if len(records) > limit:
+                            return records[:limit], True
         except (OSError, UnicodeDecodeError, ValidationError, ValueError) as exc:
             raise PersistenceError(f"could not read events after sequence: {exc}") from exc
         return records, False
@@ -956,6 +1027,244 @@ class LocalSessionStore:
         validated = _validated_record_id(session_id, kind="session")
         return self.session_mutation_locks_dir / f"{validated}.lock"
 
+    def _event_run_offset(
+        self,
+        session_id: str,
+        run_id: str,
+        journal: Path,
+    ) -> int:
+        """Return the first possible byte for a Run without rescanning old Runs."""
+
+        validated_run_id = _validated_record_id(run_id, kind="run")
+        key = (session_id, validated_run_id)
+        cached = self._event_run_offset_cache.get(key)
+        if cached is not None:
+            return cached
+        journal_size = journal.stat().st_size if journal.exists() else 0
+        index_path = self._event_run_offset_path(session_id, validated_run_id)
+        if index_path.exists():
+            try:
+                raw = json.loads(read_text_atomic(index_path))
+                offset = raw["offset"]
+                if (
+                    raw.get("schema_version") == 1
+                    and raw.get("run_id") == validated_run_id
+                    and isinstance(offset, int)
+                    and not isinstance(offset, bool)
+                    and _is_record_boundary(journal, offset, journal_size)
+                ):
+                    self._event_run_offset_cache[key] = offset
+                    return offset
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                # This is a derived accelerator. Rebuild it from the canonical
+                # append-only journal instead of making the Session unreadable.
+                pass
+        offset = self._find_event_run_offset(journal, session_id=session_id, run_id=run_id)
+        self._write_event_run_offset(session_id, validated_run_id, offset)
+        return offset
+
+    def _find_event_run_offset(self, journal: Path, *, session_id: str, run_id: str) -> int:
+        run_id_pattern = re.compile(
+            rb'"run_id"\s*:\s*' + re.escape(json.dumps(run_id, ensure_ascii=False).encode("utf-8"))
+        )
+        try:
+            with journal.open("rb") as file:
+                while True:
+                    offset = file.tell()
+                    raw = file.readline()
+                    if not raw:
+                        return offset
+                    if not raw.strip() or run_id_pattern.search(raw) is None:
+                        continue
+                    event = decode_versioned_record_json(
+                        EventRecord,
+                        raw,
+                        label=f"event in session {session_id}",
+                    )
+                    if event.run_id == run_id:
+                        return offset
+        except (OSError, UnicodeDecodeError, ValidationError, ValueError) as exc:
+            raise PersistenceError(
+                f"could not locate Run {run_id} events in Session {session_id}: {exc}"
+            ) from exc
+
+    def _write_event_run_offset(self, session_id: str, run_id: str, offset: int) -> None:
+        validated_run_id = _validated_record_id(run_id, kind="run")
+        payload = {
+            "schema_version": 1,
+            "run_id": validated_run_id,
+            "offset": offset,
+        }
+        self._event_run_offset_cache[(session_id, validated_run_id)] = offset
+        path = self._event_run_offset_path(session_id, validated_run_id)
+        if offset == 0 and not path.exists():
+            # Absence already means "scan from the journal start". Persisting
+            # a zero cursor would add I/O without narrowing any future read.
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except (OSError, TypeError, ValueError):
+            # This index is disposable. The in-memory offset remains valid for
+            # this Store; a reopened Store can rebuild it from events.jsonl.
+            return
+
+    def _event_run_offset_path(self, session_id: str, run_id: str) -> Path:
+        return self._session_dir(session_id) / "event-index" / "runs" / f"{run_id}.json"
+
+    def _read_events_for_run(
+        self,
+        journal: Path,
+        *,
+        session_id: str,
+        run_id: str,
+        offset: int,
+    ) -> list[EventRecord]:
+        run_id_pattern = re.compile(
+            rb'"run_id"\s*:\s*' + re.escape(json.dumps(run_id, ensure_ascii=False).encode("utf-8"))
+        )
+        events: list[EventRecord] = []
+        try:
+            with journal.open("rb") as file:
+                file.seek(offset)
+                for raw in file:
+                    if not raw.strip() or run_id_pattern.search(raw) is None:
+                        continue
+                    event = decode_versioned_record_json(
+                        EventRecord,
+                        raw,
+                        label=f"event in session {session_id}",
+                    )
+                    if event.run_id == run_id:
+                        events.append(event)
+        except (OSError, UnicodeDecodeError, ValidationError, ValueError) as exc:
+            raise PersistenceError(
+                f"could not read Run {run_id} events in Session {session_id}: {exc}"
+            ) from exc
+        return events
+
+    def _prepare_event_sequence_index(
+        self,
+        session_id: str,
+        journal: Path,
+        *,
+        sequence: int,
+    ) -> None:
+        """Checkpoint a sparse sequence-to-byte cursor before journal append."""
+
+        if session_id not in self._event_sequence_index_cache:
+            self._event_sequence_index_cache[session_id] = self._load_last_sequence_checkpoint(
+                session_id,
+                journal,
+            )
+        previous = self._event_sequence_index_cache[session_id]
+        if previous is not None and sequence - previous[0] < _EVENT_SEQUENCE_INDEX_STRIDE:
+            return
+        journal_size = journal.stat().st_size if journal.exists() else 0
+        if previous is None and journal_size == 0:
+            # Offset zero is the implicit checkpoint. Materialize the sparse
+            # index only once it can skip a non-empty historical prefix.
+            self._event_sequence_index_cache[session_id] = (sequence, journal_size)
+            return
+        index_path = self._event_sequence_index_path(session_id)
+        try:
+            index_path.parent.mkdir(parents=True, exist_ok=True)
+            with index_path.open("wb" if previous is None else "ab") as file:
+                file.write(_EVENT_SEQUENCE_INDEX_RECORD.pack(sequence, journal_size))
+        except (OSError, struct.error):
+            # Checkpoints are query accelerators, not part of event durability.
+            # Retry at the next sparse boundary without blocking this append.
+            self._event_sequence_index_cache[session_id] = (sequence, journal_size)
+            return
+        self._event_sequence_index_cache[session_id] = (sequence, journal_size)
+
+    def _load_last_sequence_checkpoint(
+        self,
+        session_id: str,
+        journal: Path,
+    ) -> tuple[int, int] | None:
+        index_path = self._event_sequence_index_path(session_id)
+        if not index_path.exists():
+            return None
+        try:
+            index_size = index_path.stat().st_size
+            complete_size = index_size - (index_size % _EVENT_SEQUENCE_INDEX_RECORD.size)
+            if complete_size == 0:
+                return None
+            if complete_size != index_size:
+                with index_path.open("r+b") as file:
+                    file.truncate(complete_size)
+            with index_path.open("rb") as file:
+                file.seek(complete_size - _EVENT_SEQUENCE_INDEX_RECORD.size)
+                sequence, offset = _EVENT_SEQUENCE_INDEX_RECORD.unpack(file.read())
+            journal_size = journal.stat().st_size if journal.exists() else 0
+            if not _is_record_boundary(journal, offset, journal_size):
+                return None
+            return sequence, offset
+        except (OSError, struct.error):
+            return None
+
+    def _event_offset_after_sequence(
+        self,
+        session_id: str,
+        journal: Path,
+        *,
+        after_sequence: int,
+    ) -> int:
+        """Find a bounded forward-scan start using fixed-width sparse checkpoints."""
+
+        index_path = self._event_sequence_index_path(session_id)
+        try:
+            record_size = _EVENT_SEQUENCE_INDEX_RECORD.size
+            record_count = index_path.stat().st_size // record_size
+            if record_count == 0:
+                return 0
+            target = after_sequence + 1
+            low = 0
+            high = record_count
+            candidate: tuple[int, int] | None = None
+            with index_path.open("rb") as index:
+                while low < high:
+                    middle = (low + high) // 2
+                    index.seek(middle * record_size)
+                    raw = index.read(record_size)
+                    if len(raw) != record_size:
+                        return 0
+                    sequence, offset = _EVENT_SEQUENCE_INDEX_RECORD.unpack(raw)
+                    if sequence <= target:
+                        candidate = (sequence, offset)
+                        low = middle + 1
+                    else:
+                        high = middle
+            if candidate is None:
+                return 0
+            sequence, offset = candidate
+            journal_size = journal.stat().st_size
+            if not _is_record_boundary(journal, offset, journal_size) or offset == journal_size:
+                return 0
+            with journal.open("rb") as file:
+                file.seek(offset)
+                raw = file.readline()
+            payload = json.loads(raw)
+            if not isinstance(payload, dict) or payload.get("sequence") != sequence:
+                return 0
+            return offset
+        except (
+            OSError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+            struct.error,
+        ):
+            # A corrupt/missing accelerator must never hide canonical events.
+            return 0
+
+    def _event_sequence_index_path(self, session_id: str) -> Path:
+        return self._session_dir(session_id) / "event-index" / "sequences.bin"
+
     def _max_event_sequence(self, session_id: str, path: Path) -> int:
         size = path.stat().st_size if path.exists() else 0
         cached = self._event_sequence_cache.get(session_id)
@@ -984,7 +1293,7 @@ class LocalSessionStore:
                 line,
                 label=f"compaction in {session_dir}",
             )
-            for line in self._read_jsonl(session_dir / "compactions.jsonl")
+            for line in self._iter_jsonl(session_dir / "compactions.jsonl")
         ]
 
     def _write_model_atomic(self, path: Path, model: OuroModel) -> None:
@@ -1015,13 +1324,19 @@ class LocalSessionStore:
             raise PersistenceError(f"could not append batch to {path}: {exc}") from exc
 
     def _read_jsonl(self, path: Path) -> list[str]:
+        return list(self._iter_jsonl(path))
+
+    def _iter_jsonl(self, path: Path) -> Iterator[str]:
         if not path.exists():
-            return []
+            return
         try:
             # JSON Lines defines LF as the record delimiter. ``str.splitlines``
             # also treats valid JSON string content such as U+2028/U+2029 as a
             # boundary and would split one durable record in the middle.
-            return [line for line in path.read_text("utf-8").split("\n") if line.strip()]
+            with path.open("r", encoding="utf-8", newline="") as file:
+                for line in file:
+                    if line.strip():
+                        yield line
         except OSError as exc:
             raise PersistenceError(f"could not read {path}: {exc}") from exc
 
@@ -1094,6 +1409,19 @@ def _validated_page_args(cursor: int, limit: int) -> tuple[int, int]:
     if not 1 <= limit <= 1000:
         raise ValueError("limit must be between 1 and 1000")
     return cursor, limit
+
+
+def _is_record_boundary(path: Path, offset: int, size: int) -> bool:
+    if offset < 0 or offset > size:
+        return False
+    if offset == 0:
+        return True
+    try:
+        with path.open("rb") as file:
+            file.seek(offset - 1)
+            return file.read(1) == b"\n"
+    except OSError:
+        return False
 
 
 def _read_last_nonempty_line(path: Path, *, chunk_size: int = 8192) -> str:

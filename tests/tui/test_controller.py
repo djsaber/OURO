@@ -17,9 +17,11 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import ToolSelection
 from ouro.core.compaction import CompactionRecord, compaction_source_digest
 from ouro.core.errors import ConfigError
+from ouro.core.events import EventRecord
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.core.session_controls import AttributedSessionInput, AttributedSessionInputBatch
+from ouro.core.state import SessionRecord
 from ouro.core.tools import ToolInvocation
 from ouro.local_application import LocalApplication
 from ouro.mcp import MCPServerConfigUpdate
@@ -74,6 +76,47 @@ def _reasoning_application(tmp_path: Path) -> LocalApplication:
         environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
     )
     return LocalApplication.from_runtime(runtime)
+
+
+@pytest.mark.asyncio
+async def test_controller_detaches_event_sink_when_shared_application_stays_open(
+    tmp_path: Path,
+) -> None:
+    application = _reasoning_application(tmp_path)
+    published: list[EventRecord] = []
+    controller = TuiController(
+        published.append,
+        lambda _status: None,
+        application=application,
+        close_application=False,
+    )
+    await controller.start()
+    session = application.runtime.sessions.create(title="Shared runtime").session
+    await controller.load_session(session.session_id)
+
+    try:
+        await application.runtime.event_recorder.publish(
+            session_id=session.session_id,
+            run_id="run_shared",
+            event_type="run_started",
+            payload={"trigger": "user"},
+        )
+        await application.runtime.drain_events()
+        assert [event.event_type for event in published] == ["run_started"]
+
+        await controller.close()
+        await application.runtime.event_recorder.publish(
+            session_id=session.session_id,
+            run_id="run_shared",
+            event_type="run_completed",
+            payload={},
+        )
+        await application.runtime.drain_events()
+
+        assert [event.event_type for event in published] == ["run_started"]
+    finally:
+        await controller.close()
+        await application.close()
 
 
 @pytest.mark.asyncio
@@ -603,9 +646,10 @@ async def test_controller_manages_subagent_policy_and_definitions(
             next(item for item in updated.definitions if item.agent_id == "review-code").description
             == "Review code and tests."
         )
-        assert next(
-            item for item in updated.definitions if item.agent_id == "review-code"
-        ).model is None
+        assert (
+            next(item for item in updated.definitions if item.agent_id == "review-code").model
+            is None
+        )
 
         deleted = await controller.delete_agent_definition(
             "review-code",
@@ -980,9 +1024,7 @@ async def test_controller_rolls_back_skill_source_when_runtime_refresh_fails(
     monkeypatch.setattr(controller, "_refresh_runtime_skills", fail_refresh)
     try:
         with pytest.raises(RuntimeError, match="refresh failed"):
-            await controller.update_skill_discovery(
-                source_updates={"ouro.user": False}
-            )
+            await controller.update_skill_discovery(source_updates={"ouro.user": False})
         assert configuration.skill_policy().disabled_sources == []
     finally:
         await controller.close()
@@ -1311,15 +1353,19 @@ async def test_controller_load_session_does_not_block_the_event_loop(
         entered = threading.Event()
         release = threading.Event()
         reader_threads: list[int] = []
-        original_open = application.runtime.sessions.open
+        original_snapshot = application.runtime.sessions.observation_snapshot
 
-        def blocking_open(session_id: str, *, recover: bool = True):
+        def blocking_snapshot(session_id: str):
             reader_threads.append(threading.get_ident())
             entered.set()
             release.wait()
-            return original_open(session_id, recover=recover)
+            return original_snapshot(session_id)
 
-        monkeypatch.setattr(application.runtime.sessions, "open", blocking_open)
+        monkeypatch.setattr(
+            application.runtime.sessions,
+            "observation_snapshot",
+            blocking_snapshot,
+        )
         watchdog = threading.Timer(1, release.set)
         watchdog.start()
         event_loop_thread = threading.get_ident()
@@ -1337,6 +1383,93 @@ async def test_controller_load_session_does_not_block_the_event_loop(
         assert event_loop_remained_responsive is True
         assert reader_threads != [event_loop_thread]
         assert loaded.detail.session.session_id == result.session.session_id
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_observes_another_session_without_changing_control_target(
+    tmp_path: Path,
+) -> None:
+    application = _reasoning_application(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+    )
+    await controller.start()
+
+    try:
+        controlled = await controller.submit("controlled conversation")
+        observed = application.runtime.sessions.create(title="Observed child").session
+        event = application.runtime.store.append_ordered_event(
+            EventRecord(
+                session_id=observed.session_id,
+                run_id="run_observed",
+                event_type="run_started",
+                payload={"trigger": "delegation"},
+            )
+        )
+
+        observation = await controller.observe_session(observed.session_id)
+
+        assert controller.session_id == controlled.session.session_id
+        assert observation.loaded.detail.session.session_id == observed.session_id
+        assert observation.loaded.event_high_water == event.sequence
+        observation.subscription.close()
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_new_primary_session_cannot_be_claimed_by_concurrent_child_events(
+    tmp_path: Path,
+) -> None:
+    application = _reasoning_application(tmp_path)
+    published: list[EventRecord] = []
+    controller = TuiController(
+        published.append,
+        lambda _status: None,
+        application=application,
+    )
+    await controller.start()
+
+    try:
+        root = application.runtime.sessions.create(title="Root").session
+        child = SessionRecord(
+            title="Child",
+            session_kind="subagent",
+            root_session_id=root.session_id,
+            parent_session_id=root.session_id,
+            delegation_id="dlg_child",
+        )
+        application.runtime.store.create_session(child)
+        controller._creating_session = True
+
+        await controller._receive_event(
+            EventRecord(
+                session_id=child.session_id,
+                run_id="run_child",
+                event_type="model_text_delta",
+                payload={"text": "child"},
+                sequence=1,
+            )
+        )
+
+        assert controller.session_id is None
+        assert published == []
+
+        root_event = EventRecord(
+            session_id=root.session_id,
+            run_id="run_root",
+            event_type="run_started",
+            payload={"trigger": "user"},
+            sequence=1,
+        )
+        await controller._receive_event(root_event)
+
+        assert controller.session_id == root.session_id
+        assert published == [root_event]
     finally:
         await controller.close()
 

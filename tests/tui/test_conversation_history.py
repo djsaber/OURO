@@ -3,10 +3,12 @@ from rich.console import Console
 from textual.app import App, ComposeResult
 
 import ouro.tui.conversation_history as conversation_history
+from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.tui.conversation_history import (
     AssistantMarkdownStream,
     CompactionPresentation,
     ConversationHistory,
+    ToolNavigationRequested,
     TranscriptEntry,
     _compaction_summary,
     _run_summary,
@@ -14,6 +16,7 @@ from ouro.tui.conversation_history import (
 )
 from ouro.tui.state import RunPresentation
 from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_DESIGN
+from ouro.tui.widgets import ToolActivityRow
 
 _MULTIBLOCK_ANSWER = """Here is the plan:
 
@@ -46,10 +49,36 @@ def _style_at(text, fragment: str):
 class _HistoryApp(App[None]):
     def __init__(self) -> None:
         super().__init__()
-        self.history = ConversationHistory(lambda *_args, **_kwargs: None)
+        self.history = ConversationHistory(
+            lambda tool, **_kwargs: conversation_history.Text(tool.tool_name)
+        )
+        self.navigation: list[tuple[str, str]] = []
 
     def compose(self) -> ComposeResult:
         yield self.history
+
+    def on_tool_navigation_requested(self, message: ToolNavigationRequested) -> None:
+        self.navigation.append((message.parent_run_id, message.parent_tool_call_id))
+
+
+class _LiveToolApp(App[None]):
+    def __init__(self) -> None:
+        super().__init__()
+        self.navigation: list[tuple[str, str]] = []
+
+    def compose(self) -> ComposeResult:
+        yield ToolActivityRow(
+            RuntimeToolCallActivity(
+                tool_call_id="call_live_spawn",
+                tool_name="SpawnAgent",
+                status="running",
+                source_index=0,
+            ),
+            run_id="run_live_parent",
+        )
+
+    def on_tool_navigation_requested(self, message: ToolNavigationRequested) -> None:
+        self.navigation.append((message.parent_run_id, message.parent_tool_call_id))
 
 
 @pytest.mark.asyncio
@@ -81,6 +110,65 @@ async def test_wait_until_rendered_recovers_after_a_deferred_layout_miss(
         assert "first message" in app.history.rendered_text
 
 
+@pytest.mark.asyncio
+async def test_historical_spawn_tool_click_preserves_parent_run_identity() -> None:
+    app = _HistoryApp()
+
+    async with app.run_test(size=(80, 12)) as pilot:
+        app.history.append(
+            TranscriptEntry(
+                kind="tool",
+                run_id="run_parent",
+                tool=RuntimeToolCallActivity(
+                    tool_call_id="call_spawn",
+                    tool_name="SpawnAgent",
+                    status="completed",
+                    source_index=0,
+                ),
+            )
+        )
+        await app.history.wait_until_rendered()
+
+        await pilot.click(app.history, offset=(3, 0))
+
+        assert app.navigation == [("run_parent", "call_spawn")]
+
+
+@pytest.mark.asyncio
+async def test_live_spawn_tool_click_preserves_parent_run_identity() -> None:
+    app = _LiveToolApp()
+
+    async with app.run_test(size=(80, 12)) as pilot:
+        await pilot.click(app.query_one(ToolActivityRow))
+
+        assert app.navigation == [("run_live_parent", "call_live_spawn")]
+
+
+@pytest.mark.asyncio
+async def test_tool_updates_are_scoped_to_the_parent_run() -> None:
+    app = _HistoryApp()
+    requested = RuntimeToolCallActivity(
+        tool_call_id="reused_call",
+        tool_name="SpawnAgent",
+        status="running",
+        source_index=0,
+    )
+
+    async with app.run_test(size=(80, 12)):
+        app.history.append(TranscriptEntry(kind="tool", run_id="run_old", tool=requested))
+        app.history.append(TranscriptEntry(kind="tool", run_id="run_new", tool=requested))
+
+        matched = app.history.update_tools(
+            (requested.model_copy(update={"status": "completed"}),),
+            run_id="run_new",
+        )
+
+        assert matched == frozenset({"reused_call"})
+        assert app.history.entries[0].tool == requested
+        assert app.history.entries[1].tool is not None
+        assert app.history.entries[1].tool.status == "completed"
+
+
 def test_compaction_and_run_summaries_share_visual_structure_and_failure_semantics() -> None:
     compaction = _compaction_summary(
         CompactionPresentation(
@@ -105,12 +193,9 @@ def test_compaction_and_run_summaries_share_visual_structure_and_failure_semanti
         "▣ Context compacted • 8 messages summarized • 1.2K tokens reduced • 57m 05.4s"
     )
     assert failed.plain == (
-        "▣ deepseek-v4-flash • 5m 16.4s • failed"
-        " • provider returned an empty assistant message"
+        "▣ deepseek-v4-flash • 5m 16.4s • failed • provider returned an empty assistant message"
     )
-    assert _style_at(compaction, "Context compacted") == _style_at(
-        failed, "deepseek-v4-flash"
-    )
+    assert _style_at(compaction, "Context compacted") == _style_at(failed, "deepseek-v4-flash")
     assert _style_at(compaction, "Context compacted").bold is True
     assert _style_at(compaction, "Context compacted").color is not None
     assert _style_at(compaction, "Context compacted").color.triplet.hex == (

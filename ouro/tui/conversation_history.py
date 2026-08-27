@@ -47,6 +47,16 @@ class ToolActivityRenderer(Protocol):
 TranscriptEntryKind = Literal["user", "assistant", "tool", "notice", "compaction", "run"]
 
 _REASONING_ENTRY_META = "ouro_reasoning_entry"
+_TOOL_NAVIGATION_META = "ouro_tool_navigation"
+
+
+class ToolNavigationRequested(Message):
+    """A SpawnAgent tool presentation requested its durable child Session."""
+
+    def __init__(self, *, parent_run_id: str, parent_tool_call_id: str) -> None:
+        super().__init__()
+        self.parent_run_id = parent_run_id
+        self.parent_tool_call_id = parent_tool_call_id
 
 
 class _PanelCodeTheme(SyntaxTheme):
@@ -144,9 +154,7 @@ class AssistantMarkdownStream:
         starts = _block_starts("".join(tail_lines))
         if len(starts) < 2:
             return (), False
-        blocks = tuple(
-            "".join(tail_lines[start:end]) for start, end in pairwise(starts)
-        )
+        blocks = tuple("".join(tail_lines[start:end]) for start, end in pairwise(starts))
         frozen_chars = sum(len(line) for line in tail_lines[: starts[-1]])
         self._frozen += starts[-1]
         self._tail_chars -= frozen_chars
@@ -157,9 +165,7 @@ class AssistantMarkdownStream:
         tail_lines = self._tail_lines()
         starts = _block_starts("".join(tail_lines))
         boundaries = [*starts, len(tail_lines)]
-        blocks = (
-            "".join(tail_lines[start:end]) for start, end in pairwise(boundaries)
-        )
+        blocks = ("".join(tail_lines[start:end]) for start, end in pairwise(boundaries))
         return tuple(block for block in blocks if block.strip())
 
     def _unfrozen(self) -> str:
@@ -511,8 +517,7 @@ class AssistantTailLines(ReasoningLines):
         if not rendered_lines:
             return [Strip.blank(self._render_width)]
         return [
-            Strip(segments).adjust_cell_length(self._render_width)
-            for segments in rendered_lines
+            Strip(segments).adjust_cell_length(self._render_width) for segments in rendered_lines
         ]
 
 
@@ -712,6 +717,18 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         if isinstance(entry_index, int):
             self.post_message(self.ToggleReasoningRequested(entry_index))
             event.stop()
+            return
+        tool_entry_index = event.style.meta.get(_TOOL_NAVIGATION_META)
+        if isinstance(tool_entry_index, int) and 0 <= tool_entry_index < len(self._entries):
+            entry = self._entries[tool_entry_index]
+            if entry.run_id is not None and entry.tool is not None:
+                self.post_message(
+                    ToolNavigationRequested(
+                        parent_run_id=entry.run_id,
+                        parent_tool_call_id=entry.tool.tool_call_id,
+                    )
+                )
+                event.stop()
         elif event.style.link:
             self.app.open_url(event.style.link)
 
@@ -805,6 +822,8 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
     def update_tools(
         self,
         tools: Iterable[RuntimeToolCallActivity],
+        *,
+        run_id: str | None,
     ) -> frozenset[str]:
         updates = {tool.tool_call_id: tool for tool in tools}
         if not updates:
@@ -812,14 +831,18 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         matched: set[str] = set()
         changed = False
         for index, entry in enumerate(self._entries):
-            if entry.tool is None:
+            if entry.tool is None or entry.run_id != run_id:
                 continue
             tool = updates.get(entry.tool.tool_call_id)
             if tool is None:
                 continue
             matched.add(tool.tool_call_id)
             if entry.tool != tool:
-                self._entries[index] = TranscriptEntry(kind="tool", tool=tool)
+                self._entries[index] = TranscriptEntry(
+                    kind="tool",
+                    run_id=entry.run_id,
+                    tool=tool,
+                )
                 changed = True
         if changed:
             self._render_entries()
@@ -962,10 +985,17 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             ]
         if entry.kind == "tool":
             assert entry.tool is not None
+            rendered = self._render_tool(entry.tool, frame=0, theme=theme)
+            if entry.tool.tool_name == "SpawnAgent" and entry.run_id is not None:
+                rendered.stylize(
+                    Style(meta={_TOOL_NAVIGATION_META: entry_index}),
+                    0,
+                    len(rendered),
+                )
             return [
                 (
                     Padding(
-                        self._render_tool(entry.tool, frame=0, theme=theme),
+                        rendered,
                         (0, 0, 0, 2),
                     ),
                     "body",

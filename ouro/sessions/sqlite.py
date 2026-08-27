@@ -29,7 +29,11 @@ from ouro.core.resources import SessionResourceReference
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.local_locks import is_lock_held
-from ouro.sessions.base import RuntimeSessionSnapshot, SessionSnapshot
+from ouro.sessions.base import (
+    RuntimeSessionSnapshot,
+    SessionObservationState,
+    SessionSnapshot,
+)
 from ouro.sessions.catalog import (
     SessionCatalogProjection,
     catalog_entry_from_projection,
@@ -96,6 +100,8 @@ class SQLiteSessionStore:
                     );
                     CREATE INDEX IF NOT EXISTS events_session_order
                         ON events(session_id, row_id);
+                    CREATE INDEX IF NOT EXISTS events_session_run_order
+                        ON events(session_id, run_id, row_id);
                     CREATE TABLE IF NOT EXISTS runs (
                         session_id TEXT NOT NULL,
                         run_id TEXT NOT NULL,
@@ -634,6 +640,51 @@ class SQLiteSessionStore:
                     (session_id,),
                     CompactionRecord,
                 ),
+            )
+            if session.active_compaction_id is not None and snapshot.active_compaction is None:
+                raise PersistenceError(
+                    f"session {session_id} references missing compaction "
+                    f"{session.active_compaction_id}"
+                )
+            return snapshot
+
+    def load_session_observation(self, session_id: str) -> SessionObservationState:
+        with self._read_connection() as connection:
+            session = self._load_session_record(connection, session_id)
+            active_run_id = session.active_run_id
+            events = (
+                self._load_models(
+                    connection,
+                    "SELECT payload FROM events "
+                    "WHERE session_id = ? AND run_id = ? ORDER BY row_id",
+                    (session_id, active_run_id),
+                    EventRecord,
+                )
+                if active_run_id is not None
+                else []
+            )
+            row = connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) FROM events WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            assert row is not None
+            snapshot = SessionObservationState(
+                session=session,
+                messages=self._load_models(
+                    connection,
+                    "SELECT payload FROM messages WHERE session_id = ? ORDER BY row_id",
+                    (session_id,),
+                    MessageRecord,
+                ),
+                runs=self._load_runs(connection, session_id),
+                compactions=self._load_models(
+                    connection,
+                    "SELECT payload FROM compactions WHERE session_id = ? ORDER BY row_id",
+                    (session_id,),
+                    CompactionRecord,
+                ),
+                active_run_events=events,
+                event_high_water=int(row[0]),
             )
             if session.active_compaction_id is not None and snapshot.active_compaction is None:
                 raise PersistenceError(

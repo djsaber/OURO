@@ -270,6 +270,19 @@ def test_projection_rejects_other_session_events() -> None:
     assert projection.assistant_text == ""
 
 
+def test_projection_restore_advances_to_snapshot_high_water() -> None:
+    projection = TuiSessionProjection("ses_test")
+
+    projection.restore(
+        (_event(2, "model_text_delta", text="loaded"),),
+        event_high_water=5,
+    )
+
+    assert projection.last_sequence == 5
+    assert projection.apply(_event(4, "model_text_delta", text="duplicate")) is None
+    assert projection.assistant_text == "loaded"
+
+
 def test_projection_exposes_live_event_delivery_failure() -> None:
     projection = TuiSessionProjection("ses_test")
 

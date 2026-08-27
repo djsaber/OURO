@@ -17,6 +17,7 @@ RuntimeEventCategory = Literal[
     "run",
     "compaction",
     "lifecycle",
+    "agent",
     "unknown",
 ]
 
@@ -97,6 +98,9 @@ def validate_runtime_event_payload(event_type: str, payload: dict[str, Any]) -> 
             "child_run_id",
             "agent_id",
             "execution_mode",
+            "root_session_id",
+            "parent_session_id",
+            "parent_run_id",
         ),
         "agent_result_ready": (
             "delegation_id",
@@ -120,6 +124,16 @@ def validate_runtime_event_payload(event_type: str, payload: dict[str, Any]) -> 
     for field in required.get(event_type, ()):
         if not isinstance(payload.get(field), str):
             raise ValueError(f"runtime event {event_type} requires string payload field {field}")
+    if event_type == "agent_spawned" and not (
+        "parent_tool_call_id" in payload
+        and (
+            payload["parent_tool_call_id"] is None
+            or isinstance(payload["parent_tool_call_id"], str)
+        )
+    ):
+        raise ValueError(
+            "runtime event agent_spawned requires nullable string payload field parent_tool_call_id"
+        )
     if event_type == "compaction_model_output":
         for field in (
             "chunk_index",
@@ -156,6 +170,8 @@ def _event_category(event_type: str) -> RuntimeEventCategory:
         return "run"
     if event_type.startswith("compaction_"):
         return "compaction"
+    if event_type.startswith("agent_"):
+        return "agent"
     if event_type in {
         "session_loaded",
         "user_message_added",

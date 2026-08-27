@@ -6,6 +6,7 @@ import json
 import pytest
 
 from ouro.application.runtime import RuntimeService
+from ouro.application.sessions import SessionService
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.application.supervisor_models import ShutdownPolicy
 from ouro.core.adapter import RuntimeAdapter
@@ -428,6 +429,79 @@ async def test_host_event_projection_is_typed_and_redacts_payload_secrets(tmp_pa
     assert notification.event.text == "hello"
     assert notification.event.data["api_key"] == "***"
     assert "event-secret" not in notification.model_dump_json()
+    subscription.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_observation_high_water_hands_off_to_subscription_without_a_gap(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, FauxProvider())
+    session = runtime.sessions.create(title="Observation handoff").session
+    first = runtime.store.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id="run_live",
+            event_type="model_text_delta",
+            payload={"text": "before"},
+        )
+    )
+    snapshot = SessionService(runtime.store).observation_snapshot(session.session_id)
+    second = runtime.store.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id="run_live",
+            event_type="model_text_delta",
+            payload={"text": "after"},
+        )
+    )
+    supervisor = RuntimeSupervisor(runtime)
+
+    subscription = supervisor.subscribe(
+        session.session_id,
+        after_sequence=snapshot.event_high_water,
+    )
+    notification = await subscription.get()
+
+    assert snapshot.event_high_water == first.sequence
+    assert notification.event is not None
+    assert notification.event.sequence == second.sequence
+    assert notification.event.text == "after"
+    subscription.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agent_relation_events_have_a_dedicated_category(tmp_path) -> None:
+    runtime = _runtime(tmp_path, FauxProvider())
+    session = runtime.sessions.create(title="Agent relation events").session
+    runtime.store.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id="run_parent",
+            event_type="agent_spawned",
+            payload={
+                "root_session_id": session.session_id,
+                "parent_session_id": session.session_id,
+                "parent_run_id": "run_parent",
+                "parent_tool_call_id": "call_spawn",
+                "delegation_id": "dlg_child",
+                "child_session_id": "ses_child",
+                "child_run_id": "run_child",
+                "agent_id": "reader",
+                "execution_mode": "async",
+            },
+        )
+    )
+    supervisor = RuntimeSupervisor(runtime)
+    subscription = supervisor.subscribe(session.session_id)
+
+    notification = await subscription.get()
+
+    assert notification.event is not None
+    assert notification.event.category == "agent"
+    assert notification.event.data["parent_tool_call_id"] == "call_spawn"
     subscription.close()
     await supervisor.shutdown()
 

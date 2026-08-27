@@ -43,6 +43,13 @@ class SessionSnapshot(RuntimeSessionSnapshot):
     extension_states: list[SessionExtensionStateRecord] = Field(default_factory=list)
 
 
+class SessionObservationState(RuntimeSessionSnapshot):
+    """Atomic persistence view for Host snapshot/live event handoff."""
+
+    active_run_events: list[EventRecord] = Field(default_factory=list)
+    event_high_water: int = Field(default=0, ge=0)
+
+
 class SessionLock(Protocol):
     def release(self) -> None: ...
 
@@ -122,6 +129,8 @@ class SessionRepository(Protocol):
     ) -> RuntimeSessionSnapshot: ...
 
     def load_session_record(self, session_id: str) -> SessionRecord: ...
+
+    def load_session_observation(self, session_id: str) -> SessionObservationState: ...
 
     def load_active_compaction(self, session_id: str) -> CompactionRecord | None: ...
 

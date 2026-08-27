@@ -122,6 +122,23 @@ async def test_application_event_publish_uses_same_durable_observer_boundary(tmp
             event_type="agent_spawned",
             payload={"delegation_id": "dlg_invalid"},
         )
+    with pytest.raises(ValueError, match="parent_tool_call_id"):
+        await recorder.publish(
+            session_id=session.session_id,
+            run_id="run_parent",
+            event_type="agent_spawned",
+            payload={
+                "delegation_id": "dlg_invalid_parent",
+                "child_session_id": "ses_child",
+                "child_run_id": "run_child",
+                "agent_id": "reader",
+                "execution_mode": "async",
+                "root_session_id": session.session_id,
+                "parent_session_id": session.session_id,
+                "parent_run_id": "run_parent",
+                "parent_tool_call_id": 42,
+            },
+        )
     await recorder.close()
 
     assert event.sequence == 1
@@ -497,6 +514,41 @@ async def test_tool_output_with_malformed_url_does_not_break_event_delivery(tmp_
         event.event_type == "event_sink_failed"
         for event in store.load_session(session.session_id).events
     )
+    await recorder.close()
+
+
+@pytest.mark.asyncio
+async def test_host_event_sink_registration_detaches_without_closing_runtime(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Detachable host")
+    store.create_session(session)
+    recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
+    seen: list[str] = []
+    registration = recorder.add_event_sink(lambda event: seen.append(event.event_type))
+
+    await recorder.publish(
+        session_id=session.session_id,
+        run_id="run_1",
+        event_type="run_started",
+        payload={"trigger": "user"},
+    )
+    await recorder.drain()
+    await registration.close()
+    await registration.close()
+    await recorder.publish(
+        session_id=session.session_id,
+        run_id="run_1",
+        event_type="run_completed",
+        payload={},
+    )
+    await recorder.drain()
+
+    assert seen == ["run_started"]
+    assert [event.event_type for event in store.load_session(session.session_id).events] == [
+        "run_started",
+        "run_completed",
+    ]
     await recorder.close()
 
 

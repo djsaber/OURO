@@ -21,6 +21,8 @@ OURO_HOME/
       session.json
       messages.jsonl
       events.jsonl
+      event-index/sequences.bin
+      event-index/runs/<run_id>.json
       compactions.jsonl
       runs/<run_id>.json
       delegations/<delegation_id>.json
@@ -55,6 +57,13 @@ Canonical 数据包括：
 - root Session 下的 `delegations/*.json`；
 - `compactions.jsonl`。
 - `extensions/index.json` 中按稳定 owner identity 唯一的 Session extension state。
+
+`event-index/` 是 Local adapter 私有、可丢弃的查询加速器，不属于 canonical 数据，也不推进 data layout version。
+`event-index/runs/<run_id>.json` 保存首次可能 event byte offset，`sequences.bin` 保存固定宽度的稀疏
+sequence→byte checkpoint。
+缺失、截断或损坏时读取必须回退到 `events.jsonl`，且可在目标 Session mutation 边界内惰性重建；索引绝不能使
+canonical Session 不可读或隐藏事件。派生索引维护是 best-effort 且不执行 fsync，失败不能阻断 canonical append；
+offset 0 由索引缺失隐式表达，只有游标能跳过非空历史前缀时才落盘。
 
 Session、Run、Message、Event、Compaction、ContextSnapshot 和 Delegation 是独立持久化根记录。每个 payload
 必须显式携带当前 `schema_version=1`；缺失、非整数、旧版本或未来版本均由共享 versioned decoder 在 adapter
@@ -115,6 +124,13 @@ Delegation 以 root Session 为聚合边界，使用 `(root_session_id, idempote
 准备和队列消费不得为了 Session 状态或 event sequence 加载完整事件日志。event sequence 由 Store 通过独立
 轻量端口提供。只需要 Run 元数据的检查（如插件 durable generation 引用扫描）使用独立的 Run 记录只读端口，
 不为此加载消息或事件日志。
+
+Host 观察使用 `SessionObservationState` 在一个 Session mutation 边界内取得 canonical transcript、active Run
+事件和 event high-water。Local adapter 在稳定路径从 per-Run byte offset 读取 active Run，不扫描 terminal Run；
+`load_events_after` 通过稀疏 sequence checkpoint 将前向扫描限制为 checkpoint 间隔加实际返回前缀。旧会话首次
+缺少 Run offset 时可以扫描一次 canonical journal 并写入派生索引。SQLite 必须以 `(session_id, run_id)` 和
+`(session_id, sequence)` 索引完成等价查询；前者包含 `row_id` 以直接满足稳定顺序，后者可由 canonical sequence
+唯一约束提供，不建立重复索引。
 
 ## 锁与并发
 

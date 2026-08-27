@@ -940,7 +940,8 @@ SessionStore 或 RuntimeSupervisor 内部 job，也不依赖一个大一统 appl
 CLI definition 命令通过不需要模型 Provider 的本地 composition 使用 AgentDefinitionService；运行命令构建完整
 LocalApplication 并使用 AgentService。短生命周期 CLI 可从 completed parent Run 的冻结目录发起 unattended Host
 delegation，并在退出前等待 terminal；模型 `SpawnAgent` 仍只接受当前 active parent。长期运行 Host 可在 active parent
-上 spawn、保持 subscription，并按 child Session event cursor 增量打开完整流。Agent handle 携带 relation revision 与
+上 spawn、保持 subscription，并按 child Session event cursor 增量打开完整流。完整的 snapshot/live 交接、父 ToolCall
+导航与 Host 只读策略边界由 [`session-observation.md`](session-observation.md) 定义。Agent handle 携带 relation revision 与
 control state；tree refresh/reconnect 从 canonical snapshot 重建，不要求 UI 缓存业务状态。
 CLI 的 completed-parent spawn 固定 notify-only；会启动 parent next-boundary/follow-up Run 的 delivery policy 只由
 长期运行 Host 或模型控制面使用。

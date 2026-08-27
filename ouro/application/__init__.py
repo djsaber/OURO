@@ -10,6 +10,7 @@ from ouro.application.agent_models import (
     AgentInteractionView,
     AgentReadView,
     AgentTreeEdge,
+    AgentTreeNode,
     AgentTreeNotification,
     AgentTreeSnapshot,
     AgentWaitResultView,
@@ -25,8 +26,8 @@ from ouro.application.configuration_models import (
     MCPServerConfigView,
 )
 from ouro.application.dto import ApplicationStartupReport
-from ouro.application.event_models import RuntimeEventView
-from ouro.application.events import RuntimeEventRecorder
+from ouro.application.event_models import RuntimeEventCategory, RuntimeEventView
+from ouro.application.events import RuntimeEventRecorder, RuntimeEventSinkRegistration
 from ouro.application.models import ModelReasoningState
 from ouro.application.queued_inputs import QueuedUserInputView
 from ouro.application.resources import ResourceService
@@ -49,6 +50,7 @@ from ouro.application.session_models import (
     SessionExport,
     SessionMessagePage,
     SessionMutationResult,
+    SessionObservationSnapshot,
     SessionReplay,
     SessionTrashResult,
     SessionView,
@@ -88,6 +90,7 @@ __all__ = [
     "AgentService",
     "AgentTreeEdge",
     "AgentTreeNotification",
+    "AgentTreeNode",
     "AgentTreeSnapshot",
     "AgentTreeSubscription",
     "AgentWaitResultView",
@@ -102,6 +105,8 @@ __all__ = [
     "QueuedUserInputView",
     "RunResult",
     "RuntimeEventRecorder",
+    "RuntimeEventSinkRegistration",
+    "RuntimeEventCategory",
     "RuntimeEventView",
     "RuntimeService",
     "RuntimeConfigurationResolver",
@@ -138,6 +143,7 @@ __all__ = [
     "SessionExport",
     "SessionMessagePage",
     "SessionMutationResult",
+    "SessionObservationSnapshot",
     "SessionReplay",
     "SessionTrashResult",
     "SessionView",

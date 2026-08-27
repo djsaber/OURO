@@ -103,6 +103,7 @@ from ouro.tui.conversation_history import (
     AssistantTailLines,
     CompactionPresentation,
     ReasoningLines,
+    ToolNavigationRequested,
     _ReasoningContent,
 )
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
@@ -853,6 +854,81 @@ class QueuedSubagentApprovalProvider:
         )
 
 
+class MultiChildStreamingProvider:
+    """Run two async child Sessions concurrently while the root completes."""
+
+    provider_id = "multi-child-streaming"
+
+    def __init__(self) -> None:
+        self.root_round = 0
+        self.root_stream_started = asyncio.Event()
+        self.release_root = asyncio.Event()
+        self.first_chunks = {
+            "first child task": asyncio.Event(),
+            "second child task": asyncio.Event(),
+        }
+        self.releases = {
+            "first child task": asyncio.Event(),
+            "second child task": asyncio.Event(),
+        }
+
+    async def stream(
+        self,
+        *,
+        model: ModelMetadata,
+        system_prompt: str = "",
+        messages: list[ModelMessage],
+        tools: list[dict[str, object]] | None = None,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        del model, system_prompt
+        names = [str(item["name"]) for item in (tools or [])]
+        if "SpawnAgent" in names:
+            if self.root_round == 0:
+                self.root_round += 1
+                for index, task in enumerate(self.first_chunks, start=1):
+                    yield ProviderStreamEvent.from_tool_call(
+                        {
+                            "id": f"spawn_child_{index}",
+                            "name": "SpawnAgent",
+                            "arguments": {
+                                "agent_id": "general",
+                                "task": task,
+                                "description": f"Observe child {index}",
+                                "execution_mode": "async",
+                            },
+                        },
+                        index=index - 1,
+                    )
+                yield ProviderStreamEvent(type="done")
+                return
+            yield ProviderStreamEvent(type="text_delta", text="root prefix")
+            self.root_stream_started.set()
+            await self.release_root.wait()
+            yield ProviderStreamEvent(type="text_delta", text=" + root suffix")
+            yield ProviderStreamEvent(type="done")
+            return
+
+        task = next(
+            name
+            for name in self.first_chunks
+            if any(name in message.text_content for message in messages)
+        )
+        label = "first" if task.startswith("first") else "second"
+        yield ProviderStreamEvent(type="text_delta", text=f"{label} child prefix")
+        self.first_chunks[task].set()
+        await self.releases[task].wait()
+        yield ProviderStreamEvent(type="text_delta", text=f" + {label} child suffix")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            ok=True,
+            model_id=model.model_id,
+            message="ok",
+        )
+
+
 class TuiPlanConfirmationProvider:
     provider_id = "tui-plan-confirmation"
 
@@ -1218,6 +1294,25 @@ def _queued_subagent_approval_application(
     return LocalApplication.from_runtime(runtime)
 
 
+def _multi_child_streaming_application(
+    tmp_path: Path,
+    provider: MultiChildStreamingProvider,
+) -> LocalApplication:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="faux", provider_id=provider.provider_id),
+        ),
+        tools=ToolRegistry(),
+        default_workspace=tmp_path,
+        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+    )
+    return LocalApplication.from_runtime(runtime)
+
+
 def _question_application(
     tmp_path: Path,
     *,
@@ -1570,16 +1665,12 @@ async def test_status_line_shows_model_retry_attempts_after_the_first_attempt(
         assert "/5" not in indicator.render().plain
 
         app._sync_activity(
-            first_attempt.model_copy(
-                update={"model_attempt": 2, "model_max_attempts": 5}
-            )
+            first_attempt.model_copy(update={"model_attempt": 2, "model_max_attempts": 5})
         )
         assert "Waiting for model 2/5" in indicator.render().plain
 
         app._sync_activity(
-            first_attempt.model_copy(
-                update={"model_attempt": 3, "model_max_attempts": 5}
-            )
+            first_attempt.model_copy(update={"model_attempt": 3, "model_max_attempts": 5})
         )
         assert "Waiting for model 3/5" in indicator.render().plain
 
@@ -1595,8 +1686,7 @@ async def test_status_line_updates_while_a_model_retry_is_waiting(tmp_path: Path
         try:
             await asyncio.wait_for(provider.retry_observed.wait(), timeout=2)
             await _wait_until(
-                lambda: "Waiting for model 3/5"
-                in app.query_one(ActivityIndicator).render().plain,
+                lambda: "Waiting for model 3/5" in app.query_one(ActivityIndicator).render().plain,
                 pilot,
                 description="model retry status",
             )
@@ -1669,8 +1759,10 @@ async def test_model_switch_keeps_context_usage_and_updates_model_capacity(
     async with app.run_test(size=(100, 32)) as pilot:
         await _wait_for_active_session(app, pilot, result.session.session_id)
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.session_id == result.session.session_id,
+            lambda: (
+                app._projection is not None
+                and app._projection.session_id == result.session.session_id
+            ),
             pilot,
             description="restored session projection",
         )
@@ -1716,8 +1808,7 @@ async def test_tui_changes_model_and_approval_while_the_session_is_running(tmp_p
         await pilot.press(*"stream", "enter")
         await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.activity.status == "running",
+            lambda: app._projection is not None and app._projection.activity.status == "running",
             pilot,
             description="active streamed run",
         )
@@ -1740,8 +1831,7 @@ async def test_tui_changes_model_and_approval_while_the_session_is_running(tmp_p
         finally:
             provider.release.set()
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.activity.status == "completed",
+            lambda: app._projection is not None and app._projection.activity.status == "completed",
             pilot,
             description="completed streamed run",
         )
@@ -1808,8 +1898,7 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
 
         factory.connection_lost("connection lost")
         await _wait_until(
-            lambda: "0/1 connected • 0 tool(s) • 1 failed"
-            in welcome._system._mcp.render().plain,
+            lambda: "0/1 connected • 0 tool(s) • 1 failed" in welcome._system._mcp.render().plain,
             pilot,
             description="failed MCP connection status",
         )
@@ -1923,8 +2012,7 @@ async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Pa
         # immutable history freezes with, so markup stays literal text.
         assert reasoning._content.rendered_text == f"│ {expected}"
         assert reasoning.label.render().plain.startswith(
-            f"{TUI_DESIGN.expanded_disclosure_marker} "
-            f"Thinking{TUI_DESIGN.inline_separator}"
+            f"{TUI_DESIGN.expanded_disclosure_marker} Thinking{TUI_DESIGN.inline_separator}"
         )
         assert reasoning.label.render().plain.endswith("s")
         assert reasoning.label.region.x == turn.content_region.x
@@ -2011,12 +2099,7 @@ async def test_reasoning_stream_lines_match_whole_block_rendering(tmp_path: Path
         session_id = "ses_reasoning_parity"
         app._projection = TuiSessionProjection(session_id)
         long_line = " ".join(f"word{number}" for number in range(40))
-        text = (
-            "first thought\n\n"
-            f"{long_line}\n"
-            'markup [data-theme=" stays literal\n'
-            "trailing partial"
-        )
+        text = f'first thought\n\n{long_line}\nmarkup [data-theme=" stays literal\ntrailing partial'
         # Fragments split mid-word and mid-line so line completion and tail
         # growth are exercised separately from the source structure.
         fragments = tuple(text[index : index + 7] for index in range(0, len(text), 7))
@@ -2038,8 +2121,7 @@ async def test_reasoning_stream_lines_match_whole_block_rendering(tmp_path: Path
         options = console.options.update_width(body._render_width)
         segments = console.render(_ReasoningContent(text), options)
         whole_block = [
-            strip.text.rstrip()
-            for strip in Strip.from_lines(list(Segment.split_lines(segments)))
+            strip.text.rstrip() for strip in Strip.from_lines(list(Segment.split_lines(segments)))
         ]
         assert body.rendered_text.splitlines() == whole_block
         assert body.rendered_text.splitlines()[0] == "│ first thought"
@@ -2057,9 +2139,11 @@ async def test_fork_command_uses_inline_targets_for_full_and_user_boundary(
         await pilot.pause()
         await pilot.press("f", "o", "r", "k", "enter")
         await _wait_until(
-            lambda: app._controller.session_id is not None
-            and app._projection is not None
-            and app._projection.activity.status == "completed",
+            lambda: (
+                app._controller.session_id is not None
+                and app._projection is not None
+                and app._projection.activity.status == "completed"
+            ),
             pilot,
             description="source session",
         )
@@ -2128,9 +2212,11 @@ async def test_fork_command_refuses_active_tui_session(
         await pilot.pause()
         await pilot.press("f", "o", "r", "k", "enter")
         await _wait_until(
-            lambda: app._controller.session_id is not None
-            and app._projection is not None
-            and app._projection.activity.status == "completed",
+            lambda: (
+                app._controller.session_id is not None
+                and app._projection is not None
+                and app._projection.activity.status == "completed"
+            ),
             pilot,
             description="source session",
         )
@@ -2164,8 +2250,7 @@ async def test_first_markdown_chunk_renders_while_provider_is_still_running(
         try:
             await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
             await _wait_until(
-                lambda: app._projection is not None
-                and app._projection.assistant_text == "first ",
+                lambda: app._projection is not None and app._projection.assistant_text == "first ",
                 pilot,
                 description="first streamed chunk",
             )
@@ -2177,8 +2262,7 @@ async def test_first_markdown_chunk_renders_while_provider_is_still_running(
         finally:
             provider.release.set()
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.activity.status == "completed",
+            lambda: app._projection is not None and app._projection.activity.status == "completed",
             pilot,
             description="completed streamed run",
         )
@@ -2204,8 +2288,7 @@ async def test_first_user_message_renders_when_leaving_welcome_page(tmp_path: Pa
         try:
             await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
             await _wait_until(
-                lambda: app._projection is not None
-                and app._projection.assistant_text == "first ",
+                lambda: app._projection is not None and app._projection.assistant_text == "first ",
                 pilot,
                 description="first streamed response chunk",
             )
@@ -2236,8 +2319,10 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
         try:
             await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
             await _wait_until(
-                lambda: composer.placeholder
-                == "Enter queues a follow-up · Ctrl+Enter guides the active run…",
+                lambda: (
+                    composer.placeholder
+                    == "Enter queues a follow-up · Ctrl+Enter guides the active run…"
+                ),
                 pilot,
                 description="active-run composer placeholder",
             )
@@ -2248,12 +2333,14 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
             provider.release.set()
         await _wait_for_worker_group(app, pilot, group="run")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.activity.status == "completed"
-            and composer.placeholder == Composer.DEFAULT_PLACEHOLDER
-            and not app._pending_runtime_events
-            and not app._runtime_events_ready_posted
-            and not app._runtime_events_frame_scheduled,
+            lambda: (
+                app._projection is not None
+                and app._projection.activity.status == "completed"
+                and composer.placeholder == Composer.DEFAULT_PLACEHOLDER
+                and not app._pending_runtime_events
+                and not app._runtime_events_ready_posted
+                and not app._runtime_events_frame_scheduled
+            ),
             pilot,
             description="completed streamed run with settled TUI events",
         )
@@ -2277,8 +2364,7 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
         await pilot.press(*"first", "enter")
         await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.activity.status == "running",
+            lambda: app._projection is not None and app._projection.activity.status == "running",
             pilot,
             description="active run",
         )
@@ -2304,9 +2390,7 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
         provider.release.set()
         for _ in range(20):
             await pilot.pause(0.1)
-            assistant_count = sum(
-                entry.kind == "assistant" for entry in history.entries
-            )
+            assistant_count = sum(entry.kind == "assistant" for entry in history.entries)
             if assistant_count == 2:
                 break
 
@@ -2346,8 +2430,7 @@ async def test_unqueue_command_selects_message_and_returns_it_to_composer(
         await pilot.press(*"first", "enter")
         await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.activity.status == "running",
+            lambda: app._projection is not None and app._projection.activity.status == "running",
             pilot,
             description="active run",
         )
@@ -2395,8 +2478,7 @@ async def test_unqueue_command_selects_message_and_returns_it_to_composer(
 
         provider.release.set()
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.activity.status == "completed",
+            lambda: app._projection is not None and app._projection.activity.status == "completed",
             pilot,
             description="run completion after unqueue",
         )
@@ -2453,15 +2535,17 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(tmp_path: P
         await _wait_for_worker_group(app, pilot, group="run")
         history = app.query_one(ConversationHistory)
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.activity.status == "completed"
-            and app._interaction is None
-            and not app._pending_runtime_events
-            and not app._runtime_events_ready_posted
-            and not app._runtime_events_frame_scheduled
-            and any(
-                entry.kind == "assistant" and "queued input consumed" in entry.text
-                for entry in history.entries
+            lambda: (
+                app._projection is not None
+                and app._projection.activity.status == "completed"
+                and app._interaction is None
+                and not app._pending_runtime_events
+                and not app._runtime_events_ready_posted
+                and not app._runtime_events_frame_scheduled
+                and any(
+                    entry.kind == "assistant" and "queued input consumed" in entry.text
+                    for entry in history.entries
+                )
             ),
             pilot,
             description="completed queued follow-up with settled TUI events",
@@ -2473,6 +2557,151 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(tmp_path: P
         rendered = "\n".join(entry.text for entry in history.entries if entry.kind == "assistant")
         assert "parent resumed" in rendered
         assert "queued input consumed" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = MultiChildStreamingProvider()
+    application = _multi_child_streaming_application(tmp_path, provider)
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 38)) as pilot:
+        await pilot.pause()
+        await pilot.click("#composer")
+        await pilot.press(*"start two children", "enter")
+        await asyncio.wait_for(
+            asyncio.gather(*(event.wait() for event in provider.first_chunks.values())),
+            timeout=5,
+        )
+        await asyncio.wait_for(provider.root_stream_started.wait(), timeout=5)
+        root_session_id = app._controller.session_id
+        assert root_session_id is not None
+        assert application.agents is not None
+        tree = application.agents.agent_tree_snapshot(root_session_id)
+        by_call = {node.parent_tool_call_id: node for node in tree.nodes}
+        first = by_call["spawn_child_1"]
+        second = by_call["spawn_child_2"]
+
+        app.post_message(
+            ToolNavigationRequested(
+                parent_run_id=first.parent_run_id,
+                parent_tool_call_id="spawn_child_1",
+            )
+        )
+        await _wait_until(
+            lambda: app._visible_session_id() == first.session_id,
+            pilot,
+            description="first child view",
+        )
+        assert app._controller.session_id == root_session_id
+        assert app._visible_read_only is True
+        assert app.query_one(Composer).disabled is True
+        assert app._projection is not None
+        assert app._projection.assistant_text == "first child prefix"
+        assert app.query_one(AssistantTurn).source == "first child prefix"
+
+        writes: list[str] = []
+
+        async def reject_submit(prompt: str, **_kwargs):
+            writes.append(f"submit:{prompt}")
+            raise AssertionError("read-only child view submitted input")
+
+        async def reject_abort():
+            writes.append("abort")
+            raise AssertionError("read-only child view aborted a Run")
+
+        monkeypatch.setattr(app._controller, "submit", reject_submit)
+        monkeypatch.setattr(app._controller, "abort", reject_abort)
+        app.post_message(Composer.Submitted("must not submit", "follow_up"))
+        app.action_abort()
+        await pilot.pause()
+        assert writes == []
+
+        provider.release_root.set()
+        await _wait_for_worker_group(app, pilot, group="run")
+        assert app._visible_session_id() == first.session_id
+        assert app._visible_read_only is True
+        assert app.query_one(Composer).disabled is True
+
+        provider.releases["first child task"].set()
+        await _wait_until(
+            lambda: app._projection is not None and app._projection.activity.status == "completed",
+            pilot,
+            description="first child stream completion",
+        )
+        assert "first child prefix + first child suffix" in "\n".join(
+            entry.text
+            for entry in app.query_one(ConversationHistory).entries
+            if entry.kind == "assistant"
+        )
+
+        app.action_main_session()
+        await _wait_until(
+            lambda: app._visible_session_id() == root_session_id,
+            pilot,
+            description="return to root",
+        )
+        assert app._visible_read_only is False
+        assert app.query_one(Composer).disabled is False
+        assert "root prefix + root suffix" in "\n".join(
+            entry.text
+            for entry in app.query_one(ConversationHistory).entries
+            if entry.kind == "assistant"
+        )
+
+        app.post_message(
+            ToolNavigationRequested(
+                parent_run_id=second.parent_run_id,
+                parent_tool_call_id="spawn_child_2",
+            )
+        )
+        await _wait_until(
+            lambda: app._visible_session_id() == second.session_id,
+            pilot,
+            description="second child view",
+        )
+        assert app._controller.session_id == root_session_id
+        assert app._projection is not None
+        assert app._projection.assistant_text == "second child prefix"
+
+        app.action_main_session()
+        await _wait_until(
+            lambda: app._visible_session_id() == root_session_id,
+            pilot,
+            description="leave second child while it is streaming",
+        )
+        provider.releases["second child task"].set()
+        await _wait_until(
+            lambda: any(
+                node.delegation_id == second.delegation_id and node.status == "completed"
+                for node in application.agents.agent_tree_snapshot(root_session_id).nodes
+            ),
+            pilot,
+            description="invisible second child completion",
+        )
+        app.post_message(
+            ToolNavigationRequested(
+                parent_run_id=second.parent_run_id,
+                parent_tool_call_id="spawn_child_2",
+            )
+        )
+        await _wait_until(
+            lambda: (
+                app._visible_session_id() == second.session_id
+                and app._projection is not None
+                and app._projection.activity.status == "idle"
+            ),
+            pilot,
+            description="reloaded completed second child",
+        )
+        assert "second child prefix + second child suffix" in "\n".join(
+            entry.text
+            for entry in app.query_one(ConversationHistory).entries
+            if entry.kind == "assistant"
+        )
 
 
 @pytest.mark.asyncio
@@ -2495,8 +2724,7 @@ async def test_guide_shortcuts_steer_the_active_run_at_the_next_model_turn(
         await pilot.press(*"first", "enter")
         await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.activity.status == "running",
+            lambda: app._projection is not None and app._projection.activity.status == "running",
             pilot,
             description="active run",
         )
@@ -2519,8 +2747,7 @@ async def test_guide_shortcuts_steer_the_active_run_at_the_next_model_turn(
         finally:
             provider.release.set()
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.activity.status == "completed",
+            lambda: app._projection is not None and app._projection.activity.status == "completed",
             pilot,
             description="guided run completion",
         )
@@ -2553,8 +2780,7 @@ async def test_resumed_session_restores_its_durable_user_input_queue(
 
     async with app.run_test(size=(100, 36)) as pilot:
         await _wait_until(
-            lambda: app._interaction is not None
-            and app.query_one(QueuedInputPanel).display,
+            lambda: app._interaction is not None and app.query_one(QueuedInputPanel).display,
             pilot,
             description="restored input queue",
         )
@@ -2614,9 +2840,7 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
             rendered_lines[thought_line].lstrip()
         )
         assert all(
-            line.startswith(
-                " " * thought_indent + "\N{BOX DRAWINGS LIGHT VERTICAL} "
-            )
+            line.startswith(" " * thought_indent + "\N{BOX DRAWINGS LIGHT VERTICAL} ")
             for line in reasoning_lines
         )
         assert not app.query(AssistantTurn)
@@ -2992,9 +3216,7 @@ async def test_compaction_completion_updates_context_and_transcript_without_next
                 "context_metrics_after": metrics.model_dump(mode="json"),
             },
         )
-        await app._apply_runtime_events(
-            (completed,)
-        )
+        await app._apply_runtime_events((completed,))
         await pilot.pause()
 
         history = app.query_one(ConversationHistory)
@@ -3289,9 +3511,7 @@ async def test_plugin_message_event_renders_non_scaffold_user_input(
         await app._apply_runtime_events(events, allow_new_projection=True)
 
         entries = app.query_one(ConversationHistory).entries
-        assert [(entry.kind, entry.text) for entry in entries] == [
-            ("user", "Ship through Goal")
-        ]
+        assert [(entry.kind, entry.text) for entry in entries] == [("user", "Ship through Goal")]
 
 
 @pytest.mark.asyncio
@@ -3508,8 +3728,7 @@ async def test_run_result_replays_events_when_live_sink_is_delayed(tmp_path: Pat
         await pilot.click("#composer")
         await pilot.press("h", "e", "l", "l", "o", "enter")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.activity.status == "completed",
+            lambda: app._projection is not None and app._projection.activity.status == "completed",
             pilot,
             description="replayed run result",
         )
@@ -3963,12 +4182,8 @@ async def test_delete_session_menu_keeps_current_marker_separate_from_multi_sele
         choices = {choice.value: choice for choice in delete_screen._choices}
         assert choices[current.session_id].marker == TUI_DESIGN.selected_choice_marker
         assert choices[other.session_id].marker == ""
-        assert choices[current.session_id].selection_marker == (
-            TUI_DESIGN.unselected_choice_marker
-        )
-        assert choices[other.session_id].selection_marker == (
-            TUI_DESIGN.unselected_choice_marker
-        )
+        assert choices[current.session_id].selection_marker == (TUI_DESIGN.unselected_choice_marker)
+        assert choices[other.session_id].selection_marker == (TUI_DESIGN.unselected_choice_marker)
 
         options = delete_screen.query_one("#choice-list", OptionList)
         options.highlighted = options.get_option_index(other.session_id)
@@ -3978,9 +4193,7 @@ async def test_delete_session_menu_keeps_current_marker_separate_from_multi_sele
 
         choices = {choice.value: choice for choice in delete_screen._choices}
         assert choices[current.session_id].marker == TUI_DESIGN.selected_choice_marker
-        assert choices[current.session_id].selection_marker == (
-            TUI_DESIGN.unselected_choice_marker
-        )
+        assert choices[current.session_id].selection_marker == (TUI_DESIGN.unselected_choice_marker)
         assert choices[other.session_id].selection_marker == TUI_DESIGN.selected_choice_marker
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -4111,9 +4324,7 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         preset_options = app.screen.query_one("#choice-list", OptionList)
         assert preset_options.get_option("anthropic-adaptive-effort").disabled is True
         incompatible = next(
-            choice
-            for choice in app.screen._choices
-            if choice.value == "anthropic-adaptive-effort"
+            choice for choice in app.screen._choices if choice.value == "anthropic-adaptive-effort"
         )
         assert incompatible.trailing == "Protocol incompatible"
         preset_options.highlighted = preset_options.get_option_index("thinking-toggle")
@@ -4256,8 +4467,7 @@ async def test_thinking_modal_remains_available_during_an_active_run(tmp_path: P
         await pilot.pause()
         await pilot.press(*"start", "enter")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.activity.status == "completed",
+            lambda: app._projection is not None and app._projection.activity.status == "completed",
             pilot,
             description="completed initial run",
         )
@@ -4607,9 +4817,7 @@ async def test_subagent_edit_and_delete_menus_show_disabled_builtin_group(
             await pilot.pause()
             await pilot.press("enter")
             await _wait_for_screen(app, ChoiceScreen, title=title)
-            general = next(
-                choice for choice in app.screen._choices if choice.value == "general"
-            )
+            general = next(choice for choice in app.screen._choices if choice.value == "general")
             assert general.group == "BUILT-IN"
             assert general.disabled is True
             assert not list(app.query("Toast"))
@@ -4774,9 +4982,10 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
         await pilot.press("enter")
         await pilot.pause()
         assert ConfigurationFacade(tmp_path).provider("secondary").enabled is True
-        assert next(
-            choice for choice in app.screen._choices if choice.value == "toggle"
-        ).label == "Disable provider"
+        assert (
+            next(choice for choice in app.screen._choices if choice.value == "toggle").label
+            == "Disable provider"
+        )
 
         await pilot.press("escape")
         await pilot.pause()
@@ -4789,9 +4998,10 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
         await pilot.click(options, offset=(4, 1))
         await pilot.pause()
         assert ConfigurationFacade(tmp_path).provider("secondary").enabled is False
-        assert next(
-            choice for choice in app.screen._choices if choice.value == "toggle"
-        ).label == "Enable provider"
+        assert (
+            next(choice for choice in app.screen._choices if choice.value == "toggle").label
+            == "Enable provider"
+        )
 
         await pilot.press("escape")
         await pilot.pause()
@@ -4809,9 +5019,7 @@ async def test_provider_submenu_updates_from_latest_preset_in_place(tmp_path: Pa
     root = json.loads(template_path.read_text(encoding="utf-8"))
     template = root["templates"]["openai"]
     template["revision"] = 3
-    endpoint = next(
-        item for item in template["endpoints"] if item["endpoint_id"] == "gpt-5.6"
-    )
+    endpoint = next(item for item in template["endpoints"] if item["endpoint_id"] == "gpt-5.6")
     endpoint["context_window"] = 2_000_000
     template_path.write_text(json.dumps(root), encoding="utf-8")
     app = OuroTuiApp(application=_application(tmp_path))
@@ -4829,9 +5037,7 @@ async def test_provider_submenu_updates_from_latest_preset_in_place(tmp_path: Pa
         await pilot.press("enter")
         await pilot.pause()
 
-        update = next(
-            choice for choice in app.screen._choices if choice.value == "update-template"
-        )
+        update = next(choice for choice in app.screen._choices if choice.value == "update-template")
         assert update.label == "Update from preset"
         assert update.trailing == "openai r1"
         options = app.screen.query_one("#choice-list", OptionList)
@@ -4840,9 +5046,9 @@ async def test_provider_submenu_updates_from_latest_preset_in_place(tmp_path: Pa
         await pilot.press("enter")
         await pilot.pause()
 
-        assert ConfigurationFacade(tmp_path).endpoint(
-            "primary", "gpt-5.6"
-        ).context_window == 2_000_000
+        assert (
+            ConfigurationFacade(tmp_path).endpoint("primary", "gpt-5.6").context_window == 2_000_000
+        )
         refreshed = next(
             choice for choice in app.screen._choices if choice.value == "update-template"
         )
@@ -5591,6 +5797,7 @@ async def test_alt_menu_shortcuts_are_idempotent_and_do_not_stack_screens(
         assert len(menu._page_stack) == 0
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
 
+
 @pytest.mark.asyncio
 async def test_plugin_shortcut_navigates_beneath_actions_without_stacking(
     tmp_path: Path,
@@ -5714,18 +5921,14 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         assert app.screen is menu
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
         assert menu.query_one("#choice-panel", Vertical).display is True
-        assert menu.query_one("#choice-hint", Static).render().plain == (
-            HelpScreen.BACK_HINT
-        )
+        assert menu.query_one("#choice-hint", Static).render().plain == (HelpScreen.BACK_HINT)
         assert {choice.group for choice in menu._choices} == {
             "SHORTCUTS",
             "BUILT-IN SLASH COMMANDS",
             "PLUGIN SLASH COMMANDS",
         }
         shortcuts = {
-            choice.label: choice.trailing
-            for choice in menu._choices
-            if choice.group == "SHORTCUTS"
+            choice.label: choice.trailing for choice in menu._choices if choice.group == "SHORTCUTS"
         }
         assert shortcuts["Alt+T"] == "cycle model thinking"
         assert shortcuts["Alt+A"] == "cycle session approval"
@@ -5740,9 +5943,7 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         await pilot.press("ctrl+h")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is menu
-        assert menu.query_one("#choice-hint", Static).render().plain == (
-            ChoiceScreen.DEFAULT_HINT
-        )
+        assert menu.query_one("#choice-hint", Static).render().plain == (ChoiceScreen.DEFAULT_HINT)
 
         await pilot.press("ctrl+n")
         await pilot.pause()
@@ -6359,9 +6560,10 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         await pilot.press("enter")
         await pilot.pause()
         assert ConfigurationFacade(tmp_path).mcp_server("local").enabled is False
-        assert next(
-            choice for choice in app.screen._choices if choice.value == "toggle"
-        ).label == "Enable server"
+        assert (
+            next(choice for choice in app.screen._choices if choice.value == "toggle").label
+            == "Enable server"
+        )
         start = next(choice for choice in app.screen._choices if choice.value == "start")
         assert start.label == "Start runtime"
         assert start.disabled is True
@@ -6374,21 +6576,24 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
 
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
-        assert next(
-            choice for choice in app.screen._choices if choice.value == "local"
-        ).trailing == "disabled · disabled"
+        assert (
+            next(choice for choice in app.screen._choices if choice.value == "local").trailing
+            == "disabled · disabled"
+        )
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="MCP · local")
         options = app.screen.query_one("#choice-list", OptionList)
         await pilot.click(options, offset=(4, 1))
         await pilot.pause()
         assert ConfigurationFacade(tmp_path).mcp_server("local").enabled is True
-        assert next(
-            choice for choice in app.screen._choices if choice.value == "toggle"
-        ).label == "Disable server"
-        assert next(
-            choice for choice in app.screen._choices if choice.value == "start"
-        ).disabled is False
+        assert (
+            next(choice for choice in app.screen._choices if choice.value == "toggle").label
+            == "Disable server"
+        )
+        assert (
+            next(choice for choice in app.screen._choices if choice.value == "start").disabled
+            is False
+        )
 
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
@@ -6447,30 +6652,31 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
         await pilot.press("enter")
 
         assert action_screen is app.screen
-        assert next(
-            choice for choice in action_screen._choices if choice.value == "start"
-        ).loading is True
+        assert (
+            next(choice for choice in action_screen._choices if choice.value == "start").loading
+            is True
+        )
         action_screen.query_one("#choice-filter", Input).value = "runtime"
         await pilot.pause(0.15)
         assert action_screen.query_one("#choice-filter", Input).value == "runtime"
 
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
-        assert next(
-            choice for choice in action_screen._choices if choice.value == "local"
-        ).loading is True
+        assert (
+            next(choice for choice in action_screen._choices if choice.value == "local").loading
+            is True
+        )
 
         session.initialize_gate.set()
         deadline = asyncio.get_running_loop().time() + 2
-        while next(
-            choice for choice in action_screen._choices if choice.value == "local"
-        ).loading:
+        while next(choice for choice in action_screen._choices if choice.value == "local").loading:
             if asyncio.get_running_loop().time() >= deadline:
                 raise AssertionError("MCP start did not refresh the parent menu")
             await pilot.pause(0.05)
-        assert next(
-            choice for choice in action_screen._choices if choice.value == "local"
-        ).trailing == "enabled · connected"
+        assert (
+            next(choice for choice in action_screen._choices if choice.value == "local").trailing
+            == "enabled · connected"
+        )
 
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="MCP · local")
@@ -6503,9 +6709,10 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
 
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
-        assert next(
-            choice for choice in action_screen._choices if choice.value == "local"
-        ).trailing == "enabled · stopped"
+        assert (
+            next(choice for choice in action_screen._choices if choice.value == "local").trailing
+            == "enabled · stopped"
+        )
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert any(choice.value.endswith(":mcp.list") for choice in action_screen._choices)
@@ -6779,9 +6986,12 @@ async def test_skill_directory_sources_use_shared_menu_and_persist_toggles(tmp_p
         policy = ConfigurationFacade(tmp_path).skill_policy()
         assert policy.disabled_sources == ["ouro.user"]
         assert app._controller.runtime_skill_names() == ()
-        assert next(
-            choice for choice in action_screen._choices if choice.value == "ouro.user"
-        ).trailing == "disabled"
+        assert (
+            next(
+                choice for choice in action_screen._choices if choice.value == "ouro.user"
+            ).trailing
+            == "disabled"
+        )
 
         action_screen.query_one("#choice-filter", Input).value = "Skill directory discovery"
         await pilot.pause()
@@ -6791,9 +7001,12 @@ async def test_skill_directory_sources_use_shared_menu_and_persist_toggles(tmp_p
         policy = ConfigurationFacade(tmp_path).skill_policy()
         assert policy.enabled is False
         assert policy.disabled_sources == ["ouro.user"]
-        assert next(
-            choice for choice in action_screen._choices if choice.value == "discovery"
-        ).trailing == "disabled"
+        assert (
+            next(
+                choice for choice in action_screen._choices if choice.value == "discovery"
+            ).trailing
+            == "disabled"
+        )
 
 
 @pytest.mark.asyncio
@@ -6855,9 +7068,10 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
 
         await pilot.press("escape")
         await pilot.pause()
-        assert next(
-            choice for choice in app.screen._choices if choice.value == "demo"
-        ).trailing == "ouro · user · disabled"
+        assert (
+            next(choice for choice in app.screen._choices if choice.value == "demo").trailing
+            == "ouro · user · disabled"
+        )
         await pilot.press("enter")
         await pilot.pause()
         options = app.screen.query_one("#choice-list", OptionList)
@@ -6868,9 +7082,10 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
 
         await pilot.press("escape")
         await pilot.pause()
-        assert next(
-            choice for choice in app.screen._choices if choice.value == "demo"
-        ).trailing == "ouro · user · enabled"
+        assert (
+            next(choice for choice in app.screen._choices if choice.value == "demo").trailing
+            == "ouro · user · enabled"
+        )
         await pilot.press("escape")
 
 
@@ -7117,9 +7332,12 @@ async def test_subagent_policy_uses_shared_grouped_inline_menu(tmp_path: Path) -
             "CAPABILITIES",
             "ACTIONS",
         }
-        assert next(
-            choice for choice in screen._choices if choice.value == "agent-policy-agents"
-        ).edit_value is None
+        assert (
+            next(
+                choice for choice in screen._choices if choice.value == "agent-policy-agents"
+            ).edit_value
+            is None
+        )
 
         options = screen.query_one("#choice-list", OptionList)
         options.highlighted = options.get_option_index("agent-policy-agents")
@@ -7144,9 +7362,10 @@ async def test_subagent_policy_uses_shared_grouped_inline_menu(tmp_path: Path) -
         options.focus()
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="ALLOWED SUBAGENT MODELS")
-        assert next(
-            choice for choice in app.screen._choices if choice.value == models[0].key
-        ).marker == TUI_DESIGN.selected_choice_marker
+        assert (
+            next(choice for choice in app.screen._choices if choice.value == models[0].key).marker
+            == TUI_DESIGN.selected_choice_marker
+        )
         await pilot.press("escape")
         await _wait_for_screen(
             app,
@@ -7195,9 +7414,7 @@ async def test_subagent_definition_editor_does_not_limit_selected_tool_count(
         assert not list(screen.query("Button"))
         assert not list(screen.query("Checkbox"))
         assert not list(screen.query("Select"))
-        save = next(
-            choice for choice in screen._choices if choice.value == "agent-definition-save"
-        )
+        save = next(choice for choice in screen._choices if choice.value == "agent-definition-save")
         assert save.trailing == "Agent ID is required"
         model_choice = next(
             choice for choice in screen._choices if choice.value == "agent-definition-model"
@@ -7209,9 +7426,12 @@ async def test_subagent_definition_editor_does_not_limit_selected_tool_count(
         options.focus()
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="SUBAGENT MODEL")
-        assert next(
-            choice for choice in app.screen._choices if choice.value == "__ouro_runtime_model__"
-        ).marker == TUI_DESIGN.selected_choice_marker
+        assert (
+            next(
+                choice for choice in app.screen._choices if choice.value == "__ouro_runtime_model__"
+            ).marker
+            == TUI_DESIGN.selected_choice_marker
+        )
         model_options = app.screen.query_one("#choice-list", OptionList)
         model_options.highlighted = model_options.get_option_index(models[0].key)
         model_options.focus()
@@ -7891,8 +8111,7 @@ Review the requested code carefully.
 
         await pilot.press(*"inspect", "space", *"app.py", "enter")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.activity.status == "completed",
+            lambda: app._projection is not None and app._projection.activity.status == "completed",
             pilot,
             description="skill-activated run",
         )
@@ -8279,8 +8498,7 @@ async def test_approval_panel_selects_with_arrows_and_resumes_run(tmp_path: Path
         await pilot.click("#composer")
         await pilot.press("w", "r", "i", "t", "e", "enter")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.pending_interaction is not None,
+            lambda: app._projection is not None and app._projection.pending_interaction is not None,
             pilot,
             description="tool approval request",
         )
@@ -8313,8 +8531,7 @@ async def test_approval_panel_selects_with_arrows_and_resumes_run(tmp_path: Path
 
         await pilot.press("enter")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.activity.status == "completed",
+            lambda: app._projection is not None and app._projection.activity.status == "completed",
             pilot,
             description="approved run completion",
         )
@@ -8339,9 +8556,11 @@ async def test_parallel_approvals_advance_one_at_a_time_without_stalling(tmp_pat
         await pilot.click("#composer")
         await pilot.press("r", "u", "n", "enter")
         await _wait_until(
-            lambda: app._projection is not None
-            and len(app._projection.pending_interactions) == 2
-            and app.query_one(InteractionBar).has_focus,
+            lambda: (
+                app._projection is not None
+                and len(app._projection.pending_interactions) == 2
+                and app.query_one(InteractionBar).has_focus
+            ),
             pilot,
             description="parallel approval requests",
         )
@@ -8353,9 +8572,11 @@ async def test_parallel_approvals_advance_one_at_a_time_without_stalling(tmp_pat
 
         await pilot.press("enter")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.pending_interaction is not None
-            and app._projection.pending_interaction.tool_call_id == "call_write_2",
+            lambda: (
+                app._projection is not None
+                and app._projection.pending_interaction is not None
+                and app._projection.pending_interaction.tool_call_id == "call_write_2"
+            ),
             pilot,
             description="second approval request",
         )
@@ -8368,8 +8589,7 @@ async def test_parallel_approvals_advance_one_at_a_time_without_stalling(tmp_pat
 
         await pilot.press("enter")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.activity.status == "completed",
+            lambda: app._projection is not None and app._projection.activity.status == "completed",
             pilot,
             description="parallel approval completion",
         )
@@ -8393,8 +8613,7 @@ async def test_approval_panel_denies_selected_tool(tmp_path: Path) -> None:
         await pilot.click("#composer")
         await pilot.press("w", "r", "i", "t", "e", "enter")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.pending_interaction is not None,
+            lambda: app._projection is not None and app._projection.pending_interaction is not None,
             pilot,
             description="tool approval request",
         )
@@ -8402,8 +8621,7 @@ async def test_approval_panel_denies_selected_tool(tmp_path: Path) -> None:
         panel = app.query_one(InteractionBar)
         await pilot.press("down", "enter")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.pending_interaction is None,
+            lambda: app._projection is not None and app._projection.pending_interaction is None,
             pilot,
             description="denied approval resolution",
         )
@@ -8438,9 +8656,11 @@ async def test_builtin_ask_user_renders_form_and_submits_structured_answer(
 
         await pilot.press("2")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.pending_interaction is None
-            and app._projection.assistant_text == "Answer received.",
+            lambda: (
+                app._projection is not None
+                and app._projection.pending_interaction is None
+                and app._projection.assistant_text == "Answer received."
+            ),
             pilot,
             description="structured question answer",
         )
@@ -8484,8 +8704,7 @@ async def test_ask_user_other_accepts_freeform_even_when_answer_starts_with_slas
 
         await pilot.press("slash", "t", "m", "p", "enter")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.pending_interaction is None,
+            lambda: app._projection is not None and app._projection.pending_interaction is None,
             pilot,
             description="freeform question answer",
         )
@@ -8525,8 +8744,7 @@ async def test_plugin_question_uses_common_form_and_returns_scalar_answer(
 
         await pilot.press("1")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.pending_interaction is None,
+            lambda: app._projection is not None and app._projection.pending_interaction is None,
             pilot,
             description="plugin question answer",
         )
@@ -8635,8 +8853,7 @@ async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedbac
 
         await pilot.press(*"Add rollback checks.", "enter")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.pending_interaction is None,
+            lambda: app._projection is not None and app._projection.pending_interaction is None,
             pilot,
             description="plan revision answer",
         )
@@ -8703,8 +8920,7 @@ async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_opti
 
         await pilot.press("down", "enter")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.pending_interaction is None,
+            lambda: app._projection is not None and app._projection.pending_interaction is None,
             pilot,
             description="selected plan implementation",
         )

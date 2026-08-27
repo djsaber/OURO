@@ -103,3 +103,29 @@ def test_outer_durable_transaction_never_downgrades_for_nested_delta(
         )
 
     assert synchronous_modes == [2]
+
+
+def test_sqlite_observation_and_replay_queries_use_session_scoped_indexes(tmp_path) -> None:
+    store = SQLiteSessionStore(tmp_path / "ouro.db")
+    store.initialize()
+
+    connection = sqlite3.connect(store.database)
+    try:
+        observation_plan = connection.execute(
+            "EXPLAIN QUERY PLAN SELECT payload FROM events "
+            "WHERE session_id = ? AND run_id = ? ORDER BY row_id",
+            ("session_1", "run_1"),
+        ).fetchall()
+        replay_plan = connection.execute(
+            "EXPLAIN QUERY PLAN SELECT payload FROM events "
+            "WHERE session_id = ? AND sequence > ? ORDER BY sequence LIMIT ?",
+            ("session_1", 100_000, 101),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert any("USING INDEX events_session_run_order" in str(row[3]) for row in observation_plan)
+    assert any(
+        "USING INDEX" in str(row[3]) and "session_id=? AND sequence>?" in str(row[3])
+        for row in replay_plan
+    )

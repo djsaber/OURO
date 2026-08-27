@@ -84,8 +84,7 @@ def project_run_presentation(
             ),
         )
         for message in messages
-        if message.run_id == run.run_id
-        and (response := message.model_response) is not None
+        if message.run_id == run.run_id and (response := message.model_response) is not None
     )
     model = requests[-1].model if requests else run.model or "unknown model"
     duration = (
@@ -224,9 +223,20 @@ class TuiSessionProjection:
     def model(self) -> str | None:
         return self._model
 
-    def restore(self, events: tuple[EventRecord, ...]) -> None:
+    @property
+    def last_sequence(self) -> int:
+        return max(0, self._last_sequence)
+
+    def restore(
+        self,
+        events: tuple[EventRecord, ...],
+        *,
+        event_high_water: int | None = None,
+    ) -> None:
         for event in sorted(events, key=lambda item: (item.sequence, item.event_id)):
             self.apply(event)
+        if event_high_water is not None:
+            self._last_sequence = max(self._last_sequence, event_high_water)
 
     def apply(self, event: EventRecord) -> ProjectionUpdate | None:
         if event.session_id != self.session_id or event.sequence <= self._last_sequence:

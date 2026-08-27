@@ -49,6 +49,21 @@ class _SinkObserver:
     enabled: bool = True
 
 
+class RuntimeEventSinkRegistration:
+    """One detachable Host event sink owned by its registering consumer."""
+
+    def __init__(self, recorder: RuntimeEventRecorder, observer: _SinkObserver) -> None:
+        self._recorder = recorder
+        self._observer = observer
+        self._closed = False
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        await self._recorder._remove_event_sink(self._observer)
+
+
 class RuntimeEventRecorder:
     """Persist canonical events, then fan them out through bounded observers.
 
@@ -75,7 +90,6 @@ class RuntimeEventRecorder:
         self.observers = observers
         self._observer_queue_size = observer_queue_size
         self._sink_timeout_seconds = sink_timeout_seconds
-        self._sink_callbacks: list[RuntimeEventSink] = []
         self._sink_observers: list[_SinkObserver] = []
         self._observer_registry_resolver: ObserverRegistryResolver | None = None
         self._observer_dispatcher = observer_dispatcher or ObserverDispatcher()
@@ -85,10 +99,15 @@ class RuntimeEventRecorder:
         if event_sink is not None:
             self.add_event_sink(event_sink)
 
-    def add_event_sink(self, event_sink: RuntimeEventSink) -> None:
+    def add_event_sink(self, event_sink: RuntimeEventSink) -> RuntimeEventSinkRegistration:
         if self._closed:
             raise RuntimeError("event recorder is closed")
-        self._sink_callbacks.append(event_sink)
+        observer = _SinkObserver(
+            callback=event_sink,
+            queue=asyncio.Queue(maxsize=self._observer_queue_size),
+        )
+        self._sink_observers.append(observer)
+        return RuntimeEventSinkRegistration(self, observer)
 
     def set_observer_registry_resolver(self, resolver: ObserverRegistryResolver) -> None:
         """Resolve and retain the immutable Observer view for one fact."""
@@ -266,19 +285,34 @@ class RuntimeEventRecorder:
             self.observe(_runtime_event_observation(event))
 
     def _ensure_sink_observers_started(self) -> None:
-        while len(self._sink_observers) < len(self._sink_callbacks):
-            callback = self._sink_callbacks[len(self._sink_observers)]
-            observer = _SinkObserver(
-                callback=callback,
-                queue=asyncio.Queue(maxsize=self._observer_queue_size),
-            )
+        for index, observer in enumerate(self._sink_observers):
+            if observer.task is not None or not observer.enabled:
+                continue
             # Eager task factories may enter the consumer before create_task()
             # returns, so its complete lifecycle state must already be published.
-            self._sink_observers.append(observer)
             observer.task = asyncio.create_task(
                 self._run_sink_observer(observer),
-                name=f"ouro-event-sink-{len(self._sink_observers) - 1}",
+                name=f"ouro-event-sink-{index}",
             )
+
+    async def _remove_event_sink(self, observer: _SinkObserver) -> None:
+        if observer not in self._sink_observers:
+            return
+        self._sink_observers.remove(observer)
+        observer.enabled = False
+        while True:
+            try:
+                observer.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            else:
+                observer.queue.task_done()
+        task = observer.task
+        if task is None or task.done():
+            return
+        observer.queue.put_nowait(None)
+        if task is not asyncio.current_task():
+            await task
 
     async def _run_sink_observer(self, observer: _SinkObserver) -> None:
         while True:

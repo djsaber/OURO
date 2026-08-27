@@ -7,7 +7,7 @@ from contextlib import closing
 
 import pytest
 
-from ouro.application.session_models import SessionCatalogQuery
+from ouro.application.session_models import SessionCatalogQuery, SessionView
 from ouro.application.sessions import SessionService
 from ouro.core.agents import (
     AgentCatalogSnapshot,
@@ -58,6 +58,24 @@ def test_session_create_and_rename_persist_explicit_identity_and_title_state(tmp
     assert reloaded.title_locked == renamed.session.title_locked
 
 
+def test_session_view_projects_subagent_delegation_identity() -> None:
+    view = SessionView.from_record(
+        SessionRecord(
+            session_id="ses_child",
+            title="Child",
+            session_kind="subagent",
+            root_session_id="ses_root",
+            parent_session_id="ses_root",
+            delegation_id="dlg_child",
+        )
+    )
+
+    assert view.session_kind == "subagent"
+    assert view.root_session_id == "ses_root"
+    assert view.parent_session_id == "ses_root"
+    assert view.delegation_id == "dlg_child"
+
+
 def test_session_run_result_projects_terminal_text_without_exposing_store(tmp_path) -> None:
     store, sessions = _service(tmp_path)
     session = sessions.create(title="Run result").session
@@ -77,6 +95,65 @@ def test_session_run_result_projects_terminal_text_without_exposing_store(tmp_pa
 
     assert result.run == run
     assert result.final_text == "done"
+
+
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+def test_observation_snapshot_has_atomic_high_water_and_only_active_run_events(
+    tmp_path,
+    backend: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
+    )
+    store.initialize()
+    sessions = SessionService(store)
+    session = sessions.create(title="Observed").session
+    completed = RunRecord(session_id=session.session_id, status="completed")
+    active = RunRecord(session_id=session.session_id, status="running")
+    store.save_run(completed)
+    store.save_run(active)
+    stored_session = store.load_session_record(session.session_id)
+    store.save_session(stored_session.model_copy(update={"active_run_id": active.run_id}))
+    store.append_message(
+        MessageRecord.text(
+            session_id=session.session_id,
+            run_id=completed.run_id,
+            role="assistant",
+            text="persisted history",
+            sequence=1,
+        )
+    )
+    store.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=completed.run_id,
+            event_type="run_completed",
+        )
+    )
+    active_event = store.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=active.run_id,
+            event_type="model_text_delta",
+            payload={"text": "live"},
+        )
+    )
+
+    def reject_complete_history(*_args, **_kwargs):
+        raise AssertionError("Host observation must not materialize complete event history")
+
+    monkeypatch.setattr(store, "load_session", reject_complete_history)
+
+    snapshot = sessions.observation_snapshot(session.session_id)
+
+    assert snapshot.session.session_id == session.session_id
+    assert snapshot.event_high_water == active_event.sequence
+    assert snapshot.messages[0].text_content == "persisted history"
+    assert snapshot.events == (active_event,)
+    assert {run.run_id for run in snapshot.runs} == {completed.run_id, active.run_id}
 
 
 @pytest.mark.parametrize("backend", ("files", "sqlite"))
@@ -100,9 +177,7 @@ def test_message_batch_round_trip_preserves_independent_semantics(tmp_path, back
             semantic_tag=f"{role.replace('_', '-')}-context",
         ).model_copy(
             update={
-                    "tool_result": ToolResultReference(
-                        tool_call_id="call_1", tool_name="lookup"
-                    )
+                "tool_result": ToolResultReference(tool_call_id="call_1", tool_name="lookup")
                 if role == "tool_result"
                 else None
             }
@@ -933,9 +1008,7 @@ def test_branch_inherits_only_compaction_lineage_available_at_boundary(
     assert inherited.compaction_id != first.compaction_id
     assert inherited.metadata["source_compaction_id"] == first.compaction_id
     assert inherited.covered_message_ids == [result.message_id_map[messages[0].message_id]]
-    assert inherited.history_boundary_message_id == result.message_id_map[
-        messages[1].message_id
-    ]
+    assert inherited.history_boundary_message_id == result.message_id_map[messages[1].message_id]
     assert branch.session.active_compaction_id == inherited.compaction_id
     assert inherited.context_metrics_after is not None
     assert first.context_metrics_after is not None
@@ -944,8 +1017,9 @@ def test_branch_inherits_only_compaction_lineage_available_at_boundary(
     )
     assert inherited.context_metrics_after.estimated_input_tokens == expected_input_tokens
     assert inherited.estimated_tokens_after == expected_input_tokens
-    assert inherited.metadata["branch_context_extended_through_message_id"] == (
-        result.message_id_map[messages[3].message_id]
+    assert (
+        inherited.metadata["branch_context_extended_through_message_id"]
+        == (result.message_id_map[messages[3].message_id])
     )
     assert validate_compaction_lineage(branch.messages, inherited) == 1
 

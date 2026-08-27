@@ -77,6 +77,10 @@ class SpawnAgentRequest(ApplicationDTO):
 class AgentHandleView(ApplicationDTO):
     revision: int = Field(ge=0)
     delegation_id: str
+    root_session_id: str
+    parent_session_id: str
+    parent_run_id: str
+    parent_tool_call_id: str | None = None
     child_session_id: str | None = None
     child_run_id: str | None = None
     agent_id: str
@@ -102,9 +106,13 @@ class AgentTreeEdge(ApplicationDTO):
 
 
 class AgentTreeNode(ApplicationDTO):
+    revision: int = Field(ge=0)
     delegation_id: str
+    root_session_id: str
     session_id: str
     parent_session_id: str
+    parent_run_id: str
+    parent_tool_call_id: str | None = None
     agent_id: str
     agent_name: str
     nickname: str | None = None

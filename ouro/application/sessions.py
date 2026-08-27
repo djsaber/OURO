@@ -27,6 +27,7 @@ from ouro.application.session_models import (
     SessionExport,
     SessionMessagePage,
     SessionMutationResult,
+    SessionObservationSnapshot,
     SessionReplay,
     SessionTrashResult,
     SessionView,
@@ -230,6 +231,28 @@ class SessionService:
             runs=tuple(snapshot.runs),
             compactions=tuple(snapshot.compactions),
             extension_states=tuple(snapshot.extension_states),
+        )
+
+    def observation_snapshot(self, session_id: str) -> SessionObservationSnapshot:
+        """Read a canonical snapshot and event cursor under one store boundary.
+
+        Terminal Run events are intentionally omitted because canonical messages
+        already represent their transcript.  Events for the active Run remain so
+        a Host can rebuild partial text, tools, and pending interactions before
+        subscribing from ``event_high_water``.
+        """
+
+        try:
+            snapshot = self._store.load_session_observation(session_id)
+        except FileNotFoundError as exc:
+            raise SessionNotFoundError(f"session not found: {session_id}") from exc
+        return SessionObservationSnapshot(
+            session=SessionView.from_record(snapshot.session),
+            messages=tuple(snapshot.messages),
+            events=tuple(snapshot.active_run_events),
+            runs=tuple(snapshot.runs),
+            compactions=tuple(snapshot.compactions),
+            event_high_water=snapshot.event_high_water,
         )
 
     def message_page(

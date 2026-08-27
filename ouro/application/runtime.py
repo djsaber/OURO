@@ -13,7 +13,11 @@ from ouro.application.compaction import (
     LLMSummaryCompactionStrategy,
 )
 from ouro.application.dto import Diagnostic
-from ouro.application.events import RuntimeEventRecorder, RuntimeEventSink
+from ouro.application.events import (
+    RuntimeEventRecorder,
+    RuntimeEventSink,
+    RuntimeEventSinkRegistration,
+)
 from ouro.application.models import (
     AvailableModel,
     FixedRuntimeAdapterCatalog,
@@ -531,8 +535,8 @@ class RuntimeService:
         self._run_tool_coordinators[run_id] = coordinator
         return coordinator
 
-    def add_event_sink(self, event_sink: RuntimeEventSink) -> None:
-        self.event_recorder.add_event_sink(event_sink)
+    def add_event_sink(self, event_sink: RuntimeEventSink) -> RuntimeEventSinkRegistration:
+        return self.event_recorder.add_event_sink(event_sink)
 
     async def drain_events(self) -> None:
         """Wait until every event observer has processed the published prefix."""
@@ -997,9 +1001,7 @@ class RuntimeService:
         """Persist reasoning intent for the next model request boundary."""
 
         def validate(session: SessionRecord) -> None:
-            model = self.models.resolve(
-                session.current_model or self.models.default_model().key
-            )
+            model = self.models.resolve(session.current_model or self.models.default_model().key)
             self._model_reasoning_state(model, reasoning_request)
 
         return self._update_live_session_settings(
@@ -1364,9 +1366,7 @@ class RuntimeService:
         attributed_source = (
             _attributed_input_source(_input_attribution)
             if _input_attribution is not None
-            else (
-                queued_attributed_input.source if queued_attributed_input is not None else None
-            )
+            else (queued_attributed_input.source if queued_attributed_input is not None else None)
         )
         run = (
             _prepared_run
@@ -1524,9 +1524,7 @@ class RuntimeService:
                     role=_input_role(_input_attribution),
                     scaffold=_input_scaffold(_input_attribution),
                     semantic_tag=(
-                        _input_attribution.semantic_tag
-                        if _input_attribution is not None
-                        else None
+                        _input_attribution.semantic_tag if _input_attribution is not None else None
                     ),
                     host_source_id=(
                         _input_attribution.host_source_id
@@ -2193,11 +2191,7 @@ class RuntimeService:
                 source=source,
                 role=role,
                 scaffold=scaffold,
-                semantic_tag=(
-                    attribution.semantic_tag
-                    if attribution is not None
-                    else None
-                ),
+                semantic_tag=(attribution.semantic_tag if attribution is not None else None),
                 host_source_id=(
                     attribution.host_source_id
                     if isinstance(attribution, HostSessionInput)
@@ -2882,10 +2876,7 @@ class RuntimeService:
 
     @staticmethod
     def _queued_input_is_durable(messages: list[MessageRecord], queue_id: str) -> bool:
-        return any(
-            message.metadata.get("queued_input_id") == queue_id
-            for message in messages
-        )
+        return any(message.metadata.get("queued_input_id") == queue_id for message in messages)
 
     def _load_runtime_snapshot(
         self,

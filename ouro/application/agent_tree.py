@@ -113,9 +113,13 @@ class AgentTreeProjector:
                 activity = None
             nodes.append(
                 AgentTreeNode(
+                    revision=relation.revision,
                     delegation_id=relation.delegation_id,
+                    root_session_id=relation.root_session_id,
                     session_id=relation.child_session_id,
                     parent_session_id=relation.parent_session_id,
+                    parent_run_id=relation.parent_run_id,
+                    parent_tool_call_id=relation.parent_tool_call_id,
                     agent_id=relation.agent_id,
                     agent_name=relation.definition.name,
                     nickname=relation.nickname,

@@ -1250,6 +1250,47 @@ async def test_sync_follow_up_result_is_delivered_to_parent(tmp_path) -> None:
             execution_mode="sync",
         )
     )
+    assert handle.parent_session_id == "ses_root"
+    assert handle.parent_run_id == "run_parent"
+    assert handle.parent_tool_call_id == "sync_spawn_call"
+    tree = service.agent_tree_snapshot("ses_root")
+    assert tree.nodes[0].revision >= 0
+    assert tree.nodes[0].root_session_id == "ses_root"
+    assert tree.nodes[0].parent_session_id == "ses_root"
+    assert tree.nodes[0].parent_run_id == "run_parent"
+    assert tree.nodes[0].parent_tool_call_id == "sync_spawn_call"
+    assert (
+        service.resolve_agent_navigation(
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            parent_tool_call_id="sync_spawn_call",
+        )
+        == tree.nodes[0]
+    )
+    assert (
+        service.resolve_agent_navigation(
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            parent_tool_call_id="missing_call",
+        )
+        is None
+    )
+    spawned = next(
+        event
+        for event in store.load_session("ses_root").events
+        if event.event_type == "agent_spawned"
+    )
+    assert spawned.payload == {
+        "root_session_id": "ses_root",
+        "parent_session_id": "ses_root",
+        "parent_run_id": "run_parent",
+        "parent_tool_call_id": "sync_spawn_call",
+        "delegation_id": handle.delegation_id,
+        "child_session_id": handle.child_session_id,
+        "child_run_id": handle.child_run_id,
+        "agent_id": "reader",
+        "execution_mode": "sync",
+    }
     await service.wait_agents((handle.delegation_id,))
     relation = store.load_delegation("ses_root", handle.delegation_id)
     assert relation.result is not None
@@ -1322,8 +1363,7 @@ async def test_sync_follow_up_result_stays_pending_after_parent_abort(tmp_path) 
     assert relation.result.delivery.policy == "resume_waiter"
     assert relation.result.delivery.status == "pending"
     assert not any(
-        message.role == "system"
-        for message in store.load_runtime_session("ses_root").messages
+        message.role == "system" for message in store.load_runtime_session("ses_root").messages
     )
     await service.close()
     await supervisor.shutdown()

@@ -21,6 +21,7 @@ connectivity-extensions -> plugin-observers-prompt-policy
 | [插件观察器与提示策略（已完成）](plugin-observers-prompt-policy.md) | 非阻塞 typed Observer 与 fail-closed Prompt Policy | 连接与扩展 B1-B8、不可变 ExtensionCatalog |
 | [高级智能体能力](advanced-agent-capabilities.md) | 长期记忆与 durable Task/Workflow；工作流 C 子智能体已完成 | ResourceService、Supervisor 和稳定 Host 控制面 |
 | [子智能体（已完成）](subagents.md) | 工作流 C 的实现记录：AgentDefinition、durable Delegation、控制工具、事件树、HITL、权限和恢复 | Session/Run、Tool/HITL、config、ExtensionCatalog、ResourceService、RuntimeSupervisor |
+| [TUI 子智能体会话视图（已完成）](tui-subagent-session-views.md) | Host-neutral 会话观察契约与 TUI 主/多 child 只读连续切换 | 子智能体、RuntimeSupervisor、TUI 实施基线 |
 | [桌面 Host](desktop-host.md) | 基于 application DTO 的本地桌面端 | 配置门面、Supervisor；资源视图依赖 ResourceService |
 
 ## 使用规则

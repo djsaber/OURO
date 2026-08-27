@@ -28,6 +28,7 @@
 | [CLI 与 Host](cli-host.md) | 命令面、输出模式、退出码和 Host/application 边界 | `ouro/cli`、`ouro/application` services/DTO |
 | [资源与后台运行监督](resources-supervisor.md) | ResourceService、不可变 blob、引用可达性、RuntimeSupervisor 调度与订阅 | `ouro/resources`、`ouro/application/resources.py`、`ouro/application/supervisor.py` |
 | [子智能体](subagents.md) | AgentDefinition、durable Delegation、前后台执行、Agent tree/HITL、权限、结果交付与恢复 | `ouro/core/agents.py`、`ouro/application/agents.py`、`ouro/tools/builtin_agents.py`、`ouro/sessions` |
+| [Host 会话观察与子智能体导航](session-observation.md) | Host-neutral ToolCall→child 关系、Session snapshot/event cursor 与 TUI 多会话只读切换 | `ouro/application`、`ouro/sessions`、`ouro/tui` |
 | [插件系统](plugin-system.md) | 不可变 Catalog、原子 generation、Observer、Prompt Policy 与稳定执行契约 | `ouro/plugins`、`ouro/application/observers.py`、`ouro/core/observers.py`、`ouro/core/prompt_policies.py` |
 
 ## 目标规格

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import ouro.sessions.local_files as local_files_module
 from ouro.application.session_recovery import SessionRecoveryService
 from ouro.core.approvals import ApprovalRecord
 from ouro.core.base import utc_now
@@ -159,6 +160,253 @@ def test_latest_event_sequence_reads_only_ordered_journal_tail(monkeypatch, tmp_
     monkeypatch.setattr(reopened, "_read_jsonl", reject_full_journal_read)
 
     assert reopened.latest_event_sequence(session.session_id) == 2
+
+
+def test_observation_seeks_to_active_run_without_decoding_prior_run_events(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Indexed observation")
+    store.create_session(session)
+    completed = RunRecord(
+        run_id="run_completed",
+        session_id=session.session_id,
+        status="completed",
+    )
+    active = RunRecord(
+        run_id="run_active",
+        session_id=session.session_id,
+        status="running",
+    )
+    store.save_run(completed)
+    for index in range(600):
+        store.append_ordered_event(
+            EventRecord(
+                session_id=session.session_id,
+                run_id=completed.run_id,
+                event_type="model_text_delta",
+                payload={"text": str(index)},
+            )
+        )
+    store.save_run(active)
+    store.save_session(
+        session.model_copy(
+            update={
+                "status": "running",
+                "active_run_id": active.run_id,
+                "last_run_id": active.run_id,
+            }
+        )
+    )
+    expected = [
+        store.append_ordered_event(
+            EventRecord(
+                session_id=session.session_id,
+                run_id=active.run_id,
+                event_type="model_text_delta",
+                payload={"text": text},
+            )
+        )
+        for text in ("live-1", "live-2")
+    ]
+    reopened = LocalSessionStore(tmp_path)
+    decoded_event_count = 0
+    original_decode = local_files_module.decode_versioned_record_json
+
+    def count_event_decodes(model_type, *args, **kwargs):
+        nonlocal decoded_event_count
+        if model_type is EventRecord:
+            decoded_event_count += 1
+        return original_decode(model_type, *args, **kwargs)
+
+    monkeypatch.setattr(
+        local_files_module,
+        "decode_versioned_record_json",
+        count_event_decodes,
+    )
+
+    snapshot = reopened.load_session_observation(session.session_id)
+
+    assert snapshot.active_run_events == expected
+    assert snapshot.event_high_water == expected[-1].sequence
+    assert decoded_event_count == len(expected)
+
+
+def test_events_after_uses_sparse_sequence_index_for_bounded_replay(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Indexed replay")
+    store.create_session(session)
+    for index in range(600):
+        store.append_ordered_event(
+            EventRecord(
+                session_id=session.session_id,
+                run_id="run_old",
+                event_type="model_text_delta",
+                payload={"text": str(index)},
+            )
+        )
+    high_water = store.latest_event_sequence(session.session_id)
+    expected = [
+        store.append_ordered_event(
+            EventRecord(
+                session_id=session.session_id,
+                run_id="run_live",
+                event_type="model_text_delta",
+                payload={"text": text},
+            )
+        )
+        for text in ("a", "b", "c")
+    ]
+    decoded_event_count = 0
+    original_decode = local_files_module.decode_versioned_record_json
+
+    def count_event_decodes(model_type, *args, **kwargs):
+        nonlocal decoded_event_count
+        if model_type is EventRecord:
+            decoded_event_count += 1
+        return original_decode(model_type, *args, **kwargs)
+
+    monkeypatch.setattr(
+        local_files_module,
+        "decode_versioned_record_json",
+        count_event_decodes,
+    )
+
+    events, truncated = store.load_events_after(
+        session.session_id,
+        after_sequence=high_water,
+        limit=100,
+    )
+
+    assert events == expected
+    assert truncated is False
+    assert decoded_event_count <= 3 + 256
+
+
+def test_corrupt_event_accelerators_fall_back_without_hiding_canonical_events(
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Rebuild event accelerators")
+    store.create_session(session)
+    active = RunRecord(
+        run_id="run_active",
+        session_id=session.session_id,
+        status="running",
+    )
+    store.save_run(active)
+    store.save_session(
+        session.model_copy(update={"status": "running", "active_run_id": active.run_id})
+    )
+    first = store.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=active.run_id,
+            event_type="model_text_delta",
+            payload={"text": "first"},
+        )
+    )
+    second = store.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=active.run_id,
+            event_type="model_text_delta",
+            payload={"text": "second"},
+        )
+    )
+    index_dir = store.sessions_dir / session.session_id / "event-index"
+    (index_dir / "runs" / f"{active.run_id}.json").write_text(
+        "not-json",
+        encoding="utf-8",
+    )
+    (index_dir / "sequences.bin").write_bytes(b"\xff" * 16)
+    reopened = LocalSessionStore(tmp_path)
+
+    observation = reopened.load_session_observation(session.session_id)
+    replay, truncated = reopened.load_events_after(
+        session.session_id,
+        after_sequence=first.sequence,
+        limit=10,
+    )
+
+    assert observation.active_run_events == [first, second]
+    assert replay == [second]
+    assert truncated is False
+    rebuilt = json.loads((index_dir / "runs" / f"{active.run_id}.json").read_text(encoding="utf-8"))
+    assert rebuilt["offset"] == 0
+
+
+def test_unwritable_event_accelerators_do_not_block_canonical_events(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Disposable event accelerators")
+    store.create_session(session)
+    run = RunRecord(
+        run_id="run_active",
+        session_id=session.session_id,
+        status="running",
+    )
+    index_dir = store.sessions_dir / session.session_id / "event-index"
+    (index_dir / "runs" / f"{run.run_id}.json").mkdir()
+    (index_dir / "sequences.bin").mkdir()
+
+    store.save_run(run)
+    store.save_session(
+        session.model_copy(update={"status": "running", "active_run_id": run.run_id})
+    )
+    event = store.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            event_type="model_text_delta",
+            payload={"text": "still canonical"},
+        )
+    )
+
+    reopened = LocalSessionStore(tmp_path)
+    observation = reopened.load_session_observation(session.session_id)
+    replay, truncated = reopened.load_events_after(
+        session.session_id,
+        after_sequence=0,
+        limit=10,
+    )
+
+    assert observation.active_run_events == [event]
+    assert replay == [event]
+    assert truncated is False
+
+
+def test_zero_event_cursors_remain_implicit_until_they_can_skip_history(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Implicit zero event cursors")
+    store.create_session(session)
+    run = RunRecord(
+        run_id="run_first",
+        session_id=session.session_id,
+        status="running",
+    )
+
+    store.save_run(run)
+    store.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            event_type="model_text_delta",
+            payload={"text": "first"},
+        )
+    )
+
+    index_dir = store.sessions_dir / session.session_id / "event-index"
+    assert not (index_dir / "runs" / f"{run.run_id}.json").exists()
+    assert not (index_dir / "sequences.bin").exists()
 
 
 def test_jsonl_pages_use_stable_byte_cursors_across_appends(tmp_path) -> None:

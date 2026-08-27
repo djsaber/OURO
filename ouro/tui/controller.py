@@ -13,6 +13,7 @@ from ouro.application.agent_models import (
     AgentDefinitionDetail,
     AgentInteractionView,
     AgentToolOptionView,
+    AgentTreeNode,
 )
 from ouro.application.agents import AgentService
 from ouro.application.configuration import ConfigurationFacade
@@ -39,6 +40,7 @@ from ouro.application.configuration_models import (
     ToolExecutionConfigView,
 )
 from ouro.application.dto import ApplicationStartupReport
+from ouro.application.events import RuntimeEventSinkRegistration
 from ouro.application.models import AvailableModel, ModelReasoningState
 from ouro.application.plugin_models import (
     PluginActionResult,
@@ -54,9 +56,11 @@ from ouro.application.session_models import (
     SessionCatalogEntry,
     SessionContextStatus,
     SessionDetail,
+    SessionObservationSnapshot,
     SessionView,
 )
 from ouro.application.skill_activations import SkillInvocationRequest
+from ouro.application.supervisor import RuntimeSubscription
 from ouro.application.usage_models import UsageSummary, UsageTotals
 from ouro.config import EndpointReasoningConfig, ProviderType
 from ouro.core.agents import ExecutionMode, ToolSelection
@@ -69,7 +73,7 @@ from ouro.core.base import Metadata
 from ouro.core.billing import UsageFilter
 from ouro.core.compaction import CompactionCommandResult, CompactionRecord
 from ouro.core.context import ContextMetrics
-from ouro.core.errors import ConfigError, PersistenceError
+from ouro.core.errors import ConfigError, PersistenceError, SessionNotFoundError
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
@@ -364,6 +368,13 @@ class LoadedSession:
     compactions: tuple[CompactionRecord, ...] = ()
     queued_inputs: tuple[QueuedUserInputView, ...] = ()
     session_controls: tuple[TuiSessionControlStatus, ...] = ()
+    event_high_water: int = 0
+
+
+@dataclass(frozen=True)
+class TuiSessionObservation:
+    loaded: LoadedSession
+    subscription: RuntimeSubscription
 
 
 class TuiController:
@@ -402,6 +413,8 @@ class TuiController:
         self._initial_model: str | None = None
         self._draft_workspace: str | None = None
         self._creating_session = False
+        self._event_root_sessions: dict[str, str] = {}
+        self._event_sink_registration: RuntimeEventSinkRegistration | None = None
 
     @property
     def session_id(self) -> str | None:
@@ -431,8 +444,13 @@ class TuiController:
                     detail="",
                 )
             )
-        self._application.runtime.add_event_sink(self._receive_event)
-        await self._application.start()
+        registration = self._application.runtime.add_event_sink(self._receive_event)
+        try:
+            await self._application.start()
+        except Exception:
+            await registration.close()
+            raise
+        self._event_sink_registration = registration
         self._started = True
         runtime = self._application.runtime
         self._draft_workspace = runtime.default_workspace
@@ -493,6 +511,10 @@ class TuiController:
 
     async def close(self) -> None:
         application = self._application
+        registration = self._event_sink_registration
+        self._event_sink_registration = None
+        if registration is not None:
+            await registration.close()
         self._started = False
         if application is not None and self._close_application:
             await application.close()
@@ -1345,9 +1367,7 @@ class TuiController:
                 managed=(configured_skill.managed if configured_skill is not None else False),
                 install=(configured_skill.install if configured_skill is not None else None),
             )
-        return configured.model_copy(
-            update={"skills": [skills[name] for name in sorted(skills)]}
-        )
+        return configured.model_copy(update={"skills": [skills[name] for name in sorted(skills)]})
 
     async def skill_policy(self) -> SkillPolicyView:
         configuration = self._require_configuration()
@@ -1376,9 +1396,7 @@ class TuiController:
             await asyncio.to_thread(
                 configuration.update_skill_discovery,
                 enabled=previous.enabled if enabled is not None else None,
-                source_updates={
-                    source_id: previous_sources[source_id] for source_id in updates
-                },
+                source_updates={source_id: previous_sources[source_id] for source_id in updates},
             )
             raise
         return saved
@@ -1421,9 +1439,7 @@ class TuiController:
             None,
         )
         if plugin_skill is not None:
-            raise ConfigError(
-                f"plugin skill {name!r} is managed through its owning plugin"
-            )
+            raise ConfigError(f"plugin skill {name!r} is managed through its owning plugin")
         configuration = self._require_configuration()
         result = await asyncio.to_thread(configuration.set_skill_enabled, name, enabled=enabled)
         try:
@@ -1722,9 +1738,7 @@ class TuiController:
         plugin_names: dict[str, str] = {}
         if application.plugins is not None:
             try:
-                plugin_names = {
-                    item.plugin_id: item.name for item in application.plugins.list()
-                }
+                plugin_names = {item.plugin_id: item.name for item in application.plugins.list()}
             except Exception:  # noqa: BLE001 - labels have a stable identity fallback.
                 # Session-control state remains present even when plugin catalog
                 # presentation metadata is temporarily unavailable.
@@ -1926,6 +1940,45 @@ class TuiController:
         self._initial_model = None
         return loaded
 
+    async def observe_session(self, session_id: str) -> TuiSessionObservation:
+        """Attach a read-only Host observation without changing the control Session."""
+
+        loaded = await asyncio.to_thread(self._read_session, session_id)
+        subscription = self.subscribe_session(
+            session_id,
+            after_sequence=loaded.event_high_water,
+        )
+        return TuiSessionObservation(loaded=loaded, subscription=subscription)
+
+    def subscribe_session(
+        self,
+        session_id: str,
+        *,
+        after_sequence: int,
+    ) -> RuntimeSubscription:
+        application = self._application
+        if not self._started or application is None:
+            raise RuntimeError("TUI controller is not started")
+        return application.supervisor.subscribe(
+            session_id,
+            after_sequence=after_sequence,
+            max_buffer=1000,
+        )
+
+    async def resolve_agent_navigation(
+        self,
+        *,
+        parent_session_id: str,
+        parent_run_id: str,
+        parent_tool_call_id: str,
+    ) -> AgentTreeNode | None:
+        return await asyncio.to_thread(
+            self._agents().resolve_agent_navigation,
+            parent_session_id=parent_session_id,
+            parent_run_id=parent_run_id,
+            parent_tool_call_id=parent_tool_call_id,
+        )
+
     async def _unarchive_current_session_after_update(self) -> None:
         session_id = self._session_id
         if session_id is None or not self._session_archived:
@@ -1937,39 +1990,19 @@ class TuiController:
     def _read_session(self, session_id: str) -> LoadedSession:
         runtime = self._runtime()
         sessions = runtime.sessions
-        detail = sessions.open(session_id, recover=False)
-        messages = self._session_messages(session_id)
-
-        events: list[EventRecord] = []
-        # Messages are the canonical presentation history for terminal Runs.
-        # Event replay exists only to reconstruct mutable state for the active
-        # Run (pending interaction, live tools, and activity). Replaying the
-        # latest completed Run makes an idle Session open scale with an
-        # unrelated historical event journal.
-        run_id = detail.session.active_run_id
-        if run_id is not None:
-            cursor = 0
-            while True:
-                event_page = sessions.event_page(
-                    session_id,
-                    cursor=cursor,
-                    limit=500,
-                    run_id=run_id,
-                )
-                events.extend(event_page.events)
-                if event_page.next_cursor is None:
-                    break
-                cursor = event_page.next_cursor
+        snapshot = sessions.observation_snapshot(session_id)
+        detail = _observation_detail(snapshot)
         return LoadedSession(
             detail=detail,
-            messages=tuple(messages),
-            events=tuple(events),
-            runs=sessions.run_history(session_id),
+            messages=snapshot.messages,
+            events=snapshot.events,
+            runs=snapshot.runs,
             context_status=sessions.context_status(session_id),
             effective_context_metrics=runtime.session_context_metrics(session_id),
-            compactions=sessions.compactions(session_id),
+            compactions=snapshot.compactions,
             queued_inputs=self._queued_user_inputs(session_id),
             session_controls=self._session_control_statuses(session_id),
+            event_high_water=snapshot.event_high_water,
         )
 
     def _session_messages(self, session_id: str) -> list[MessageRecord]:
@@ -2019,9 +2052,52 @@ class TuiController:
         """Cross one persisted Runtime event into Textual's message pump."""
 
         if self._creating_session and self._session_id is None:
+            if self._event_root_session_id(event.session_id) != event.session_id:
+                return
             self._session_id = event.session_id
+        controlled_session_id = self._session_id
+        if controlled_session_id is None:
+            return
+        if (
+            event.session_id != controlled_session_id
+            and self._event_root_session_id(event.session_id) != controlled_session_id
+        ):
+            return
         self._publish_event(event)
         await asyncio.sleep(0)
+
+    def _event_root_session_id(self, session_id: str) -> str | None:
+        cached = self._event_root_sessions.get(session_id)
+        if cached is not None:
+            return cached
+        try:
+            session = self._runtime().sessions.open(session_id, recover=False).session
+        except (FileNotFoundError, PersistenceError, SessionNotFoundError):
+            return None
+        root_session_id = session.agent_root_session_id
+        self._event_root_sessions[session_id] = root_session_id
+        return root_session_id
+
+
+def _observation_detail(snapshot: SessionObservationSnapshot) -> SessionDetail:
+    recent_run_id = snapshot.session.active_run_id or snapshot.session.last_run_id
+    recent_run = next(
+        (run for run in snapshot.runs if run.run_id == recent_run_id),
+        None,
+    )
+    active_compaction = next(
+        (
+            item
+            for item in snapshot.compactions
+            if item.compaction_id == snapshot.session.active_compaction_id
+        ),
+        None,
+    )
+    return SessionDetail(
+        session=snapshot.session,
+        recent_run=recent_run,
+        active_compaction=active_compaction,
+    )
 
 
 def _plugin_session_title(name: str, argument: str) -> str:
