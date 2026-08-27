@@ -176,6 +176,7 @@ class RuntimeSupervisor:
         self._snapshots: dict[str, RuntimeStatusSnapshot] = {}
         self._activities: dict[str, RuntimeActivitySnapshot] = {}
         self._subscriptions: dict[str, set[RuntimeSubscription]] = {}
+        self._parked_session_locks: dict[str, asyncio.Lock] = {}
         self._lifecycle_lock = asyncio.Lock()
         self._started = False
         self._closed = False
@@ -318,25 +319,27 @@ class RuntimeSupervisor:
         """Schedule continuation of one parked parent Run."""
 
         await self.start()
-        await self._await_parked_session(
-            session_id,
-            run_id=run_id,
-            expected_status="waiting_child",
-        )
-        run = self.store.load_run(session_id, run_id)
-        if run.status != "waiting_child":
-            raise ValueError(f"run is not waiting for a child: {run.status}")
-        handle = RunHandle(session_id=session_id)
-        job = _RunJob(
-            handle=handle,
-            prompt="",
-            title=None,
-            agent_wait_resolution=resolution,
-            agent_wait_result=result,
-            agent_wait_tool_call_id=tool_call_id,
-        )
-        self._enqueue_job(job, run_id=run_id)
-        return handle
+        lock = self._parked_session_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            await self._await_parked_session(
+                session_id,
+                run_id=run_id,
+                expected_status="waiting_child",
+            )
+            run = self.store.load_run(session_id, run_id)
+            if run.status != "waiting_child":
+                raise ValueError(f"run is not waiting for a child: {run.status}")
+            handle = RunHandle(session_id=session_id)
+            job = _RunJob(
+                handle=handle,
+                prompt="",
+                title=None,
+                agent_wait_resolution=resolution,
+                agent_wait_result=result,
+                agent_wait_tool_call_id=tool_call_id,
+            )
+            self._enqueue_job(job, run_id=run_id)
+            return handle
 
     async def route_host_input(
         self,
@@ -542,11 +545,7 @@ class RuntimeSupervisor:
         run = maybe_active_run(runs)
         if run is None and session.last_run_id is not None:
             run = next(
-                (
-                    item
-                    for item in runs
-                    if item.run_id == session.last_run_id
-                ),
+                (item for item in runs if item.run_id == session.last_run_id),
                 None,
             )
         return RuntimeStatusSnapshot(

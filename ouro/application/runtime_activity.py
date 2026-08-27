@@ -313,6 +313,12 @@ def reduce_runtime_activity(
             transition="started",
             occurred_at=event.created_at,
         )
+    elif event_type == "agent_wait_requested":
+        updates["tool_calls"] = _update_tool_call_status(
+            current.tool_calls,
+            _string_or_none(payload.get("tool_call_id")),
+            "waiting_child",
+        )
     elif event_type == "tool_call_completed":
         call_status = _tool_call_status(payload.get("status")) or (
             "failed" if payload.get("is_error") is True else "completed"

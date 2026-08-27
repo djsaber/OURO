@@ -166,6 +166,18 @@ _PLUGIN_ISSUE_STATUSES = frozenset(
         "failed",
     }
 )
+_CHILD_CONTROL_EVENT_TYPES = frozenset(
+    {
+        "approval_requested",
+        "approval_resolved",
+        "ask_user_requested",
+        "ask_user_resolved",
+        "run_completed",
+        "run_aborted",
+        "run_failed",
+        "run_paused",
+    }
+)
 
 
 def project_plugin_system_status(
@@ -2058,13 +2070,13 @@ class TuiController:
         controlled_session_id = self._session_id
         if controlled_session_id is None:
             return
-        if (
-            event.session_id != controlled_session_id
-            and self._event_root_session_id(event.session_id) != controlled_session_id
-        ):
-            return
+        if event.session_id != controlled_session_id:
+            if (
+                event.event_type not in _CHILD_CONTROL_EVENT_TYPES
+                or self._event_root_session_id(event.session_id) != controlled_session_id
+            ):
+                return
         self._publish_event(event)
-        await asyncio.sleep(0)
 
     def _event_root_session_id(self, session_id: str) -> str | None:
         cached = self._event_root_sessions.get(session_id)

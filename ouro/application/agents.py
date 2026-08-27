@@ -1030,6 +1030,21 @@ class AgentService:
         relation = matches[0]
         if relation.child_session_id is None:
             return None
+        try:
+            child = self.store.load_session_record(relation.child_session_id)
+        except FileNotFoundError as exc:
+            raise PersistenceError(
+                f"Delegation {relation.delegation_id} references a missing child Session"
+            ) from exc
+        if (
+            child.session_kind != "subagent"
+            or child.root_session_id != relation.root_session_id
+            or child.parent_session_id != relation.parent_session_id
+            or child.delegation_id != relation.delegation_id
+        ):
+            raise PersistenceError(
+                f"Delegation {relation.delegation_id} does not match its child Session backlink"
+            )
         node = next(
             (
                 item
@@ -1721,7 +1736,8 @@ class AgentService:
             content=_subagent_result_content(handle, relation, detail.final_text[:8_000]),
             structured=structured,
             resource_refs=list(resource_refs),
-            ended_at=utc_now(),
+            started_at=relation.created_at,
+            ended_at=max(relation.result.result_ready_at, relation.created_at),
         )
 
     def _tool_result_is_committed(

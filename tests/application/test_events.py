@@ -320,6 +320,58 @@ async def test_event_recorder_allocates_unique_sequences_across_concurrent_emitt
 
 
 @pytest.mark.asyncio
+async def test_event_recorder_fanout_preserves_same_session_persistence_order(tmp_path) -> None:
+    first_persisted = threading.Event()
+    release_first = threading.Event()
+
+    class DelayedReturnStore(LocalSessionStore):
+        def append_ordered_event(self, event: EventRecord) -> EventRecord:
+            recorded = super().append_ordered_event(event)
+            if event.event_type == "run_started":
+                first_persisted.set()
+                assert release_first.wait(timeout=2)
+            return recorded
+
+    store = DelayedReturnStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Ordered fan-out")
+    store.create_session(session)
+    seen: list[int] = []
+    recorder = RuntimeEventRecorder(
+        store=store,
+        observers=ObserverRegistry(),
+        event_sink=lambda event: seen.append(event.sequence),
+    )
+    first = asyncio.create_task(
+        recorder.publish(
+            session_id=session.session_id,
+            run_id="run_1",
+            event_type="run_started",
+            payload={},
+        )
+    )
+    assert await asyncio.to_thread(first_persisted.wait, 1)
+    second = asyncio.create_task(
+        recorder.publish(
+            session_id=session.session_id,
+            run_id="run_1",
+            event_type="model_request_started",
+            payload={},
+        )
+    )
+    await asyncio.sleep(0)
+    assert second.done() is False
+
+    release_first.set()
+    recorded = await asyncio.gather(first, second)
+    await recorder.drain()
+
+    assert [event.sequence for event in recorded] == [1, 2]
+    assert seen == [1, 2]
+    await recorder.close()
+
+
+@pytest.mark.asyncio
 async def test_slow_file_persistence_does_not_block_another_session(tmp_path) -> None:
     entered = threading.Event()
     release = threading.Event()

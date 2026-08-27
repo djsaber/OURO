@@ -78,7 +78,7 @@ from ouro.tools import (
     ToolResult,
     builtin_tools,
 )
-from ouro.tui.app import OuroTuiApp, _session_choices
+from ouro.tui.app import OuroTuiApp, _active_stream_tail, _session_choices
 from ouro.tui.commands import TUI_COMMANDS, TuiCommand, TuiCommandArgument
 from ouro.tui.configuration_screens import (
     AgentDefinitionConfigurationScreen,
@@ -929,6 +929,62 @@ class MultiChildStreamingProvider:
         )
 
 
+class SyncChildViewProvider:
+    """Keep one synchronous child reasoning while its parent view is reloaded."""
+
+    provider_id = "sync-child-view"
+
+    def __init__(self) -> None:
+        self.root_round = 0
+        self.child_reasoning_started = asyncio.Event()
+        self.release_child = asyncio.Event()
+
+    async def stream(
+        self,
+        *,
+        model: ModelMetadata,
+        system_prompt: str = "",
+        messages: list[ModelMessage],
+        tools: list[dict[str, object]] | None = None,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        del model, system_prompt, messages
+        names = [str(item["name"]) for item in (tools or [])]
+        if "SpawnAgent" not in names:
+            yield ProviderStreamEvent(type="reasoning_delta", reasoning_content="Inspecting")
+            self.child_reasoning_started.set()
+            await self.release_child.wait()
+            yield ProviderStreamEvent(type="text_delta", text="child complete")
+            yield ProviderStreamEvent(type="done")
+            return
+
+        if self.root_round == 0:
+            self.root_round += 1
+            yield ProviderStreamEvent.from_tool_call(
+                {
+                    "id": "sync_view_spawn",
+                    "name": "SpawnAgent",
+                    "arguments": {
+                        "agent_id": "general",
+                        "task": "Inspect while both Session views are exercised.",
+                        "description": "Synchronous view test",
+                        "execution_mode": "sync",
+                    },
+                }
+            )
+            yield ProviderStreamEvent(type="done")
+            return
+        yield ProviderStreamEvent(type="text_delta", text="parent resumed")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            ok=True,
+            model_id=model.model_id,
+            message="ok",
+        )
+
+
 class TuiPlanConfirmationProvider:
     provider_id = "tui-plan-confirmation"
 
@@ -1297,6 +1353,25 @@ def _queued_subagent_approval_application(
 def _multi_child_streaming_application(
     tmp_path: Path,
     provider: MultiChildStreamingProvider,
+) -> LocalApplication:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="faux", provider_id=provider.provider_id),
+        ),
+        tools=ToolRegistry(),
+        default_workspace=tmp_path,
+        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+    )
+    return LocalApplication.from_runtime(runtime)
+
+
+def _sync_child_view_application(
+    tmp_path: Path,
+    provider: SyncChildViewProvider,
 ) -> LocalApplication:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -2273,6 +2348,67 @@ async def test_first_markdown_chunk_renders_while_provider_is_still_running(
 
 
 @pytest.mark.asyncio
+async def test_visible_subscription_owns_events_without_global_sink_duplicates(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    session = application.runtime.sessions.create(title="Observed once").session
+    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await _wait_until(
+            lambda: app._visible_session_id() == session.session_id,
+            pilot,
+            description="visible subscribed Session",
+        )
+        await _wait_until(
+            lambda: not app._pending_runtime_events,
+            pilot,
+            description="settled event buffer",
+        )
+        assert app._observation_subscription is not None
+        event = EventRecord(
+            session_id=session.session_id,
+            run_id="run_duplicate",
+            event_type="model_text_delta",
+            sequence=1,
+            payload={"text": "duplicate sink delivery"},
+        )
+
+        app._publish_runtime_event(event)
+
+        assert app._pending_runtime_events == []
+
+
+@pytest.mark.asyncio
+async def test_tui_runtime_event_staging_buffer_is_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("ouro.tui.app._RUNTIME_EVENT_BUFFER_MAX", 2)
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        events = tuple(
+            EventRecord(
+                session_id="ses_buffer",
+                run_id="run_buffer",
+                event_type="model_text_delta",
+                sequence=sequence,
+                payload={"text": str(sequence)},
+            )
+            for sequence in range(1, 4)
+        )
+
+        assert app._queue_runtime_event(events[0]) is True
+        assert app._queue_runtime_event(events[1]) is True
+        assert app._queue_runtime_event(events[2]) is False
+        assert app._pending_runtime_events == list(events[:2])
+        app._pending_runtime_events.clear()
+
+
+@pytest.mark.asyncio
 async def test_first_user_message_renders_when_leaving_welcome_page(tmp_path: Path) -> None:
     provider = BlockingStreamProvider()
     app = OuroTuiApp(application=_blocking_application(tmp_path, provider))
@@ -2702,6 +2838,96 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             for entry in app.query_one(ConversationHistory).entries
             if entry.kind == "assistant"
         )
+
+
+@pytest.mark.asyncio
+async def test_sync_child_view_restore_preserves_live_tool_and_reasoning_clocks(
+    tmp_path: Path,
+) -> None:
+    provider = SyncChildViewProvider()
+    application = _sync_child_view_application(tmp_path, provider)
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 38)) as pilot:
+        await pilot.pause()
+        await pilot.click("#composer")
+        await pilot.press(*"start child", "enter")
+        await asyncio.wait_for(provider.child_reasoning_started.wait(), timeout=5)
+        await pilot.pause(0.25)
+
+        root_session_id = app._controller.session_id
+        assert root_session_id is not None
+        assert application.agents is not None
+        child = application.agents.agent_tree_snapshot(root_session_id).nodes[0]
+        app.post_message(
+            ToolNavigationRequested(
+                parent_run_id=child.parent_run_id,
+                parent_tool_call_id="sync_view_spawn",
+            )
+        )
+        await _wait_until(
+            lambda: app._visible_session_id() == child.session_id,
+            pilot,
+            description="synchronous child view",
+        )
+        first_reasoning = app.query_one(AssistantTurn).reasoning
+        first_elapsed = first_reasoning._elapsed_seconds()
+        assert first_elapsed >= 0.2
+
+        app.action_main_session()
+        await _wait_until(
+            lambda: app._visible_session_id() == root_session_id,
+            pilot,
+            description="restored synchronous parent view",
+        )
+        root_conversation = app.query_one(ConversationView)
+        await _wait_until(
+            lambda: "sync_view_spawn" in root_conversation._tools,
+            pilot,
+            description="restored live SpawnAgent row",
+        )
+        root_tool = root_conversation._tools["sync_view_spawn"]
+        assert root_tool.tool.status == "waiting_child"
+        assert root_tool._timer is not None
+        frame = root_tool._frame
+        root_tool._tick()
+        assert root_tool._frame != frame
+
+        await pilot.pause(0.2)
+        app.post_message(
+            ToolNavigationRequested(
+                parent_run_id=child.parent_run_id,
+                parent_tool_call_id="sync_view_spawn",
+            )
+        )
+        await _wait_until(
+            lambda: app._visible_session_id() == child.session_id,
+            pilot,
+            description="reopened synchronous child view",
+        )
+        restored_elapsed = app.query_one(AssistantTurn).reasoning._elapsed_seconds()
+        assert restored_elapsed >= first_elapsed + 0.15
+
+        app.action_main_session()
+        await _wait_until(
+            lambda: app._visible_session_id() == root_session_id,
+            pilot,
+            description="final parent view",
+        )
+        provider.release_child.set()
+        await _wait_for_worker_group(app, pilot, group="run")
+        await _wait_until(
+            lambda: app._projection is not None and app._projection.activity.status == "completed",
+            pilot,
+            description="synchronous parent completion",
+        )
+        completed = [
+            entry.tool
+            for entry in app.query_one(ConversationHistory).entries
+            if entry.tool is not None and entry.tool.tool_call_id == "sync_view_spawn"
+        ]
+        assert len(completed) == 1
+        assert completed[0].status == "completed"
 
 
 @pytest.mark.asyncio
@@ -3394,6 +3620,54 @@ async def test_history_load_renders_tool_calls_between_messages(tmp_path: Path) 
         assert kinds == ["user", "tool", "assistant"]
 
 
+@pytest.mark.asyncio
+async def test_history_load_keeps_the_active_tool_batch_in_live_rows(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    run_id = "run_active_tools"
+    tool_call_id = "spawn_active"
+    request = MessageRecord(
+        session_id="ses_active_tools",
+        run_id=run_id,
+        role="assistant",
+        content=[],
+        tool_calls=[
+            ToolCallRequest(
+                id=tool_call_id,
+                name="SpawnAgent",
+                arguments={"task": "Inspect the active child."},
+            )
+        ],
+    )
+    active = RuntimeToolCallActivity(
+        tool_call_id=tool_call_id,
+        tool_name="SpawnAgent",
+        status="waiting_child",
+        source_index=0,
+        arguments={"task": "Inspect the active child."},
+        started_at=datetime.now(UTC) - timedelta(seconds=2),
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        conversation = app.query_one(ConversationView)
+        await conversation.load_messages(
+            (request,),
+            mutable_tool_calls=((run_id, tool_call_id),),
+        )
+        conversation.begin_model_request(run_id=run_id)
+        await conversation.sync_tools((active,))
+        await pilot.pause()
+
+        history = conversation.query_one(ConversationHistory)
+        assert not [entry for entry in history.entries if entry.tool is not None]
+        row = conversation._tools[tool_call_id]
+        assert row.is_attached is True
+        assert row._timer is not None
+        frame = row._frame
+        row._tick()
+        assert row._frame != frame
+
+
 def test_history_recovers_legacy_tool_timing_from_message_boundaries() -> None:
     started_at = datetime(2026, 8, 26, 10, 0, tzinfo=UTC)
     call_id = "legacy_call"
@@ -3736,6 +4010,74 @@ async def test_run_result_replays_events_when_live_sink_is_delayed(tmp_path: Pat
         assert app._projection is not None
         assert app._projection.assistant_text == "Recovered response"
         assert app._projection.activity.status == "completed"
+
+
+def test_active_stream_tail_waits_for_canonical_message_commit() -> None:
+    session_id = "ses_restore_boundary"
+    run_id = "run_restore_boundary"
+    events = (
+        EventRecord(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id="turn_committed",
+            event_type="model_text_delta",
+            sequence=1,
+            payload={"text": "already stored"},
+        ),
+        EventRecord(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id="turn_committed",
+            event_type="model_message_completed",
+            sequence=2,
+        ),
+        EventRecord(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id="turn_pending",
+            event_type="model_reasoning_delta",
+            sequence=3,
+            payload={"reasoning_content": "still thinking"},
+        ),
+        EventRecord(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id="turn_pending",
+            event_type="model_text_delta",
+            sequence=4,
+            payload={"text": "not committed yet"},
+        ),
+        EventRecord(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id="turn_pending",
+            event_type="model_message_completed",
+            sequence=5,
+        ),
+    )
+    committed = MessageRecord.text(
+        session_id=session_id,
+        run_id=run_id,
+        turn_id="turn_committed",
+        role="assistant",
+        text="already stored",
+        sequence=1,
+    )
+
+    assert _active_stream_tail(events, (committed,)) == (
+        "still thinking",
+        "not committed yet",
+    )
+
+    pending = MessageRecord.text(
+        session_id=session_id,
+        run_id=run_id,
+        turn_id="turn_pending",
+        role="assistant",
+        text="not committed yet",
+        sequence=2,
+    )
+    assert _active_stream_tail(events, (committed, pending)) == ("", "")
 
 
 @pytest.mark.asyncio

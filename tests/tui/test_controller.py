@@ -1475,6 +1475,53 @@ async def test_new_primary_session_cannot_be_claimed_by_concurrent_child_events(
 
 
 @pytest.mark.asyncio
+async def test_controller_filters_child_stream_but_forwards_child_control_events(
+    tmp_path: Path,
+) -> None:
+    application = _reasoning_application(tmp_path)
+    published: list[EventRecord] = []
+    controller = TuiController(
+        published.append,
+        lambda _status: None,
+        application=application,
+    )
+    await controller.start()
+
+    try:
+        root = application.runtime.sessions.create(title="Root").session
+        child = SessionRecord(
+            title="Child",
+            session_kind="subagent",
+            root_session_id=root.session_id,
+            parent_session_id=root.session_id,
+            delegation_id="dlg_child",
+        )
+        application.runtime.store.create_session(child)
+        controller._session_id = root.session_id
+        delta = EventRecord(
+            session_id=child.session_id,
+            run_id="run_child",
+            event_type="model_text_delta",
+            payload={"text": "high-volume child stream"},
+            sequence=1,
+        )
+        approval = EventRecord(
+            session_id=child.session_id,
+            run_id="run_child",
+            event_type="approval_requested",
+            payload={"tool_call_id": "call_1", "approval_id": "approval_1"},
+            sequence=2,
+        )
+
+        await controller._receive_event(delta)
+        await controller._receive_event(approval)
+
+        assert published == [approval]
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
 async def test_controller_keeps_archive_policy_in_tui_and_unarchives_after_update(
     tmp_path: Path,
 ) -> None:

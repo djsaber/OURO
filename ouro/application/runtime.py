@@ -3234,6 +3234,16 @@ class RuntimeService:
                     "turn_id": batch.turn_id,
                 },
             )
+            if suspension.status == "waiting_child":
+                if self._agent_controls is None or suspension.call.agent_wait is None:
+                    raise RuntimeError("Agent control executor is unavailable")
+                await self._agent_controls.wait_parked(
+                    session=session,
+                    run=run,
+                    batch=batch,
+                    tool_call_id=suspension.call.request.id,
+                    wait=suspension.call.agent_wait,
+                )
             return RunResult(session=session, run=run, events=emitted)
 
         active_signal = self.run_ownership.activate_signal(session.session_id, run.run_id)

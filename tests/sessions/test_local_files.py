@@ -343,6 +343,62 @@ def test_corrupt_event_accelerators_fall_back_without_hiding_canonical_events(
     assert rebuilt["offset"] == 0
 
 
+def test_valid_looking_late_run_offset_cannot_hide_canonical_event_prefix(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Validate Run cursor identity")
+    store.create_session(session)
+    store.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id="run_old",
+            event_type="model_text_delta",
+            payload={"text": "historical"},
+        )
+    )
+    active = RunRecord(
+        run_id="run_active",
+        session_id=session.session_id,
+        status="running",
+    )
+    store.save_run(active)
+    store.save_session(
+        session.model_copy(update={"status": "running", "active_run_id": active.run_id})
+    )
+    expected = [
+        store.append_ordered_event(
+            EventRecord(
+                session_id=session.session_id,
+                run_id=active.run_id,
+                event_type="model_text_delta",
+                payload={"text": text},
+            )
+        )
+        for text in ("first", "second")
+    ]
+    session_dir = store.sessions_dir / session.session_id
+    journal = session_dir / "events.jsonl"
+    second_offset = 0
+    with journal.open("rb") as file:
+        while raw := file.readline():
+            if expected[1].event_id.encode() in raw:
+                second_offset = file.tell() - len(raw)
+                break
+    assert second_offset > 0
+    index_path = session_dir / "event-index" / "runs" / f"{active.run_id}.json"
+    cursor = json.loads(index_path.read_text(encoding="utf-8"))
+    cursor["offset"] = second_offset
+    index_path.write_text(json.dumps(cursor), encoding="utf-8")
+
+    reopened = LocalSessionStore(tmp_path)
+    observation = reopened.load_session_observation(session.session_id)
+
+    assert observation.active_run_events == expected
+    rebuilt = json.loads(index_path.read_text(encoding="utf-8"))
+    assert rebuilt["offset"] < second_offset
+    assert rebuilt["first_event_id"] == expected[0].event_id
+
+
 def test_unwritable_event_accelerators_do_not_block_canonical_events(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()

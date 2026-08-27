@@ -669,6 +669,8 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._render_tool = render_tool
         self._entries: list[TranscriptEntry] = []
         self._pieces: list[_Piece] = []
+        self._piece_indexes_by_entry: dict[int, list[int]] = {}
+        self._tool_entry_indexes: dict[tuple[str | None, str], int] = {}
         self._user_lines: tuple[int, ...] = ()
         self._render_width = 0
         self._reasoning_expanded = reasoning_expanded
@@ -787,6 +789,8 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
     ) -> None:
         entry_index = len(self._entries)
         self._entries.append(entry)
+        if entry.tool is not None:
+            self._tool_entry_indexes[(entry.run_id, entry.tool.tool_call_id)] = entry_index
         if (
             entry.reasoning
             and reasoning_expanded is not None
@@ -829,13 +833,12 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         if not updates:
             return frozenset()
         matched: set[str] = set()
-        changed = False
-        for index, entry in enumerate(self._entries):
-            if entry.tool is None or entry.run_id != run_id:
+        changed_indexes: list[int] = []
+        for tool_call_id, tool in updates.items():
+            index = self._tool_entry_indexes.get((run_id, tool_call_id))
+            if index is None:
                 continue
-            tool = updates.get(entry.tool.tool_call_id)
-            if tool is None:
-                continue
+            entry = self._entries[index]
             matched.add(tool.tool_call_id)
             if entry.tool != tool:
                 self._entries[index] = TranscriptEntry(
@@ -843,9 +846,12 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                     run_id=entry.run_id,
                     tool=tool,
                 )
-                changed = True
-        if changed:
-            self._render_entries()
+                changed_indexes.append(index)
+        if changed_indexes:
+            if not all(self._rerender_entry(index) for index in changed_indexes):
+                self._render_entries()
+            else:
+                self._rebuild_lines()
         return frozenset(matched)
 
     def refresh_theme(self) -> None:
@@ -928,6 +934,12 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         """Reset the strip buffer for a full replacement; True when width is known."""
         self._entries = entries
         self._pieces.clear()
+        self._piece_indexes_by_entry.clear()
+        self._tool_entry_indexes = {
+            (entry.run_id, entry.tool.tool_call_id): index
+            for index, entry in enumerate(entries)
+            if entry.tool is not None
+        }
         self._user_lines = ()
         self._widest_line_width = 0
         self._line_cache.clear()
@@ -964,9 +976,29 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 _Piece(
                     strips=strips,
                     tag=tag,
-                    entry_index=entry_index if tag == "reasoning" else -1,
+                    entry_index=entry_index,
                 )
             )
+            self._piece_indexes_by_entry.setdefault(entry_index, []).append(len(self._pieces) - 1)
+
+    def _rerender_entry(self, entry_index: int) -> bool:
+        piece_indexes = self._piece_indexes_by_entry.get(entry_index)
+        if not piece_indexes:
+            return False
+        entry = self._entries[entry_index]
+        previous_kind = self._entries[entry_index - 1].kind if entry_index > 0 else None
+        renderables = self._entry_pieces(
+            entry,
+            previous_kind=previous_kind,
+            entry_index=entry_index,
+        )
+        if len(renderables) != len(piece_indexes):
+            return False
+        for piece_index, (renderable, tag) in zip(piece_indexes, renderables, strict=True):
+            piece = self._pieces[piece_index]
+            piece.strips = self._render_strips(renderable)
+            piece.tag = tag
+        return True
 
     def _entry_pieces(
         self,

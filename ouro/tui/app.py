@@ -125,6 +125,7 @@ class SessionObservationLagged(Message):
 
 _MCP_STATUS_SYNC_INTERVAL_SECONDS = 0.25
 _SESSION_TITLE_MAX_CELLS = 56
+_RUNTIME_EVENT_BUFFER_MAX = 1000
 _RUNTIME_RENDER_BOUNDARY_EVENTS = {
     "compaction_completed",
     "run_completed",
@@ -981,6 +982,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._waiting_for_session_event = False
         self._dismissed_command_text: str | None = None
         self._pending_runtime_events: list[EventRecord] = []
+        self._runtime_event_buffer_lagged: set[str] = set()
         self._runtime_events_ready_posted = False
         self._runtime_events_frame_scheduled = False
         self._runtime_event_apply_lock = asyncio.Lock()
@@ -1156,12 +1158,23 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self.query_one(StatusLine).set_session_controls(tuple(status.label for status in statuses))
 
     def _publish_runtime_event(self, event: EventRecord) -> None:
+        """Accept fallback sink events not already owned by the visible subscription."""
+
         if self._host_closing:
             return
+        subscription = self._observation_subscription
+        if subscription is not None and subscription.session_id == event.session_id:
+            return
+        if not self._queue_runtime_event(event):
+            self._signal_runtime_event_buffer_lag(event.session_id)
+
+    def _queue_runtime_event(self, event: EventRecord) -> bool:
+        if len(self._pending_runtime_events) >= _RUNTIME_EVENT_BUFFER_MAX:
+            return False
         self._pending_runtime_events.append(event)
         if event.event_type in _RUNTIME_RENDER_BOUNDARY_EVENTS:
             self._post_runtime_events_ready()
-            return
+            return True
         if not self._runtime_events_ready_posted and not self._runtime_events_frame_scheduled:
             # The compositor already owns the display cadence. Schedule one
             # prefix per native frame instead of undersampling it with a
@@ -1169,6 +1182,26 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._runtime_events_frame_scheduled = self.call_after_refresh(
                 self._post_runtime_events_ready,
             )
+        return True
+
+    def _signal_runtime_event_buffer_lag(self, session_id: str) -> None:
+        if session_id in self._runtime_event_buffer_lagged or self._host_closing:
+            return
+        self._runtime_event_buffer_lagged.add(session_id)
+        self.post_message(
+            SessionObservationLagged(
+                session_id=session_id,
+                diagnostic=Diagnostic(
+                    code="tui_runtime_event_buffer_lagged",
+                    severity="warning",
+                    component="tui.session_observation",
+                    message="TUI event buffer overflowed; reload the durable Session snapshot",
+                    session_id=session_id,
+                    recoverable=True,
+                    suggested_action="Reload the visible Session observation.",
+                ),
+            )
+        )
 
     def _replace_observation(self, subscription: RuntimeSubscription) -> None:
         previous = self._observation_subscription
@@ -1188,7 +1221,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 if self._host_closing:
                     return
                 if notification.kind == "event" and notification.event is not None:
-                    self._publish_runtime_event(_event_record(notification.event))
+                    if not self._queue_runtime_event(_event_record(notification.event)):
+                        self._signal_runtime_event_buffer_lag(subscription.session_id)
+                        return
                 elif notification.kind == "diagnostic" and notification.diagnostic is not None:
                     self.post_message(
                         SessionObservationLagged(
@@ -1204,6 +1239,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self,
         message: SessionObservationLagged,
     ) -> None:
+        self._runtime_event_buffer_lagged.discard(message.session_id)
         if message.session_id != self._visible_session_id() or self._host_closing:
             return
         self.notify(
@@ -2665,6 +2701,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._projection = None
             self._interaction = None
             self._sync_interaction(None)
+            projection = self._project_loaded_session(loaded)
             conversation = self.query_one(ConversationView)
             await conversation.load_messages(
                 loaded.messages,
@@ -2673,10 +2710,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     (run for run in loaded.runs if run.kind == "agent"),
                     loaded.messages,
                 ),
+                mutable_tool_calls=(
+                    (projection.activity.run_id, tool.tool_call_id)
+                    for tool in projection.activity.tool_calls
+                ),
             )
             self._set_welcome_mode(conversation.showing_welcome)
             self.query_one(QueuedInputPanel).set_inputs(() if read_only else loaded.queued_inputs)
-            await self._restore_projection(loaded)
+            await self._restore_projection(loaded, projection)
             session = loaded.detail.session
             agent_name = None if agent is None else agent.nickname or agent.agent_name
             self._active_title = (
@@ -2805,7 +2846,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if selected_message is not None:
             self._edit_draft(user_message_text(selected_message))
 
-    async def _restore_projection(self, loaded: LoadedSession) -> None:
+    @staticmethod
+    def _project_loaded_session(loaded: LoadedSession) -> TuiSessionProjection:
         projection = TuiSessionProjection(loaded.detail.session.session_id)
         projection.restore(
             loaded.events,
@@ -2817,6 +2859,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 "effective_context_metrics": loaded.effective_context_metrics,
             }
         )
+        return projection
+
+    async def _restore_projection(
+        self,
+        loaded: LoadedSession,
+        projection: TuiSessionProjection,
+    ) -> None:
         self._projection = projection
         self._sync_activity(projection.activity)
         if self._visible_read_only:
@@ -2825,18 +2874,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         else:
             await self._refresh_interaction(refresh_agents=True)
         conversation = self.query_one(ConversationView)
-        reasoning, answer = _active_stream_tail(loaded.events)
+        reasoning, answer = _active_stream_tail(loaded.events, loaded.messages)
         if projection.activity.run_id is not None:
             conversation.begin_model_request(run_id=projection.activity.run_id)
         if reasoning:
-            await conversation.append_reasoning(reasoning)
+            await conversation.append_reasoning(
+                reasoning,
+                started_at=projection.reasoning_started_at,
+            )
+            if projection.reasoning_duration_seconds is not None:
+                conversation.finish_reasoning(projection.reasoning_duration_seconds)
         if answer:
             await conversation.append_assistant(answer)
-        self.run_worker(
-            conversation.sync_tools(projection.activity.tool_calls),
-            group="restore-tools",
-            exclusive=True,
-        )
+        await conversation.sync_tools(projection.activity.tool_calls)
 
     async def _select_model(self, selector: str) -> None:
         applies_to_next_request = self._has_active_run()
@@ -3440,13 +3490,39 @@ def _event_record(event: RuntimeEventView) -> EventRecord:
     )
 
 
-def _active_stream_tail(events: Sequence[EventRecord]) -> tuple[str, str]:
-    """Return only the unfinished model round not already in canonical messages."""
+def _active_stream_tail(
+    events: Sequence[EventRecord],
+    messages: Sequence[MessageRecord] = (),
+) -> tuple[str, str]:
+    """Return stream text not yet represented by a canonical assistant message.
+
+    ``model_message_completed`` closes the provider stream, but the Runtime
+    persists the resulting MessageRecord at a later durable boundary. A Host
+    snapshot can legitimately land between those operations, so only an actual
+    canonical assistant message proves that the corresponding deltas are
+    already present in history.
+    """
 
     ordered = sorted(events, key=lambda item: (item.sequence, item.event_id))
+    run_id = next((event.run_id for event in ordered if event.run_id is not None), None)
+    covered_turns = {
+        message.turn_id
+        for message in messages
+        if message.role == "assistant" and message.run_id == run_id and message.turn_id is not None
+    }
+    covered_legacy_rounds = sum(
+        1
+        for message in messages
+        if message.role == "assistant" and message.run_id == run_id and message.turn_id is None
+    )
     start = 0
     for index, event in enumerate(ordered):
-        if event.event_type == "model_message_completed":
+        if event.event_type != "model_message_completed":
+            continue
+        if event.turn_id is not None and event.turn_id in covered_turns:
+            start = index + 1
+        elif event.turn_id is None and covered_legacy_rounds:
+            covered_legacy_rounds -= 1
             start = index + 1
     reasoning: list[str] = []
     answer: list[str] = []

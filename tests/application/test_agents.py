@@ -105,6 +105,58 @@ class SyncAgentProvider:
         )
 
 
+class ParallelSyncAgentProvider:
+    """Complete two synchronous children at the same durable parent boundary."""
+
+    provider_id = "parallel-sync"
+
+    def __init__(self) -> None:
+        self.root_round = 0
+        self.child_count = 0
+        self.children_ready = asyncio.Event()
+
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
+        del model, system_prompt, messages
+        names = [item["name"] for item in (tools or [])]
+        if "SpawnAgent" not in names:
+            self.child_count += 1
+            if self.child_count == 2:
+                self.children_ready.set()
+            await self.children_ready.wait()
+            yield ProviderStreamEvent(type="text_delta", text="parallel child complete")
+            yield ProviderStreamEvent(type="done")
+            return
+
+        if self.root_round == 0:
+            self.root_round += 1
+            for index in range(2):
+                yield ProviderStreamEvent.from_tool_call(
+                    {
+                        "id": f"parallel_spawn_{index}",
+                        "name": "SpawnAgent",
+                        "arguments": {
+                            "agent_id": "reader",
+                            "task": f"Inspect partition {index}.",
+                            "description": f"Parallel inspection {index}",
+                            "execution_mode": "sync",
+                        },
+                    },
+                    index=index,
+                )
+            yield ProviderStreamEvent(type="done")
+            return
+        yield ProviderStreamEvent(type="text_delta", text="parallel parent resumed")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            model_id=model.model_id,
+            ok=True,
+            message="ok",
+        )
+
+
 class SyncHitlProvider:
     provider_id = "sync-hitl"
 
@@ -1327,6 +1379,37 @@ async def test_sync_follow_up_result_is_delivered_to_parent(tmp_path) -> None:
     assert delivered[0].semantic_tag == "subagent-result"
     assert "## Subagent Result" in delivered[0].text_content
     assert "child complete" in delivered[0].text_content
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agent_navigation_rejects_mismatched_child_session_backlink(tmp_path) -> None:
+    service, supervisor, store, _ = await _services(tmp_path)
+    handle = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/navigation-backlink",
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            parent_tool_call_id="spawn_backlink",
+            agent_id="reader",
+            task="Inspect once.",
+            description="Backlink validation",
+            execution_mode="async",
+        )
+    )
+    await service.wait_agents((handle.delegation_id,))
+    assert handle.child_session_id is not None
+    child = store.load_session_record(handle.child_session_id)
+    store.save_session(child.model_copy(update={"parent_session_id": "ses_wrong_parent"}))
+
+    with pytest.raises(PersistenceError, match="child Session backlink"):
+        service.resolve_agent_navigation(
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            parent_tool_call_id="spawn_backlink",
+        )
+
     await service.close()
     await supervisor.shutdown()
 
@@ -2591,6 +2674,85 @@ async def test_sync_spawn_releases_parent_worker_and_resumes_original_tool_call(
     assert relation.result is not None
     assert relation.result.delivery.status == "delivered"
     assert relation.result.delivery.target_run_id == parent_run_id
+
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_parallel_sync_spawns_serialize_parent_resumption(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    tools = _tools()
+    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions.create(
+        agent_id="reader",
+        name="Reader",
+        description="Read bounded evidence.",
+        system_prompt="CHILD ONLY",
+        tool_selection=ToolSelection(mode="selected", names=("Read",)),
+        tools=tools,
+        expected_revision=0,
+    )
+    provider = ParallelSyncAgentProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="parallel-sync", provider_id="parallel-sync"),
+        ),
+        tools=tools,
+    )
+    supervisor = RuntimeSupervisor(runtime, max_concurrency=4)
+    service = AgentService(
+        store=store,
+        definitions=definitions,
+        scheduler=supervisor,
+        events=runtime.event_recorder,
+    )
+    runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
+    await service.start()
+
+    parent_handle = await supervisor.submit("Delegate two synchronous tasks.")
+    parked = await supervisor.wait(parent_handle)
+    assert parked.status == "waiting_child"
+    assert parked.run_id is not None
+
+    async with asyncio.timeout(5):
+        while store.load_run(parent_handle.session_id, parked.run_id).status != "completed":
+            await asyncio.sleep(0.01)
+
+    events = store.load_session(parent_handle.session_id).events
+    completed_spawn_ids = {
+        event.payload["tool_call_id"]
+        for event in events
+        if event.event_type == "tool_call_completed"
+        and event.payload.get("tool_name") == "SpawnAgent"
+    }
+    assert completed_spawn_ids == {"parallel_spawn_0", "parallel_spawn_1"}
+    snapshot = store.load_runtime_session(parent_handle.session_id)
+    assert snapshot.messages[-1].text_content == "parallel parent resumed"
+    relations_by_call = {
+        relation.parent_tool_call_id: relation
+        for relation in store.list_delegations(parent_handle.session_id)
+    }
+    spawn_results = [
+        message
+        for message in snapshot.messages
+        if message.tool_result is not None and message.tool_result.tool_name == "SpawnAgent"
+    ]
+    assert {message.tool_result.tool_call_id for message in spawn_results} == {
+        "parallel_spawn_0",
+        "parallel_spawn_1",
+    }
+    for message in spawn_results:
+        assert message.tool_result is not None
+        assert message.tool_execution is not None
+        relation = relations_by_call[message.tool_result.tool_call_id]
+        assert relation.result is not None
+        assert message.tool_execution.started_at == relation.created_at
+        assert message.tool_execution.ended_at == relation.result.result_ready_at
+        assert message.tool_execution.ended_at > message.tool_execution.started_at
 
     await service.close()
     await supervisor.shutdown()

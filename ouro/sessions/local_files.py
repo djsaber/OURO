@@ -369,14 +369,28 @@ class LocalSessionStore:
         with self.session_mutation(event.session_id):
             session_dir = self._require_session_dir(event.session_id)
             path = session_dir / "events.jsonl"
+            run_offset: int | None = None
             if event.run_id is not None:
-                self._event_run_offset(event.session_id, event.run_id, path)
+                run_offset = self._event_run_offset(event.session_id, event.run_id, path)
+            journal_size = path.stat().st_size if path.exists() else 0
             self._prepare_event_sequence_index(
                 event.session_id,
                 path,
                 sequence=event.sequence,
             )
             self._append_jsonl(path, event)
+            if (
+                event.run_id is not None
+                and run_offset not in {None, 0}
+                and run_offset == journal_size
+            ):
+                self._write_event_run_offset(
+                    event.session_id,
+                    event.run_id,
+                    run_offset,
+                    journal_size=path.stat().st_size,
+                    first_event=event,
+                )
             self._event_sequence_cache.pop(event.session_id, None)
 
     def append_ordered_event(self, event: EventRecord) -> EventRecord:
@@ -388,8 +402,10 @@ class LocalSessionStore:
                 self._max_event_sequence(event.session_id, path) + 1,
             )
             ordered = event.model_copy(update={"sequence": sequence})
+            run_offset: int | None = None
             if ordered.run_id is not None:
-                self._event_run_offset(event.session_id, ordered.run_id, path)
+                run_offset = self._event_run_offset(event.session_id, ordered.run_id, path)
+            journal_size = path.stat().st_size if path.exists() else 0
             self._prepare_event_sequence_index(
                 event.session_id,
                 path,
@@ -402,6 +418,18 @@ class LocalSessionStore:
                 ordered,
                 durable=ordered.event_type not in MODEL_STREAM_DELTA_EVENT_TYPES,
             )
+            if (
+                ordered.run_id is not None
+                and run_offset not in {None, 0}
+                and run_offset == journal_size
+            ):
+                self._write_event_run_offset(
+                    event.session_id,
+                    ordered.run_id,
+                    run_offset,
+                    journal_size=path.stat().st_size,
+                    first_event=ordered,
+                )
             self._event_sequence_cache[event.session_id] = (path.stat().st_size, sequence)
             return ordered
 
@@ -422,6 +450,7 @@ class LocalSessionStore:
                         run.session_id,
                         run_id,
                         journal.stat().st_size if journal.exists() else 0,
+                        journal_size=journal.stat().st_size if journal.exists() else 0,
                     )
             self._write_model_atomic(run_path, run)
 
@@ -1052,6 +1081,13 @@ class LocalSessionStore:
                     and isinstance(offset, int)
                     and not isinstance(offset, bool)
                     and _is_record_boundary(journal, offset, journal_size)
+                    and self._event_run_offset_matches(
+                        journal,
+                        run_id=validated_run_id,
+                        offset=offset,
+                        journal_size=journal_size,
+                        index=raw,
+                    )
                 ):
                     self._event_run_offset_cache[key] = offset
                     return offset
@@ -1059,11 +1095,27 @@ class LocalSessionStore:
                 # This is a derived accelerator. Rebuild it from the canonical
                 # append-only journal instead of making the Session unreadable.
                 pass
-        offset = self._find_event_run_offset(journal, session_id=session_id, run_id=run_id)
-        self._write_event_run_offset(session_id, validated_run_id, offset)
+        offset, first_event = self._find_event_run_offset(
+            journal,
+            session_id=session_id,
+            run_id=run_id,
+        )
+        self._write_event_run_offset(
+            session_id,
+            validated_run_id,
+            offset,
+            journal_size=journal_size,
+            first_event=first_event,
+        )
         return offset
 
-    def _find_event_run_offset(self, journal: Path, *, session_id: str, run_id: str) -> int:
+    def _find_event_run_offset(
+        self,
+        journal: Path,
+        *,
+        session_id: str,
+        run_id: str,
+    ) -> tuple[int, EventRecord | None]:
         run_id_pattern = re.compile(
             rb'"run_id"\s*:\s*' + re.escape(json.dumps(run_id, ensure_ascii=False).encode("utf-8"))
         )
@@ -1073,7 +1125,7 @@ class LocalSessionStore:
                     offset = file.tell()
                     raw = file.readline()
                     if not raw:
-                        return offset
+                        return offset, None
                     if not raw.strip() or run_id_pattern.search(raw) is None:
                         continue
                     event = decode_versioned_record_json(
@@ -1082,19 +1134,35 @@ class LocalSessionStore:
                         label=f"event in session {session_id}",
                     )
                     if event.run_id == run_id:
-                        return offset
+                        return offset, event
         except (OSError, UnicodeDecodeError, ValidationError, ValueError) as exc:
             raise PersistenceError(
                 f"could not locate Run {run_id} events in Session {session_id}: {exc}"
             ) from exc
 
-    def _write_event_run_offset(self, session_id: str, run_id: str, offset: int) -> None:
+    def _write_event_run_offset(
+        self,
+        session_id: str,
+        run_id: str,
+        offset: int,
+        *,
+        journal_size: int,
+        first_event: EventRecord | None = None,
+    ) -> None:
         validated_run_id = _validated_record_id(run_id, kind="run")
         payload = {
             "schema_version": 1,
             "run_id": validated_run_id,
             "offset": offset,
+            "journal_size": journal_size,
         }
+        if first_event is not None:
+            payload.update(
+                {
+                    "first_event_id": first_event.event_id,
+                    "first_event_sequence": first_event.sequence,
+                }
+            )
         self._event_run_offset_cache[(session_id, validated_run_id)] = offset
         path = self._event_run_offset_path(session_id, validated_run_id)
         if offset == 0 and not path.exists():
@@ -1111,6 +1179,40 @@ class LocalSessionStore:
             # This index is disposable. The in-memory offset remains valid for
             # this Store; a reopened Store can rebuild it from events.jsonl.
             return
+
+    @staticmethod
+    def _event_run_offset_matches(
+        journal: Path,
+        *,
+        run_id: str,
+        offset: int,
+        journal_size: int,
+        index: dict[str, object],
+    ) -> bool:
+        if offset == 0:
+            return True
+        if offset == journal_size:
+            return index.get("journal_size") == journal_size
+        event_id = index.get("first_event_id")
+        sequence = index.get("first_event_sequence")
+        if (
+            not isinstance(event_id, str)
+            or not isinstance(sequence, int)
+            or isinstance(sequence, bool)
+        ):
+            return False
+        try:
+            with journal.open("rb") as file:
+                file.seek(offset)
+                payload = json.loads(file.readline())
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+        return (
+            isinstance(payload, dict)
+            and payload.get("run_id") == run_id
+            and payload.get("event_id") == event_id
+            and payload.get("sequence") == sequence
+        )
 
     def _event_run_offset_path(self, session_id: str, run_id: str) -> Path:
         return self._session_dir(session_id) / "event-index" / "runs" / f"{run_id}.json"

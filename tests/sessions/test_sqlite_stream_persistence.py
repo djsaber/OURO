@@ -3,7 +3,7 @@ import sqlite3
 import pytest
 
 from ouro.core.events import EventRecord
-from ouro.core.state import SessionRecord
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import SQLiteSessionStore
 
 
@@ -129,3 +129,58 @@ def test_sqlite_observation_and_replay_queries_use_session_scoped_indexes(tmp_pa
         "USING INDEX" in str(row[3]) and "session_id=? AND sequence>?" in str(row[3])
         for row in replay_plan
     )
+
+
+def test_sqlite_observation_high_water_shares_the_snapshot_read_boundary(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = SQLiteSessionStore(tmp_path / "ouro.db")
+    store.initialize()
+    session = SessionRecord(title="Atomic observation")
+    store.create_session(session)
+    run = RunRecord(run_id="run_active", session_id=session.session_id, status="running")
+    store.save_run(run)
+    store.save_session(
+        session.model_copy(
+            update={"status": "running", "active_run_id": run.run_id, "last_run_id": run.run_id}
+        )
+    )
+    first = store.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            event_type="model_text_delta",
+            payload={"text": "snapshot"},
+        )
+    )
+    original_load_models = store._load_models
+    appended: list[EventRecord] = []
+
+    def append_between_event_rows_and_high_water(connection, query, parameters, model_type):
+        records = original_load_models(connection, query, parameters, model_type)
+        if model_type is EventRecord and not appended:
+            appended.append(
+                store.append_ordered_event(
+                    EventRecord(
+                        session_id=session.session_id,
+                        run_id=run.run_id,
+                        event_type="model_text_delta",
+                        payload={"text": "replay"},
+                    )
+                )
+            )
+        return records
+
+    monkeypatch.setattr(store, "_load_models", append_between_event_rows_and_high_water)
+
+    snapshot = store.load_session_observation(session.session_id)
+    replay, truncated = store.load_events_after(
+        session.session_id,
+        after_sequence=snapshot.event_high_water,
+    )
+
+    assert snapshot.active_run_events == [first]
+    assert snapshot.event_high_water == first.sequence
+    assert replay == appended
+    assert truncated is False

@@ -145,7 +145,7 @@ async def test_live_spawn_tool_click_preserves_parent_run_identity() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tool_updates_are_scoped_to_the_parent_run() -> None:
+async def test_tool_updates_are_scoped_to_the_parent_run(monkeypatch) -> None:
     app = _HistoryApp()
     requested = RuntimeToolCallActivity(
         tool_call_id="reused_call",
@@ -157,6 +157,12 @@ async def test_tool_updates_are_scoped_to_the_parent_run() -> None:
     async with app.run_test(size=(80, 12)):
         app.history.append(TranscriptEntry(kind="tool", run_id="run_old", tool=requested))
         app.history.append(TranscriptEntry(kind="tool", run_id="run_new", tool=requested))
+        await app.history.wait_until_rendered()
+
+        def reject_full_history_render() -> None:
+            raise AssertionError("one tool update must not re-render the complete history")
+
+        monkeypatch.setattr(app.history, "_render_entries", reject_full_history_render)
 
         matched = app.history.update_tools(
             (requested.model_copy(update={"status": "completed"}),),

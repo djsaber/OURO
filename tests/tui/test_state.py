@@ -108,6 +108,8 @@ def test_projection_times_reasoning_from_request_start_to_first_answer_delta() -
             payload={"reasoning_content": "Inspect"},
         )
     )
+    assert projection.reasoning_started_at == started_at
+    assert projection.reasoning_duration_seconds is None
     answer = projection.apply(
         EventRecord(
             session_id="ses_test",
@@ -121,6 +123,7 @@ def test_projection_times_reasoning_from_request_start_to_first_answer_delta() -
 
     assert reasoning is not None and reasoning.reasoning_started_at == started_at
     assert answer is not None and answer.reasoning_duration_seconds == pytest.approx(0.85)
+    assert projection.reasoning_duration_seconds == pytest.approx(0.85)
 
 
 def test_projection_tracks_tool_lifecycle_and_approval() -> None:
@@ -191,6 +194,41 @@ def test_projection_tracks_tool_lifecycle_and_approval() -> None:
     assert tool.started_at is not None
     assert tool.ended_at is not None
     assert tool.requested_at <= tool.started_at <= tool.ended_at
+
+
+def test_projection_restores_a_parked_agent_call_as_waiting_child() -> None:
+    projection = TuiSessionProjection("ses_test")
+    projection.apply(_event(1, "run_started", trigger="user"))
+    projection.apply(_event(2, "tool_batch_planned", batch_id="batch_1"))
+    projection.apply(
+        _event(
+            3,
+            "tool_call_requested",
+            tool_call_id="spawn_1",
+            tool_name="SpawnAgent",
+            source_index=0,
+        )
+    )
+    projection.apply(
+        _event(
+            4,
+            "tool_call_started",
+            tool_call_id="spawn_1",
+            tool_name="SpawnAgent",
+            source_index=0,
+        )
+    )
+    projection.apply(
+        _event(
+            5,
+            "agent_wait_requested",
+            tool_call_id="spawn_1",
+            wait_id="wait_1",
+            delegation_id="dlg_1",
+        )
+    )
+
+    assert projection.activity.tool_calls[0].status == "waiting_child"
 
 
 def test_projection_queues_parallel_approvals_in_event_order() -> None:

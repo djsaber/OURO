@@ -1264,7 +1264,17 @@ class SQLiteSessionStore:
         connection: sqlite3.Connection | None = None
         try:
             connection = self._connect()
-            yield connection
+            # A shared connection alone is not a snapshot boundary in SQLite:
+            # without an explicit transaction each SELECT may observe a newer
+            # commit. Observation snapshots issue several SELECTs and publish a
+            # high-water cursor, so they must all read one database version or a
+            # concurrent event can be covered by neither the snapshot nor replay.
+            connection.execute("BEGIN")
+            try:
+                yield connection
+            finally:
+                if connection.in_transaction:
+                    connection.rollback()
         except sqlite3.Error as exc:
             raise PersistenceError(f"SQLite read failed: {exc}") from exc
         finally:

@@ -1245,6 +1245,8 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         messages: Iterable[MessageRecord],
         compactions: Iterable[CompactionRecord] = (),
         runs: Iterable[RunPresentation] = (),
+        *,
+        mutable_tool_calls: Iterable[tuple[str | None, str]] = (),
     ) -> None:
         await self._clear_live_transcript()
         self._assistant = None
@@ -1258,6 +1260,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         # role, semantic tags, and producer source must not be used to infer it.
         materialized = [message for message in messages if not message.scaffold]
         run_presentations = tuple(runs)
+        mutable_tool_call_keys = frozenset(mutable_tool_calls)
         requests = {
             request.message_id: request for run in run_presentations for request in run.requests
         }
@@ -1306,6 +1309,8 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                         ),
                     )
                 for call in message.tool_calls:
+                    if (message.run_id, call.id) in mutable_tool_call_keys:
+                        continue
                     activity = tool_activities.get(call.id)
                     if activity is None:
                         continue

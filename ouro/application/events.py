@@ -95,6 +95,7 @@ class RuntimeEventRecorder:
         self._observer_dispatcher = observer_dispatcher or ObserverDispatcher()
         self._observer_dispatcher.set_failure_sink(self.record_observer_failure)
         self._diagnostic_tasks: set[asyncio.Task[None]] = set()
+        self._session_event_locks: dict[str, asyncio.Lock] = {}
         self._closed = False
         if event_sink is not None:
             self.add_event_sink(event_sink)
@@ -150,9 +151,8 @@ class RuntimeEventRecorder:
             sequence=sequence + 1,
             payload=payload,
         )
-        event = await self._append_ordered_event(event)
+        event = await self._record_event(event, notify_observers=True)
         emitted.append(event)
-        self._publish(event, notify_observers=True)
         return event.sequence
 
     async def publish(
@@ -166,27 +166,26 @@ class RuntimeEventRecorder:
         """Persist and publish an application event outside a Run loop transaction."""
 
         validate_runtime_event_payload(event_type, payload)
-        event = await self._append_ordered_event(
+        return await self._record_event(
             EventRecord(
                 session_id=session_id,
                 run_id=run_id,
                 event_type=event_type,
                 payload=payload,
-            )
+            ),
+            notify_observers=True,
         )
-        self._publish(event, notify_observers=True)
-        return event
 
     async def record_observer_failure(self, failure: ObserverFailure) -> None:
-        event = await self._append_ordered_event(
+        await self._record_event(
             EventRecord(
                 session_id=failure.session_id or "unknown",
                 run_id=failure.run_id,
                 event_type="plugin_observer_failed",
                 payload=failure.model_dump(mode="json"),
-            )
+            ),
+            notify_observers=False,
         )
-        self._publish(event, notify_observers=False)
 
     async def record_context_provider_failures(
         self,
@@ -195,18 +194,18 @@ class RuntimeEventRecorder:
         failures: Sequence[ContextProviderFailure],
     ) -> int:
         for failure in failures:
-            event = await self._append_ordered_event(
+            event = await self._record_event(
                 EventRecord(
                     session_id=failure.session_id,
                     run_id=failure.run_id,
                     event_type="context_provider_failed",
                     sequence=sequence + 1,
                     payload=failure.model_dump(mode="json"),
-                )
+                ),
+                notify_observers=False,
             )
             sequence = event.sequence
             emitted.append(event)
-            self._publish(event, notify_observers=False)
         return sequence
 
     async def record_turn_policy_failures(
@@ -216,7 +215,7 @@ class RuntimeEventRecorder:
         failures: Sequence[TurnPolicyFailure],
     ) -> int:
         for failure in failures:
-            event = await self._append_ordered_event(
+            event = await self._record_event(
                 EventRecord(
                     session_id=failure.session_id,
                     run_id=failure.run_id,
@@ -224,11 +223,11 @@ class RuntimeEventRecorder:
                     event_type="turn_policy_failed",
                     sequence=sequence + 1,
                     payload=failure.model_dump(mode="json"),
-                )
+                ),
+                notify_observers=False,
             )
             sequence = event.sequence
             emitted.append(event)
-            self._publish(event, notify_observers=False)
         return sequence
 
     async def drain(self) -> None:
@@ -262,6 +261,20 @@ class RuntimeEventRecorder:
 
     async def _append_ordered_event(self, event: EventRecord) -> EventRecord:
         return await asyncio.to_thread(self.store.append_ordered_event, event)
+
+    async def _record_event(
+        self,
+        event: EventRecord,
+        *,
+        notify_observers: bool,
+    ) -> EventRecord:
+        """Keep persistence order and live fan-out order identical per Session."""
+
+        lock = self._session_event_locks.setdefault(event.session_id, asyncio.Lock())
+        async with lock:
+            recorded = await self._append_ordered_event(event)
+            self._publish(recorded, notify_observers=notify_observers)
+            return recorded
 
     def _publish(self, event: EventRecord, *, notify_observers: bool) -> None:
         if self._closed:
@@ -397,15 +410,15 @@ class RuntimeEventRecorder:
         event_type: str,
         payload: dict[str, Any],
     ) -> None:
-        diagnostic = await self._append_ordered_event(
+        await self._record_event(
             EventRecord(
                 session_id=source.session_id,
                 run_id=source.run_id,
                 event_type=event_type,
                 payload=payload,
-            )
+            ),
+            notify_observers=False,
         )
-        self._publish(diagnostic, notify_observers=False)
 
     async def _join_sink_queues(self) -> None:
         joins = [observer.queue.join() for observer in self._sink_observers]

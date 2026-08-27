@@ -186,6 +186,7 @@ class TuiSessionProjection:
     _model_request_started_at: datetime | None = field(default=None, init=False)
     _reasoning_seen: bool = field(default=False, init=False)
     _reasoning_finished: bool = field(default=False, init=False)
+    _reasoning_duration_seconds: float | None = field(default=None, init=False)
     _model: str | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
@@ -224,6 +225,14 @@ class TuiSessionProjection:
         return self._model
 
     @property
+    def reasoning_started_at(self) -> datetime | None:
+        return self._model_request_started_at if self._reasoning_seen else None
+
+    @property
+    def reasoning_duration_seconds(self) -> float | None:
+        return self._reasoning_duration_seconds
+
+    @property
     def last_sequence(self) -> int:
         return max(0, self._last_sequence)
 
@@ -260,11 +269,13 @@ class TuiSessionProjection:
             self._model_request_started_at = None
             self._reasoning_seen = False
             self._reasoning_finished = False
+            self._reasoning_duration_seconds = None
             self._model = None
         elif event.event_type == "model_request_started":
             self._model_request_started_at = event.created_at
             self._reasoning_seen = False
             self._reasoning_finished = False
+            self._reasoning_duration_seconds = None
             self._model = _string(payload.get("endpoint")) or _string(payload.get("model"))
         elif event.event_type == "model_text_delta":
             assistant_delta = _string(payload.get("text")) or ""
@@ -362,7 +373,11 @@ class TuiSessionProjection:
         ):
             return None
         self._reasoning_finished = True
-        return max(0.0, (ended_at - self._model_request_started_at).total_seconds())
+        self._reasoning_duration_seconds = max(
+            0.0,
+            (ended_at - self._model_request_started_at).total_seconds(),
+        )
+        return self._reasoning_duration_seconds
 
 
 def question_text(interaction: PendingInteraction) -> str:
