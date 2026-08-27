@@ -2189,6 +2189,39 @@ async def test_first_markdown_chunk_renders_while_provider_is_still_running(
 
 
 @pytest.mark.asyncio
+async def test_first_user_message_renders_when_leaving_welcome_page(tmp_path: Path) -> None:
+    provider = BlockingStreamProvider()
+    app = OuroTuiApp(application=_blocking_application(tmp_path, provider))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await _wait_until(
+            lambda: app.query_one(ConversationView).showing_welcome,
+            pilot,
+            description="welcome page",
+        )
+
+        await pilot.press(*"first message", "enter")
+        try:
+            await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
+            await _wait_until(
+                lambda: app._projection is not None
+                and app._projection.assistant_text == "first ",
+                pilot,
+                description="first streamed response chunk",
+            )
+
+            history = app.query_one(ConversationHistory)
+            assert history.user_turns == ("first message",)
+            assert "first message" in history.rendered_text
+        finally:
+            provider.release.set()
+        await _wait_for_worker_group(app, pilot, group="run")
+
+        assert app._projection is not None
+        assert app._projection.activity.status == "completed"
+
+
+@pytest.mark.asyncio
 async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
     provider = BlockingStreamProvider()
     app = OuroTuiApp(application=_blocking_application(tmp_path, provider))

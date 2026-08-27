@@ -737,10 +737,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 # soon as layout provides one instead of leaving callers racing
                 # an async mount.
                 self.call_after_refresh(self._render_entries)
-                for _ in range(3):
-                    if self.lines:
-                        return
-                    await self.wait_for_refresh()
+                await self.wait_until_rendered()
             return
         rendered = 0
         try:
@@ -791,12 +788,19 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             self.call_after_refresh(self._render_entries)
 
     async def wait_until_rendered(self) -> None:
-        """Wait for the initial width and line-buffer layout to become available."""
+        """Render the initial line buffer once layout geometry becomes available."""
 
-        for _ in range(3):
+        # A deferred render may run while an ancestor is still hidden and has
+        # no usable geometry. Retrying the render here makes this method own its
+        # contract instead of relying on a later Resize event that may not fire.
+        for attempt in range(4):
             if not self._entries or self.lines:
                 return
-            await self.wait_for_refresh()
+            self._render_entries()
+            if self.lines:
+                return
+            if attempt < 3:
+                await self.wait_for_refresh()
 
     def update_tools(
         self,

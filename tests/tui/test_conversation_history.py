@@ -1,9 +1,13 @@
+import pytest
 from rich.console import Console
+from textual.app import App, ComposeResult
 
 import ouro.tui.conversation_history as conversation_history
 from ouro.tui.conversation_history import (
     AssistantMarkdownStream,
     CompactionPresentation,
+    ConversationHistory,
+    TranscriptEntry,
     _compaction_summary,
     _run_summary,
     split_markdown_blocks,
@@ -37,6 +41,44 @@ Final paragraph.
 
 def _style_at(text, fragment: str):
     return text.get_style_at_offset(Console(), text.plain.index(fragment))
+
+
+class _HistoryApp(App[None]):
+    def __init__(self) -> None:
+        super().__init__()
+        self.history = ConversationHistory(lambda *_args, **_kwargs: None)
+
+    def compose(self) -> ComposeResult:
+        yield self.history
+
+
+@pytest.mark.asyncio
+async def test_wait_until_rendered_recovers_after_a_deferred_layout_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _HistoryApp()
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        render_entries = app.history._render_entries
+        layout_available = False
+
+        def render_when_visible() -> None:
+            if layout_available:
+                render_entries()
+
+        monkeypatch.setattr(app.history, "_render_entries", render_when_visible)
+        # Model the welcome transition after its one-shot deferred render ran
+        # while the conversation ancestor still had no layout geometry.
+        app.history._reset_buffer([TranscriptEntry(kind="user", text="first message")])
+        await pilot.pause()
+        assert app.history.entries
+        assert app.history.rendered_text == ""
+
+        layout_available = True
+        await app.history.wait_until_rendered()
+
+        assert "first message" in app.history.rendered_text
 
 
 def test_compaction_and_run_summaries_share_visual_structure_and_failure_semantics() -> None:
