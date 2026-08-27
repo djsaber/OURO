@@ -9,6 +9,9 @@ This project records user-visible and framework-contract changes in this file.
 - The built-in provider catalog now exposes DeepSeek `low` reasoning, adds GLM-5.3 and the
   natively multimodal GLM-5.3-Flash, and integrates xAI Grok 4.6 with reviewed endpoint and
   model capability metadata.
+- The built-in Qwen preset now serves the Qwen3.8-Max flagship, the multimodal Qwen3.8-Flash,
+  and the multimodal Qwen3.7-Plus with reviewed 1M-context capability metadata and
+  Flash-specific thinking-effort controls.
 - The TUI MCP connect and disconnect menus now show every configured server and express
   operation availability by disabling servers that are already in the target state.
 - `/fork` now selects either the full Session or a numbered user-message boundary through the

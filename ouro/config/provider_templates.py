@@ -110,6 +110,30 @@ _QWEN_REASONING = toggle_reasoning(
     enabled={"enable_thinking": True, "preserve_thinking": True},
     disabled={"enable_thinking": False, "preserve_thinking": False},
 )
+_QWEN_FLASH_REASONING = mapped_reasoning(
+    name="qwen-flash-thinking-effort",
+    activation="toggle",
+    supported_efforts=("low", "medium", "xhigh"),
+    default=ReasoningRequest(mode="enabled", effort="xhigh"),
+    output="text",
+    continuation="text",
+    variants={
+        "disabled": {"enable_thinking": False, "preserve_thinking": False},
+        "enabled": {
+            "enable_thinking": True,
+            "preserve_thinking": True,
+            "reasoning_effort": "xhigh",
+        },
+        **{
+            effort: {
+                "enable_thinking": True,
+                "preserve_thinking": True,
+                "reasoning_effort": effort,
+            }
+            for effort in ("low", "medium", "xhigh")
+        },
+    },
+)
 _KIMI_REASONING = toggle_reasoning(
     name="kimi-thinking-toggle",
     enabled={"thinking": {"type": "enabled", "keep": "all"}},
@@ -435,51 +459,55 @@ _PROVIDER_TEMPLATES = (
     ProviderTemplate(
         template_id="qwen",
         display_name="Alibaba Cloud Qwen",
-        description="DashScope's OpenAI-compatible China endpoint with current Qwen models.",
+        description=(
+            "DashScope's OpenAI-compatible China endpoint with the Qwen3.8-Max "
+            "flagship, Qwen3.8-Flash, and Qwen3.7-Plus multimodal models."
+        ),
         provider_id="qwen",
         provider_type="qwen",
         protocol="openai-chat-completions",
         credential_env="DASHSCOPE_API_KEY",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         api_path="/chat/completions",
-        default_endpoint="qwen3.7-plus",
+        default_endpoint="qwen3.8-max",
         endpoints=(
             ProviderEndpointConfig(
-                endpoint_id="qwen3.7-plus",
-                model_id="qwen3.7-plus",
+                endpoint_id="qwen3.8-max",
+                model_id="qwen3.8-max",
                 context_window=1_000_000,
-                max_output_tokens=32_768,
+                max_output_tokens=131_072,
                 supports_tools=True,
-                supports_vision=False,
+                supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=True,
                 reasoning=_QWEN_REASONING,
             ),
             ProviderEndpointConfig(
-                endpoint_id="qwen3.7-max",
-                model_id="qwen3.7-max",
+                endpoint_id="qwen3.8-flash",
+                model_id="qwen3.8-flash",
                 context_window=1_000_000,
-                max_output_tokens=32_768,
+                max_output_tokens=131_072,
                 supports_tools=True,
-                supports_vision=False,
+                supports_vision=True,
                 supports_streaming=True,
-                supports_structured_output=False,
-                reasoning=_QWEN_REASONING,
+                supports_structured_output=True,
+                reasoning=_QWEN_FLASH_REASONING,
             ),
             ProviderEndpointConfig(
-                endpoint_id="qwen3.6-flash",
-                model_id="qwen3.6-flash",
+                endpoint_id="qwen3.7-plus",
+                model_id="qwen3.7-plus",
                 context_window=1_000_000,
-                max_output_tokens=32_768,
+                max_output_tokens=131_072,
                 supports_tools=True,
-                supports_vision=False,
+                supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=True,
                 reasoning=_QWEN_REASONING,
             ),
         ),
         documentation_url="https://help.aliyun.com/zh/model-studio/text-generation-model",
-        verified_on=_VERIFIED_ON,
+        verified_on="2026-08-27",
+        revision=2,
     ),
     ProviderTemplate(
         template_id="kimi",

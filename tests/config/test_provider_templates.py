@@ -21,7 +21,7 @@ _EXPECTED_ENDPOINTS = {
         {"gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite"},
     ),
     "deepseek": ("deepseek-v4-pro", {"deepseek-v4-pro", "deepseek-v4-flash"}),
-    "qwen": ("qwen3.7-plus", {"qwen3.7-plus", "qwen3.7-max", "qwen3.6-flash"}),
+    "qwen": ("qwen3.8-max", {"qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus"}),
     "kimi": (
         "kimi-k3",
         {"kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"},
@@ -44,6 +44,7 @@ _EXPECTED_VERIFIED_ON = {
     "kimi": "2026-07-17",
     "glm": "2026-08-27",
     "grok": "2026-08-27",
+    "qwen": "2026-08-27",
 }
 
 
@@ -124,9 +125,44 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     }
     assert templates["deepseek"].revision == 2
 
-    qwen = templates["qwen"].endpoint().reasoning
-    assert qwen.profile is not None
-    assert qwen.profile.variants["enabled"]["preserve_thinking"] is True
+    qwen = templates["qwen"]
+    assert qwen.revision == 2
+    qwen_max = qwen.endpoint()
+    assert qwen_max.model_id == "qwen3.8-max"
+    assert qwen_max.context_window == 1_000_000
+    assert qwen_max.max_output_tokens == 131_072
+    assert qwen_max.supports_tools is True
+    assert qwen_max.supports_vision is True
+    assert qwen_max.supports_streaming is True
+    assert qwen_max.supports_structured_output is True
+    qwen_reasoning = qwen_max.reasoning
+    assert qwen_reasoning.capability.activation == "toggle"
+    assert qwen_reasoning.profile is not None
+    assert qwen_reasoning.profile.variants["enabled"]["preserve_thinking"] is True
+    qwen_flash = qwen.endpoint("qwen3.8-flash")
+    assert qwen_flash.context_window == 1_000_000
+    assert qwen_flash.max_output_tokens == 131_072
+    assert qwen_flash.supports_vision is True
+    assert qwen_flash.supports_structured_output is True
+    flash_reasoning = qwen_flash.reasoning
+    assert flash_reasoning.capability.activation == "toggle"
+    assert flash_reasoning.capability.supported_efforts == ("low", "medium", "xhigh")
+    assert flash_reasoning.profile is not None
+    assert flash_reasoning.profile.variants["enabled"] == {
+        "enable_thinking": True,
+        "preserve_thinking": True,
+        "reasoning_effort": "xhigh",
+    }
+    assert flash_reasoning.profile.variants["disabled"]["enable_thinking"] is False
+    qwen_plus = qwen.endpoint("qwen3.7-plus")
+    assert qwen_plus.context_window == 1_000_000
+    assert qwen_plus.max_output_tokens == 131_072
+    assert qwen_plus.supports_vision is True
+    assert qwen_plus.supports_structured_output is True
+    plus_reasoning = qwen_plus.reasoning
+    assert plus_reasoning.capability.activation == "toggle"
+    assert plus_reasoning.profile is not None
+    assert plus_reasoning.profile.variants["enabled"]["preserve_thinking"] is True
 
     kimi = templates["kimi"]
     assert kimi.endpoint("kimi-k2.7-code").reasoning.capability.activation == "always_on"

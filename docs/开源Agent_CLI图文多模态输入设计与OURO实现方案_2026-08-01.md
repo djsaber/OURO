@@ -130,9 +130,9 @@ adapter，因此多模态能力属于真实调用 Endpoint，而不是 Provider 
 
 当前内置模板中：
 
-- vision：OpenAI、Anthropic、Gemini、Kimi、Grok、OpenRouter、Mistral 的现有模板 Endpoint，以及
-  GLM 的 `glm-5.3-flash` 与 `glm-5v-turbo`；
-- non-vision：DeepSeek、Qwen、GLM 的非 V Endpoint；
+- vision：OpenAI、Anthropic、Gemini、Kimi、Grok、OpenRouter、Mistral 的现有模板 Endpoint，Qwen 的
+  `qwen3.8-max`、`qwen3.8-flash` 与 `qwen3.7-plus`，以及 GLM 的 `glm-5.3-flash` 与 `glm-5v-turbo`；
+- non-vision：DeepSeek、GLM 的非 V Endpoint；
 - 用户自定义 compatible Endpoint：默认 non-vision，需显式开启。
 
 ### 4.2 模型侧多模态链路
