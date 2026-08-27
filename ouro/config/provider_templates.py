@@ -507,7 +507,7 @@ _PROVIDER_TEMPLATES = (
         ),
         documentation_url="https://help.aliyun.com/zh/model-studio/text-generation-model",
         verified_on="2026-08-27",
-        revision=2,
+        revision=3,
     ),
     ProviderTemplate(
         template_id="kimi",

@@ -126,7 +126,7 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     assert templates["deepseek"].revision == 2
 
     qwen = templates["qwen"]
-    assert qwen.revision == 2
+    assert qwen.revision == 3
     qwen_max = qwen.endpoint()
     assert qwen_max.model_id == "qwen3.8-max"
     assert qwen_max.context_window == 1_000_000

@@ -6,12 +6,12 @@ from pathlib import Path
 import pytest
 
 import ouro.config.provider_template_store as store_module
-from ouro.config.provider_templates import ProviderTemplate, provider_templates
 from ouro.config.provider_template_store import (
     SCHEMA_VERSION,
     ProviderTemplateStore,
     template_fingerprint,
 )
+from ouro.config.provider_templates import ProviderTemplate, provider_templates
 from ouro.core.errors import ConfigError
 
 _INLINE_BY_ID = {template.template_id: template for template in provider_templates()}
@@ -128,6 +128,53 @@ def test_formatting_only_edits_still_upgrade_to_new_inline_revision(
     entry = _read_json(tmp_path)["templates"]["openai"]
     assert entry["display_name"] == "OpenAI v2"
     assert entry["meta"]["baseline_revision"] == 2
+
+
+def test_qwen_revision_upgrade_replaces_incomplete_cached_template(
+    tmp_path, monkeypatch
+) -> None:
+    latest = _INLINE_BY_ID["qwen"]
+    incomplete = latest.model_copy(
+        update={
+            "revision": 2,
+            "endpoints": tuple(
+                endpoint
+                for endpoint in latest.endpoints
+                if endpoint.endpoint_id != "qwen3.7-plus"
+            ),
+        }
+    )
+    _fake_inline(
+        monkeypatch,
+        tuple(
+            incomplete if template.template_id == "qwen" else template
+            for template in provider_templates()
+        ),
+    )
+    store = ProviderTemplateStore(tmp_path)
+    initial = store.catalog()
+    initial_qwen = next(
+        entry for entry in initial.entries if entry.template.template_id == "qwen"
+    )
+    assert {endpoint.endpoint_id for endpoint in initial_qwen.template.endpoints} == {
+        "qwen3.8-max",
+        "qwen3.8-flash",
+    }
+
+    _fake_inline(monkeypatch, provider_templates())
+    upgraded = store.catalog()
+
+    qwen = next(
+        entry for entry in upgraded.entries if entry.template.template_id == "qwen"
+    )
+    assert {endpoint.endpoint_id for endpoint in qwen.template.endpoints} == {
+        "qwen3.8-max",
+        "qwen3.8-flash",
+        "qwen3.7-plus",
+    }
+    assert any("updated to inline revision" in notice for notice in upgraded.notices)
+    entry = _read_json(tmp_path)["templates"]["qwen"]
+    assert entry["meta"]["baseline_revision"] == latest.revision
 
 
 def test_user_modified_template_is_preserved_with_revision_advanced(
