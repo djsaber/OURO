@@ -217,11 +217,17 @@ uv run ouro provider add google \
   --default
 ```
 
-当前模板包括 OpenAI、Anthropic、Gemini、DeepSeek、Qwen、KIMI、GLM、OpenRouter 和 Mistral；每个模板携带
+当前模板包括 OpenAI、Anthropic、Gemini、DeepSeek、Qwen、KIMI、GLM、Grok、OpenRouter 和 Mistral；每个模板携带
 一个明确的默认 Endpoint、多个当前主流模型 Endpoint、官方文档链接与核验日期。`--model` 和
 `--endpoint-id` 只覆盖默认 Endpoint。`add` 根据 `--type` 自动判断是否装载内置模板；Provider id 已存在时会
-提示使用 `provider update` 或 `provider replace`。内置类型的 `update` 会刷新模板端点并保留用户自行添加的
-Endpoint、凭据、enabled、timeout 和 retry，`replace` 则用所选类型的模板完整替换现有 Provider。
+提示使用 `provider update` 或 `provider replace`。内置类型的 `update` 会基于创建时记录的模板基线做安全三方
+合并：未修改的预置值跟随新模板，用户修改或删除的预置 Endpoint、未知 Endpoint 和自定义连接信息保留；新增
+模板 Endpoint 自动加入，同名占用会报告而不覆盖。旧版本创建且没有基线的 Provider 首次更新只补缺失 Endpoint
+并建立跟踪，不猜测覆盖已有配置。`replace` 则用所选类型的模板完整替换现有 Provider。
+
+CLI 更新会在文本或 `--json` 输出中给出 added/updated/removed/preserved/conflicts 报告；TUI 可在供应商列表选中
+Provider 回车后，通过 `Update from preset` 执行同一更新逻辑。模板已删除、禁用或来源发生替换时，更新失败且
+Provider 保持不变。
 
 需要完全自定义时，Provider 的创建、更新、替换分别使用 `add`、`update`、`replace`，Endpoint 仍由独立命令
 管理，不会隐式创建另一层对象：

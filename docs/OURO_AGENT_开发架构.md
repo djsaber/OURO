@@ -576,7 +576,8 @@ CLI 命令使用资源层级表达职责：
 - `provider templates` 查询类型化的只读厂商模板目录；
 - `provider add <id> --type <type>` 统一创建 Provider；内置厂商类型原子装载模板参数与 Endpoint，compatible
   类型创建空 Provider 并由 endpoint 命令补充模型；同 id 冲突提示显式使用 `update` 或 `replace`；
-- 内置厂商的 `provider update` 刷新模板并保留用户扩展，`provider replace` 按新类型完整替换；
+- 内置厂商的 `provider update` 以持久化模板基线做三方合并：未修改模板值跟随升级，用户修改、删除、未知
+  Endpoint 与同名冲突保留并报告；`provider replace` 按新类型完整替换；
 - 内部 Faux Provider 不进入用户侧目录、默认展示或连接检查；
 - `provider check` 负责连接检查；
 - `mcp list/show/set/remove` 管理 MCP server 配置，`mcp check` 执行一次临时连接检查；

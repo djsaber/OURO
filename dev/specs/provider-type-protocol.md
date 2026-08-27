@@ -19,7 +19,7 @@ Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它�
 
 ## 产品类型与协议
 
-集成厂商类型包括 `openai`、`anthropic`、`gemini`、`deepseek`、`qwen`、`kimi`、`glm`、
+集成厂商类型包括 `openai`、`anthropic`、`gemini`、`deepseek`、`qwen`、`kimi`、`glm`、`grok`、
 `openrouter` 和 `mistral`。它们提供已核验的模板，并由 `ProviderTypeSpec` 定义默认和允许的协议。
 
 通用配置入口包括：
@@ -57,7 +57,7 @@ continuation：OpenAI Chat Completions 支持 `none/text`，Anthropic Messages �
 - `ouro/application` 暴露同时包含 `provider_type` 与 `protocol` 的类型化 DTO，并编排配置用例；
 - CLI 只解析创建、更新或替换意图并格式化结果，冲突规则由配置/application 层执行。
 
-厂商模板不会产生一厂商一个 adapter。Gemini、DeepSeek、Qwen、KIMI、GLM、OpenRouter 和 Mistral 当前都
+厂商模板不会产生一厂商一个 adapter。Gemini、DeepSeek、Qwen、KIMI、GLM、Grok、OpenRouter 和 Mistral 当前都
 复用 OpenAI Chat Completions adapter；Anthropic 使用 Messages adapter。
 
 ## 创建、更新与替换
@@ -66,13 +66,15 @@ Provider mutation 使用三个明确操作：
 
 - `provider add`：唯一创建入口；根据 type 为集成厂商原子装载模板，或为 compatible 类型创建空 Provider；
   `provider_id` 已存在时失败并提示 update/replace，不写入任何字段；
-- `provider update`：只更新现有 Provider；内置类型自动刷新对应模板并保留用户额外 Endpoint 和运行设置，
-  compatible 类型只修改连接、凭据、timeout、retry 和 enabled；
+- `provider update`：只更新现有 Provider；模板来源类型使用持久化旧模板基线做三方合并，只更新未被用户
+  修改的模板值，保留未知、修改或主动删除的 Endpoint，并报告同 id 冲突；compatible 类型只修改连接、凭据、
+  timeout、retry 和 enabled；
 - `provider replace`：只替换现有 Provider；内置类型装载新类型模板，compatible 类型清空原 Endpoint、凭据和
   扩展设置。
 
-模板更新根据现有 `provider_type` 定位对应模板，持久化的 type/protocol 组合仍必须合法。所有冲突与校验在一次
-写盘前完成；失败时配置保持不变。交互 Host 遇到同 id 冲突时应让用户选择新 id、更新或替换，不能自行合并。
+模板更新优先根据持久化模板绑定定位同来源模板；旧配置首次更新才根据现有 `provider_type` 安全接管。持久化的
+type/protocol 组合仍必须合法。所有冲突与校验在一次写盘前完成；失败时配置保持不变。交互 Host 遇到 Provider
+同 id 创建冲突时应让用户选择新 id、更新或替换，不能自行改变操作语义。
 
 ## 非目标
 

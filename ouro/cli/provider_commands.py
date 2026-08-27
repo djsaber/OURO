@@ -9,6 +9,7 @@ from typing import Any, Literal
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import (
     ProviderEndpointView,
+    ProviderTemplateUpdateView,
     ProviderTemplateView,
     ProviderView,
 )
@@ -318,6 +319,11 @@ def mutate_provider_config(
 
     public = _provider_to_public(provider)
     if json_mode:
+        template_update = (
+            catalog.template_update.model_dump(mode="json", exclude_none=True)
+            if catalog.template_update is not None
+            else None
+        )
         print(
             json.dumps(
                 {
@@ -325,6 +331,7 @@ def mutate_provider_config(
                     "operation": operation,
                     "config_path": catalog.config_path,
                     "provider": public,
+                    "template_update": template_update,
                 },
                 ensure_ascii=False,
             )
@@ -333,6 +340,8 @@ def mutate_provider_config(
     suffix = " and set as default" if public["default"] else ""
     action = {"add": "added", "update": "updated", "replace": "replaced"}[operation]
     print(f"Provider {action}: {provider.provider_id}{suffix}")
+    if catalog.template_update is not None:
+        print(_template_update_summary(catalog.template_update))
     return 0
 
 
@@ -610,6 +619,16 @@ def _provider_to_public(provider: ProviderView) -> dict[str, Any]:
         "default_endpoint": provider.default_endpoint,
         "endpoint_count": provider.endpoint_count,
         "endpoints": [_endpoint_to_public(endpoint) for endpoint in provider.endpoints],
+        "template": (
+            {
+                "template_id": provider.template_id,
+                "origin": provider.template_origin,
+                "revision": provider.template_revision,
+                "tracked": provider.template_revision is not None,
+            }
+            if provider.template_id is not None
+            else None
+        ),
     }
 
 
@@ -634,6 +653,18 @@ def _checked_target_label(
     if model_id and model_id != endpoint_id:
         parts.append(model_id)
     return "/".join(parts)
+
+
+def _template_update_summary(update: ProviderTemplateUpdateView) -> str:
+    mode = "adopted" if update.adopted else f"r{update.from_revision} -> r{update.to_revision}"
+    counts = (
+        f"{len(update.added_endpoints)} added",
+        f"{len(update.updated_endpoints)} updated",
+        f"{len(update.removed_endpoints)} removed",
+        f"{len(update.preserved_endpoints)} preserved",
+        f"{len(update.conflicted_endpoints)} conflicts",
+    )
+    return f"Template {update.template_id} {mode}: " + ", ".join(counts)
 
 
 def _print_provider_error(exc: OuroError, *, json_mode: bool) -> None:

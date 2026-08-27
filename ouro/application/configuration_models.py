@@ -5,7 +5,11 @@ from typing import Any, Literal
 from pydantic import Field
 
 from ouro.application.dto import ApplicationDTO, Diagnostic
-from ouro.config.provider_models import ProviderProtocol, ProviderType
+from ouro.config.provider_models import (
+    ProviderProtocol,
+    ProviderTemplateOrigin,
+    ProviderType,
+)
 from ouro.config.reasoning import EndpointReasoningConfig
 from ouro.core.agents import AgentSpawnPolicy
 from ouro.core.provider import ProviderRetryPolicy
@@ -87,10 +91,28 @@ class ProviderView(ApplicationDTO):
     default: bool = False
     default_endpoint: str | None = None
     endpoints: list[ProviderEndpointView] = Field(default_factory=list)
+    template_id: str | None = None
+    template_origin: ProviderTemplateOrigin | None = None
+    template_revision: int | None = None
 
     @property
     def endpoint_count(self) -> int:
         return len(self.endpoints)
+
+
+class ProviderTemplateUpdateView(ApplicationDTO):
+    template_id: str
+    from_revision: int | None = None
+    to_revision: int
+    adopted: bool = False
+    changed: bool = False
+    added_endpoints: list[str] = Field(default_factory=list)
+    updated_endpoints: list[str] = Field(default_factory=list)
+    removed_endpoints: list[str] = Field(default_factory=list)
+    preserved_endpoints: list[str] = Field(default_factory=list)
+    conflicted_endpoints: list[str] = Field(default_factory=list)
+    updated_fields: list[str] = Field(default_factory=list)
+    preserved_fields: list[str] = Field(default_factory=list)
 
 
 class ProviderCatalogView(ApplicationDTO):
@@ -98,6 +120,7 @@ class ProviderCatalogView(ApplicationDTO):
     default_provider_id: str | None = None
     providers: list[ProviderView] = Field(default_factory=list)
     change: ConfigurationChange | None = None
+    template_update: ProviderTemplateUpdateView | None = None
 
 
 class ProviderEndpointCatalogView(ApplicationDTO):

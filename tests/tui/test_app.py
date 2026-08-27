@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -4743,6 +4744,54 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
             choice for choice in app.screen._choices if choice.value == "secondary"
         ).trailing.endswith("· disabled")
         await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_provider_submenu_updates_from_latest_preset_in_place(tmp_path: Path) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    configuration.add_provider("primary", provider_type="openai")
+    template_path = tmp_path / "config" / "provider-templates.json"
+    root = json.loads(template_path.read_text(encoding="utf-8"))
+    template = root["templates"]["openai"]
+    template["revision"] = 3
+    endpoint = next(
+        item for item in template["endpoints"] if item["endpoint_id"] == "gpt-5.6"
+    )
+    endpoint["context_window"] = 2_000_000
+    template_path.write_text(json.dumps(root), encoding="utf-8")
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "List providers"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "primary"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        update = next(
+            choice for choice in app.screen._choices if choice.value == "update-template"
+        )
+        assert update.label == "Update from preset"
+        assert update.trailing == "openai r1"
+        options = app.screen.query_one("#choice-list", OptionList)
+        options.highlighted = options.get_option_index("update-template")
+        options.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert ConfigurationFacade(tmp_path).endpoint(
+            "primary", "gpt-5.6"
+        ).context_window == 2_000_000
+        refreshed = next(
+            choice for choice in app.screen._choices if choice.value == "update-template"
+        )
+        assert refreshed.trailing == "openai r3"
 
 
 @pytest.mark.asyncio

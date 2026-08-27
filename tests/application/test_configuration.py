@@ -219,9 +219,7 @@ def test_compaction_overrides_are_validated_against_fixed_endpoint_capabilities(
     with pytest.raises(ConfigError, match="output limit"):
         facade.update_compaction_model(max_output_tokens=4096)
     with pytest.raises(ConfigError, match="is not supported"):
-        facade.update_compaction_model(
-            reasoning=ReasoningRequest(mode="enabled", effort="medium")
-        )
+        facade.update_compaction_model(reasoning=ReasoningRequest(mode="enabled", effort="medium"))
     assert facade.compaction_config() == saved.model_copy(update={"change": None})
 
 
@@ -318,9 +316,7 @@ def test_provider_template_catalog_exposes_deprecated_and_filters_disabled(
     without_mistral = tuple(
         template for template in provider_templates() if template.template_id != "mistral"
     )
-    monkeypatch.setattr(
-        store_module, "inline_provider_templates", lambda: without_mistral
-    )
+    monkeypatch.setattr(store_module, "inline_provider_templates", lambda: without_mistral)
 
     deprecated = facade.provider_template_catalog()
     mistral = next(
@@ -338,9 +334,7 @@ def test_provider_template_catalog_exposes_deprecated_and_filters_disabled(
 
     listed_ids = [template.template_id for template in catalog.templates]
     assert "openai" not in listed_ids
-    mistral = next(
-        template for template in catalog.templates if template.template_id == "mistral"
-    )
+    mistral = next(template for template in catalog.templates if template.template_id == "mistral")
     assert mistral.deprecated is False
 
 
@@ -374,6 +368,7 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
         "qwen",
         "kimi",
         "glm",
+        "grok",
         "openrouter",
         "mistral",
     ]
@@ -422,6 +417,53 @@ def test_provider_template_reapply_preserves_other_endpoints_and_credential(tmp_
         "legacy",
     }
     assert facade.endpoint("primary", "gpt-5.6").model_id == "gpt-custom"
+
+
+def test_provider_update_returns_template_merge_report_and_tracking_state(tmp_path) -> None:
+    facade = ConfigurationFacade(tmp_path)
+    facade.add_provider("primary", provider_type="openai")
+    template_path = tmp_path / "config" / "provider-templates.json"
+    root = json.loads(template_path.read_text(encoding="utf-8"))
+    template = root["templates"]["openai"]
+    template["revision"] = 3
+    endpoint = next(item for item in template["endpoints"] if item["endpoint_id"] == "gpt-5.6")
+    endpoint["context_window"] = 2_000_000
+    template_path.write_text(json.dumps(root), encoding="utf-8")
+
+    updated = facade.update_provider("primary")
+    provider = facade.provider("primary")
+
+    assert updated.template_update is not None
+    assert updated.template_update.template_id == "openai"
+    assert updated.template_update.from_revision == 1
+    assert updated.template_update.to_revision == 3
+    assert updated.template_update.updated_endpoints == ["gpt-5.6"]
+    assert provider.template_id == "openai"
+    assert provider.template_origin == "inline"
+    assert provider.template_revision == 3
+    assert facade.endpoint("primary", "gpt-5.6").context_window == 2_000_000
+
+
+def test_removed_provider_template_rejects_update_without_changing_provider(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import ouro.config.provider_template_store as store_module
+    from ouro.config.provider_templates import provider_templates
+
+    facade = ConfigurationFacade(tmp_path)
+    facade.add_provider("primary", provider_type="openai")
+    config_path = tmp_path / "config" / "config.json"
+    before = json.loads(config_path.read_text(encoding="utf-8"))
+    without_openai = tuple(
+        template for template in provider_templates() if template.template_id != "openai"
+    )
+    monkeypatch.setattr(store_module, "inline_provider_templates", lambda: without_openai)
+
+    with pytest.raises(ConfigError, match="template was removed"):
+        facade.update_provider("primary")
+
+    assert json.loads(config_path.read_text(encoding="utf-8")) == before
 
 
 def test_provider_settings_update_preserves_integrated_endpoint_registry(tmp_path) -> None:

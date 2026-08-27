@@ -93,13 +93,14 @@ _GEMINI_FLASH_LITE_REASONING = openai_effort_reasoning(
 _DEEPSEEK_REASONING = mapped_reasoning(
     name="deepseek-thinking-effort",
     activation="toggle",
-    supported_efforts=("high", "max"),
+    supported_efforts=("low", "high", "max"),
     default=ReasoningRequest(mode="enabled", effort="high"),
     output="text",
     continuation="text",
     variants={
         "disabled": {"thinking": {"type": "disabled"}},
         "enabled": {"thinking": {"type": "enabled"}},
+        "low": {"thinking": {"type": "enabled"}, "reasoning_effort": "low"},
         "high": {"thinking": {"type": "enabled"}, "reasoning_effort": "high"},
         "max": {"thinking": {"type": "enabled"}, "reasoning_effort": "max"},
     },
@@ -140,6 +141,51 @@ _GLM_REASONING = toggle_reasoning(
     name="glm-thinking-toggle",
     enabled={"thinking": {"type": "enabled", "clear_thinking": False}},
     disabled={"thinking": {"type": "disabled"}},
+)
+_GLM_53_REASONING = mapped_reasoning(
+    name="glm-5.3-thinking-effort",
+    activation="always_on",
+    supported_efforts=("low", "high", "max"),
+    default=ReasoningRequest(mode="enabled", effort="max"),
+    output="text",
+    continuation="text",
+    variants={
+        "enabled": {"thinking": {"type": "enabled"}, "reasoning_effort": "max"},
+        **{
+            effort: {
+                "thinking": {"type": "enabled"},
+                "reasoning_effort": effort,
+            }
+            for effort in ("low", "high", "max")
+        },
+    },
+)
+_GLM_53_FLASH_REASONING = mapped_reasoning(
+    name="glm-5.3-flash-thinking-effort",
+    activation="always_on",
+    supported_efforts=("low", "high", "max"),
+    default=ReasoningRequest(mode="enabled", effort="max"),
+    output="text",
+    continuation="text",
+    variants={
+        "enabled": {
+            "thinking": {"type": "enabled", "clear_thinking": False},
+            "reasoning_effort": "max",
+        },
+        **{
+            effort: {
+                "thinking": {"type": "enabled", "clear_thinking": False},
+                "reasoning_effort": effort,
+            }
+            for effort in ("low", "high", "max")
+        },
+    },
+)
+_GROK_46_REASONING = openai_effort_reasoning(
+    activation="always_on",
+    supported_efforts=("low", "medium", "high", "xhigh"),
+    default_effort="high",
+    output="summary",
 )
 _ANTHROPIC_SONNET_REASONING = mapped_reasoning(
     name="anthropic-default-adaptive-effort",
@@ -383,7 +429,8 @@ _PROVIDER_TEMPLATES = (
             ),
         ),
         documentation_url="https://api-docs.deepseek.com/quick_start/pricing/",
-        verified_on=_VERIFIED_ON,
+        verified_on="2026-08-27",
+        revision=2,
     ),
     ProviderTemplate(
         template_id="qwen",
@@ -497,15 +544,37 @@ _PROVIDER_TEMPLATES = (
     ProviderTemplate(
         template_id="glm",
         display_name="Zhipu GLM",
-        description="Zhipu's OpenAI-compatible API with current text and vision models.",
+        description="Zhipu's OpenAI-compatible API with current text and multimodal models.",
         provider_id="glm",
         provider_type="glm",
         protocol="openai-chat-completions",
         credential_env="ZAI_API_KEY",
         base_url="https://open.bigmodel.cn/api/paas/v4",
         api_path="/chat/completions",
-        default_endpoint="glm-5.2",
+        default_endpoint="glm-5.3",
         endpoints=(
+            ProviderEndpointConfig(
+                endpoint_id="glm-5.3",
+                model_id="glm-5.3",
+                context_window=1_000_000,
+                max_output_tokens=128_000,
+                supports_tools=True,
+                supports_vision=False,
+                supports_streaming=True,
+                supports_structured_output=True,
+                reasoning=_GLM_53_REASONING,
+            ),
+            ProviderEndpointConfig(
+                endpoint_id="glm-5.3-flash",
+                model_id="glm-5.3-flash",
+                context_window=1_000_000,
+                max_output_tokens=128_000,
+                supports_tools=True,
+                supports_vision=True,
+                supports_streaming=True,
+                supports_structured_output=True,
+                reasoning=_GLM_53_FLASH_REASONING,
+            ),
             ProviderEndpointConfig(
                 endpoint_id="glm-5.2",
                 model_id="glm-5.2",
@@ -541,7 +610,36 @@ _PROVIDER_TEMPLATES = (
             ),
         ),
         documentation_url="https://docs.bigmodel.cn/cn/guide/start/model-overview",
-        verified_on=_VERIFIED_ON,
+        verified_on="2026-08-27",
+        revision=2,
+    ),
+    ProviderTemplate(
+        template_id="grok",
+        display_name="xAI Grok",
+        description="xAI's OpenAI-compatible API with the latest Grok frontier model.",
+        provider_id="grok",
+        provider_type="grok",
+        protocol="openai-chat-completions",
+        credential_env="XAI_API_KEY",
+        base_url="https://api.x.ai/v1",
+        api_path="/chat/completions",
+        default_endpoint="grok-4.6",
+        endpoints=(
+            ProviderEndpointConfig(
+                endpoint_id="grok-4.6",
+                model_id="grok-4.6",
+                context_window=500_000,
+                max_output_tokens=128_000,
+                supports_tools=True,
+                supports_vision=True,
+                supports_streaming=True,
+                supports_structured_output=True,
+                reasoning=_GROK_46_REASONING,
+                metadata={"provider_output_limit": "unlimited"},
+            ),
+        ),
+        documentation_url="https://docs.x.ai/developers/grok-4-6",
+        verified_on="2026-08-27",
     ),
     ProviderTemplate(
         template_id="openrouter",

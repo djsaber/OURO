@@ -6,6 +6,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- The built-in provider catalog now exposes DeepSeek `low` reasoning, adds GLM-5.3 and the
+  natively multimodal GLM-5.3-Flash, and integrates xAI Grok 4.6 with reviewed endpoint and
+  model capability metadata.
 - The TUI MCP connect and disconnect menus now show every configured server and express
   operation availability by disabling servers that are already in the target state.
 - `/fork` now selects either the full Session or a numbered user-message boundary through the
@@ -70,6 +73,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Added
 
+- Preset-created providers now retain compact template provenance and support atomic three-way
+  updates through CLI and the TUI provider submenu. Unmodified preset values follow the latest
+  template, while customized, deleted, unknown, and colliding endpoints are preserved and
+  reported; legacy providers are adopted conservatively on their first update.
 - TUI `/workspace <path>` selection for new-session drafts, with inline history/freeform input,
   immutable created-session workspaces, and a persistent twenty-entry recent-workspace list that
   records each terminal startup directory.

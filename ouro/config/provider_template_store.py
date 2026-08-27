@@ -24,6 +24,8 @@ from ouro.config.endpoints import _SENSITIVE_PUBLIC_KEYS
 from ouro.config.file import JsonConfigFile
 from ouro.config.provider_templates import (
     ProviderTemplate,
+)
+from ouro.config.provider_templates import (
     provider_templates as inline_provider_templates,
 )
 from ouro.core.base import OuroModel
@@ -304,6 +306,7 @@ class ProviderTemplateStore:
                 notices,
                 f"provider template file has an invalid schema_version: {local_schema!r}",
             )
+        assert isinstance(local_schema, int)
 
         loaded = self._load_templates(templates_raw, inline_ids, notices)
         if local_schema > SCHEMA_VERSION:

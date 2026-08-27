@@ -137,8 +137,9 @@ Endpoint 集合、连接地址、凭据环境变量、Endpoint capability、官�
 | Gemini | `gemini-3.5-flash` | `gemini-3.1-pro-preview`、`gemini-3.1-flash-lite` |
 | DeepSeek | `deepseek-v4-pro` | `deepseek-v4-flash` |
 | Qwen | `qwen3.7-plus` | `qwen3.7-max`、`qwen3.6-flash` |
-| KIMI | `kimi-k2.7-code` | `kimi-k2.7-code-highspeed`、`kimi-k2.6` |
-| GLM | `glm-5.2` | `glm-5-turbo`、`glm-5v-turbo` |
+| KIMI | `kimi-k3` | `kimi-k2.7-code`、`kimi-k2.7-code-highspeed`、`kimi-k2.6` |
+| GLM | `glm-5.3` | `glm-5.3-flash`、`glm-5.2`、`glm-5-turbo`、`glm-5v-turbo` |
+| Grok | `grok-4.6` | — |
 | OpenRouter | `auto` | `free` |
 | Mistral | `mistral-medium-3-5` | `mistral-small-2603`、`mistral-large-2512` |
 
@@ -148,8 +149,42 @@ credential；覆盖不会丢弃同一模板中的其他 Endpoint。
 `provider add <id> --type <type>` 是唯一创建用例。application 根据 type 判断：集成厂商类型由配置 manager
 在一次校验和一次写盘中创建 Provider 与全部模板 Endpoint；compatible 类型只创建 Provider，Endpoint 由独立
 命令管理。失败不得产生半配置。若 id 已存在，明确提示使用 `provider update` 或 `provider replace`。内置类型的
-update 刷新模板 Endpoint 并保留非模板 Endpoint、凭据、enabled、timeout、retry 与 extra；replace 按所选类型
-完整替换。默认 Endpoint 的 id 或 model 覆盖与其他模板 Endpoint 冲突时，在写盘前明确失败。
+update 按下述模板基线规则合并，replace 按所选类型完整替换。默认 Endpoint 的 id 或 model 覆盖与其他模板
+Endpoint 冲突时，在写盘前明确失败。
+
+### 模板来源与显式更新
+
+从模板创建或替换 Provider 时，配置随实例持久化紧凑的 `template` 绑定。绑定只记录模板 id、来源、修订号、
+Provider 级模板值，以及每个模板 Endpoint 到配置 Endpoint 的 id 映射和旧内容指纹；不复制完整旧模板，也不保存
+凭据值。该基线是区分“模板旧值”和“用户当前值”的必要事实，不能仅凭 `provider_type` 或 Endpoint 名称猜测。
+
+`provider update <id>` 对模板来源 Provider 执行一次显式、原子的三方合并：旧模板基线、当前 Provider 配置和
+当前本地模板目录中的最新模板。TUI 在 Provider 子菜单提供 `Update from preset`，调用同一 application 用例。
+合并以保留用户意图为优先，规则如下：
+
+| 情况 | 更新结果 |
+|---|---|
+| 模板 Endpoint 相对旧基线有变化，当前 Endpoint 与旧指纹一致 | 用新模板完整 Endpoint 更新 |
+| 当前模板 Endpoint 内容被用户修改 | 完整保留当前 Endpoint；不做易产生混合语义的字段级拼接 |
+| 最新模板新增 Endpoint，配置中无同 id Endpoint | 新增并纳入模板管理 |
+| 最新模板新增 Endpoint，但同 id 已被未知/自定义 Endpoint 占用 | 保留用户 Endpoint、报告冲突，不接管 |
+| 用户删除了仍在模板中的 Endpoint | 保持删除状态，后续更新不反复补回 |
+| 最新模板移除未修改的 Endpoint | 删除该 Endpoint |
+| 最新模板移除已修改或被用户选为默认的 Endpoint | 保留并解除模板管理 |
+| 配置中的未知 Endpoint | 始终保留 |
+
+Provider 级 `base_url`、`api_path`、模板凭据环境变量和默认 Endpoint 采用同样的旧值比较：当前值仍等于旧模板值
+才跟随新模板，否则保留用户值。`enabled`、timeout、retry、provider options 和 Provider id 始终归用户管理。
+Endpoint id/model、连接和凭据等本次 CLI 显式参数在合并后应用，并作为用户覆盖留待后续合并识别。
+
+旧版 OURO 创建的内置类型 Provider 没有 `template` 绑定，无法可靠还原旧模板。首次 update 执行保守接管：补充
+最新模板中缺失的 Endpoint，保留所有已有 Provider/Endpoint 值和未知 Endpoint，并从当前模板建立基线；之后
+进入正常三方合并。该行为明确牺牲首次更新时对“已有但已过期 Endpoint”的猜测性覆盖，以避免静默破坏用户
+配置。
+
+模板已被删除或禁用、绑定模板来源发生 inline/custom 替换、Provider type/protocol 与模板不一致时，更新明确
+失败且 Provider 配置不变。每次成功更新返回新增、更新、删除、保留、冲突 Endpoint 及 Provider 字段的类型化
+报告；相同输入重复执行不得产生新的语义变化。
 
 Faux 只作为框架内部安全运行时和测试实现存在，不进入 application/CLI 的 Provider 目录、默认展示、选择或
 连接检查；没有用户配置时，公开目录的默认 Provider 为 `null`。

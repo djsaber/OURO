@@ -17,6 +17,7 @@ from ouro.application.configuration_models import (
     MCPServerConfigView,
     ProviderEndpointCatalogView,
     ProviderEndpointView,
+    ProviderTemplateUpdateView,
     ProviderTemplateView,
     ProviderView,
     SkillDiagnosticView,
@@ -24,11 +25,13 @@ from ouro.application.configuration_models import (
     SkillView,
 )
 from ouro.config import (
+    INTEGRATED_PROVIDER_TYPES,
     CompactionConfig,
     CredentialResolver,
     ProviderConfig,
     ProviderEndpointConfig,
     ProviderTemplate,
+    ProviderTemplateUpdateResult,
     endpoint_config_to_public_dict,
 )
 from ouro.config.endpoints import redact_sensitive_mapping
@@ -73,6 +76,23 @@ def provider_view(provider: ProviderConfig, *, is_default: bool) -> ProviderView
             endpoint_view(endpoint, default_endpoint=provider.default_endpoint)
             for endpoint in provider.endpoints
         ],
+        template_id=(
+            provider.template.template_id
+            if provider.template is not None
+            else provider.provider_type
+            if provider.provider_type in INTEGRATED_PROVIDER_TYPES
+            else None
+        ),
+        template_origin=(provider.template.origin if provider.template is not None else None),
+        template_revision=(provider.template.revision if provider.template is not None else None),
+    )
+
+
+def provider_template_update_view(
+    result: ProviderTemplateUpdateResult,
+) -> ProviderTemplateUpdateView:
+    return ProviderTemplateUpdateView.model_validate(
+        result.model_dump(mode="json", exclude={"provider"})
     )
 
 

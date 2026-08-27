@@ -1129,11 +1129,12 @@ when its type and complete template-owned configuration must change.""",
 
     provider_update_parser = provider_subparsers.add_parser(
         "update",
-        help="Update a provider and refresh integrated preset endpoints",
+        help="Update a provider and safely merge its latest preset",
         description=(
             "Update connection, credential, retry, or enabled state without changing the "
-            "Provider type.\nIntegrated types refresh template-owned Endpoints and preserve "
-            "user-created Endpoints."
+            "Provider type.\nFor preset providers, unchanged template-owned values follow "
+            "the latest preset while customized, locally removed, and user-created "
+            "Endpoints are preserved."
         ),
     )
     provider_update_parser.add_argument("provider_id", help="Provider/supplier id")

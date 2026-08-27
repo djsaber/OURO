@@ -4,7 +4,11 @@ from typing import cast
 
 from textual.app import App
 
-from ouro.application.configuration_models import ProviderEndpointView, ProviderView
+from ouro.application.configuration_models import (
+    ProviderEndpointView,
+    ProviderTemplateUpdateView,
+    ProviderView,
+)
 from ouro.tui.controller import (
     TuiController,
     TuiEndpointConfiguration,
@@ -309,6 +313,17 @@ class ProviderConfigurationWorkflows(App[int]):
                 nonlocal provider
                 if selected == "edit":
                     await self._edit_provider(provider, menu=menu)
+                elif selected == "update-template":
+                    saved = await self._update_provider_template(provider)
+                    if saved is None:
+                        return None
+                    provider = saved
+                    catalog = await self._controller.provider_catalog()
+                    menu.update_parent_choices(
+                        tuple(_provider_choice(item) for item in catalog.providers),
+                        initial_value=provider.provider_id,
+                    )
+                    return _provider_management_choices(provider)
                 elif selected == "toggle":
                     saved = await self._set_provider_enabled(
                         provider,
@@ -348,6 +363,8 @@ class ProviderConfigurationWorkflows(App[int]):
         )
         if selected == "edit":
             await self._edit_provider(provider)
+        elif selected == "update-template":
+            await self._update_provider_template(provider)
         elif selected == "toggle":
             await self._set_provider_enabled(provider, enabled=not provider.enabled)
         elif selected == "endpoints":
@@ -382,6 +399,28 @@ class ProviderConfigurationWorkflows(App[int]):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         self.notify(f"Provider saved: {saved.provider_id} (next request)")
+
+    async def _update_provider_template(
+        self,
+        provider: ProviderView,
+    ) -> ProviderView | None:
+        try:
+            catalog = await self._controller.update_provider_template(provider.provider_id)
+        except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return None
+        updated = next(
+            item for item in catalog.providers if item.provider_id == provider.provider_id
+        )
+        report = catalog.template_update
+        if report is None:
+            await self.query_one(ConversationView).add_notice(
+                f"Provider has no preset template: {provider.provider_id}",
+                error=True,
+            )
+            return None
+        self.notify(_provider_template_update_notice(report))
+        return updated
 
     async def _set_provider_enabled(
         self,
@@ -882,16 +921,46 @@ def _provider_choice(provider: ProviderView, *, disabled: bool = False) -> Choic
 
 
 def _provider_management_choices(provider: ProviderView) -> tuple[Choice, ...]:
-    return (
-        Choice("edit", "Edit provider"),
-        Choice(
-            "toggle",
-            "Disable provider" if provider.enabled else "Enable provider",
-            disabled=provider.default,
-        ),
-        Choice("endpoints", "Manage endpoints", trailing=str(provider.endpoint_count)),
-        Choice("add-endpoint", "Add endpoint"),
-        Choice("remove", "Remove provider"),
+    choices = [Choice("edit", "Edit provider")]
+    if provider.template_id is not None:
+        template_version = (
+            f"{provider.template_id} r{provider.template_revision}"
+            if provider.template_revision is not None
+            else TUI_DESIGN.inline_separator.join((provider.template_id, "untracked"))
+        )
+        choices.append(
+            Choice(
+                "update-template",
+                "Update from preset",
+                trailing=template_version,
+            )
+        )
+    choices.extend(
+        (
+            Choice(
+                "toggle",
+                "Disable provider" if provider.enabled else "Enable provider",
+                disabled=provider.default,
+            ),
+            Choice("endpoints", "Manage endpoints", trailing=str(provider.endpoint_count)),
+            Choice("add-endpoint", "Add endpoint"),
+            Choice("remove", "Remove provider"),
+        )
+    )
+    return tuple(choices)
+
+
+def _provider_template_update_notice(update: ProviderTemplateUpdateView) -> str:
+    mode = "preset adopted" if update.adopted else f"updated to r{update.to_revision}"
+    changes = (
+        f"{len(update.added_endpoints)} added",
+        f"{len(update.updated_endpoints)} updated",
+        f"{len(update.removed_endpoints)} removed",
+        f"{len(update.preserved_endpoints)} preserved",
+        f"{len(update.conflicted_endpoints)} conflicts",
+    )
+    return TUI_DESIGN.inline_separator.join(
+        (f"Provider preset {mode}: {update.template_id}", *changes)
     )
 
 

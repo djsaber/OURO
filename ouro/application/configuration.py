@@ -20,6 +20,7 @@ from ouro.application.configuration_models import (
     ProviderEndpointCatalogView,
     ProviderEndpointView,
     ProviderTemplateCatalogView,
+    ProviderTemplateUpdateView,
     ProviderTemplateView,
     ProviderView,
     QueuedInputConfigView,
@@ -42,6 +43,7 @@ from ouro.application.configuration_views import (
     loaded_skill_view,
     managed_skill_view,
     mcp_server_view,
+    provider_template_update_view,
     provider_template_view,
     provider_view,
     skill_diagnostic_view,
@@ -62,6 +64,7 @@ from ouro.config import (
     PromptConfigManager,
     ProviderConfig,
     ProviderConfigManager,
+    ProviderTemplateEntry,
     ProviderTemplateStore,
     ProviderType,
     QueuedInputConfigManager,
@@ -200,6 +203,7 @@ class ConfigurationFacade:
         self,
         *,
         change: ConfigurationChange | None = None,
+        template_update: ProviderTemplateUpdateView | None = None,
     ) -> ProviderCatalogView:
         snapshot = self.providers.snapshot(include_builtin=False)
         default_provider_id = (
@@ -218,6 +222,7 @@ class ConfigurationFacade:
                 for provider in snapshot.providers
             ],
             change=change,
+            template_update=template_update,
         )
 
     def provider(self, provider_id: str | None = None) -> ProviderView:
@@ -286,8 +291,10 @@ class ConfigurationFacade:
             backoff_multiplier=retry_backoff_multiplier,
         )
         if provider_type in INTEGRATED_PROVIDER_TYPES:
+            entry = self.provider_templates.get_entry(provider_type)
             self.providers.create_from_template(
-                self.provider_templates.get(provider_type),
+                entry.template,
+                template_origin=entry.origin,
                 provider_id=provider_id,
                 endpoint_id=endpoint_id,
                 model_id=model,
@@ -355,8 +362,10 @@ class ConfigurationFacade:
         )
         current = self._require_provider(provider_id)
         if current.provider_type in INTEGRATED_PROVIDER_TYPES:
-            self.providers.update_from_template(
-                self.provider_templates.get(current.provider_type),
+            entry = self._provider_template_for_update(current)
+            result = self.providers.update_from_template(
+                entry.template,
+                template_origin=entry.origin,
                 provider_id=provider_id,
                 endpoint_id=endpoint_id,
                 model_id=model,
@@ -370,6 +379,7 @@ class ConfigurationFacade:
                 enabled=enabled,
                 make_default=make_default,
             )
+            template_update = provider_template_update_view(result)
         else:
             self._reject_template_options(
                 current.provider_type,
@@ -389,8 +399,10 @@ class ConfigurationFacade:
                 enabled=enabled,
                 make_default=make_default,
             )
+            template_update = None
         return self.provider_catalog(
-            change=configuration_change("providers", "updated", "next_request")
+            change=configuration_change("providers", "updated", "next_request"),
+            template_update=template_update,
         )
 
     def update_provider_settings(
@@ -467,8 +479,10 @@ class ConfigurationFacade:
             backoff_multiplier=retry_backoff_multiplier,
         )
         if provider_type in INTEGRATED_PROVIDER_TYPES:
+            entry = self.provider_templates.get_entry(provider_type)
             self.providers.replace_from_template(
-                self.provider_templates.get(provider_type),
+                entry.template,
+                template_origin=entry.origin,
                 provider_id=provider_id,
                 endpoint_id=endpoint_id,
                 model_id=model,
@@ -1083,3 +1097,25 @@ class ConfigurationFacade:
         if provider is None:
             raise ConfigError(f"provider not found: {provider_id}")
         return provider
+
+    def _provider_template_for_update(
+        self,
+        provider: ProviderConfig,
+    ) -> ProviderTemplateEntry:
+        template_id = (
+            provider.template.template_id
+            if provider.template is not None
+            else provider.provider_type
+        )
+        entry = self.provider_templates.get_entry(template_id)
+        if entry.deprecated:
+            raise ConfigError(
+                f"provider template was removed from OURO: {template_id}; "
+                "the provider was left unchanged"
+            )
+        if not entry.enabled:
+            raise ConfigError(
+                f"provider template is disabled: {template_id}; "
+                "enable it before updating the provider"
+            )
+        return entry

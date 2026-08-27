@@ -36,17 +36,21 @@ from ouro.config.provider_models import (
     ProviderConfigSnapshot,
     ProviderProtocol,
     ProviderRuntimeOptions,
+    ProviderTemplateBinding,
+    ProviderTemplateEndpointBinding,
+    ProviderTemplateOrigin,
+    ProviderTemplateUpdateResult,
     ProviderType,
-)
-from ouro.config.provider_templates import (
-    ProviderTemplate,
-    get_provider_template,
-    provider_templates,
 )
 from ouro.config.provider_template_store import (
     ProviderTemplateCatalogSnapshot,
     ProviderTemplateEntry,
     ProviderTemplateStore,
+)
+from ouro.config.provider_templates import (
+    ProviderTemplate,
+    get_provider_template,
+    provider_templates,
 )
 from ouro.config.providers import ProviderConfigManager
 from ouro.config.queued_inputs import (
@@ -97,6 +101,10 @@ __all__ = [
     "CONFIGURABLE_PROVIDER_TYPES",
     "ProviderEndpointConfig",
     "ProviderRuntimeOptions",
+    "ProviderTemplateBinding",
+    "ProviderTemplateEndpointBinding",
+    "ProviderTemplateOrigin",
+    "ProviderTemplateUpdateResult",
     "ReasoningProfileConfig",
     "REASONING_PRESETS",
     "ProviderTemplate",

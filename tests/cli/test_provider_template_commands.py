@@ -23,6 +23,7 @@ def test_provider_templates_command_lists_builtin_catalog(capsys) -> None:
         "qwen",
         "kimi",
         "glm",
+        "grok",
         "openrouter",
         "mistral",
     }
@@ -106,6 +107,88 @@ def test_provider_add_integrated_type_persists_complete_default_route(
     configured = ProviderConfigManager(tmp_path).get_provider("claude")
     assert configured is not None
     assert configured.credential_ref.display() == "env:CLAUDE_KEY"
+
+
+def test_provider_add_grok_installs_latest_reviewed_endpoint(tmp_path, capsys) -> None:
+    code = main(
+        [
+            "provider",
+            "add",
+            "xai",
+            "--type",
+            "grok",
+            "--home",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    provider = payload["provider"]
+    assert provider["provider_id"] == "xai"
+    assert provider["provider_type"] == "grok"
+    assert provider["protocol"] == "openai-chat-completions"
+    assert provider["default_endpoint"] == "grok-4.6"
+    assert provider["endpoint_count"] == 1
+    configured = ProviderConfigManager(tmp_path).get_provider("xai")
+    assert configured is not None
+    assert configured.base_url == "https://api.x.ai/v1"
+    assert configured.api_path == "/chat/completions"
+    assert configured.credential_ref.display() == "env:XAI_API_KEY"
+
+
+def test_provider_update_json_exposes_safe_template_merge_report(tmp_path, capsys) -> None:
+    assert (
+        main(
+            [
+                "provider",
+                "add",
+                "primary",
+                "--type",
+                "openai",
+                "--home",
+                str(tmp_path),
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    code = main(
+        [
+            "provider",
+            "update",
+            "primary",
+            "--home",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["operation"] == "update"
+    assert payload["provider"]["template"] == {
+        "template_id": "openai",
+        "origin": "inline",
+        "revision": 1,
+        "tracked": True,
+    }
+    assert payload["template_update"] == {
+        "template_id": "openai",
+        "from_revision": 1,
+        "to_revision": 1,
+        "adopted": False,
+        "changed": False,
+        "added_endpoints": [],
+        "updated_endpoints": [],
+        "removed_endpoints": [],
+        "preserved_endpoints": [],
+        "conflicted_endpoints": [],
+        "updated_fields": [],
+        "preserved_fields": [],
+    }
 
 
 def test_removed_configure_custom_and_protocol_are_not_parseable() -> None:

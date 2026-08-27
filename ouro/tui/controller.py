@@ -846,6 +846,10 @@ class TuiController:
     async def update_provider(self, draft: TuiProviderConfiguration) -> ProviderView:
         return await asyncio.to_thread(self._update_provider, draft)
 
+    async def update_provider_template(self, provider_id: str) -> ProviderCatalogView:
+        configuration = self._require_configuration()
+        return await asyncio.to_thread(configuration.update_provider, provider_id)
+
     def _update_provider(self, draft: TuiProviderConfiguration) -> ProviderView:
         configuration = self._require_configuration()
         current = configuration.provider(draft.provider_id)

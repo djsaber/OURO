@@ -18,6 +18,7 @@ from ouro.config.provider_models import (
     SUPPORTED_PROVIDER_TYPES,
     ProviderConfig,
     ProviderProtocol,
+    ProviderTemplateBinding,
     ProviderType,
     normalize_provider_config,
 )
@@ -38,6 +39,7 @@ _PROVIDER_FIELDS = frozenset(
         "timeout_seconds",
         "retry_policy",
         "provider_options",
+        "template",
     }
 )
 
@@ -69,6 +71,15 @@ def provider_config_to_public_dict(
             }
             for endpoint in provider.endpoints
         ],
+        "template": (
+            {
+                "template_id": provider.template.template_id,
+                "origin": provider.template.origin,
+                "revision": provider.template.revision,
+            }
+            if provider.template is not None
+            else None
+        ),
     }
 
 
@@ -103,6 +114,7 @@ def provider_config_from_mapping(
             timeout_seconds=raw.get("timeout_seconds", 60.0),
             retry_policy=ProviderRetryPolicy.model_validate(raw.get("retry_policy") or {}),
             extra=dict(raw.get("provider_options") or {}),
+            template=_template_binding_from_mapping(raw.get("template")),
         )
         return normalize_provider_config(provider)
     except (TypeError, ValueError, ValidationError) as exc:
@@ -137,6 +149,8 @@ def provider_config_to_raw(provider: ProviderConfig) -> dict[str, Any]:
         raw["retry_policy"] = provider.retry_policy.model_dump(mode="json")
     if provider.extra:
         raw["provider_options"] = provider.extra
+    if provider.template is not None:
+        raw["template"] = provider.template.model_dump(mode="json")
     return raw
 
 
@@ -172,6 +186,14 @@ def _credential_ref_to_raw(ref: CredentialRef) -> str | dict[str, str]:
     if ref.type == "inline":
         return {"type": "inline", "value": ref.value or ""}
     return "none"
+
+
+def _template_binding_from_mapping(raw: object) -> ProviderTemplateBinding | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError("provider template binding must be an object")
+    return ProviderTemplateBinding.model_validate(dict(raw))
 
 
 def _optional_str(value: object) -> str | None:

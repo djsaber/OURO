@@ -22,6 +22,7 @@ ProviderType = Literal[
     "qwen",
     "kimi",
     "glm",
+    "grok",
     "openrouter",
     "mistral",
     "openai-compatible",
@@ -32,6 +33,7 @@ ProviderProtocol = Literal[
     "openai-chat-completions",
     "anthropic-messages",
 ]
+ProviderTemplateOrigin = Literal["inline", "custom"]
 
 INTEGRATED_PROVIDER_TYPES: tuple[ProviderType, ...] = (
     "openai",
@@ -41,6 +43,7 @@ INTEGRATED_PROVIDER_TYPES: tuple[ProviderType, ...] = (
     "qwen",
     "kimi",
     "glm",
+    "grok",
     "openrouter",
     "mistral",
 )
@@ -92,6 +95,7 @@ _PROVIDER_TYPE_SPECS: dict[ProviderType, ProviderTypeSpec] = {
     "qwen": ProviderTypeSpec("qwen", "openai-chat-completions", _OPENAI_PROTOCOL),
     "kimi": ProviderTypeSpec("kimi", "openai-chat-completions", _OPENAI_PROTOCOL),
     "glm": ProviderTypeSpec("glm", "openai-chat-completions", _OPENAI_PROTOCOL),
+    "grok": ProviderTypeSpec("grok", "openai-chat-completions", _OPENAI_PROTOCOL),
     "openrouter": ProviderTypeSpec("openrouter", "openai-chat-completions", _OPENAI_PROTOCOL),
     "mistral": ProviderTypeSpec("mistral", "openai-chat-completions", _OPENAI_PROTOCOL),
     "openai-compatible": ProviderTypeSpec(
@@ -225,6 +229,62 @@ def validate_reasoning_protocol_compatibility(
         raise ValueError("faux protocol does not support reasoning controls")
 
 
+class ProviderTemplateEndpointBinding(OuroModel):
+    """Last template baseline for one configured endpoint identity."""
+
+    template_endpoint_id: str
+    configured_endpoint_id: str
+    fingerprint: str
+
+    @field_validator("template_endpoint_id", "configured_endpoint_id", "fingerprint")
+    @classmethod
+    def _require_binding_value(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("template endpoint binding values must not be empty")
+        return normalized
+
+
+class ProviderTemplateBinding(OuroModel):
+    """Provenance and compact baseline needed for safe explicit template updates."""
+
+    template_id: str
+    origin: ProviderTemplateOrigin
+    revision: int = Field(ge=1)
+    credential_env: str
+    base_url: str
+    api_path: str
+    default_endpoint: str
+    endpoints: tuple[ProviderTemplateEndpointBinding, ...] = Field(default_factory=tuple)
+
+    @field_validator("template_id", "credential_env", "base_url", "api_path", "default_endpoint")
+    @classmethod
+    def _require_template_value(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("template binding values must not be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_endpoint_bindings(self) -> ProviderTemplateBinding:
+        template_ids = [item.template_endpoint_id for item in self.endpoints]
+        configured_ids = [item.configured_endpoint_id for item in self.endpoints]
+        if len(set(template_ids)) != len(template_ids):
+            raise ValueError("template endpoint binding ids must be unique")
+        if len(set(configured_ids)) != len(configured_ids):
+            raise ValueError("configured endpoint binding ids must be unique")
+        return self
+
+    def endpoint_binding(
+        self,
+        template_endpoint_id: str,
+    ) -> ProviderTemplateEndpointBinding | None:
+        return next(
+            (item for item in self.endpoints if item.template_endpoint_id == template_endpoint_id),
+            None,
+        )
+
+
 class ProviderConfig(OuroModel):
     """Supplier-level product identity, protocol, connection, and endpoints."""
 
@@ -240,6 +300,7 @@ class ProviderConfig(OuroModel):
     timeout_seconds: float = Field(default=60.0, gt=0)
     retry_policy: ProviderRetryPolicy = Field(default_factory=ProviderRetryPolicy)
     extra: Metadata = MetadataField
+    template: ProviderTemplateBinding | None = None
 
     @field_validator("provider_id")
     @classmethod
@@ -315,6 +376,24 @@ class ProviderConfig(OuroModel):
             (endpoint for endpoint in self.endpoints if endpoint.endpoint_id == target),
             None,
         )
+
+
+class ProviderTemplateUpdateResult(OuroModel):
+    """Typed, user-facing facts produced by one atomic template update."""
+
+    provider: ProviderConfig
+    template_id: str
+    from_revision: int | None = None
+    to_revision: int
+    adopted: bool = False
+    changed: bool = False
+    added_endpoints: tuple[str, ...] = ()
+    updated_endpoints: tuple[str, ...] = ()
+    removed_endpoints: tuple[str, ...] = ()
+    preserved_endpoints: tuple[str, ...] = ()
+    conflicted_endpoints: tuple[str, ...] = ()
+    updated_fields: tuple[str, ...] = ()
+    preserved_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

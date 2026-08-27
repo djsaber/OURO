@@ -26,7 +26,11 @@ _EXPECTED_ENDPOINTS = {
         "kimi-k3",
         {"kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"},
     ),
-    "glm": ("glm-5.2", {"glm-5.2", "glm-5-turbo", "glm-5v-turbo"}),
+    "glm": (
+        "glm-5.3",
+        {"glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5-turbo", "glm-5v-turbo"},
+    ),
+    "grok": ("grok-4.6", {"grok-4.6"}),
     "openrouter": ("auto", {"auto", "free"}),
     "mistral": (
         "mistral-medium-3-5",
@@ -35,7 +39,12 @@ _EXPECTED_ENDPOINTS = {
 }
 
 # Templates re-verified against provider docs after the shared review date.
-_EXPECTED_VERIFIED_ON = {"kimi": "2026-07-17"}
+_EXPECTED_VERIFIED_ON = {
+    "deepseek": "2026-08-27",
+    "kimi": "2026-07-17",
+    "glm": "2026-08-27",
+    "grok": "2026-08-27",
+}
 
 
 def _template(**updates: object) -> ProviderTemplate:
@@ -103,12 +112,17 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     )
 
     deepseek = templates["deepseek"].endpoint().reasoning
-    assert deepseek.capability.supported_efforts == ("high", "max")
+    assert deepseek.capability.supported_efforts == ("low", "high", "max")
     assert deepseek.profile is not None
+    assert deepseek.profile.variants["low"] == {
+        "thinking": {"type": "enabled"},
+        "reasoning_effort": "low",
+    }
     assert deepseek.profile.variants["max"] == {
         "thinking": {"type": "enabled"},
         "reasoning_effort": "max",
     }
+    assert templates["deepseek"].revision == 2
 
     qwen = templates["qwen"].endpoint().reasoning
     assert qwen.profile is not None
@@ -123,11 +137,53 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     assert k3_reasoning.profile is not None
     assert k3_reasoning.profile.variants["enabled"] == {"reasoning_effort": "max"}
 
-    glm = templates["glm"].endpoint().reasoning
-    assert glm.profile is not None
-    assert glm.profile.variants["enabled"] == {
+    glm = templates["glm"]
+    assert glm.revision == 2
+    glm_53 = glm.endpoint().reasoning
+    assert glm_53.capability.activation == "always_on"
+    assert glm_53.capability.supported_efforts == ("low", "high", "max")
+    assert glm_53.profile is not None
+    assert glm_53.profile.variants["enabled"] == {
+        "thinking": {"type": "enabled"},
+        "reasoning_effort": "max",
+    }
+    glm_53_endpoint = glm.endpoint()
+    assert glm_53_endpoint.context_window == 1_000_000
+    assert glm_53_endpoint.max_output_tokens == 128_000
+    assert glm_53_endpoint.supports_tools is True
+    assert glm_53_endpoint.supports_vision is False
+    assert glm_53_endpoint.supports_streaming is True
+    assert glm_53_endpoint.supports_structured_output is True
+    glm_flash = glm.endpoint("glm-5.3-flash")
+    assert glm_flash.context_window == 1_000_000
+    assert glm_flash.max_output_tokens == 128_000
+    assert glm_flash.supports_tools is True
+    assert glm_flash.supports_vision is True
+    assert glm_flash.supports_streaming is True
+    assert glm_flash.supports_structured_output is True
+    assert glm_flash.reasoning.profile is not None
+    assert glm_flash.reasoning.profile.variants["low"] == {
+        "thinking": {"type": "enabled", "clear_thinking": False},
+        "reasoning_effort": "low",
+    }
+    legacy_glm = glm.endpoint("glm-5.2").reasoning
+    assert legacy_glm.profile is not None
+    assert legacy_glm.profile.variants["enabled"] == {
         "thinking": {"type": "enabled", "clear_thinking": False}
     }
+
+    grok = templates["grok"].endpoint()
+    assert grok.context_window == 500_000
+    assert grok.max_output_tokens == 128_000
+    assert grok.supports_tools is True
+    assert grok.supports_vision is True
+    assert grok.supports_streaming is True
+    assert grok.supports_structured_output is True
+    assert grok.metadata["provider_output_limit"] == "unlimited"
+    assert grok.reasoning.capability.activation == "always_on"
+    assert grok.reasoning.capability.supported_efforts == ("low", "medium", "high", "xhigh")
+    assert grok.reasoning.profile is not None
+    assert grok.reasoning.profile.variants["enabled"] == {"reasoning_effort": "high"}
 
 
 def test_provider_template_requires_a_resolvable_default_endpoint() -> None:
