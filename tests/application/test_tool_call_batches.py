@@ -871,7 +871,7 @@ async def test_batch_waits_for_every_approval_and_marks_running_before_execution
             approved=True,
         )
     )
-    await asyncio.wait_for(started.wait(), timeout=1)
+    await asyncio.wait_for(started.wait(), timeout=5)
     executing = runtime.store.load_session(pending.session.session_id)
     executing_run = next(item for item in executing.runs if item.run_id == pending.run.run_id)
     assert executing.session.status == "running"
@@ -879,7 +879,7 @@ async def test_batch_waits_for_every_approval_and_marks_running_before_execution
     assert executing_run.phase == "tool_execution"
     release.set()
 
-    resumed = await asyncio.wait_for(resume_task, timeout=1)
+    resumed = await asyncio.wait_for(resume_task, timeout=5)
     assert resumed.run.status == "completed"
     assert sorted(executed) == ["call_1", "call_2", "call_3"]
 

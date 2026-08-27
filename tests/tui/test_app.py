@@ -1922,7 +1922,10 @@ async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Pa
         # The live body renders through the same │-prefixed definition the
         # immutable history freezes with, so markup stays literal text.
         assert reasoning._content.rendered_text == f"│ {expected}"
-        assert reasoning.label.render().plain.startswith("Thinking · ")
+        assert reasoning.label.render().plain.startswith(
+            f"{TUI_DESIGN.expanded_disclosure_marker} "
+            f"Thinking{TUI_DESIGN.inline_separator}"
+        )
         assert reasoning.label.render().plain.endswith("s")
         assert reasoning.label.region.x == turn.content_region.x
         assert reasoning._content.region.x == reasoning.label.region.x
@@ -2210,11 +2213,16 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
             )
         finally:
             provider.release.set()
+        await _wait_for_worker_group(app, pilot, group="run")
         await _wait_until(
             lambda: app._projection is not None
-            and app._projection.activity.status == "completed",
+            and app._projection.activity.status == "completed"
+            and composer.placeholder == Composer.DEFAULT_PLACEHOLDER
+            and not app._pending_runtime_events
+            and not app._runtime_events_ready_posted
+            and not app._runtime_events_frame_scheduled,
             pilot,
-            description="completed streamed run",
+            description="completed streamed run with settled TUI events",
         )
 
         assert app._projection is not None
@@ -2409,12 +2417,26 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(tmp_path: P
 
         await pilot.press("enter")
         await asyncio.wait_for(provider.queued_input_consumed.wait(), timeout=5)
-        await pilot.pause()
+        await _wait_for_worker_group(app, pilot, group="run")
+        history = app.query_one(ConversationHistory)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.activity.status == "completed"
+            and app._interaction is None
+            and not app._pending_runtime_events
+            and not app._runtime_events_ready_posted
+            and not app._runtime_events_frame_scheduled
+            and any(
+                entry.kind == "assistant" and "queued input consumed" in entry.text
+                for entry in history.entries
+            ),
+            pilot,
+            description="completed queued follow-up with settled TUI events",
+        )
 
         assert app._interaction is None
         assert app.query_one(InteractionBar).display is False
         assert app.query_one(QueuedInputPanel).display is False
-        history = app.query_one(ConversationHistory)
         rendered = "\n".join(entry.text for entry in history.entries if entry.kind == "assistant")
         assert "parent resumed" in rendered
         assert "queued input consumed" in rendered

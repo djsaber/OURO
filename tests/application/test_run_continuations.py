@@ -59,6 +59,8 @@ from ouro.plugins.session_controllers import (
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
 
+TEST_GOAL_PLUGIN_ID = "dev.example.goal"
+
 
 class CountingProvider:
     provider_id = "continuation-test"
@@ -106,7 +108,7 @@ def _write_goal_plugin(source) -> None:
         json.dumps(
             {
                 "schema_version": 3,
-                "plugin_id": "dev.ouro.goal",
+                "plugin_id": TEST_GOAL_PLUGIN_ID,
                 "name": "Goal",
                 "version": "1.0.0",
                 "namespace": "goal",
@@ -215,10 +217,10 @@ async def test_plugin_continuation_creates_attributed_scaffold_follow_up(
     _write_goal_plugin(source)
     assert application.plugins is not None
     application.plugins.install(source)
-    application.plugins.authorize("dev.ouro.goal")
-    application.plugins.trust_code("dev.ouro.goal")
+    application.plugins.authorize(TEST_GOAL_PLUGIN_ID)
+    application.plugins.trust_code(TEST_GOAL_PLUGIN_ID)
     await application.start()
-    assert (await application.plugins.enable("dev.ouro.goal")).status == "active"
+    assert (await application.plugins.enable(TEST_GOAL_PLUGIN_ID)).status == "active"
 
     result = await runtime.run("Solve the task")
 
@@ -237,7 +239,7 @@ async def test_plugin_continuation_creates_attributed_scaffold_follow_up(
         "assistant",
     ]
     scaffold = snapshot.messages[2]
-    assert scaffold.metadata["plugin_id"] == "dev.ouro.goal"
+    assert scaffold.metadata["plugin_id"] == TEST_GOAL_PLUGIN_ID
     assert scaffold.metadata["contribution_id"] == "goal"
     assert scaffold.metadata["continuation_decision_id"]
     assert scaffold.text_content.startswith("Check the goal")
@@ -277,13 +279,13 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
     _write_goal_plugin(source)
     assert application.plugins is not None
     application.plugins.install(source)
-    application.plugins.authorize("dev.ouro.goal")
-    application.plugins.trust_code("dev.ouro.goal")
+    application.plugins.authorize(TEST_GOAL_PLUGIN_ID)
+    application.plugins.trust_code(TEST_GOAL_PLUGIN_ID)
     await application.start()
-    assert (await application.plugins.enable("dev.ouro.goal")).status == "active"
+    assert (await application.plugins.enable(TEST_GOAL_PLUGIN_ID)).status == "active"
 
     alias = await handle_command(
-        "/dev.ouro.goal:goal inspect the feature",
+        f"/{TEST_GOAL_PLUGIN_ID}:goal inspect the feature",
         runtime,
         None,
         plugins=application.plugins,
@@ -293,7 +295,7 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
     assert alias.session_inputs[0].prompt == "Work on: inspect the feature"
 
     command = await handle_command(
-        "/dev.ouro.goal:goal ship the feature",
+        f"/{TEST_GOAL_PLUGIN_ID}:goal ship the feature",
         runtime,
         None,
         plugins=application.plugins,
@@ -303,7 +305,7 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
     assert store.list_sessions() == []
     assert len(command.session_inputs) == 1
     attributed = command.session_inputs[0]
-    assert attributed.plugin_id == "dev.ouro.goal"
+    assert attributed.plugin_id == TEST_GOAL_PLUGIN_ID
     assert attributed.contribution_id == "goal"
     assert attributed.generation_id
 
@@ -339,21 +341,21 @@ async def test_interactive_plugin_run_accepts_commands_while_model_is_running(tm
     _write_goal_plugin(source)
     assert application.plugins is not None
     application.plugins.install(source)
-    application.plugins.authorize("dev.ouro.goal")
-    application.plugins.trust_code("dev.ouro.goal")
+    application.plugins.authorize(TEST_GOAL_PLUGIN_ID)
+    application.plugins.trust_code(TEST_GOAL_PLUGIN_ID)
     await application.start()
-    assert (await application.plugins.enable("dev.ouro.goal")).status == "active"
+    assert (await application.plugins.enable(TEST_GOAL_PLUGIN_ID)).status == "active"
     commands = iter(
         [
-            "/dev.ouro.goal:goal target",
-            "/dev.ouro.goal:goal guide",
+            f"/{TEST_GOAL_PLUGIN_ID}:goal target",
+            f"/{TEST_GOAL_PLUGIN_ID}:goal guide",
             "/quit",
         ]
     )
 
     def input_func(_prompt: str) -> str:
         command = next(commands)
-        if command == "/dev.ouro.goal:goal guide":
+        if command == f"/{TEST_GOAL_PLUGIN_ID}:goal guide":
             assert provider.started.wait(timeout=2)
         if command == "/quit":
             provider.release.set()
