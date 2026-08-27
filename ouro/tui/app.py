@@ -24,6 +24,7 @@ from textual.timer import Timer
 from textual.widgets import TextArea
 
 from ouro.application.agent_models import AgentTreeNode
+from ouro.application.agent_tree import AgentTreeSubscription
 from ouro.application.dto import Diagnostic
 from ouro.application.event_models import RuntimeEventView
 from ouro.application.models import AvailableModel, ModelReasoningState
@@ -970,6 +971,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._visible_read_only = False
         self._visible_agent: AgentTreeNode | None = None
         self._observation_subscription: RuntimeSubscription | None = None
+        self._agent_tree_subscription: AgentTreeSubscription | None = None
+        self._agent_nodes: dict[str, AgentTreeNode] = {}
+        self._held_session_scroll_y: dict[str, float] = {}
         self._interaction: PendingInteraction | None = None
         self._models: tuple[AvailableModel, ...] = ()
         self._sessions: tuple[SessionCatalogEntry, ...] = ()
@@ -1061,6 +1065,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._observation_subscription is not None:
             self._observation_subscription.close()
             self._observation_subscription = None
+        if self._agent_tree_subscription is not None:
+            self._agent_tree_subscription.close()
+            self._agent_tree_subscription = None
+        self._agent_nodes.clear()
         self._runtime_events_frame_scheduled = False
         if self._mcp_status_timer is not None:
             self._mcp_status_timer.stop()
@@ -1235,6 +1243,60 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         finally:
             subscription.close()
 
+    def _replace_agent_tree(self, root_session_id: str | None) -> tuple[AgentTreeNode, ...]:
+        previous = self._agent_tree_subscription
+        if previous is not None and previous.root_session_id == root_session_id:
+            return tuple(self._agent_nodes.values())
+        if previous is not None:
+            previous.close()
+        self._agent_tree_subscription = None
+        self._agent_nodes.clear()
+        if root_session_id is None:
+            return ()
+        subscription = self._controller.subscribe_agent_tree(root_session_id)
+        if subscription is None:
+            return ()
+        self._agent_tree_subscription = subscription
+        self._agent_nodes = {
+            node.delegation_id: node for node in subscription.initial_snapshot.nodes
+        }
+        self.run_worker(
+            self._consume_agent_tree(subscription),
+            name=f"agent-tree-{root_session_id}",
+            group="agent-tree",
+            exclusive=True,
+        )
+        return tuple(self._agent_nodes.values())
+
+    async def _consume_agent_tree(self, subscription: AgentTreeSubscription) -> None:
+        try:
+            async for notification in subscription:
+                if self._host_closing or self._agent_tree_subscription is not subscription:
+                    return
+                if notification.kind == "diagnostic" and notification.diagnostic is not None:
+                    self.notify(
+                        notification.diagnostic.message,
+                        severity="warning",
+                        markup=False,
+                    )
+                    snapshot = self._controller.agent_tree_snapshot(subscription.root_session_id)
+                    if snapshot is None:
+                        continue
+                    nodes = snapshot.nodes
+                    self._agent_nodes = {node.delegation_id: node for node in nodes}
+                elif notification.kind == "snapshot" and notification.snapshot is not None:
+                    nodes = notification.snapshot.nodes
+                    self._agent_nodes = {node.delegation_id: node for node in nodes}
+                else:
+                    continue
+                async with self._runtime_event_apply_lock:
+                    if self._agent_tree_subscription is subscription and self._surface_available():
+                        self.query_one(ConversationView).sync_agents(nodes)
+        except (StopAsyncIteration, asyncio.CancelledError):
+            return
+        finally:
+            subscription.close()
+
     async def on_session_observation_lagged(
         self,
         message: SessionObservationLagged,
@@ -1358,6 +1420,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 return
             projection = TuiSessionProjection(events[0].session_id)
             self._projection = projection
+            # A selected draft becomes a durable primary Session at this
+            # boundary. Synthetic or foreign event projections do not own the
+            # controller Session and therefore have no Agent tree to observe.
+            if self._controller.session_id == projection.session_id:
+                self._replace_agent_tree(projection.session_id)
             composer = self.query_one(Composer)
             composer.disabled = False
             composer.focus()
@@ -1420,7 +1487,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 message_id = event.payload.get("message_id")
                 if isinstance(message_id, str):
                     input_message = await self._controller.message(event.session_id, message_id)
-                    if input_message.role == "user" and not input_message.scaffold:
+                    if input_message.role == "user":
                         await conversation.add_user_message(input_message)
             if event.event_type == "compaction_completed":
                 await flush_stream()
@@ -2380,6 +2447,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify(str(exc), severity="error", markup=False)
             return
         self._projection = None
+        self._replace_agent_tree(None)
         self._interaction = None
         self._active_title = "New session"
         self._active_workspace = self._controller.draft_workspace or self._system_status.workspace
@@ -2692,7 +2760,17 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         read_only: bool,
         agent: AgentTreeNode | None,
     ) -> None:
+        session = loaded.detail.session
+        agents = self._replace_agent_tree(session.agent_root_session_id)
         async with self._runtime_event_apply_lock:
+            conversation = self.query_one(ConversationView)
+            visible_session_id = self._visible_session_id()
+            if visible_session_id is not None:
+                held_scroll_y = conversation.held_scroll_y()
+                if held_scroll_y is None:
+                    self._held_session_scroll_y.pop(visible_session_id, None)
+                else:
+                    self._held_session_scroll_y[visible_session_id] = held_scroll_y
             # The selected Session now owns the surface. Clear every interaction
             # projected by the previous Session before yielding while its history
             # is mounted; the new projection will restore its own pending request.
@@ -2702,7 +2780,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._interaction = None
             self._sync_interaction(None)
             projection = self._project_loaded_session(loaded)
-            conversation = self.query_one(ConversationView)
             await conversation.load_messages(
                 loaded.messages,
                 loaded.compactions,
@@ -2714,11 +2791,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     (projection.activity.run_id, tool.tool_call_id)
                     for tool in projection.activity.tool_calls
                 ),
+                visible_scaffold_delegation_id=(
+                    session.delegation_id if session.session_kind == "subagent" else None
+                ),
+                held_scroll_y=self._held_session_scroll_y.get(session.session_id),
             )
             self._set_welcome_mode(conversation.showing_welcome)
             self.query_one(QueuedInputPanel).set_inputs(() if read_only else loaded.queued_inputs)
             await self._restore_projection(loaded, projection)
-            session = loaded.detail.session
+            conversation.sync_agents(agents)
             agent_name = None if agent is None else agent.nickname or agent.agent_name
             self._active_title = (
                 f"{agent_name}{TUI_DESIGN.inline_separator}read-only"

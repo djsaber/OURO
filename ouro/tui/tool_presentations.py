@@ -34,7 +34,7 @@ class ToolPresentationLine:
 
 @dataclass(frozen=True)
 class ToolPresentation:
-    subject: str | None = None
+    title: str | None = None
     summary: str | None = None
     lines: tuple[ToolPresentationLine, ...] = ()
 
@@ -53,7 +53,22 @@ def present_tool(tool: RuntimeToolCallActivity) -> ToolPresentation:
         return _present_command(tool.arguments)
     if name == "todolist":
         return _present_todos(tool.arguments, tool.result_data)
+    if name == "spawnagent":
+        return _present_spawn_agent(tool.arguments, tool.result_data)
     return ToolPresentation()
+
+
+def _present_spawn_agent(
+    arguments: dict[str, JsonValue],
+    result: dict[str, JsonValue],
+) -> ToolPresentation:
+    nickname = _non_blank_text(arguments.get("nickname"))
+    handle = result.get("handle")
+    agent_name = (
+        _non_blank_text(handle.get("agent_name")) if isinstance(handle, dict) else None
+    )
+    title = nickname or agent_name or _non_blank_text(arguments.get("agent_id")) or "Subagent"
+    return ToolPresentation(title=title)
 
 
 def _present_read(
@@ -177,6 +192,10 @@ def _path(value: JsonValue | None) -> str | None:
     if not isinstance(value, str) or not value:
         return None
     return value
+
+
+def _non_blank_text(value: JsonValue | None) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def _path_parts(path: str | None) -> tuple[ToolPresentationPart, ...]:

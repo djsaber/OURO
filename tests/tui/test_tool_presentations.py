@@ -4,7 +4,11 @@ import pytest
 from rich.console import Console
 from textual.app import App, ComposeResult
 
-from ouro.application.supervisor_models import RuntimeToolCallActivity
+from ouro.application.agent_models import AgentTreeNode
+from ouro.application.supervisor_models import (
+    RuntimeActivitySnapshot,
+    RuntimeToolCallActivity,
+)
 from ouro.tui.conversation_history import ConversationHistory, TranscriptEntry
 from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_DESIGN
 from ouro.tui.tool_presentations import present_tool
@@ -16,16 +20,43 @@ def _tool(
     *,
     arguments: dict[str, object] | None = None,
     result: dict[str, object] | None = None,
+    status: str = "completed",
 ) -> RuntimeToolCallActivity:
     return RuntimeToolCallActivity.model_validate(
         {
             "tool_call_id": "call_1",
             "tool_name": name,
-            "status": "completed",
+            "status": status,
             "source_index": 0,
             "arguments": arguments or {},
             "result_data": result or {},
         }
+    )
+
+
+def _agent(
+    activity: RuntimeActivitySnapshot,
+    *,
+    nickname: str | None = "Scout",
+) -> AgentTreeNode:
+    return AgentTreeNode(
+        revision=1,
+        delegation_id="dlg_1",
+        root_session_id="ses_root",
+        session_id="ses_child",
+        parent_session_id="ses_root",
+        parent_run_id="run_root",
+        parent_tool_call_id="call_1",
+        agent_id="general",
+        agent_name="General Agent",
+        nickname=nickname,
+        task_description="Inspect the event pipeline",
+        status="running",
+        execution_mode="async",
+        lifecycle_binding="detached",
+        control_state="open",
+        depth=1,
+        activity=activity,
     )
 
 
@@ -48,9 +79,7 @@ def test_file_tool_presentations_expose_target_and_line_semantics() -> None:
         )
     )
 
-    assert [(line.marker, line.text) for line in read.lines] == [
-        ("└", "src/app.py · 42 lines")
-    ]
+    assert [(line.marker, line.text) for line in read.lines] == [("└", "src/app.py · 42 lines")]
     assert [(line.marker, line.text) for line in write.lines] == [
         ("└", "src/new.py · +2 lines · append")
     ]
@@ -62,9 +91,7 @@ def test_file_tool_presentations_expose_target_and_line_semantics() -> None:
         (" · ", "muted"),
         ("append", "muted"),
     ]
-    assert [(line.marker, line.text) for line in edit.lines] == [
-        ("└", "src/edit.py · +3 −2 lines")
-    ]
+    assert [(line.marker, line.text) for line in edit.lines] == [("└", "src/edit.py · +3 −2 lines")]
     assert [(part.text, part.tone) for part in edit.lines[0].parts] == [
         ("src/edit.py", "default"),
         (" · ", "muted"),
@@ -77,9 +104,7 @@ def test_file_tool_presentations_expose_target_and_line_semantics() -> None:
 
 def test_command_presentation_keeps_full_flattened_command_for_layout_time() -> None:
     command = "Get-ChildItem\n" + "x" * 180
-    presentation = present_tool(
-        _tool("PowerShell", arguments={"command": command})
-    )
+    presentation = present_tool(_tool("PowerShell", arguments={"command": command}))
 
     assert len(presentation.lines) == 1
     assert presentation.lines[0].text == "Get-ChildItem ↵ " + "x" * 180
@@ -118,6 +143,104 @@ def test_todolist_presentation_exposes_progress_and_item_states() -> None:
         ("◉", "active"),
         ("○", "pending"),
     ]
+
+
+def test_spawn_agent_uses_agent_identity_and_places_task_below_status() -> None:
+    tool = _tool(
+        "SpawnAgent",
+        arguments={
+            "agent_id": "general",
+            "nickname": "Fallback nickname",
+            "description": "Fallback description",
+        },
+        status="waiting_child",
+    )
+    activity = RuntimeActivitySnapshot(
+        session_id="ses_child",
+        run_id="run_child",
+        status="running",
+        activity="streaming_text",
+    )
+    presentation = present_tool(tool)
+
+    assert presentation.title == "Fallback nickname"
+    assert (
+        "SpawnAgent"
+        not in _tool_activity_text(
+            tool,
+            frame=0,
+            theme=DEFAULT_TUI_THEME,
+        ).plain
+    )
+
+    rendered_text = _tool_activity_text(
+        tool,
+        frame=0,
+        theme=DEFAULT_TUI_THEME,
+        agent=_agent(activity),
+    )
+    rendered = rendered_text.plain
+
+    assert "SpawnAgent" not in rendered
+    assert f"General Agent{TUI_DESIGN.inline_separator}Scout" in rendered.splitlines()[0]
+    assert "working" in rendered.splitlines()[0]
+    assert "waiting for subagent" not in rendered
+    assert "Inspect the event pipeline" not in rendered.splitlines()[0]
+    assert "└ Responding · Inspect the event pipeline" in rendered
+    detail_offset = rendered.index("└ Responding")
+    detail_style = rendered_text.get_style_at_offset(Console(), detail_offset)
+    assert detail_style.color is not None
+    assert detail_style.color.triplet is not None
+    assert detail_style.color.triplet.hex == TUI_DESIGN.text_lowlight
+
+
+def test_spawn_agent_uses_existing_child_tool_activity_status() -> None:
+    activity = RuntimeActivitySnapshot(
+        session_id="ses_child",
+        run_id="run_child",
+        status="running",
+        activity="executing_tools",
+    )
+
+    rendered = _tool_activity_text(
+        _tool("SpawnAgent", status="waiting_child"),
+        frame=0,
+        theme=DEFAULT_TUI_THEME,
+        agent=_agent(activity, nickname=None),
+    ).plain
+
+    assert "General Agent" in rendered.splitlines()[0]
+    assert "Inspect the event pipeline" not in rendered.splitlines()[0]
+    assert "└ Running tools · Inspect the event pipeline" in rendered
+
+
+@pytest.mark.parametrize(
+    ("agent_status", "expected"),
+    (("completed", "done"), ("failed", "failed"), ("aborted", "failed")),
+)
+def test_spawn_agent_uses_task_outcome_status(
+    agent_status: str,
+    expected: str,
+) -> None:
+    activity = RuntimeActivitySnapshot(
+        session_id="ses_child",
+        run_id="run_child",
+        status="idle",
+        activity="idle",
+    )
+    agent = _agent(activity).model_copy(update={"status": agent_status, "activity": None})
+
+    rendered = _tool_activity_text(
+        _tool("SpawnAgent", status="completed"),
+        frame=0,
+        theme=DEFAULT_TUI_THEME,
+        agent=agent,
+    ).plain
+    header, detail = rendered.splitlines()
+
+    assert expected in header
+    assert "completed" not in rendered.casefold()
+    assert f"└ {expected.title()} · Inspect the event pipeline" == detail.strip()
 
 
 class _HistoryApp(App[None]):
@@ -159,6 +282,39 @@ async def test_tool_groups_only_add_spacing_at_non_tool_boundaries() -> None:
         assert lines[before + 1 : first_header] == [""]
         assert lines[first_detail + 1 : second_header] == []
         assert lines[second_detail + 1 : after] == [""]
+
+
+@pytest.mark.asyncio
+async def test_subagent_status_replaces_only_its_indexed_history_piece() -> None:
+    app = _HistoryApp()
+    tool = _tool("SpawnAgent", status="waiting_child")
+
+    async with app.run_test(size=(100, 30)):
+        app.history.append(TranscriptEntry(kind="assistant", text="Unrelated history."))
+        app.history.append(TranscriptEntry(kind="tool", run_id="run_root", tool=tool))
+        app.history.append(TranscriptEntry(kind="assistant", text="Later history."))
+        await app.history.wait_until_rendered()
+        line_buffer = app.history.lines
+        unaffected_line = line_buffer[0]
+
+        first = RuntimeActivitySnapshot(
+            session_id="ses_child",
+            run_id="run_child",
+            status="running",
+            activity="streaming_text",
+        )
+        app.history.update_agents((_agent(first),))
+
+        assert app.history.lines is line_buffer
+        assert app.history.lines[0] is unaffected_line
+        assert "└ Responding · Inspect the event pipeline" in app.history.rendered_text
+
+        second = first.model_copy(update={"activity": "streaming_reasoning"})
+        app.history.update_agents((_agent(second),))
+
+        assert app.history.lines is line_buffer
+        assert app.history.lines[0] is unaffected_line
+        assert "└ Thinking · Inspect the event pipeline" in app.history.rendered_text
 
 
 @pytest.mark.asyncio

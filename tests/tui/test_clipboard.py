@@ -11,6 +11,7 @@ from textual.screen import Screen
 from textual.selection import Selection
 from textual.widgets import Static
 
+from ouro.application.agent_models import AgentTreeNode
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.tui.app import _OuroHostScreen
 from ouro.tui.clipboard import (
@@ -29,12 +30,13 @@ from ouro.tui.widgets import Composer, ConversationView
 
 
 def _unused_tool_renderer(
-    _tool: RuntimeToolCallActivity,
+    tool: RuntimeToolCallActivity,
     *,
     frame: int,
     theme: TuiTheme,
+    agent: AgentTreeNode | None = None,
 ) -> Text:
-    del frame, theme
+    del tool, frame, theme, agent
     return Text()
 
 

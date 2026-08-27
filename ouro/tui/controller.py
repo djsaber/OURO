@@ -14,7 +14,9 @@ from ouro.application.agent_models import (
     AgentInteractionView,
     AgentToolOptionView,
     AgentTreeNode,
+    AgentTreeSnapshot,
 )
+from ouro.application.agent_tree import AgentTreeSubscription
 from ouro.application.agents import AgentService
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import (
@@ -1976,6 +1978,22 @@ class TuiController:
             after_sequence=after_sequence,
             max_buffer=1000,
         )
+
+    def subscribe_agent_tree(self, root_session_id: str) -> AgentTreeSubscription | None:
+        application = self._application
+        if not self._started or application is None:
+            raise RuntimeError("TUI controller is not started")
+        if application.agents is None:
+            return None
+        return application.agents.subscribe_agent_tree(root_session_id)
+
+    def agent_tree_snapshot(self, root_session_id: str) -> AgentTreeSnapshot | None:
+        application = self._application
+        if not self._started or application is None:
+            raise RuntimeError("TUI controller is not started")
+        if application.agents is None:
+            return None
+        return application.agents.agent_tree_snapshot(root_session_id)
 
     async def resolve_agent_navigation(
         self,

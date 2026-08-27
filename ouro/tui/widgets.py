@@ -22,6 +22,7 @@ from textual.timer import Timer
 from textual.widgets import Label, Static, TextArea
 
 from ouro import __version__
+from ouro.application.agent_models import AgentTreeNode
 from ouro.application.queued_inputs import (
     QueuedInputMode,
     QueuedUserInputView,
@@ -116,6 +117,28 @@ _ACTIVITY_LABELS = {
     "paused": "Paused",
     "recoverable": "Recovery required",
 }
+_TOOL_STATUS_LABELS = {
+    "planned": "queued",
+    "ready": "ready",
+    "awaiting_approval": "approval required",
+    "waiting_user": "waiting for input",
+    "resolving_input": "resolving input",
+    "running": "running",
+    "cancelling": "cancelling",
+    "completed": "completed",
+    "failed": "failed",
+    "rejected": "rejected",
+    "aborted": "aborted",
+    "unknown_outcome": "outcome unknown",
+    "waiting_child": "waiting for subagent",
+}
+_SUBAGENT_ACTIVITY_LABELS = {
+    **_ACTIVITY_LABELS,
+    "completed": "Done",
+    "aborted": "Failed",
+    "recoverable": "Failed",
+}
+_FAILED_SUBAGENT_STATUSES = frozenset({"failed", "aborted", "recoverable"})
 _CONTEXT_PROGRESS_WIDTH = 11
 _HEADER_MIN_GAP = 3
 
@@ -548,11 +571,18 @@ def _completed_reasoning_label(
 
 
 class ToolActivityRow(RangeSelectionOnly, Static):
-    def __init__(self, tool: RuntimeToolCallActivity, *, run_id: str | None) -> None:
+    def __init__(
+        self,
+        tool: RuntimeToolCallActivity,
+        *,
+        run_id: str | None,
+        agent: AgentTreeNode | None = None,
+    ) -> None:
         super().__init__(classes="tool-row")
         self.tool_call_id = tool.tool_call_id
         self.run_id = run_id
         self._tool = tool
+        self._agent = agent
         self._frame = 0
         self._timer: Timer | None = None
         self.apply_tool(tool)
@@ -571,9 +601,17 @@ class ToolActivityRow(RangeSelectionOnly, Static):
         self._sync_timer()
         self._render_tool()
 
+    def apply_agent(self, agent: AgentTreeNode) -> None:
+        self._agent = agent
+        self._render_tool()
+
     @property
     def tool(self) -> RuntimeToolCallActivity:
         return self._tool
+
+    @property
+    def agent(self) -> AgentTreeNode | None:
+        return self._agent
 
     def _sync_timer(self) -> None:
         if not self.is_attached:
@@ -612,7 +650,14 @@ class ToolActivityRow(RangeSelectionOnly, Static):
             event.stop()
 
     def _render_tool(self) -> None:
-        self.update(_tool_activity_text(self._tool, frame=self._frame, theme=theme_for(self)))
+        self.update(
+            _tool_activity_text(
+                self._tool,
+                frame=self._frame,
+                theme=theme_for(self),
+                agent=self._agent,
+            )
+        )
 
 
 def _tool_activity_text(
@@ -620,6 +665,7 @@ def _tool_activity_text(
     *,
     frame: int,
     theme: TuiTheme,
+    agent: AgentTreeNode | None = None,
 ) -> Text:
     """Render one tool state without coupling it to a mounted widget."""
 
@@ -652,37 +698,32 @@ def _tool_activity_text(
         "awaiting_approval": theme.accent,
         "waiting_user": theme.accent,
     }
-    status_labels = {
-        "planned": "queued",
-        "ready": "ready",
-        "awaiting_approval": "approval required",
-        "waiting_user": "waiting for input",
-        "resolving_input": "resolving input",
-        "running": "running",
-        "cancelling": "cancelling",
-        "completed": "completed",
-        "failed": "failed",
-        "rejected": "rejected",
-        "aborted": "aborted",
-        "unknown_outcome": "outcome unknown",
-        "waiting_child": "waiting for subagent",
-    }
     accent = state_styles.get(
         tool.status,
         theme.accent if active else TUI_DESIGN.text_muted,
     )
     presentation = present_tool(tool)
+    subagent = agent if agent is not None and tool.tool_name.casefold() == "spawnagent" else None
+    title = presentation.title or tool.tool_name
+    if subagent is not None:
+        title = _subagent_identity(subagent)
     text = Text(no_wrap=True, overflow="ellipsis")
     text.append(f"  {mark} ", style=f"bold {accent}")
-    text.append(tool.tool_name, style=f"bold {TUI_DESIGN.text_primary}")
-    if presentation.subject:
-        text.append(f"  {presentation.subject}", style=TUI_DESIGN.text_muted)
+    text.append(title, style=f"bold {TUI_DESIGN.text_primary}")
     if presentation.summary:
         text.append(
             f" {TUI_DESIGN.inline_separator}{presentation.summary}",
             style=TUI_DESIGN.text_detail,
         )
-    text.append(f"  {status_labels[tool.status]}", style=accent)
+    status_label = (
+        _subagent_task_status(subagent)
+        if subagent is not None
+        else _TOOL_STATUS_LABELS[tool.status]
+    )
+    status_tone = (
+        TUI_DESIGN.failure if subagent is not None and status_label == "failed" else accent
+    )
+    text.append(f"  {status_label}", style=status_tone)
     elapsed = _tool_elapsed_seconds(tool)
     if elapsed is not None:
         text.append(
@@ -706,7 +747,42 @@ def _tool_activity_text(
         for part in line.parts:
             style = part_styles[part.tone]
             text.append(part.text, style=style)
+    if subagent is not None:
+        _append_subagent_activity(text, subagent)
     return text
+
+
+def _subagent_identity(agent: AgentTreeNode) -> str:
+    nickname = agent.nickname.strip() if agent.nickname is not None else ""
+    if nickname and nickname != agent.agent_name:
+        return TUI_DESIGN.inline_separator.join((agent.agent_name, nickname))
+    return agent.agent_name
+
+
+def _subagent_task_status(agent: AgentTreeNode) -> str:
+    if agent.status == "completed":
+        return "done"
+    if agent.status in _FAILED_SUBAGENT_STATUSES:
+        return "failed"
+    if agent.status == "paused":
+        return "paused"
+    return "working"
+
+
+def _append_subagent_activity(
+    text: Text,
+    agent: AgentTreeNode,
+) -> None:
+    activity = agent.activity
+    activity_name = activity.activity if activity is not None else agent.status
+    label = _SUBAGENT_ACTIVITY_LABELS.get(
+        activity_name,
+        activity_name.replace("_", " ").title(),
+    )
+    text.append(
+        f"\n    └ {label}{TUI_DESIGN.inline_separator}{agent.task_description}",
+        style=TUI_DESIGN.text_lowlight,
+    )
 
 
 def _is_terminal_tool(tool: RuntimeToolCallActivity) -> bool:
@@ -1144,6 +1220,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self._tools: dict[str, ToolActivityRow] = {}
         self._current_run_id: str | None = None
         self._presented_run_ids: set[str] = set()
+        self._visible_scaffold_delegation_id: str | None = None
 
     def compose(self) -> ComposeResult:
         yield self._transcript
@@ -1172,6 +1249,11 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
     def release_anchor(self) -> None:
         self._follow_tail = False
         self.scroll_target_y = self.scroll_y
+
+    def held_scroll_y(self) -> float | None:
+        """Return a restorable offset only while the user is reviewing history."""
+
+        return None if self._follow_tail else self.scroll_y
 
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
         super().watch_scroll_y(old_value, new_value)
@@ -1247,6 +1329,8 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         runs: Iterable[RunPresentation] = (),
         *,
         mutable_tool_calls: Iterable[tuple[str | None, str]] = (),
+        visible_scaffold_delegation_id: str | None = None,
+        held_scroll_y: float | None = None,
     ) -> None:
         await self._clear_live_transcript()
         self._assistant = None
@@ -1254,11 +1338,13 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self._showing_welcome = False
         self._current_run_id = None
         self._presented_run_ids.clear()
+        self._visible_scaffold_delegation_id = visible_scaffold_delegation_id
 
         # Canonical history contains both autonomous dialogue and harness
-        # scaffolding. Presentation provenance is explicit on each message;
-        # role, semantic tags, and producer source must not be used to infer it.
-        materialized = [message for message in messages if not message.scaffold]
+        # scaffolding. A child view deliberately presents only the user-role
+        # inputs belonging to its own Delegation; every other scaffold remains
+        # hidden according to its explicit presentation provenance.
+        materialized = [message for message in messages if self._presents_message(message)]
         run_presentations = tuple(runs)
         mutable_tool_call_keys = frozenset(mutable_tool_calls)
         requests = {
@@ -1373,7 +1459,11 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
 
         self._set_showing_welcome(False)
         await self._history.load(transcript)
-        self.anchor()
+        if held_scroll_y is None:
+            self.anchor()
+        else:
+            self.release_anchor()
+            self.scroll_to(y=held_scroll_y, animate=False, immediate=True)
 
     async def _clear_live_transcript(self) -> None:
         live_children = tuple(
@@ -1414,11 +1504,22 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         await self._history.wait_until_rendered()
 
     async def add_user_message(self, message: MessageRecord) -> None:
-        if message.role != "user" or message.scaffold:
+        if message.role != "user" or not self._presents_message(message):
             return
         text = user_message_text(message)
         if text:
             await self.add_user(text)
+
+    def _presents_message(self, message: MessageRecord) -> bool:
+        if not message.scaffold:
+            return True
+        delegation_id = self._visible_scaffold_delegation_id
+        return (
+            delegation_id is not None
+            and message.role == "user"
+            and message.metadata.get("session_input_source") == "delegation"
+            and message.metadata.get("delegation_id") == delegation_id
+        )
 
     async def append_assistant(self, text: str) -> None:
         await self._dismiss_welcome()
@@ -1546,8 +1647,32 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             terminal_rows = tuple(self._tools.values())
             self._tools.clear()
             for row in terminal_rows:
-                self._history.append(TranscriptEntry(kind="tool", run_id=row.run_id, tool=row.tool))
+                self._history.append(
+                    TranscriptEntry(
+                        kind="tool",
+                        run_id=row.run_id,
+                        tool=row.tool,
+                        agent=row.agent,
+                    )
+                )
                 await row.remove()
+
+    def sync_agents(self, agents: Iterable[AgentTreeNode]) -> None:
+        materialized = tuple(agents)
+        if not materialized:
+            return
+        self._history.update_agents(materialized)
+        agents_by_call = {
+            (agent.parent_run_id, agent.parent_tool_call_id): agent
+            for agent in materialized
+            if agent.parent_tool_call_id is not None
+        }
+        for row in self._tools.values():
+            if row.run_id is None:
+                continue
+            agent = agents_by_call.get((row.run_id, row.tool_call_id))
+            if agent is not None:
+                row.apply_agent(agent)
 
     async def add_notice(self, message: str, *, error: bool = False) -> None:
         await self._dismiss_welcome()

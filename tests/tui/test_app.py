@@ -861,6 +861,7 @@ class MultiChildStreamingProvider:
 
     def __init__(self) -> None:
         self.root_round = 0
+        self.root_prefix = "\n\n".join(f"Root history paragraph {index}" for index in range(50))
         self.root_stream_started = asyncio.Event()
         self.release_root = asyncio.Event()
         self.first_chunks = {
@@ -901,7 +902,7 @@ class MultiChildStreamingProvider:
                     )
                 yield ProviderStreamEvent(type="done")
                 return
-            yield ProviderStreamEvent(type="text_delta", text="root prefix")
+            yield ProviderStreamEvent(type="text_delta", text=self.root_prefix)
             self.root_stream_started.set()
             await self.release_root.wait()
             yield ProviderStreamEvent(type="text_delta", text=" + root suffix")
@@ -2720,6 +2721,46 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         by_call = {node.parent_tool_call_id: node for node in tree.nodes}
         first = by_call["spawn_child_1"]
         second = by_call["spawn_child_2"]
+        root_history = app.query_one(ConversationHistory)
+
+        def child_entry(call_id: str):
+            return next(
+                (
+                    entry
+                    for entry in root_history.entries
+                    if entry.tool is not None and entry.tool.tool_call_id == call_id
+                ),
+                None,
+            )
+
+        await _wait_until(
+            lambda: all(
+                (entry := child_entry(call_id)) is not None
+                and entry.agent is not None
+                and entry.agent.activity is not None
+                and entry.agent.activity.activity == "streaming_text"
+                for call_id in ("spawn_child_1", "spawn_child_2")
+            ),
+            pilot,
+            description="root subagent previews",
+        )
+        for index, call_id in enumerate(("spawn_child_1", "spawn_child_2"), start=1):
+            entry = child_entry(call_id)
+            assert entry is not None
+            assert entry.agent is not None
+            assert entry.agent.task_description == f"Observe child {index}"
+            assert entry.agent.agent_name in root_history.rendered_text
+        assert "SpawnAgent" not in root_history.rendered_text
+        assert "└ Responding · Observe child 1" in root_history.rendered_text
+        assert "└ Responding · Observe child 2" in root_history.rendered_text
+        root_conversation = app.query_one(ConversationView)
+        await pilot.pause()
+        assert root_conversation.max_scroll_y > 0
+        root_conversation.scroll_to(y=3, animate=False, immediate=True)
+        await pilot.pause()
+        held_root_scroll_y = root_conversation.scroll_y
+        assert held_root_scroll_y == 3
+        assert held_root_scroll_y < root_conversation.max_scroll_y
 
         app.post_message(
             ToolNavigationRequested(
@@ -2738,6 +2779,10 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         assert app._projection is not None
         assert app._projection.assistant_text == "first child prefix"
         assert app.query_one(AssistantTurn).source == "first child prefix"
+        assert any(
+            entry.kind == "user" and entry.text == "first child task"
+            for entry in app.query_one(ConversationHistory).entries
+        )
 
         writes: list[str] = []
 
@@ -2775,18 +2820,32 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         )
 
         app.action_main_session()
-        await _wait_until(
-            lambda: app._visible_session_id() == root_session_id,
-            pilot,
-            description="return to root",
-        )
+        await _wait_for_worker_group(app, pilot, group="navigation")
+        assert app._visible_session_id() == root_session_id
+        assert app.query_one(ConversationView).scroll_y == held_root_scroll_y
         assert app._visible_read_only is False
         assert app.query_one(Composer).disabled is False
-        assert "root prefix + root suffix" in "\n".join(
+        assert "Root history paragraph 0" in "\n".join(
             entry.text
             for entry in app.query_one(ConversationHistory).entries
             if entry.kind == "assistant"
         )
+        assert " + root suffix" in "\n".join(
+            entry.text
+            for entry in app.query_one(ConversationHistory).entries
+            if entry.kind == "assistant"
+        )
+        root_history = app.query_one(ConversationHistory)
+        await _wait_until(
+            lambda: (
+                (entry := child_entry("spawn_child_1")) is not None
+                and entry.agent is not None
+                and entry.agent.status == "completed"
+            ),
+            pilot,
+            description="completed first child preview",
+        )
+        assert "└ Done · Observe child 1" in root_history.rendered_text
 
         app.post_message(
             ToolNavigationRequested(
@@ -3736,6 +3795,59 @@ async def test_history_load_projects_scaffold_visibility_from_message_record(
         assert [(entry.kind, entry.text) for entry in entries] == [
             ("user", "Ship the visible objective"),
             ("assistant", "Visible answer"),
+        ]
+
+
+@pytest.mark.asyncio
+async def test_child_history_presents_only_its_own_delegated_user_inputs(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    delegated = MessageRecord(
+        session_id="ses_child",
+        role="user",
+        content=[TextContent(text="Inspect the delegated target")],
+        scaffold=True,
+        metadata={
+            "session_input_source": "delegation",
+            "delegation_id": "dlg_child",
+        },
+    )
+    unrelated = delegated.model_copy(
+        update={
+            "message_id": "msg_unrelated_delegation",
+            "content": [TextContent(text="Unrelated delegated task")],
+            "metadata": {
+                "session_input_source": "delegation",
+                "delegation_id": "dlg_other",
+            },
+        }
+    )
+    follow_up = delegated.model_copy(
+        update={
+            "message_id": "msg_delegated_follow_up",
+            "content": [TextContent(text="Check one more file")],
+        }
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        conversation = app.query_one(ConversationView)
+
+        await conversation.load_messages((delegated, unrelated))
+        assert conversation.query_one(ConversationHistory).entries == ()
+
+        await conversation.load_messages(
+            (delegated, unrelated),
+            visible_scaffold_delegation_id="dlg_child",
+        )
+        await conversation.add_user_message(unrelated)
+        await conversation.add_user_message(follow_up)
+
+        entries = conversation.query_one(ConversationHistory).entries
+        assert [(entry.kind, entry.text) for entry in entries] == [
+            ("user", "Inspect the delegated target"),
+            ("user", "Check one more file"),
         ]
 
 

@@ -23,6 +23,7 @@ from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import RichLog
 
+from ouro.application.agent_models import AgentTreeNode
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.tui.selection import RangeSelectionOnly
 from ouro.tui.state import (
@@ -41,6 +42,7 @@ class ToolActivityRenderer(Protocol):
         *,
         frame: int,
         theme: TuiTheme,
+        agent: AgentTreeNode | None = None,
     ) -> Text: ...
 
 
@@ -233,6 +235,7 @@ class TranscriptEntry:
     run_id: str | None = None
     reasoning_seconds: float | None = None
     tool: RuntimeToolCallActivity | None = None
+    agent: AgentTreeNode | None = None
     run: RunPresentation | None = None
     compaction: CompactionPresentation | None = None
     error: bool = False
@@ -669,6 +672,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._render_tool = render_tool
         self._entries: list[TranscriptEntry] = []
         self._pieces: list[_Piece] = []
+        self._piece_line_starts: list[int] = []
         self._piece_indexes_by_entry: dict[int, list[int]] = {}
         self._tool_entry_indexes: dict[tuple[str | None, str], int] = {}
         self._user_lines: tuple[int, ...] = ()
@@ -845,14 +849,37 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                     kind="tool",
                     run_id=entry.run_id,
                     tool=tool,
+                    agent=entry.agent,
                 )
                 changed_indexes.append(index)
         if changed_indexes:
             if not all(self._rerender_entry(index) for index in changed_indexes):
                 self._render_entries()
-            else:
-                self._rebuild_lines()
         return frozenset(matched)
+
+    def update_agents(self, agents: Iterable[AgentTreeNode]) -> None:
+        changed_indexes: list[int] = []
+        for agent in agents:
+            if agent.parent_tool_call_id is None:
+                continue
+            index = self._tool_entry_indexes.get(
+                (agent.parent_run_id, agent.parent_tool_call_id)
+            )
+            if index is None:
+                continue
+            entry = self._entries[index]
+            if entry.agent == agent:
+                continue
+            self._entries[index] = TranscriptEntry(
+                kind="tool",
+                run_id=entry.run_id,
+                tool=entry.tool,
+                agent=agent,
+            )
+            changed_indexes.append(index)
+        if changed_indexes:
+            if not all(self._rerender_entry(index) for index in changed_indexes):
+                self._render_entries()
 
     def refresh_theme(self) -> None:
         if self._entries:
@@ -934,6 +961,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         """Reset the strip buffer for a full replacement; True when width is known."""
         self._entries = entries
         self._pieces.clear()
+        self._piece_line_starts.clear()
         self._piece_indexes_by_entry.clear()
         self._tool_entry_indexes = {
             (entry.run_id, entry.tool.tool_call_id): index
@@ -971,6 +999,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             strips = self._render_strips(renderable)
             if tag == "user":
                 self._user_lines = (*self._user_lines, len(self.lines))
+            self._piece_line_starts.append(len(self.lines))
             self._append_strips(strips)
             self._pieces.append(
                 _Piece(
@@ -996,8 +1025,27 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             return False
         for piece_index, (renderable, tag) in zip(piece_indexes, renderables, strict=True):
             piece = self._pieces[piece_index]
-            piece.strips = self._render_strips(renderable)
+            old_length = len(piece.strips)
+            start = self._piece_line_starts[piece_index]
+            new_strips = self._render_strips(renderable)
+            self.lines[start : start + old_length] = new_strips
+            delta = len(new_strips) - old_length
+            piece.strips = new_strips
             piece.tag = tag
+            if delta:
+                for later in range(piece_index + 1, len(self._piece_line_starts)):
+                    self._piece_line_starts[later] += delta
+                old_end = start + old_length
+                self._user_lines = tuple(
+                    line + delta if line >= old_end else line for line in self._user_lines
+                )
+            self._widest_line_width = max(
+                self._widest_line_width,
+                max(strip.cell_length for strip in new_strips),
+            )
+            self.virtual_size = Size(self._widest_line_width, len(self.lines))
+            self._line_cache.clear()
+            self.refresh(layout=bool(delta))
         return True
 
     def _entry_pieces(
@@ -1017,7 +1065,12 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             ]
         if entry.kind == "tool":
             assert entry.tool is not None
-            rendered = self._render_tool(entry.tool, frame=0, theme=theme)
+            rendered = self._render_tool(
+                entry.tool,
+                frame=0,
+                theme=theme,
+                agent=entry.agent,
+            )
             if entry.tool.tool_name == "SpawnAgent" and entry.run_id is not None:
                 rendered.stylize(
                     Style(meta={_TOOL_NAVIGATION_META: entry_index}),
@@ -1092,14 +1145,17 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         """Rebuild the visible line space from pieces; strips are reused as-is."""
         self._line_cache.clear()
         lines: list[Strip] = []
+        starts: list[int] = []
         user_lines: list[int] = []
         widest = 0
         for piece in self._pieces:
+            starts.append(len(lines))
             if piece.tag == "user":
                 user_lines.append(len(lines))
             widest = max(widest, max(strip.cell_length for strip in piece.strips))
             lines.extend(piece.strips)
         self.lines = lines
+        self._piece_line_starts = starts
         self._user_lines = tuple(user_lines)
         self._widest_line_width = widest
         self.virtual_size = Size(widest, len(lines))
