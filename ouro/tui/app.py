@@ -2277,12 +2277,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return (*catalog, *self._plugin_commands())
 
     def _workspace_arguments(self) -> tuple[TuiCommandArgument, ...]:
-        current = self._controller.draft_workspace
         return tuple(
-            TuiCommandArgument(
-                workspace,
-                "Current workspace" if workspace == current else "Recent workspace",
-            )
+            TuiCommandArgument(workspace, "")
             for workspace in self._preferences.recent_workspaces
         )
 

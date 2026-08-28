@@ -2501,7 +2501,7 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
                 style = active_placeholder.get_style_at_offset(
                     active_placeholder.plain.index(shortcut)
                 )
-                assert style.bold is True
+                assert style.bold is False
                 assert style.foreground == Color.parse(TUI_THEMES["original"].accent_bright)
 
             composer.focus()
@@ -2890,14 +2890,14 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             shortcut_style = child_placeholder.get_style_at_offset(
                 child_placeholder.plain.index(shortcut)
             )
-            assert shortcut_style.bold is True
+            assert shortcut_style.bold is False
             assert shortcut_style.foreground == Color.parse(TUI_THEMES["original"].accent_bright)
         rendered_placeholder = composer.render_line(0)
         assert rendered_placeholder.text == child_placeholder.plain
         for shortcut in ("Alt+↑", "Alt+←/→"):
             offset = rendered_placeholder.text.index(shortcut)
             segment = next(iter(rendered_placeholder.crop(offset, offset + len(shortcut))))
-            assert segment.style is not None and segment.style.bold
+            assert segment.style is not None and not segment.style.bold
             assert segment.style.color is not None
             assert (
                 segment.style.color.get_truecolor().hex
@@ -8594,6 +8594,14 @@ async def test_workspace_command_uses_inline_history_and_freeform_only_before_se
             str(tmp_path.resolve()),
             str(historical.resolve()),
         ]
+        assert [argument.display_label for argument in popup._arguments] == [
+            str(tmp_path.resolve()),
+            str(historical.resolve()),
+        ]
+        assert all(not argument.description for argument in popup._arguments)
+        workspace_menu = popup.query_one("#command-popup-content", Static).render().plain
+        assert "Current workspace" not in workspace_menu
+        assert "Recent workspace" not in workspace_menu
 
         await pilot.press("down", "enter")
         await pilot.pause()

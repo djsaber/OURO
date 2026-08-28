@@ -2582,10 +2582,11 @@ class CommandPopup(VerticalScroll):
                 argument.display_label.ljust(value_width),
                 style=(theme.accent_bright if selected else TUI_DESIGN.text_primary),
             )
-            row.append(
-                f"  {argument.description}",
-                style=(TUI_DESIGN.text_secondary if selected else TUI_DESIGN.text_lowlight),
-            )
+            if argument.description:
+                row.append(
+                    f"  {argument.description}",
+                    style=(TUI_DESIGN.text_secondary if selected else TUI_DESIGN.text_lowlight),
+                )
             rows.append(row)
         self._render_rows(tuple(rows))
 
@@ -2787,7 +2788,7 @@ class Composer(TuiTextArea):
     ) -> Content:
         key_style = Style(
             foreground=Color.parse(theme_for(self).accent_bright),
-            bold=True,
+            bold=False,
         )
         lowlight_style = Style(foreground=Color.parse(TUI_DESIGN.text_lowlight))
         separator_style = Style(foreground=Color.parse(TUI_DESIGN.separator_tone))
