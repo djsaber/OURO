@@ -726,9 +726,9 @@ class SessionService:
             parent_session_id=source.session_id,
             forked_from_message_id=(source_message.message_id if source_message else None),
             forked_from_run_id=(source_message.run_id if source_message else None),
-            title=_branch_title(source.title),
-            title_source="fallback",
-            title_locked=False,
+            title=source.title,
+            title_source=source.title_source,
+            title_locked=source.title_locked,
             created_at=now,
             updated_at=now,
             last_activity_at=now,
@@ -922,14 +922,6 @@ def _normalize_title(value: str) -> str:
     if len(title) > _MAX_TITLE_LENGTH:
         raise ValueError(f"session title exceeds {_MAX_TITLE_LENGTH} characters")
     return title
-
-
-def _branch_title(source_title: str) -> str:
-    suffix = " • 分支"
-    normalized = _normalize_title(source_title)
-    if len(normalized) + len(suffix) <= _MAX_TITLE_LENGTH:
-        return f"{normalized}{suffix}"
-    return f"{normalized[: _MAX_TITLE_LENGTH - len(suffix)].rstrip()}{suffix}"
 
 
 def _filter_entries(

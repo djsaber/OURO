@@ -529,6 +529,9 @@ Session 的通用 `branch` 只表达 canonical history 边界：传入任意 mes
 创建空历史分支，不限制 Host 可选择的消息角色。TUI 的 `/fork` 在会话输入框命令菜单中统一投影分支目标：首项
 `Full session` 复制完整当前历史，后续 `#N` 项显示对应 user message 文本，并将所选 user message 映射为其
 前一个 canonical message 边界后回填为草稿。上述选择与映射完全属于 TUI 交互规则。
+分支原样继承源 Session 的 `title`、`title_source` 和 `title_locked`，并通过 `parent_session_id`、
+`root_session_id`、`forked_from_message_id`、`forked_from_run_id` 诚实记录 lineage。框架不向标题拼接“分支”等
+展示标记；Host 是否以及如何呈现 lineage 属于前端策略。
 分支只继承 active compaction lineage 中对新历史仍然可用的前缀：`covered_message_ids` 必须精确匹配新分支
 canonical prefix，且 `history_boundary_message_id` 也必须位于分支内。复制时统一重建 message/compaction identity、
 previous 指针和 source digest，并与 Session、资源引用、扩展状态在同一个新 Session 快照中原子发布；最新

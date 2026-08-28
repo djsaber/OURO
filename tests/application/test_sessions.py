@@ -569,7 +569,7 @@ def test_branch_remaps_messages_and_expands_complete_tool_exchange(tmp_path) -> 
     assert branch.session.parent_session_id == source.session_id
     assert branch.session.root_session_id == source.session_id
     assert branch.session.forked_from_message_id == assistant.message_id
-    assert branch.session.title == "Tool task • 分支"
+    assert branch.session.title == source.title
     assert len(branch_snapshot.messages) == 3
     assert [message.sequence for message in branch_snapshot.messages] == [1, 2, 3]
     assert all(message.run_id is None for message in branch_snapshot.messages)
@@ -580,6 +580,21 @@ def test_branch_remaps_messages_and_expands_complete_tool_exchange(tmp_path) -> 
         assistant.message_id,
         result.message_id,
     ]
+
+
+def test_branch_preserves_canonical_title_state_without_display_markers(tmp_path) -> None:
+    _store, sessions = _service(tmp_path)
+    source = sessions.create(title="User-owned title", title_source="user").session
+
+    branch = sessions.branch(source.session_id, None).session
+
+    assert branch.title == source.title
+    assert branch.title_source == source.title_source
+    assert branch.title_locked == source.title_locked
+    assert branch.parent_session_id == source.session_id
+    assert branch.root_session_id == source.root_session_id
+    assert branch.forked_from_message_id is None
+    assert branch.forked_from_run_id is None
 
 
 def test_branch_does_not_load_event_history_or_runtime_aggregate(
