@@ -8730,6 +8730,7 @@ Review the requested code carefully.
         assert composer.suggestion == "<task>"
 
         await pilot.press(*"inspect", "space", *"app.py", "enter")
+        await _wait_for_worker_group(app, pilot, group="run")
         await _wait_until(
             lambda: app._projection is not None and app._projection.activity.status == "completed",
             pilot,
