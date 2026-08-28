@@ -1281,6 +1281,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         )
         self._system_status = TuiSystemStatus()
         self._showing_welcome = False
+        self._restored_scroll_y: float | None = None
         self._assistant: AssistantTurn | None = None
         self._tools: dict[str, ToolActivityRow] = {}
         self._current_run_id: str | None = None
@@ -1301,24 +1302,42 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         arrangement = super().arrange(size, optimal)
         if not optimal:
             max_scroll_y = max(0, arrangement.total_region.bottom - size.height)
-            scroll_y = max_scroll_y if self._follow_tail else self.scroll_y
+            scroll_y: float
+            if self._follow_tail:
+                scroll_y = max_scroll_y
+            elif self._restored_scroll_y is not None:
+                scroll_y = min(self._restored_scroll_y, max_scroll_y)
+                self._restored_scroll_y = None
+            else:
+                scroll_y = min(self.scroll_y, max_scroll_y)
             self.set_scroll(None, scroll_y)
             self.scroll_target_y = scroll_y
         return arrangement
 
     def anchor(self, anchor: bool = True) -> None:
         self._follow_tail = anchor
+        self._restored_scroll_y = None
         if anchor:
             self.scroll_end(immediate=True, animate=False)
 
     def release_anchor(self) -> None:
         self._follow_tail = False
+        self._restored_scroll_y = None
         self.scroll_target_y = self.scroll_y
 
     def held_scroll_y(self) -> float | None:
         """Return a restorable offset only while the user is reviewing history."""
 
-        return None if self._follow_tail else self.scroll_y
+        if self._follow_tail:
+            return None
+        return self._restored_scroll_y if self._restored_scroll_y is not None else self.scroll_y
+
+    def _restore_scroll_y(self, scroll_y: float) -> None:
+        """Resolve a saved offset against the destination transcript's first layout."""
+
+        self._follow_tail = False
+        self._restored_scroll_y = max(0.0, scroll_y)
+        self.refresh(layout=True)
 
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
         super().watch_scroll_y(old_value, new_value)
@@ -1527,8 +1546,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         if held_scroll_y is None:
             self.anchor()
         else:
-            self.release_anchor()
-            self.scroll_to(y=held_scroll_y, animate=False, immediate=True)
+            self._restore_scroll_y(held_scroll_y)
 
     async def _clear_live_transcript(self) -> None:
         live_children = tuple(

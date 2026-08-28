@@ -882,7 +882,14 @@ class MultiChildStreamingProvider:
 
     def __init__(self) -> None:
         self.root_round = 0
-        self.root_prefix = "\n\n".join(f"Root history paragraph {index}" for index in range(50))
+        self.root_prefix = "\n\n".join(f"Root history paragraph {index}" for index in range(80))
+        self.child_prefixes = {
+            task: "\n\n".join(f"{label} child paragraph {index}" for index in range(30))
+            for task, label in (
+                ("first child task", "first"),
+                ("second child task", "second"),
+            )
+        }
         self.root_stream_started = asyncio.Event()
         self.release_root = asyncio.Event()
         self.first_chunks = {
@@ -936,7 +943,7 @@ class MultiChildStreamingProvider:
             if any(name in message.text_content for message in messages)
         )
         label = "first" if task.startswith("first") else "second"
-        yield ProviderStreamEvent(type="text_delta", text=f"{label} child prefix")
+        yield ProviderStreamEvent(type="text_delta", text=self.child_prefixes[task])
         self.first_chunks[task].set()
         await self.releases[task].wait()
         yield ProviderStreamEvent(type="text_delta", text=f" + {label} child suffix")
@@ -2777,10 +2784,14 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         root_conversation = app.query_one(ConversationView)
         await pilot.pause()
         assert root_conversation.max_scroll_y > 0
-        root_conversation.scroll_to(y=3, animate=False, immediate=True)
+        root_conversation.scroll_to(
+            y=root_conversation.max_scroll_y - 2,
+            animate=False,
+            immediate=True,
+        )
         await pilot.pause()
         held_root_scroll_y = root_conversation.scroll_y
-        assert held_root_scroll_y == 3
+        assert held_root_scroll_y > 3
         assert held_root_scroll_y < root_conversation.max_scroll_y
 
         app.post_message(
@@ -2798,8 +2809,8 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         assert app._visible_read_only is True
         assert app.query_one(Composer).disabled is True
         assert app._projection is not None
-        assert app._projection.assistant_text == "first child prefix"
-        assert app.query_one(AssistantTurn).source == "first child prefix"
+        assert app._projection.assistant_text == provider.child_prefixes["first child task"]
+        assert app.query_one(AssistantTurn).source == provider.child_prefixes["first child task"]
         child_header = app.query_one(BrandHeader).render()
         assert "read-only" not in child_header.plain
         assert app.query_one(BrandHeader)._session_detail == first.task_description
@@ -2846,16 +2857,54 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             description="first child task result",
         )
         assert "Subagent" in app.query_one(ActivityIndicator).render().plain
-        assert "first child prefix + first child suffix" in "\n".join(
+        first_child_text = "\n".join(
             entry.text
             for entry in app.query_one(ConversationHistory).entries
             if entry.kind == "assistant"
         )
+        assert "first child paragraph 0" in first_child_text
+        assert " + first child suffix" in first_child_text
+
+        child_conversation = app.query_one(ConversationView)
+        assert child_conversation.max_scroll_y > 3
+        assert held_root_scroll_y > child_conversation.max_scroll_y
+        child_conversation.scroll_to(
+            y=child_conversation.max_scroll_y - 2,
+            animate=False,
+            immediate=True,
+        )
+        await pilot.pause()
+        held_child_scroll_y = child_conversation.scroll_y
+        assert held_child_scroll_y < child_conversation.max_scroll_y
+
+        displayed_root_frames: list[tuple[str, float]] = []
+        original_display = app._display
+
+        def capture_root_frames(screen, renderable) -> None:
+            rendered_history = app.query_one(ConversationHistory).rendered_text
+            displayed_root_frames.append(
+                (rendered_history, app.query_one(ConversationView).scroll_y)
+            )
+            original_display(screen, renderable)
+
+        monkeypatch.setattr(app, "_display", capture_root_frames)
 
         app.action_main_session()
         await _wait_for_worker_group(app, pilot, group="navigation")
         assert app._visible_session_id() == root_session_id
         assert app.query_one(ConversationView).scroll_y == held_root_scroll_y
+        assert displayed_root_frames
+        assert all(
+            (
+                "first child paragraph 29" in rendered
+                and scroll_y == held_child_scroll_y
+            )
+            or (
+                "Root history paragraph 79" in rendered
+                and scroll_y == held_root_scroll_y
+            )
+            for rendered, scroll_y in displayed_root_frames
+        )
         assert app._visible_read_only is False
         assert app.query_one(Composer).disabled is False
         assert "Root history paragraph 0" in "\n".join(
@@ -2880,6 +2929,49 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         )
         assert "└ Done • Observe child 1" in root_history.rendered_text
 
+        displayed_child_frames: list[tuple[str, float]] = []
+
+        def capture_child_frames(screen, renderable) -> None:
+            rendered_history = app.query_one(ConversationHistory).rendered_text
+            displayed_child_frames.append(
+                (rendered_history, app.query_one(ConversationView).scroll_y)
+            )
+            original_display(screen, renderable)
+
+        monkeypatch.setattr(app, "_display", capture_child_frames)
+        app.post_message(
+            ToolNavigationRequested(
+                parent_run_id=first.parent_run_id,
+                parent_tool_call_id="spawn_child_1",
+            )
+        )
+        await _wait_until(
+            lambda: app._visible_session_id() == first.session_id,
+            pilot,
+            description="reopened first child view",
+        )
+        assert app.query_one(ConversationView).scroll_y == held_child_scroll_y
+        assert displayed_child_frames
+        assert all(
+            (
+                "Root history paragraph 79" in rendered
+                and scroll_y == held_root_scroll_y
+            )
+            or (
+                "first child paragraph 29" in rendered
+                and scroll_y == held_child_scroll_y
+            )
+            for rendered, scroll_y in displayed_child_frames
+        )
+        monkeypatch.setattr(app, "_display", original_display)
+
+        app.action_main_session()
+        await _wait_until(
+            lambda: app._visible_session_id() == root_session_id,
+            pilot,
+            description="return from reopened first child view",
+        )
+
         app.post_message(
             ToolNavigationRequested(
                 parent_run_id=second.parent_run_id,
@@ -2893,7 +2985,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         )
         assert app._controller.session_id == root_session_id
         assert app._projection is not None
-        assert app._projection.assistant_text == "second child prefix"
+        assert app._projection.assistant_text == provider.child_prefixes["second child task"]
 
         app.action_main_session()
         await _wait_until(
@@ -2925,11 +3017,13 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             pilot,
             description="reloaded completed second child",
         )
-        assert "second child prefix + second child suffix" in "\n".join(
+        second_child_text = "\n".join(
             entry.text
             for entry in app.query_one(ConversationHistory).entries
             if entry.kind == "assistant"
         )
+        assert "second child paragraph 0" in second_child_text
+        assert " + second child suffix" in second_child_text
 
 
 @pytest.mark.asyncio

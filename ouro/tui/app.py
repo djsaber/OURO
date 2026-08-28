@@ -2775,72 +2775,78 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if agent is not None:
             agent = self._agent_nodes.get(agent.delegation_id, agent)
         async with self._runtime_event_apply_lock:
-            conversation = self.query_one(ConversationView)
-            visible_session_id = self._visible_session_id()
-            if visible_session_id is not None:
-                held_scroll_y = conversation.held_scroll_y()
-                if held_scroll_y is None:
-                    self._held_session_scroll_y.pop(visible_session_id, None)
-                else:
-                    self._held_session_scroll_y[visible_session_id] = held_scroll_y
-            # The selected Session now owns the surface. Clear every interaction
-            # projected by the previous Session before yielding while its history
-            # is mounted; the new projection will restore its own pending request.
-            self._visible_read_only = read_only
-            self._visible_agent = agent
-            self._projection = None
-            self._interaction = None
-            self._sync_interaction(None)
-            projection = self._project_loaded_session(loaded)
-            await conversation.load_messages(
-                loaded.messages,
-                loaded.compactions,
-                project_run_presentations(
-                    (run for run in loaded.runs if run.kind == "agent"),
+            # Session history still renders in bounded chunks, but switching the
+            # shared surface is one visual commit. Repainting an incomplete
+            # destination would expose its growing height and stale scroll state.
+            with self.batch_update():
+                conversation = self.query_one(ConversationView)
+                visible_session_id = self._visible_session_id()
+                if visible_session_id is not None:
+                    held_scroll_y = conversation.held_scroll_y()
+                    if held_scroll_y is None:
+                        self._held_session_scroll_y.pop(visible_session_id, None)
+                    else:
+                        self._held_session_scroll_y[visible_session_id] = held_scroll_y
+                # The selected Session now owns the surface. Clear every interaction
+                # projected by the previous Session before yielding while its history
+                # is mounted; the new projection will restore its own pending request.
+                self._visible_read_only = read_only
+                self._visible_agent = agent
+                self._projection = None
+                self._interaction = None
+                self._sync_interaction(None)
+                projection = self._project_loaded_session(loaded)
+                await conversation.load_messages(
                     loaded.messages,
-                ),
-                mutable_tool_calls=(
-                    (projection.activity.run_id, tool.tool_call_id)
-                    for tool in projection.activity.tool_calls
-                ),
-                visible_scaffold_delegation_id=(
-                    session.delegation_id if session.session_kind == "subagent" else None
-                ),
-                held_scroll_y=self._held_session_scroll_y.get(session.session_id),
-            )
-            self._set_welcome_mode(conversation.showing_welcome)
-            self.query_one(QueuedInputPanel).set_inputs(() if read_only else loaded.queued_inputs)
-            await self._restore_projection(loaded, projection)
-            conversation.sync_agents(agents)
-            agent_name = None if agent is None else agent.nickname or agent.agent_name
-            self._active_title = agent_name if agent_name is not None else session.title
-            self._active_workspace = session.workspace or self._system_status.workspace
-            if session.current_model is not None:
-                self._active_model = _model_endpoint_name(session.current_model)
-            self.query_one(BrandHeader).set_context(
-                session_title=self._active_title,
-                session_detail=agent.task_description if agent is not None else None,
-                workspace=self._active_workspace,
-            )
-            status_line = self.query_one(StatusLine)
-            status_line.set_model(self._active_model)
-            status_line.set_subagent(agent if read_only else None)
-            status_line.set_session_controls(
-                ("Subagent",)
-                if read_only
-                else tuple(status.label for status in loaded.session_controls)
-            )
-            if read_only:
-                composer = self.query_one(Composer)
-                composer.disabled = True
-                composer.placeholder = (
-                    f"Subagent view is read-only{TUI_DESIGN.inline_separator}Alt+Left to return"
+                    loaded.compactions,
+                    project_run_presentations(
+                        (run for run in loaded.runs if run.kind == "agent"),
+                        loaded.messages,
+                    ),
+                    mutable_tool_calls=(
+                        (projection.activity.run_id, tool.tool_call_id)
+                        for tool in projection.activity.tool_calls
+                    ),
+                    visible_scaffold_delegation_id=(
+                        session.delegation_id if session.session_kind == "subagent" else None
+                    ),
+                    held_scroll_y=self._held_session_scroll_y.get(session.session_id),
                 )
-            else:
-                await self._refresh_approval_indicator()
-                await self._refresh_reasoning_indicator()
-                self._sync_composer_placeholder()
-                self._sync_interaction_focus(self._interaction)
+                self._set_welcome_mode(conversation.showing_welcome)
+                self.query_one(QueuedInputPanel).set_inputs(
+                    () if read_only else loaded.queued_inputs
+                )
+                await self._restore_projection(loaded, projection)
+                conversation.sync_agents(agents)
+                agent_name = None if agent is None else agent.nickname or agent.agent_name
+                self._active_title = agent_name if agent_name is not None else session.title
+                self._active_workspace = session.workspace or self._system_status.workspace
+                if session.current_model is not None:
+                    self._active_model = _model_endpoint_name(session.current_model)
+                self.query_one(BrandHeader).set_context(
+                    session_title=self._active_title,
+                    session_detail=agent.task_description if agent is not None else None,
+                    workspace=self._active_workspace,
+                )
+                status_line = self.query_one(StatusLine)
+                status_line.set_model(self._active_model)
+                status_line.set_subagent(agent if read_only else None)
+                status_line.set_session_controls(
+                    ("Subagent",)
+                    if read_only
+                    else tuple(status.label for status in loaded.session_controls)
+                )
+                if read_only:
+                    composer = self.query_one(Composer)
+                    composer.disabled = True
+                    composer.placeholder = (
+                        f"Subagent view is read-only{TUI_DESIGN.inline_separator}Alt+Left to return"
+                    )
+                else:
+                    await self._refresh_approval_indicator()
+                    await self._refresh_reasoning_indicator()
+                    self._sync_composer_placeholder()
+                    self._sync_interaction_focus(self._interaction)
         self._replace_observation(subscription)
 
     async def _open_child_session(self, agent: AgentTreeNode) -> None:
