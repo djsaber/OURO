@@ -1184,7 +1184,9 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         size_was_known = self._size_known
         super().on_resize(event)
         width = self.scrollable_content_region.width
-        if self._entries and width > 0 and (not size_was_known or width != self._render_width):
+        if self._entries and width > 0 and (
+            not self.lines or not size_was_known or width != self._render_width
+        ):
             self._render_entries()
 
     def _reset_buffer(self, entries: list[TranscriptEntry]) -> bool:

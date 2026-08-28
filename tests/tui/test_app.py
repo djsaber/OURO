@@ -4496,6 +4496,46 @@ async def test_session_picker_closes_modal_before_rendering_selected_history(
 
 
 @pytest.mark.asyncio
+async def test_session_picker_restores_history_after_returning_to_welcome(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    session = application.runtime.sessions.create(title="Reusable session").session
+    application.runtime.store.append_message(
+        MessageRecord.text(
+            session_id=session.session_id,
+            role="user",
+            text="Persisted user message",
+            sequence=1,
+        )
+    )
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+        await pilot.press("enter")
+        await _wait_for_active_session(app, pilot, session.session_id)
+        assert app.query_one(ConversationHistory).user_turns == ("Persisted user message",)
+
+        await pilot.press("ctrl+n")
+        await _wait_until(
+            lambda: app.query_one(ConversationView).showing_welcome,
+            pilot,
+            description="new-session welcome page",
+        )
+        await pilot.press("ctrl+s")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+        await pilot.press("enter")
+        await _wait_for_active_session(app, pilot, session.session_id)
+
+        history = app.query_one(ConversationHistory)
+        assert history.user_turns == ("Persisted user message",)
+        assert "Persisted user message" in history.rendered_text
+
+
+@pytest.mark.asyncio
 async def test_session_load_projects_loading_activity_until_history_is_ready(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
