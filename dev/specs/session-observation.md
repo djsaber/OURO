@@ -113,13 +113,21 @@ TUI 必须实现：
 2. 历史和实时 SpawnAgent 工具展示均携带 `(parent_session_id, parent_run_id, parent_tool_call_id)` 点击身份。
 3. 点击只能通过 Application relation 投影打开 child；不存在/尚未绑定时不猜测。
 4. child 视图明确显示只读状态，禁用 composer、提交、abort、交互应答和会话写配置。
-5. 提供返回主会话和在多个已知 child 之间切换的路径。
+5. 从 root Agent tree 投影同一主会话下全部已知 child（包括嵌套派发），按 `parent_run_id` 保留 Run 分组，并提供
+   root/child 与 child/child 直接切换路径。
 6. 主会话和每个 child 使用独立 projection/cursor；交错事件不能串流、覆盖或错误去重。
 7. 切换期间新到事件必须被缓存、投影或在 durable replay 中恢复，不能因 widget 重建而丢失。
 8. active root 或 active child 不得成为只读视图切换的阻止条件。
 9. 视图切换不应阻塞 Textual event loop 的持续刷新；大历史装载必须分块/yield。
 10. 关闭 TUI 必须释放所有观察任务/订阅；复用共享 Application 时不得终止后台 Session。若 TUI 是 Application 的
     composition root，则整体退出遵循既有 Runtime shutdown policy，而不是由会话视图逻辑隐式控制 child。
+11. composer 上方的导航面板只消费 Agent tree DTO，不读取 store 或解析工具文本；无 child 时隐藏，有 child 时在
+    root/child surface 上使用同一 widget，按当前/选中节点调整最多十个 child 的有界窗口。
+12. 导航面板必须保持在当前最上层 inline 菜单（命令、审批、问答或计划确认）的上方，使菜单与 composer 相邻；
+    运行、结束和失败节点分别使用运行语义色、常规低亮色和失败语义色，不复制颜色常量。
+13. 终端协议只产生带 modifier 的按键事件，不产生独立 Alt key-up。TUI 将每个 `Alt+方向键` 作为一笔导航事务：
+    进入节点选择状态、更新选中节点并切换 visible Session，目标 surface 提交后恢复当前节点状态；不得用全局键盘
+    轮询或超时猜测模拟 key-up。
 
 主 transcript 不自动混入 child 中间日志。Agent tree/HITL 摘要可以继续在 root Host 控制面显示；这不改变 child
 完整流只属于 child Session 的事实。
@@ -148,6 +156,8 @@ TUI 必须实现：
 - 历史/实时 SpawnAgent 工具点击测试；
 - child 只读且 root 控制目标不变测试；
 - root 与至少两个 child 交错流、多次切换、切换窗口新事件测试；
+- root tree 全层级节点、跨 Run 分组、十节点窗口及 root/child/child 方向键直切测试；
+- 导航面板与命令/审批 inline panel 的层叠几何、运行/结束/失败状态色测试；
 - active Run 期间切换测试；
 - TUI 退出资源释放且 child 继续运行测试；
 - Local 与 SQLite 后端相关契约测试，以及全局质量门。

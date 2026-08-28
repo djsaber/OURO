@@ -15,6 +15,7 @@ from rich.text import Text
 from textual import events
 from textual.color import Color
 from textual.containers import Vertical
+from textual.content import Content
 from textual.strip import Strip
 from textual.widgets import Input, OptionList, Static, TextArea
 
@@ -126,6 +127,7 @@ from ouro.tui.state import (
     TuiSessionProjection,
     project_run_presentation,
 )
+from ouro.tui.subagent_navigation import SubagentNavigationPanel
 from ouro.tui.theme import TUI_DESIGN, TUI_THEMES
 from ouro.tui.widgets import (
     ActivityIndicator,
@@ -2119,6 +2121,7 @@ async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Pa
             f"{TUI_DESIGN.expanded_disclosure_marker} Thinking{TUI_DESIGN.inline_separator}"
         )
         assert reasoning.label.render().plain.endswith("s")
+        assert "Thinking" in reasoning.label.render_line(0).text
         assert reasoning.label.region.x == turn.content_region.x
         assert reasoning._content.region.x == reasoning.label.region.x
         assert reasoning._content.region.y == reasoning.label.region.bottom + 1
@@ -2485,15 +2488,34 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
             await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
             await _wait_until(
                 lambda: (
-                    composer.placeholder
-                    == "Enter queues a follow-up • Ctrl+Enter guides the active run…"
+                    isinstance(composer.placeholder, Content)
+                    and composer.placeholder.plain == Composer.ACTIVE_RUN_PLACEHOLDER
                 ),
                 pilot,
                 description="active-run composer placeholder",
             )
-            assert composer.placeholder == (
-                "Enter queues a follow-up • Ctrl+Enter guides the active run…"
-            )
+            active_placeholder = composer.placeholder
+            assert isinstance(active_placeholder, Content)
+            assert active_placeholder.plain == Composer.ACTIVE_RUN_PLACEHOLDER
+            for shortcut in ("Enter", "Ctrl+Enter"):
+                style = active_placeholder.get_style_at_offset(
+                    active_placeholder.plain.index(shortcut)
+                )
+                assert style.bold is True
+                assert style.foreground == Color.parse(TUI_THEMES["original"].accent_bright)
+
+            composer.focus()
+            composer.cursor_blink = True
+            composer._cursor_visible = False
+            cursor_off = composer.render_line(0)
+            composer._cursor_visible = True
+            cursor_on = composer.render_line(0)
+            cursor_off_style = next(iter(cursor_off.crop(0, 1))).style
+            cursor_on_style = next(iter(cursor_on.crop(0, 1))).style
+            assert cursor_on_style != cursor_off_style
+            assert next(iter(cursor_on.crop(1, 2))).style == next(
+                iter(cursor_off.crop(1, 2))
+            ).style
         finally:
             provider.release.set()
         await _wait_for_worker_group(app, pilot, group="run")
@@ -2690,6 +2712,10 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(tmp_path: P
         assert interaction.tool_name == "Danger"
         approval_panel = app.query_one(InteractionBar)
         assert approval_panel.display is True
+        subagent_panel = app.query_one(SubagentNavigationPanel)
+        assert subagent_panel.display is True
+        assert subagent_panel.region.bottom == approval_panel.region.y
+        assert approval_panel.region.bottom == app.query_one(Composer).region.y
         assert (
             "Subagent General"
             in approval_panel.query_one("#interaction-summary", Static).render().plain
@@ -2781,6 +2807,36 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         assert "SpawnAgent" not in root_history.rendered_text
         assert "└ Responding • Observe child 1" in root_history.rendered_text
         assert "└ Responding • Observe child 2" in root_history.rendered_text
+        subagent_panel = app.query_one(SubagentNavigationPanel)
+        assert subagent_panel.display is True
+        assert subagent_panel.current_session_id == root_session_id
+        assert subagent_panel.visible_session_ids == (first.session_id, second.session_id)
+        assert subagent_panel.render_content(80).plain.rstrip().endswith("▣ | ■■")
+        assert str(subagent_panel.styles.text_align) == "right"
+        assert subagent_panel.content_region.right == app.query_one(Composer).region.right
+        await pilot.press("ctrl+h")
+        await _wait_for_screen(app, HelpScreen, title="KEYBOARD HELP")
+        app.post_message(events.Key("alt+right", None))
+        await pilot.pause()
+        assert app._visible_session_id() == root_session_id
+        await pilot.press("escape")
+        await pilot.click("#composer")
+        await pilot.press("slash")
+        await _wait_until(
+            lambda: app.query_one(CommandPopup).display,
+            pilot,
+            description="command popup above composer",
+        )
+        command_popup = app.query_one(CommandPopup)
+        assert subagent_panel.region.bottom == command_popup.region.y
+        assert command_popup.region.bottom == app.query_one(Composer).region.y
+        await pilot.press("escape")
+        await _wait_until(
+            lambda: not command_popup.display,
+            pilot,
+            description="dismissed command popup",
+        )
+        app.query_one(Composer).load_text("pending root draft")
         root_conversation = app.query_one(ConversationView)
         await pilot.pause()
         assert root_conversation.max_scroll_y > 0
@@ -2815,8 +2871,38 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         assert "read-only" not in child_header.plain
         assert app.query_one(BrandHeader)._session_detail == first.task_description
         child_status = app.query_one(ActivityIndicator).render().plain
-        assert "Subagent" in child_status
+        assert "Subagent" not in child_status
+        assert "Responding" in child_status
         assert "read-only" not in child_status
+        await app._refresh_session_controls()
+        assert "Subagent" not in app.query_one(ActivityIndicator).render().plain
+        child_placeholder = app.query_one(Composer).placeholder
+        assert isinstance(child_placeholder, Content)
+        assert child_placeholder.plain == (
+            "Subagent view is read-only • Alt+↑ main • Alt+←/→ switch"
+        )
+        composer = app.query_one(Composer)
+        assert composer.has_class("read-only-session")
+        assert composer.styles.opacity == 1.0
+        assert composer.text == ""
+        assert app._controlled_composer_draft == "pending root draft"
+        for shortcut in ("Alt+↑", "Alt+←/→"):
+            shortcut_style = child_placeholder.get_style_at_offset(
+                child_placeholder.plain.index(shortcut)
+            )
+            assert shortcut_style.bold is True
+            assert shortcut_style.foreground == Color.parse(TUI_THEMES["original"].accent_bright)
+        rendered_placeholder = composer.render_line(0)
+        assert rendered_placeholder.text == child_placeholder.plain
+        for shortcut in ("Alt+↑", "Alt+←/→"):
+            offset = rendered_placeholder.text.index(shortcut)
+            segment = next(iter(rendered_placeholder.crop(offset, offset + len(shortcut))))
+            assert segment.style is not None and segment.style.bold
+            assert segment.style.color is not None
+            assert (
+                segment.style.color.get_truecolor().hex
+                == TUI_THEMES["original"].accent_bright
+            )
         assert any(
             entry.kind == "user" and entry.text == "first child task"
             for entry in app.query_one(ConversationHistory).entries
@@ -2856,7 +2942,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             pilot,
             description="first child task result",
         )
-        assert "Subagent" in app.query_one(ActivityIndicator).render().plain
+        assert "Subagent" not in app.query_one(ActivityIndicator).render().plain
         first_child_text = "\n".join(
             entry.text
             for entry in app.query_one(ConversationHistory).entries
@@ -2906,7 +2992,11 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             for rendered, scroll_y in displayed_root_frames
         )
         assert app._visible_read_only is False
-        assert app.query_one(Composer).disabled is False
+        composer = app.query_one(Composer)
+        assert composer.disabled is False
+        assert not composer.has_class("read-only-session")
+        assert composer.text == "pending root draft"
+        assert app._controlled_composer_draft is None
         assert "Root history paragraph 0" in "\n".join(
             entry.text
             for entry in app.query_one(ConversationHistory).entries
@@ -2986,11 +3076,22 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         )
         monkeypatch.setattr(app, "_display", original_display)
 
-        app.action_main_session()
+        app.post_message(events.Key("alt+right", None))
+        await _wait_until(
+            lambda: app._visible_session_id() == second.session_id,
+            pilot,
+            description="direct sibling child view",
+        )
+        assert app._controller.session_id == root_session_id
+        assert subagent_panel.current_session_id == second.session_id
+        assert "Observe child 2" in subagent_panel.render_content(80).plain
+        rendered_during_cached_switch.clear()
+
+        app.post_message(events.Key("alt+up", None))
         await _wait_until(
             lambda: app._visible_session_id() == root_session_id,
             pilot,
-            description="return from reopened first child view",
+            description="return from sibling child view",
         )
         assert rendered_during_cached_switch == []
 
@@ -6615,6 +6716,8 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         }
         assert shortcuts["Alt+T"] == "cycle model thinking"
         assert shortcuts["Alt+A"] == "cycle session approval"
+        assert shortcuts["Alt+← / Alt+→"] == "switch agent node"
+        assert shortcuts["Alt+↑ / Alt+↓"] == "main / latest agent"
         plugin_commands = tuple(
             choice for choice in menu._choices if choice.group == "PLUGIN SLASH COMMANDS"
         )

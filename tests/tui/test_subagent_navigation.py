@@ -1,0 +1,147 @@
+from __future__ import annotations
+
+from rich.color import Color
+from rich.console import Console
+
+from ouro.application.agent_models import AgentTreeNode
+from ouro.application.supervisor_models import RuntimeActivitySnapshot
+from ouro.tui.subagent_navigation import SubagentNavigationPanel
+from ouro.tui.theme import TUI_DESIGN
+
+
+def _agent(
+    index: int,
+    *,
+    parent_run_id: str,
+    parent_session_id: str = "ses_root",
+    status: str = "running",
+) -> AgentTreeNode:
+    activity_name = {
+        "completed": "completed",
+        "failed": "failed",
+    }.get(status, "streaming_text")
+    return AgentTreeNode(
+        revision=1,
+        delegation_id=f"dlg_{index}",
+        root_session_id="ses_root",
+        session_id=f"ses_child_{index}",
+        parent_session_id=parent_session_id,
+        parent_run_id=parent_run_id,
+        parent_tool_call_id=f"spawn_{index}",
+        agent_id="general",
+        agent_name=f"General {index}",
+        nickname=f"Worker {index}",
+        task_description=f"Inspect task {index}",
+        status=status,
+        execution_mode="async" if index % 2 else "sync",
+        lifecycle_binding="bound",
+        control_state="open",
+        depth=1,
+        activity=RuntimeActivitySnapshot(
+            session_id=f"ses_child_{index}",
+            status=status,
+            activity=activity_name,
+        ),
+    )
+
+
+def test_subagent_panel_keeps_latest_ten_nodes_and_reframes_around_current_child() -> None:
+    panel = SubagentNavigationPanel()
+    agents = tuple(_agent(index, parent_run_id=f"run_{(index - 1) // 4}") for index in range(1, 13))
+
+    panel.set_tree(root_session_id="ses_root", agents=agents, root_status="running")
+    panel.set_current_session("ses_root")
+
+    assert panel.visible_session_ids == tuple(f"ses_child_{index}" for index in range(3, 13))
+    assert panel.render_content(80).plain.rstrip().endswith("▣ | ■■ ■■■■ ■■■■")
+
+    panel.set_current_session("ses_child_2")
+
+    assert panel.visible_session_ids == tuple(f"ses_child_{index}" for index in range(1, 11))
+    assert "Inspect task 2 • Worker 2" in panel.render_content(80).plain
+    assert panel.render_content(80).plain.rstrip().endswith("■ | ■▣■■ ■■■■ ■■")
+
+
+def test_subagent_panel_includes_nested_agents_from_the_same_root_session() -> None:
+    panel = SubagentNavigationPanel()
+    direct = _agent(1, parent_run_id="run_root")
+    nested = _agent(
+        2,
+        parent_run_id="run_child",
+        parent_session_id=direct.session_id,
+    )
+
+    panel.set_tree(
+        root_session_id="ses_root",
+        agents=(direct, nested),
+        root_status="running",
+    )
+
+    assert panel.visible_session_ids == (direct.session_id, nested.session_id)
+    assert panel.render_content(80).plain.rstrip().endswith("▣ | ■ ■")
+
+
+def test_subagent_panel_keeps_interleaved_dispatches_in_stable_run_groups() -> None:
+    panel = SubagentNavigationPanel()
+    agents = (
+        _agent(1, parent_run_id="run_a"),
+        _agent(2, parent_run_id="run_b"),
+        _agent(3, parent_run_id="run_a"),
+    )
+
+    panel.set_tree(root_session_id="ses_root", agents=agents, root_status="running")
+
+    assert panel.visible_session_ids == (
+        agents[0].session_id,
+        agents[2].session_id,
+        agents[1].session_id,
+    )
+    assert panel.render_content(80).plain.rstrip().endswith("▣ | ■■ ■")
+    panel.begin_navigation()
+    assert panel.select_latest_child() == agents[2].session_id
+
+
+def test_subagent_panel_navigation_selects_root_latest_and_adjacent_children() -> None:
+    panel = SubagentNavigationPanel()
+    agents = tuple(_agent(index, parent_run_id="run_root") for index in range(1, 4))
+    panel.set_tree(root_session_id="ses_root", agents=agents, root_status="running")
+    panel.set_current_session("ses_child_2")
+
+    panel.begin_navigation()
+    assert panel.select_relative(-1) == "ses_child_1"
+    assert panel.selected_agent == agents[0]
+    assert "Inspect task 1 • Worker 1" in panel.render_content(80).plain
+    assert panel.select_relative(1) == "ses_child_2"
+    assert panel.select_root() == "ses_root"
+    assert "Inspect task" not in panel.render_content(80).plain
+    assert panel.select_latest_child() == "ses_child_3"
+
+    panel.end_navigation()
+
+    assert panel.navigation_active is False
+    assert panel.selected_session_id == "ses_child_2"
+
+
+def test_subagent_panel_node_colors_follow_runtime_outcomes() -> None:
+    panel = SubagentNavigationPanel()
+    agents = (
+        _agent(1, parent_run_id="run_root", status="running"),
+        _agent(2, parent_run_id="run_root", status="completed"),
+        _agent(3, parent_run_id="run_root", status="failed"),
+    )
+    panel.set_tree(root_session_id="ses_root", agents=agents, root_status="running")
+    panel.set_current_session("ses_child_1")
+
+    rendered = panel.render_content(80)
+    node_offsets = [
+        index for index, character in enumerate(rendered.plain) if character in {"■", "▣"}
+    ]
+    node_colors = [rendered.get_style_at_offset(Console(), offset).color for offset in node_offsets]
+
+    assert node_colors == [
+        Color.parse(TUI_DESIGN.running),
+        Color.parse(TUI_DESIGN.running),
+        Color.parse(TUI_DESIGN.text_lowlight),
+        Color.parse(TUI_DESIGN.failure),
+    ]
+    assert panel.tooltip == "run_root • async • streaming text"

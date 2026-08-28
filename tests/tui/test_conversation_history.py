@@ -80,6 +80,7 @@ async def test_live_reasoning_label_highlights_only_its_text_on_hover() -> None:
         label = app.query_one(ReasoningLabel)
         before = label.render()
         before_style = before.get_style_at_offset(before.plain.index("Thought"))
+        assert "Thought" in label.render_line(0).text
         await pilot.hover(label)
         await pilot.pause()
         hovered = label.render()
@@ -87,6 +88,7 @@ async def test_live_reasoning_label_highlights_only_its_text_on_hover() -> None:
 
         assert hovered_style.foreground == Color.parse(TUI_DESIGN.text_highlight)
         assert hovered_style.background == before_style.background
+        assert "Thought" in label.render_line(0).text
 
 
 @pytest.mark.asyncio

@@ -157,6 +157,17 @@ TUI 独立拥有：
 
 - SpawnAgent 对应的历史工具行和实时工具行均可打开已建立的 child Session；尚未建立关系时保持普通工具行。
 - child 顶部显示 Agent/会话身份和只读标识，并提供返回主会话及切换其他已知 child 的入口。
+- composer 上方以右对齐导航条投影整个 root Agent tree；root 与 child 节点以 `|` 分隔，child 按父 Run 分组，
+  最多显示十个并围绕当前节点滑动。
+- 当前或键盘选中节点使用 `▣`，其他节点使用 `■`；运行、结束和失败分别复用运行语义色、常规低亮色和失败语义色。
+- child composer 的只读快捷提示只高亮按键组合；底部状态栏不追加 `Subagent` 标签，继续显示 child 自身的实时
+  activity、审批模式、模型和推理状态。
+- 主会话 composer 中带有键盘操作的占位提示复用同一结构化片段渲染；例如运行期的 `Enter` 和
+  `Ctrl+Enter` 与子会话快捷键使用相同主题高亮样式。
+- 打开首个 child surface 时，TUI 暂存并清空 controlled root 的 composer 草稿；child/child 切换不覆盖该草稿，
+  回到 root surface 时原样恢复。child composer 因此始终为空并可稳定显示只读快捷提示。
+- `Alt+←/→` 直接切换相邻 child，`Alt+↑` 回到 root，`Alt+↓` 打开最新 child。终端没有 modifier key-up 事件，
+  所以每个组合键作为一次原子导航事务，在目标 surface 提交后结束选择态，不使用键盘轮询或超时推断。
 - child 可见时，键盘提交、粘贴提交、abort、审批/AskUser 应答及其他会写入 Session 的动作均不可发往 child。
 - 主会话继续接收其 own stream 和 Agent tree/HITL 更新；切回时立即显示最新一致状态。
 - 多 child 的事件、工具 id、sequence、滚动状态互不污染。
@@ -168,7 +179,7 @@ TUI 独立拥有：
 - 不让 TUI 直接访问 SessionStore/DelegationRepository；
 - 不把只读策略写进 Core；
 - 不通过无限缓存承诺可靠性；
-- 不在本功能中扩展任意深度子智能体或改变现有执行深度限制。
+- 不改变现有子智能体执行深度限制；导航只投影 root Agent tree 中已经存在的节点。
 
 ## 8. 验收依据
 
@@ -187,3 +198,7 @@ root 与两个并发 child 的集成测试覆盖 snapshot 前缀、live 后缀�
 abort 防线；最终全量回归结果为 `1874 passed, 2 skipped`。规范已转为
 [`状态：当前`](../dev/specs/session-observation.md)，最终执行证据记录于
 [`dev/plans/tui-subagent-session-views.md`](../dev/plans/tui-subagent-session-views.md)。
+
+后续导航面板改良继续复用同一 root Agent tree 和 controlled/visible Session 分离模型：面板覆盖 root tree 全部层级，
+按父 Run 分组并提供十节点窗口，主/子 surface 共用同一 widget；child/child 直切仍只替换 visible observation，
+不改变 controlled root 或任何 Runtime 生命周期。

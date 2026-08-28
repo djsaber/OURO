@@ -20,6 +20,8 @@ class TuiDesignTokens:
     active_item_marker: str = "◉"
     completed_item_marker: str = "●"
     pending_item_marker: str = "○"
+    session_node_mark: str = "■"
+    selected_session_node_mark: str = "▣"
     expanded_disclosure_marker: str = "-"
     collapsed_disclosure_marker: str = "+"
     spinner_frames: tuple[str, ...] = (
@@ -58,6 +60,7 @@ class TuiDesignTokens:
     critical: str = "#e08a8a"
     text_highlight: str = "#e5e7eb"
     warning_bright: str = "#facc15"
+    running: str = "#77b083"
     success: str = "#77b083"
 
     @property

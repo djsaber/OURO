@@ -46,6 +46,7 @@ _HELP_SHORTCUTS = (
     ("Ctrl+Enter / Ctrl+J", "guide active run", "↑ / ↓", "input history"),
     ("Ctrl+N", "new session", "Ctrl+S", "sessions"),
     ("Alt+T", "cycle model thinking", "Alt+A", "cycle session approval"),
+    ("Alt+← / Alt+→", "switch agent node", "Alt+↑ / Alt+↓", "main / latest agent"),
     ("Alt+P", "plugins", "Ctrl+P", "actions"),
     ("Ctrl+H", "help", "Ctrl+↑", "conversation top"),
     ("Ctrl+↓", "conversation bottom", "Ctrl+←", "previous user message"),

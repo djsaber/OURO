@@ -10,6 +10,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
+from typing import Literal
 
 from pydantic import JsonValue
 from rich.text import Text
@@ -90,6 +91,7 @@ from ouro.tui.state import (
     project_run_presentation,
     project_run_presentations,
 )
+from ouro.tui.subagent_navigation import SubagentNavigationPanel
 from ouro.tui.theme import TUI_DESIGN, TUI_THEMES, TuiTheme
 from ouro.tui.widgets import (
     AskUserPanel,
@@ -128,7 +130,7 @@ class SessionObservationLagged(Message):
 _MCP_STATUS_SYNC_INTERVAL_SECONDS = 0.25
 _SESSION_TITLE_MAX_CELLS = 56
 _RUNTIME_EVENT_BUFFER_MAX = 1000
-_SESSION_HISTORY_CACHE_SIZE = 2
+_SESSION_HISTORY_CACHE_SIZE = 3
 _RUNTIME_RENDER_BOUNDARY_EVENTS = {
     "compaction_completed",
     "run_completed",
@@ -494,6 +496,7 @@ _OURO_TUI_CSS = """
 
     #input-region.welcome-page #composer,
     #input-region.welcome-page #command-popup,
+    #input-region.welcome-page #subagent-navigation-panel,
     #input-region.welcome-page StatusLine {
         width: 100%;
         margin-left: 0;
@@ -567,6 +570,17 @@ _OURO_TUI_CSS = """
         margin: 0 0 0 2;
         color: $ouro-text-secondary;
         background: transparent;
+    }
+
+    #subagent-navigation-panel {
+        width: 100%;
+        height: 1;
+        margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
+        padding: 0 0 0 2;
+        color: $ouro-text-lowlight;
+        background: $ouro-background;
+        text-align: right;
+        overflow: hidden;
     }
 
     .approval-panel {
@@ -691,6 +705,10 @@ _OURO_TUI_CSS = """
     #composer:focus {
         border-left: solid $ouro-theme;
         border-right: solid $ouro-border-focus;
+    }
+
+    #composer.read-only-session:disabled {
+        opacity: 1;
     }
 
     #composer .text-area--suggestion {
@@ -910,14 +928,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             show=False,
             priority=True,
         ),
-        Binding(
-            "alt+left",
-            "main_session",
-            "Back to main session",
-            show=False,
-            key_display="Alt+Left",
-            priority=True,
-        ),
+        Binding("alt+left", "agent_node_left", "Previous subagent", show=False, priority=True),
+        Binding("alt+right", "agent_node_right", "Next subagent", show=False, priority=True),
+        Binding("alt+up", "agent_node_root", "Main session", show=False, priority=True),
+        Binding("alt+down", "agent_node_latest", "Latest subagent", show=False, priority=True),
         Binding(
             "ctrl+c",
             "abort",
@@ -975,6 +989,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._observation_subscription: RuntimeSubscription | None = None
         self._agent_tree_subscription: AgentTreeSubscription | None = None
         self._agent_nodes: dict[str, AgentTreeNode] = {}
+        self._agent_root_status = "idle"
+        self._agent_navigation_revision = 0
+        self._controlled_composer_draft: str | None = None
         self._held_session_scroll_y: dict[str, float] = {}
         self._session_history_states: OrderedDict[str, ConversationHistoryState] = OrderedDict()
         self._interaction: PendingInteraction | None = None
@@ -1160,7 +1177,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._visible_read_only:
             status_line = self.query_one(StatusLine)
             status_line.set_subagent(self._visible_agent)
-            status_line.set_session_controls(("Subagent",))
+            status_line.set_session_controls(())
             return
         try:
             statuses = await self._controller.session_control_statuses()
@@ -1253,20 +1270,28 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _replace_agent_tree(self, root_session_id: str | None) -> tuple[AgentTreeNode, ...]:
         previous = self._agent_tree_subscription
         if previous is not None and previous.root_session_id == root_session_id:
+            self._sync_subagent_navigation_panel(root_session_id=root_session_id)
             return tuple(self._agent_nodes.values())
         if previous is not None:
             previous.close()
         self._agent_tree_subscription = None
         self._agent_nodes.clear()
+        self._agent_root_status = "idle"
         if root_session_id is None:
+            self._sync_subagent_navigation_panel(root_session_id=None)
             return ()
         subscription = self._controller.subscribe_agent_tree(root_session_id)
         if subscription is None:
+            self._sync_subagent_navigation_panel(root_session_id=root_session_id)
             return ()
         self._agent_tree_subscription = subscription
+        snapshot = subscription.initial_snapshot
         self._agent_nodes = {
-            node.delegation_id: node for node in subscription.initial_snapshot.nodes
+            node.delegation_id: node for node in snapshot.nodes
         }
+        if snapshot.root_activity is not None:
+            self._agent_root_status = snapshot.root_activity.status
+        self._sync_subagent_navigation_panel(root_session_id=root_session_id)
         self.run_worker(
             self._consume_agent_tree(subscription),
             name=f"agent-tree-{root_session_id}",
@@ -1274,6 +1299,24 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             exclusive=True,
         )
         return tuple(self._agent_nodes.values())
+
+    def _sync_subagent_navigation_panel(
+        self,
+        *,
+        root_session_id: str | None,
+        current_session_id: str | None = None,
+    ) -> None:
+        if self._host_closing or not self.query(SubagentNavigationPanel):
+            return
+        panel = self.query_one(SubagentNavigationPanel)
+        panel.set_tree(
+            root_session_id=root_session_id,
+            agents=self._agent_nodes.values(),
+            root_status=self._agent_root_status,
+        )
+        visible_session_id = current_session_id or self._visible_session_id()
+        if visible_session_id is not None:
+            panel.set_current_session(visible_session_id)
 
     async def _consume_agent_tree(self, subscription: AgentTreeSubscription) -> None:
         try:
@@ -1290,12 +1333,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     if snapshot is None:
                         continue
                     nodes = snapshot.nodes
+                    root_activity = snapshot.root_activity
                     self._agent_nodes = {node.delegation_id: node for node in nodes}
                 elif notification.kind == "snapshot" and notification.snapshot is not None:
-                    nodes = notification.snapshot.nodes
+                    snapshot = notification.snapshot
+                    nodes = snapshot.nodes
+                    root_activity = snapshot.root_activity
                     self._agent_nodes = {node.delegation_id: node for node in nodes}
                 else:
                     continue
+                self._agent_root_status = (
+                    root_activity.status if root_activity is not None else "idle"
+                )
                 async with self._runtime_event_apply_lock:
                     if self._agent_tree_subscription is subscription and self._surface_available():
                         self.query_one(ConversationView).sync_agents(nodes)
@@ -1305,6 +1354,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                             if updated_agent is not None:
                                 self._visible_agent = updated_agent
                                 self.query_one(StatusLine).set_subagent(updated_agent)
+                        self._sync_subagent_navigation_panel(
+                            root_session_id=subscription.root_session_id
+                        )
         except (StopAsyncIteration, asyncio.CancelledError):
             return
         finally:
@@ -1994,6 +2046,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             model_max_attempts=activity.model_max_attempts,
         )
         status_line.set_context_metrics(activity.effective_context_metrics)
+        if activity.session_id == self._controller.session_id:
+            self._agent_root_status = activity.status
+            root_session_id = self._controller.session_id
+            if root_session_id is not None:
+                self._sync_subagent_navigation_panel(root_session_id=root_session_id)
         self._sync_composer_placeholder()
 
     async def _refresh_interaction(
@@ -2089,11 +2146,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._host_closing or not self.query(Composer):
             return
         if self._visible_read_only:
-            self.query_one(
-                Composer
-            ).placeholder = (
-                f"Subagent view is read-only{TUI_DESIGN.inline_separator}Alt+Left to return"
-            )
+            composer = self.query_one(Composer)
+            composer.set_subagent_placeholder()
             return
         interaction = self._interaction
         if interaction is not None and interaction.kind == "question":
@@ -2107,10 +2161,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     else Composer.QUESTION_PLACEHOLDER
                 )
         elif self._has_active_run():
-            placeholder = Composer.ACTIVE_RUN_PLACEHOLDER
+            composer = self.query_one(Composer)
+            composer.set_active_run_placeholder()
+            return
         else:
             placeholder = Composer.DEFAULT_PLACEHOLDER
-        self.query_one(Composer).placeholder = placeholder
+        self.query_one(Composer).set_plain_placeholder(placeholder)
 
     def _edit_command(self, value: str, *, draft: str = "") -> None:
         composer = self.query_one(Composer)
@@ -2509,6 +2565,85 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             group="navigation",
         )
 
+    def action_agent_node_left(self) -> None:
+        self._navigate_agent_node("left")
+
+    def action_agent_node_right(self) -> None:
+        self._navigate_agent_node("right")
+
+    def action_agent_node_root(self) -> None:
+        self._navigate_agent_node("root")
+
+    def action_agent_node_latest(self) -> None:
+        self._navigate_agent_node("latest")
+
+    def _navigate_agent_node(
+        self,
+        direction: Literal["left", "right", "root", "latest"],
+    ) -> None:
+        if (
+            self._host_closing
+            or len(self.screen_stack) > 1
+            or not self.query(SubagentNavigationPanel)
+        ):
+            return
+        panel = self.query_one(SubagentNavigationPanel)
+        if not panel.display:
+            return
+        panel.begin_navigation()
+        if direction == "left":
+            target_session_id = panel.select_relative(-1)
+        elif direction == "right":
+            target_session_id = panel.select_relative(1)
+        elif direction == "root":
+            target_session_id = panel.select_root()
+        else:
+            target_session_id = panel.select_latest_child()
+        if target_session_id is None or target_session_id == self._visible_session_id():
+            panel.end_navigation()
+            return
+        target_agent = panel.selected_agent
+        if target_session_id != self._controller.session_id and target_agent is None:
+            panel.end_navigation()
+            return
+        self._agent_navigation_revision += 1
+        revision = self._agent_navigation_revision
+        self.run_worker(
+            self._switch_agent_node(
+                target_session_id=target_session_id,
+                target_agent=target_agent,
+                revision=revision,
+            ),
+            exclusive=True,
+            group="navigation",
+        )
+
+    async def _switch_agent_node(
+        self,
+        *,
+        target_session_id: str,
+        target_agent: AgentTreeNode | None,
+        revision: int,
+    ) -> None:
+        try:
+            self.query_one(StatusLine).set_activity("loading_session")
+            if target_session_id == self._controller.session_id:
+                await self._show_main_session()
+            elif target_agent is not None:
+                await self._open_child_session(target_agent)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - navigation failures are user-visible.
+            if self._surface_available():
+                self.notify(str(exc), severity="error", markup=False)
+        finally:
+            if revision == self._agent_navigation_revision and self.query(
+                SubagentNavigationPanel
+            ):
+                panel = self.query_one(SubagentNavigationPanel)
+                panel.set_current_session(self._visible_session_id())
+                panel.end_navigation()
+
     def action_conversation_top(self) -> None:
         self._navigate_to("top")
 
@@ -2812,11 +2947,20 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     session.session_id,
                     None,
                 )
+                composer = self.query_one(Composer)
+                if read_only and not self._visible_read_only:
+                    self._controlled_composer_draft = composer.text
+                    composer.restore_command_draft("")
+                elif not read_only and self._visible_read_only:
+                    composer.restore_command_draft(self._controlled_composer_draft or "")
+                    self._controlled_composer_draft = None
                 # The selected Session now owns the surface. Clear every interaction
                 # projected by the previous Session before yielding while its history
                 # is mounted; the new projection will restore its own pending request.
                 self._visible_read_only = read_only
                 self._visible_agent = agent
+                composer.set_class(read_only, "read-only-session")
+                self.query_one(SubagentNavigationPanel).set_current_session(session.session_id)
                 self._projection = None
                 self._interaction = None
                 self._sync_interaction(None)
@@ -2858,16 +3002,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 status_line.set_model(self._active_model)
                 status_line.set_subagent(agent if read_only else None)
                 status_line.set_session_controls(
-                    ("Subagent",)
-                    if read_only
-                    else tuple(status.label for status in loaded.session_controls)
+                    () if read_only else tuple(status.label for status in loaded.session_controls)
                 )
                 if read_only:
-                    composer = self.query_one(Composer)
                     composer.disabled = True
-                    composer.placeholder = (
-                        f"Subagent view is read-only{TUI_DESIGN.inline_separator}Alt+Left to return"
-                    )
+                    composer.set_subagent_placeholder()
                 else:
                     await self._refresh_approval_indicator()
                     await self._refresh_reasoning_indicator()
@@ -2884,7 +3023,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 read_only=True,
                 agent=agent,
             )
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             observation.subscription.close()
             raise
 
@@ -2900,7 +3039,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 read_only=False,
                 agent=None,
             )
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             observation.subscription.close()
             raise
 

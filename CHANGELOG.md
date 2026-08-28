@@ -32,6 +32,8 @@ This project records user-visible and framework-contract changes in this file.
   themed markers, reduced token counts, and local completion times.
 - TUI inline command suggestions now update in the same edit cycle as their text and cursor,
   keeping placeholders horizontally stable during backspace input.
+- Styled composer hints now highlight shortcut keys without replacing Textual's native blinking
+  cursor presentation.
 - OpenAI-compatible requests now merge the base system prompt and all system-role messages into one
   leading system message after semantic-envelope projection, preserving tagged scaffold content
   while supporting endpoints that reject multiple system messages.
@@ -64,6 +66,8 @@ This project records user-visible and framework-contract changes in this file.
   render exactly once through the same │-bordered definition the immutable history freezes with
   (live and frozen reasoning are now cell-identical), and only the trailing partial line
   re-renders per flush, so long unbounded thinking no longer slows streaming quadratically.
+- Live reasoning labels now preserve Textual's render-cache hook while applying hover emphasis,
+  so `Thinking` remains visible throughout streaming as well as after completion.
 - Decouple LocalApplication, RuntimeSupervisor, AgentService, CLI, and TUI startup from persisted
   Session history. Recovery now runs on the explicitly opened Session and its bounded Agent root;
   primary forks own independent Agent trees even when their lineage root was trashed, while the
@@ -77,6 +81,13 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Added
 
+- A root-scoped TUI subagent navigation strip above the composer, grouping every dispatched
+  child by parent Run, using green for running nodes and lowlight for finished nodes, and supporting
+  direct root/child and child/child switching with `Alt+Arrow` while preserving the controlled
+  primary Session. Read-only child composer shortcuts are highlighted without adding a redundant
+  `Subagent` label to the bottom activity line, and primary active-run hints apply the same
+  highlight treatment to `Enter` and `Ctrl+Enter`. Primary composer drafts are parked while a
+  child surface is visible and restored unchanged on return instead of leaking into the child view.
 - Preset-created providers now retain compact template provenance and support atomic three-way
   updates through CLI and the TUI provider submenu. Unmodified preset values follow the latest
   template, while customized, deleted, unknown, and colliding endpoints are preserved and

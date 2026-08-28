@@ -14,10 +14,14 @@ from rich.text import Text
 from textual import events, work
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.color import Color
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.content import Content
 from textual.geometry import Region, Size
 from textual.layout import DockArrangeResult
 from textual.message import Message
+from textual.strip import Strip
+from textual.style import Style
 from textual.timer import Timer
 from textual.widgets import Label, Static, TextArea
 
@@ -60,6 +64,7 @@ from ouro.tui.state import (
     format_compact_count,
     format_duration,
 )
+from ouro.tui.subagent_navigation import SubagentNavigationPanel
 from ouro.tui.text_inputs import TuiTextArea
 from ouro.tui.theme import (
     TUI_DESIGN,
@@ -119,6 +124,8 @@ _ACTIVITY_LABELS = {
     "paused": "Paused",
     "recoverable": "Recovery required",
 }
+_PlaceholderTone = Literal["text", "separator", "key"]
+_PlaceholderPart = tuple[str, _PlaceholderTone]
 _SUBAGENT_ACTIVITY_LABELS = {
     **_ACTIVITY_LABELS,
     "starting": "Dispatching",
@@ -380,17 +387,17 @@ class ReasoningLabel(RangeSelectionOnly, Label):
 
     def set_content(self, content: Text) -> None:
         self._content = content
-        self._render_content()
+        self._update_displayed_content()
 
     def on_enter(self, _event: events.Enter) -> None:
         self._hovered = True
-        self._render_content()
+        self._update_displayed_content()
 
     def on_leave(self, _event: events.Leave) -> None:
         self._hovered = False
-        self._render_content()
+        self._update_displayed_content()
 
-    def _render_content(self) -> None:
+    def _update_displayed_content(self) -> None:
         content = self._content.copy()
         if self._hovered:
             content.stylize(TUI_DESIGN.text_highlight)
@@ -1156,6 +1163,7 @@ class WelcomePanel(Vertical):
 
     def compose(self) -> ComposeResult:
         yield self._top
+        yield SubagentNavigationPanel()
         yield CommandPopup()
         yield AskUserPanel()
         yield PlanConfirmationPanel()
@@ -2684,6 +2692,22 @@ class Composer(TuiTextArea):
     QUESTION_PLACEHOLDER = "Choose an option above…"
     FREEFORM_PLACEHOLDER = "Type another answer…"
     PLAN_FEEDBACK_PLACEHOLDER = "Describe the requested plan changes…"
+    _ACTIVE_RUN_PLACEHOLDER_PARTS: tuple[_PlaceholderPart, ...] = (
+        ("Enter", "key"),
+        (" queues a follow-up", "text"),
+        (TUI_DESIGN.inline_separator, "separator"),
+        ("Ctrl+Enter", "key"),
+        (" guides the active run…", "text"),
+    )
+    _SUBAGENT_PLACEHOLDER_PARTS: tuple[_PlaceholderPart, ...] = (
+        ("Subagent view is read-only", "text"),
+        (TUI_DESIGN.inline_separator, "separator"),
+        ("Alt+↑", "key"),
+        (" main", "text"),
+        (TUI_DESIGN.inline_separator, "separator"),
+        ("Alt+←/→", "key"),
+        (" switch", "text"),
+    )
 
     BINDINGS = [
         *TextArea.BINDINGS,
@@ -2735,12 +2759,76 @@ class Composer(TuiTextArea):
         self._observed_text = ""
         self._command_draft: str | None = None
         self._suggestion_resolver: Callable[[], str] | None = None
+        self._placeholder_parts: tuple[_PlaceholderPart, ...] = ()
 
     def set_suggestion_resolver(self, resolver: Callable[[], str]) -> None:
         """Resolve inline suggestions synchronously with text edits."""
 
         self._suggestion_resolver = resolver
         self.update_suggestion()
+
+    def set_plain_placeholder(self, placeholder: str) -> None:
+        self._placeholder_parts = ()
+        self.placeholder = placeholder
+
+    def set_active_run_placeholder(self) -> None:
+        self._set_styled_placeholder(self._ACTIVE_RUN_PLACEHOLDER_PARTS)
+
+    def set_subagent_placeholder(self) -> None:
+        self._set_styled_placeholder(self._SUBAGENT_PLACEHOLDER_PARTS)
+
+    def _set_styled_placeholder(self, parts: tuple[_PlaceholderPart, ...]) -> None:
+        self._placeholder_parts = parts
+        self.placeholder = self._render_styled_placeholder(parts)
+
+    def _render_styled_placeholder(
+        self,
+        parts: tuple[_PlaceholderPart, ...],
+    ) -> Content:
+        key_style = Style(
+            foreground=Color.parse(theme_for(self).accent_bright),
+            bold=True,
+        )
+        lowlight_style = Style(foreground=Color.parse(TUI_DESIGN.text_lowlight))
+        separator_style = Style(foreground=Color.parse(TUI_DESIGN.separator_tone))
+        styles = {
+            "text": lowlight_style,
+            "separator": separator_style,
+            "key": key_style,
+        }
+        return Content.assemble(
+            *((text, styles[tone]) for text, tone in parts),
+        )
+
+    def refresh_theme(self) -> None:
+        if self._placeholder_parts:
+            self.placeholder = self._render_styled_placeholder(self._placeholder_parts)
+
+    def render_line(self, y: int) -> Strip:
+        if isinstance(self.placeholder, Content) and (
+            not self.text or self.has_class("read-only-session")
+        ):
+            lines = self.placeholder.wrap(self.content_size.width)
+            if y < len(lines):
+                content = lines[y]
+                # Preserve TextArea's native cursor lifecycle while retaining
+                # per-span placeholder colors that its uniform style would erase.
+                if self._draw_cursor and y == 0:
+                    theme = self._theme
+                    cursor_style = theme.cursor_style if theme is not None else None
+                    if cursor_style is not None:
+                        content = content.stylize(
+                            Style.from_rich_style(cursor_style),
+                            0,
+                            1,
+                        )
+                return Strip(
+                    content.render_segments(self.visual_style),
+                    content.cell_length,
+                )
+            if self.has_class("read-only-session"):
+                return Strip.blank(self.content_size.width, self.visual_style)
+        return super().render_line(y)
 
     def update_suggestion(self) -> None:
         """Keep the suggestion aligned with the document before it is redrawn."""

@@ -88,6 +88,20 @@
 
 退出条件：所有强制不变量都有当前类型或测试证据；计划状态改为“已完成”。
 
+## M7：根会话级子智能体导航面板
+
+- [x] 复用 root Agent tree，展示整个主会话内全部子智能体，并按父 Run 分组。
+- [x] 在 composer 上方增加单一导航 widget；无 child 时隐藏，并通过 compose 顺序自然适配命令、审批、问答和计划
+  inline panel。
+- [x] 实现 root 节点与最多十个 child 节点的有界滑窗；root 视图显示最新窗口，child 视图围绕当前节点重排。
+- [x] 使用 TUI 运行/低亮/失败语义 token 渲染实时状态，并在选中 child 时同步任务描述、名称、所属 Run、派发方式
+  和实时 activity。
+- [x] 实现 `Alt+←/→/↑/↓` 的相邻 child、主会话和最新 child 导航，保持 controlled root 不变，并隔离模态页面。
+- [x] 覆盖嵌套派发、Run 分组、窗口重排、节点颜色、菜单/审批几何、兄弟 child 直切和观察订阅取消竞态。
+
+终端输入协议没有独立 modifier key-up 事件，因此每个 `Alt+方向键` 组合是一次完整导航事务；实现不通过轮询或
+超时推断 Alt 松开，从而保持跨终端的一致性。
+
 ## 预期修改面
 
 - Application：`ouro/application/event_models.py`、Agent DTO/projector/service、Session/Supervisor 观察 DTO。
