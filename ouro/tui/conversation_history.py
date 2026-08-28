@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import pairwise
 from typing import Any, Literal, Protocol
 
@@ -561,6 +561,27 @@ class _Piece:
     entry_index: int = -1
 
 
+@dataclass(slots=True)
+class ConversationHistoryState:
+    """Detached rendered history owned by one Session.
+
+    A state is transferred, not copied, and consumed by the next load of that
+    Session.  Live transcript widgets deliberately stay outside this boundary.
+    """
+
+    entries: list[TranscriptEntry]
+    pieces: list[_Piece]
+    piece_line_starts: list[int]
+    piece_indexes_by_entry: dict[int, list[int]]
+    user_lines: list[int]
+    lines: list[Strip]
+    widest_line_width: int
+    render_width: int
+    reasoning_expanded: bool
+    reasoning_expanded_by_entry: dict[int, bool]
+    theme_id: str
+
+
 def _summary_line(
     title: str,
     *,
@@ -701,7 +722,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._piece_line_starts: list[int] = []
         self._piece_indexes_by_entry: dict[int, list[int]] = {}
         self._tool_entry_indexes: dict[tuple[str | None, str], int] = {}
-        self._user_lines: tuple[int, ...] = ()
+        self._user_lines: list[int] = []
         self._render_width = 0
         self._reasoning_expanded = reasoning_expanded
         self._reasoning_expanded_by_entry: dict[int, bool] = {}
@@ -718,7 +739,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
 
     @property
     def user_lines(self) -> tuple[int, ...]:
-        return self._user_lines
+        return tuple(self._user_lines)
 
     @property
     def rendered_text(self) -> str:
@@ -801,28 +822,87 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         elif self._entries:
             self.call_after_refresh(self._render_entries)
 
-    async def load(self, entries: Iterable[TranscriptEntry]) -> None:
-        """Replace the transcript in chunks so loading never blocks the UI thread.
+    def take_state(self) -> ConversationHistoryState | None:
+        """Detach the current rendered history for reuse by its owning Session."""
 
-        The status line keeps animating its loading activity while chunks mount;
-        each chunk yields one frame in between. Returns only once the entries
-        are rendered, preserving the ``load_messages`` contract that callers
-        rely on before anchoring the scroll position.
+        if not self._entries:
+            return None
+        hovered_indexes = {
+            index
+            for index in (
+                self._hovered_tool_entry_index,
+                self._hovered_reasoning_entry_index,
+            )
+            if index is not None
+        }
+        self._hovered_tool_entry_index = None
+        self._hovered_reasoning_entry_index = None
+        if hovered_indexes and not all(self._rerender_entry(index) for index in hovered_indexes):
+            self._render_entries()
+        state = ConversationHistoryState(
+            entries=self._entries,
+            pieces=self._pieces,
+            piece_line_starts=self._piece_line_starts,
+            piece_indexes_by_entry=self._piece_indexes_by_entry,
+            user_lines=self._user_lines,
+            lines=self.lines,
+            widest_line_width=self._widest_line_width,
+            render_width=self._render_width,
+            reasoning_expanded=self._reasoning_expanded,
+            reasoning_expanded_by_entry=self._reasoning_expanded_by_entry,
+            theme_id=theme_for(self).theme_id,
+        )
+        self._entries = []
+        self._pieces = []
+        self._piece_line_starts = []
+        self._piece_indexes_by_entry = {}
+        self._tool_entry_indexes = {}
+        self._user_lines = []
+        self.lines = []
+        self._widest_line_width = 0
+        self._render_width = 0
+        self._reasoning_expanded_by_entry = {}
+        self._line_cache.clear()
+        self.virtual_size = Size(0, 0)
+        self.display = False
+        return state
+
+    async def load(
+        self,
+        entries: Iterable[TranscriptEntry],
+        *,
+        reusable_state: ConversationHistoryState | None = None,
+    ) -> None:
+        """Replace the transcript, reusing rendered state where it is canonical.
+
+        Unchanged entries retain their Rich strips. Mutable tool and Run
+        projections re-render in place, while a structural change renders only
+        the suffix after the shared prefix. A cold load remains chunked.
         """
         self._hovered_tool_entry_index = None
         self._hovered_reasoning_entry_index = None
-        self._reasoning_expanded_by_entry.clear()
-        if not self._reset_buffer(list(entries)):
+        materialized = list(entries)
+        rendered = self._restore_state(reusable_state, materialized)
+        if rendered is None:
+            self._reasoning_expanded_by_entry.clear()
+            if not self._reset_buffer(materialized):
+                if self._entries:
+                    # Width is unknown (the log was hidden while empty); render as
+                    # soon as layout provides one instead of leaving callers racing
+                    # an async mount.
+                    self.call_after_refresh(self._render_entries)
+                    await self.wait_until_rendered()
+                return
+            rendered = 0
+        elif rendered == len(self._entries):
+            return
+        if not self._size_known or self.scrollable_content_region.width <= 0:
             if self._entries:
-                # Width is unknown (the log was hidden while empty); render as
-                # soon as layout provides one instead of leaving callers racing
-                # an async mount.
                 self.call_after_refresh(self._render_entries)
                 await self.wait_until_rendered()
             return
-        rendered = 0
         try:
-            for start in range(0, len(self._entries), _LOAD_CHUNK_ENTRIES):
+            for start in range(rendered, len(self._entries), _LOAD_CHUNK_ENTRIES):
                 rendered = self._write_entries(
                     start, min(start + _LOAD_CHUNK_ENTRIES, len(self._entries))
                 )
@@ -834,6 +914,97 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             self._write_entries(rendered, len(self._entries))
             raise
         self._render_width = self.scrollable_content_region.width
+
+    def _restore_state(
+        self,
+        state: ConversationHistoryState | None,
+        entries: list[TranscriptEntry],
+    ) -> int | None:
+        """Consume compatible state and return the first unrendered entry."""
+
+        width = self.scrollable_content_region.width
+        if (
+            state is None
+            or not self._size_known
+            or width <= 0
+            or state.render_width != width
+            or state.reasoning_expanded != self._reasoning_expanded
+            or state.theme_id != theme_for(self).theme_id
+        ):
+            return None
+
+        shared = 0
+        for cached, current in zip(state.entries, entries, strict=False):
+            if not self._same_entry_boundary(cached, current):
+                break
+            shared += 1
+
+        self._entries = state.entries
+        self._pieces = state.pieces
+        self._piece_line_starts = state.piece_line_starts
+        self._piece_indexes_by_entry = state.piece_indexes_by_entry
+        self._user_lines = state.user_lines
+        self.lines = state.lines
+        self._widest_line_width = state.widest_line_width
+        self._render_width = state.render_width
+        self._reasoning_expanded_by_entry = state.reasoning_expanded_by_entry
+
+        if shared < len(self._entries):
+            self._entries = self._entries[:shared]
+            self._pieces = [piece for piece in self._pieces if piece.entry_index < shared]
+            self._reasoning_expanded_by_entry = {
+                index: expanded
+                for index, expanded in self._reasoning_expanded_by_entry.items()
+                if index < shared
+            }
+            self._rebuild_lines()
+
+        cached_prefix = self._entries
+        changed_indexes: list[int] = []
+        merged_prefix: list[TranscriptEntry] = []
+        for index, (cached, current) in enumerate(
+            zip(cached_prefix, entries[:shared], strict=True)
+        ):
+            merged = current
+            if current.kind == "tool" and current.agent is None and cached.agent is not None:
+                merged = replace(current, agent=cached.agent)
+            merged_prefix.append(merged)
+            if merged != cached:
+                changed_indexes.append(index)
+        self._entries = [*merged_prefix, *entries[shared:]]
+        self._tool_entry_indexes = {
+            (entry.run_id, entry.tool.tool_call_id): index
+            for index, entry in enumerate(self._entries)
+            if entry.tool is not None
+        }
+        for index in changed_indexes:
+            if not self._rerender_entry(index):
+                return None
+        self._line_cache.clear()
+        self.display = bool(self._entries)
+        self.virtual_size = Size(self._widest_line_width, len(self.lines))
+        self.refresh(layout=True)
+        return shared
+
+    @staticmethod
+    def _same_entry_boundary(
+        cached: TranscriptEntry,
+        current: TranscriptEntry,
+    ) -> bool:
+        """Compare immutable position identity, excluding mutable projections."""
+
+        if cached.kind != current.kind:
+            return False
+        if cached.kind == "tool":
+            return (
+                cached.run_id == current.run_id
+                and cached.tool is not None
+                and current.tool is not None
+                and cached.tool.tool_call_id == current.tool.tool_call_id
+            )
+        if cached.kind == "run":
+            return cached.run_id == current.run_id
+        return cached == current
 
     def _write_entries(self, start: int, stop: int) -> int:
         """Render entries[start:stop] into pieces; returns the next index."""
@@ -1027,7 +1198,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             for index, entry in enumerate(entries)
             if entry.tool is not None
         }
-        self._user_lines = ()
+        self._user_lines = []
         self._widest_line_width = 0
         self._line_cache.clear()
         self.lines.clear()
@@ -1057,7 +1228,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         ):
             strips = self._render_strips(renderable)
             if tag == "user":
-                self._user_lines = (*self._user_lines, len(self.lines))
+                self._user_lines.append(len(self.lines))
             self._piece_line_starts.append(len(self.lines))
             self._append_strips(strips)
             self._pieces.append(
@@ -1095,9 +1266,9 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 for later in range(piece_index + 1, len(self._piece_line_starts)):
                     self._piece_line_starts[later] += delta
                 old_end = start + old_length
-                self._user_lines = tuple(
+                self._user_lines = [
                     line + delta if line >= old_end else line for line in self._user_lines
-                )
+                ]
             self._widest_line_width = max(
                 self._widest_line_width,
                 max(strip.cell_length for strip in new_strips),
@@ -1206,16 +1377,24 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         lines: list[Strip] = []
         starts: list[int] = []
         user_lines: list[int] = []
+        piece_indexes_by_entry: dict[int, list[int]] = {}
         widest = 0
-        for piece in self._pieces:
+        for piece_index, piece in enumerate(self._pieces):
             starts.append(len(lines))
+            piece_indexes_by_entry.setdefault(piece.entry_index, []).append(piece_index)
             if piece.tag == "user":
                 user_lines.append(len(lines))
             widest = max(widest, max(strip.cell_length for strip in piece.strips))
             lines.extend(piece.strips)
         self.lines = lines
         self._piece_line_starts = starts
-        self._user_lines = tuple(user_lines)
+        self._piece_indexes_by_entry = piece_indexes_by_entry
+        self._tool_entry_indexes = {
+            (entry.run_id, entry.tool.tool_call_id): index
+            for index, entry in enumerate(self._entries)
+            if entry.tool is not None
+        }
+        self._user_lines = user_lines
         self._widest_line_width = widest
         self.virtual_size = Size(widest, len(lines))
         self.refresh()

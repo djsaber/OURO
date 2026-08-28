@@ -2930,6 +2930,23 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         assert "└ Done • Observe child 1" in root_history.rendered_text
 
         displayed_child_frames: list[tuple[str, float]] = []
+        rendered_during_cached_switch: list[int] = []
+        write_entry = ConversationHistory._write_entry
+
+        def capture_cached_switch_render(
+            history: ConversationHistory,
+            *args,
+            entry_index: int,
+            **kwargs,
+        ) -> None:
+            rendered_during_cached_switch.append(entry_index)
+            write_entry(history, *args, entry_index=entry_index, **kwargs)
+
+        monkeypatch.setattr(
+            ConversationHistory,
+            "_write_entry",
+            capture_cached_switch_render,
+        )
 
         def capture_child_frames(screen, renderable) -> None:
             rendered_history = app.query_one(ConversationHistory).rendered_text
@@ -2951,6 +2968,10 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             description="reopened first child view",
         )
         assert app.query_one(ConversationView).scroll_y == held_child_scroll_y
+        assert rendered_during_cached_switch == [
+            len(app.query_one(ConversationHistory).entries) - 1
+        ]
+        rendered_during_cached_switch.clear()
         assert displayed_child_frames
         assert all(
             (
@@ -2971,6 +2992,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             pilot,
             description="return from reopened first child view",
         )
+        assert rendered_during_cached_switch == []
 
         app.post_message(
             ToolNavigationRequested(

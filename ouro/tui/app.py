@@ -5,6 +5,7 @@ import json
 import logging
 import sys
 from calendar import month_name
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import date, datetime
@@ -65,7 +66,7 @@ from ouro.tui.controller import (
     TuiSystemStatus,
     project_mcp_system_status,
 )
-from ouro.tui.conversation_history import ToolNavigationRequested
+from ouro.tui.conversation_history import ConversationHistoryState, ToolNavigationRequested
 from ouro.tui.plan_confirmation import project_plan_confirmation
 from ouro.tui.preferences import (
     MAX_RECENT_WORKSPACES,
@@ -127,6 +128,7 @@ class SessionObservationLagged(Message):
 _MCP_STATUS_SYNC_INTERVAL_SECONDS = 0.25
 _SESSION_TITLE_MAX_CELLS = 56
 _RUNTIME_EVENT_BUFFER_MAX = 1000
+_SESSION_HISTORY_CACHE_SIZE = 2
 _RUNTIME_RENDER_BOUNDARY_EVENTS = {
     "compaction_completed",
     "run_completed",
@@ -974,6 +976,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._agent_tree_subscription: AgentTreeSubscription | None = None
         self._agent_nodes: dict[str, AgentTreeNode] = {}
         self._held_session_scroll_y: dict[str, float] = {}
+        self._session_history_states: OrderedDict[str, ConversationHistoryState] = OrderedDict()
         self._interaction: PendingInteraction | None = None
         self._models: tuple[AvailableModel, ...] = ()
         self._sessions: tuple[SessionCatalogEntry, ...] = ()
@@ -2526,6 +2529,20 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return None
         return projection.session_id
 
+    def _remember_session_history(
+        self,
+        session_id: str,
+        state: ConversationHistoryState | None,
+    ) -> None:
+        """Retain recent inactive history without duplicating the active buffer."""
+
+        self._session_history_states.pop(session_id, None)
+        if state is None:
+            return
+        self._session_history_states[session_id] = state
+        while len(self._session_history_states) > _SESSION_HISTORY_CACHE_SIZE:
+            self._session_history_states.popitem(last=False)
+
     async def on_tool_navigation_requested(
         self,
         message: ToolNavigationRequested,
@@ -2787,6 +2804,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                         self._held_session_scroll_y.pop(visible_session_id, None)
                     else:
                         self._held_session_scroll_y[visible_session_id] = held_scroll_y
+                    self._remember_session_history(
+                        visible_session_id,
+                        conversation.take_history_state(),
+                    )
+                reusable_history = self._session_history_states.pop(
+                    session.session_id,
+                    None,
+                )
                 # The selected Session now owns the surface. Clear every interaction
                 # projected by the previous Session before yielding while its history
                 # is mounted; the new projection will restore its own pending request.
@@ -2811,6 +2836,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                         session.delegation_id if session.session_kind == "subagent" else None
                     ),
                     held_scroll_y=self._held_session_scroll_y.get(session.session_id),
+                    reusable_history=reusable_history,
                 )
                 self._set_welcome_mode(conversation.showing_welcome)
                 self.query_one(QueuedInputPanel).set_inputs(
@@ -3495,10 +3521,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify(str(exc), severity="error", markup=False)
             return False
         self._preferences = preferences
+        self._session_history_states.clear()
         self.query_one(ConversationView).set_reasoning_expanded(expanded)
         return True
 
     def _apply_tui_theme(self, theme: TuiTheme) -> None:
+        self._session_history_states.clear()
         self._tui_theme = theme
         self.refresh_css(animate=False)
         self._refresh_theme_content()

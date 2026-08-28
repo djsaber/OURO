@@ -45,6 +45,7 @@ from ouro.tui.conversation_history import (
     AssistantTailLines,
     CompactionPresentation,
     ConversationHistory,
+    ConversationHistoryState,
     ReasoningLines,
     ToolNavigationRequested,
     TranscriptEntry,
@@ -1406,6 +1407,11 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             self._history.toggle_reasoning(message.entry_index)
         message.stop()
 
+    def take_history_state(self) -> ConversationHistoryState | None:
+        """Detach the persisted transcript; live Run widgets are reconstructed."""
+
+        return self._history.take_state()
+
     async def load_messages(
         self,
         messages: Iterable[MessageRecord],
@@ -1415,6 +1421,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         mutable_tool_calls: Iterable[tuple[str | None, str]] = (),
         visible_scaffold_delegation_id: str | None = None,
         held_scroll_y: float | None = None,
+        reusable_history: ConversationHistoryState | None = None,
     ) -> None:
         await self._clear_live_transcript()
         self._assistant = None
@@ -1542,7 +1549,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             return
 
         self._set_showing_welcome(False)
-        await self._history.load(transcript)
+        await self._history.load(transcript, reusable_state=reusable_history)
         if held_scroll_y is None:
             self.anchor()
         else:

@@ -180,6 +180,92 @@ async def test_wait_until_rendered_recovers_after_a_deferred_layout_miss(
 
 
 @pytest.mark.asyncio
+async def test_same_session_history_reuse_renders_only_the_changed_suffix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _HistoryApp()
+    entries = tuple(
+        TranscriptEntry(
+            kind="user" if index % 2 == 0 else "assistant",
+            text=f"history entry {index}",
+        )
+        for index in range(120)
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await app.history.load(entries)
+        state = app.history.take_state()
+        rendered_indexes: list[int] = []
+        write_entry = app.history._write_entry
+
+        def record_write_entry(*args, entry_index: int, **kwargs) -> None:
+            rendered_indexes.append(entry_index)
+            write_entry(*args, entry_index=entry_index, **kwargs)
+
+        monkeypatch.setattr(app.history, "_write_entry", record_write_entry)
+        await app.history.load(entries, reusable_state=state)
+
+        assert rendered_indexes == []
+        assert app.history.entries == entries
+        assert "history entry 119" in app.history.rendered_text
+
+        state = app.history.take_state()
+        appended = (*entries, TranscriptEntry(kind="assistant", text="new tail"))
+        await app.history.load(appended, reusable_state=state)
+
+        assert rendered_indexes == [120]
+        assert app.history.entries == appended
+        assert "new tail" in app.history.rendered_text
+
+
+@pytest.mark.asyncio
+async def test_same_session_history_reuse_updates_mutable_entry_in_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _HistoryApp()
+    running_tool = RuntimeToolCallActivity(
+        tool_call_id="call_early",
+        tool_name="Read",
+        status="running",
+        source_index=0,
+    )
+    entries = (
+        TranscriptEntry(kind="user", text="inspect"),
+        TranscriptEntry(kind="tool", run_id="run_1", tool=running_tool),
+        *(
+            TranscriptEntry(kind="assistant", text=f"settled history {index}")
+            for index in range(100)
+        ),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await app.history.load(entries)
+        state = app.history.take_state()
+        render_strips = app.history._render_strips
+        rendered_pieces = 0
+
+        def count_rendered_piece(renderable):
+            nonlocal rendered_pieces
+            rendered_pieces += 1
+            return render_strips(renderable)
+
+        monkeypatch.setattr(app.history, "_render_strips", count_rendered_piece)
+        completed_tool = running_tool.model_copy(update={"status": "completed"})
+        updated = (
+            entries[0],
+            TranscriptEntry(kind="tool", run_id="run_1", tool=completed_tool),
+            *entries[2:],
+        )
+        await app.history.load(updated, reusable_state=state)
+
+        assert rendered_pieces == 1
+        assert app.history.entries == updated
+        assert "settled history 99" in app.history.rendered_text
+
+
+@pytest.mark.asyncio
 async def test_historical_spawn_tool_click_preserves_parent_run_identity() -> None:
     app = _HistoryApp()
 
