@@ -296,18 +296,6 @@ def _add_plugin_parser(subparsers: argparse._SubParsersAction) -> None:
     _add_plugin_source_args(install)
     _add_plugin_mutation_args(install)
 
-    for name in ("authorize", "trust-code"):
-        command = commands.add_parser(name, help=f"{name.replace('-', ' ').title()} for a digest")
-        command.add_argument("plugin_id")
-        command.add_argument("--digest")
-        _add_plugin_mutation_args(command)
-
-    revoke = commands.add_parser("revoke", help="Revoke capability or code trust grants")
-    revoke.add_argument("plugin_id")
-    revoke.add_argument("--code-trust", action="store_true")
-    _add_plugin_request_id(revoke)
-    _add_plugin_output(revoke)
-
     configure = commands.add_parser("configure", help="Set validated plugin configuration")
     configure.add_argument("plugin_id")
     configure.add_argument("--values", required=True, help="JSON object")
@@ -339,16 +327,6 @@ def _add_plugin_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     reload_parser.add_argument("plugin_id")
     reload_parser.add_argument("source")
-    reload_parser.add_argument(
-        "--authorize",
-        action="store_true",
-        help="Explicitly grant the candidate's declared capabilities",
-    )
-    reload_parser.add_argument(
-        "--trust-code",
-        action="store_true",
-        help="Explicitly trust the candidate's exact executable digest",
-    )
     _add_plugin_source_args(reload_parser)
     _add_plugin_request_id(reload_parser)
     _add_plugin_output(reload_parser)

@@ -194,8 +194,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 await self._restart_plugin(plugin_id)
             elif selected == "configure":
                 await self._configure_plugin(plugin_id, menu=menu)
-            elif selected in {"authorize", "trust-code", "revoke", "revoke-code-trust"}:
-                await self._change_plugin_grants(selected, plugin_id, menu=menu)
             elif selected == "select-install":
                 await self._choose_plugin_install(plugin_id, menu=menu)
                 return None
@@ -339,62 +337,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             return
         self._refresh_plugin_system_status()
         await self._refresh_session_controls()
-
-    async def _change_plugin_grants(
-        self,
-        action: str,
-        plugin_id: str,
-        *,
-        menu: ChoiceScreen | None,
-    ) -> None:
-        plugin = self._controller.plugin(plugin_id)
-        labels = {
-            "authorize": ("AUTHORIZE PLUGIN", "Authorize", "declared capabilities"),
-            "trust-code": ("TRUST PLUGIN CODE", "Trust code", "selected executable digest"),
-            "revoke": ("REVOKE PLUGIN AUTHORIZATION", "Revoke", "capability grants"),
-            "revoke-code-trust": ("REVOKE PLUGIN CODE TRUST", "Revoke", "code trust grants"),
-        }
-        title, confirm_label, subject = labels[action]
-        permissions = (
-            ", ".join(str(item.get("id")) for item in plugin.permissions if item.get("id"))
-            or "none"
-        )
-        selected = await (
-            menu.open_child(
-                ConfirmationScreen(
-                    title=title,
-                    message=(
-                        f"Change {subject} for {plugin.name} ({plugin_id})? "
-                        f"Declared permissions: {permissions}."
-                    ),
-                    confirm_label=confirm_label,
-                )
-            )
-            if menu is not None
-            else self.push_screen_wait(
-                ConfirmationScreen(
-                    title=title,
-                    message=f"Change {subject} for {plugin.name} ({plugin_id})?",
-                    confirm_label=confirm_label,
-                )
-            )
-        )
-        if not ConfirmationScreen.confirmed(selected):
-            return
-        try:
-            if action == "authorize":
-                await self._controller.authorize_plugin(plugin_id)
-            elif action == "trust-code":
-                await self._controller.trust_plugin_code(plugin_id)
-            else:
-                await self._controller.revoke_plugin_grants(
-                    plugin_id,
-                    code_trust=action == "revoke-code-trust",
-                )
-        except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
-            return
-        self._refresh_plugin_system_status()
 
     async def _choose_plugin_install(
         self,
@@ -550,20 +492,6 @@ def _plugin_action_choices(plugin: PluginDetail) -> tuple[Choice, ...]:
     if plugin.plugin_class == "user":
         if plugin.configuration_supported:
             actions.append(Choice("configure", "Configuration", group="SECURITY & CONFIG"))
-        if plugin.trust.capability_authorization == "missing":
-            actions.append(
-                Choice("authorize", "Authorize capabilities", group="SECURITY & CONFIG")
-            )
-        elif plugin.trust.capability_authorization == "granted":
-            actions.append(
-                Choice("revoke", "Revoke authorization", group="SECURITY & CONFIG")
-            )
-        if plugin.trust.code_trust == "missing":
-            actions.append(Choice("trust-code", "Trust selected code", group="SECURITY & CONFIG"))
-        elif plugin.trust.code_trust == "granted":
-            actions.append(
-                Choice("revoke-code-trust", "Revoke code trust", group="SECURITY & CONFIG")
-            )
         if len(plugin.installs) > 1:
             actions.append(
                 Choice(

@@ -49,8 +49,6 @@ PluginStatus = Literal[
     "incompatible",
     "disabled",
     "needs_configuration",
-    "needs_code_trust",
-    "needs_authorization",
     "ready",
     "starting",
     "active",

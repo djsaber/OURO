@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ouro.core.redaction import public_url, redact_text
+from ouro.core.redaction import public_url, redact_data, redact_text
 
 
 def test_public_url_projects_only_public_route_components() -> None:
@@ -22,3 +22,21 @@ def test_redact_text_treats_malformed_url_from_tool_output_as_untrusted_text() -
     )
 
     assert redact_text(output) == "downloaded script ***"
+
+
+def test_redact_data_distinguishes_token_metrics_from_credentials() -> None:
+    value = {
+        "input_tokens": 123,
+        "context_window_tokens": 1_000,
+        "access_token": "access-secret",
+        "token_value": "token-secret",
+        "token": "direct-secret",
+    }
+
+    assert redact_data(value) == {
+        "input_tokens": 123,
+        "context_window_tokens": 1_000,
+        "access_token": "***",
+        "token_value": "***",
+        "token": "***",
+    }

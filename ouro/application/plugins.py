@@ -16,21 +16,11 @@ from ouro.application.plugin_models import (
     PluginProvenanceView,
     PluginScaffoldView,
     PluginSummary,
-    PluginTrustView,
     PluginValidationView,
 )
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.core.redaction import redact_text
 from ouro.core.session_controls import AttributedSessionControlTransition
-from ouro.plugins.authorization import (
-    assess_plugin_trust,
-    configuration_errors,
-    create_capability_grant,
-    create_code_trust_grant,
-    plugin_install_readiness,
-    requires_capability_authorization,
-    requires_code_trust,
-)
 from ouro.plugins.builtin import BuiltinPluginDefinition, BuiltinPluginRegistry
 from ouro.plugins.catalog import ExtensionCatalogLease
 from ouro.plugins.compatibility import inspect_community_package
@@ -53,6 +43,7 @@ from ouro.plugins.models import (
     create_configuration_revision,
 )
 from ouro.plugins.package import PluginPackageError
+from ouro.plugins.readiness import configuration_errors, plugin_install_readiness
 from ouro.plugins.runtime import PluginRuntimeResource
 from ouro.plugins.scaffold import create_plugin_scaffold
 from ouro.plugins.store import PluginPackageStore
@@ -219,7 +210,6 @@ class PluginService:
         summary = self._summary(record)
         manifest = installed.manifest
         configuration = record.activation.configuration_for(installed.package_digest)
-        trust = assess_plugin_trust(installed, record.activation)
         generations: list[dict[str, object]] = []
         if self.runtime is not None:
             with self.runtime.snapshot() as snapshot:
@@ -252,10 +242,6 @@ class PluginService:
             configuration_values=(dict(configuration.values) if configuration is not None else {}),
             credential_refs=(
                 dict(configuration.credential_refs) if configuration is not None else {}
-            ),
-            trust=PluginTrustView(
-                capability_authorization=trust.capability_authorization,
-                code_trust=trust.code_trust,
             ),
         )
 
@@ -444,124 +430,6 @@ class PluginService:
             suggested_target=report.suggested_target,
         )
 
-    def authorize(
-        self,
-        plugin_id: str,
-        *,
-        package_digest: str | None = None,
-        request_id: str | None = None,
-        preview: bool = False,
-    ) -> PluginActionResult:
-        self._require_user_operation(plugin_id, "authorize")
-        record = self._record(plugin_id)
-        installed = _select_install(record, package_digest)
-        if not requires_capability_authorization(installed.manifest):
-            raise PluginOperationNotAllowedError(
-                f"plugin declares no capabilities that require authorization: {plugin_id}"
-            )
-        grant = create_capability_grant(installed)
-        if preview:
-            return PluginActionResult(
-                action="authorize",
-                plugin_id=plugin_id,
-                status=self._status(record),
-                changed=False,
-                package_digest=installed.package_digest,
-            )
-
-        def update(state: PluginStateDocument) -> PluginStateDocument:
-            activation = state.plugins[plugin_id].activation
-            activation.capability_grants = [
-                item
-                for item in activation.capability_grants
-                if not (
-                    item.permission_fingerprint == grant.permission_fingerprint
-                    and item.contribution_fingerprint == grant.contribution_fingerprint
-                    and item.runtime_kind == grant.runtime_kind
-                )
-            ]
-            activation.capability_grants.append(grant)
-            return state
-
-        self.store.mutate_state(update)
-        self._audit("authorize", installed, request_id=request_id)
-        return self._action("authorize", plugin_id, installed.package_digest)
-
-    def trust_code(
-        self,
-        plugin_id: str,
-        *,
-        package_digest: str | None = None,
-        request_id: str | None = None,
-        preview: bool = False,
-    ) -> PluginActionResult:
-        self._require_user_operation(plugin_id, "trust code for")
-        record = self._record(plugin_id)
-        installed = _select_install(record, package_digest)
-        if not requires_code_trust(installed.manifest):
-            raise PluginOperationNotAllowedError(
-                f"plugin runtime does not require code trust: {plugin_id}"
-            )
-        grant = create_code_trust_grant(installed)
-        if preview:
-            return PluginActionResult(
-                action="trust_code",
-                plugin_id=plugin_id,
-                status=self._status(record),
-                changed=False,
-                package_digest=installed.package_digest,
-            )
-
-        def update(state: PluginStateDocument) -> PluginStateDocument:
-            grants = state.plugins[plugin_id].activation.code_trust_grants
-            if grant not in grants:
-                grants.append(grant)
-            return state
-
-        self.store.mutate_state(update)
-        self._audit("trust_code", installed, request_id=request_id)
-        return self._action("trust_code", plugin_id, installed.package_digest)
-
-    async def revoke(
-        self,
-        plugin_id: str,
-        *,
-        code_trust: bool = False,
-        request_id: str | None = None,
-    ) -> PluginActionResult:
-        self._require_user_operation(plugin_id, "revoke grants from")
-        expected = self.store.read_state()
-        record = _state_plugin_record(expected, plugin_id)
-        installed = _require_selected(record)
-        candidate = expected.model_copy(deep=True)
-        activation = candidate.plugins[plugin_id].activation
-        if code_trust:
-            activation.code_trust_grants = []
-        else:
-            activation.capability_grants = []
-        if self.runtime is not None and self.runtime.status(plugin_id) in {
-            "active",
-            "degraded",
-        }:
-            affected = desired_dependant_closure(
-                candidate,
-                {plugin_id},
-                builtin_contracts=self.builtin_contracts,
-            )
-            await self.runtime.apply_candidate_state(
-                expected=expected,
-                candidate=candidate,
-                roots={plugin_id},
-                reason="revoke",
-                cascade_dependants=False,
-                remove_ids=affected,
-                close_gate_ids=affected,
-            )
-        else:
-            self.store.commit_candidate_state(expected, candidate)
-        self._audit("revoke_code_trust" if code_trust else "revoke", installed, request_id)
-        return self._action("revoke", plugin_id, installed.package_digest)
-
     async def configure(
         self,
         plugin_id: str,
@@ -652,11 +520,6 @@ class PluginService:
             package_root = self.store.package_path(plugin_id, installed.package_digest)
             if configuration_errors(installed, record.activation, package_root):
                 raise PluginPackageError("selected plugin digest needs configuration")
-            trust = assess_plugin_trust(installed, record.activation)
-            if trust.code_trust == "missing":
-                raise PermissionError("selected plugin digest needs code trust")
-            if trust.capability_authorization == "missing":
-                raise PermissionError("selected plugin digest needs capability authorization")
 
         selected_expected = expected_digest if expected_digest is not None else previous_digest
         if previous_digest != selected_expected:
@@ -743,8 +606,6 @@ class PluginService:
         *,
         ref: str | None = None,
         subdirectory: str | None = None,
-        authorize: bool = False,
-        trust_code: bool = False,
         request_id: str | None = None,
     ) -> PluginActionResult:
         """Install local development bytes and atomically select them when ready."""
@@ -761,18 +622,6 @@ class PluginService:
             expected_plugin_id=plugin_id,
         )
         installed = installed_result.installed
-        if authorize:
-            self.authorize(
-                plugin_id,
-                package_digest=installed.package_digest,
-                request_id=request_id,
-            )
-        if trust_code:
-            self.trust_code(
-                plugin_id,
-                package_digest=installed.package_digest,
-                request_id=request_id,
-            )
         record = self._record(plugin_id)
         candidate_status = self._install_readiness(record, installed)
         if desired_enabled and candidate_status != "ready":
@@ -1016,10 +865,6 @@ class PluginService:
             active_generations=generations,
             diagnostics=(
                 self.runtime.diagnostics(definition.plugin_id) if self.runtime is not None else []
-            ),
-            trust=PluginTrustView(
-                capability_authorization="not_required",
-                code_trust="not_required",
             ),
         )
 

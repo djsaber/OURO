@@ -11,7 +11,9 @@ _SENSITIVE_ASSIGNMENT = re.compile(
 )
 _BEARER = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
 _URL = re.compile(r"https?://[^\s]+")
-_SENSITIVE_KEY = re.compile(r"(?i)(api[_-]?key|token|password|authorization|secret|credential)")
+_SENSITIVE_KEY = re.compile(
+    r"(?i)(api[_-]?key|token(?!s(?:$|[_-]))|password|authorization|secret|credential)"
+)
 
 
 class SensitiveValueRedactor:

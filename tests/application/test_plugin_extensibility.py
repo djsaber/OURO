@@ -139,8 +139,6 @@ async def test_inprocess_plugin_tool_policy_can_restrict_builtin_tool(tmp_path) 
     _write_guard_plugin(source, shell.tool_name)
     assert application.plugins is not None
     application.plugins.install(source)
-    application.plugins.authorize("dev.ouro.guard")
-    application.plugins.trust_code("dev.ouro.guard")
     await application.start()
     assert (await application.plugins.enable("dev.ouro.guard")).status == "active"
 
@@ -184,8 +182,6 @@ async def test_runtime_available_tools_follow_the_published_plugin_catalog(tmp_p
     _write_catalog_plugin(source)
     assert application.plugins is not None
     application.plugins.install(source)
-    application.plugins.authorize("dev.ouro.catalog")
-    application.plugins.trust_code("dev.ouro.catalog")
     await application.start()
 
     try:
@@ -229,15 +225,7 @@ async def test_inprocess_prompt_policy_uses_the_run_catalog_and_denies_without_s
     _write_prompt_policy_plugin(source)
     assert application.plugins is not None
     application.plugins.install(source)
-    application.plugins.trust_code("dev.ouro.prompt_guard")
     await application.start()
-    assert (await application.plugins.enable("dev.ouro.prompt_guard")).status == (
-        "needs_authorization"
-    )
-    without_grant = await runtime.run("contains blocked marker without grant")
-    assert without_grant.run.status == "completed"
-
-    application.plugins.authorize("dev.ouro.prompt_guard")
     assert (await application.plugins.enable("dev.ouro.prompt_guard")).status == "active"
 
     allowed = await runtime.run("ordinary input")
@@ -265,16 +253,6 @@ async def test_inprocess_prompt_policy_uses_the_run_catalog_and_denies_without_s
     )
     assert after_disable.run.status == "completed"
 
-    assert (await application.plugins.enable("dev.ouro.prompt_guard")).status == "active"
-    assert (await application.plugins.revoke("dev.ouro.prompt_guard")).status == (
-        "needs_authorization"
-    )
-    after_revoke = await runtime.run(
-        "contains blocked marker after revoke",
-        session_id=allowed.session.session_id,
-    )
-    assert after_revoke.run.status == "completed"
-
     await application.close()
 
 
@@ -298,8 +276,6 @@ async def test_observer_timeout_releases_catalog_lease_after_plugin_disable(tmp_
     assert application.plugins is not None
     assert application.plugin_runtime is not None
     application.plugins.install(source)
-    application.plugins.authorize("dev.ouro.observer_retire")
-    application.plugins.trust_code("dev.ouro.observer_retire")
     await application.start()
     assert (await application.plugins.enable("dev.ouro.observer_retire")).status == "active"
 
@@ -361,8 +337,6 @@ async def test_prompt_policy_catalog_swap_cannot_change_the_prospective_run(tmp_
     assert application.plugins is not None
     assert application.plugin_runtime is not None
     application.plugins.install(source)
-    application.plugins.authorize("dev.ouro.prompt_guard")
-    application.plugins.trust_code("dev.ouro.prompt_guard")
     await application.start()
     assert (await application.plugins.enable("dev.ouro.prompt_guard")).status == "active"
     with application.plugin_runtime.snapshot() as initial:
@@ -430,8 +404,6 @@ async def test_queued_prompt_policy_approval_pins_the_prospective_catalog(tmp_pa
     assert application.plugins is not None
     assert application.plugin_runtime is not None
     application.plugins.install(source)
-    application.plugins.authorize("dev.ouro.prompt_guard")
-    application.plugins.trust_code("dev.ouro.prompt_guard")
     await application.start()
     assert (await application.plugins.enable("dev.ouro.prompt_guard")).status == "active"
 
@@ -512,8 +484,6 @@ async def test_steering_prompt_policy_uses_the_active_run_catalog(tmp_path) -> N
     assert application.plugins is not None
     assert application.plugin_runtime is not None
     application.plugins.install(source)
-    application.plugins.authorize("dev.ouro.prompt_guard")
-    application.plugins.trust_code("dev.ouro.prompt_guard")
     await application.start()
     assert (await application.plugins.enable("dev.ouro.prompt_guard")).status == "active"
 
@@ -851,8 +821,6 @@ async def test_concurrent_runs_keep_their_immutable_plugin_catalog(tmp_path) -> 
     assert application.plugins is not None
     assert application.plugin_runtime is not None
     application.plugins.install(source)
-    application.plugins.authorize("dev.ouro.catalog")
-    application.plugins.trust_code("dev.ouro.catalog")
     await application.start()
     assert (await application.plugins.enable("dev.ouro.catalog")).status == "active"
 
@@ -928,8 +896,6 @@ async def test_waiting_approval_rebuilds_same_execution_contract_after_restart(t
     first_application = LocalApplication.from_runtime(first_runtime, home=home)
     assert first_application.plugins is not None
     first_application.plugins.install(source)
-    first_application.plugins.authorize("dev.ouro.catalog")
-    first_application.plugins.trust_code("dev.ouro.catalog")
     await first_application.start()
     assert (await first_application.plugins.enable("dev.ouro.catalog")).status == "active"
 
@@ -1019,8 +985,6 @@ async def test_resumable_plugin_tool_rebuilds_original_execution_contract_after_
     first_application = LocalApplication.from_runtime(first_runtime, home=home)
     assert first_application.plugins is not None
     first_application.plugins.install(source)
-    first_application.plugins.authorize("dev.ouro.resume")
-    first_application.plugins.trust_code("dev.ouro.resume")
     await first_application.start()
     assert (await first_application.plugins.enable("dev.ouro.resume")).status == "active"
 
@@ -1109,18 +1073,6 @@ async def test_waiting_approval_rebuilds_retained_contract_after_plugin_update(
     assert first_application.plugins is not None
     first = first_application.plugins.install(first_source)
     second = await first_application.plugins.update("dev.ouro.catalog", second_source)
-    first_application.plugins.authorize(
-        "dev.ouro.catalog",
-        package_digest=second.package_digest,
-    )
-    first_application.plugins.trust_code(
-        "dev.ouro.catalog",
-        package_digest=first.package_digest,
-    )
-    first_application.plugins.trust_code(
-        "dev.ouro.catalog",
-        package_digest=second.package_digest,
-    )
     await first_application.start()
     assert (await first_application.plugins.enable("dev.ouro.catalog")).status == "active"
     waiting = await first_runtime.run("retain the first contract")
@@ -1195,8 +1147,6 @@ async def test_waiting_approval_settles_before_missing_contract_failure(
     first_application = LocalApplication.from_runtime(first_runtime, home=home)
     assert first_application.plugins is not None
     installed = first_application.plugins.install(source)
-    first_application.plugins.authorize("dev.ouro.catalog")
-    first_application.plugins.trust_code("dev.ouro.catalog")
     await first_application.start()
     assert (await first_application.plugins.enable("dev.ouro.catalog")).status == "active"
     waiting = await first_runtime.run("retain package bytes")
@@ -1373,7 +1323,6 @@ async def test_plugin_skill_prompt_is_resolved_from_each_run_catalog(tmp_path) -
     _write_skill_plugin(source)
     assert application.plugins is not None
     application.plugins.install(source)
-    application.plugins.authorize("dev.ouro.skill_prompt")
     await application.start()
     assert (await application.plugins.enable("dev.ouro.skill_prompt")).status == "active"
 

@@ -264,11 +264,20 @@ class PluginPackageStore:
 
 
 def _migrate_plugin_state(raw: object) -> object:
-    if not isinstance(raw, dict) or raw.get("schema_version") != 2:
+    if not isinstance(raw, dict) or raw.get("schema_version") not in {2, 3}:
         return raw
     migrated = dict(raw)
-    migrated["schema_version"] = 3
+    migrated["schema_version"] = 4
     migrated.setdefault("builtin_activation_overrides", {})
+    plugins = migrated.get("plugins")
+    if isinstance(plugins, dict):
+        for record in plugins.values():
+            if not isinstance(record, dict):
+                continue
+            activation = record.get("activation")
+            if isinstance(activation, dict):
+                activation.pop("capability_grants", None)
+                activation.pop("code_trust_grants", None)
     return migrated
 
 

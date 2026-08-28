@@ -35,7 +35,7 @@ OURO 是强扩展的个人智能体。插件是系统级扩展模块，不是项
 - **Run 一致性**：一个 Run 使用一个不可变 Extension Catalog，不在执行中混用不同插件代际；
 - **原子替换**：候选插件完整启动后才影响新 Run，失败不改变当前可用版本；
 - **可恢复**：durable record 按执行契约恢复，不按偶然的进程实例或同名 contribution 猜测；
-- **本地可控**：安装、配置、授权、数据、诊断和删除都由本地 application facade 管理；
+- **本地可控**：安装、配置、启停、选版、数据、诊断和删除都由本地 application facade 管理；
 - **必要信任边界**：明确 full-trust 与 process isolation，不宣称不存在的 OS sandbox；
 - **可演进内核**：新增 contribution 类型有统一内部接入边界，但用户插件不能动态定义扩展点。
 
@@ -59,7 +59,8 @@ OURO 是强扩展的个人智能体。插件是系统级扩展模块，不是项
 1. `ouro.core` 不读取 Manifest、不 import 插件代码、不依赖安装和 worker adapter。
 2. Host 只调用 application facade/DTO，不直接操作插件目录、state、registry 或 import adapter。
 3. Package、Install、Activation、Generation 和 Extension Catalog 是不同对象。
-4. User plugin 安装后默认 disabled；未满足配置、授权和 executable code trust 前不得执行代码。
+4. User plugin 安装后默认 disabled；只有显式 enable/select/reload/rollback 才接受并运行目标 digest，且配置、
+   依赖和包完整性必须先通过校验。
 5. Provenance 由 installer 根据真实来源生成，Manifest 不能自报 builtin、verified 或可信等级。
 6. Builtin identity 永久保留，user plugin 不能覆盖 builtin contribution。
 7. Contribution 必须先完整 prepare，再经 catalog transaction 原子发布；失败不得部分可见。
@@ -73,7 +74,7 @@ OURO 是强扩展的个人智能体。插件是系统级扩展模块，不是项
 14. 插件输入的 producer provenance、model role、`scaffold` 和可选 `semantic_tag` 必须分离：始终保留 plugin、
     contribution 和 execution contract 来源；每个消息属性由插件输入显式声明，Host 不相互推断。
 15. 所有 task、进程、MCP、listener 和 connection 都属于一个可关闭 generation owner。
-16. Disable/revoke 后的每次插件调用必须经过 generation gate；关闭 gate 后不得开始新调用。
+16. Disable 后的每次插件调用必须经过 generation gate；关闭 gate 后不得开始新调用。
 17. 依赖未 active 时依赖者不得 active。
 18. 状态查询和管理命令必须使用同一 observed-state reconciler。
 19. Pending tool/approval 恢复必须验证发布引用（user package digest 或 builtin contract hash）和 execution
@@ -96,7 +97,7 @@ InstalledUserPlugin
         |
         v
 PluginActivation
-  selected digest + desired state + grants + active configuration revision
+  selected digest + desired state + active configuration revision
         |
         v
 PluginGeneration
@@ -130,7 +131,7 @@ Builtin plugin：
 - 与 user plugin 复用同一 generation、gate、owner、contribution preparation、catalog transaction 和 durable
   execution contract；builtin 不是 Host baseline，也不建立第二套 runtime；
 - 不进入 user install/update/remove 流程；
-- 不需要用户 capability grant 或 code trust；
+- 不经过 user install/select/remove 流程；
 - identity 和公开名称不能被 user plugin 覆盖；
 - 以稳定 version 和 builtin contract hash 参与 dependency lock；实现内容变化即使忘记提升 version，也必须产生不同 release identity。
 
@@ -155,7 +156,6 @@ User plugin：
 
 - installs、provenance 和 selected digest；
 - desired enablement；
-- capability grants 和 code trust grants；
 - 每 digest 的 immutable configuration revisions 与 active revision reference；
 - user plugin data reference。
 
@@ -169,8 +169,6 @@ Builtin code/definition 不写入 user install state。`state.json` 另存稀疏
 - `invalid` / `incompatible`；
 - `disabled`；
 - `needs_configuration`；
-- `needs_code_trust`；
-- `needs_authorization`；
 - `ready`；
 - `starting` / `active` / `degraded` / `blocked` / `stopping` / `failed`。
 
@@ -281,13 +279,13 @@ calendar-plugin/
 - 启用 generation 时启动其全部 MCP；
 - 必需 MCP 失败使 activation 失败；可选 MCP 失败使 generation degraded。
 
-没有 executable runtime 时不要求 code trust。用户显式选择并启用新 package digest，即接受其中静态资源变化。
+用户显式选择并启用新 package digest，即接受其中静态资源变化。
 
 ### 7.2 Python in-process
 
 Python factory 在 OURO 进程中运行，是 full-trust runtime：
 
-- exact digest 必须获得 code trust；
+- 只有显式 enable/select/reload/rollback 接受的 selected digest 可以执行；
 - permission 只约束 Host service，不能限制直接 Python/OS 调用；
 - entrypoint 使用 plugin-owned 顶层 namespace；
 - top-level module 冲突时拒绝 activation；
@@ -629,21 +627,17 @@ tool list 和执行 registry 中按轮次隐藏。插件回调可以读取业务
 
 ### 11.1 Trust 模型
 
-- Builtin plugin 由 OURO composition root 信任；
-- User declarative plugin 通过显式 install、select 和 enable 接受纯静态资源；声明 `process.spawn` 的 package 即使
-  runtime 为 declarative，也必须取得 exact-digest code trust；
-- User executable runtime 或声明 `process.spawn` 的 package，其 code trust 绑定 exact digest 和 runtime kind；
-- capability grant 绑定 plugin id、permission fingerprint、contribution fingerprint 和 runtime kind；
-- permission/contribution/runtime 变化使旧 capability grant 失效；
-- executable digest 变化使旧 code trust 失效。
+- Builtin plugin 由 OURO composition root 提供并信任；
+- User plugin 安装仅保存经校验的不可变 bytes，不 import entrypoint、不启动 worker/MCP、不发布 contribution；
+- 初次 `enable` 显式接受并运行当前 selected digest；
+- `update` 只并排安装候选，不自动选版；`select`、`reload` 和 `rollback` 显式接受并切换目标 digest；
+- 激活前必须重新验证 digest store 完整性、配置、依赖、Manifest 与运行契约；
+- `python-inprocess` 是 full-trust，worker 不是 OS sandbox；Host 必须诚实展示 runtime 类型，不能把 permission
+  声明描述成系统调用级隔离。
 
-插件只声明 `runtime`、`permissions` 与 `contributes` 等可验证事实，不得声明
-`requires_authorization`、`requires_code_trust` 或任何自行降低信任要求的布尔值。Host 从这些事实统一推导
-capability authorization 与 code trust 各自的 `not_required | missing | granted` 状态；激活、已启用版本切换和
-application DTO 必须消费同一评估结果。前端只根据 DTO 提供 authorize/trust/revoke 动作，不重新解释 runtime 或
-Manifest。任一 required trust 为 `missing` 时，不得 import executable entrypoint、启动 worker/MCP 或发布 contribution。
-
-CLI/UI 可以合并确认步骤，但底层事实不能合并为一个 `trusted=true`。
+OURO 是单用户本地智能体，不另存 capability authorization 或 code-trust grant。它们与显式生命周期操作属于同一
+用户对同一 digest 的重复同意，不能建立额外执行边界。需要停止信任时直接 disable/remove；需要接受新内容时显式
+select/reload/rollback。前端只呈现这些真实状态与动作，不维护第二套 trust 状态机。
 
 ### 11.2 Permission registry
 
@@ -657,7 +651,7 @@ Permission id 必须由 OURO 核心注册表定义。每个 id 都要有真实�
 - `background.run`：允许请求 continuation/background Run。
 
 未知 permission 严格拒绝。只有真实 Host service 落地后才新增 filesystem、resource、model 等 permission。
-对 full-trust runtime，permission 不是 OS 强制边界，授权界面必须明确这一事实。
+对 full-trust runtime，permission 不是 OS 强制边界，界面和文档必须明确这一事实。
 
 ### 11.3 Credentials
 
@@ -719,7 +713,7 @@ OURO_HOME/artifacts/
 
 ### 13.1 Source
 
-当前支持 local directory、Git URL/ref/subdirectory 和本地 archive。Source provider 只 materialize，不授权、不激活。
+当前支持 local directory、Git URL/ref/subdirectory 和本地 archive。Source provider 只 materialize，不激活。
 
 - Git 操作有 timeout、clone/download 边界；
 - ref 解析为 commit 并进入 provenance；
@@ -736,7 +730,7 @@ OURO_HOME/artifacts/
 6. 最后原子写 install record；
 7. record 失败留下的无引用 store 由 GC 清理。
 
-安装不 import、不执行 package script、不 enable、不授权。
+安装不 import、不执行 package script、不 enable。
 
 ### 13.3 Dependencies
 
@@ -763,7 +757,7 @@ Reconciler 是 desired state 与 observed state 的唯一协调者：
 
 ```text
 read persistent activation or mutation candidate
-  -> validate target package/configuration revision/grants/trust
+  -> validate target package/configuration revision and explicit lifecycle intent
   -> resolve dependency graph
   -> ensure dependencies active
   -> compute affected active dependant closure
@@ -832,7 +826,7 @@ Builtin 不保留随旧 OURO 版本发布的代码副本。恢复所需 builtin 
 
 - side-by-side 安装候选 digest；
 - 不隐式改变 selected digest；
-- 用户完成候选配置和必要授权后显式 select；
+- 用户完成候选配置后显式 select；
 - select 通过包含受影响 active dependant closure 的候选 activation 流程；
 - 只有新 catalog 发布成功才提交 active selection；
 - 失败时 current selection/catalog 不变。
@@ -843,7 +837,7 @@ Active plugin 的配置更新使用相同流程：创建 immutable candidate rev
 ### 16.2 Rollback
 
 - 选择仍存在的 immutable digest；
-- 使用同一配置、授权、依赖和候选 activation 流程；
+- 使用同一配置、依赖和候选 activation 流程；
 - 失败不改变 current catalog；
 - 不承诺兼容任意旧 OURO state 或插件私有 data schema。
 
@@ -874,14 +868,14 @@ Active plugin 的配置更新使用相同流程：创建 immutable candidate rev
 `PluginService` 提供类型化用例：
 
 - scaffold、validate、install、list、show、diagnostics、dependencies；
-- configure、authorize、revoke、trust-code；
+- configure；
 - enable、disable、restart、check；
 - update、reload、select、rollback、remove、gc、purge-data；
 - list/execute plugin command；
 - compatibility report。
 
 查询、enable、disable、restart、check、diagnostics 和 dependencies 同时适用于 builtin/user。install、update、reload、
-select、rollback、remove、authorize、trust-code 和 revoke 只适用于 user plugin；对 builtin 调用时 application 层返回
+select、rollback 和 remove 只适用于 user plugin；对 builtin 调用时 application 层返回
 类型化的 operation-not-allowed 错误，不能静默 no-op。builtin disabled 后允许显式 purge 私有 data，但 GC 永不处理
 builtin code。
 
@@ -889,8 +883,8 @@ CLI/TUI/Desktop 只映射这些用例。Plugin command canonical name 为 `<plug
 优先，只有 local name 唯一时 Host 才能提供短别名。
 
 `scaffold` 只生成一个经完整 package validation 的最小 user plugin，并以临时目录 + rename 原子发布，绝不覆盖已有
-目录。`reload` 是显式本地开发用例：先按 immutable digest 并排安装，再检查候选配置、能力授权和 exact-digest code
-trust；只有候选就绪才通过既有 candidate activation 原子选版，失败时旧 selection/Catalog 不变。
+目录。`reload` 是显式本地开发用例：先按 immutable digest 并排安装，再检查候选配置、依赖和包完整性；只有候选
+就绪才通过既有 candidate activation 原子选版，失败时旧 selection/Catalog 不变。
 
 Git source 必须在 checkout 前读取 tree metadata 并执行 portable path、文件数、单文件与总大小限制；使用 shallow、
 blob-filtered fetch，指定 subdirectory 时使用 sparse checkout，并禁用 LFS 自动 smudge。无论来源为何，最终 package
@@ -928,7 +922,7 @@ ouro/plugins/
   scaffold.py        # minimal validated user-plugin scaffold
   package.py         # static package validation
   store.py           # immutable code and mutable state/data
-  authorization.py   # trust, permission and grant evaluation
+  readiness.py       # configuration and credential-binding readiness
   contribution_types.py # internal ContributionTypeAdapter definitions
   catalog.py         # immutable ExtensionCatalog and leases
   dependencies.py    # dependency graph and reconciliation inputs
@@ -950,12 +944,12 @@ ouro/builtin_plugins/
 
 ## 21. 验收矩阵
 
-### Package 与 trust
+### Package 与 activation
 
 - path traversal、symlink/reparse、archive bomb、文件/总大小和 Git source 边界；
 - 安装阶段 entrypoint side effect 从未执行；
 - builtin/user class 不能由 Manifest 伪造；
-- executable digest、permission 和 contribution 变化正确使授权失效；
+- 安装从不执行插件；enable/select/reload/rollback 只运行显式目标 digest；
 - secret 不进入公开输出、协议和 diagnostic。
 
 ### Catalog 与 lifecycle
@@ -1015,7 +1009,7 @@ Plugin Skill 不转换为 Observer；`RuntimeService` 每轮从该 Run 的
 - scaffold 成功后 package 可直接 validate，失败不留下公开半成品，且不覆盖用户目录；
 - active 插件 reload 未满足授权/信任时只保留候选，旧 Catalog 继续服务；候选就绪后原子切换；
 - Git source 在 blob checkout 前拒绝超限或不可移植 tree，subdirectory 不物化范围外文件；
-- declarative、in-process、worker 三类示例均通过真实 install/authorize/enable 生命周期；
+- declarative、in-process、worker 三类示例均通过真实 install/enable 生命周期；
 - compatibility report 的四种 outcome、目标描述与不执行未知代码边界可验证；
 - 开发指南明确 builtin/user、full-trust、request context、Catalog、owner 和 durable contract。
 

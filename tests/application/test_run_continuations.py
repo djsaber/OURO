@@ -217,8 +217,6 @@ async def test_plugin_continuation_creates_attributed_scaffold_follow_up(
     _write_goal_plugin(source)
     assert application.plugins is not None
     application.plugins.install(source)
-    application.plugins.authorize(TEST_GOAL_PLUGIN_ID)
-    application.plugins.trust_code(TEST_GOAL_PLUGIN_ID)
     await application.start()
     assert (await application.plugins.enable(TEST_GOAL_PLUGIN_ID)).status == "active"
 
@@ -279,8 +277,6 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
     _write_goal_plugin(source)
     assert application.plugins is not None
     application.plugins.install(source)
-    application.plugins.authorize(TEST_GOAL_PLUGIN_ID)
-    application.plugins.trust_code(TEST_GOAL_PLUGIN_ID)
     await application.start()
     assert (await application.plugins.enable(TEST_GOAL_PLUGIN_ID)).status == "active"
 
@@ -341,8 +337,6 @@ async def test_interactive_plugin_run_accepts_commands_while_model_is_running(tm
     _write_goal_plugin(source)
     assert application.plugins is not None
     application.plugins.install(source)
-    application.plugins.authorize(TEST_GOAL_PLUGIN_ID)
-    application.plugins.trust_code(TEST_GOAL_PLUGIN_ID)
     await application.start()
     assert (await application.plugins.enable(TEST_GOAL_PLUGIN_ID)).status == "active"
     commands = iter(

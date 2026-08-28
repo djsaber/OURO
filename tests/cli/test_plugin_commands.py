@@ -66,20 +66,7 @@ def create_plugin(context): return Plugin()
     assert main(["plugin", "show", "dev.ouro.cli", "--home", str(home), "--json"]) == 0
     detail = json.loads(capsys.readouterr().out)
     assert detail["runtime_kind"] == "python-inprocess"
-    assert detail["trust"] == {
-        "capability_authorization": "missing",
-        "code_trust": "missing",
-    }
-
-    assert main(["plugin", "authorize", "dev.ouro.cli", "--home", str(home), "--json"]) == 0
-    capsys.readouterr()
-    assert main(["plugin", "trust-code", "dev.ouro.cli", "--home", str(home), "--json"]) == 0
-    capsys.readouterr()
-    assert main(["plugin", "show", "dev.ouro.cli", "--home", str(home), "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)["trust"] == {
-        "capability_authorization": "granted",
-        "code_trust": "granted",
-    }
+    assert "trust" not in detail
     assert main(["plugin", "enable", "dev.ouro.cli", "--home", str(home), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "active"
 
@@ -120,8 +107,6 @@ def create_plugin(context): return Plugin()
     assert main(["plugin", "check", "dev.ouro.cli", "--home", str(home), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "active"
 
-    assert main(["plugin", "revoke", "dev.ouro.cli", "--home", str(home), "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)["status"] == "needs_authorization"
     assert main(["plugin", "disable", "dev.ouro.cli", "--home", str(home), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "disabled"
     assert main(["plugin", "remove", "dev.ouro.cli", "--home", str(home), "--json"]) == 0
@@ -201,9 +186,8 @@ def test_plugin_cli_scaffold_and_explicit_reload_flow(tmp_path, capsys) -> None:
     assert json.loads(capsys.readouterr().out)["valid"] is True
     assert main(["plugin", "install", str(source), "--home", str(home), "--json"]) == 0
     first_digest = json.loads(capsys.readouterr().out)["package_digest"]
-    for command in ("authorize", "trust-code", "enable"):
-        assert main(["plugin", command, "dev.ouro.starter", "--home", str(home), "--json"]) == 0
-        capsys.readouterr()
+    assert main(["plugin", "enable", "dev.ouro.starter", "--home", str(home), "--json"]) == 0
+    capsys.readouterr()
 
     module = source / "starter_plugin.py"
     module.write_text(module.read_text(encoding="utf-8") + "\n# local reload\n", encoding="utf-8")
@@ -214,30 +198,6 @@ def test_plugin_cli_scaffold_and_explicit_reload_flow(tmp_path, capsys) -> None:
                 "reload",
                 "dev.ouro.starter",
                 str(source),
-                "--home",
-                str(home),
-                "--json",
-            ]
-        )
-        == 0
-    )
-    pending = json.loads(capsys.readouterr().out)
-    # Capability authorization is semantic and remains valid because the declared
-    # permissions/contributions did not change; executable bytes require exact trust.
-    assert pending["status"] == "needs_code_trust"
-    assert pending["package_digest"] != first_digest
-    assert main(["plugin", "show", "dev.ouro.starter", "--home", str(home), "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)["package_digest"] == first_digest
-
-    assert (
-        main(
-            [
-                "plugin",
-                "reload",
-                "dev.ouro.starter",
-                str(source),
-                "--authorize",
-                "--trust-code",
                 "--home",
                 str(home),
                 "--json",

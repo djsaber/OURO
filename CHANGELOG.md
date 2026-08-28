@@ -70,9 +70,10 @@ This project records user-visible and framework-contract changes in this file.
   local Session catalog is invalidated in O(1) and rebuilt only on an explicit catalog query.
 - All OURO builtin plugins are now enabled by default when no explicit user activation override
   exists. Existing explicit enable/disable choices remain authoritative.
-- Plugin trust requirements are now derived once by the Host from runtime, permissions, and
-  contributions, projected as explicit `not_required` / `missing` / `granted` application state,
-  enforced by activation and selected-version changes, and consumed directly by TUI actions.
+- User-plugin trust now follows the single-user lifecycle directly: installation stores inert
+  immutable bytes, while explicit enable/select/reload/rollback actions accept the selected digest.
+  Redundant capability/code-trust grants and their CLI/TUI states have been removed; package
+  integrity, configuration, dependency, credential, and tool-permission boundaries remain enforced.
 
 ### Added
 
@@ -106,7 +107,7 @@ This project records user-visible and framework-contract changes in this file.
   continuation, canonical token accounting, optional user-owned budgets, and Plan-mode claim
   arbitration.
 - Native OURO plugin system with strict manifests, local/Git/archive installation, immutable
-  package storage, separate code-trust and capability grants, declarative/in-process/worker
+  package storage, explicit digest-bound activation, declarative/in-process/worker
   runtimes, owner-atomic contributions, plugin Skills/MCP/background services, generation-safe
   durable Run metadata, dependency resolution, compatibility reports, application DTOs, and CLI.
 - Typed plugin Run continuation policies with generation-frozen durable checkpoints, deterministic

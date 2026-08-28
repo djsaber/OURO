@@ -12,7 +12,6 @@ from ouro.plugins.manifest import PluginManifest, PluginRuntimeKind, PluginStatu
 
 PluginSourceKind = Literal["local", "git", "archive"]
 PluginClass = Literal["builtin", "user"]
-PluginTrustStatus = Literal["not_required", "missing", "granted"]
 DiagnosticSeverity = Literal["info", "warning", "error"]
 
 
@@ -33,21 +32,6 @@ class InstalledPlugin(OuroModel):
     manifest: PluginManifest
     provenance: PluginProvenance
     installed_at: datetime = Field(default_factory=utc_now)
-
-
-class CapabilityGrant(OuroModel):
-    plugin_id: str
-    permission_fingerprint: str
-    contribution_fingerprint: str
-    runtime_kind: PluginRuntimeKind
-    granted_at: datetime = Field(default_factory=utc_now)
-
-
-class CodeTrustGrant(OuroModel):
-    plugin_id: str
-    package_digest: str
-    runtime_kind: PluginRuntimeKind
-    granted_at: datetime = Field(default_factory=utc_now)
 
 
 class PluginConfigurationRevision(OuroModel):
@@ -75,8 +59,6 @@ class PluginConfigurationRevision(OuroModel):
 class PluginActivationState(OuroModel):
     desired_enabled: bool = False
     selected_digest: str | None = None
-    capability_grants: list[CapabilityGrant] = Field(default_factory=list)
-    code_trust_grants: list[CodeTrustGrant] = Field(default_factory=list)
     configuration_revisions: dict[str, PluginConfigurationRevision] = Field(default_factory=dict)
     configuration_revision_by_digest: dict[str, str] = Field(default_factory=dict)
     active_configuration_revision_id: str | None = None
@@ -130,7 +112,7 @@ class BuiltinPluginActivationOverride(OuroModel):
 
 
 class PluginStateDocument(OuroModel):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     plugins: dict[str, PluginRecord] = Field(default_factory=dict)
     builtin_activation_overrides: dict[str, BuiltinPluginActivationOverride] = Field(
         default_factory=dict
@@ -170,10 +152,6 @@ class PluginStateDocument(OuroModel):
             ]
             if activation.active_configuration_revision_id != selected_revision:
                 raise ValueError(f"active plugin configuration revision is invalid: {plugin_id}")
-            if any(grant.plugin_id != plugin_id for grant in activation.capability_grants):
-                raise ValueError(f"plugin capability grant identity is invalid: {plugin_id}")
-            if any(grant.plugin_id != plugin_id for grant in activation.code_trust_grants):
-                raise ValueError(f"plugin code trust identity is invalid: {plugin_id}")
         return self
 
 

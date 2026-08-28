@@ -20,7 +20,6 @@ from ouro.plugins.api import (
     build_plugin_context,
     load_plugin_factory,
 )
-from ouro.plugins.authorization import plugin_install_readiness
 from ouro.plugins.builtin import EMPTY_BUILTIN_PLUGIN_REGISTRY, BuiltinPluginRegistry
 from ouro.plugins.candidates import PluginRuntimeCandidate
 from ouro.plugins.catalog import (
@@ -66,6 +65,7 @@ from ouro.plugins.models import (
     create_configuration_revision,
 )
 from ouro.plugins.package import PLUGIN_API_VERSION
+from ouro.plugins.readiness import plugin_install_readiness
 from ouro.plugins.store import PluginPackageStore, PluginStateConflictError
 from ouro.plugins.worker import WorkerPluginInstance
 from ouro.sdk.plugins import v1 as sdk
@@ -320,30 +320,6 @@ class PluginRuntimeResource:
                 )
             )
             return "disabled"
-
-    async def suspend(self, plugin_id: str, *, revoke: bool = False) -> PluginStatus:
-        """Withdraw an active generation without changing desired state."""
-
-        async with self._mutation_lock:
-            expected = self.store.read_state()
-            self._runtime_candidate(expected, plugin_id)
-            affected = (
-                desired_dependant_closure(
-                    expected,
-                    {plugin_id},
-                    builtin_contracts=self.builtin_contracts,
-                )
-                if revoke
-                else {plugin_id}
-            )
-            await self._transition_state_locked(
-                expected=expected,
-                candidate_state=expected,
-                remove_ids=affected,
-                close_gate_ids=affected if revoke else set(),
-                reason="revoke" if revoke else "restart",
-            )
-            return self.status(plugin_id)
 
     async def enable(self, plugin_id: str) -> PluginStatus:
         async with self._mutation_lock:
@@ -1845,7 +1821,7 @@ def _retirement_reason(
     new: ActivePluginGeneration | None,
 ) -> StopReason:
     if not replaced:
-        return "disable" if reason in {"disable", "revoke"} else "restart"
+        return "disable" if reason == "disable" else "restart"
     if new is not None and new.candidate.release_id != old.candidate.release_id:
         return "upgrade"
     return "restart"

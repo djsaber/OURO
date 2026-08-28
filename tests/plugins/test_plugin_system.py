@@ -507,15 +507,24 @@ def test_state_format_error_remains_a_typed_persistence_failure(tmp_path) -> Non
         store.read_state()
 
 
-def test_plugin_state_schema_two_migrates_without_losing_user_installs(tmp_path) -> None:
+@pytest.mark.parametrize("legacy_version", [2, 3])
+def test_plugin_state_migrates_without_losing_user_installs(
+    tmp_path,
+    legacy_version: int,
+) -> None:
     source = tmp_path / "source"
     source.mkdir()
     _write_native_plugin(source)
     service = build_local_plugin_service(tmp_path / "home")
     installed = service.install(source)
     raw = json.loads(service.store.state_path.read_text(encoding="utf-8"))
-    raw["schema_version"] = 2
-    raw.pop("builtin_activation_overrides")
+    raw["schema_version"] = legacy_version
+    if legacy_version == 2:
+        raw.pop("builtin_activation_overrides")
+    else:
+        activation = raw["plugins"]["dev.ouro.echo"]["activation"]
+        activation["capability_grants"] = []
+        activation["code_trust_grants"] = []
     service.store.state_path.write_text(json.dumps(raw), encoding="utf-8")
 
     migrated = service.store.read_state()
@@ -526,7 +535,7 @@ def test_plugin_state_schema_two_migrates_without_losing_user_installs(tmp_path)
     assert migrated.builtin_activation_overrides == {}
     service.store.mutate_state(lambda state: state)
     persisted = json.loads(service.store.state_path.read_text(encoding="utf-8"))
-    assert persisted["schema_version"] == 3
+    assert persisted["schema_version"] == 4
 
 
 def test_permission_registry_and_builtin_identity_are_enforced_before_install(tmp_path) -> None:
@@ -660,14 +669,10 @@ async def test_plugin_mcp_starts_on_enable_without_manifest_auto_start(tmp_path)
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.echo")
 
     assert service.check("dev.ouro.echo").status == "disabled"
-    assert service.show("dev.ouro.echo").trust.code_trust == "missing"
-    assert (await service.enable("dev.ouro.echo")).status == "needs_code_trust"
-    service.trust_code("dev.ouro.echo")
     assert (await service.enable("dev.ouro.echo")).status == "failed"
-    assert service.check("dev.ouro.echo").status != "needs_code_trust"
+    assert service.check("dev.ouro.echo").status == "failed"
     await runtime.close()
 
 
@@ -698,8 +703,6 @@ async def test_optional_plugin_mcp_failure_degrades_without_fake_contract(tmp_pa
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.echo")
-    service.trust_code("dev.ouro.echo")
 
     assert (await service.enable("dev.ouro.echo")).status == "degraded"
     with runtime.snapshot() as snapshot:
@@ -740,8 +743,6 @@ async def test_plugin_mcp_tools_are_frozen_in_catalog_and_resource_closes(tmp_pa
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.echo")
-    service.trust_code("dev.ouro.echo")
 
     assert (await asyncio.wait_for(service.enable("dev.ouro.echo"), timeout=15)).status == "active"
     resource = runtime._active["dev.ouro.echo"].resources[0]
@@ -844,7 +845,6 @@ def create_plugin(context): return Plugin()
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.trust_code("dev.ouro.echo")
     assert (await service.enable("dev.ouro.echo")).status == "active"
     with runtime.snapshot() as snapshot:
         generation_id = snapshot.generations[0].generation_id
@@ -877,7 +877,6 @@ async def test_inprocess_loaded_top_level_namespace_conflict_rejects_activation(
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.trust_code("dev.ouro.echo")
     sys.modules["echo_plugin"] = ModuleType("echo_plugin")
     try:
         assert (await service.enable("dev.ouro.echo")).status == "failed"
@@ -956,10 +955,6 @@ def create_plugin(context):
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
 
-    assert (await service.enable("dev.ouro.echo")).status == "needs_code_trust"
-    service.authorize("dev.ouro.echo")
-    assert service.check("dev.ouro.echo").status == "needs_code_trust"
-    service.trust_code("dev.ouro.echo")
     assert (await service.enable("dev.ouro.echo")).status == "active"
     with runtime.snapshot() as current:
         definition = current.tools.get("echo__run").definition
@@ -1062,8 +1057,6 @@ def create_plugin(context): return Plugin()
     runtime, tools, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.echo")
-    service.trust_code("dev.ouro.echo")
 
     empty_snapshot = runtime.snapshot()
     enabling = asyncio.create_task(service.enable("dev.ouro.echo"))
@@ -1087,9 +1080,9 @@ def create_plugin(context): return Plugin()
     empty_snapshot.close()
 
     active_snapshot = runtime.snapshot()
-    assert (await service.revoke("dev.ouro.echo")).status == "needs_authorization"
-    with runtime.snapshot() as revoked_snapshot:
-        assert revoked_snapshot.tools.names() == []
+    assert (await service.disable("dev.ouro.echo")).status == "disabled"
+    with runtime.snapshot() as disabled_snapshot:
+        assert disabled_snapshot.tools.names() == []
     assert tools.names() == []
     with pytest.raises(PluginGenerationUnavailableError):
         await active_snapshot.tools.get("safe__run").execute(
@@ -1119,7 +1112,6 @@ async def test_declarative_skill_is_projected_into_immutable_catalog(tmp_path) -
     runtime, _tools, observers, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.echo")
     assert (await service.enable("dev.ouro.echo")).status == "active"
 
     snapshot = runtime.snapshot()
@@ -1170,7 +1162,6 @@ async def test_plugin_skill_name_conflicts_fail_candidate_without_overriding_hos
     runtime, *_ = _runtime(tmp_path / "home", base_skills=(host_skill,))
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.echo")
 
     assert (await service.enable("dev.ouro.echo")).status == "failed"
     with runtime.snapshot() as snapshot:
@@ -1230,15 +1221,7 @@ async def test_replacing_host_skills_rejects_plugin_conflict_without_publication
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    pending = service.show("dev.ouro.echo")
-    assert pending.trust.capability_authorization == "missing"
-    assert pending.trust.code_trust == "not_required"
-    assert (await service.enable("dev.ouro.echo")).status == "needs_authorization"
-    service.authorize("dev.ouro.echo")
     assert (await service.enable("dev.ouro.echo")).status == "active"
-    granted = service.show("dev.ouro.echo")
-    assert granted.trust.capability_authorization == "granted"
-    assert granted.trust.code_trust == "not_required"
     before = runtime.snapshot()
     conflicting = SkillMetadata(
         name="calendar",
@@ -1257,7 +1240,7 @@ async def test_replacing_host_skills_rejects_plugin_conflict_without_publication
 
 
 @pytest.mark.asyncio
-async def test_host_derived_trust_rejects_irrelevant_grants(tmp_path) -> None:
+async def test_declarative_plugin_enable_is_the_explicit_activation_boundary(tmp_path) -> None:
     source = tmp_path / "empty-declarative"
     source.mkdir()
     _write_native_plugin(source)
@@ -1265,19 +1248,12 @@ async def test_host_derived_trust_rejects_irrelevant_grants(tmp_path) -> None:
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
 
-    detail = service.show("dev.ouro.echo")
-    assert detail.trust.capability_authorization == "not_required"
-    assert detail.trust.code_trust == "not_required"
-    with pytest.raises(PluginOperationNotAllowedError, match="no capabilities"):
-        service.authorize("dev.ouro.echo")
-    with pytest.raises(PluginOperationNotAllowedError, match="does not require code trust"):
-        service.trust_code("dev.ouro.echo")
     assert (await service.enable("dev.ouro.echo")).status == "active"
     await runtime.close()
 
 
 @pytest.mark.asyncio
-async def test_executable_plugin_cannot_activate_without_exact_code_trust(tmp_path) -> None:
+async def test_executable_plugin_runs_only_after_explicit_enable(tmp_path) -> None:
     source = tmp_path / "empty-executable"
     import_marker = tmp_path / "plugin-imported.txt"
     source.mkdir()
@@ -1308,18 +1284,9 @@ def create_plugin(context): return Plugin(context)
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
 
-    pending = service.show("dev.ouro.echo")
-    assert pending.trust.capability_authorization == "missing"
-    assert pending.trust.code_trust == "missing"
-    assert (await service.enable("dev.ouro.echo")).status == "needs_code_trust"
     assert not import_marker.exists()
     with runtime.snapshot() as catalog:
         assert catalog.generations == ()
-    service.trust_code("dev.ouro.echo")
-    assert service.show("dev.ouro.echo").trust.code_trust == "granted"
-    assert (await service.enable("dev.ouro.echo")).status == "needs_authorization"
-    assert not import_marker.exists()
-    service.authorize("dev.ouro.echo")
     assert (await service.enable("dev.ouro.echo")).status == "active"
     assert import_marker.read_text(encoding="utf-8") == "imported"
     await runtime.close()
@@ -1359,7 +1326,6 @@ async def test_plugin_skill_declaration_resolves_exactly_one_matching_skill(
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.echo")
 
     assert (await service.enable("dev.ouro.echo")).status == "failed"
     assert any(expected in item.message for item in service.diagnostics("dev.ouro.echo"))
@@ -1414,8 +1380,6 @@ def create_plugin(context): return Plugin(context)
     runtime, _tools, _hooks, commands, _compaction = _runtime(home)
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.echo")
-    service.trust_code("dev.ouro.echo")
     assert (await service.enable("dev.ouro.echo")).status == "active"
 
     command_view = service.list_commands()[0]
@@ -1824,8 +1788,6 @@ for line in sys.stdin:
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.worker_prompt_cancel")
-    service.trust_code("dev.ouro.worker_prompt_cancel")
     assert (await service.enable("dev.ouro.worker_prompt_cancel")).status == "active"
     snapshot = runtime.snapshot()
 
@@ -2037,8 +1999,6 @@ for line in sys.stdin:
     runtime, tools, *_ = _runtime(home)
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.worker")
-    service.trust_code("dev.ouro.worker")
 
     assert (await service.enable("dev.ouro.worker")).status == "active"
     with runtime.snapshot() as snapshot:
@@ -2099,8 +2059,6 @@ for line in sys.stdin:
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.worker_input")
-    service.trust_code("dev.ouro.worker_input")
     assert (await service.enable("dev.ouro.worker_input")).status == "active"
 
     with runtime.snapshot() as snapshot:
@@ -2166,8 +2124,6 @@ for line in sys.stdin:
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.worker_resume")
-    service.trust_code("dev.ouro.worker_resume")
     assert (await service.enable("dev.ouro.worker_resume")).status == "active"
 
     with runtime.snapshot() as snapshot:
@@ -2237,8 +2193,6 @@ for line in sys.stdin:
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.worker_invalid")
-    service.trust_code("dev.ouro.worker_invalid")
     assert (await service.enable("dev.ouro.worker_invalid")).status == "active"
 
     with runtime.snapshot() as snapshot:
@@ -2307,8 +2261,6 @@ for line in sys.stdin:
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.worker_exit")
-    service.trust_code("dev.ouro.worker_exit")
     assert (await service.enable("dev.ouro.worker_exit")).status == "active"
     old_catalog = runtime.snapshot()
 
@@ -2487,8 +2439,6 @@ for line in sys.stdin:
     runtime, _, _, commands, _ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.worker_goal")
-    service.trust_code("dev.ouro.worker_goal")
 
     assert (await service.enable("dev.ouro.worker_goal")).status == "active"
     command = await service.execute_command("dev.ouro.worker_goal:goal", "ship")
@@ -2683,7 +2633,6 @@ for line in sys.stdin:
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.trust_code("dev.ouro.protocol")
 
     assert (await service.enable("dev.ouro.protocol")).status == "failed"
     assert any(
@@ -2749,8 +2698,6 @@ for line in sys.stdin:
     runtime.credential_resolver = resolve_plugin_credential
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.credentials")
-    service.trust_code("dev.ouro.credentials")
 
     with pytest.raises(PluginPackageError, match="credential slot"):
         await service.configure(
@@ -2817,8 +2764,6 @@ def create_plugin(context): return Plugin(context)
     runtime.credential_resolver = resolve_plugin_credential
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.inprocess_credentials")
-    service.trust_code("dev.ouro.inprocess_credentials")
     await service.configure(
         "dev.ouro.inprocess_credentials",
         {},
@@ -2955,11 +2900,10 @@ def create_plugin(context): return Plugin()
     home = tmp_path / "home"
     runtime, *_ = _runtime(home)
     service = PluginService(runtime.store, runtime=runtime)
-    first = service.install(dependency_v1)
+    service.install(dependency_v1)
     second = service.install(dependency_v2)
     service.install(dependant)
     service.install(unrelated)
-    service.trust_code("dev.ouro.dependency", package_digest=first.package_digest)
 
     assert (await service.enable("dev.ouro.dependant")).status == "blocked"
     assert service.show("dev.ouro.dependency").status == "failed"
@@ -3025,7 +2969,6 @@ def create_plugin(context): return Plugin(context)
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.trust_code("dev.ouro.degraded")
     assert (await service.enable("dev.ouro.degraded")).status == "active"
     await asyncio.sleep(0.01)
 
@@ -3071,8 +3014,6 @@ def create_plugin(context): return Plugin()
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.optional")
-    service.trust_code("dev.ouro.optional")
 
     assert (await service.enable("dev.ouro.optional")).status == "degraded"
     assert service.show("dev.ouro.optional").status == "degraded"
@@ -3164,9 +3105,6 @@ def create_plugin(context): return Plugin()
     service = PluginService(runtime.store, runtime=runtime)
     first = service.install(first_source)
     second = service.install(second_source)
-    for digest in (first.package_digest, second.package_digest):
-        service.authorize("dev.ouro.echo", package_digest=digest)
-        service.trust_code("dev.ouro.echo", package_digest=digest)
     assert (await service.enable("dev.ouro.echo")).status == "active"
     with runtime.snapshot() as before:
         previous_generation_id = before.generations[0].generation_id
@@ -3225,7 +3163,6 @@ def create_plugin(context): return Plugin(context)
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.trust_code("dev.ouro.configuration")
     await service.configure("dev.ouro.configuration", {"fail": False})
     assert (await service.enable("dev.ouro.configuration")).status == "active"
     with runtime.snapshot() as before:
@@ -3283,8 +3220,6 @@ def create_plugin(context): return Plugin()
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.tool_identity")
-    service.trust_code("dev.ouro.tool_identity")
 
     assert (await service.enable("dev.ouro.tool_identity")).status == "failed"
     assert any(
@@ -3334,8 +3269,6 @@ def create_plugin(context): return Plugin()
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.tool_permission")
-    service.trust_code("dev.ouro.tool_permission")
 
     assert (await service.enable("dev.ouro.tool_permission")).status == "failed"
     assert any(
@@ -3381,8 +3314,6 @@ def create_plugin(context): return Plugin()
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.tool_description")
-    service.trust_code("dev.ouro.tool_description")
 
     assert (await service.enable("dev.ouro.tool_description")).status == "failed"
     assert any(
@@ -3617,7 +3548,6 @@ def create_plugin(context): return Plugin(context)
     runtime, *_ = _runtime(home)
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.trust_code("dev.ouro.echo")
     expected = runtime.store.read_state()
 
     assert (await service.enable("dev.ouro.echo")).status == "failed"
@@ -3764,8 +3694,6 @@ def create_plugin(context): return Plugin(context)
     runtime, *_ = _runtime(home)
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    service.authorize("dev.ouro.service_handover")
-    service.trust_code("dev.ouro.service_handover")
     await service.configure("dev.ouro.service_handover", {"mode": "old"})
     assert (await service.enable("dev.ouro.service_handover")).status == "active"
     await service.configure("dev.ouro.service_handover", {"mode": "new"})

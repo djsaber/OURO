@@ -24,7 +24,7 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 - 标准 `SKILL.md` 发现、提示词注入、校验、安装、更新、启停和移除。
 - 官方 Python SDK 驱动的 MCP 客户端：stdio、Streamable HTTP、legacy SSE、握手、工具发现/调用、
   超时取消、健康检查、重连、凭据注入、隔离诊断和完整关闭。
-- 插件管理闭环：严格 manifest、local/Git/archive 安装、不可变 digest store、独立代码信任与能力授权、
+- 插件管理闭环：严格 manifest、local/Git/archive 安装、不可变 digest store、显式启用与版本选择、
   declarative / Python in-process / stdio worker runtime、原子 owner contribution、Run generation snapshot、
   候选 digest 并排安装/回滚、插件 Skills/MCP、依赖解析、兼容报告、类型化 application facade 与 CLI；插件还可
   通过 durable continuation policy 和携带显式 role/scaffold/provenance 的输入实现跨 Run 的目标模式，并用
@@ -103,20 +103,15 @@ Session 后端默认是 `files`，也可通过 `OURO_SESSION_BACKEND=sqlite` 设
 
 ## 插件
 
-原生插件使用 `.ouro-plugin/plugin.json`。插件是系统级扩展，只分 builtin 与 user；安装、state、grant、CLI 和 DTO
-均不定义 workspace/project scope。安装只做静态校验和不可变发布，
-不 import entrypoint、启动 worker 或 MCP；启用前根据 Manifest 事实分别检查代码信任、能力授权与配置。完成信任和
-能力授权后，插件工具权限不按来源降级；manifest 声明属于 contribution 授权指纹的一部分。
-插件只声明 `runtime`、`permissions` 与 `contributes`，是否需要以及是否已满足授权由 Host 统一投影为
-`not_required`、`missing` 或 `granted`；TUI/其他前端不自行推导规则。缺少 required grant 时 runtime 不会加载插件代码
-或发布贡献。
+原生插件使用 `.ouro-plugin/plugin.json`。插件是系统级扩展，只分 builtin 与 user；安装、state、CLI 和 DTO
+均不定义 workspace/project scope。安装只做静态校验和不可变发布，不 import entrypoint、启动 worker 或 MCP。
+用户通过 `enable` 显式接受并运行当前 selected digest；`update` 只并排安装候选，只有显式 `select`、`reload` 或
+`rollback` 才切换版本。激活前 Host 重新校验不可变包内容、配置、依赖和 Manifest 契约。
 
 ```bash
 uv run ouro plugin scaffold ./my-plugin --plugin-id dev.example.plugin --name "Example plugin"
 uv run ouro plugin validate ./my-plugin --home ./.ouro-dev
 uv run ouro plugin install ./my-plugin --home ./.ouro-dev
-uv run ouro plugin authorize dev.example.plugin --home ./.ouro-dev
-uv run ouro plugin trust-code dev.example.plugin --home ./.ouro-dev
 uv run ouro plugin enable dev.example.plugin --home ./.ouro-dev
 
 uv run ouro plugin list --home ./.ouro-dev
@@ -125,20 +120,18 @@ uv run ouro plugin commands --home ./.ouro-dev
 uv run ouro plugin run-command dev.example.plugin:command "argument" --home ./.ouro-dev
 
 uv run ouro plugin update dev.example.plugin ./new-version --home ./.ouro-dev
-uv run ouro plugin authorize dev.example.plugin --digest <candidate_digest> --home ./.ouro-dev
-uv run ouro plugin trust-code dev.example.plugin --digest <candidate_digest> --home ./.ouro-dev
 uv run ouro plugin select dev.example.plugin <candidate_digest> --home ./.ouro-dev
-uv run ouro plugin reload dev.example.plugin ./my-plugin --authorize --trust-code --home ./.ouro-dev
+uv run ouro plugin reload dev.example.plugin ./my-plugin --home ./.ouro-dev
 uv run ouro plugin rollback dev.example.plugin <package_digest> --home ./.ouro-dev
 uv run ouro plugin disable dev.example.plugin --home ./.ouro-dev
 uv run ouro plugin remove dev.example.plugin --home ./.ouro-dev
 ```
 
-`python-inprocess` 是用户明确授予的同进程完整代码信任；`worker` 提供进程和协议隔离，但不等于 OS 安全
-沙箱。声明 `process.spawn` 的 declarative package（例如 stdio MCP）同样需要 exact-digest code trust。
-`update` 只并排安装候选 digest，不隐式切换运行版本；候选版本须单独授权、配置并通过 `select` 发布。
+`python-inprocess` 是与 OURO 同进程的 full-trust 代码；`worker` 提供进程和协议隔离，但不等于 OS 安全沙箱。
+运行这些代码的信任动作就是对精确 selected digest 的显式 `enable`、`select`、`reload` 或 `rollback`，不再维护
+重复的 capability/code-trust grant。`update` 只并排安装候选 digest，不隐式切换运行版本。
 插件配置中的凭据只接受 manifest `credentials.use` 声明槽位对应的 `env:VARIABLE` 引用；worker 只得到临时
-环境变量名，秘密值不进入初始化 JSON。`reload` 先并排安装本地候选，只有候选就绪才原子切换；缺少显式授权时旧
+环境变量名，秘密值不进入初始化 JSON。`reload` 先并排安装本地候选，只有候选就绪才原子切换；候选失败时旧
 Catalog 保持不变。Git source 在 checkout 前按 tree 校验路径、文件数和大小，subdirectory 使用 sparse checkout，
 不会先完整检出再校验。Claude/Codex/Pi/OpenCode 等社区包先通过 `plugin import-report` 输出 `supported`、
 `converted`、`ignored`、`incompatible` 逐项结论和明确 OURO target，不透明执行未知社区 Hook 或安装脚本。
@@ -147,7 +140,7 @@ continuation、Prompt Policy 与 tool policy 在该 Run 内只读取同一 Catal
 pointer；Host registry 不参与 generation 发布，也不会形成全局 Run barrier。已经持有 lease 的 Run 与后续 Run
 可以同时使用不同 generation。
 configure/select/restart 会先完整构建受影响依赖闭包与候选 Catalog，再以 expected-state 比较提交并切换 pointer；
-失败不改变 current selection、active configuration revision 或旧 generation。disable/revoke 会关闭 generation gate，
+失败不改变 current selection、active configuration revision 或旧 generation。disable 会关闭 generation gate，
 因此已发放的 Catalog 保留结构但不能发起新的插件回调。进程内 Run 由 Catalog lease 保留，生命周期命令无需等待
 无关 Run；
 跨进程恢复按稳定 `execution_contract_hash` 匹配 package、配置修订、依赖锁、API/protocol 和 contribution contract，

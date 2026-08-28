@@ -22,6 +22,7 @@ from ouro import __version__
 from ouro.application.agent_models import AgentToolOptionView
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import SkillView
+from ouro.application.event_models import project_runtime_event
 from ouro.application.models import AvailableModel
 from ouro.application.plugin_models import (
     PluginCommandArgumentView,
@@ -78,7 +79,7 @@ from ouro.tools import (
     ToolResult,
     builtin_tools,
 )
-from ouro.tui.app import OuroTuiApp, _active_stream_tail, _session_choices
+from ouro.tui.app import OuroTuiApp, _active_stream_tail, _event_record, _session_choices
 from ouro.tui.commands import TUI_COMMANDS, TuiCommand, TuiCommandArgument
 from ouro.tui.configuration_screens import (
     AgentDefinitionConfigurationScreen,
@@ -3549,6 +3550,46 @@ async def test_compaction_completion_updates_context_and_transcript_without_next
             f"{TUI_DESIGN.section_separator}550 tokens"
             f"{TUI_DESIGN.section_separator}1m 05.4s"
         ) in history.rendered_text
+        assert app.query_one("#context-detail", Static).render().plain.startswith("250 ")
+
+
+@pytest.mark.asyncio
+async def test_live_host_event_updates_context_without_reloading(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    metrics = ContextMetrics(
+        estimated_input_tokens=250,
+        estimated_fixed_tokens=100,
+        context_window_tokens=1_000,
+        reserved_output_tokens=100,
+        input_budget_tokens=900,
+        estimated_remaining_tokens=650,
+        estimated_utilization_ratio=250 / 900,
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        session_id = "ses_live_context"
+        app._projection = TuiSessionProjection(session_id)
+        started = EventRecord(
+            session_id=session_id,
+            run_id="run_live_context",
+            turn_id="turn_live_context",
+            event_type="model_request_started",
+            sequence=1,
+            payload={
+                "context_id": "ctx_live",
+                "provider": "test",
+                "endpoint": "primary",
+                "model": "test-model",
+                "round": 1,
+                "turn_id": "turn_live_context",
+                "context_metrics": metrics.model_dump(mode="json"),
+            },
+        )
+
+        await app._apply_runtime_events((_event_record(project_runtime_event(started)),))
+        await pilot.pause()
+
         assert app.query_one("#context-detail", Static).render().plain.startswith("250 ")
 
 
@@ -7506,7 +7547,6 @@ async def test_skill_menu_loads_live_plugin_skill_as_disabled_choice(tmp_path: P
         installed = await app._controller.install_plugin(
             TuiPluginInstallConfiguration(source=str(source))
         )
-        await app._controller.authorize_plugin(installed.plugin_id)
         assert (await app._controller.enable_plugin(installed.plugin_id)).status == "active"
 
         await pilot.press("ctrl+p")

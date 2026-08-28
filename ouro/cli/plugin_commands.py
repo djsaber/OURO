@@ -62,36 +62,6 @@ def _run_plugin_command(args) -> int:
             preview=args.preview,
         )
         return _emit(install_result, json_mode=args.json)
-    if command == "authorize":
-        return _emit(
-            service.authorize(
-                args.plugin_id,
-                package_digest=args.digest,
-                request_id=args.request_id,
-                preview=args.preview,
-            ),
-            json_mode=args.json,
-        )
-    if command == "trust-code":
-        return _emit(
-            service.trust_code(
-                args.plugin_id,
-                package_digest=args.digest,
-                request_id=args.request_id,
-                preview=args.preview,
-            ),
-            json_mode=args.json,
-        )
-    if command == "revoke":
-        return asyncio.run(
-            _revoke_command(
-                home,
-                args.plugin_id,
-                code_trust=args.code_trust,
-                request_id=args.request_id,
-                json_mode=args.json,
-            )
-        )
     if command == "configure":
         values = _json_object(args.values, option="--values")
         credentials = (
@@ -143,8 +113,6 @@ def _run_plugin_command(args) -> int:
                 args.source,
                 ref=args.ref,
                 subdirectory=args.subdirectory,
-                authorize=args.authorize,
-                trust_code=args.trust_code,
                 request_id=args.request_id,
                 json_mode=args.json,
             )
@@ -207,23 +175,6 @@ async def _plugin_contributed_command(home: Path, args) -> int:
         return _emit_many(values, json_mode=args.json)
     assert result is not None
     return _emit(result, json_mode=args.json)
-
-
-async def _revoke_command(
-    home: Path,
-    plugin_id: str,
-    *,
-    code_trust: bool,
-    request_id: str | None,
-    json_mode: bool,
-) -> int:
-    async with _plugin_session(home, quiet=json_mode) as service:
-        result = await service.revoke(
-            plugin_id,
-            code_trust=code_trust,
-            request_id=request_id,
-        )
-    return _emit(result, json_mode=json_mode)
 
 
 async def _configure_command(
@@ -306,8 +257,6 @@ async def _reload_command(
     *,
     ref: str | None,
     subdirectory: str | None,
-    authorize: bool,
-    trust_code: bool,
     request_id: str | None,
     json_mode: bool,
 ) -> int:
@@ -317,8 +266,6 @@ async def _reload_command(
             source,
             ref=ref,
             subdirectory=subdirectory,
-            authorize=authorize,
-            trust_code=trust_code,
             request_id=request_id,
         )
     return _emit(result, json_mode=json_mode)

@@ -161,8 +161,6 @@ _PLUGIN_ISSUE_STATUSES = frozenset(
         "invalid",
         "incompatible",
         "needs_configuration",
-        "needs_code_trust",
-        "needs_authorization",
         "degraded",
         "blocked",
         "failed",
@@ -1606,29 +1604,6 @@ class TuiController:
         if application is None or application.plugins is None:
             raise RuntimeError("plugin management is unavailable")
         return await asyncio.to_thread(application.plugins.check, plugin_id)
-
-    async def authorize_plugin(self, plugin_id: str) -> PluginActionResult:
-        application = self._application
-        if application is None or application.plugins is None:
-            raise RuntimeError("plugin management is unavailable")
-        return await asyncio.to_thread(application.plugins.authorize, plugin_id)
-
-    async def trust_plugin_code(self, plugin_id: str) -> PluginActionResult:
-        application = self._application
-        if application is None or application.plugins is None:
-            raise RuntimeError("plugin management is unavailable")
-        return await asyncio.to_thread(application.plugins.trust_code, plugin_id)
-
-    async def revoke_plugin_grants(
-        self,
-        plugin_id: str,
-        *,
-        code_trust: bool,
-    ) -> PluginActionResult:
-        application = self._application
-        if application is None or application.plugins is None:
-            raise RuntimeError("plugin management is unavailable")
-        return await application.plugins.revoke(plugin_id, code_trust=code_trust)
 
     async def select_plugin_install(
         self,

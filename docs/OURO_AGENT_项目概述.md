@@ -138,12 +138,13 @@ legacy SSE 数据通道由 OURO 适配为 SDK session stream，使读取和 POST
 投影一并释放。单个 server 启动失败不会阻止不依赖它的普通 Run。`mcp list/show/set/remove/check` 提供
 原子配置管理、脱敏查询和一次性连接诊断，用户不需要直接编辑共享 JSON 配置。
 
-插件系统包括严格 manifest、local/Git/archive 安装、不可变 digest store、代码信任与 capability
-grant、declarative/Python in-process/stdio worker runtime、不可变 owner Catalog、generation lease、依赖解析、
+插件系统包括严格 manifest、local/Git/archive 安装、不可变 digest store、显式 digest-bound 启用与选版、
+declarative/Python in-process/stdio worker runtime、不可变 owner Catalog、generation lease、依赖解析、
 更新/回滚、Skills/MCP/background service、最小 scaffold/开发 reload、四类兼容报告和五类可运行示例。插件是 OURO
 系统级模块，正式来源只分 builtin 与 user；
-workspace/project 只影响一次执行的上下文，不存在项目插件或 workspace plugin scope。in-process 是用户明确授予的
-同进程代码信任；worker 提供进程与协议隔离，但不是 OS sandbox。
+workspace/project 只影响一次执行的上下文，不存在项目插件或 workspace plugin scope。in-process 是 full-trust
+同进程代码；worker 提供进程与协议隔离，但不是 OS sandbox。安装只保存 inert bytes，enable/select/reload/rollback
+才显式接受并运行目标 digest。
 
 插件可贡献 Host-neutral command 和 Run continuation policy。command 经 `sessions.write` 与 `background.run`
 授权后可请求会话输入；continuation policy 在每个 Agent Run 终态后返回继续、完成、暂停或失败。application
@@ -156,7 +157,7 @@ steer、暂停或中止输入。
 受保护路径和合规门禁。策略只能提升审批或拒绝，不能批准、放宽 Host policy 或修改调用参数，失败时默认拒绝；
 用户在审批中修改参数后会以最终参数重新评估。Runtime 为每个 Run 固定不可变 Extension Catalog，贯穿模型工具列表、
 执行、Observer、上下文、压缩、continuation 与 policy；current pointer 切换不改变已经冻结的 Run，插件 contribution
-归属于 Catalog，不写入 Host 全局 registry。每代 callback 经过 process-local gate，disable/revoke 后不能开始新调用。
+归属于 Catalog，不写入 Host 全局 registry。每代 callback 经过 process-local gate，disable 后不能开始新调用。
 enable/configure/select/restart 共享候选 activation 事务：失败不提交 state/Catalog，依赖变化重建传递 closure；候选
 数据写入隔离暂存，后台服务按停旧启新顺序串行转交。依赖 observed state、封闭 contribution adapter 清单、严格
 Worker 协议、代际私有 in-process module、统一 Run-local Skill Catalog 与 Plugin MCP 生命周期属于同一 generation

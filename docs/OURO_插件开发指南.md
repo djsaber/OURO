@@ -11,8 +11,8 @@ OURO 插件是系统级扩展模块，只有两类：
 - `user` 安装到一个 `OURO_HOME`，不随项目或 workspace 自动激活。
 
 Builtin 不是“启动时自动安装的 user plugin”，也不是绕过插件生命周期的 Host baseline。启用后它与 user plugin 使用
-相同的 Generation、gate、Catalog lease 和 durable execution contract，只省略 source materialization、安装、能力授权和
-代码信任。`builtin | user` 不能由 Manifest 声明；它由 installer 或 composition root 根据真实供应方式确定。
+相同的 Generation、gate、Catalog lease 和 durable execution contract，只省略 source materialization 与安装。
+`builtin | user` 不能由 Manifest 声明；它由 installer 或 composition root 根据真实供应方式确定。
 
 workspace 可以作为一次 Tool/Command 调用的 request context。项目级说明应使用 workspace Skill 或提示词，而不是
 创建项目插件。
@@ -21,8 +21,8 @@ workspace 可以作为一次 Tool/Command 调用的 request context。项目级�
 
 | Runtime | 用途 | 信任与资源边界 |
 |---|---|---|
-| `declarative` | Agent Skill、MCP descriptor 等声明式资源 | 不 import 插件 entrypoint；声明 `process.spawn` 时仍需 exact-digest code trust |
-| `python-inprocess` | 深度 Python 扩展、低延迟回调、Host request context | 与 OURO 同进程、full-trust、exact-digest code trust |
+| `declarative` | Agent Skill、MCP descriptor 等声明式资源 | 不 import 插件 entrypoint；启用接受 selected digest |
+| `python-inprocess` | 深度 Python 扩展、低延迟回调、Host request context | 与 OURO 同进程、full-trust；启用接受 selected digest |
 | `worker` | 独立进程、多语言或进程故障隔离 | 严格 stdio JSON-RPC 协议；不是 OS sandbox |
 
 不要为了简单 Skill 建 worker，也不要把需要独立第三方依赖环境的代码塞进 OURO 主 Python 环境。
@@ -32,7 +32,7 @@ composition root 的 builtin registry 显式装配。插件机制层不得 impor
 `RuntimeService`、`SessionStore` 或可变 registry。Builtin 使用 in-process、空配置形态，并只承载产品内建能力。
 
 用户可用普通管理入口查询、启用、关闭、重启和检查 builtin，例如
-`ouro plugin enable dev.ouro.plan`。Builtin 不经过 install/authorize/trust-code/configure/update/remove；这些操作会
+`ouro plugin enable dev.ouro.plan`。Builtin 不经过 install/configure/update/remove；这些操作会
 明确返回 operation-not-allowed。关闭后可以显式清理其私有 data，但不能删除随 OURO 分发的 definition/code。
 
 ## 2. 最小本地闭环
@@ -47,39 +47,27 @@ uv run ouro plugin scaffold ./my-plugin \
 ```
 
 scaffold 原子创建新目录，目标已存在时拒绝覆盖，并在发布目录前运行完整 package validation。随后显式完成安装与
-授权：
+启用：
 
 ```bash
 uv run ouro plugin validate ./my-plugin --json
 uv run ouro plugin install ./my-plugin --home ./.ouro-dev --json
-uv run ouro plugin authorize dev.example.my_plugin --home ./.ouro-dev --json
-uv run ouro plugin trust-code dev.example.my_plugin --home ./.ouro-dev --json
 uv run ouro plugin enable dev.example.my_plugin --home ./.ouro-dev --json
 uv run ouro plugin run-command dev.example.my_plugin:hello world --home ./.ouro-dev
 ```
 
-安装只保存不可变 bytes，不 import、不执行、不给权限也不启用。`authorize` 接受 manifest 声明的 Host capability；
-`trust-code` 接受 executable package 的 exact digest。可执行 runtime 与声明 `process.spawn` 的 package 都属于该边界；
-后者包括可启动包内脚本的 declarative stdio MCP。两者不是同一个授权。
-
-插件作者只声明 `runtime`、`permissions` 和 `contributes` 等事实，不声明 `requires_authorization` 或
-`requires_code_trust`。OURO Host 从这些事实推导两类信任的 `not_required | missing | granted` 状态，并在激活前
-真实校验 grant；缺失时不会 import entrypoint、启动 worker/MCP 或发布 contribution。前端直接消费 application DTO
-中的信任状态，不按 runtime 名称重复推导安全规则。
+安装只保存不可变 bytes，不 import、不执行也不启用。`enable` 显式接受并运行当前 selected digest；`update` 只并排
+安装候选，`select`、`reload` 和 `rollback` 才显式切换版本。激活前 Host 重新校验包完整性、配置、依赖与 Manifest
+契约。插件作者仍只声明 `runtime`、`permissions` 和 `contributes` 等可验证事实。
 
 本地修改后可使用开发 reload：
 
 ```bash
-uv run ouro plugin reload dev.example.my_plugin ./my-plugin \
-  --authorize \
-  --trust-code \
-  --home ./.ouro-dev \
-  --json
+uv run ouro plugin reload dev.example.my_plugin ./my-plugin --home ./.ouro-dev --json
 ```
 
-reload 先静态校验并并排安装新 digest；只有候选配置、能力授权和代码信任完整时才原子 select。省略显式授权选项时，
-active 插件的候选保持并排安装并返回 `needs_authorization` 或 `needs_code_trust`，旧 Catalog 继续可用。相同 digest 的
-reload 执行显式 restart，不制造新 package。
+reload 先静态校验并并排安装新 digest；只有候选配置、依赖和包完整性都有效时才原子 select，失败时旧 Catalog
+继续可用。相同 digest 的 reload 执行显式 restart，不制造新 package。
 
 ## 3. Manifest 与 package
 
@@ -292,7 +280,7 @@ settlement plan，再幂等执行 release/queue/checkpoint resolve。owner polic
 一个 Run 只读取一个不可变 `ExtensionCatalogLease`。插件更新先完整构建候选 generation 与 Catalog，再切换 current
 pointer；旧 Run 继续持有旧 Catalog。Background Service 是每 plugin 的 activation-singleton，不属于 Run Catalog。
 
-每个 generation 拥有 instance、worker、MCP、task、module、gate 和 contribution。disable/revoke 关闭 gate 后不能
+每个 generation 拥有 instance、worker、MCP、task、module、gate 和 contribution。disable 关闭 gate 后不能
 开始新的插件回调；lease 释放后 owner 才回收。
 
 Run、Tool/Approval 和 Continuation 持久化稳定 `execution_contract_hash`，覆盖 package、immutable configuration
@@ -307,8 +295,8 @@ revision、传递 dependency lock、Plugin API/worker protocol 和 contribution 
 
 OURO 保留个人智能体所需的基础边界：
 
-- executable user plugin 的 exact-digest code trust；
-- 封闭 permission id 与 capability authorization；
+- 安装默认禁用，显式 enable/select/reload/rollback 只接受目标 immutable digest；
+- 封闭 permission id 与真实 Host 能力检查；
 - credential 只保存 `env:VARIABLE` binding reference，秘密不进入 manifest/state/worker initialize JSON；
 - user plugin Tool 始终经过 Host schema、审批、Tool Policy 和 `ToolExecutor`；
 - package、workspace path 与 owner 生命周期校验。
@@ -374,5 +362,5 @@ uv run ouro plugin import-report ./community-package --json
   prompt fragment、运行环境边界和默认启用 builtin 的组合方式；
 - [`worker-tool`](../examples/plugins/worker-tool)：stdio worker Tool。
 
-五个 `examples/plugins` package 由测试执行真实 validate/authorize/enable 生命周期；内置 Plan 则由 builtin
+五个 `examples/plugins` package 由测试执行真实 validate/install/enable 生命周期；内置 Plan 则由 builtin
 enable/disable、Generation、工具恢复与跨进程 Run 集成测试覆盖，避免文档示例与实现漂移。

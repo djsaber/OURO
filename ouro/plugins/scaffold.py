@@ -132,14 +132,12 @@ def create_plugin(context) -> Plugin:
 def _readme_template(plugin_id: str) -> str:
     return f"""# {plugin_id}
 
-This directory is an OURO user plugin. `python-inprocess` plugins are trusted, full-process
-extensions; install and execution remain separate.
+This directory is an OURO user plugin. `python-inprocess` plugins are full-process extensions;
+installing stores inert bytes, while enabling explicitly accepts and executes the selected digest.
 
 ```bash
 uv run ouro plugin validate . --json
 uv run ouro plugin install . --home ./.ouro-dev --json
-uv run ouro plugin authorize {plugin_id} --home ./.ouro-dev --json
-uv run ouro plugin trust-code {plugin_id} --home ./.ouro-dev --json
 uv run ouro plugin enable {plugin_id} --home ./.ouro-dev --json
 uv run ouro plugin run-command {plugin_id}:hello world --home ./.ouro-dev
 ```

@@ -131,12 +131,6 @@ class PluginInstaller:
                     record.activation.active_configuration_revision_id = revision.revision_id
                 else:
                     record.activation.active_configuration_revision_id = None
-                record.activation.capability_grants = []
-            record.activation.code_trust_grants = [
-                grant
-                for grant in record.activation.code_trust_grants
-                if grant.package_digest != digest
-            ]
             if not record.installs:
                 state.plugins.pop(plugin_id, None)
             return state

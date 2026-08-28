@@ -11,28 +11,24 @@ EXAMPLES = Path(__file__).parents[2] / "examples" / "plugins"
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("directory", "plugin_id", "executable"),
+    ("directory", "plugin_id"),
     [
-        ("declarative-skill", "dev.ouro.examples.declarative_skill", False),
-        ("inprocess-command", "dev.ouro.examples.inprocess_command", True),
-        ("inprocess-observer", "dev.ouro.examples.observer", True),
-        ("inprocess-prompt-policy", "dev.ouro.examples.prompt_policy", True),
-        ("worker-tool", "dev.ouro.examples.worker_tool", True),
+        ("declarative-skill", "dev.ouro.examples.declarative_skill"),
+        ("inprocess-command", "dev.ouro.examples.inprocess_command"),
+        ("inprocess-observer", "dev.ouro.examples.observer"),
+        ("inprocess-prompt-policy", "dev.ouro.examples.prompt_policy"),
+        ("worker-tool", "dev.ouro.examples.worker_tool"),
     ],
 )
 async def test_documented_plugin_examples_activate(
     tmp_path,
     directory: str,
     plugin_id: str,
-    executable: bool,
 ) -> None:
     async with open_local_plugins(tmp_path / "home") as service:
         validation = service.validate(EXAMPLES / directory)
         assert validation.valid is True
         service.install(EXAMPLES / directory)
-        service.authorize(plugin_id)
-        if executable:
-            service.trust_code(plugin_id)
 
         result = await service.enable(plugin_id)
 

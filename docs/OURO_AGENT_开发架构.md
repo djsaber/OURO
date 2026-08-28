@@ -648,9 +648,9 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   mailbox、timeout 和 scope isolation 相互独立。
 - 插件只能通过 owner-aware candidate Catalog 贡献工具、限制性 tool policy、Prompt Policy、Observer、Host-neutral command、
   上下文 provider、turn policy、压缩策略、Skills、MCP、Run continuation policy 或受监督后台服务。manifest 的
-  `official` 自报不构成信任；有效 provenance 由安装来源传入，capability/permission 必须覆盖实际贡献，
-  未授权插件保持 `needs_authorization`。用户信任并授权插件后，其工具权限与内置工具使用相同语义，不按来源
-  降级；manifest 工具权限是授权契约，运行时 SDK 贡献不得偏离，相关字段变化会改变 contribution fingerprint。
+  `official` 自报不构成信任；有效 provenance 由安装来源传入，capability/permission 必须覆盖实际贡献。
+  安装默认禁用，enable/select/reload/rollback 显式接受目标 digest；启用后插件工具权限与内置工具使用相同语义，
+  不按来源降级，运行时 SDK 贡献不得偏离 Manifest 契约。
 - 插件命令使用 `<plugin_id>:<name>` 稳定 identity 和类型化 request/result；CLI/TUI 可映射为 slash command，
   Desktop 可映射为 action，但 core 不定义 UI extension DSL。当前 Interactive 中 builtin 优先，canonical
   `/<plugin_id>:<name>` 始终可用，唯一 local name 才获得 `/<name>` 短别名。Manifest 的
@@ -683,19 +683,19 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   之前 fail-closed 评估；user plugin 必须声明 `sessions.prompt.inspect`。允许后，直接或排队的 prospective Run 都固定
   同一 Catalog execution contract；拒绝路径不记录提示正文。
 - 插件是 OURO 系统级扩展模块，来源只分 `builtin` 与 `user`。workspace/project 只作为一次请求的执行上下文，
-  不提供项目插件、scope overlay 或按项目安装的插件运行时；plugin state、grant、provenance、CLI 与 DTO 不携带
+  不提供项目插件、scope overlay 或按项目安装的插件运行时；plugin state、provenance、CLI 与 DTO 不携带
   activation scope。
 - Builtin 由 application composition root 的显式 definition registry 装配，不扫描磁盘、不写入 user immutable
   store，也不伪造 install/provenance。definition registry 是 builtin identity、默认启停、依赖 contract 和公开名称
   保留的唯一事实来源；user installer、dependency resolver、application services 与 runtime 都消费该 registry 的派生视图。
-- Builtin 与 user 的差异止于供应、授权和管理操作。启用后两者进入同一个 candidate reconciliation，拥有正常
+- Builtin 与 user 的差异止于供应和管理操作。启用后两者进入同一个 candidate reconciliation，拥有正常
   Generation、gate、owner、Catalog projection 和 durable execution contract；可关闭 builtin 不能放入 Host baseline，
   也不新增 `builtin` runtime kind 或第二套插件 runtime。
 - `PluginPackageStore.state.json` 保留 user install/activation，并另存稀疏 builtin enablement override；builtin code 随
   OURO distribution 发布，私有 data 继续使用 `OURO_HOME/plugins/data/<plugin-id>/`。没有 override 时使用 definition 的
   product default，显式用户选择跨重启保留。需要交给模型内置文件工具编辑的用户制品使用独立的
   `OURO_HOME/artifacts/<plugin-id>/`，不混入插件私有 data 或 canonical Session 存储。
-- 插件系统将 package、install/provenance、authorization 和 runtime generation 分层，并提供完整管理与运行闭环。
+- 插件系统将 package、install/provenance、activation 和 runtime generation 分层，并提供完整管理与运行闭环。
   [插件系统规格](../dev/specs/plugin-system.md)定义当前权威契约；同进程插件为 full trust，worker
   提供进程与协议边界，但不宣称 OS 沙箱。
 - `PluginPackageStore` 分离 immutable code、mutable state 与 plugin data；installer 从真实 local/Git/archive
@@ -705,8 +705,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   文件系统 I/O 错误保持为类型化 persistence failure，不能触发隔离。`LocalApplication.startup_report` 投影同步插件、
   Runtime 和 Agent 恢复诊断；进程级 MCP 因后台启动而通过 Manager 的实时 record/diagnostics 独立投影。各 Host 的
   MCP 状态查询必须读取该实时投影，不得把仍在连接误报为失败。
-- code trust 精确绑定 digest，capability grant 绑定 permission/contribution fingerprint；撤权先关闭 generation
-  gate 并发布不含受影响 generation closure 的新 Catalog，再异步 drain owner。配置使用包含 credential binding
+- enable/select/reload/rollback 只接受显式目标 digest；disable 先关闭 generation gate 并发布不含受影响 generation
+  closure 的新 Catalog，再异步 drain owner。配置使用包含 credential binding
   reference 的内容寻址 immutable revision，selected digest 通过 active revision id 引用；配置/选版与候选 Catalog
   在同一成功边界提交；失败时 selection、configuration revision 和 generation pointer 保持不变。
 - 启用依赖图只使用显式选择的已安装 digest；digest/configuration 改变会按拓扑重建传递 desired dependant closure，
@@ -752,8 +752,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   Service，lease 释放后按 owner 回收。缺包、禁用或重建 contract 不一致时恢复显式失败；durable reference 释放前
   application service 阻止移除旧 digest。
 - `PluginService.scaffold/reload` 是 Host-neutral 开发用例：scaffold 原子发布经验证的最小 user package；reload 先
-  并排安装 immutable candidate，只有配置、能力授权与 exact-digest code trust 完整时才复用 candidate activation
-  切换 current。CLI 只负责参数与 DTO 映射。
+  并排安装 immutable candidate，只有配置、依赖和包完整性都有效时才复用 candidate activation 切换 current。
+  CLI 只负责参数与 DTO 映射。
 - Git source 在 checkout 前以 tree metadata 校验 portable path、文件数和字节上限；shallow/blob-filtered fetch、
   subdirectory sparse checkout 和禁用 LFS smudge 共同避免先物化范围外内容。所有 source 最终仍进入统一 package
   validation。社区 compatibility inspection 只读资源并输出四类 outcome 与显式 OURO target，不执行未知代码。
