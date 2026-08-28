@@ -541,7 +541,7 @@ _OURO_TUI_CSS = """
     .reasoning-label {
         height: 1;
         color: $ouro-text-secondary;
-        text-style: bold;
+        text-style: none;
     }
 
     /* The reasoning body carries its │ border inside its strips, matching
@@ -1155,7 +1155,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._host_closing or not self.query(StatusLine):
             return
         if self._visible_read_only:
-            self.query_one(StatusLine).set_session_controls(("read-only subagent",))
+            status_line = self.query_one(StatusLine)
+            status_line.set_subagent(self._visible_agent)
+            status_line.set_session_controls(("Subagent",))
             return
         try:
             statuses = await self._controller.session_control_statuses()
@@ -1163,7 +1165,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         if not self._surface_available():
             return
-        self.query_one(StatusLine).set_session_controls(tuple(status.label for status in statuses))
+        status_line = self.query_one(StatusLine)
+        status_line.set_subagent(None)
+        status_line.set_session_controls(tuple(status.label for status in statuses))
 
     def _publish_runtime_event(self, event: EventRecord) -> None:
         """Accept fallback sink events not already owned by the visible subscription."""
@@ -1292,6 +1296,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 async with self._runtime_event_apply_lock:
                     if self._agent_tree_subscription is subscription and self._surface_available():
                         self.query_one(ConversationView).sync_agents(nodes)
+                        visible_agent = self._visible_agent
+                        if visible_agent is not None:
+                            updated_agent = self._agent_nodes.get(visible_agent.delegation_id)
+                            if updated_agent is not None:
+                                self._visible_agent = updated_agent
+                                self.query_one(StatusLine).set_subagent(updated_agent)
         except (StopAsyncIteration, asyncio.CancelledError):
             return
         finally:
@@ -2762,6 +2772,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     ) -> None:
         session = loaded.detail.session
         agents = self._replace_agent_tree(session.agent_root_session_id)
+        if agent is not None:
+            agent = self._agent_nodes.get(agent.delegation_id, agent)
         async with self._runtime_event_apply_lock:
             conversation = self.query_one(ConversationView)
             visible_session_id = self._visible_session_id()
@@ -2801,22 +2813,20 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._restore_projection(loaded, projection)
             conversation.sync_agents(agents)
             agent_name = None if agent is None else agent.nickname or agent.agent_name
-            self._active_title = (
-                f"{agent_name}{TUI_DESIGN.inline_separator}read-only"
-                if agent_name is not None
-                else session.title
-            )
+            self._active_title = agent_name if agent_name is not None else session.title
             self._active_workspace = session.workspace or self._system_status.workspace
             if session.current_model is not None:
                 self._active_model = _model_endpoint_name(session.current_model)
             self.query_one(BrandHeader).set_context(
                 session_title=self._active_title,
+                session_detail=agent.task_description if agent is not None else None,
                 workspace=self._active_workspace,
             )
             status_line = self.query_one(StatusLine)
             status_line.set_model(self._active_model)
+            status_line.set_subagent(agent if read_only else None)
             status_line.set_session_controls(
-                ("read-only subagent",)
+                ("Subagent",)
                 if read_only
                 else tuple(status.label for status in loaded.session_controls)
             )

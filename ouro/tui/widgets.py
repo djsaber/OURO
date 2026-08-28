@@ -48,6 +48,7 @@ from ouro.tui.conversation_history import (
     ReasoningLines,
     ToolNavigationRequested,
     TranscriptEntry,
+    _reasoning_label_text,
     split_markdown_blocks,
 )
 from ouro.tui.question_forms import QuestionField, QuestionForm
@@ -56,7 +57,7 @@ from ouro.tui.state import (
     PendingInteraction,
     RunPresentation,
     format_compact_count,
-    format_reasoning_label,
+    format_duration,
 )
 from ouro.tui.text_inputs import TuiTextArea
 from ouro.tui.theme import (
@@ -117,27 +118,18 @@ _ACTIVITY_LABELS = {
     "paused": "Paused",
     "recoverable": "Recovery required",
 }
-_TOOL_STATUS_LABELS = {
-    "planned": "queued",
-    "ready": "ready",
-    "awaiting_approval": "approval required",
-    "waiting_user": "waiting for input",
-    "resolving_input": "resolving input",
-    "running": "running",
-    "cancelling": "cancelling",
-    "completed": "completed",
-    "failed": "failed",
-    "rejected": "rejected",
-    "aborted": "aborted",
-    "unknown_outcome": "outcome unknown",
-    "waiting_child": "waiting for subagent",
-}
 _SUBAGENT_ACTIVITY_LABELS = {
     **_ACTIVITY_LABELS,
+    "starting": "Dispatching",
+    "queued": "Dispatching",
     "completed": "Done",
     "aborted": "Failed",
     "recoverable": "Failed",
 }
+_ACTIVE_TOOL_STATUSES = frozenset(
+    {"planned", "ready", "resolving_input", "running", "cancelling", "waiting_child"}
+)
+_FAILED_TOOL_STATUSES = frozenset({"failed", "rejected", "aborted"})
 _FAILED_SUBAGENT_STATUSES = frozenset({"failed", "aborted", "recoverable"})
 _CONTEXT_PROGRESS_WIDTH = 11
 _HEADER_MIN_GAP = 3
@@ -163,6 +155,7 @@ class BrandHeader(Static):
     ) -> None:
         super().__init__(id="brand-header")
         self._session_title = initial_context
+        self._session_detail: str | None = None
         self._workspace = initial_workspace
 
     def on_mount(self) -> None:
@@ -175,10 +168,12 @@ class BrandHeader(Static):
         self,
         *,
         session_title: str | None = None,
+        session_detail: str | None = None,
         workspace: str | None = None,
     ) -> None:
         if session_title is not None:
             self._session_title = session_title
+        self._session_detail = session_detail
         if workspace is not None:
             self._workspace = workspace
         self._render_header()
@@ -192,6 +187,7 @@ class BrandHeader(Static):
         self.update(
             _brand_header_content(
                 self._session_title,
+                self._session_detail,
                 self._workspace,
                 width=available_width,
                 accent=accent,
@@ -201,6 +197,7 @@ class BrandHeader(Static):
 
 def _brand_header_content(
     session_title: str,
+    session_detail: str | None,
     workspace: str | None,
     *,
     width: int,
@@ -210,8 +207,12 @@ def _brand_header_content(
 
     content = Text()
     content.append(f" {TUI_DESIGN.brand_mark} OURO ", style=f"bold {accent}")
+    title = Text(session_title, style=TUI_DESIGN.text_primary)
+    if session_detail:
+        title.append(TUI_DESIGN.inline_separator, style=TUI_DESIGN.separator_tone)
+        title.append(session_detail, style=TUI_DESIGN.text_lowlight)
     if width <= 0:
-        content.append(session_title, style="bold")
+        content.append_text(title)
         if workspace:
             content.append(" " * _HEADER_MIN_GAP)
             content.append(workspace, style=accent)
@@ -223,7 +224,6 @@ def _brand_header_content(
         return content
 
     if not workspace:
-        title = Text(session_title, style="bold")
         title.truncate(remaining, overflow="ellipsis")
         content.append_text(title)
         return content
@@ -231,7 +231,6 @@ def _brand_header_content(
     workspace_width = cell_len(workspace)
     title_width = remaining - workspace_width - _HEADER_MIN_GAP
     if title_width > 0:
-        title = Text(session_title, style="bold")
         title.truncate(title_width, overflow="ellipsis")
         content.append_text(title)
         content.append(" " * (width - content.cell_len - workspace_width))
@@ -260,6 +259,7 @@ class ActivityIndicator(Static):
         self._model_max_attempts: int | None = None
         self._reasoning: str | None = None
         self._reasoning_peak = False
+        self._subagent: AgentTreeNode | None = None
         self._session_control_labels: tuple[str, ...] = ()
         self._timer: Timer | None = None
 
@@ -307,6 +307,10 @@ class ActivityIndicator(Static):
         self._session_control_labels = tuple(dict.fromkeys(labels))
         self._render_indicator()
 
+    def set_subagent(self, agent: AgentTreeNode | None) -> None:
+        self._subagent = agent
+        self._render_indicator()
+
     def refresh_theme(self) -> None:
         self._render_indicator()
 
@@ -320,6 +324,8 @@ class ActivityIndicator(Static):
         ready = self._activity in {"idle", "completed"}
         mark = TUI_DESIGN.spinner_frames[self._frame] if busy else TUI_DESIGN.brand_mark
         label = _ACTIVITY_LABELS.get(self._activity, self._activity.replace("_", " ").title())
+        if self._subagent is not None and ready:
+            label = _subagent_task_status(self._subagent).title()
         if (
             self._activity == "waiting_model"
             and self._model_attempt is not None
@@ -365,6 +371,29 @@ class ActivityIndicator(Static):
 class ReasoningLabel(RangeSelectionOnly, Label):
     class ToggleRequested(Message):
         pass
+
+    def __init__(self, content: Text, *, classes: str) -> None:
+        self._content = content
+        self._hovered = False
+        super().__init__(content, classes=classes)
+
+    def set_content(self, content: Text) -> None:
+        self._content = content
+        self._render_content()
+
+    def on_enter(self, _event: events.Enter) -> None:
+        self._hovered = True
+        self._render_content()
+
+    def on_leave(self, _event: events.Leave) -> None:
+        self._hovered = False
+        self._render_content()
+
+    def _render_content(self) -> None:
+        content = self._content.copy()
+        if self._hovered:
+            content.stylize(TUI_DESIGN.text_highlight)
+        self.update(content)
 
     def on_click(self, event: events.Click) -> None:
         if event.button == 1:
@@ -441,15 +470,15 @@ class ReasoningView(RangeSelectionOnly, Vertical):
             else:
                 elapsed = self._elapsed_seconds()
             self._completed_seconds = elapsed
-            self.label.update(_completed_reasoning_label(elapsed, expanded=self.expanded))
+            self.label.set_content(_completed_reasoning_label(elapsed, expanded=self.expanded))
         self._stop_timer()
 
     def _tick(self) -> None:
         self._render_live_label()
 
     def _render_live_label(self) -> None:
-        self.label.update(
-            format_reasoning_label(
+        self.label.set_content(
+            _reasoning_label_text(
                 "Thinking",
                 self._elapsed_seconds(),
                 expanded=self.expanded,
@@ -460,7 +489,7 @@ class ReasoningView(RangeSelectionOnly, Vertical):
         if self._clock_started_at is not None:
             self._render_live_label()
             return
-        self.label.update(
+        self.label.set_content(
             _completed_reasoning_label(
                 self._completed_seconds,
                 expanded=self.expanded,
@@ -566,8 +595,8 @@ def _completed_reasoning_label(
     duration_seconds: float | None,
     *,
     expanded: bool,
-) -> str:
-    return format_reasoning_label("Thought", duration_seconds, expanded=expanded)
+) -> Text:
+    return _reasoning_label_text("Thought", duration_seconds, expanded=expanded)
 
 
 class ToolActivityRow(RangeSelectionOnly, Static):
@@ -578,7 +607,10 @@ class ToolActivityRow(RangeSelectionOnly, Static):
         run_id: str | None,
         agent: AgentTreeNode | None = None,
     ) -> None:
-        super().__init__(classes="tool-row")
+        clickable = run_id is not None and tool.tool_name == "SpawnAgent"
+        super().__init__(classes="tool-row clickable" if clickable else "tool-row")
+        self._clickable = clickable
+        self._hovered = False
         self.tool_call_id = tool.tool_call_id
         self.run_id = run_id
         self._tool = tool
@@ -624,13 +656,7 @@ class ToolActivityRow(RangeSelectionOnly, Static):
 
     @property
     def _is_active(self) -> bool:
-        return self._tool.status in {
-            "planned",
-            "ready",
-            "resolving_input",
-            "running",
-            "waiting_child",
-        }
+        return self._tool.status in _ACTIVE_TOOL_STATUSES
 
     def _tick(self) -> None:
         self._frame = (self._frame + 1) % len(TUI_DESIGN.spinner_frames)
@@ -638,6 +664,16 @@ class ToolActivityRow(RangeSelectionOnly, Static):
 
     def refresh_theme(self) -> None:
         self._render_tool()
+
+    def on_enter(self, _event: events.Enter) -> None:
+        if self._clickable:
+            self._hovered = True
+            self._render_tool()
+
+    def on_leave(self, _event: events.Leave) -> None:
+        if self._hovered:
+            self._hovered = False
+            self._render_tool()
 
     def on_click(self, event: events.Click) -> None:
         if event.button == 1 and self.run_id is not None and self._tool.tool_name == "SpawnAgent":
@@ -656,6 +692,7 @@ class ToolActivityRow(RangeSelectionOnly, Static):
                 frame=self._frame,
                 theme=theme_for(self),
                 agent=self._agent,
+                highlighted=self._hovered,
             )
         )
 
@@ -666,68 +703,48 @@ def _tool_activity_text(
     frame: int,
     theme: TuiTheme,
     agent: AgentTreeNode | None = None,
+    highlighted: bool = False,
 ) -> Text:
     """Render one tool state without coupling it to a mounted widget."""
 
-    active = tool.status in {
-        "planned",
-        "ready",
-        "resolving_input",
-        "running",
-        "cancelling",
-        "waiting_child",
-    }
-    marks = {
-        "awaiting_approval": "?",
-        "waiting_user": "?",
-        "completed": "✓",
-        "failed": "×",
-        "rejected": "×",
-        "aborted": "×",
-        "unknown_outcome": "!",
-    }
-    mark = (
-        TUI_DESIGN.spinner_frames[frame] if active else marks.get(tool.status, TUI_DESIGN.idle_mark)
-    )
-    state_styles = {
-        "completed": TUI_DESIGN.success,
-        "failed": TUI_DESIGN.failure,
-        "rejected": TUI_DESIGN.failure,
-        "aborted": TUI_DESIGN.failure,
-        "unknown_outcome": theme.accent,
-        "awaiting_approval": theme.accent,
-        "waiting_user": theme.accent,
-    }
-    accent = state_styles.get(
-        tool.status,
-        theme.accent if active else TUI_DESIGN.text_muted,
-    )
     presentation = present_tool(tool)
     subagent = agent if agent is not None and tool.tool_name.casefold() == "spawnagent" else None
     title = presentation.title or tool.tool_name
     if subagent is not None:
         title = _subagent_identity(subagent)
+    failed = tool.status in _FAILED_TOOL_STATUSES or (
+        subagent is not None and subagent.status in _FAILED_SUBAGENT_STATUSES
+    )
     text = Text(no_wrap=True, overflow="ellipsis")
-    text.append(f"  {mark} ", style=f"bold {accent}")
-    text.append(title, style=f"bold {TUI_DESIGN.text_primary}")
+    if tool.status in _ACTIVE_TOOL_STATUSES:
+        text.append(
+            f"{TUI_DESIGN.spinner_frames[frame]} ",
+            style=theme.accent,
+        )
+    text.append(
+        title,
+        style=TUI_DESIGN.failure if failed else TUI_DESIGN.text_primary,
+    )
     if presentation.summary:
         text.append(
             f" {TUI_DESIGN.inline_separator}{presentation.summary}",
             style=TUI_DESIGN.text_detail,
         )
-    status_label = (
-        _subagent_task_status(subagent)
-        if subagent is not None
-        else _TOOL_STATUS_LABELS[tool.status]
-    )
-    status_tone = (
-        TUI_DESIGN.failure if subagent is not None and status_label == "failed" else accent
-    )
-    text.append(f"  {status_label}", style=status_tone)
-    elapsed = _tool_elapsed_seconds(tool)
-    if elapsed is not None:
+    if subagent is not None:
+        status_label = _subagent_task_status(subagent)
         text.append(
-            f"{TUI_DESIGN.inline_separator}{elapsed}s",
+            f"  {status_label}",
+            style=(
+                TUI_DESIGN.failure
+                if status_label == "failed"
+                else TUI_DESIGN.text_metadata
+            ),
+        )
+    elapsed = _tool_elapsed_seconds(tool)
+    elapsed_label = format_duration(elapsed) if elapsed is not None else None
+    if elapsed_label is not None and elapsed_label != "0ms":
+        text.append(
+            f"{TUI_DESIGN.inline_separator}{elapsed_label}",
             style=TUI_DESIGN.text_faint,
         )
     line_styles: dict[ToolLineState, str] = {
@@ -743,12 +760,14 @@ def _tool_activity_text(
         "removed": TUI_DESIGN.failure,
     }
     for line in presentation.lines:
-        text.append(f"\n    {line.marker} ", style=line_styles[line.state])
+        text.append(f"\n  {line.marker} ", style=line_styles[line.state])
         for part in line.parts:
             style = part_styles[part.tone]
             text.append(part.text, style=style)
     if subagent is not None:
         _append_subagent_activity(text, subagent)
+    if highlighted:
+        text.stylize(TUI_DESIGN.text_highlight)
     return text
 
 
@@ -766,6 +785,8 @@ def _subagent_task_status(agent: AgentTreeNode) -> str:
         return "failed"
     if agent.status == "paused":
         return "paused"
+    if agent.execution_mode == "async":
+        return "background"
     return "working"
 
 
@@ -780,7 +801,7 @@ def _append_subagent_activity(
         activity_name.replace("_", " ").title(),
     )
     text.append(
-        f"\n    └ {label}{TUI_DESIGN.inline_separator}{agent.task_description}",
+        f"\n  └ {label}{TUI_DESIGN.inline_separator}{agent.task_description}",
         style=TUI_DESIGN.text_lowlight,
     )
 
@@ -795,11 +816,12 @@ def _is_terminal_tool(tool: RuntimeToolCallActivity) -> bool:
     }
 
 
-def _tool_elapsed_seconds(tool: RuntimeToolCallActivity) -> int | None:
+def _tool_elapsed_seconds(tool: RuntimeToolCallActivity) -> float | None:
     if tool.started_at is None:
         return None
     ended_at = tool.ended_at or datetime.now(UTC)
-    return max(0, int((ended_at - tool.started_at).total_seconds()))
+    elapsed = max(0.0, (ended_at - tool.started_at).total_seconds())
+    return elapsed if elapsed > 0 else None
 
 
 _INPUT_TIPS = (
@@ -2839,6 +2861,9 @@ class StatusLine(Horizontal):
 
     def set_session_controls(self, labels: tuple[str, ...]) -> None:
         self.query_one(ActivityIndicator).set_session_controls(labels)
+
+    def set_subagent(self, agent: AgentTreeNode | None) -> None:
+        self.query_one(ActivityIndicator).set_subagent(agent)
 
     def set_context(self, status: SessionContextStatus | None) -> None:
         self.set_context_metrics(status.metrics if status is not None else None)

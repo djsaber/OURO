@@ -1,6 +1,7 @@
 import pytest
 from rich.console import Console
 from textual.app import App, ComposeResult
+from textual.color import Color
 
 import ouro.tui.conversation_history as conversation_history
 from ouro.application.supervisor_models import RuntimeToolCallActivity
@@ -11,12 +12,13 @@ from ouro.tui.conversation_history import (
     ToolNavigationRequested,
     TranscriptEntry,
     _compaction_summary,
+    _reasoning_label_text,
     _run_summary,
     split_markdown_blocks,
 )
 from ouro.tui.state import RunPresentation
 from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_DESIGN
-from ouro.tui.widgets import ToolActivityRow
+from ouro.tui.widgets import ReasoningLabel, ToolActivityRow
 
 _MULTIBLOCK_ANSWER = """Here is the plan:
 
@@ -44,6 +46,73 @@ Final paragraph.
 
 def _style_at(text, fragment: str):
     return text.get_style_at_offset(Console(), text.plain.index(fragment))
+
+
+def test_reasoning_label_uses_regular_title_and_lowlight_timing() -> None:
+    label = _reasoning_label_text("Thought", 2.5, expanded=False)
+
+    assert label.plain == "+ Thought · 2.5s"
+    title_style = _style_at(label, "Thought")
+    duration_style = _style_at(label, "2.5s")
+    assert not title_style.bold
+    assert not duration_style.bold
+    assert title_style.color is not None
+    assert title_style.color.triplet is not None
+    assert title_style.color.triplet.hex == TUI_DESIGN.text_secondary
+    assert duration_style.color is not None
+    assert duration_style.color.triplet is not None
+    assert duration_style.color.triplet.hex == TUI_DESIGN.text_faint
+
+
+class _ReasoningLabelApp(App[None]):
+    def compose(self) -> ComposeResult:
+        yield ReasoningLabel(
+            _reasoning_label_text("Thought", 2.5, expanded=False),
+            classes="reasoning-label",
+        )
+
+
+@pytest.mark.asyncio
+async def test_live_reasoning_label_highlights_only_its_text_on_hover() -> None:
+    app = _ReasoningLabelApp()
+
+    async with app.run_test(size=(40, 6)) as pilot:
+        label = app.query_one(ReasoningLabel)
+        before = label.render()
+        before_style = before.get_style_at_offset(before.plain.index("Thought"))
+        await pilot.hover(label)
+        await pilot.pause()
+        hovered = label.render()
+        hovered_style = hovered.get_style_at_offset(hovered.plain.index("Thought"))
+
+        assert hovered_style.foreground == Color.parse(TUI_DESIGN.text_highlight)
+        assert hovered_style.background == before_style.background
+
+
+@pytest.mark.asyncio
+async def test_historical_reasoning_label_highlights_only_its_text_on_hover() -> None:
+    app = _HistoryApp()
+
+    async with app.run_test(size=(50, 10)) as pilot:
+        app.history.append(
+            TranscriptEntry(kind="assistant", reasoning="Inspect the event pipeline")
+        )
+        await app.history.wait_until_rendered()
+        before = next(
+            segment for segment in app.history.render_line(0) if "Thought" in segment.text
+        )
+        assert before.style is not None
+
+        await pilot.hover(app.history, offset=(3, 0))
+        await pilot.pause()
+        hovered = next(
+            segment for segment in app.history.render_line(0) if "Thought" in segment.text
+        )
+        assert hovered.style is not None
+        assert hovered.style.color is not None
+        assert hovered.style.color.triplet is not None
+        assert hovered.style.color.triplet.hex == TUI_DESIGN.text_highlight
+        assert hovered.style.bgcolor == before.style.bgcolor
 
 
 class _HistoryApp(App[None]):
@@ -128,6 +197,21 @@ async def test_historical_spawn_tool_click_preserves_parent_run_identity() -> No
             )
         )
         await app.history.wait_until_rendered()
+        before_hover = next(
+            segment for segment in app.history.render_line(0) if "SpawnAgent" in segment.text
+        )
+        assert before_hover.style is not None
+
+        await pilot.hover(app.history, offset=(3, 0))
+        await pilot.pause()
+        hovered = next(
+            segment for segment in app.history.render_line(0) if "SpawnAgent" in segment.text
+        )
+        assert hovered.style is not None
+        assert hovered.style.bgcolor == before_hover.style.bgcolor
+        assert hovered.style.color is not None
+        assert hovered.style.color.triplet is not None
+        assert hovered.style.color.triplet.hex == TUI_DESIGN.text_highlight
 
         await pilot.click(app.history, offset=(3, 0))
 
@@ -139,7 +223,15 @@ async def test_live_spawn_tool_click_preserves_parent_run_identity() -> None:
     app = _LiveToolApp()
 
     async with app.run_test(size=(80, 12)) as pilot:
-        await pilot.click(app.query_one(ToolActivityRow))
+        row = app.query_one(ToolActivityRow)
+        assert row.has_class("clickable")
+        await pilot.hover(row)
+        await pilot.pause()
+        hovered = row.render()
+        highlighted_style = hovered.get_style_at_offset(hovered.plain.index("Subagent"))
+        assert highlighted_style.foreground == Color.parse(TUI_DESIGN.text_highlight)
+        assert row.styles.background.a == 0
+        await pilot.click(row)
 
         assert app.navigation == [("run_live_parent", "call_live_spawn")]
 
@@ -196,13 +288,14 @@ def test_compaction_and_run_summaries_share_visual_structure_and_failure_semanti
     )
 
     assert compaction.plain == (
-        "▣ Context compacted • 8 messages summarized • 1.2K tokens reduced • 57m 05.4s"
+        "▣ Context compacted • 8 messages • 1.2K tokens • 57m 05.4s"
     )
     assert failed.plain == (
         "▣ deepseek-v4-flash • 5m 16.4s • failed • provider returned an empty assistant message"
     )
-    assert _style_at(compaction, "Context compacted") == _style_at(failed, "deepseek-v4-flash")
     assert _style_at(compaction, "Context compacted").bold is True
+    assert not _style_at(failed, "deepseek-v4-flash").bold
+    assert not _style_at(failed, TUI_DESIGN.brand_mark).bold
     assert _style_at(compaction, "Context compacted").color is not None
     assert _style_at(compaction, "Context compacted").color.triplet.hex == (
         TUI_DESIGN.text_secondary

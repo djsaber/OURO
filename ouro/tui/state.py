@@ -41,15 +41,29 @@ def format_reasoning_label(
     *,
     expanded: bool,
 ) -> str:
+    text, duration = format_reasoning_label_parts(
+        label,
+        duration_seconds,
+        expanded=expanded,
+    )
+    if duration is not None:
+        text += f"{TUI_DESIGN.inline_separator}{duration}"
+    return text
+
+
+def format_reasoning_label_parts(
+    label: str,
+    duration_seconds: float | None,
+    *,
+    expanded: bool,
+) -> tuple[str, str | None]:
     state_mark = (
         TUI_DESIGN.expanded_disclosure_marker
         if expanded
         else TUI_DESIGN.collapsed_disclosure_marker
     )
-    text = f"{state_mark} {label}"
-    if duration_seconds is not None:
-        text += f"{TUI_DESIGN.inline_separator}{format_duration(duration_seconds)}"
-    return text
+    duration = format_duration(duration_seconds) if duration_seconds is not None else None
+    return f"{state_mark} {label}", duration
 
 
 @dataclass(frozen=True)

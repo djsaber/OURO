@@ -140,6 +140,7 @@ from ouro.tui.widgets import (
     QueuedInputPanel,
     StatusLine,
     WelcomePanel,
+    _brand_header_content,
     _tool_activities_from_messages,
 )
 
@@ -163,6 +164,25 @@ async def _wait_for_screen(
         if asyncio.get_running_loop().time() >= deadline:
             raise AssertionError(f"Timed out waiting for {title}")
         await asyncio.sleep(0.01)
+
+
+def test_brand_header_renders_session_detail_as_lowlight_metadata() -> None:
+    detail = "Inspect the event pipeline"
+    content = _brand_header_content(
+        "Scout",
+        detail,
+        None,
+        width=80,
+        accent="#ffffff",
+    )
+
+    assert f"Scout{TUI_DESIGN.inline_separator}{detail}" in content.plain
+    title_style = content.get_style_at_offset(Console(), content.plain.index("Scout"))
+    assert not title_style.bold
+    style = content.get_style_at_offset(Console(), content.plain.index(detail))
+    assert style.color is not None
+    assert style.color.triplet is not None
+    assert style.color.triplet.hex == TUI_DESIGN.text_lowlight
 
 
 async def _wait_for_active_session(
@@ -2779,6 +2799,12 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         assert app._projection is not None
         assert app._projection.assistant_text == "first child prefix"
         assert app.query_one(AssistantTurn).source == "first child prefix"
+        child_header = app.query_one(BrandHeader).render()
+        assert "read-only" not in child_header.plain
+        assert app.query_one(BrandHeader)._session_detail == first.task_description
+        child_status = app.query_one(ActivityIndicator).render().plain
+        assert "Subagent" in child_status
+        assert "read-only" not in child_status
         assert any(
             entry.kind == "user" and entry.text == "first child task"
             for entry in app.query_one(ConversationHistory).entries
@@ -2813,6 +2839,12 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             pilot,
             description="first child stream completion",
         )
+        await _wait_until(
+            lambda: "Done" in app.query_one(ActivityIndicator).render().plain,
+            pilot,
+            description="first child task result",
+        )
+        assert "Subagent" in app.query_one(ActivityIndicator).render().plain
         assert "first child prefix + first child suffix" in "\n".join(
             entry.text
             for entry in app.query_one(ConversationHistory).entries
@@ -3458,8 +3490,8 @@ async def test_history_restores_compaction_boundaries_in_chronological_order(
         ]
         assert (
             f"{TUI_DESIGN.brand_mark} Context compacted"
-            f"{TUI_DESIGN.section_separator}1 message summarized"
-            f"{TUI_DESIGN.section_separator}500 tokens reduced"
+            f"{TUI_DESIGN.section_separator}1 message"
+            f"{TUI_DESIGN.section_separator}500 tokens"
             f"{TUI_DESIGN.section_separator}57m 05.4s"
         ) in history.rendered_text
 
@@ -3513,8 +3545,8 @@ async def test_compaction_completion_updates_context_and_transcript_without_next
         )
         assert (
             f"{TUI_DESIGN.brand_mark} Context compacted"
-            f"{TUI_DESIGN.section_separator}4 messages summarized"
-            f"{TUI_DESIGN.section_separator}550 tokens reduced"
+            f"{TUI_DESIGN.section_separator}4 messages"
+            f"{TUI_DESIGN.section_separator}550 tokens"
             f"{TUI_DESIGN.section_separator}1m 05.4s"
         ) in history.rendered_text
         assert app.query_one("#context-detail", Static).render().plain.startswith("250 ")
@@ -3672,7 +3704,7 @@ async def test_history_load_renders_tool_calls_between_messages(tmp_path: Path) 
         rendered = history.rendered_text
         assert "read" in rendered
         assert "config.json" in rendered
-        assert "3s" in rendered
+        assert "3.0s" in rendered
 
         # Dialogue order: user text, tool row, assistant text — interleaved.
         kinds = [entry.kind for entry in history.entries]
@@ -3939,7 +3971,7 @@ async def test_history_load_marks_failed_tool_calls(tmp_path: Path) -> None:
         tools = [entry.tool for entry in history.entries if entry.tool is not None]
         assert len(tools) == 1
         assert tools[0].status == "failed"
-        assert "failed" in history.rendered_text
+        assert "failed" not in history.rendered_text
 
 
 @pytest.mark.asyncio

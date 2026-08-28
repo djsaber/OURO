@@ -30,7 +30,7 @@ from ouro.tui.state import (
     RunPresentation,
     format_compact_count,
     format_duration,
-    format_reasoning_label,
+    format_reasoning_label_parts,
 )
 from ouro.tui.theme import TUI_DESIGN, TuiTheme, theme_for
 
@@ -206,16 +206,34 @@ def _thought_label(
     *,
     entry_index: int,
     expanded: bool,
+    highlighted: bool = False,
 ) -> Text:
-    label = format_reasoning_label("Thought", reasoning_seconds, expanded=expanded)
-    return Text(
+    label = _reasoning_label_text("Thought", reasoning_seconds, expanded=expanded)
+    if highlighted:
+        label.stylize(TUI_DESIGN.text_highlight)
+    label.stylize(Style(meta={_REASONING_ENTRY_META: entry_index}))
+    return label
+
+
+def _reasoning_label_text(
+    label: str,
+    duration_seconds: float | None,
+    *,
+    expanded: bool,
+) -> Text:
+    title, duration = format_reasoning_label_parts(
         label,
-        style=Style(
-            color=TUI_DESIGN.text_secondary,
-            bold=True,
-            meta={_REASONING_ENTRY_META: entry_index},
-        ),
+        duration_seconds,
+        expanded=expanded,
     )
+    text = Text(title, style=Style(color=TUI_DESIGN.text_secondary))
+    if duration is not None:
+        text.append(
+            TUI_DESIGN.inline_separator,
+            style=Style(color=TUI_DESIGN.separator_tone),
+        )
+        text.append(duration, style=Style(color=TUI_DESIGN.text_faint))
+    return text
 
 
 @dataclass(frozen=True)
@@ -548,10 +566,15 @@ def _summary_line(
     *,
     marker_tone: str,
     details: Iterable[tuple[str, str]],
+    emphasized: bool = True,
 ) -> Text:
     summary = Text()
-    summary.append(f"{TUI_DESIGN.brand_mark} ", style=f"bold {marker_tone}")
-    summary.append(title, style=f"bold {TUI_DESIGN.text_secondary}")
+    marker_style = f"bold {marker_tone}" if emphasized else marker_tone
+    title_style = (
+        f"bold {TUI_DESIGN.text_secondary}" if emphasized else TUI_DESIGN.text_secondary
+    )
+    summary.append(f"{TUI_DESIGN.brand_mark} ", style=marker_style)
+    summary.append(title, style=title_style)
     for value, tone in details:
         summary.append(TUI_DESIGN.section_separator, style=TUI_DESIGN.separator_tone)
         summary.append(value, style=tone)
@@ -562,14 +585,14 @@ def _compaction_summary(compaction: CompactionPresentation, theme: TuiTheme) -> 
     noun = "message" if compaction.covered_message_count == 1 else "messages"
     details = [
         (
-            f"{compaction.covered_message_count} {noun} summarized",
+            f"{compaction.covered_message_count} {noun}",
             TUI_DESIGN.text_metadata,
         )
     ]
     if compaction.tokens_reduced is not None:
         details.append(
             (
-                f"{format_compact_count(compaction.tokens_reduced)} tokens reduced",
+                f"{format_compact_count(compaction.tokens_reduced)} tokens",
                 TUI_DESIGN.text_metadata,
             )
         )
@@ -607,6 +630,7 @@ def _run_summary(run: RunPresentation, theme: TuiTheme) -> Text:
         run.model,
         marker_tone=marker_tone,
         details=details,
+        emphasized=False,
     )
 
 
@@ -616,6 +640,7 @@ def _reasoning_area(
     entry_index: int,
     expanded: bool,
     top: int,
+    highlighted: bool = False,
 ) -> tuple[RenderableType, _PieceTag]:
     """The reasoning area of one entry: label plus the togglable body.
 
@@ -626,6 +651,7 @@ def _reasoning_area(
         entry.reasoning_seconds,
         entry_index=entry_index,
         expanded=expanded,
+        highlighted=highlighted,
     )
     if expanded:
         area: RenderableType = Group(
@@ -679,6 +705,8 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._render_width = 0
         self._reasoning_expanded = reasoning_expanded
         self._reasoning_expanded_by_entry: dict[int, bool] = {}
+        self._hovered_tool_entry_index: int | None = None
+        self._hovered_reasoning_entry_index: int | None = None
 
     @property
     def entries(self) -> tuple[TranscriptEntry, ...]:
@@ -738,7 +766,35 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         elif event.style.link:
             self.app.open_url(event.style.link)
 
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        hovered_tool = None
+        hovered_reasoning = None
+        if event.style is not None:
+            tool_entry_index = event.style.meta.get(_TOOL_NAVIGATION_META)
+            if isinstance(tool_entry_index, int):
+                hovered_tool = tool_entry_index
+            reasoning_entry_index = event.style.meta.get(_REASONING_ENTRY_META)
+            if isinstance(reasoning_entry_index, int):
+                hovered_reasoning = reasoning_entry_index
+        self._set_hovered_entry("_hovered_tool_entry_index", hovered_tool)
+        self._set_hovered_entry("_hovered_reasoning_entry_index", hovered_reasoning)
+
+    def on_leave(self, _event: events.Leave) -> None:
+        self._set_hovered_entry("_hovered_tool_entry_index", None)
+        self._set_hovered_entry("_hovered_reasoning_entry_index", None)
+
+    def _set_hovered_entry(self, attribute: str, entry_index: int | None) -> None:
+        previous = getattr(self, attribute)
+        if previous == entry_index:
+            return
+        setattr(self, attribute, entry_index)
+        for changed in (previous, entry_index):
+            if changed is not None and 0 <= changed < len(self._entries):
+                self._rerender_entry(changed)
+
     def replace(self, entries: Iterable[TranscriptEntry]) -> None:
+        self._hovered_tool_entry_index = None
+        self._hovered_reasoning_entry_index = None
         self._reasoning_expanded_by_entry.clear()
         if self._reset_buffer(list(entries)):
             self._render_entries()
@@ -753,6 +809,8 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         are rendered, preserving the ``load_messages`` contract that callers
         rely on before anchoring the scroll position.
         """
+        self._hovered_tool_entry_index = None
+        self._hovered_reasoning_entry_index = None
         self._reasoning_expanded_by_entry.clear()
         if not self._reset_buffer(list(entries)):
             if self._entries:
@@ -947,6 +1005,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             entry_index=entry_index,
             expanded=expanded,
             top=top,
+            highlighted=self._hovered_reasoning_entry_index == entry_index,
         )
         return self._render_strips(renderable)
 
@@ -1072,11 +1131,10 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 agent=entry.agent,
             )
             if entry.tool.tool_name == "SpawnAgent" and entry.run_id is not None:
-                rendered.stylize(
-                    Style(meta={_TOOL_NAVIGATION_META: entry_index}),
-                    0,
-                    len(rendered),
-                )
+                interaction_style = Style(meta={_TOOL_NAVIGATION_META: entry_index})
+                if self._hovered_tool_entry_index == entry_index:
+                    interaction_style += Style(color=TUI_DESIGN.text_highlight)
+                rendered.stylize(interaction_style, 0, len(rendered))
             return [
                 (
                     Padding(
@@ -1109,6 +1167,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                     entry_index=entry_index,
                     expanded=self.is_reasoning_expanded(entry_index),
                     top=top,
+                    highlighted=self._hovered_reasoning_entry_index == entry_index,
                 )
             )
         if entry.text:

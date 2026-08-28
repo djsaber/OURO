@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from rich.console import Console
 from textual.app import App, ComposeResult
@@ -38,6 +40,7 @@ def _agent(
     activity: RuntimeActivitySnapshot,
     *,
     nickname: str | None = "Scout",
+    execution_mode: str = "async",
 ) -> AgentTreeNode:
     return AgentTreeNode(
         revision=1,
@@ -52,7 +55,7 @@ def _agent(
         nickname=nickname,
         task_description="Inspect the event pipeline",
         status="running",
-        execution_mode="async",
+        execution_mode=execution_mode,
         lifecycle_binding="detached",
         control_state="open",
         depth=1,
@@ -145,7 +148,7 @@ def test_todolist_presentation_exposes_progress_and_item_states() -> None:
     ]
 
 
-def test_spawn_agent_uses_agent_identity_and_places_task_below_status() -> None:
+def test_spawn_agent_uses_agent_identity_and_places_task_below_header() -> None:
     tool = _tool(
         "SpawnAgent",
         arguments={
@@ -182,9 +185,10 @@ def test_spawn_agent_uses_agent_identity_and_places_task_below_status() -> None:
     rendered = rendered_text.plain
 
     assert "SpawnAgent" not in rendered
-    assert f"General Agent{TUI_DESIGN.inline_separator}Scout" in rendered.splitlines()[0]
-    assert "working" in rendered.splitlines()[0]
-    assert "waiting for subagent" not in rendered
+    assert rendered.splitlines()[0] == (
+        f"{TUI_DESIGN.spinner_frames[0]} "
+        f"General Agent{TUI_DESIGN.inline_separator}Scout  background"
+    )
     assert "Inspect the event pipeline" not in rendered.splitlines()[0]
     assert "└ Responding · Inspect the event pipeline" in rendered
     detail_offset = rendered.index("└ Responding")
@@ -192,6 +196,97 @@ def test_spawn_agent_uses_agent_identity_and_places_task_below_status() -> None:
     assert detail_style.color is not None
     assert detail_style.color.triplet is not None
     assert detail_style.color.triplet.hex == TUI_DESIGN.text_lowlight
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_color"),
+    (
+        ("completed", TUI_DESIGN.text_primary),
+        ("failed", TUI_DESIGN.failure),
+        ("rejected", TUI_DESIGN.failure),
+        ("aborted", TUI_DESIGN.failure),
+    ),
+)
+def test_tool_header_omits_status_chrome_and_only_colors_failures(
+    status: str,
+    expected_color: str,
+) -> None:
+    rendered = _tool_activity_text(
+        _tool("Read", status=status),
+        frame=0,
+        theme=DEFAULT_TUI_THEME,
+    )
+    header = rendered.plain.splitlines()[0]
+
+    assert header.strip() == "Read"
+    style = rendered.get_style_at_offset(Console(), rendered.plain.index("Read"))
+    assert style.color is not None
+    assert style.color.triplet is not None
+    assert style.color.triplet.hex == expected_color
+    assert not style.bold
+
+
+def test_active_tool_retains_spinner_without_a_right_status_label() -> None:
+    tool = _tool("Read", status="running")
+
+    first = _tool_activity_text(
+        tool,
+        frame=0,
+        theme=DEFAULT_TUI_THEME,
+    ).plain
+    second = _tool_activity_text(
+        tool,
+        frame=1,
+        theme=DEFAULT_TUI_THEME,
+    ).plain
+
+    assert first == f"{TUI_DESIGN.spinner_frames[0]} Read"
+    assert second == f"{TUI_DESIGN.spinner_frames[1]} Read"
+
+
+def test_tool_elapsed_time_omits_zero_and_uses_shared_duration_format() -> None:
+    started_at = datetime(2026, 8, 28, tzinfo=UTC)
+    zero = _tool("Read").model_copy(
+        update={"started_at": started_at, "ended_at": started_at}
+    )
+    submillisecond = _tool("Read").model_copy(
+        update={
+            "started_at": started_at,
+            "ended_at": started_at + timedelta(microseconds=1),
+        }
+    )
+    elapsed = _tool("Read").model_copy(
+        update={
+            "started_at": started_at,
+            "ended_at": started_at + timedelta(seconds=304.2),
+        }
+    )
+
+    zero_text = _tool_activity_text(
+        zero,
+        frame=0,
+        theme=DEFAULT_TUI_THEME,
+    ).plain
+    submillisecond_text = _tool_activity_text(
+        submillisecond,
+        frame=0,
+        theme=DEFAULT_TUI_THEME,
+    ).plain
+    elapsed_rendered = _tool_activity_text(
+        elapsed,
+        frame=0,
+        theme=DEFAULT_TUI_THEME,
+    )
+    elapsed_text = elapsed_rendered.plain
+
+    assert "0s" not in zero_text
+    assert "0ms" not in submillisecond_text
+    assert "5m 04.2s" in elapsed_text
+    assert "304" not in elapsed_text
+    elapsed_style = elapsed_rendered.get_style_at_offset(
+        Console(), elapsed_text.index("5m 04.2s")
+    )
+    assert not elapsed_style.bold
 
 
 def test_spawn_agent_uses_existing_child_tool_activity_status() -> None:
@@ -214,6 +309,48 @@ def test_spawn_agent_uses_existing_child_tool_activity_status() -> None:
     assert "└ Running tools · Inspect the event pipeline" in rendered
 
 
+def test_spawn_agent_uses_dispatching_as_its_initial_detail_status() -> None:
+    activity = RuntimeActivitySnapshot(
+        session_id="ses_child",
+        run_id="run_child",
+        status="queued",
+        activity="queued",
+    )
+    agent = _agent(activity).model_copy(update={"status": "queued", "activity": None})
+
+    rendered = _tool_activity_text(
+        _tool("SpawnAgent", status="waiting_child"),
+        frame=0,
+        theme=DEFAULT_TUI_THEME,
+        agent=agent,
+    ).plain
+
+    assert rendered.splitlines()[0].endswith(
+        f"General Agent{TUI_DESIGN.inline_separator}Scout  background"
+    )
+    assert "└ Dispatching · Inspect the event pipeline" in rendered
+
+
+def test_spawn_agent_distinguishes_foreground_work_from_background_work() -> None:
+    activity = RuntimeActivitySnapshot(
+        session_id="ses_child",
+        run_id="run_child",
+        status="running",
+        activity="streaming_text",
+    )
+
+    rendered = _tool_activity_text(
+        _tool("SpawnAgent", status="waiting_child"),
+        frame=0,
+        theme=DEFAULT_TUI_THEME,
+        agent=_agent(activity, execution_mode="sync"),
+    ).plain
+
+    assert rendered.splitlines()[0].endswith(
+        f"General Agent{TUI_DESIGN.inline_separator}Scout  working"
+    )
+
+
 @pytest.mark.parametrize(
     ("agent_status", "expected"),
     (("completed", "done"), ("failed", "failed"), ("aborted", "failed")),
@@ -230,17 +367,28 @@ def test_spawn_agent_uses_task_outcome_status(
     )
     agent = _agent(activity).model_copy(update={"status": agent_status, "activity": None})
 
-    rendered = _tool_activity_text(
+    rendered_text = _tool_activity_text(
         _tool("SpawnAgent", status="completed"),
         frame=0,
         theme=DEFAULT_TUI_THEME,
         agent=agent,
-    ).plain
+    )
+    rendered = rendered_text.plain
     header, detail = rendered.splitlines()
 
-    assert expected in header
-    assert "completed" not in rendered.casefold()
+    assert header.strip() == (
+        f"General Agent{TUI_DESIGN.inline_separator}Scout  {expected}"
+    )
     assert f"└ {expected.title()} · Inspect the event pipeline" == detail.strip()
+    title_style = rendered_text.get_style_at_offset(
+        Console(), rendered.index("General Agent")
+    )
+    assert title_style.color is not None
+    assert title_style.color.triplet is not None
+    assert title_style.color.triplet.hex == (
+        TUI_DESIGN.failure if expected == "failed" else TUI_DESIGN.text_primary
+    )
+    assert not title_style.bold
 
 
 class _HistoryApp(App[None]):
@@ -267,18 +415,22 @@ async def test_tool_groups_only_add_spacing_at_non_tool_boundaries() -> None:
         app.history.append(TranscriptEntry(kind="assistant", text="After."))
         await app.history.wait_until_rendered()
 
-        lines = [line.strip() for line in app.history.rendered_text.splitlines()]
+        raw_lines = app.history.rendered_text.splitlines()
+        lines = [line.strip() for line in raw_lines]
         before = lines.index("Before.")
-        first_header = next(index for index, line in enumerate(lines) if "✓ Read" in line)
+        first_header = next(index for index, line in enumerate(lines) if line == "Read")
         first_detail = lines.index("└ first.py · 1 line")
         second_header = next(
             index
             for index, line in enumerate(lines[first_header + 1 :], first_header + 1)
-            if "✓ Read" in line
+            if line == "Read"
         )
         second_detail = lines.index("└ second.py · 2 lines")
         after = lines.index("After.")
 
+        assert raw_lines[first_header].startswith("  Read")
+        assert not raw_lines[first_header].startswith("    Read")
+        assert raw_lines[first_detail].startswith("    └")
         assert lines[before + 1 : first_header] == [""]
         assert lines[first_detail + 1 : second_header] == []
         assert lines[second_detail + 1 : after] == [""]
@@ -355,6 +507,6 @@ async def test_reasoning_only_turn_adds_one_message_boundary_before_tool() -> No
 
         lines = [line.strip() for line in app.history.rendered_text.splitlines()]
         reasoning = lines.index("+ Thought")
-        tool_header = next(index for index, line in enumerate(lines) if "✓ Read" in line)
+        tool_header = next(index for index, line in enumerate(lines) if line == "Read")
 
         assert lines[reasoning + 1 : tool_header] == [""]
