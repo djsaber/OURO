@@ -925,7 +925,7 @@ def _normalize_title(value: str) -> str:
 
 
 def _branch_title(source_title: str) -> str:
-    suffix = " · 分支"
+    suffix = " • 分支"
     normalized = _normalize_title(source_title)
     if len(normalized) + len(suffix) <= _MAX_TITLE_LENGTH:
         return f"{normalized}{suffix}"

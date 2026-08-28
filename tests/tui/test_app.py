@@ -1661,7 +1661,7 @@ def test_plugin_skill_choice_is_visible_but_not_selectable() -> None:
     )
 
     assert choice.disabled is True
-    assert choice.trailing == "plugin · enabled"
+    assert choice.trailing == "plugin • enabled"
 
 
 @pytest.mark.asyncio
@@ -2478,13 +2478,13 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
             await _wait_until(
                 lambda: (
                     composer.placeholder
-                    == "Enter queues a follow-up · Ctrl+Enter guides the active run…"
+                    == "Enter queues a follow-up • Ctrl+Enter guides the active run…"
                 ),
                 pilot,
                 description="active-run composer placeholder",
             )
             assert composer.placeholder == (
-                "Enter queues a follow-up · Ctrl+Enter guides the active run…"
+                "Enter queues a follow-up • Ctrl+Enter guides the active run…"
             )
         finally:
             provider.release.set()
@@ -2771,8 +2771,8 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             assert entry.agent.task_description == f"Observe child {index}"
             assert entry.agent.agent_name in root_history.rendered_text
         assert "SpawnAgent" not in root_history.rendered_text
-        assert "└ Responding · Observe child 1" in root_history.rendered_text
-        assert "└ Responding · Observe child 2" in root_history.rendered_text
+        assert "└ Responding • Observe child 1" in root_history.rendered_text
+        assert "└ Responding • Observe child 2" in root_history.rendered_text
         root_conversation = app.query_one(ConversationView)
         await pilot.pause()
         assert root_conversation.max_scroll_y > 0
@@ -2877,7 +2877,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             pilot,
             description="completed first child preview",
         )
-        assert "└ Done · Observe child 1" in root_history.rendered_text
+        assert "└ Done • Observe child 1" in root_history.rendered_text
 
         app.post_message(
             ToolNavigationRequested(
@@ -3295,7 +3295,7 @@ async def test_history_restores_each_model_call_timing_with_one_run_summary(
         assert summaries[0].run == presentation
         assert presentation.model == "chat-endpoint"
         assert presentation.duration_seconds == 3
-        assert history.rendered_text.count("+ Thought · 500ms") == 2
+        assert history.rendered_text.count("+ Thought • 500ms") == 2
         assert "chat-endpoint" in history.rendered_text
         assert "3.0s" in history.rendered_text
 
@@ -5260,7 +5260,7 @@ async def test_actions_lists_the_unified_subagent_catalog(tmp_path: Path) -> Non
 
         general = next(choice for choice in app.screen._choices if choice.value == "general")
         assert general.group == "BUILT-IN"
-        assert general.trailing == "general · available"
+        assert general.trailing == "general • available"
         assert general.disabled is True
         custom = next(choice for choice in app.screen._choices if choice.value == "review-code")
         assert custom.group == "USER"
@@ -5270,7 +5270,7 @@ async def test_actions_lists_the_unified_subagent_catalog(tmp_path: Path) -> Non
         options.highlighted = options.get_option_index("review-code")
         options.focus()
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="SUBAGENT · Code reviewer")
+        await _wait_for_screen(app, ChoiceScreen, title="SUBAGENT • Code reviewer")
         assert [choice.label for choice in app.screen._choices] == [
             "Edit subagent",
             "Delete subagent",
@@ -5422,7 +5422,7 @@ async def test_actions_opens_provider_scoped_endpoint_configuration(tmp_path: Pa
         await pilot.press("enter")
         await pilot.pause()
         assert app.screen.query_one("#choice-title", Static).render().plain == (
-            "ADD ENDPOINT · PROVIDER"
+            "ADD ENDPOINT • PROVIDER"
         )
 
         await pilot.press("enter")
@@ -5457,7 +5457,7 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
         await pilot.pause()
 
         assert app.screen.query_one("#choice-title", Static).render().plain == (
-            "PROVIDER · secondary"
+            "PROVIDER • secondary"
         )
         toggle = next(choice for choice in app.screen._choices if choice.value == "toggle")
         assert toggle.label == "Enable provider"
@@ -5477,7 +5477,7 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
         await pilot.pause()
         assert next(
             choice for choice in app.screen._choices if choice.value == "secondary"
-        ).trailing.endswith("· enabled")
+        ).trailing.endswith("• enabled")
         await pilot.press("enter")
         await pilot.pause()
         options = app.screen.query_one("#choice-list", OptionList)
@@ -5493,7 +5493,7 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
         await pilot.pause()
         assert next(
             choice for choice in app.screen._choices if choice.value == "secondary"
-        ).trailing.endswith("· disabled")
+        ).trailing.endswith("• disabled")
         await pilot.press("escape")
 
 
@@ -5566,7 +5566,7 @@ async def test_provider_catalog_refreshes_before_returning_from_submenu(
         options.highlighted = options.get_option_index("custom")
         options.focus()
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="PROVIDER · custom")
+        await _wait_for_screen(app, ChoiceScreen, title="PROVIDER • custom")
 
         await app._controller.add_endpoint(
             TuiEndpointConfiguration(
@@ -5583,7 +5583,7 @@ async def test_provider_catalog_refreshes_before_returning_from_submenu(
         assert app.screen is menu
         assert menu.query_one(OptionList) is options
         refreshed = next(choice for choice in menu._choices if choice.value == "custom")
-        assert "· 1 ·" in refreshed.trailing
+        assert "• 1 •" in refreshed.trailing
         await pilot.press("escape")
 
 
@@ -6127,13 +6127,13 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
             choice for choice in plugin_screen._choices if choice.value == "dev.ouro.toolkit"
         )
         assert toolkit.label == "Toolkit"
-        assert toolkit.trailing == "v1.0.0 · active"
+        assert toolkit.trailing == "v1.0.0 • active"
         assert toolkit.marker == ""
 
         plugin_screen.query_one("#choice-filter", Input).value = "Toolkit"
         await pilot.pause()
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN · Toolkit")
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Toolkit")
         assert app.screen is plugin_screen
         assert [choice.label for choice in plugin_screen._choices] == [
             "Disable",
@@ -6146,7 +6146,7 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         )
 
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN · Toolkit")
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Toolkit")
         assert app.screen is plugin_screen
         lifecycle = {choice.value: choice for choice in plugin_screen._choices}
         assert lifecycle["enable"].trailing == "disabled"
@@ -6158,12 +6158,12 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         refreshed = next(
             choice for choice in plugin_screen._choices if choice.value == "dev.ouro.toolkit"
         )
-        assert refreshed.trailing == "v1.0.0 · disabled"
+        assert refreshed.trailing == "v1.0.0 • disabled"
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN · Toolkit")
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Toolkit")
         options = plugin_screen.query_one("#choice-list", OptionList)
         await pilot.click(options, offset=(4, 1))
-        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN · Toolkit")
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Toolkit")
         assert (
             next(choice for choice in plugin_screen._choices if choice.value == "disable").trailing
             == "active"
@@ -6183,7 +6183,7 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
             choice for choice in plugin_screen._choices if choice.value == "dev.ouro.toolkit"
         )
         assert refreshed.marker == ""
-        assert refreshed.trailing == "v1.0.0 · active"
+        assert refreshed.trailing == "v1.0.0 • active"
 
 
 @pytest.mark.asyncio
@@ -6527,7 +6527,7 @@ async def test_mcp_actions_open_operation_specific_server_selection(tmp_path: Pa
             assert app.screen.query_one("#choice-title", Static).render().plain == chooser_title
             assert [choice.value for choice in app.screen._choices] == ["local"]
             assert app.screen._choices[0].group == "STDIO"
-            assert app.screen._choices[0].trailing == "enabled · configured"
+            assert app.screen._choices[0].trailing == "enabled • configured"
             assert app.screen._choices[0].description == ""
 
             await pilot.press("escape")
@@ -6658,7 +6658,7 @@ async def test_mcp_connect_runs_in_background_and_contains_failures(
             await pilot.pause(0.05)
 
         failed = next(choice for choice in menu._choices if choice.value == "local")
-        assert failed.trailing == "enabled · failed"
+        assert failed.trailing == "enabled • failed"
         assert app.screen is menu
 
         # A runtime refresh keeps the full server catalog visible while making
@@ -6667,7 +6667,7 @@ async def test_mcp_connect_runs_in_background_and_contains_failures(
         await menu.refresh_choices()
         connected = next(choice for choice in menu._choices if choice.value == "local")
         assert connected.disabled is True
-        assert connected.trailing == "enabled · connected"
+        assert connected.trailing == "enabled • connected"
         options.highlighted = options.get_option_index("local")
         await pilot.press("enter")
         await pilot.pause()
@@ -6735,7 +6735,7 @@ async def test_mcp_disconnect_runs_in_background_and_refreshes_status(
             await pilot.pause(0.05)
 
         stopped = next(choice for choice in menu._choices if choice.value == "local")
-        assert stopped.trailing == "enabled · stopped"
+        assert stopped.trailing == "enabled • stopped"
         assert stopped.disabled is True
         assert app.screen is menu
 
@@ -6866,11 +6866,11 @@ async def test_tool_permissions_group_all_registered_sources(tmp_path: Path) -> 
         assert choices["AiGeneratedPluginTest"].group == "dev.ouro.generated"
         assert not any(choice.label == "Plugin default" for choice in choices.values())
         assert choices["UnavailableTest"].group == "Unavailable"
-        assert choices["BuiltinTest"].trailing == "default · approval"
-        assert choices["ContractControlledTest"].trailing == "contract · auto"
+        assert choices["BuiltinTest"].trailing == "default • approval"
+        assert choices["ContractControlledTest"].trailing == "contract • auto"
         assert choices["ContractControlledTest"].disabled is True
         assert choices["ThirdPartyPluginTest"].disabled is False
-        assert choices["UnavailableTest"].trailing == "deny · unavailable"
+        assert choices["UnavailableTest"].trailing == "deny • unavailable"
         assert all(choice.description == "" for choice in choices.values())
 
 
@@ -6894,7 +6894,7 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         await _wait_for_screen(
             app,
             ChoiceScreen,
-            title="TOOL PERMISSION · BuiltinTest",
+            title="TOOL PERMISSION • BuiltinTest",
         )
         assert app.screen is tool_screen
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
@@ -6921,7 +6921,7 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         await _wait_for_screen(
             app,
             ChoiceScreen,
-            title="TOOL PERMISSION · BuiltinTest",
+            title="TOOL PERMISSION • BuiltinTest",
         )
         assert app.screen is tool_screen
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
@@ -6934,7 +6934,7 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         assert app.screen is tool_screen
         assert (
             next(choice for choice in app.screen._choices if choice.value == "BuiltinTest").trailing
-            == "default · approval"
+            == "default • approval"
         )
         assert not list(app.screen.query("Toast"))
         assert "BuiltinTest" not in ConfigurationFacade(tmp_path).permission_config().tools
@@ -7025,7 +7025,7 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
 
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="MCP · local")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP • local")
         assert app.screen is action_screen
         assert [choice.value for choice in app.screen._choices] == [
             "edit",
@@ -7064,10 +7064,10 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
         assert (
             next(choice for choice in app.screen._choices if choice.value == "local").trailing
-            == "disabled · disabled"
+            == "disabled • disabled"
         )
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="MCP · local")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP • local")
         options = app.screen.query_one("#choice-list", OptionList)
         await pilot.click(options, offset=(4, 1))
         await pilot.pause()
@@ -7086,7 +7086,7 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         assert app.screen is action_screen
         assert next(
             choice for choice in app.screen._choices if choice.value == "local"
-        ).trailing.startswith("enabled ·")
+        ).trailing.startswith("enabled •")
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is action_screen
@@ -7129,7 +7129,7 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="MCP · local")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP • local")
 
         options = action_screen.query_one("#choice-list", OptionList)
         assert options.get_option("start").disabled is False
@@ -7161,11 +7161,11 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
             await pilot.pause(0.05)
         assert (
             next(choice for choice in action_screen._choices if choice.value == "local").trailing
-            == "enabled · connected"
+            == "enabled • connected"
         )
 
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="MCP · local")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP • local")
         options = action_screen.query_one("#choice-list", OptionList)
 
         assert action_screen is app.screen
@@ -7197,7 +7197,7 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
         await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
         assert (
             next(choice for choice in action_screen._choices if choice.value == "local").trailing
-            == "enabled · stopped"
+            == "enabled • stopped"
         )
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -7407,7 +7407,7 @@ async def test_skill_actions_open_operation_specific_skill_selection(tmp_path: P
         assert app.screen.query_one("#choice-title", Static).render().plain == "VALIDATE SKILL"
         assert [choice.value for choice in app.screen._choices] == ["demo"]
         assert app.screen._choices[0].description == ""
-        assert app.screen._choices[0].trailing == "ouro · user · enabled"
+        assert app.screen._choices[0].trailing == "ouro • user • enabled"
 
 
 @pytest.mark.asyncio
@@ -7450,21 +7450,21 @@ async def test_skill_directory_sources_use_shared_menu_and_persist_toggles(tmp_p
             *("WORKSPACE DIRECTORIES",) * 5,
         ]
         assert [choice.label for choice in action_screen._choices[1:]] == [
-            "agents · user",
-            "claude · user",
-            "copilot · user",
-            "codex · user",
-            "ouro · user",
-            "agents · workspace",
-            "claude · workspace",
-            "github · workspace",
-            "codex · workspace",
-            "ouro · workspace",
+            "agents • user",
+            "claude • user",
+            "copilot • user",
+            "codex • user",
+            "ouro • user",
+            "agents • workspace",
+            "claude • workspace",
+            "github • workspace",
+            "codex • workspace",
+            "ouro • workspace",
         ]
         assert all(choice.trailing == "enabled" for choice in action_screen._choices)
         assert "plugin" not in {choice.value for choice in action_screen._choices}
 
-        action_screen.query_one("#choice-filter", Input).value = "ouro · user"
+        action_screen.query_one("#choice-filter", Input).value = "ouro • user"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
@@ -7520,7 +7520,7 @@ async def test_skill_menu_loads_live_plugin_skill_as_disabled_choice(tmp_path: P
         assert app.screen.query_one("#choice-title", Static).render().plain == "SKILLS"
         assert [choice.value for choice in app.screen._choices] == ["calendar"]
         assert app.screen._choices[0].disabled is True
-        assert app.screen._choices[0].trailing == "plugin · enabled"
+        assert app.screen._choices[0].trailing == "plugin • enabled"
 
 
 @pytest.mark.asyncio
@@ -7542,7 +7542,7 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
         await pilot.press("enter", "enter")
         await pilot.pause()
 
-        assert app.screen.query_one("#choice-title", Static).render().plain == "SKILL · demo"
+        assert app.screen.query_one("#choice-title", Static).render().plain == "SKILL • demo"
         assert app.screen._choices[0].label == "Disable"
 
         options = app.screen.query_one("#choice-list", OptionList)
@@ -7556,7 +7556,7 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
         await pilot.pause()
         assert (
             next(choice for choice in app.screen._choices if choice.value == "demo").trailing
-            == "ouro · user · disabled"
+            == "ouro • user • disabled"
         )
         await pilot.press("enter")
         await pilot.pause()
@@ -7570,7 +7570,7 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
         await pilot.pause()
         assert (
             next(choice for choice in app.screen._choices if choice.value == "demo").trailing
-            == "ouro · user · enabled"
+            == "ouro • user • enabled"
         )
         await pilot.press("escape")
 
@@ -9321,7 +9321,7 @@ async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedbac
         assert "Accept" in controls
         assert "Revise" in controls
         assert "Reject" in controls
-        assert "↑/↓ or ←/→ move · Enter choose" in controls
+        assert "↑/↓ or ←/→ move • Enter choose" in controls
         assert "1. Accept" not in controls
         assert "2. Revise" not in controls
         assert "3. Reject" not in controls

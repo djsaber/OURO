@@ -708,7 +708,8 @@ def _tool_activity_text(
     """Render one tool state without coupling it to a mounted widget."""
 
     presentation = present_tool(tool)
-    subagent = agent if agent is not None and tool.tool_name.casefold() == "spawnagent" else None
+    is_spawn_agent = tool.tool_name.casefold() == "spawnagent"
+    subagent = agent if agent is not None and is_spawn_agent else None
     title = presentation.title or tool.tool_name
     if subagent is not None:
         title = _subagent_identity(subagent)
@@ -732,6 +733,16 @@ def _tool_activity_text(
         )
     if subagent is not None:
         status_label = _subagent_task_status(subagent)
+        text.append(
+            f"  {status_label}",
+            style=(
+                TUI_DESIGN.failure
+                if status_label == "failed"
+                else TUI_DESIGN.text_metadata
+            ),
+        )
+    elif is_spawn_agent:
+        status_label = _spawn_agent_preview_status(tool)
         text.append(
             f"  {status_label}",
             style=(
@@ -766,6 +777,8 @@ def _tool_activity_text(
             text.append(part.text, style=style)
     if subagent is not None:
         _append_subagent_activity(text, subagent)
+    elif is_spawn_agent:
+        _append_subagent_preview(text, tool)
     if highlighted:
         text.stylize(TUI_DESIGN.text_highlight)
     return text
@@ -785,9 +798,35 @@ def _subagent_task_status(agent: AgentTreeNode) -> str:
         return "failed"
     if agent.status == "paused":
         return "paused"
-    if agent.execution_mode == "async":
-        return "background"
-    return "working"
+    return _subagent_execution_status(agent.execution_mode)
+
+
+def _subagent_execution_status(execution_mode: object) -> str:
+    return "background" if execution_mode == "async" else "working"
+
+
+def _spawn_agent_preview_status(tool: RuntimeToolCallActivity) -> str:
+    """Project the stable header shape before the durable Agent node exists."""
+
+    if tool.status in _FAILED_TOOL_STATUSES:
+        return "failed"
+    if tool.status == "completed":
+        if tool.arguments.get("execution_mode") != "async":
+            return "done"
+    return _subagent_execution_status(tool.arguments.get("execution_mode", "sync"))
+
+
+def _append_subagent_preview(text: Text, tool: RuntimeToolCallActivity) -> None:
+    description = tool.arguments.get("description")
+    if not isinstance(description, str) or not description.strip():
+        return
+    if tool.status in _FAILED_TOOL_STATUSES:
+        label = "Failed"
+    elif tool.status == "completed" and tool.arguments.get("execution_mode") != "async":
+        label = "Done"
+    else:
+        label = "Dispatching"
+    _append_subagent_detail(text, label, description.strip())
 
 
 def _append_subagent_activity(
@@ -800,8 +839,12 @@ def _append_subagent_activity(
         activity_name,
         activity_name.replace("_", " ").title(),
     )
+    _append_subagent_detail(text, label, agent.task_description)
+
+
+def _append_subagent_detail(text: Text, label: str, description: str) -> None:
     text.append(
-        f"\n  └ {label}{TUI_DESIGN.inline_separator}{agent.task_description}",
+        f"\n  └ {label}{TUI_DESIGN.inline_separator}{description}",
         style=TUI_DESIGN.text_lowlight,
     )
 

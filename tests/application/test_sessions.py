@@ -569,6 +569,7 @@ def test_branch_remaps_messages_and_expands_complete_tool_exchange(tmp_path) -> 
     assert branch.session.parent_session_id == source.session_id
     assert branch.session.root_session_id == source.session_id
     assert branch.session.forked_from_message_id == assistant.message_id
+    assert branch.session.title == "Tool task • 分支"
     assert len(branch_snapshot.messages) == 3
     assert [message.sequence for message in branch_snapshot.messages] == [1, 2, 3]
     assert all(message.run_id is None for message in branch_snapshot.messages)

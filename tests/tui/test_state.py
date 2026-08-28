@@ -35,8 +35,8 @@ def test_projection_without_run_is_idle() -> None:
 
 def test_duration_and_reasoning_labels_share_explicit_state_format() -> None:
     assert format_duration(3_425.4) == "57m 05.4s"
-    assert format_reasoning_label("Thought", 2.5, expanded=False) == "+ Thought · 2.5s"
-    assert format_reasoning_label("Thought", 2.5, expanded=True) == "- Thought · 2.5s"
+    assert format_reasoning_label("Thought", 2.5, expanded=False) == "+ Thought • 2.5s"
+    assert format_reasoning_label("Thought", 2.5, expanded=True) == "- Thought • 2.5s"
 
 
 def test_run_presentation_preserves_failure_information() -> None:

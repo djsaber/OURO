@@ -82,22 +82,22 @@ def test_file_tool_presentations_expose_target_and_line_semantics() -> None:
         )
     )
 
-    assert [(line.marker, line.text) for line in read.lines] == [("└", "src/app.py · 42 lines")]
+    assert [(line.marker, line.text) for line in read.lines] == [("└", "src/app.py • 42 lines")]
     assert [(line.marker, line.text) for line in write.lines] == [
-        ("└", "src/new.py · +2 lines · append")
+        ("└", "src/new.py • +2 lines • append")
     ]
     assert [(part.text, part.tone) for part in write.lines[0].parts] == [
         ("src/new.py", "default"),
-        (" · ", "muted"),
+        (" • ", "muted"),
         ("+2", "added"),
         (" lines", "muted"),
-        (" · ", "muted"),
+        (" • ", "muted"),
         ("append", "muted"),
     ]
-    assert [(line.marker, line.text) for line in edit.lines] == [("└", "src/edit.py · +3 −2 lines")]
+    assert [(line.marker, line.text) for line in edit.lines] == [("└", "src/edit.py • +3 −2 lines")]
     assert [(part.text, part.tone) for part in edit.lines[0].parts] == [
         ("src/edit.py", "default"),
-        (" · ", "muted"),
+        (" • ", "muted"),
         ("+3", "added"),
         (" ", "muted"),
         ("−2", "removed"),
@@ -190,12 +190,60 @@ def test_spawn_agent_uses_agent_identity_and_places_task_below_header() -> None:
         f"General Agent{TUI_DESIGN.inline_separator}Scout  background"
     )
     assert "Inspect the event pipeline" not in rendered.splitlines()[0]
-    assert "└ Responding · Inspect the event pipeline" in rendered
+    assert "└ Responding • Inspect the event pipeline" in rendered
     detail_offset = rendered.index("└ Responding")
     detail_style = rendered_text.get_style_at_offset(Console(), detail_offset)
     assert detail_style.color is not None
     assert detail_style.color.triplet is not None
     assert detail_style.color.triplet.hex == TUI_DESIGN.text_lowlight
+
+
+@pytest.mark.parametrize(
+    ("execution_mode", "expected_status"),
+    (("sync", "working"), ("async", "background")),
+)
+def test_spawn_agent_first_frame_uses_request_for_complete_preview(
+    execution_mode: str,
+    expected_status: str,
+) -> None:
+    tool = _tool(
+        "SpawnAgent",
+        arguments={
+            "agent_id": "general",
+            "description": "Inspect the event pipeline",
+            "execution_mode": execution_mode,
+        },
+        status="waiting_child",
+    )
+
+    initial = _tool_activity_text(
+        tool,
+        frame=0,
+        theme=DEFAULT_TUI_THEME,
+    ).plain.splitlines()
+    updated = _tool_activity_text(
+        tool,
+        frame=0,
+        theme=DEFAULT_TUI_THEME,
+        agent=_agent(
+            RuntimeActivitySnapshot(
+                session_id="ses_child",
+                run_id="run_child",
+                status="queued",
+                activity="queued",
+            ),
+            nickname=None,
+            execution_mode=execution_mode,
+        ),
+    ).plain.splitlines()
+
+    assert initial == [
+        f"{TUI_DESIGN.spinner_frames[0]} general  {expected_status}",
+        f"  └ Dispatching{TUI_DESIGN.inline_separator}Inspect the event pipeline",
+    ]
+    assert len(updated) == len(initial)
+    assert updated[0].endswith(f"General Agent  {expected_status}")
+    assert updated[1] == initial[1]
 
 
 @pytest.mark.parametrize(
@@ -306,7 +354,7 @@ def test_spawn_agent_uses_existing_child_tool_activity_status() -> None:
 
     assert "General Agent" in rendered.splitlines()[0]
     assert "Inspect the event pipeline" not in rendered.splitlines()[0]
-    assert "└ Running tools · Inspect the event pipeline" in rendered
+    assert "└ Running tools • Inspect the event pipeline" in rendered
 
 
 def test_spawn_agent_uses_dispatching_as_its_initial_detail_status() -> None:
@@ -328,7 +376,7 @@ def test_spawn_agent_uses_dispatching_as_its_initial_detail_status() -> None:
     assert rendered.splitlines()[0].endswith(
         f"General Agent{TUI_DESIGN.inline_separator}Scout  background"
     )
-    assert "└ Dispatching · Inspect the event pipeline" in rendered
+    assert "└ Dispatching • Inspect the event pipeline" in rendered
 
 
 def test_spawn_agent_distinguishes_foreground_work_from_background_work() -> None:
@@ -379,7 +427,7 @@ def test_spawn_agent_uses_task_outcome_status(
     assert header.strip() == (
         f"General Agent{TUI_DESIGN.inline_separator}Scout  {expected}"
     )
-    assert f"└ {expected.title()} · Inspect the event pipeline" == detail.strip()
+    assert f"└ {expected.title()} • Inspect the event pipeline" == detail.strip()
     title_style = rendered_text.get_style_at_offset(
         Console(), rendered.index("General Agent")
     )
@@ -419,13 +467,13 @@ async def test_tool_groups_only_add_spacing_at_non_tool_boundaries() -> None:
         lines = [line.strip() for line in raw_lines]
         before = lines.index("Before.")
         first_header = next(index for index, line in enumerate(lines) if line == "Read")
-        first_detail = lines.index("└ first.py · 1 line")
+        first_detail = lines.index("└ first.py • 1 line")
         second_header = next(
             index
             for index, line in enumerate(lines[first_header + 1 :], first_header + 1)
             if line == "Read"
         )
-        second_detail = lines.index("└ second.py · 2 lines")
+        second_detail = lines.index("└ second.py • 2 lines")
         after = lines.index("After.")
 
         assert raw_lines[first_header].startswith("  Read")
@@ -459,14 +507,14 @@ async def test_subagent_status_replaces_only_its_indexed_history_piece() -> None
 
         assert app.history.lines is line_buffer
         assert app.history.lines[0] is unaffected_line
-        assert "└ Responding · Inspect the event pipeline" in app.history.rendered_text
+        assert "└ Responding • Inspect the event pipeline" in app.history.rendered_text
 
         second = first.model_copy(update={"activity": "streaming_reasoning"})
         app.history.update_agents((_agent(second),))
 
         assert app.history.lines is line_buffer
         assert app.history.lines[0] is unaffected_line
-        assert "└ Thinking · Inspect the event pipeline" in app.history.rendered_text
+        assert "└ Thinking • Inspect the event pipeline" in app.history.rendered_text
 
 
 @pytest.mark.asyncio

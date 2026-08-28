@@ -37,7 +37,7 @@ def test_tui_theme_catalog_uses_distinct_restrained_palettes() -> None:
 
 def test_tui_design_tokens_own_shared_symbols_colors_and_animation() -> None:
     assert TUI_DESIGN.section_separator == " • "
-    assert TUI_DESIGN.inline_separator == " · "
+    assert TUI_DESIGN.inline_separator == " • "
     assert TUI_DESIGN.brand_mark == "▣"
     assert TUI_DESIGN.selected_choice_marker == "●"
     assert TUI_DESIGN.expanded_disclosure_marker == "-"

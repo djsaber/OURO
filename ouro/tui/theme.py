@@ -12,7 +12,7 @@ class TuiDesignTokens:
     """Theme-independent visual vocabulary shared by CSS and Rich content."""
 
     section_separator_mark: str = "•"
-    inline_separator_mark: str = "·"
+    inline_separator_mark: str = "•"
     brand_mark: str = "▣"
     mask_character: str = "•"
     selected_choice_marker: str = "●"

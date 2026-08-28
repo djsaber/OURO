@@ -51,7 +51,7 @@ def _style_at(text, fragment: str):
 def test_reasoning_label_uses_regular_title_and_lowlight_timing() -> None:
     label = _reasoning_label_text("Thought", 2.5, expanded=False)
 
-    assert label.plain == "+ Thought · 2.5s"
+    assert label.plain == "+ Thought • 2.5s"
     title_style = _style_at(label, "Thought")
     duration_style = _style_at(label, "2.5s")
     assert not title_style.bold
