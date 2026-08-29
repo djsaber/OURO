@@ -1756,6 +1756,33 @@ async def test_streaming_assistant_renders_completed_source_lines_once(
 
 
 @pytest.mark.asyncio
+async def test_first_assistant_chunk_is_applied_before_the_turn_is_mounted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        conversation = app.query_one(ConversationView)
+        original_mount = conversation._transcript.mount
+        mounted_sources: list[str] = []
+
+        async def record_mount(*widgets, **kwargs):
+            mounted_sources.extend(
+                widget.source for widget in widgets if isinstance(widget, AssistantTurn)
+            )
+            return await original_mount(*widgets, **kwargs)
+
+        monkeypatch.setattr(conversation._transcript, "mount", record_mount)
+
+        await conversation.append_assistant("first ")
+
+        assert mounted_sources == ["first "]
+        assert conversation.query_one(AssistantTurn).source == "first "
+
+
+@pytest.mark.asyncio
 async def test_streaming_tail_skips_layout_when_visual_height_is_unchanged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1880,6 +1907,8 @@ async def test_session_input_surface_reserves_one_row_above_connected_menus(
         assert panel.region.height == 1
         assert panel.render().plain.strip() == ""
         assert panel.region.bottom == composer.region.y
+        assert panel.content_region.x == composer.region.x
+        assert panel.content_region.right == composer.region.right
         composer_y = composer.region.y
 
         await pilot.press("slash")
@@ -4353,6 +4382,8 @@ async def test_history_load_keeps_the_active_tool_batch_in_live_rows(tmp_path: P
         assert not [entry for entry in history.entries if entry.tool is not None]
         row = conversation._tools[tool_call_id]
         assert row.is_attached is True
+        assert row.content_region.x == conversation.content_region.x + 2
+        assert row.content_region.right == conversation.content_region.right - 2
         assert row._timer is not None
         frame = row._frame
         row._tick()

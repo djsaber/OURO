@@ -1323,7 +1323,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 (
                     Padding(
                         rendered,
-                        (0, 0, 0, 2),
+                        (0, 2, 0, 2),
                     ),
                     "body",
                 )

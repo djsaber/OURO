@@ -529,9 +529,14 @@ async def test_tool_detail_uses_available_width_without_wrapping() -> None:
         app.history.append(TranscriptEntry(kind="tool", tool=tool))
         await app.history.wait_until_rendered()
 
-        narrow_lines = [line.strip() for line in app.history.rendered_text.splitlines()]
+        narrow_raw_lines = app.history.rendered_text.splitlines()
+        narrow_lines = [line.strip() for line in narrow_raw_lines]
+        narrow_raw_detail = next(
+            line for line in narrow_raw_lines if line.strip().startswith("└ Get-ChildItem")
+        )
         narrow_detail = next(line for line in narrow_lines if line.startswith("└ Get-ChildItem"))
         assert narrow_detail.endswith("…")
+        assert len(narrow_raw_detail) == app.history.scrollable_content_region.width - 2
         assert len([line for line in narrow_lines if "long-segment" in line]) == 1
 
         await pilot.resize_terminal(80, 12)

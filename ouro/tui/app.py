@@ -580,7 +580,7 @@ _OURO_TUI_CSS = """
 
     .tool-row {
         height: auto;
-        margin: 0 0 0 2;
+        margin: 0 2;
         color: $ouro-text-secondary;
         background: transparent;
     }
@@ -589,7 +589,7 @@ _OURO_TUI_CSS = """
         width: 100%;
         height: 1;
         margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
-        padding: 0 0 0 2;
+        padding: 0;
         color: $ouro-text-lowlight;
         background: $ouro-background;
         text-align: right;

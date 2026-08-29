@@ -1773,8 +1773,15 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
 
     async def append_assistant(self, text: str) -> None:
         await self._dismiss_welcome()
-        turn = await self._ensure_turn()
-        for block in turn.feed(text):
+        turn = self._assistant
+        if turn is None:
+            turn = self._create_turn()
+            self._assistant = turn
+            blocks = turn.feed(text)
+            await self._transcript.mount(turn)
+        else:
+            blocks = turn.feed(text)
+        for block in blocks:
             await self._freeze_block(turn, block)
 
     async def append_reasoning(
@@ -1793,13 +1800,16 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
 
     async def _ensure_turn(self) -> AssistantTurn:
         if self._assistant is None:
-            self._assistant = AssistantTurn(
-                run_id=self._current_run_id,
-                after_tool=self._history_ends_with_tool,
-                reasoning_expanded=self._reasoning_expanded,
-            )
+            self._assistant = self._create_turn()
             await self._transcript.mount(self._assistant)
         return self._assistant
+
+    def _create_turn(self) -> AssistantTurn:
+        return AssistantTurn(
+            run_id=self._current_run_id,
+            after_tool=self._history_ends_with_tool,
+            reasoning_expanded=self._reasoning_expanded,
+        )
 
     async def _freeze_block(self, turn: AssistantTurn, block: str) -> None:
         """Freeze one completed block, promoting pending reasoning ahead of it."""
