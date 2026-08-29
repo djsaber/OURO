@@ -81,6 +81,18 @@ _OURO_LOGO = """
 ╚██████╔╝╚▒▒▒▒▒▒╔╝██║  ██║╚▒▒▒▒▒▒╔╝
  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝
 """
+
+WELCOME_MAX_WIDTH = 116
+COMMAND_POPUP_MIN_HEIGHT = 3
+COMMAND_POPUP_MAX_HEIGHT = 14
+INTERACTION_PANEL_MIN_HEIGHT = 6
+INTERACTION_PANEL_MAX_HEIGHT = 10
+
+# The regular surface always retains the Host header, one conversation row,
+# the composer, and the status line. Welcome mode instead splits the rows
+# around its centered composer/status pair.
+_REGULAR_SURFACE_RESERVED_HEIGHT = 6
+_WELCOME_CENTER_HEIGHT = 4
 _BUSY_ACTIVITIES = {
     "starting",
     "loading_session",
@@ -1188,17 +1200,20 @@ class WelcomePanel(Vertical):
             self._system,
             classes="welcome-only welcome-bottom",
         )
+        self._command_popup = CommandPopup()
+        self._interaction_bar = InteractionBar()
         self._composer = Composer()
         self._composer.display = False
+        self._viewport_size: Size | None = None
         self._render_logo()
 
     def compose(self) -> ComposeResult:
         yield self._top
         yield SubagentNavigationPanel()
-        yield CommandPopup()
+        yield self._command_popup
         yield AskUserPanel()
         yield PlanConfirmationPanel()
-        yield InteractionBar()
+        yield self._interaction_bar
         yield self._composer
         yield QueuedInputPanel()
         yield StatusLine()
@@ -1210,10 +1225,42 @@ class WelcomePanel(Vertical):
         self._usage.set_system_status(status)
 
     def on_mount(self) -> None:
+        self.set_viewport_size(self.app.screen.size)
         self.refresh_theme()
 
     def set_welcome_mode(self, enabled: bool) -> None:
         self.set_class(enabled, "welcome-page")
+        self._apply_viewport_constraints()
+
+    def set_viewport_size(self, size: Size) -> None:
+        """Apply bounded constraints while Textual continues to own layout."""
+
+        if size == self._viewport_size:
+            return
+        self._viewport_size = size
+        self._apply_viewport_constraints()
+
+    def _apply_viewport_constraints(self) -> None:
+        size = self._viewport_size
+        if size is None:
+            return
+        welcome_mode = self.has_class("welcome-page")
+        self.styles.max_width = (
+            min(WELCOME_MAX_WIDTH, size.width) if welcome_mode else "100%"
+        )
+        available_height = (
+            max(1, (size.height - _WELCOME_CENTER_HEIGHT) // 2)
+            if welcome_mode
+            else max(1, size.height - _REGULAR_SURFACE_RESERVED_HEIGHT)
+        )
+        self._command_popup.styles.max_height = min(
+            COMMAND_POPUP_MAX_HEIGHT,
+            available_height,
+        )
+        self._interaction_bar.styles.max_height = min(
+            INTERACTION_PANEL_MAX_HEIGHT,
+            max(1, size.height - _REGULAR_SURFACE_RESERVED_HEIGHT),
+        )
 
     def refresh_theme(self) -> None:
         self._render_logo()
@@ -1933,6 +1980,13 @@ class ApprovalPanel(Vertical):
             return
         self._cursor = (self._cursor + offset) % choice_count
         self._render_approval_controls()
+        self.call_after_refresh(self._scroll_approval_selection_into_view)
+
+    def _scroll_approval_selection_into_view(self) -> None:
+        if self._cursor == 0:
+            self.scroll_home(animate=False)
+        else:
+            self.scroll_end(animate=False)
 
     def _render_approval_title(self, title: str) -> None:
         theme = theme_for(self)
@@ -2089,6 +2143,7 @@ class InteractionBar(ApprovalPanel):
             )
         self._append_approval_hint(content)
         self._controls.update(content)
+        self.call_after_refresh(self._scroll_approval_selection_into_view)
 
 
 class AskUserPanel(Static):

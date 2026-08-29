@@ -773,6 +773,9 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   server，不等待网络或子进程握手，startup records 始终从 Manager 当前状态读取。连接成功后的工具投影与重连移除
   仍由 owner 原子完成；shutdown 关闭 session、HTTP client、stdio 管道和子进程。TUI 只在自身挂载生命周期内按有界
   间隔读取这一进程内快照，并在摘要变化时重绘连接和工具计数；轮询不执行网络调用，也不拥有第二份 MCP 状态。
+- TUI 输入表面只接收 Screen 的单一 resize 信号，以常数次边界更新把终端可用尺寸交给 Textual 布局系统：欢迎页
+  保留百分比宽度及 48/116 列偏好边界，但视口硬边界优先；命令与审批面板只约束可用最大高度，内容测量、居中、
+  滚动和选中项可见性仍由组件布局负责，不在 resize 路径遍历组件树或重算渲染内容。
 - 外部 Agent Skills frontmatter 在 skills parser 边界校验；`skills` 层拥有发现、解析和按冻结元数据精确加载，
   Application 拥有显式激活、Run/Queue/Policy 编排，Core 只拥有可持久化内容块及 Provider 投影不变量，Host 只做
   输入与展示适配。

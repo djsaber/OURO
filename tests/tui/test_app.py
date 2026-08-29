@@ -1778,6 +1778,43 @@ async def test_welcome_tips_point_to_keyboard_help_instead_of_sessions(tmp_path:
         assert "Sessions" not in tips
 
 
+@pytest.mark.asyncio
+async def test_welcome_layout_stays_centered_across_terminal_width_bounds(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(200, 32)) as pilot:
+        welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
+        composer = app.query_one(Composer)
+
+        assert welcome.region.width == 116
+        assert welcome.region.x == app.screen.region.width - welcome.region.right
+        assert composer.region.x == app.screen.region.width - composer.region.right
+
+        await pilot.resize_terminal(64, 24)
+        await pilot.pause()
+        assert welcome.region.width == 48
+        assert welcome.region.x == app.screen.region.width - welcome.region.right
+        assert composer.region.x == app.screen.region.width - composer.region.right
+
+        await pilot.resize_terminal(40, 16)
+        await pilot.pause()
+        assert welcome.region.width == app.screen.region.width
+        assert composer.region.x == app.screen.region.width - composer.region.right
+        assert welcome._top.region.height == welcome._bottom.region.height
+        assert composer.region.y == welcome._top.region.bottom
+        assert app.query_one(StatusLine).region.bottom <= app.screen.region.bottom
+
+        await pilot.click("#composer")
+        await pilot.press("slash")
+        await pilot.pause()
+        popup = app.query_one(CommandPopup)
+        assert popup.region.y >= app.screen.region.y
+        assert popup.region.bottom == composer.region.y
+        assert popup.region.right <= app.screen.region.right
+
+
 def test_plugin_skill_choice_is_visible_but_not_selectable() -> None:
     choice = _skill_choice(
         SkillView(
@@ -8871,6 +8908,55 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_command_and_approval_menus_fit_resized_terminal(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        composer = app.query_one(Composer)
+        composer.load_text("start session")
+        await pilot.press("enter")
+        await _wait_for_worker_group(app, pilot, group="run")
+
+        await pilot.resize_terminal(80, 16)
+        await pilot.click("#composer")
+        await pilot.press("slash")
+        await pilot.pause()
+        popup = app.query_one(CommandPopup)
+        assert popup.region.height == 10
+        assert popup.region.bottom == composer.region.y
+        assert app.query_one(StatusLine).region.bottom == app.screen.region.bottom
+
+        await pilot.resize_terminal(40, 12)
+        await pilot.pause()
+        assert popup.region.height == 6
+        assert popup.region.right <= app.screen.region.right
+        assert popup.region.bottom == composer.region.y
+        assert app.query_one(StatusLine).region.bottom == app.screen.region.bottom
+
+        composer.load_text("/approval ")
+        composer.move_cursor((0, len(composer.text)))
+        await pilot.pause()
+        assert popup.argument_command is not None
+        assert popup.argument_command.name == "/approval"
+        assert popup.region.bottom == composer.region.y
+        assert popup.region.right <= app.screen.region.right
+
+        for _ in range(len(popup._arguments) - 1):
+            await pilot.press("down")
+        await pilot.pause()
+        assert popup.selected_argument == popup._arguments[-1]
+        assert popup.scroll_y > 0
+
+        await pilot.resize_terminal(100, 32)
+        composer.load_text("/")
+        composer.move_cursor((0, 1))
+        await pilot.pause()
+        assert popup.region.height == 14
+        assert popup.region.bottom == composer.region.y
+
+
+@pytest.mark.asyncio
 async def test_workspace_command_uses_inline_history_and_freeform_only_before_session(
     tmp_path: Path,
 ) -> None:
@@ -9638,6 +9724,41 @@ async def test_approval_panel_selects_with_arrows_and_resumes_run(tmp_path: Path
         assert app._projection.pending_interaction is None
         assert app._projection.activity.status == "completed"
         assert composer.disabled is False
+
+
+@pytest.mark.asyncio
+async def test_approval_panel_keeps_selected_action_visible_in_short_terminal(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "approved.txt"
+    app = OuroTuiApp(
+        application=_approval_application(tmp_path, target),
+        approval_mode="approval",
+    )
+
+    async with app.run_test(size=(40, 12)) as pilot:
+        await pilot.pause()
+        await pilot.click("#composer")
+        await pilot.press(*"write", "enter")
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.pending_interaction is not None,
+            pilot,
+            description="approval in short terminal",
+        )
+
+        panel = app.query_one(InteractionBar)
+        composer = app.query_one(Composer)
+        assert panel.region.height == 6
+        assert panel.region.right <= app.screen.region.right
+        assert panel.region.bottom == composer.region.y
+        assert app.query_one(StatusLine).region.bottom == app.screen.region.bottom
+
+        await pilot.press("down")
+        await pilot.pause()
+        assert panel.selected_approved is False
+        assert panel.scroll_y > 0
+        assert "Deny" in app.export_screenshot()
 
 
 @pytest.mark.asyncio

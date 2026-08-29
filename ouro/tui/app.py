@@ -19,6 +19,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.driver import Driver
+from textual.geometry import Size
 from textual.message import Message
 from textual.messages import Prune
 from textual.screen import Screen
@@ -96,6 +97,11 @@ from ouro.tui.state import (
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
 from ouro.tui.theme import TUI_DESIGN, TUI_THEMES, TuiTheme
 from ouro.tui.widgets import (
+    COMMAND_POPUP_MAX_HEIGHT,
+    COMMAND_POPUP_MIN_HEIGHT,
+    INTERACTION_PANEL_MAX_HEIGHT,
+    INTERACTION_PANEL_MIN_HEIGHT,
+    WELCOME_MAX_WIDTH,
     AskUserPanel,
     BrandHeader,
     CommandPopup,
@@ -191,11 +197,13 @@ class _OuroHostScreen(Screen):
     def __init__(
         self,
         on_prune: Callable[[], None],
+        on_resize: Callable[[Size], None] | None = None,
         *,
         clipboard_writer: Callable[[str], None] = write_system_clipboard,
     ) -> None:
         super().__init__(id="_default")
         self._on_host_prune = on_prune
+        self._on_host_resize = on_resize
         self._clipboard_writer = clipboard_writer
 
     async def on_mouse_down(self, event: events.MouseDown) -> None:
@@ -215,6 +223,10 @@ class _OuroHostScreen(Screen):
         self._on_host_prune()
         await super().on_prune(event)
 
+    def on_resize(self, event: events.Resize) -> None:
+        if self._on_host_resize is not None:
+            self._on_host_resize(event.size)
+
 
 _OURO_TUI_CSS = """
     /* Design tokens — one source of truth for the flat OURO chrome.
@@ -226,10 +238,8 @@ _OURO_TUI_CSS = """
     $conversation-right-gutter: 1;
     $welcome-width: 72%;
     $welcome-min-width: 48;
-    $welcome-max-width: 116;
     $welcome-inline-padding: 2;
     $welcome-logo-gap: 2;
-    $welcome-info-min-height: 15;
     $welcome-section-gap: 2;
     $welcome-system-gap: 3;
     $welcome-label-width: 11;
@@ -395,7 +405,7 @@ _OURO_TUI_CSS = """
     .welcome-bottom {
         width: 100%;
         height: 1fr;
-        min-height: $welcome-info-min-height;
+        min-height: 0;
         overflow: hidden;
     }
 
@@ -611,8 +621,14 @@ _OURO_TUI_CSS = """
     }
 
     #interaction-bar {
-        max-height: 10;
-        overflow: hidden;
+        min-height: $interaction-panel-min-height;
+        max-height: $interaction-panel-max-height;
+        overflow-y: auto;
+        scrollbar-background: transparent;
+        scrollbar-color: transparent;
+        scrollbar-color-hover: transparent;
+        scrollbar-size-vertical: 0;
+        scrollbar-gutter: auto;
     }
 
     #interaction-summary {
@@ -669,7 +685,8 @@ _OURO_TUI_CSS = """
 
     #command-popup {
         height: auto;
-        max-height: 14;
+        min-height: $command-popup-min-height;
+        max-height: $command-popup-max-height;
         margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         padding: 1 2;
         color: $ouro-text-primary;
@@ -1013,6 +1030,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._runtime_events_frame_scheduled = False
         self._runtime_event_apply_lock = asyncio.Lock()
         self._mcp_status_timer: Timer | None = None
+        self._input_surface: WelcomePanel | None = None
 
     @property
     def tui_theme(self) -> TuiTheme:
@@ -1023,6 +1041,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             **super().get_css_variables(),
             **TUI_DESIGN.css_variables(),
             "ouro-theme": self._tui_theme.accent,
+            "welcome-max-width": str(WELCOME_MAX_WIDTH),
+            "command-popup-min-height": str(COMMAND_POPUP_MIN_HEIGHT),
+            "command-popup-max-height": str(COMMAND_POPUP_MAX_HEIGHT),
+            "interaction-panel-min-height": str(INTERACTION_PANEL_MIN_HEIGHT),
+            "interaction-panel-max-height": str(INTERACTION_PANEL_MAX_HEIGHT),
         }
 
     def compose(self) -> ComposeResult:
@@ -1038,7 +1061,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 welcome_state_changed=self._set_welcome_mode,
                 system_status_changed=self._set_welcome_system_status,
             )
-            yield WelcomePanel()
+            self._input_surface = WelcomePanel()
+            yield self._input_surface
 
     def get_driver_class(self) -> type[Driver]:
         driver_class = super().get_driver_class()
@@ -1052,7 +1076,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return driver_class
 
     def get_default_screen(self) -> Screen:
-        return _OuroHostScreen(self._begin_host_close)
+        return _OuroHostScreen(self._begin_host_close, self._resize_input_surface)
+
+    def _resize_input_surface(self, size: Size) -> None:
+        if self._input_surface is not None:
+            self._input_surface.set_viewport_size(size)
 
     def on_mount(self) -> None:
         self.query_one(StatusLine).set_activity("starting")
