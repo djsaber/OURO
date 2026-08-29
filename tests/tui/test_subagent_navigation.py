@@ -145,7 +145,7 @@ def test_subagent_panel_node_colors_follow_runtime_outcomes() -> None:
         Color.parse(TUI_DESIGN.text_lowlight),
         Color.parse(TUI_DESIGN.failure),
     ]
-    assert panel.tooltip == "run_root • async • streaming text"
+    assert panel.tooltip is None
 
 
 def test_subagent_panel_skips_equivalent_tree_and_selection_refreshes(

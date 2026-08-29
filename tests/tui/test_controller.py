@@ -1470,6 +1470,38 @@ async def test_controller_observes_another_session_without_changing_control_targ
 
 
 @pytest.mark.asyncio
+async def test_controller_selects_subagent_surface_under_root_control(
+    tmp_path: Path,
+) -> None:
+    application = _reasoning_application(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+    )
+    await controller.start()
+
+    try:
+        root = application.runtime.sessions.create(title="Root").session
+        child = SessionRecord(
+            session_id="ses_direct_child",
+            title="Direct child",
+            session_kind="subagent",
+            root_session_id=root.session_id,
+            parent_session_id=root.session_id,
+            delegation_id="dlg_direct_child",
+        )
+        application.runtime.store.create_session(child)
+
+        loaded = await controller.load_session(child.session_id)
+
+        assert loaded.detail.session.session_id == child.session_id
+        assert controller.session_id == root.session_id
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
 async def test_new_primary_session_cannot_be_claimed_by_concurrent_child_events(
     tmp_path: Path,
 ) -> None:

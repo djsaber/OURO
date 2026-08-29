@@ -232,22 +232,6 @@ class SubagentNavigationPanel(Static):
         return TUI_DESIGN.text_lowlight
 
     def _refresh_content(self) -> None:
-        selected = self.selected_agent
-        self.tooltip = (
-            None
-            if selected is None
-            else TUI_DESIGN.inline_separator.join(
-                (
-                    selected.parent_run_id,
-                    selected.execution_mode,
-                    (
-                        selected.activity.activity.replace("_", " ")
-                        if selected.activity is not None
-                        else selected.status.replace("_", " ")
-                    ),
-                )
-            )
-        )
         self.refresh(layout=True)
 
 

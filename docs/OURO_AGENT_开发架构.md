@@ -527,7 +527,7 @@ SessionRepository 拥有，文件实现保存 Session 子记录，SQLite 实现�
 
 Session 的通用 `branch` 只表达 canonical history 边界：传入任意 message id 时包含该边界，传入空边界时
 创建空历史分支，不限制 Host 可选择的消息角色。TUI 的 `/fork` 在会话输入框命令菜单中统一投影分支目标：首项
-`Full session` 复制完整当前历史，后续 `#N` 项显示对应 user message 文本，并将所选 user message 映射为其
+`Full` 复制完整当前历史，后续 `#N` 项显示对应 user message 文本，并将所选 user message 映射为其
 前一个 canonical message 边界后回填为草稿。上述选择与映射完全属于 TUI 交互规则。
 分支原样继承源 Session 的 `title`、`title_source` 和 `title_locked`，并通过 `parent_session_id`、
 `root_session_id`、`forked_from_message_id`、`forked_from_run_id` 诚实记录 lineage。框架不向标题拼接“分支”等

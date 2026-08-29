@@ -38,7 +38,13 @@ from ouro.application.session_models import SessionContextStatus
 from ouro.application.supervisor_models import RuntimeActivitySnapshot, RuntimeToolCallActivity
 from ouro.config import reasoning_preset
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.agents import ToolSelection
+from ouro.core.agents import (
+    AgentCatalogEntry,
+    AgentCatalogSnapshot,
+    AgentDefinition,
+    DelegationRecord,
+    ToolSelection,
+)
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextMetrics
 from ouro.core.errors import PersistenceError
@@ -58,7 +64,7 @@ from ouro.core.provider import (
     ProviderStreamEvent,
 )
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
-from ouro.core.state import RunRecord
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest, ToolSource
 from ouro.local_application import LocalApplication
 from ouro.mcp import (
@@ -1402,6 +1408,89 @@ def _multi_child_streaming_application(
     return LocalApplication.from_runtime(runtime)
 
 
+def _persist_direct_child_session(application: LocalApplication) -> tuple[str, str]:
+    """Persist one canonical root/Delegation/child aggregate for picker tests."""
+
+    store = application.runtime.store
+    definition = AgentDefinition(
+        agent_id="general",
+        name="General",
+        description="General subagent.",
+        tool_selection=ToolSelection(mode="selected", names=()),
+    )
+    root_run_id = "run_picker_root"
+    child_run_id = "run_picker_child"
+    root = SessionRecord(
+        session_id="ses_picker_root",
+        title="Picker root",
+        last_run_id=root_run_id,
+    )
+    child = SessionRecord(
+        session_id="ses_picker_child",
+        title="Picker child",
+        session_kind="subagent",
+        root_session_id=root.session_id,
+        parent_session_id=root.session_id,
+        delegation_id="dlg_picker_child",
+        last_run_id=child_run_id,
+    )
+    store.create_session(root)
+    store.save_run(
+        RunRecord(
+            run_id=root_run_id,
+            session_id=root.session_id,
+            status="completed",
+            agent_catalog=AgentCatalogSnapshot(
+                entries=(AgentCatalogEntry(definition=definition),)
+            ),
+        )
+    )
+    store.create_session(child)
+    store.save_run(
+        RunRecord(
+            run_id=child_run_id,
+            session_id=child.session_id,
+            status="completed",
+            parent_run_id=root_run_id,
+            initiator_id="ouro.subagents/dlg_picker_child",
+            metadata={
+                "delegation_id": child.delegation_id,
+                "root_session_id": root.session_id,
+                "agent_id": definition.agent_id,
+                "agent_definition_contract_hash": definition.contract_hash,
+            },
+        )
+    )
+    store.create_delegation(
+        DelegationRecord(
+            delegation_id=child.delegation_id or "",
+            idempotency_key="picker/direct-child",
+            root_session_id=root.session_id,
+            parent_session_id=root.session_id,
+            parent_run_id=root_run_id,
+            child_session_id=child.session_id,
+            current_child_run_id=child_run_id,
+            agent_id=definition.agent_id,
+            task_description="Inspect direct child navigation.",
+            prompt_digest="sha256:picker-direct-child",
+            spawn_state="submitted",
+            definition=definition,
+        )
+    )
+    store.append_message(
+        MessageRecord.text(
+            session_id=child.session_id,
+            run_id=child_run_id,
+            role="assistant",
+            text="Direct child history",
+            sequence=1,
+        )
+    )
+    application.runtime.sessions.open(root.session_id)
+    application.runtime.sessions.open(child.session_id)
+    return root.session_id, child.session_id
+
+
 def _sync_child_view_application(
     tmp_path: Path,
     provider: SyncChildViewProvider,
@@ -2350,7 +2439,7 @@ async def test_fork_command_uses_inline_targets_for_full_and_user_boundary(
         assert popup.argument_command.name == "/fork"
         assert [argument.value for argument in popup._arguments] == ["full", "#1"]
         assert [argument.display_label for argument in popup._arguments] == [
-            "Full session",
+            "Full",
             "#1",
         ]
         popup_text = popup.query_one("#command-popup-content", Static).render().plain
@@ -3624,6 +3713,7 @@ async def test_history_loads_failed_run_summary_with_failure_semantics(tmp_path:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(
             (message,),
@@ -4729,6 +4819,85 @@ async def test_session_picker_closes_modal_before_rendering_selected_history(
         assert session_menu not in app.screen_stack
         assert app._controller.session_id == session.session_id
         assert app.query_one(ConversationHistory).user_turns == ("Persisted user message",)
+
+
+@pytest.mark.asyncio
+async def test_session_picker_opens_child_as_root_owned_read_only_surface(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    root_session_id, child_session_id = _persist_direct_child_session(application)
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await _wait_until(
+            lambda: app._controller._started,
+            pilot,
+            description="TUI startup with persisted Agent tree",
+        )
+        await pilot.press("ctrl+s")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+        options = app.screen.query_one("#choice-list", OptionList)
+        options.highlighted = options.get_option_index(child_session_id)
+        options.focus()
+        await pilot.press("enter")
+        await _wait_until(
+            lambda: app._visible_session_id() == child_session_id,
+            pilot,
+            description="direct child session surface",
+        )
+
+        panel = app.query_one(SubagentNavigationPanel)
+        composer = app.query_one(Composer)
+        assert app._controller.session_id == root_session_id
+        assert app._visible_read_only is True
+        assert app._visible_agent is not None
+        assert app._visible_agent.session_id == child_session_id
+        assert composer.disabled is True
+        assert composer.has_class("read-only-session")
+        assert panel.display is True
+        assert panel.current_session_id == child_session_id
+        assert panel.visible_session_ids == (child_session_id,)
+
+        app.post_message(events.Key("alt+up", None))
+        await _wait_until(
+            lambda: app._visible_session_id() == root_session_id,
+            pilot,
+            description="root surface after direct child entry",
+        )
+
+        assert app._visible_read_only is False
+        assert composer.disabled is False
+        assert not composer.has_class("read-only-session")
+        assert panel.current_session_id == root_session_id
+
+
+@pytest.mark.asyncio
+async def test_startup_resume_preserves_canonical_child_read_only_state(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    root_session_id, child_session_id = _persist_direct_child_session(application)
+    app = OuroTuiApp(
+        application=application,
+        resume_session_id=child_session_id,
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await _wait_until(
+            lambda: app._visible_session_id() == child_session_id,
+            pilot,
+            description="startup child session surface",
+        )
+
+        composer = app.query_one(Composer)
+        panel = app.query_one(SubagentNavigationPanel)
+        assert app._controller.session_id == root_session_id
+        assert app._visible_read_only is True
+        assert composer.disabled is True
+        assert composer.has_class("read-only-session")
+        assert panel.display is True
+        assert panel.current_session_id == child_session_id
 
 
 @pytest.mark.asyncio

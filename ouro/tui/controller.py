@@ -1938,11 +1938,32 @@ class TuiController:
         return await asyncio.to_thread(runtime.session_reasoning, session_id)
 
     async def load_session(self, session_id: str) -> LoadedSession:
-        loaded = await asyncio.to_thread(self._read_session, session_id)
-        self._session_id = session_id
-        self._session_archived = loaded.detail.session.archived
+        loaded, control_archived = await asyncio.to_thread(
+            self._read_session_selection,
+            session_id,
+        )
+        self._session_id = loaded.detail.session.agent_root_session_id
+        self._session_archived = control_archived
         self._initial_model = None
         return loaded
+
+    def _read_session_selection(self, session_id: str) -> tuple[LoadedSession, bool]:
+        """Read the selected surface and resolve its canonical control Session."""
+
+        loaded = self._read_session(session_id)
+        session = loaded.detail.session
+        if session.session_kind == "primary":
+            return loaded, session.archived
+        root = self._runtime().sessions.open(
+            session.agent_root_session_id,
+            recover=False,
+        ).session
+        if root.session_kind != "primary":
+            raise PersistenceError(
+                f"subagent session {session.session_id} references non-primary root "
+                f"{root.session_id}"
+            )
+        return loaded, root.archived
 
     async def observe_session(self, session_id: str) -> TuiSessionObservation:
         """Attach a read-only Host observation without changing the control Session."""

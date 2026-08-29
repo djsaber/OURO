@@ -36,7 +36,7 @@ from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.supervisor import RuntimeSubscription
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.approvals import SessionApprovalMode
-from ouro.core.errors import OuroError
+from ouro.core.errors import OuroError, PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
@@ -1127,8 +1127,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         composer = self.query_one(Composer)
         with self.batch_update():
             composer.display = True
-            composer.disabled = False
-            composer.focus()
+            composer.disabled = self._visible_read_only
+            if not self._visible_read_only:
+                composer.focus()
         if session_load_error is not None:
             self._show_session_load_error(*session_load_error)
 
@@ -2437,7 +2438,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             TuiCommandArgument(
                 "full",
                 "Fork the complete current session",
-                label="Full session",
+                label="Full",
             ),
             *(
                 user_message_options
@@ -2960,8 +2961,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._install_session_surface(
                 loaded,
                 subscription=subscription,
-                read_only=False,
-                agent=None,
             )
         except Exception:
             if subscription is not None:
@@ -2977,8 +2976,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         loaded: LoadedSession,
         *,
         subscription: RuntimeSubscription,
-        read_only: bool,
-        agent: AgentTreeNode | None,
     ) -> None:
         session = loaded.detail.session
         projection, run_presentations, active_stream_tail = await asyncio.to_thread(
@@ -2986,8 +2983,21 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             loaded,
         )
         agents = self._replace_agent_tree(session.agent_root_session_id)
-        if agent is not None:
-            agent = self._agent_nodes.get(agent.delegation_id, agent)
+        read_only = session.session_kind == "subagent"
+        agent = next(
+            (
+                candidate
+                for candidate in agents
+                if candidate.session_id == session.session_id
+                and candidate.delegation_id == session.delegation_id
+            ),
+            None,
+        )
+        if read_only and agent is None:
+            raise PersistenceError(
+                f"subagent session {session.session_id} is absent from Agent tree "
+                f"{session.agent_root_session_id}"
+            )
         async with self._runtime_event_apply_lock:
             # Session history still renders in bounded chunks, but switching the
             # shared surface is one visual commit. Repainting an incomplete
@@ -3081,8 +3091,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._install_session_surface(
                 observation.loaded,
                 subscription=observation.subscription,
-                read_only=True,
-                agent=agent,
             )
         except (Exception, asyncio.CancelledError):
             observation.subscription.close()
@@ -3097,8 +3105,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._install_session_surface(
                 observation.loaded,
                 subscription=observation.subscription,
-                read_only=False,
-                agent=None,
             )
         except (Exception, asyncio.CancelledError):
             observation.subscription.close()
