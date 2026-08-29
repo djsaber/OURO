@@ -10328,6 +10328,46 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
     assert restarted.tui_theme == TUI_THEMES["sage"]
 
 
+@pytest.mark.parametrize(
+    ("placeholder_setter", "highlight"),
+    (
+        ("set_active_run_placeholder", "Ctrl+Enter"),
+        ("set_subagent_placeholder", "Alt+↑"),
+    ),
+)
+@pytest.mark.asyncio
+async def test_theme_switch_refreshes_styled_composer_placeholder(
+    tmp_path: Path,
+    placeholder_setter: str,
+    highlight: str,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        composer = app.query_one(Composer)
+        getattr(composer, placeholder_setter)()
+        placeholder = composer.placeholder
+        assert isinstance(placeholder, Content)
+        offset = placeholder.plain.index(highlight)
+        assert placeholder.get_style_at_offset(offset).foreground == Color.parse(
+            TUI_THEMES["original"].accent_bright
+        )
+
+        app._apply_tui_theme(TUI_THEMES["harbor"])
+
+        themed_placeholder = composer.placeholder
+        assert isinstance(themed_placeholder, Content)
+        assert themed_placeholder.get_style_at_offset(offset).foreground == Color.parse(
+            TUI_THEMES["harbor"].accent_bright
+        )
+        rendered = composer.render_line(0)
+        rendered_offset = rendered.text.index(highlight)
+        segment = next(iter(rendered.crop(rendered_offset, rendered_offset + len(highlight))))
+        assert segment.style is not None and segment.style.color is not None
+        assert segment.style.color.get_truecolor().hex == TUI_THEMES["harbor"].accent_bright
+
+
 @pytest.mark.asyncio
 async def test_action_menu_updates_thought_display_without_closing_picker(
     tmp_path: Path,

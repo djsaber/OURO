@@ -2933,7 +2933,14 @@ class Composer(TuiTextArea):
         if self._placeholder_parts == parts:
             return
         self._placeholder_parts = parts
-        self.placeholder = self._render_styled_placeholder(parts)
+        self._refresh_styled_placeholder()
+
+    def _refresh_styled_placeholder(self) -> None:
+        placeholder = self._render_styled_placeholder(self._placeholder_parts)
+        # Content equality ignores span styling, so replace the reactive value
+        # explicitly before notifying Textual about the visual mutation.
+        self.set_reactive(TextArea.placeholder, placeholder)
+        self.mutate_reactive(TextArea.placeholder)
 
     def _render_styled_placeholder(
         self,
@@ -2956,7 +2963,7 @@ class Composer(TuiTextArea):
 
     def refresh_theme(self) -> None:
         if self._placeholder_parts:
-            self.placeholder = self._render_styled_placeholder(self._placeholder_parts)
+            self._refresh_styled_placeholder()
 
     def render_line(self, y: int) -> Strip:
         if isinstance(self.placeholder, Content) and (
