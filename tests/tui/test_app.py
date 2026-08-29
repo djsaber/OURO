@@ -378,6 +378,49 @@ def test_group_shortcuts_are_disabled_for_ungrouped_choice_screens() -> None:
     assert screen.check_action("next_group", ()) is False
 
 
+@pytest.mark.asyncio
+async def test_editable_choice_filter_owns_text_input_outside_inline_edit(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async def save_value(_choice_id: str, _value: str) -> tuple[Choice, ...]:
+        return ()
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        screen = EditableChoiceScreen(
+            title="EDITABLE ITEMS",
+            placeholder="Filter items…",
+            choices=(Choice("item", "Item", group="ITEMS"),),
+            on_save=save_value,
+        )
+        app.push_screen(screen)
+        await pilot.pause()
+
+        filter_input = screen.query_one("#choice-filter", Input)
+        assert filter_input.has_focus is True
+
+        await pilot.press(*tuple("abcd"), "home", "delete", "end", "backspace")
+        assert filter_input.value == "bc"
+
+        await pilot.press("ctrl+u")
+        assert filter_input.value == ""
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen._editing_value == "item"
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert screen._editing_value is None
+        assert filter_input.has_focus is True
+
+        await pilot.press(*tuple("Item"))
+        assert filter_input.value == "Item"
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+
 def test_choice_focus_position_clamps_to_last_enabled_option() -> None:
     options = OptionList(
         *ChoiceScreen._options(
@@ -5231,6 +5274,7 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         assert app.screen is rename_screen
         assert rename_screen._editing_value is None
         assert rename_screen.query_one("#choice-filter", Input).disabled is False
+        assert rename_screen.query_one("#choice-filter", Input).has_focus is True
         assert rename_screen.query_one("#choice-hint", Static).render().plain == (
             EditableChoiceScreen.DEFAULT_HINT
         )
@@ -5798,6 +5842,38 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         await pilot.pause(0.2)
         assert isinstance(app.screen, CompactionConfigurationScreen)
         await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_shared_menu_applies_responsive_height_before_mount_layout(
+    tmp_path: Path,
+) -> None:
+    class MountObservedChoiceScreen(ChoiceScreen):
+        list_max_height_at_mount: int | None = None
+
+        def on_mount(self) -> None:
+            max_height = self.query_one("#choice-list", OptionList).styles.max_height
+            assert max_height is not None
+            self.list_max_height_at_mount = max_height.cells
+            super().on_mount()
+
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(48, 18)) as pilot:
+        await pilot.pause()
+        screen = MountObservedChoiceScreen(
+            title="ITEMS",
+            placeholder="Filter items…",
+            choices=tuple(Choice(str(index), f"Item {index}") for index in range(30)),
+        )
+        app.push_screen(screen)
+        await pilot.pause()
+
+        assert screen.list_max_height_at_mount == 7
+        assert screen.query_one("#choice-list", OptionList).styles.max_height.cells == 7
+
+        await pilot.press("escape")
+        await pilot.pause()
 
 
 @pytest.mark.asyncio

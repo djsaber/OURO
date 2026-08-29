@@ -284,7 +284,9 @@ class ChoiceScreen(ModalScreen[str | None]):
         with Vertical(id="choice-panel"):
             yield Static(self._title, id="choice-title")
             yield self._filter_input()
-            yield self._choice_list()
+            choice_list = self._choice_list()
+            choice_list.styles.max_height = self._responsive_list_height(self.app.size.height)
+            yield choice_list
             yield Static(self._resolved_hint(), id="choice-hint")
 
     def _filter_input(self) -> Input:
@@ -326,12 +328,15 @@ class ChoiceScreen(ModalScreen[str | None]):
     def on_resize(self, event: events.Resize) -> None:
         """Keep the scrollable menu body within a bounded share of the terminal."""
 
-        responsive_panel_height = event.size.height * 4 // 5
-        list_height = responsive_panel_height - self.MENU_CHROME_HEIGHT
-        self.query_one("#choice-list", OptionList).styles.max_height = max(
-            self.MIN_LIST_HEIGHT,
-            min(self.MAX_LIST_HEIGHT, list_height),
+        self.query_one("#choice-list", OptionList).styles.max_height = (
+            self._responsive_list_height(event.size.height)
         )
+
+    @classmethod
+    def _responsive_list_height(cls, viewport_height: int) -> int:
+        responsive_panel_height = viewport_height * 4 // 5
+        list_height = responsive_panel_height - cls.MENU_CHROME_HEIGHT
+        return max(cls.MIN_LIST_HEIGHT, min(cls.MAX_LIST_HEIGHT, list_height))
 
     def on_unmount(self) -> None:
         if self._spinner_timer is not None:
@@ -932,6 +937,11 @@ class EditableChoiceScreen(ChoiceScreen):
         self._edit_cursor_visible = True
         self._edit_cursor_timer: Timer | None = None
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action.startswith("edit_"):
+            return self._editing_value is not None
+        return super().check_action(action, parameters)
+
     def on_unmount(self) -> None:
         self._stop_edit_cursor()
         super().on_unmount()
@@ -1090,7 +1100,7 @@ class EditableChoiceScreen(ChoiceScreen):
             needle = ""
         self._show_hint()
         self._refresh_options(needle=needle, preferred_value=selected)
-        self.query_one("#choice-list", OptionList).focus()
+        filter_input.focus()
 
     def _replace_choices(self, choices: tuple[Choice, ...], *, selected: str) -> None:
         """Replace the live menu projection while preserving filter and focus."""
