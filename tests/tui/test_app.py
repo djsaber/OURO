@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
@@ -19,6 +20,7 @@ from textual.content import Content
 from textual.strip import Strip
 from textual.widgets import Input, OptionList, Static, TextArea
 
+import ouro.tui.widgets as tui_widgets
 from ouro import __version__
 from ouro.application.agent_models import AgentToolOptionView
 from ouro.application.configuration import ConfigurationFacade
@@ -1621,6 +1623,36 @@ async def test_streaming_assistant_renders_completed_source_lines_once(
 
 
 @pytest.mark.asyncio
+async def test_streaming_tail_skips_layout_when_visual_height_is_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+        conversation = app.query_one(ConversationView)
+        await conversation.append_assistant("prefix")
+        tail = conversation.query_one(AssistantTailLines)
+        await _wait_until(
+            lambda: tail._render_width > 0 and bool(tail.rendered_text),
+            pilot,
+            description="initial assistant tail layout",
+        )
+        refresh_layouts: list[bool] = []
+
+        def record_refresh(*_regions, **kwargs):
+            refresh_layouts.append(bool(kwargs.get("layout")))
+            return tail
+
+        monkeypatch.setattr(tail, "refresh", record_refresh)
+        await conversation.append_assistant(" suffix")
+
+        assert refresh_layouts == [False]
+        assert tail.text == "prefix suffix"
+
+
+@pytest.mark.asyncio
 async def test_welcome_refreshes_live_system_status_each_time_it_opens(tmp_path: Path) -> None:
     application = _application(tmp_path)
     app = OuroTuiApp(application=application)
@@ -1779,6 +1811,59 @@ async def test_status_line_shows_model_retry_attempts_after_the_first_attempt(
             first_attempt.model_copy(update={"model_attempt": 3, "model_max_attempts": 5})
         )
         assert "Waiting for model 3/5" in indicator.render().plain
+
+
+@pytest.mark.asyncio
+async def test_repeated_runtime_activity_skips_unchanged_presentations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        session_id = "session_hot_path"
+        activity = RuntimeActivitySnapshot(
+            session_id=session_id,
+            run_id="run_hot_path",
+            status="running",
+            activity="streaming_text",
+        )
+        projection = TuiSessionProjection(session_id)
+        projection.activity = activity
+        app._projection = projection
+        app._controller._session_id = session_id
+        app._sync_activity(activity)
+        indicator = app.query_one(ActivityIndicator)
+        assert indicator._timer is not None
+        indicator._timer.stop()
+        indicator._timer = None
+
+        def reject_redundant_render() -> None:
+            raise AssertionError("unchanged runtime activity triggered presentation work")
+
+        monkeypatch.setattr(
+            indicator,
+            "_render_indicator",
+            reject_redundant_render,
+        )
+        monkeypatch.setattr(
+            app.query_one(StatusLine),
+            "_render_context",
+            reject_redundant_render,
+        )
+        monkeypatch.setattr(
+            app.query_one(SubagentNavigationPanel),
+            "_refresh_content",
+            reject_redundant_render,
+        )
+        monkeypatch.setattr(
+            app.query_one(Composer),
+            "_render_styled_placeholder",
+            lambda _parts: reject_redundant_render(),
+        )
+
+        app._sync_activity(activity)
 
 
 @pytest.mark.asyncio
@@ -3834,6 +3919,56 @@ async def test_persisted_history_uses_a_bounded_widget_tree(tmp_path: Path) -> N
         # one entry per markdown block: 200 user + 200 reasoning + 200 text.
         assert len(history.entries) == 600
         assert len(list(conversation.query("*"))) == 2
+
+
+@pytest.mark.asyncio
+async def test_history_projection_does_not_block_the_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    message = MessageRecord(
+        session_id="ses_projection",
+        role="assistant",
+        content=[TextContent(text="Projected in a worker" * 4_096)],
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        entered = threading.Event()
+        release = threading.Event()
+        projection_threads: list[int] = []
+        project_transcript = tui_widgets._project_transcript_entries
+
+        def blocking_projection(*args, **kwargs):
+            projection_threads.append(threading.get_ident())
+            entered.set()
+            release.wait()
+            return project_transcript(*args, **kwargs)
+
+        monkeypatch.setattr(
+            tui_widgets,
+            "_project_transcript_entries",
+            blocking_projection,
+        )
+        watchdog = threading.Timer(1, release.set)
+        watchdog.start()
+        event_loop_thread = threading.get_ident()
+        loading = asyncio.create_task(
+            app.query_one(ConversationView).load_messages((message,))
+        )
+
+        try:
+            projection_entered = await asyncio.to_thread(entered.wait, 2)
+            event_loop_remained_responsive = not loading.done()
+        finally:
+            release.set()
+            watchdog.cancel()
+        await loading
+
+        assert projection_entered is True
+        assert event_loop_remained_responsive is True
+        assert projection_threads != [event_loop_thread]
 
 
 @pytest.mark.asyncio
@@ -9749,6 +9884,47 @@ async def test_noop_abort_does_not_notify_when_ready_status_is_visible(tmp_path:
 
         assert "Ready" in app.query_one(ActivityIndicator).render().plain
         assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
+
+
+@pytest.mark.asyncio
+async def test_preference_writes_do_not_block_the_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        entered = threading.Event()
+        release = threading.Event()
+        writer_threads: list[int] = []
+        save_preferences = app._preferences_store.save
+
+        def blocking_save(preferences: TuiPreferences) -> None:
+            writer_threads.append(threading.get_ident())
+            entered.set()
+            release.wait()
+            save_preferences(preferences)
+
+        monkeypatch.setattr(app._preferences_store, "save", blocking_save)
+        watchdog = threading.Timer(1, release.set)
+        watchdog.start()
+        event_loop_thread = threading.get_ident()
+        saving = asyncio.create_task(app._set_tui_theme("harbor"))
+
+        try:
+            writer_entered = await asyncio.to_thread(entered.wait, 2)
+            event_loop_remained_responsive = not saving.done()
+        finally:
+            release.set()
+            watchdog.cancel()
+        saved = await saving
+
+        assert writer_entered is True
+        assert event_loop_remained_responsive is True
+        assert writer_threads != [event_loop_thread]
+        assert saved is True
+        assert app.tui_theme == TUI_THEMES["harbor"]
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Literal, TypeVar
 
-from rich.cells import cell_len
+from rich.cells import get_character_cell_size
 from rich.table import Table
 from rich.text import Text
 from textual import events, work
@@ -1202,11 +1202,15 @@ class EditableChoiceScreen(ChoiceScreen):
         cursor = min(self._edit_cursor, len(display_text))
         start = min(self._edit_view_start, cursor)
         end = cursor + 1 if cursor < len(display_text) else len(display_text)
+        cell_offsets = [0]
+        for character in display_text:
+            cell_offsets.append(cell_offsets[-1] + get_character_cell_size(character))
 
         def view_width(candidate_start: int, candidate_end: int) -> int:
             return (
                 (1 if candidate_start else 0)
-                + cell_len(display_text[candidate_start:candidate_end])
+                + cell_offsets[candidate_end]
+                - cell_offsets[candidate_start]
                 + (1 if candidate_end < len(display_text) else 0)
                 + (1 if cursor == len(display_text) else 0)
             )

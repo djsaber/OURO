@@ -143,16 +143,25 @@ def project_mcp_system_status(
 ) -> TuiSystemStatus:
     """Project one live MCP snapshot into the shared TUI system summary."""
 
-    connected = tuple(server for server in servers if server.status == "connected")
+    connected_count = 0
+    tool_count = 0
+    connecting_count = 0
+    failed_count = 0
+    for server in servers:
+        if server.status == "connected":
+            connected_count += 1
+            tool_count += server.tool_count
+        elif server.status in {"starting", "reconnecting"}:
+            connecting_count += 1
+        elif server.status == "failed":
+            failed_count += 1
     return replace(
         status,
-        mcp_connected_count=len(connected),
+        mcp_connected_count=connected_count,
         mcp_total_count=len(servers),
-        mcp_tool_count=sum(server.tool_count for server in connected),
-        mcp_connecting_count=sum(
-            server.status in {"starting", "reconnecting"} for server in servers
-        ),
-        mcp_failed_count=sum(server.status == "failed" for server in servers),
+        mcp_tool_count=tool_count,
+        mcp_connecting_count=connecting_count,
+        mcp_failed_count=failed_count,
     )
 
 
@@ -186,13 +195,19 @@ def project_plugin_system_status(
 ) -> TuiSystemStatus:
     """Project the canonical plugin catalog into the shared TUI summary."""
 
-    active = tuple(plugin for plugin in plugins if plugin.status in {"active", "ready"})
+    active_names: list[str] = []
+    issue_count = 0
+    for plugin in plugins:
+        if plugin.status in {"active", "ready"}:
+            active_names.append(plugin.name)
+        if plugin.status in _PLUGIN_ISSUE_STATUSES:
+            issue_count += 1
     return replace(
         status,
-        plugin_active_count=len(active),
+        plugin_active_count=len(active_names),
         plugin_total_count=len(plugins),
-        plugin_issue_count=sum(plugin.status in _PLUGIN_ISSUE_STATUSES for plugin in plugins),
-        plugin_active_names=tuple(sorted(plugin.name for plugin in active)),
+        plugin_issue_count=issue_count,
+        plugin_active_names=tuple(sorted(active_names)),
     )
 
 
@@ -2057,7 +2072,11 @@ class TuiController:
         """Cross one persisted Runtime event into Textual's message pump."""
 
         if self._creating_session and self._session_id is None:
-            if self._event_root_session_id(event.session_id) != event.session_id:
+            root_session_id = await asyncio.to_thread(
+                self._event_root_session_id,
+                event.session_id,
+            )
+            if root_session_id != event.session_id:
                 return
             self._session_id = event.session_id
         controlled_session_id = self._session_id
@@ -2066,7 +2085,11 @@ class TuiController:
         if event.session_id != controlled_session_id:
             if (
                 event.event_type not in _CHILD_CONTROL_EVENT_TYPES
-                or self._event_root_session_id(event.session_id) != controlled_session_id
+                or await asyncio.to_thread(
+                    self._event_root_session_id,
+                    event.session_id,
+                )
+                != controlled_session_id
             ):
                 return
         self._publish_event(event)

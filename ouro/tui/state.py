@@ -16,6 +16,19 @@ from ouro.tui.theme import TUI_DESIGN
 InteractionKind = Literal["approval", "question"]
 
 
+def canonical_event_order(events: Iterable[EventRecord]) -> tuple[EventRecord, ...]:
+    """Return canonical event order without sorting an already ordered snapshot."""
+
+    materialized = tuple(events)
+    previous_key: tuple[int, str] | None = None
+    for event in materialized:
+        key = (event.sequence, event.event_id)
+        if previous_key is not None and key < previous_key:
+            return tuple(sorted(materialized, key=lambda item: (item.sequence, item.event_id)))
+        previous_key = key
+    return materialized
+
+
 def format_compact_count(value: int) -> str:
     for divisor, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
         if value >= divisor:
@@ -256,7 +269,7 @@ class TuiSessionProjection:
         *,
         event_high_water: int | None = None,
     ) -> None:
-        for event in sorted(events, key=lambda item: (item.sequence, item.event_id)):
+        for event in canonical_event_order(events):
             self.apply(event)
         if event_high_water is not None:
             self._last_sequence = max(self._last_sequence, event_high_water)

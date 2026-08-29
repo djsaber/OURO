@@ -268,6 +268,33 @@ async def test_same_session_history_reuse_updates_mutable_entry_in_place(
 
 
 @pytest.mark.asyncio
+async def test_cold_history_load_publishes_virtual_size_once_per_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _HistoryApp()
+    entries = tuple(
+        TranscriptEntry(kind="assistant", text=f"history entry {index}")
+        for index in range(120)
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        sync_count = 0
+        sync_virtual_size = app.history._sync_virtual_size
+
+        def count_size_sync() -> None:
+            nonlocal sync_count
+            sync_count += 1
+            sync_virtual_size()
+
+        monkeypatch.setattr(app.history, "_sync_virtual_size", count_size_sync)
+        await app.history.load(entries)
+
+        assert 0 < sync_count <= 3
+        assert app.history.entries == entries
+
+
+@pytest.mark.asyncio
 async def test_historical_spawn_tool_click_preserves_parent_run_identity() -> None:
     app = _HistoryApp()
 

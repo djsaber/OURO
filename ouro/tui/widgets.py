@@ -40,7 +40,7 @@ from ouro.builtin_plugins.plan.interaction import (
 )
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextMetrics
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, TextContent
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import TuiCommand, TuiCommandArgument
 from ouro.tui.controller import TuiApprovalPreset, TuiSystemStatus
@@ -124,6 +124,8 @@ _ACTIVITY_LABELS = {
     "paused": "Paused",
     "recoverable": "Recovery required",
 }
+_TRANSCRIPT_BACKGROUND_ENTRY_THRESHOLD = 64
+_TRANSCRIPT_BACKGROUND_TEXT_THRESHOLD = 64 * 1024
 _PlaceholderTone = Literal["text", "separator", "key"]
 _PlaceholderPart = tuple[str, _PlaceholderTone]
 _SUBAGENT_ACTIVITY_LABELS = {
@@ -272,7 +274,11 @@ class ActivityIndicator(Static):
         self._timer: Timer | None = None
 
     def on_mount(self) -> None:
-        self._timer = self.set_interval(0.12, self._tick, pause=True)
+        self._timer = self.set_interval(
+            0.12,
+            self._tick,
+            pause=self._activity not in _BUSY_ACTIVITIES,
+        )
         self._render_indicator()
 
     def set_activity(
@@ -282,6 +288,12 @@ class ActivityIndicator(Static):
         model_attempt: int | None = None,
         model_max_attempts: int | None = None,
     ) -> None:
+        if (
+            activity == self._activity
+            and model_attempt == self._model_attempt
+            and model_max_attempts == self._model_max_attempts
+        ):
+            return
         self._activity = activity
         self._model_attempt = model_attempt
         self._model_max_attempts = model_max_attempts
@@ -294,10 +306,14 @@ class ActivityIndicator(Static):
         self._render_indicator()
 
     def set_model(self, model: str) -> None:
+        if model == self._model:
+            return
         self._model = model
         self._render_indicator()
 
     def set_approval_mode(self, mode: TuiApprovalPreset) -> None:
+        if mode == self._approval_mode:
+            return
         self._approval_mode = mode
         self._render_indicator()
 
@@ -307,15 +323,22 @@ class ActivityIndicator(Static):
         ``peak`` highlights the level when it is the highest effort the current
         endpoint supports, signalling that reasoning is maxed out.
         """
+        if value == self._reasoning and peak == self._reasoning_peak:
+            return
         self._reasoning = value
         self._reasoning_peak = peak
         self._render_indicator()
 
     def set_session_controls(self, labels: tuple[str, ...]) -> None:
-        self._session_control_labels = tuple(dict.fromkeys(labels))
+        unique_labels = tuple(dict.fromkeys(labels))
+        if unique_labels == self._session_control_labels:
+            return
+        self._session_control_labels = unique_labels
         self._render_indicator()
 
     def set_subagent(self, agent: AgentTreeNode | None) -> None:
+        if agent == self._subagent:
+            return
         self._subagent = agent
         self._render_indicator()
 
@@ -452,6 +475,8 @@ class ReasoningView(RangeSelectionOnly, Vertical):
         return not self._content.has_class("collapsed")
 
     def set_expanded(self, expanded: bool) -> None:
+        if expanded == self.expanded:
+            return
         self._content.set_class(not expanded, "collapsed")
         self._render_label()
 
@@ -459,6 +484,7 @@ class ReasoningView(RangeSelectionOnly, Vertical):
         if not text:
             return
         self.display = True
+        started = self._clock_started_at is None
         if self._clock_started_at is None:
             now = datetime.now(UTC)
             self._elapsed_at_start = (
@@ -466,7 +492,8 @@ class ReasoningView(RangeSelectionOnly, Vertical):
             )
             self._clock_started_at = monotonic()
             self._timer = self.set_interval(0.1, self._tick)
-        self._render_live_label()
+        if started:
+            self._render_live_label()
         self._content.append(text)
 
     def finish(self, duration_seconds: float | None = None) -> None:
@@ -625,7 +652,7 @@ class ToolActivityRow(RangeSelectionOnly, Static):
         self._agent = agent
         self._frame = 0
         self._timer: Timer | None = None
-        self.apply_tool(tool)
+        self._render_tool()
 
     def on_mount(self) -> None:
         if self._is_active:
@@ -637,11 +664,15 @@ class ToolActivityRow(RangeSelectionOnly, Static):
             self._timer = None
 
     def apply_tool(self, tool: RuntimeToolCallActivity) -> None:
+        if tool == self._tool:
+            return
         self._tool = tool
         self._sync_timer()
         self._render_tool()
 
     def apply_agent(self, agent: AgentTreeNode) -> None:
+        if agent == self._agent:
+            return
         self._agent = agent
         self._render_tool()
 
@@ -1263,6 +1294,153 @@ def _compaction_presentation(
     )
 
 
+def _presents_message(
+    message: MessageRecord,
+    *,
+    visible_scaffold_delegation_id: str | None,
+) -> bool:
+    if not message.scaffold:
+        return True
+    return (
+        visible_scaffold_delegation_id is not None
+        and message.role == "user"
+        and message.metadata.get("session_input_source") == "delegation"
+        and message.metadata.get("delegation_id") == visible_scaffold_delegation_id
+    )
+
+
+def _project_transcript_entries(
+    messages: tuple[MessageRecord, ...],
+    compactions: tuple[CompactionRecord, ...],
+    runs: tuple[RunPresentation, ...],
+    *,
+    mutable_tool_call_keys: frozenset[tuple[str | None, str]],
+    visible_scaffold_delegation_id: str | None,
+) -> tuple[tuple[TranscriptEntry, ...], frozenset[str]]:
+    """Build immutable history away from Textual's event loop.
+
+    Entries are bucketed directly at their message boundary. This preserves the
+    canonical message → Run summary → compaction order without constructing and
+    sorting an intermediate list of ordering tuples.
+    """
+
+    materialized = tuple(
+        message
+        for message in messages
+        if _presents_message(
+            message,
+            visible_scaffold_delegation_id=visible_scaffold_delegation_id,
+        )
+    )
+    requests = {request.message_id: request for run in runs for request in run.requests}
+    tool_activities = _tool_activities_from_messages(materialized)
+    message_entries: list[list[TranscriptEntry]] = [[] for _ in materialized]
+    message_positions: dict[str, int] = {}
+    last_message_by_run: dict[str, int] = {}
+
+    for message_index, message in enumerate(materialized):
+        message_positions[message.message_id] = message_index
+        if message.run_id is not None:
+            last_message_by_run[message.run_id] = message_index
+        entries = message_entries[message_index]
+        if message.role == "user":
+            text = user_message_text(message)
+            if text:
+                entries.append(TranscriptEntry(kind="user", text=text))
+            continue
+        if message.role != "assistant":
+            continue
+
+        request = requests.get(message.message_id)
+        if message.reasoning_content:
+            entries.append(
+                TranscriptEntry(
+                    kind="assistant",
+                    reasoning=message.reasoning_content,
+                    run_id=message.run_id,
+                    reasoning_seconds=(request.reasoning_seconds if request is not None else None),
+                )
+            )
+        entries.extend(
+            TranscriptEntry(kind="assistant", text=block, run_id=message.run_id)
+            for block in split_markdown_blocks(message.text_content)
+        )
+        for call in message.tool_calls:
+            if (message.run_id, call.id) in mutable_tool_call_keys:
+                continue
+            activity = tool_activities.get(call.id)
+            if activity is not None:
+                entries.append(
+                    TranscriptEntry(
+                        kind="tool",
+                        run_id=message.run_id,
+                        tool=activity,
+                    )
+                )
+
+    run_entries: dict[int, list[TranscriptEntry]] = {}
+    presented_run_ids: set[str] = set()
+    for run in runs:
+        boundary_index = last_message_by_run.get(run.run_id)
+        if boundary_index is None or run.duration_seconds is None:
+            continue
+        run_entries.setdefault(boundary_index, []).append(
+            TranscriptEntry(kind="run", run_id=run.run_id, run=run)
+        )
+        presented_run_ids.add(run.run_id)
+
+    compaction_entries: dict[int, list[TranscriptEntry]] = {}
+    for compaction in compactions:
+        boundary_index = message_positions.get(compaction.history_boundary_message_id)
+        if boundary_index is None:
+            raise ValueError(
+                f"compaction {compaction.compaction_id} references missing history "
+                f"boundary {compaction.history_boundary_message_id}"
+            )
+        compaction_entries.setdefault(boundary_index, []).append(
+            TranscriptEntry(
+                kind="compaction",
+                compaction=_compaction_presentation(
+                    covered_message_count=len(compaction.covered_message_ids),
+                    tokens_before=compaction.estimated_tokens_before,
+                    tokens_after=compaction.estimated_tokens_after,
+                    duration_seconds=compaction.duration_seconds,
+                ),
+            )
+        )
+
+    transcript: list[TranscriptEntry] = []
+    for message_index, entries in enumerate(message_entries):
+        transcript.extend(entries)
+        transcript.extend(run_entries.get(message_index, ()))
+        transcript.extend(compaction_entries.get(message_index, ()))
+    return tuple(transcript), frozenset(presented_run_ids)
+
+
+def _requires_background_transcript_projection(
+    messages: tuple[MessageRecord, ...],
+    compactions: tuple[CompactionRecord, ...],
+    runs: tuple[RunPresentation, ...],
+) -> bool:
+    """Keep cheap loads synchronous; move only frame-sized work off the UI loop."""
+
+    entry_count = len(messages) + len(compactions) + len(runs)
+    text_size = 0
+    for message in messages:
+        entry_count += len(message.tool_calls)
+        text_size += len(message.reasoning_content)
+        text_size += sum(
+            len(block.text) for block in message.content if isinstance(block, TextContent)
+        )
+        if (
+            entry_count >= _TRANSCRIPT_BACKGROUND_ENTRY_THRESHOLD
+            or text_size >= _TRANSCRIPT_BACKGROUND_TEXT_THRESHOLD
+        ):
+            return True
+    entry_count += sum(len(run.requests) for run in runs)
+    return entry_count >= _TRANSCRIPT_BACKGROUND_ENTRY_THRESHOLD
+
+
 class _ConversationTranscript(RangeSelectionOnly, Vertical):
     """Own transcript layout without turning triple-click into select-all."""
 
@@ -1443,111 +1621,32 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         # scaffolding. A child view deliberately presents only the user-role
         # inputs belonging to its own Delegation; every other scaffold remains
         # hidden according to its explicit presentation provenance.
-        materialized = [message for message in messages if self._presents_message(message)]
+        materialized = tuple(messages)
+        compaction_records = tuple(compactions)
         run_presentations = tuple(runs)
         mutable_tool_call_keys = frozenset(mutable_tool_calls)
-        requests = {
-            request.message_id: request for run in run_presentations for request in run.requests
-        }
-        tool_activities = _tool_activities_from_messages(materialized)
-        chronological: list[tuple[int, int, TranscriptEntry]] = []
-        message_positions = {
-            message.message_id: index for index, message in enumerate(materialized)
-        }
-
-        def append_entry(
-            message_index: int,
-            entry: TranscriptEntry,
-        ) -> None:
-            chronological.append((message_index * 3, len(chronological), entry))
-
-        for message_index, message in enumerate(materialized):
-            if message.role == "user":
-                text = user_message_text(message)
-                if not text:
-                    continue
-                append_entry(message_index, TranscriptEntry(kind="user", text=text))
-            elif message.role == "assistant":
-                text = message.text_content
-                request = requests.get(message.message_id)
-                if message.reasoning_content:
-                    append_entry(
-                        message_index,
-                        TranscriptEntry(
-                            kind="assistant",
-                            reasoning=message.reasoning_content,
-                            run_id=message.run_id,
-                            reasoning_seconds=(
-                                request.reasoning_seconds if request is not None else None
-                            ),
-                        ),
-                    )
-                # Reloaded messages split into the same top-level blocks that
-                # streaming froze, so live and reloaded rendering stay identical.
-                for block in split_markdown_blocks(text):
-                    append_entry(
-                        message_index,
-                        TranscriptEntry(
-                            kind="assistant",
-                            text=block,
-                            run_id=message.run_id,
-                        ),
-                    )
-                for call in message.tool_calls:
-                    if (message.run_id, call.id) in mutable_tool_call_keys:
-                        continue
-                    activity = tool_activities.get(call.id)
-                    if activity is None:
-                        continue
-                    append_entry(
-                        message_index,
-                        TranscriptEntry(
-                            kind="tool",
-                            run_id=message.run_id,
-                            tool=activity,
-                        ),
-                    )
-
-        last_message_by_run: dict[str, int] = {}
-        for message_index, message in enumerate(materialized):
-            if message.run_id is not None:
-                last_message_by_run[message.run_id] = message_index
-        for run in run_presentations:
-            boundary_index = last_message_by_run.get(run.run_id)
-            if boundary_index is None or run.duration_seconds is None:
-                continue
-            chronological.append(
-                (
-                    boundary_index * 3 + 1,
-                    len(chronological),
-                    TranscriptEntry(kind="run", run_id=run.run_id, run=run),
-                )
+        if _requires_background_transcript_projection(
+            materialized,
+            compaction_records,
+            run_presentations,
+        ):
+            transcript, presented_run_ids = await asyncio.to_thread(
+                _project_transcript_entries,
+                materialized,
+                compaction_records,
+                run_presentations,
+                mutable_tool_call_keys=mutable_tool_call_keys,
+                visible_scaffold_delegation_id=visible_scaffold_delegation_id,
             )
-            self._presented_run_ids.add(run.run_id)
-
-        for compaction in compactions:
-            boundary_index = message_positions.get(compaction.history_boundary_message_id)
-            if boundary_index is None:
-                raise ValueError(
-                    f"compaction {compaction.compaction_id} references missing history "
-                    f"boundary {compaction.history_boundary_message_id}"
-                )
-            chronological.append(
-                (
-                    boundary_index * 3 + 2,
-                    len(chronological),
-                    TranscriptEntry(
-                        kind="compaction",
-                        compaction=_compaction_presentation(
-                            covered_message_count=len(compaction.covered_message_ids),
-                            tokens_before=compaction.estimated_tokens_before,
-                            tokens_after=compaction.estimated_tokens_after,
-                            duration_seconds=compaction.duration_seconds,
-                        ),
-                    ),
-                )
+        else:
+            transcript, presented_run_ids = _project_transcript_entries(
+                materialized,
+                compaction_records,
+                run_presentations,
+                mutable_tool_call_keys=mutable_tool_call_keys,
+                visible_scaffold_delegation_id=visible_scaffold_delegation_id,
             )
-        transcript = [entry for *_ordering, entry in sorted(chronological)]
+        self._presented_run_ids.update(presented_run_ids)
 
         if not transcript:
             # A loaded session with no visible dialogue is still an empty state.
@@ -1609,14 +1708,9 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             await self.add_user(text)
 
     def _presents_message(self, message: MessageRecord) -> bool:
-        if not message.scaffold:
-            return True
-        delegation_id = self._visible_scaffold_delegation_id
-        return (
-            delegation_id is not None
-            and message.role == "user"
-            and message.metadata.get("session_input_source") == "delegation"
-            and message.metadata.get("delegation_id") == delegation_id
+        return _presents_message(
+            message,
+            visible_scaffold_delegation_id=self._visible_scaffold_delegation_id,
         )
 
     async def append_assistant(self, text: str) -> None:
@@ -2769,6 +2863,8 @@ class Composer(TuiTextArea):
         self.update_suggestion()
 
     def set_plain_placeholder(self, placeholder: str) -> None:
+        if not self._placeholder_parts and self.placeholder == placeholder:
+            return
         self._placeholder_parts = ()
         self.placeholder = placeholder
 
@@ -2779,6 +2875,8 @@ class Composer(TuiTextArea):
         self._set_styled_placeholder(self._SUBAGENT_PLACEHOLDER_PARTS)
 
     def _set_styled_placeholder(self, parts: tuple[_PlaceholderPart, ...]) -> None:
+        if self._placeholder_parts == parts:
+            return
         self._placeholder_parts = parts
         self.placeholder = self._render_styled_placeholder(parts)
 
@@ -3026,6 +3124,8 @@ class StatusLine(Horizontal):
         self.set_context_metrics(status.metrics if status is not None else None)
 
     def set_context_metrics(self, metrics: ContextMetrics | None) -> None:
+        if metrics == self._context_metrics:
+            return
         self._context_metrics = metrics
         self._render_context()
 

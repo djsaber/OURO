@@ -67,14 +67,21 @@ class SubagentNavigationPanel(Static):
         agents: Iterable[AgentTreeNode],
         root_status: str,
     ) -> None:
-        root_changed = root_session_id != self._root_session_id
-        self._root_session_id = root_session_id
-        self._root_status = root_status
-        self._agents = tuple(
+        materialized = tuple(
             agent
             for agent in agents
             if root_session_id is not None and agent.root_session_id == root_session_id
         )
+        if (
+            root_session_id == self._root_session_id
+            and root_status == self._root_status
+            and materialized == self._agents
+        ):
+            return
+        root_changed = root_session_id != self._root_session_id
+        self._root_session_id = root_session_id
+        self._root_status = root_status
+        self._agents = materialized
         available = {agent.session_id for agent in self._agents}
         if root_changed or (
             self._current_session_id != root_session_id
@@ -86,10 +93,20 @@ class SubagentNavigationPanel(Static):
             and self._selected_session_id not in available
         ):
             self._selected_session_id = self._current_session_id
-        self.display = bool(self._agents)
+        visible = bool(self._agents)
+        if self.display != visible:
+            self.display = visible
         self._refresh_content()
 
     def set_current_session(self, session_id: str | None) -> None:
+        selected_session_id = (
+            self._selected_session_id if self._navigation_active else session_id
+        )
+        if (
+            session_id == self._current_session_id
+            and selected_session_id == self._selected_session_id
+        ):
+            return
         available = {agent.session_id for agent in self._agents}
         if session_id != self._root_session_id and session_id not in available:
             return
@@ -101,12 +118,15 @@ class SubagentNavigationPanel(Static):
     def begin_navigation(self) -> None:
         if not self._agents:
             return
-        if not self._navigation_active:
-            self._selected_session_id = self._current_session_id or self._root_session_id
+        if self._navigation_active:
+            return
+        self._selected_session_id = self._current_session_id or self._root_session_id
         self._navigation_active = True
         self._refresh_content()
 
     def end_navigation(self) -> None:
+        if not self._navigation_active and self._selected_session_id == self._current_session_id:
+            return
         self._navigation_active = False
         self._selected_session_id = self._current_session_id
         self._refresh_content()

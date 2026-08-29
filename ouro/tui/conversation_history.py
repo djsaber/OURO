@@ -468,6 +468,7 @@ class ReasoningLines(RangeSelectionOnly, Widget):
                 self._deferred_render = True
                 self.call_after_refresh(self._render_deferred_updates)
             return
+        previous_height = len(self._line_strips) + len(self._pending_strips)
         rebuild = width != self._render_width
         if rebuild:
             self._render_width = width
@@ -484,7 +485,8 @@ class ReasoningLines(RangeSelectionOnly, Widget):
         trailing = wrapped[-1] if wrapped else ""
         self._pending_parts = [trailing] if trailing else []
         self._pending_strips = self._render_source_line(trailing) if trailing else []
-        self.refresh(layout=True)
+        current_height = len(self._line_strips) + len(self._pending_strips)
+        self.refresh(layout=rebuild or current_height != previous_height)
 
     def _render_deferred_updates(self) -> None:
         self._deferred_render = False
@@ -1011,7 +1013,13 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         for index in range(start, stop):
             entry = self._entries[index]
             previous_kind = self._entries[index - 1].kind if index > 0 else None
-            self._write_entry(entry, previous_kind=previous_kind, entry_index=index)
+            self._write_entry(
+                entry,
+                previous_kind=previous_kind,
+                entry_index=index,
+                sync_size=False,
+            )
+        self._sync_virtual_size()
         return stop
 
     def append(
@@ -1222,6 +1230,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         *,
         previous_kind: TranscriptEntryKind | None,
         entry_index: int,
+        sync_size: bool = True,
     ) -> None:
         for renderable, tag in self._entry_pieces(
             entry,
@@ -1241,6 +1250,8 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 )
             )
             self._piece_indexes_by_entry.setdefault(entry_index, []).append(len(self._pieces) - 1)
+        if sync_size:
+            self._sync_virtual_size()
 
     def _rerender_entry(self, entry_index: int) -> bool:
         piece_indexes = self._piece_indexes_by_entry.get(entry_index)
@@ -1273,7 +1284,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 ]
             self._widest_line_width = max(
                 self._widest_line_width,
-                max(strip.cell_length for strip in new_strips),
+                new_strips[0].cell_length,
             )
             self.virtual_size = Size(self._widest_line_width, len(self.lines))
             self._line_cache.clear()
@@ -1369,8 +1380,12 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self.lines.extend(strips)
         self._widest_line_width = max(
             self._widest_line_width,
-            max(strip.cell_length for strip in strips),
+            strips[0].cell_length,
         )
+
+    def _sync_virtual_size(self) -> None:
+        """Publish one size change after a complete entry or load chunk."""
+
         self.virtual_size = Size(self._widest_line_width, len(self.lines))
 
     def _rebuild_lines(self) -> None:
@@ -1386,7 +1401,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             piece_indexes_by_entry.setdefault(piece.entry_index, []).append(piece_index)
             if piece.tag == "user":
                 user_lines.append(len(lines))
-            widest = max(widest, max(strip.cell_length for strip in piece.strips))
+            widest = max(widest, piece.strips[0].cell_length)
             lines.extend(piece.strips)
         self.lines = lines
         self._piece_line_starts = starts

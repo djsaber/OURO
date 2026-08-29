@@ -1383,6 +1383,59 @@ async def test_controller_load_session_does_not_block_the_event_loop(
 
 
 @pytest.mark.asyncio
+async def test_controller_event_ancestry_lookup_does_not_block_the_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    published: list[EventRecord] = []
+    controller = TuiController(
+        published.append,
+        lambda _status: None,
+        application=_reasoning_application(tmp_path),
+    )
+    await controller.start()
+
+    try:
+        controller._session_id = "ses_root"
+        entered = threading.Event()
+        release = threading.Event()
+        lookup_threads: list[int] = []
+
+        def blocking_lookup(_session_id: str) -> str:
+            lookup_threads.append(threading.get_ident())
+            entered.set()
+            release.wait()
+            return "ses_root"
+
+        monkeypatch.setattr(controller, "_event_root_session_id", blocking_lookup)
+        event = EventRecord(
+            session_id="ses_child",
+            run_id="run_child",
+            event_type="approval_requested",
+            sequence=1,
+        )
+        watchdog = threading.Timer(1, release.set)
+        watchdog.start()
+        event_loop_thread = threading.get_ident()
+        receiving = asyncio.create_task(controller._receive_event(event))
+
+        try:
+            lookup_entered = await asyncio.to_thread(entered.wait, 2)
+            event_loop_remained_responsive = not receiving.done()
+        finally:
+            release.set()
+            watchdog.cancel()
+        await receiving
+
+        assert lookup_entered is True
+        assert event_loop_remained_responsive is True
+        assert lookup_threads != [event_loop_thread]
+        assert published == [event]
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
 async def test_controller_observes_another_session_without_changing_control_target(
     tmp_path: Path,
 ) -> None:

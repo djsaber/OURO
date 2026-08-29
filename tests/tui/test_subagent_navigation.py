@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from rich.color import Color
 from rich.console import Console
 
@@ -145,3 +146,25 @@ def test_subagent_panel_node_colors_follow_runtime_outcomes() -> None:
         Color.parse(TUI_DESIGN.failure),
     ]
     assert panel.tooltip == "run_root • async • streaming text"
+
+
+def test_subagent_panel_skips_equivalent_tree_and_selection_refreshes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    panel = SubagentNavigationPanel()
+    agents = (_agent(1, parent_run_id="run_root"),)
+    panel.set_tree(root_session_id="ses_root", agents=agents, root_status="running")
+    panel.set_current_session("ses_child_1")
+
+    refreshes = 0
+
+    def record_refresh() -> None:
+        nonlocal refreshes
+        refreshes += 1
+
+    monkeypatch.setattr(panel, "_refresh_content", record_refresh)
+
+    panel.set_tree(root_session_id="ses_root", agents=agents, root_status="running")
+    panel.set_current_session("ses_child_1")
+
+    assert refreshes == 0

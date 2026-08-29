@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 from calendar import month_name
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import date, datetime
@@ -86,7 +86,9 @@ from ouro.tui.screens import (
 )
 from ouro.tui.state import (
     PendingInteraction,
+    RunPresentation,
     TuiSessionProjection,
+    canonical_event_order,
     project_agent_interaction,
     project_run_presentation,
     project_run_presentations,
@@ -1109,7 +1111,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._apply_bootstrap(bootstrap)
         self._apply_system_status(bootstrap)
         if bootstrap.system_status.workspace is not None:
-            self._remember_workspace(bootstrap.system_status.workspace)
+            await self._remember_workspace(bootstrap.system_status.workspace)
         await self._refresh_reasoning_indicator()
         if self._resume_session_id is not None:
             try:
@@ -1807,9 +1809,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         command_value, _draft = command_context
         _command_text, separator, argument = command_value.partition(" ")
         if not separator:
-            commands = matching_commands(command_value, self._command_catalog())
+            command_catalog = self._command_catalog()
+            commands = matching_commands(command_value, command_catalog)
             popup.show_commands(tuple(sorted(commands, key=lambda item: item.name)))
-            self._sync_command_suggestion(composer, popup)
+            self._sync_command_suggestion(composer, popup, command_catalog=command_catalog)
             return
         static_command, _normalized_argument = resolve_command(_command_text, TUI_COMMANDS)
         if (
@@ -1832,24 +1835,28 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     markup=False,
                 )
                 return
-        command, _normalized_argument = resolve_command(
-            command_value,
-            self._command_catalog(),
-        )
+        command_catalog = self._command_catalog()
+        command, _normalized_argument = resolve_command(command_value, command_catalog)
         if command is None or not command.takes_arguments:
             popup.hide()
-            self._sync_command_suggestion(composer, popup)
+            self._sync_command_suggestion(composer, popup, command_catalog=command_catalog)
             return
         arguments = matching_arguments(command, argument)
         popup.show_arguments(command, arguments)
-        self._sync_command_suggestion(composer, popup)
+        self._sync_command_suggestion(composer, popup, command_catalog=command_catalog)
 
     def on_text_area_selection_changed(self, message: TextArea.SelectionChanged) -> None:
         composer = self.query_one(Composer)
         if message.text_area is composer:
             self._sync_command_suggestion(composer, self.query_one(CommandPopup))
 
-    def _command_suggestion(self, composer: Composer, popup: CommandPopup) -> str:
+    def _command_suggestion(
+        self,
+        composer: Composer,
+        popup: CommandPopup,
+        *,
+        command_catalog: tuple[TuiCommand, ...] | None = None,
+    ) -> str:
         ask_user = self.query_one(AskUserPanel)
         plan_panel = self.query_one(PlanConfirmationPanel)
         if (ask_user.display and ask_user.awaiting_freeform) or (
@@ -1865,10 +1872,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         _command_name, separator, argument = command_text.partition(" ")
         if not separator:
             return ""
-        command, _normalized_argument = resolve_command(
-            command_text,
-            self._command_catalog(),
-        )
+        catalog = command_catalog if command_catalog is not None else self._command_catalog()
+        command, _normalized_argument = resolve_command(command_text, catalog)
         if command is None or not command.takes_arguments:
             return ""
         arguments = matching_arguments(command, argument)
@@ -1881,8 +1886,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
         return argument_suggestion(command, argument, selected)
 
-    def _sync_command_suggestion(self, composer: Composer, popup: CommandPopup) -> None:
-        composer.suggestion = self._command_suggestion(composer, popup)
+    def _sync_command_suggestion(
+        self,
+        composer: Composer,
+        popup: CommandPopup,
+        *,
+        command_catalog: tuple[TuiCommand, ...] | None = None,
+    ) -> None:
+        composer.suggestion = self._command_suggestion(
+            composer,
+            popup,
+            command_catalog=command_catalog,
+        )
 
     async def on_composer_command_submitted(self, message: Composer.CommandSubmitted) -> None:
         if self._visible_read_only:
@@ -2047,9 +2062,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
         status_line.set_context_metrics(activity.effective_context_metrics)
         if activity.session_id == self._controller.session_id:
+            root_status_changed = activity.status != self._agent_root_status
             self._agent_root_status = activity.status
             root_session_id = self._controller.session_id
-            if root_session_id is not None:
+            if root_status_changed and root_session_id is not None:
                 self._sync_subagent_navigation_panel(root_session_id=root_session_id)
         self._sync_composer_placeholder()
 
@@ -2213,7 +2229,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self.action_thinking_settings()
         elif command.name == "/thoughts":
             if argument:
-                self._set_reasoning_expanded(argument.casefold())
+                await self._set_reasoning_expanded(argument.casefold())
         elif command.name == "/compact":
             if not argument:
                 self._compact_session()
@@ -2237,26 +2253,44 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             for command in TUI_COMMANDS
             if command.name != "/workspace" or self._controller.session_id is None
         ]
-        fork_options = self._fork_arguments()
-        navigate_options = self._navigate_options()
+        argument_owner = self._active_builtin_argument_command()
+        user_message_options = (
+            self._user_message_arguments()
+            if argument_owner in {"/fork", "/navigate"}
+            else ()
+        )
         for index, command in enumerate(catalog):
-            if command.name == "/workspace":
+            if command.name == "/workspace" and argument_owner == command.name:
                 catalog[index] = replace(
                     command,
                     argument_options=self._workspace_arguments(),
                 )
-            elif command.name == "/navigate":
-                catalog[index] = replace(command, argument_options=navigate_options)
-            elif command.name == "/fork":
-                catalog[index] = replace(command, argument_options=fork_options)
-            elif command.name == "/thinking" and self._reasoning_state is not None:
+            elif command.name == "/navigate" and argument_owner == command.name:
+                catalog[index] = replace(
+                    command,
+                    argument_options=self._navigate_options(
+                        user_message_options=user_message_options
+                    ),
+                )
+            elif command.name == "/fork" and argument_owner == command.name:
+                catalog[index] = replace(
+                    command,
+                    argument_options=self._fork_arguments(
+                        user_message_options=user_message_options
+                    ),
+                )
+            elif (
+                command.name == "/thinking"
+                and argument_owner == command.name
+                and self._reasoning_state is not None
+            ):
                 options = _reasoning_arguments(self._reasoning_state)
                 catalog[index] = replace(
                     command,
                     argument_hint="[" + "|".join(option.value for option in options) + "]",
                     argument_options=options,
                 )
-            elif command.name == "/model":
+            elif command.name == "/model" and argument_owner == command.name:
                 options = tuple(
                     TuiCommandArgument(
                         value=model.key,
@@ -2266,15 +2300,30 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     for model in self._models
                 )
                 catalog[index] = replace(command, argument_options=options)
-            elif command.name == "/skill":
+            elif command.name == "/skill" and argument_owner == command.name:
                 options = self._skill_arguments()
                 catalog[index] = replace(command, argument_options=options)
-            elif command.name == "/unqueue":
+            elif command.name == "/unqueue" and argument_owner == command.name:
                 catalog[index] = replace(
                     command,
                     argument_options=self._queued_input_arguments(),
                 )
         return (*catalog, *self._plugin_commands())
+
+    def _active_builtin_argument_command(self) -> str | None:
+        """Return the builtin whose argument menu is currently being edited."""
+
+        if not self.query(Composer):
+            return None
+        context = self.query_one(Composer).command_context()
+        if context is None:
+            return None
+        command_text, _draft = context
+        name, separator, _argument = command_text.partition(" ")
+        if not separator:
+            return None
+        command, _normalized_argument = resolve_command(name, TUI_COMMANDS)
+        return command.name if command is not None else None
 
     def _workspace_arguments(self) -> tuple[TuiCommandArgument, ...]:
         return tuple(
@@ -2292,7 +2341,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._system_status = replace(self._system_status, workspace=workspace)
         self.query_one(BrandHeader).set_context(workspace=workspace)
         self.query_one(ConversationView).set_system_status(self._system_status)
-        self._remember_workspace(workspace)
+        await self._remember_workspace(workspace)
 
     def _queued_input_arguments(self) -> tuple[TuiCommandArgument, ...]:
         inputs = self.query_one(QueuedInputPanel).inputs
@@ -2359,15 +2408,27 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         self._edit_draft(_queued_input_draft(cancelled))
 
-    def _navigate_options(self) -> tuple[TuiCommandArgument, ...]:
+    def _navigate_options(
+        self,
+        *,
+        user_message_options: tuple[TuiCommandArgument, ...] | None = None,
+    ) -> tuple[TuiCommandArgument, ...]:
         """Build /navigate argument options from the live dialogue state."""
         return (
             TuiCommandArgument("top", "Jump to the first message"),
             TuiCommandArgument("bottom", "Jump to the latest message"),
-            *self._user_message_arguments(),
+            *(
+                user_message_options
+                if user_message_options is not None
+                else self._user_message_arguments()
+            ),
         )
 
-    def _fork_arguments(self) -> tuple[TuiCommandArgument, ...]:
+    def _fork_arguments(
+        self,
+        *,
+        user_message_options: tuple[TuiCommandArgument, ...] | None = None,
+    ) -> tuple[TuiCommandArgument, ...]:
         """Build /fork targets through the same numbered user-message projection."""
 
         if self._controller.session_id is None:
@@ -2378,7 +2439,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 "Fork the complete current session",
                 label="Full session",
             ),
-            *self._user_message_arguments(),
+            *(
+                user_message_options
+                if user_message_options is not None
+                else self._user_message_arguments()
+            ),
         )
 
     def _user_message_arguments(self) -> tuple[TuiCommandArgument, ...]:
@@ -2398,10 +2463,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             commands = self._controller.plugin_commands()
         except Exception:  # noqa: BLE001 - startup may not have completed yet.
             return ()
-        name_counts = {
-            item.name: sum(candidate.name == item.name for candidate in commands)
-            for item in commands
-        }
+        name_counts = Counter(item.name for item in commands)
         matches: list[TuiCommand] = []
         for item in commands:
             short_name = f"/{item.name}"
@@ -2919,6 +2981,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         agent: AgentTreeNode | None,
     ) -> None:
         session = loaded.detail.session
+        projection, run_presentations, active_stream_tail = await asyncio.to_thread(
+            self._prepare_loaded_session,
+            loaded,
+        )
         agents = self._replace_agent_tree(session.agent_root_session_id)
         if agent is not None:
             agent = self._agent_nodes.get(agent.delegation_id, agent)
@@ -2960,14 +3026,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self._projection = None
                 self._interaction = None
                 self._sync_interaction(None)
-                projection = self._project_loaded_session(loaded)
                 await conversation.load_messages(
                     loaded.messages,
                     loaded.compactions,
-                    project_run_presentations(
-                        (run for run in loaded.runs if run.kind == "agent"),
-                        loaded.messages,
-                    ),
+                    run_presentations,
                     mutable_tool_calls=(
                         (projection.activity.run_id, tool.tool_call_id)
                         for tool in projection.activity.tool_calls
@@ -2982,7 +3044,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self.query_one(QueuedInputPanel).set_inputs(
                     () if read_only else loaded.queued_inputs
                 )
-                await self._restore_projection(loaded, projection)
+                await self._restore_projection(
+                    projection,
+                    active_stream_tail=active_stream_tail,
+                )
                 conversation.sync_agents(agents)
                 agent_name = None if agent is None else agent.nickname or agent.agent_name
                 self._active_title = agent_name if agent_name is not None else session.title
@@ -3105,10 +3170,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._edit_draft(user_message_text(selected_message))
 
     @staticmethod
-    def _project_loaded_session(loaded: LoadedSession) -> TuiSessionProjection:
+    def _prepare_loaded_session(
+        loaded: LoadedSession,
+    ) -> tuple[
+        TuiSessionProjection,
+        tuple[RunPresentation, ...],
+        tuple[str, str],
+    ]:
+        """Build persisted projections without occupying Textual's event loop."""
+
+        ordered_events = canonical_event_order(loaded.events)
         projection = TuiSessionProjection(loaded.detail.session.session_id)
         projection.restore(
-            loaded.events,
+            ordered_events,
             event_high_water=loaded.event_high_water,
         )
         projection.activity = projection.activity.model_copy(
@@ -3117,12 +3191,20 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 "effective_context_metrics": loaded.effective_context_metrics,
             }
         )
-        return projection
+        return (
+            projection,
+            project_run_presentations(
+                (run for run in loaded.runs if run.kind == "agent"),
+                loaded.messages,
+            ),
+            _active_stream_tail(ordered_events, loaded.messages),
+        )
 
     async def _restore_projection(
         self,
-        loaded: LoadedSession,
         projection: TuiSessionProjection,
+        *,
+        active_stream_tail: tuple[str, str],
     ) -> None:
         self._projection = projection
         self._sync_activity(projection.activity)
@@ -3132,7 +3214,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         else:
             await self._refresh_interaction(refresh_agents=True)
         conversation = self.query_one(ConversationView)
-        reasoning, answer = _active_stream_tail(loaded.events, loaded.messages)
+        reasoning, answer = active_stream_tail
         if projection.activity.run_id is not None:
             conversation.begin_model_request(run_id=projection.activity.run_id)
         if reasoning:
@@ -3362,7 +3444,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         async def select_action(selected: str) -> tuple[Choice, ...] | None:
             action_id = selected.removeprefix(_RECENT_ACTION_PREFIX)
-            self._remember_action(action_id)
+            await self._remember_action(action_id)
             if action_id.startswith(_SYSTEM_SETTING_ACTION_PREFIX):
                 self._run_system_setting(
                     action_id.removeprefix(_SYSTEM_SETTING_ACTION_PREFIX),
@@ -3491,7 +3573,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             for action in recent
         )
 
-    def _remember_action(self, action_id: str) -> None:
+    async def _remember_action(self, action_id: str) -> None:
         """Persist a distinct three-entry MRU using canonical action IDs."""
 
         recent_actions = (
@@ -3502,12 +3584,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         preferences = self._preferences.model_copy(update={"recent_actions": recent_actions})
         try:
-            self._preferences_store.save(preferences)
+            await asyncio.to_thread(self._preferences_store.save, preferences)
         except OuroError as exc:
             _LOG.warning("Could not persist recent TUI actions: %s", exc)
         self._preferences = preferences
 
-    def _remember_workspace(self, workspace: str) -> None:
+    async def _remember_workspace(self, workspace: str) -> None:
         """Persist a distinct twenty-entry MRU using resolved workspace paths."""
 
         recent_workspaces = (
@@ -3518,7 +3600,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         preferences = self._preferences.model_copy(update={"recent_workspaces": recent_workspaces})
         try:
-            self._preferences_store.save(preferences)
+            await asyncio.to_thread(self._preferences_store.save, preferences)
         except OuroError as exc:
             _LOG.warning("Could not persist recent TUI workspaces: %s", exc)
             self.notify(str(exc), severity="warning", markup=False)
@@ -3595,7 +3677,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
 
         async def select_display(value: str) -> tuple[Choice, ...] | None:
-            if not self._set_reasoning_expanded(value):
+            if not await self._set_reasoning_expanded(value):
                 return None
             return display_choices(self._preferences.reasoning_expanded)
 
@@ -3635,7 +3717,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return False
         preferences = self._preferences.model_copy(update={"theme": theme_id})
         try:
-            self._preferences_store.save(preferences)
+            await asyncio.to_thread(self._preferences_store.save, preferences)
         except OuroError as exc:
             if restore_theme is not None:
                 self._apply_tui_theme(restore_theme)
@@ -3645,13 +3727,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._apply_tui_theme(theme)
         return True
 
-    def _set_reasoning_expanded(self, value: str) -> bool:
+    async def _set_reasoning_expanded(self, value: str) -> bool:
         expanded = _THOUGHT_DISPLAY_OPTIONS.get(value)
         if expanded is None:
             return False
         preferences = self._preferences.model_copy(update={"reasoning_expanded": expanded})
         try:
-            self._preferences_store.save(preferences)
+            await asyncio.to_thread(self._preferences_store.save, preferences)
         except OuroError as exc:
             self.notify(str(exc), severity="error", markup=False)
             return False
@@ -3763,7 +3845,7 @@ def _active_stream_tail(
     already present in history.
     """
 
-    ordered = sorted(events, key=lambda item: (item.sequence, item.event_id))
+    ordered = canonical_event_order(events)
     run_id = next((event.run_id for event in ordered if event.run_id is not None), None)
     covered_turns = {
         message.turn_id
