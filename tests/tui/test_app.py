@@ -1831,6 +1831,7 @@ async def test_welcome_layout_stays_centered_across_terminal_width_bounds(
     async with app.run_test(size=(200, 32)) as pilot:
         welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
         composer = app.query_one(Composer)
+        assert app.query_one(SubagentNavigationPanel).display is False
 
         assert welcome.region.width == 116
         assert welcome.region.x == app.screen.region.width - welcome.region.right
@@ -1857,6 +1858,41 @@ async def test_welcome_layout_stays_centered_across_terminal_width_bounds(
         assert popup.region.y >= app.screen.region.y
         assert popup.region.bottom == composer.region.y
         assert popup.region.right <= app.screen.region.right
+
+
+@pytest.mark.asyncio
+async def test_session_input_surface_reserves_one_row_above_connected_menus(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        composer = app.query_one(Composer)
+        panel = app.query_one(SubagentNavigationPanel)
+        assert panel.display is False
+
+        composer.load_text("start session")
+        await pilot.press("enter")
+        await _wait_for_worker_group(app, pilot, group="run")
+
+        assert panel.display is True
+        assert panel.region.height == 1
+        assert panel.render().plain.strip() == ""
+        assert panel.region.bottom == composer.region.y
+        composer_y = composer.region.y
+
+        await pilot.press("slash")
+        await pilot.pause()
+        popup = app.query_one(CommandPopup)
+        assert panel.region.bottom == popup.region.y
+        assert popup.region.bottom == composer.region.y
+        assert composer.region.y == composer_y
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert panel.region.bottom == composer.region.y
+        assert composer.region.y == composer_y
 
 
 def test_plugin_skill_choice_is_visible_but_not_selectable() -> None:
@@ -9106,13 +9142,13 @@ async def test_command_and_approval_menus_fit_resized_terminal(tmp_path: Path) -
         await pilot.press("slash")
         await pilot.pause()
         popup = app.query_one(CommandPopup)
-        assert popup.region.height == 10
+        assert popup.region.height == 9
         assert popup.region.bottom == composer.region.y
         assert app.query_one(StatusLine).region.bottom == app.screen.region.bottom
 
         await pilot.resize_terminal(40, 12)
         await pilot.pause()
-        assert popup.region.height == 6
+        assert popup.region.height == 5
         assert popup.region.right <= app.screen.region.right
         assert popup.region.bottom == composer.region.y
         assert app.query_one(StatusLine).region.bottom == app.screen.region.bottom
@@ -9875,6 +9911,8 @@ async def test_approval_panel_selects_with_arrows_and_resumes_run(tmp_path: Path
         assert app._projection.pending_interaction.kind == "approval"
         panel = app.query_one(InteractionBar)
         composer = app.query_one(Composer)
+        assert app.query_one(SubagentNavigationPanel).region.bottom == panel.region.y
+        assert panel.region.bottom == composer.region.y
         assert panel.has_focus is True
         assert panel.selected_approved is True
         assert composer.disabled is True
@@ -9932,7 +9970,7 @@ async def test_approval_panel_keeps_selected_action_visible_in_short_terminal(
 
         panel = app.query_one(InteractionBar)
         composer = app.query_one(Composer)
-        assert panel.region.height == 6
+        assert panel.region.height == 5
         assert panel.region.right <= app.screen.region.right
         assert panel.region.bottom == composer.region.y
         assert app.query_one(StatusLine).region.bottom == app.screen.region.bottom

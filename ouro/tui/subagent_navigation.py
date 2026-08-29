@@ -27,7 +27,7 @@ _RUNNING_STATUSES = frozenset(
 
 
 class SubagentNavigationPanel(Static):
-    """Render and navigate every agent in one controlled root Session tree."""
+    """Reserve and render the agent-navigation row for one controlled root Session."""
 
     def __init__(self) -> None:
         super().__init__(id="subagent-navigation-panel")
@@ -93,9 +93,6 @@ class SubagentNavigationPanel(Static):
             and self._selected_session_id not in available
         ):
             self._selected_session_id = self._current_session_id
-        visible = bool(self._agents)
-        if self.display != visible:
-            self.display = visible
         self._refresh_content()
 
     def set_current_session(self, session_id: str | None) -> None:
@@ -202,6 +199,8 @@ class SubagentNavigationPanel(Static):
         return tuple(agent for group in groups.values() for agent in group)
 
     def _node_text(self) -> Text:
+        if not self._agents:
+            return Text()
         selected = self._selected_session_id
         nodes = Text()
         root_mark = (

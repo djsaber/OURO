@@ -63,6 +63,26 @@ def test_subagent_panel_keeps_latest_ten_nodes_and_reframes_around_current_child
     assert panel.render_content(80).plain.rstrip().endswith("■ | ■▣■■ ■■■■ ■■")
 
 
+def test_subagent_panel_keeps_its_reserved_row_when_the_tree_is_empty() -> None:
+    panel = SubagentNavigationPanel()
+    panel.display = True
+
+    panel.set_tree(root_session_id="ses_root", agents=(), root_status="idle")
+
+    assert panel.display is True
+    assert panel.visible_session_ids == ()
+    assert panel.render_content(20).plain == " " * 20
+
+    panel.set_tree(
+        root_session_id="ses_root",
+        agents=(_agent(1, parent_run_id="run_root"),),
+        root_status="running",
+    )
+
+    assert panel.display is True
+    assert panel.render_content(20).plain.rstrip().endswith("▣ | ■")
+
+
 def test_subagent_panel_includes_nested_agents_from_the_same_root_session() -> None:
     panel = SubagentNavigationPanel()
     direct = _agent(1, parent_run_id="run_root")

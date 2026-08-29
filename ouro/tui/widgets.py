@@ -89,9 +89,9 @@ INTERACTION_PANEL_MIN_HEIGHT = 6
 INTERACTION_PANEL_MAX_HEIGHT = 10
 
 # The regular surface always retains the Host header, one conversation row,
-# the composer, and the status line. Welcome mode instead splits the rows
-# around its centered composer/status pair.
-_REGULAR_SURFACE_RESERVED_HEIGHT = 6
+# the fixed input separator/navigation row, the composer, and the status line.
+# Welcome mode instead splits the rows around its centered composer/status pair.
+_REGULAR_SURFACE_RESERVED_HEIGHT = 7
 _WELCOME_CENTER_HEIGHT = 4
 _BUSY_ACTIVITIES = {
     "starting",
@@ -1200,6 +1200,7 @@ class WelcomePanel(Vertical):
             self._system,
             classes="welcome-only welcome-bottom",
         )
+        self._subagent_navigation = SubagentNavigationPanel()
         self._command_popup = CommandPopup()
         self._interaction_bar = InteractionBar()
         self._composer = Composer()
@@ -1209,7 +1210,7 @@ class WelcomePanel(Vertical):
 
     def compose(self) -> ComposeResult:
         yield self._top
-        yield SubagentNavigationPanel()
+        yield self._subagent_navigation
         yield self._command_popup
         yield AskUserPanel()
         yield PlanConfirmationPanel()
@@ -1230,6 +1231,7 @@ class WelcomePanel(Vertical):
 
     def set_welcome_mode(self, enabled: bool) -> None:
         self.set_class(enabled, "welcome-page")
+        self._subagent_navigation.display = not enabled
         self._apply_viewport_constraints()
 
     def set_viewport_size(self, size: Size) -> None:
@@ -1257,9 +1259,18 @@ class WelcomePanel(Vertical):
             COMMAND_POPUP_MAX_HEIGHT,
             available_height,
         )
+        self._command_popup.styles.min_height = min(
+            COMMAND_POPUP_MIN_HEIGHT,
+            available_height,
+        )
+        interaction_height = max(1, size.height - _REGULAR_SURFACE_RESERVED_HEIGHT)
         self._interaction_bar.styles.max_height = min(
             INTERACTION_PANEL_MAX_HEIGHT,
-            max(1, size.height - _REGULAR_SURFACE_RESERVED_HEIGHT),
+            interaction_height,
+        )
+        self._interaction_bar.styles.min_height = min(
+            INTERACTION_PANEL_MIN_HEIGHT,
+            interaction_height,
         )
 
     def refresh_theme(self) -> None:
