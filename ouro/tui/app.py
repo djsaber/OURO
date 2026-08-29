@@ -69,6 +69,7 @@ from ouro.tui.controller import (
     project_mcp_system_status,
 )
 from ouro.tui.conversation_history import ConversationHistoryState, ToolNavigationRequested
+from ouro.tui.input_drafts import TuiInputDrafts, TuiInputDraftStore
 from ouro.tui.plan_confirmation import project_plan_confirmation
 from ouro.tui.preferences import (
     MAX_RECENT_WORKSPACES,
@@ -988,6 +989,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             preferences = TuiPreferences()
             self._preferences_error = str(exc)
         self._preferences = preferences
+        self._input_draft_store = TuiInputDraftStore(preference_home)
+        self._input_drafts_error: str | None = None
+        try:
+            input_drafts = self._input_draft_store.load()
+        except OuroError as exc:
+            input_drafts = TuiInputDrafts()
+            self._input_drafts_error = str(exc)
+        self._input_drafts = input_drafts
         self._tui_theme = TUI_THEMES[preferences.theme]
         super().__init__()
         self._controller = TuiController(
@@ -1031,6 +1040,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._runtime_event_apply_lock = asyncio.Lock()
         self._mcp_status_timer: Timer | None = None
         self._input_surface: WelcomePanel | None = None
+        self._input_draft_revision = 0
+        self._input_draft_save_task: asyncio.Task[None] | None = None
+        self._input_draft_error_notified = False
 
     @property
     def tui_theme(self) -> TuiTheme:
@@ -1096,9 +1108,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self.run_worker(self._start(), name="tui-start", exclusive=True)
         if self._preferences_error is not None:
             self.notify(self._preferences_error, severity="warning")
+        if self._input_drafts_error is not None:
+            self._input_draft_error_notified = True
+            self.notify(self._input_drafts_error, severity="warning", markup=False)
 
     async def on_unmount(self) -> None:
         self._begin_host_close()
+        if self._input_draft_save_task is not None:
+            await self._input_draft_save_task
         await self._controller.close()
 
     def _surface_available(self) -> bool:
@@ -1452,6 +1469,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         await self.query_one(ConversationView).show_welcome()
         if not self._surface_available():
             return
+        self._restore_input_draft(self._controller.session_id)
         self._set_welcome_mode(True)
 
     def _set_welcome_mode(self, enabled: bool) -> None:
@@ -1687,6 +1705,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._visible_read_only:
             self.notify("Subagent sessions are read-only", severity="warning")
             return
+        self._remember_input_draft(self._controller.session_id, "")
         interaction = self._interaction
         if interaction is not None and interaction.kind == "approval":
             self.query_one(InteractionBar).focus()
@@ -1819,6 +1838,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         composer = message.text_area
         value = composer.text
         command_context = composer.observe_command_change()
+        if not self._visible_read_only:
+            persisted_value = (
+                command_context[1] if command_context is not None and command_context[1] else value
+            )
+            self._remember_input_draft(self._controller.session_id, persisted_value)
         popup = self.query_one(CommandPopup)
         ask_user = self.query_one(AskUserPanel)
         plan_panel = self.query_one(PlanConfirmationPanel)
@@ -1980,6 +2004,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 value = selected_value
         value = selected.name if selected is not None else value
         composer.restore_command_draft(message.draft)
+        self._remember_input_draft(self._controller.session_id, message.draft)
         popup.hide()
         self._dismissed_command_text = None
         await self._dispatch_command(value)
@@ -2223,6 +2248,45 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         composer.load_text(value)
         composer.move_cursor((composer.document.line_count - 1, len(composer.document.lines[-1])))
         composer.focus()
+
+    def _restore_input_draft(self, session_id: str | None) -> None:
+        self.query_one(Composer).restore_command_draft(self._input_drafts.draft_for(session_id))
+
+    def _remember_input_draft(self, session_id: str | None, text: str) -> None:
+        self._set_input_drafts(self._input_drafts.remember(session_id, text))
+
+    def _forget_input_drafts(self, session_ids: Sequence[str]) -> None:
+        self._set_input_drafts(self._input_drafts.forget_sessions(session_ids))
+
+    def _set_input_drafts(self, drafts: TuiInputDrafts) -> None:
+        if drafts == self._input_drafts:
+            return
+        self._input_drafts = drafts
+        self._input_draft_revision += 1
+        task = self._input_draft_save_task
+        if task is None or task.done():
+            self._input_draft_save_task = asyncio.create_task(
+                self._persist_input_drafts(),
+                name="tui-input-drafts",
+            )
+
+    async def _persist_input_drafts(self) -> None:
+        try:
+            while True:
+                revision = self._input_draft_revision
+                drafts = self._input_drafts
+                try:
+                    await asyncio.to_thread(self._input_draft_store.save, drafts)
+                except OuroError as exc:
+                    _LOG.warning("Could not persist TUI input drafts: %s", exc)
+                    if not self._input_draft_error_notified and not self._host_closing:
+                        self._input_draft_error_notified = True
+                        self.notify(str(exc), severity="warning", markup=False)
+                    return
+                if revision == self._input_draft_revision:
+                    return
+        finally:
+            self._input_draft_save_task = None
 
     async def _dispatch_command(self, value: str) -> None:
         command, argument = resolve_command(value)
@@ -2943,6 +3007,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             except Exception as exc:  # noqa: BLE001
                 self.notify(str(exc), severity="error", markup=False)
                 return None
+            self._forget_input_drafts(removed)
             if current_session_id in removed:
                 await self._new_session()
             if not await self._refresh_sessions():
@@ -3049,11 +3114,17 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 )
                 composer = self.query_one(Composer)
                 if read_only and not self._visible_read_only:
-                    self._controlled_composer_draft = composer.text
+                    self._controlled_composer_draft = (
+                        composer.text
+                        if self._projection is not None
+                        else self._input_drafts.draft_for(session.agent_root_session_id)
+                    )
                     composer.restore_command_draft("")
                 elif not read_only and self._visible_read_only:
                     composer.restore_command_draft(self._controlled_composer_draft or "")
                     self._controlled_composer_draft = None
+                elif not read_only:
+                    self._restore_input_draft(session.session_id)
                 # The selected Session now owns the surface. Clear every interaction
                 # projected by the previous Session before yielding while its history
                 # is mounted; the new projection will restore its own pending request.

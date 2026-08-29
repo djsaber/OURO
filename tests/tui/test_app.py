@@ -116,6 +116,7 @@ from ouro.tui.conversation_history import (
     ToolNavigationRequested,
     _ReasoningContent,
 )
+from ouro.tui.input_drafts import TuiInputDrafts, TuiInputDraftStore
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.provider_screens import (
     EndpointConfigurationScreen,
@@ -5018,6 +5019,112 @@ async def test_session_picker_restores_history_after_returning_to_welcome(
         history = app.query_one(ConversationHistory)
         assert history.user_turns == ("Persisted user message",)
         assert "Persisted user message" in history.rendered_text
+
+
+@pytest.mark.asyncio
+async def test_input_drafts_restore_per_surface_across_tui_restarts(tmp_path: Path) -> None:
+    application = _application(tmp_path)
+    first = application.runtime.sessions.create(session_id="ses_first_draft", title="First").session
+    second = application.runtime.sessions.create(
+        session_id="ses_second_draft",
+        title="Second",
+    ).session
+    for session, text in ((first, "First message"), (second, "Second message")):
+        application.runtime.store.append_message(
+            MessageRecord.text(
+                session_id=session.session_id,
+                role="user",
+                text=text,
+                sequence=1,
+            )
+        )
+
+    draft_store = TuiInputDraftStore(tmp_path)
+    seeded = (
+        TuiInputDrafts()
+        .remember(None, "welcome seed")
+        .remember(first.session_id, "first seed")
+        .remember(second.session_id, "second seed")
+    )
+    draft_store.save(seeded)
+
+    app = OuroTuiApp(application=application)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        composer = app.query_one(Composer)
+        assert composer.text == "welcome seed"
+
+        composer.load_text("welcome edited")
+        await _wait_until(
+            lambda: draft_store.load().draft_for(None) == "welcome edited",
+            pilot,
+            description="persisted welcome draft edit",
+        )
+
+        await app._open_session(first.session_id)
+        await pilot.pause()
+        assert composer.text == "first seed"
+        composer.load_text("first edited")
+        await _wait_until(
+            lambda: draft_store.load().draft_for(first.session_id) == "first edited",
+            pilot,
+            description="persisted first Session draft edit",
+        )
+
+        await app._open_session(second.session_id)
+        await pilot.pause()
+        assert composer.text == "second seed"
+        composer.load_text("second edited")
+        await _wait_until(
+            lambda: draft_store.load().draft_for(second.session_id) == "second edited",
+            pilot,
+            description="persisted second Session draft edit",
+        )
+
+        await app._open_session(first.session_id)
+        await pilot.pause()
+        assert composer.text == "first edited"
+        await app._new_session()
+        await pilot.pause()
+        assert composer.text == "welcome edited"
+
+    restarted = OuroTuiApp(application=_application(tmp_path))
+    async with restarted.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        composer = restarted.query_one(Composer)
+        assert composer.text == "welcome edited"
+
+        await restarted._open_session(first.session_id)
+        await pilot.pause()
+        assert composer.text == "first edited"
+        composer.clear()
+        await _wait_until(
+            lambda: draft_store.load().draft_for(first.session_id) == "",
+            pilot,
+            description="removed first Session draft after editing it empty",
+        )
+
+        await restarted._open_session(second.session_id)
+        await pilot.pause()
+        assert composer.text == "second edited"
+        await pilot.press("enter")
+        await _wait_for_worker_group(restarted, pilot, group="run")
+        await _wait_until(
+            lambda: draft_store.load().draft_for(second.session_id) == "",
+            pilot,
+            description="removed submitted Session draft",
+        )
+
+    resumed = OuroTuiApp(
+        application=_application(tmp_path),
+        resume_session_id=first.session_id,
+    )
+    async with resumed.run_test(size=(100, 32)) as pilot:
+        await _wait_for_active_session(resumed, pilot, first.session_id)
+        assert resumed.query_one(Composer).text == ""
+        await resumed._new_session()
+        await pilot.pause()
+        assert resumed.query_one(Composer).text == "welcome edited"
 
 
 @pytest.mark.asyncio
