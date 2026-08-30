@@ -2842,13 +2842,17 @@ class QueuedInputPanel(VerticalScroll):
             theme = theme_for(self)
             content = Text()
             for index, item in enumerate(inputs, start=1):
-                label = "FOLLOW" if item.mode == "follow_up" else "GUIDE"
+                label = "Follow-up" if item.mode == "follow_up" else "Guide"
                 tone = theme.accent if item.mode == "follow_up" else theme.accent_bright
                 prompt = " ↵ ".join(line.strip() for line in item.prompt.splitlines())
                 if item.skill_name is not None:
                     prompt = f"/skill {item.skill_name}{f' {prompt}' if prompt else ''}"
-                content.append(f"{index}. {label:<6} ", style=f"bold {tone}")
-                content.append(prompt, style=TUI_DESIGN.text_primary)
+                content.append(f"{index}. {label}", style=tone)
+                content.append(
+                    TUI_DESIGN.inline_separator,
+                    style=TUI_DESIGN.separator_tone,
+                )
+                content.append(prompt, style=TUI_DESIGN.text_lowlight)
                 if index < len(inputs):
                     content.append("\n")
             self._content.update(content)

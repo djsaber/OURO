@@ -33,6 +33,7 @@ from ouro.application.plugin_models import (
     PluginCommandExecutionView,
     PluginCommandView,
 )
+from ouro.application.queued_inputs import QueuedUserInputView
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_models import SessionContextStatus
@@ -2859,6 +2860,64 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_queued_input_rows_use_single_line_tokenized_previews(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    long_prompt = "first line\nsecond line " + ("queued detail " * 12) + "hidden suffix"
+    inputs = (
+        QueuedUserInputView(
+            queue_id="queue_guide",
+            prompt=long_prompt,
+            mode="steer",
+            queued_at=datetime.now(UTC),
+        ),
+        QueuedUserInputView(
+            queue_id="queue_follow_up",
+            prompt="follow next",
+            mode="follow_up",
+            queued_at=datetime.now(UTC),
+        ),
+    )
+
+    async with app.run_test(size=(48, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(QueuedInputPanel)
+        panel.set_inputs(inputs)
+        await pilot.pause()
+
+        content_widget = panel.query_one("#queued-input-content", Static)
+        source = content_widget.content
+        assert isinstance(source, Text)
+        assert source.plain.count("\n") == len(inputs) - 1
+        assert source.plain.startswith(
+            f"1. Guide{TUI_DESIGN.inline_separator}first line ↵ second line"
+        )
+        assert f"2. Follow-up{TUI_DESIGN.inline_separator}follow next" in source.plain
+
+        label_style = source.get_style_at_offset(Console(), source.plain.index("Guide"))
+        separator_style = source.get_style_at_offset(
+            Console(), source.plain.index(TUI_DESIGN.inline_separator_mark)
+        )
+        message_style = source.get_style_at_offset(
+            Console(), source.plain.index("first line")
+        )
+        assert not label_style.bold
+        assert separator_style.color is not None
+        assert separator_style.color.triplet is not None
+        assert separator_style.color.triplet.hex == TUI_DESIGN.separator_tone
+        assert message_style.color is not None
+        assert message_style.color.triplet is not None
+        assert message_style.color.triplet.hex == TUI_DESIGN.text_lowlight
+
+        assert content_widget.styles.text_wrap == "nowrap"
+        assert content_widget.styles.text_overflow == "ellipsis"
+        assert content_widget.content_size.height == len(inputs)
+        first_visible_line = content_widget.render_line(0).text.rstrip()
+        assert first_visible_line.startswith(f"1. Guide{TUI_DESIGN.inline_separator}")
+        assert first_visible_line.endswith("…")
+        assert "hidden suffix" not in first_visible_line
+
+
+@pytest.mark.asyncio
 async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
     tmp_path: Path,
 ) -> None:
@@ -2890,7 +2949,8 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
         assert queue_panel.display is True
         queue_text = queue_panel.query_one("#queued-input-content").render().plain
         assert "QUEUED INPUTS" not in queue_text
-        assert "FOLLOW" in queue_text
+        assert "Follow-up" in queue_text
+        assert f"Follow-up{TUI_DESIGN.inline_separator}follow next" in queue_text
         assert "follow next" in queue_text
         history = conversation.query_one(ConversationHistory)
         assert history.user_turns == ("first",)
@@ -3597,7 +3657,8 @@ async def test_guide_shortcuts_steer_the_active_run_at_the_next_model_turn(
 
             queue_text = queue_panel.query_one("#queued-input-content").render().plain
             assert queue_panel.display is True
-            assert "GUIDE" in queue_text
+            assert "Guide" in queue_text
+            assert f"Guide{TUI_DESIGN.inline_separator}guide now" in queue_text
             assert "guide now" in queue_text
             assert "guide now" not in app.query_one(ConversationHistory).user_turns
         finally:
@@ -3644,7 +3705,7 @@ async def test_resumed_session_restores_its_durable_user_input_queue(
         queue_panel = app.query_one(QueuedInputPanel)
         queue_text = queue_panel.query_one("#queued-input-content").render().plain
         assert queue_panel.display is True
-        assert "FOLLOW" in queue_text
+        assert "Follow-up" in queue_text
         assert "Continue after approval" in queue_text
         assert "Continue after approval" not in app.query_one(ConversationHistory).user_turns
         assert app._interaction is not None

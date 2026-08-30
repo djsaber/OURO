@@ -754,8 +754,11 @@ _OURO_TUI_CSS = """
     }
 
     #queued-input-content {
+        width: 100%;
         height: auto;
         background: transparent;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
 
     StatusLine {
