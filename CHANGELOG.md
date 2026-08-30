@@ -6,6 +6,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- OpenAI-compatible streaming responses now require a provider `finish_reason` before they can
+  complete, so prematurely ended SSE streams fail explicitly instead of saving truncated output or
+  surfacing a misleading empty-assistant error.
 - TUI subagent navigation now keeps Session surface loading single-flight while key repeats
   immediately move the selected node and coalesce to the latest pending target. Agent nodes preview
   identity and task details on hover and open their read-only Session on click.

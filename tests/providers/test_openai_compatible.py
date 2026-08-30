@@ -621,7 +621,7 @@ async def test_openai_compatible_provider_streams_text_chunks() -> None:
     transport = FakeStreamingTransport(
         [
             {"choices": [{"delta": {"content": "hel"}}]},
-            {"choices": [{"delta": {"content": "lo"}}]},
+            {"choices": [{"delta": {"content": "lo"}, "finish_reason": "stop"}]},
             {"usage": {"prompt_tokens": 3, "completion_tokens": 2}, "choices": []},
         ]
     )
@@ -644,6 +644,58 @@ async def test_openai_compatible_provider_streams_text_chunks() -> None:
     assert events[-1].usage is not None
     assert events[-1].usage.input_tokens == 3
     assert transport.requests[0]["payload"]["stream"] is True
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_rejects_text_stream_without_finish_reason() -> None:
+    transport = FakeStreamingTransport(
+        [
+            {"choices": [{"delta": {"content": "truncated"}}]},
+        ]
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.test/v1",
+        transport=transport,
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="glm-test", provider_id="glm"),
+            messages=[MessageRecord.text(session_id="ses_1", role="user", text="say hello")],
+        )
+    ]
+
+    assert [event.type for event in events] == ["text_delta", "error"]
+    assert events[-1].error == "provider stream ended without finish_reason"
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_rejects_reasoning_stream_without_finish_reason() -> None:
+    transport = FakeStreamingTransport(
+        [
+            {"choices": [{"delta": {"reasoning_content": "unfinished reasoning"}}]},
+        ]
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.test/v1",
+        transport=transport,
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(
+                model_id="glm-test",
+                provider_id="glm",
+                reasoning=_OPENAI_REASONING.capability,
+            ),
+            messages=[MessageRecord.text(session_id="ses_1", role="user", text="think")],
+        )
+    ]
+
+    assert [event.type for event in events] == ["reasoning_delta", "error"]
+    assert events[-1].error == "provider stream ended without finish_reason"
 
 
 @pytest.mark.asyncio
@@ -775,7 +827,8 @@ async def test_openai_compatible_provider_streams_tool_call_chunks() -> None:
                                     "function": {"arguments": ': "README.md"}'},
                                 }
                             ]
-                        }
+                        },
+                        "finish_reason": "tool_calls",
                     }
                 ]
             },

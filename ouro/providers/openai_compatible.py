@@ -364,6 +364,13 @@ class OpenAICompatibleProvider:
                     tool_call_delta=tool_call_delta,
                 )
 
+        if provider_finish_reason is None:
+            yield ProviderStreamEvent(
+                type="error",
+                error="provider stream ended without finish_reason",
+            )
+            return
+
         if not saw_content and not saw_reasoning and not saw_tool_call:
             yield ProviderStreamEvent(
                 type="error", error="provider returned an empty assistant message"
