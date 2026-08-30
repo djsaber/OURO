@@ -10375,7 +10375,9 @@ async def test_builtin_ask_user_renders_form_and_submits_structured_answer(
         panel = app.query_one(AskUserPanel)
         assert panel.display is True
         assert panel.has_focus is True
-        assert "Which file should OURO use?" in str(panel.render())
+        rendered_question = panel.render().plain
+        assert rendered_question.splitlines()[0] == "FILE  1/1"
+        assert "Which file should OURO use?" in rendered_question
 
         await pilot.press("2")
         await _wait_until(

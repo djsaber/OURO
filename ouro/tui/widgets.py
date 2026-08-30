@@ -2335,7 +2335,7 @@ class AskUserPanel(Static):
         theme = theme_for(self)
         content = Text()
         content.append(
-            f"? {question.header.upper()}  {self._question_index + 1}/{total}\n",
+            f"{question.header.upper()}  {self._question_index + 1}/{total}\n",
             style=f"bold {theme.accent_bright}",
         )
         content.append(

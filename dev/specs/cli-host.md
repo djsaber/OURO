@@ -130,7 +130,8 @@ reasoning 区域，不能按 Markdown 解释，也不能混入最终回答；首
 
 问题视窗只依赖 TUI 自有的 `QuestionForm` 投影，不依赖具体工具 Widget。内置 `AskUser` 适配器保留其
 `answers -> question_id -> labels[]` 回答合同；插件提供的常见单问题或问题列表 JSON 复用同一视窗，无法识别的
-请求显示有界 JSON 预览并降级为自由输入。该适配只决定 Host 表现和回答编码，不判断工具业务语义；最终回答仍由
+请求显示有界 JSON 预览并降级为自由输入。问题项标题直接显示 header 与进度，不增加 `?` 等装饰前缀，与工具审批
+和计划审批保持相同的无前导符号标题层级。该适配只决定 Host 表现和回答编码，不判断工具业务语义；最终回答仍由
 Runtime 恢复原始 waiting Run。自由输入期间以 `/` 开头的文本是回答，不得触发 TUI slash command。
 
 同一工具批次可以同时产生多个 `approval_requested`。TUI 投影必须按 canonical event sequence 保存全部未决交互，
