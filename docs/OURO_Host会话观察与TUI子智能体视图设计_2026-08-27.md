@@ -160,14 +160,18 @@ TUI 独立拥有：
 - composer 上方以右对齐导航条投影整个 root Agent tree；root 与 child 节点以 `|` 分隔，child 按父 Run 分组，
   最多显示十个并围绕当前节点滑动。
 - 当前或键盘选中节点使用 `▣`，其他节点使用 `■`；运行、结束和失败分别复用运行语义色、常规低亮色和失败语义色。
+- 鼠标悬停 root 或 child 节点时临时使用选中标记，child 同时显示对应 Agent 名称和任务描述；移出后恢复当前或
+  键盘选择。点击任一会话节点都通过与键盘相同的切换入口打开该 Session。悬停不重排十节点窗口，也不触发
+  Session 观察。
 - child composer 的只读快捷提示只高亮按键组合；底部状态栏不追加 `Subagent` 标签，继续显示 child 自身的实时
   activity、审批模式、模型和推理状态。
 - 主会话 composer 中带有键盘操作的占位提示复用同一结构化片段渲染；例如运行期的 `Enter` 和
   `Ctrl+Enter` 与子会话快捷键使用相同主题高亮样式。
 - 打开首个 child surface 时，TUI 暂存并清空 controlled root 的 composer 草稿；child/child 切换不覆盖该草稿，
   回到 root surface 时原样恢复。child composer 因此始终为空并可稳定显示只读快捷提示。
-- `Alt+←/→` 直接切换相邻 child，`Alt+↑` 回到 root，`Alt+↓` 打开最新 child。终端没有 modifier key-up 事件，
-  所以每个组合键作为一次原子导航事务，在目标 surface 提交后结束选择态，不使用键盘轮询或超时推断。
+- `Alt+←/→` 选择相邻 child，`Alt+↑` 选择 root，`Alt+↓` 选择最新 child。选择反馈立即更新；昂贵的 visible
+  Session 切换同时只执行一笔，加载期间后续选择只覆盖唯一待处理目标，当前切换完成后仅打开最新目标。终端没有
+  modifier key-up 事件，因此不使用键盘轮询、超时推断或逐键加载队列。
 - child 可见时，键盘提交、粘贴提交、abort、审批/AskUser 应答及其他会写入 Session 的动作均不可发往 child。
 - 主会话继续接收其 own stream 和 Agent tree/HITL 更新；切回时立即显示最新一致状态。
 - 多 child 的事件、工具 id、sequence、滚动状态互不污染。

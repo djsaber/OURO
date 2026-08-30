@@ -6,6 +6,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- TUI subagent navigation now keeps Session surface loading single-flight while key repeats
+  immediately move the selected node and coalesce to the latest pending target. Agent nodes preview
+  identity and task details on hover and open their read-only Session on click.
 - The built-in provider catalog now exposes DeepSeek `low` reasoning, adds GLM-5.3 and the
   natively multimodal GLM-5.3-Flash, and integrates xAI Grok 4.6 with reviewed endpoint and
   model capability metadata.

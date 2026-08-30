@@ -22,7 +22,7 @@ from textual.widgets import Input, OptionList, Static, TextArea
 
 import ouro.tui.widgets as tui_widgets
 from ouro import __version__
-from ouro.application.agent_models import AgentToolOptionView
+from ouro.application.agent_models import AgentToolOptionView, AgentTreeNode
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import SkillView
 from ouro.application.event_models import project_runtime_event
@@ -5019,6 +5019,101 @@ async def test_session_picker_opens_child_as_root_owned_read_only_surface(
         assert not composer.has_class("read-only-session")
         assert panel.current_session_id == root_session_id
 
+        rendered_panel = panel.render_content(panel.content_region.width).plain
+        child_node_x = rendered_panel.rfind("■")
+        await pilot.hover(panel, offset=(child_node_x, 0))
+        await pilot.pause()
+        hovered_panel = panel.render_content(panel.content_region.width).plain
+        assert "General" in hovered_panel
+        assert "Inspect direct child navigation." in hovered_panel
+        assert panel.selected_session_id == root_session_id
+
+        await pilot.click(panel, offset=(child_node_x, 0))
+        await _wait_until(
+            lambda: app._visible_session_id() == child_session_id,
+            pilot,
+            description="child surface after clicking its navigation node",
+        )
+
+        rendered_panel = panel.render_content(panel.content_region.width).plain
+        root_node_x = rendered_panel.rfind("■ | ")
+        await pilot.click(panel, offset=(root_node_x, 0))
+        await _wait_until(
+            lambda: app._visible_session_id() == root_session_id,
+            pilot,
+            description="root surface after clicking its navigation node",
+        )
+
+
+@pytest.mark.asyncio
+async def test_agent_node_navigation_finishes_current_load_before_latest_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _application(tmp_path)
+    root_session_id, child_session_id = _persist_direct_child_session(application)
+    app = OuroTuiApp(
+        application=application,
+        resume_session_id=root_session_id,
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await _wait_until(
+            lambda: app._visible_session_id() == root_session_id,
+            pilot,
+            description="root surface before coalesced agent navigation",
+        )
+        original_open_child = app._open_child_session
+        original_show_main = app._show_main_session
+        release_child = asyncio.Event()
+        child_started = asyncio.Event()
+        child_finished = asyncio.Event()
+        main_started = asyncio.Event()
+        order: list[str] = []
+        active_loads = 0
+        peak_active_loads = 0
+
+        async def delayed_open_child(agent: AgentTreeNode) -> None:
+            nonlocal active_loads, peak_active_loads
+            active_loads += 1
+            peak_active_loads = max(peak_active_loads, active_loads)
+            order.append(agent.session_id)
+            child_started.set()
+            try:
+                await release_child.wait()
+                await original_open_child(agent)
+                child_finished.set()
+            finally:
+                active_loads -= 1
+
+        async def observed_show_main() -> None:
+            nonlocal active_loads, peak_active_loads
+            active_loads += 1
+            peak_active_loads = max(peak_active_loads, active_loads)
+            order.append(root_session_id)
+            main_started.set()
+            try:
+                await original_show_main()
+            finally:
+                active_loads -= 1
+
+        monkeypatch.setattr(app, "_open_child_session", delayed_open_child)
+        monkeypatch.setattr(app, "_show_main_session", observed_show_main)
+
+        app.post_message(events.Key("alt+right", None))
+        await asyncio.wait_for(child_started.wait(), timeout=2)
+        app.post_message(events.Key("alt+up", None))
+        await pilot.pause()
+
+        assert main_started.is_set() is False
+        release_child.set()
+        await _wait_for_worker_group(app, pilot, group="navigation")
+
+        assert child_finished.is_set() is True
+        assert order == [child_session_id, root_session_id]
+        assert peak_active_loads == 1
+        assert app._visible_session_id() == root_session_id
+
 
 @pytest.mark.asyncio
 async def test_startup_resume_preserves_canonical_child_read_only_state(
@@ -9932,7 +10027,8 @@ async def test_approval_panel_selects_with_arrows_and_resumes_run(tmp_path: Path
         await pilot.click("#composer")
         await pilot.press("w", "r", "i", "t", "e", "enter")
         await _wait_until(
-            lambda: app._projection is not None and app._projection.pending_interaction is not None,
+            lambda: app._projection is not None
+            and app._projection.pending_interaction is not None,
             pilot,
             description="tool approval request",
         )
@@ -9993,8 +10089,7 @@ async def test_approval_panel_keeps_selected_action_visible_in_short_terminal(
         await pilot.click("#composer")
         await pilot.press(*"write", "enter")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.pending_interaction is not None,
+            lambda: app._projection is not None and app._projection.pending_interaction is not None,
             pilot,
             description="approval in short terminal",
         )

@@ -125,9 +125,11 @@ TUI 必须实现：
     root/child surface 上使用同一 widget，按当前/选中节点调整最多十个 child 的有界窗口。
 12. 导航面板必须保持在当前最上层 inline 菜单（命令、审批、问答或计划确认）的上方，使菜单与 composer 相邻；
     运行、结束和失败节点分别使用运行语义色、常规低亮色和失败语义色，不复制颜色常量。
-13. 终端协议只产生带 modifier 的按键事件，不产生独立 Alt key-up。TUI 将每个 `Alt+方向键` 作为一笔导航事务：
-    进入节点选择状态、更新选中节点并切换 visible Session，目标 surface 提交后恢复当前节点状态；不得用全局键盘
-    轮询或超时猜测模拟 key-up。
+13. 终端协议只产生带 modifier 的按键事件，不产生独立 Alt key-up。`Alt+方向键` 必须立即更新节点选择，但 TUI
+    同时只能执行一笔 visible Session 切换；切换期间的新目标覆盖唯一待处理目标，当前切换完成后只处理最新目标。
+    不得排队每次重复按键，也不得用全局键盘轮询或超时猜测模拟 key-up。
+14. 鼠标悬停会话节点只改变临时选择和详情展示，不触发 Session 观察；移出后恢复当前或键盘选择。左键点击 root
+    或 child 节点都通过与键盘相同的单飞切换入口打开目标 Session；child 选中时展示 Agent 名称和任务描述。
 
 主 transcript 不自动混入 child 中间日志。Agent tree/HITL 摘要可以继续在 root Host 控制面显示；这不改变 child
 完整流只属于 child Session 的事实。
@@ -157,6 +159,7 @@ TUI 必须实现：
 - child 只读且 root 控制目标不变测试；
 - root 与至少两个 child 交错流、多次切换、切换窗口新事件测试；
 - root tree 全层级节点、跨 Run 分组、十节点窗口及 root/child/child 方向键直切测试；
+- 导航加载单飞、加载期间最新目标覆盖，以及节点悬停预览和点击切换测试；
 - 导航面板与命令/审批 inline panel 的层叠几何、运行/结束/失败状态色测试；
 - active Run 期间切换测试；
 - TUI 退出资源释放且 child 继续运行测试；

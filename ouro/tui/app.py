@@ -1018,7 +1018,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._agent_tree_subscription: AgentTreeSubscription | None = None
         self._agent_nodes: dict[str, AgentTreeNode] = {}
         self._agent_root_status = "idle"
-        self._agent_navigation_revision = 0
+        self._agent_switch_in_progress = False
+        self._pending_agent_switch: tuple[str, AgentTreeNode | None] | None = None
         self._controlled_composer_draft: str | None = None
         self._held_session_scroll_y: dict[str, float] = {}
         self._session_history_states: OrderedDict[str, ConversationHistoryState] = OrderedDict()
@@ -2708,13 +2709,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._request_menu_navigation(_MENU_SESSIONS)
 
     def action_main_session(self) -> None:
-        if not self._visible_read_only:
+        if not self._visible_read_only and not self._agent_switch_in_progress:
             return
-        self.run_worker(
-            self._return_to_main_session(),
-            exclusive=True,
-            group="navigation",
-        )
+        self._navigate_agent_node("root")
 
     def action_agent_node_left(self) -> None:
         self._navigate_agent_node("left")
@@ -2727,6 +2724,23 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def action_agent_node_latest(self) -> None:
         self._navigate_agent_node("latest")
+
+    def on_subagent_navigation_panel_navigation_requested(
+        self,
+        message: SubagentNavigationPanel.NavigationRequested,
+    ) -> None:
+        message.stop()
+        if (
+            self._host_closing
+            or len(self.screen_stack) > 1
+            or not self.query(SubagentNavigationPanel)
+        ):
+            return
+        panel = self.query_one(SubagentNavigationPanel)
+        if not panel.display:
+            return
+        panel.begin_navigation()
+        self._request_agent_switch(panel.select_session(message.session_id))
 
     def _navigate_agent_node(
         self,
@@ -2750,47 +2764,56 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             target_session_id = panel.select_root()
         else:
             target_session_id = panel.select_latest_child()
-        if target_session_id is None or target_session_id == self._visible_session_id():
-            panel.end_navigation()
+        self._request_agent_switch(target_session_id)
+
+    def _request_agent_switch(self, target_session_id: str | None) -> None:
+        panel = self.query_one(SubagentNavigationPanel)
+        if target_session_id is None:
+            if not self._agent_switch_in_progress:
+                panel.end_navigation()
             return
         target_agent = panel.selected_agent
         if target_session_id != self._controller.session_id and target_agent is None:
+            if not self._agent_switch_in_progress:
+                panel.end_navigation()
+            return
+        if not self._agent_switch_in_progress and target_session_id == self._visible_session_id():
             panel.end_navigation()
             return
-        self._agent_navigation_revision += 1
-        revision = self._agent_navigation_revision
+        self._pending_agent_switch = (target_session_id, target_agent)
+        if self._agent_switch_in_progress:
+            return
+        self._agent_switch_in_progress = True
         self.run_worker(
-            self._switch_agent_node(
-                target_session_id=target_session_id,
-                target_agent=target_agent,
-                revision=revision,
-            ),
+            self._switch_agent_nodes(),
             exclusive=True,
             group="navigation",
         )
 
-    async def _switch_agent_node(
-        self,
-        *,
-        target_session_id: str,
-        target_agent: AgentTreeNode | None,
-        revision: int,
-    ) -> None:
+    async def _switch_agent_nodes(self) -> None:
         try:
-            self.query_one(StatusLine).set_activity("loading_session")
-            if target_session_id == self._controller.session_id:
-                await self._show_main_session()
-            elif target_agent is not None:
-                await self._open_child_session(target_agent)
+            while self._pending_agent_switch is not None:
+                target_session_id, target_agent = self._pending_agent_switch
+                self._pending_agent_switch = None
+                if target_session_id == self._visible_session_id():
+                    continue
+                try:
+                    self.query_one(StatusLine).set_activity("loading_session")
+                    if target_session_id == self._controller.session_id:
+                        await self._show_main_session()
+                    elif target_agent is not None:
+                        await self._open_child_session(target_agent)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - navigation failures are visible.
+                    if self._surface_available():
+                        self.notify(str(exc), severity="error", markup=False)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - navigation failures are user-visible.
-            if self._surface_available():
-                self.notify(str(exc), severity="error", markup=False)
         finally:
-            if revision == self._agent_navigation_revision and self.query(
-                SubagentNavigationPanel
-            ):
+            self._pending_agent_switch = None
+            self._agent_switch_in_progress = False
+            if self.query(SubagentNavigationPanel):
                 panel = self.query_one(SubagentNavigationPanel)
                 panel.set_current_session(self._visible_session_id())
                 panel.end_navigation()
@@ -2851,8 +2874,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     severity="warning",
                 )
                 return
-            self.query_one(StatusLine).set_activity("loading_session")
-            await self._open_child_session(agent)
+            panel = self.query_one(SubagentNavigationPanel)
+            panel.begin_navigation()
+            self._request_agent_switch(panel.select_session(agent.session_id))
         except Exception as exc:  # noqa: BLE001 - navigation failures are user-visible.
             self.notify(str(exc), severity="error", markup=False)
 
@@ -3208,13 +3232,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except (Exception, asyncio.CancelledError):
             observation.subscription.close()
             raise
-
-    async def _return_to_main_session(self) -> None:
-        try:
-            await self._show_main_session()
-        except Exception as exc:  # noqa: BLE001 - navigation failures are user-visible.
-            if self._surface_available():
-                self.notify(str(exc), severity="error", markup=False)
 
     async def _reload_visible_observation(self) -> None:
         agent = self._visible_agent

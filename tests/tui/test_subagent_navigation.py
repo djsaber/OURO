@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from rich.color import Color
 from rich.console import Console
+from textual.app import App, ComposeResult
 
 from ouro.application.agent_models import AgentTreeNode
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
@@ -141,6 +142,70 @@ def test_subagent_panel_navigation_selects_root_latest_and_adjacent_children() -
 
     assert panel.navigation_active is False
     assert panel.selected_session_id == "ses_child_2"
+
+
+class _SubagentNavigationApp(App[None]):
+    def __init__(self, agents: tuple[AgentTreeNode, ...]) -> None:
+        super().__init__()
+        self.panel = SubagentNavigationPanel()
+        self.panel.display = True
+        self.panel.set_tree(
+            root_session_id="ses_root",
+            agents=agents,
+            root_status="running",
+        )
+        self.panel.set_current_session("ses_root")
+        self.navigation: list[str] = []
+
+    def compose(self) -> ComposeResult:
+        yield self.panel
+
+    def on_subagent_navigation_panel_navigation_requested(
+        self,
+        message: SubagentNavigationPanel.NavigationRequested,
+    ) -> None:
+        self.panel.begin_navigation()
+        self.panel.select_session(message.session_id)
+        self.navigation.append(message.session_id)
+
+
+@pytest.mark.asyncio
+async def test_subagent_panel_hover_previews_stable_visible_node_and_click_requests_it() -> None:
+    agents = tuple(_agent(index, parent_run_id=f"run_{(index - 1) // 4}") for index in range(1, 13))
+    app = _SubagentNavigationApp(agents)
+
+    async with app.run_test(size=(80, 6)) as pilot:
+        panel = app.panel
+        visible_before = panel.visible_session_ids
+        rendered = panel.render_content(panel.content_region.width).plain
+        nodes = rendered[rendered.rfind("▣ | ") :]
+        first_child_x = rendered.rfind("▣ | ") + nodes.index("■")
+
+        await pilot.hover(panel, offset=(first_child_x, 0))
+        await pilot.pause()
+
+        assert panel.visible_session_ids == visible_before
+        assert panel.selected_session_id == "ses_root"
+        assert "Inspect task 3 • Worker 3" in panel.render_content(80).plain
+        assert panel.render_content(80).plain.rstrip().endswith("■ | ▣■ ■■■■ ■■■■")
+
+        await pilot.hover(None, offset=(0, 5))
+        await pilot.pause()
+        assert panel.render_content(80).plain.rstrip().endswith("▣ | ■■ ■■■■ ■■■■")
+
+        await pilot.click(panel, offset=(first_child_x, 0))
+        await pilot.pause()
+
+        assert app.navigation == ["ses_child_3"]
+        assert panel.selected_session_id == "ses_child_3"
+
+        rendered = panel.render_content(panel.content_region.width).plain
+        root_node_x = rendered.rfind("■ | ")
+        await pilot.click(panel, offset=(root_node_x, 0))
+        await pilot.pause()
+
+        assert app.navigation == ["ses_child_3", "ses_root"]
+        assert panel.selected_session_id == "ses_root"
 
 
 def test_subagent_panel_node_colors_follow_runtime_outcomes() -> None:
