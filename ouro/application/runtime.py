@@ -384,6 +384,31 @@ class RuntimeService:
         self._extensions_bound = True
         if catalog is not None:
             self.event_recorder.set_observer_registry_resolver(self._observers_for_observation)
+            self.event_recorder.set_runtime_event_observer_matcher(
+                self._has_runtime_event_observer
+            )
+
+    def _has_runtime_event_observer(
+        self,
+        run_id: str | None,
+        event_type: str,
+    ) -> bool:
+        snapshot = self._extension_snapshots.get(run_id) if run_id is not None else None
+        if snapshot is not None:
+            assert run_id is not None
+            return snapshot.observers.has_registration(
+                "runtime_event",
+                runtime_event_type=event_type,
+                active_controller_ids=lambda: self._active_controller_ids_for_run(run_id),
+            )
+        if self._extension_catalog is not None:
+            # Application events without a retained Run snapshot resolve against
+            # the current immutable Catalog at publication time.
+            return True
+        return self.observers.has_registration(
+            "runtime_event",
+            runtime_event_type=event_type,
+        )
 
     def _observers_for_observation(
         self,

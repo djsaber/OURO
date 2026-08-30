@@ -69,6 +69,10 @@ metadata 中记录原因；这是当前运行策略，不是配置格式兼容�
 
 摘要请求不携带普通工具定义，不把摘要文本写回 canonical messages。
 
+滚动摘要选块对每个候选 frame 的模型可见内容最多序列化一次；summarization prompt 和已有摘要包络只度量一次，
+随后用与默认 token estimator 精确一致的可加字符度量累计容量。一次选块对已检查 frame/message 数保持线性复杂度，
+不能通过放宽预算、拆开 frame 或改变 `ContextOverflowError` 边界换取性能。
+
 ## CompactionRecord
 
 记录至少包含：

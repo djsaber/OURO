@@ -70,6 +70,9 @@ TUI 通过 `TuiController` 调用 `LocalApplication` 的公开服务，通过 Ru
 每帧至多发布一个 ready message；不得叠加固定周期渲染定时器而降低 compositor 的原生刷新率。结构和完成边界
 立即发布，再交给当前 assistant turn；TUI 不为每个 provider chunk 创建渲染任务。
 
+输入草稿的最新修订保存在 TUI 内存状态，磁盘快照采用 300 ms 尾沿防抖；连续编辑只保存静默后的最终快照。
+Host 关闭必须等待 pending 草稿完成原子保存，不能把防抖变成退出时的数据丢失窗口。
+
 Actions 的 Subagents 分组通过同一可复用菜单和配置表单依次提供 Dispatch policy、List、Create、Edit 和 Delete。List
 是 builtin/user 统一 definition 目录及 compatibility 的可导航页面；builtin 以 disabled 样式保留，user 可进入 Edit/Delete
 管理页，独立 Edit/Delete 入口也展示相同的 disabled builtin 分组。Definition 编辑开放 name、description、system prompt、

@@ -137,6 +137,7 @@ class SessionObservationLagged(Message):
 
 
 _MCP_STATUS_SYNC_INTERVAL_SECONDS = 0.25
+_INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS = 0.3
 _SESSION_TITLE_MAX_CELLS = 56
 _RUNTIME_EVENT_BUFFER_MAX = 1000
 _SESSION_HISTORY_CACHE_SIZE = 3
@@ -2275,6 +2276,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             while True:
                 revision = self._input_draft_revision
+                await asyncio.sleep(_INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS)
+                if revision != self._input_draft_revision:
+                    continue
                 drafts = self._input_drafts
                 try:
                     await asyncio.to_thread(self._input_draft_store.save, drafts)

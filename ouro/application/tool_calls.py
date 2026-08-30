@@ -28,7 +28,7 @@ from ouro.core.cancellation import AbortSignal
 from ouro.core.errors import SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.interactions import AnswerResolution, UnattendedResolution
-from ouro.core.messages import MessageRecord, ModelResponseRecord, ProviderContinuationArtifact
+from ouro.core.messages import ModelResponseRecord, ProviderContinuationArtifact
 from ouro.core.observers import (
     FrozenJson,
     ToolCallFinishedObservation,
@@ -818,23 +818,23 @@ class ToolCallCoordinator:
             },
         )
 
-        messages: list[MessageRecord] = []
-        results: list[ToolResult] = []
+        ordered_calls = sorted(batch.calls, key=lambda item: item.request.source_index)
+        results = [call.result for call in ordered_calls if call.result is not None]
+        messages = self.runs.append_tool_result_messages(
+            session=session,
+            run=run,
+            results=results,
+            first_sequence=message_sequence,
+            turn_id=batch.turn_id,
+        )
+        result_messages = iter(messages)
         committed_calls: list[ToolBatchCall] = []
-        for call in sorted(batch.calls, key=lambda item: item.request.source_index):
+        for call in ordered_calls:
             if call.result is None:
                 committed_calls.append(call)
                 continue
-            message = self.runs.append_tool_result_message(
-                session=session,
-                run=run,
-                result=call.result,
-                sequence=message_sequence + len(messages),
-                turn_id=batch.turn_id,
-            )
+            message = next(result_messages)
             self.after(session, run, call.result, invocation=call.invocation)
-            messages.append(message)
-            results.append(call.result)
             committed_calls.append(
                 call.model_copy(update={"result_message_id": message.message_id})
             )

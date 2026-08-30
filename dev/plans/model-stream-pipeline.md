@@ -32,7 +32,7 @@ HTTP/SSE socket
 ```text
 socket reader/pump
   -> 单一有界、无损、保序入口
-  -> 积压时合并相邻同类 delta
+  -> 首分片即时、快速后续分片有界合并
   -> 语义事件消费与有序持久化
   -> 非阻塞 Host fan-out
   -> TUI 类型化合帧
@@ -43,7 +43,7 @@ socket reader/pump
 
 - 网络读取器不等待持久化或 UI；仅在唯一入口队列满时施加显式背压。
 - 入口队列无损、FIFO；不得跨 `text/reasoning` 类型或 continuation、tool、retry、done、error 等结构边界合并。
-- 没有积压时不等待额外定时器，因此不增加首 token 延迟。
+- 每个连续类型段的首分片不等待；后续分片只等待上次发射所锚定的固定短窗口，慢流到达时窗口已截止并立即交付。
 - 持久化先于 Host 分发，运行结果和持久化日志保持同序。
 - UI 永远不能反压模型；活动帧的常规工作量只与新增文本和至多一个未完成视觉行有关，完成 Markdown 块只渲染一次。
 - 取消必须关闭 reader 和 provider 迭代器；异常必须原样越过队列边界，不能伪装为正常完成。
@@ -55,8 +55,9 @@ socket reader/pump
 
 - 将 `RuntimeAdapter` 的逐事件 `anext()` 改为常驻 reader task 和固定容量 FIFO。
 - reader 独占 provider 迭代器，消费者独占队列；取消消费者时取消 reader，并在 `finally` 中关闭 provider 流。
-- 消费者取到 delta 后，只检查队列中已经存在的后续事件；相邻同类文本/推理 delta 在字符上限内合并。遇到任一结构边界立即停止。
-- 不增加定时器、后台线程、可配置队列体系或第二级缓冲。
+- 消费者取到首个普通 delta 后立即交付；后续相邻同类文本/推理 delta 在固定、不可续期的短窗口和字符上限内合并。
+  遇到任一结构边界立即停止。
+- 不增加周期定时器、后台线程、可配置队列体系或第二级缓冲；窗口复用现有 FIFO 等待点。
 
 ### 阶段 B：有界 TUI 活动尾部
 
@@ -100,7 +101,7 @@ socket reader/pump
 ## 5. 验收标准
 
 - 慢消费者期间，reader 能持续读至入口容量；队列满时有界等待，恢复后事件无丢失且严格保序。
-- 相邻同类 delta 只在已有积压时合并；工具、continuation、retry、done 和 error 顺序与边界不变。
+- 首个同类 delta 即时交付，快速后续 delta 有界合并；工具、continuation、retry、done 和 error 顺序与边界不变。
 - 消费者提前退出不会遗留 reader task，provider 流被关闭。
 - 32 KiB 长单行和长未闭合 Markdown 块的逐帧处理不再反复构造 Rich Markdown；活动渲染不随完整尾块重复解析和渲染。
 - 最终冻结文本与 provider 原始文本逐字一致；最终 Markdown 外观继续使用共享渲染定义。
@@ -111,7 +112,7 @@ socket reader/pump
 - [x] 完成三条候选分支与主线的流式链路审查
 - [x] 定位拉取耦合、事件放大和 TUI O(n²) 主因
 - [x] 实施 RuntimeAdapter reader/FIFO
-- [x] 实施积压感知的相邻 delta 合并
+- [x] 实施首分片即时、快速后续分片有界合并
 - [x] 实施增量 Markdown 分块与活动纯文本尾部
 - [x] 对齐 SQLite 与文件后端的模型 delta 分组耐久语义
 - [x] 将 TUI 固定 50 ms 合帧改为 Textual 原生显示帧同步
@@ -126,3 +127,7 @@ SQLite 最终实现的同步等级、即时可见性、嵌套事务与 store con
 连接或新的 store 生命周期契约。
 TUI 帧调度探针按 10 ms 输入 40 个 delta：固定 50 ms timer 的稳态显示间隔中位数约 59 ms、每批 4–6 个字符；改为
 compositor 帧同步后中位数 16.45 ms、P90 18.48 ms、平均每批 1.21 个字符，单批应用中位数 0.137 ms。
+
+后续性能审查证明“仅合并已有积压”仍会让慢于单次持久化、快于展示需要的 Provider chunk 成为全链路工作单位；
+[`runtime-performance-hot-paths.md`](runtime-performance-hot-paths.md) 已将入口契约收敛为首分片即时、后续 8 ms
+固定窗口，并保留本计划的单 reader/FIFO、无第二级缓冲和结构边界不变量。

@@ -97,6 +97,79 @@ def test_runtime_event_filter_is_exact_and_empty_means_all() -> None:
     assert [item.observer_id for item in registry.matching(observation)] == ["all"]
 
 
+def test_registry_can_check_runtime_event_match_without_building_observation() -> None:
+    registry = ObserverRegistry()
+    registry.register_many(
+        (
+            ObserverRegistration(
+                plugin_id="disabled",
+                observer_id="disabled",
+                event="runtime_event",
+                event_types=("run_started",),
+                enabled=False,
+                handler=lambda _observation: None,
+            ),
+            ObserverRegistration(
+                plugin_id="filtered",
+                observer_id="completed",
+                event="runtime_event",
+                event_types=("run_completed",),
+                handler=lambda _observation: None,
+            ),
+        )
+    )
+
+    assert registry.has_registration(
+        "runtime_event",
+        runtime_event_type="run_completed",
+    )
+    assert not registry.has_registration(
+        "runtime_event",
+        runtime_event_type="run_started",
+    )
+
+    controlled = ObserverRegistry()
+    controlled.register(
+        ObserverRegistration(
+            plugin_id="controlled",
+            observer_id="active-only",
+            event="runtime_event",
+            active_when_controller_id="controller_1",
+            handler=lambda _observation: None,
+        )
+    )
+    assert not controlled.has_registration(
+        "runtime_event",
+        runtime_event_type="run_started",
+        active_controller_ids=set(),
+    )
+    assert controlled.has_registration(
+        "runtime_event",
+        runtime_event_type="run_started",
+        active_controller_ids={"controller_1"},
+    )
+
+    active_resolutions = 0
+
+    def active_ids() -> set[str]:
+        nonlocal active_resolutions
+        active_resolutions += 1
+        return set()
+
+    assert registry.has_registration(
+        "runtime_event",
+        runtime_event_type="run_completed",
+        active_controller_ids=active_ids,
+    )
+    assert active_resolutions == 0
+    assert not controlled.has_registration(
+        "runtime_event",
+        runtime_event_type="run_started",
+        active_controller_ids=active_ids,
+    )
+    assert active_resolutions == 1
+
+
 @pytest.mark.asyncio
 async def test_slow_observer_does_not_block_sibling_or_enqueue() -> None:
     registry = ObserverRegistry()

@@ -250,47 +250,78 @@ class RunLifecycle:
         sequence: int,
         turn_id: str | None = None,
     ) -> MessageRecord:
-        if result.resource_refs and self._validate_resource_refs is None:
+        return self.append_tool_result_messages(
+            session=session,
+            run=run,
+            results=[result],
+            first_sequence=sequence,
+            turn_id=turn_id,
+        )[0]
+
+    def append_tool_result_messages(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        results: list[ToolResult],
+        first_sequence: int,
+        turn_id: str | None = None,
+    ) -> list[MessageRecord]:
+        """Validate and commit one ordered tool-result message batch."""
+
+        resource_refs = [reference for result in results for reference in result.resource_refs]
+        if resource_refs and self._validate_resource_refs is None:
             raise ValueError(
                 "tool result contains resource_refs but no ResourceService is configured"
             )
-        if self._validate_resource_refs is not None:
-            self._validate_resource_refs(session.session_id, result.resource_refs)
-        existing = self._find_message(
-            session.session_id,
-            run.run_id,
-            ("tool_result", result.tool_call_id),
-        )
-        if existing is not None:
-            return existing
-        message = MessageRecord.text(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            role="tool_result",
-            text=result.content,
-            sequence=sequence,
-            turn_id=turn_id,
-        ).model_copy(
-            update={
-                "resource_refs": result.resource_refs,
-                "tool_result": ToolResultReference(
-                    tool_call_id=result.tool_call_id,
-                    tool_name=result.tool_name,
-                    is_error=result.is_error,
-                ),
-                "tool_execution": ToolExecutionTiming(
-                    started_at=result.started_at,
-                    ended_at=result.ended_at or result.started_at,
-                ),
-            }
-        )
-        self._append_message(
+        if resource_refs and self._validate_resource_refs is not None:
+            self._validate_resource_refs(session.session_id, resource_refs)
+
+        messages: list[MessageRecord] = []
+        missing: list[MessageRecord] = []
+        missing_by_tool_call_id: dict[str, MessageRecord] = {}
+        for index, result in enumerate(results):
+            existing = self._find_message(
+                session.session_id,
+                run.run_id,
+                ("tool_result", result.tool_call_id),
+            )
+            if existing is None:
+                existing = missing_by_tool_call_id.get(result.tool_call_id)
+            if existing is not None:
+                messages.append(existing)
+                continue
+            message = MessageRecord.text(
+                session_id=session.session_id,
+                run_id=run.run_id,
+                role="tool_result",
+                text=result.content,
+                sequence=first_sequence + index,
+                turn_id=turn_id,
+            ).model_copy(
+                update={
+                    "resource_refs": result.resource_refs,
+                    "tool_result": ToolResultReference(
+                        tool_call_id=result.tool_call_id,
+                        tool_name=result.tool_name,
+                        is_error=result.is_error,
+                    ),
+                    "tool_execution": ToolExecutionTiming(
+                        started_at=result.started_at,
+                        ended_at=result.ended_at or result.started_at,
+                    ),
+                }
+            )
+            messages.append(message)
+            missing.append(message)
+            missing_by_tool_call_id[result.tool_call_id] = message
+        self.append_messages(
             session=session,
             run=run,
-            message=message,
+            messages=missing,
             allow_interrupted=True,
         )
-        return message
+        return messages
 
     def record_usage(
         self,

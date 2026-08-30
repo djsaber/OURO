@@ -259,6 +259,23 @@ def estimate_text_tokens(text: str) -> int:
         return 0
     ascii_characters = sum(ord(character) < 128 for character in text)
     non_ascii_characters = len(text) - ascii_characters
+    return estimate_text_tokens_from_character_counts(
+        ascii_characters=ascii_characters,
+        non_ascii_characters=non_ascii_characters,
+    )
+
+
+def estimate_text_tokens_from_character_counts(
+    *,
+    ascii_characters: int,
+    non_ascii_characters: int,
+) -> int:
+    """Evaluate the default estimator from an incrementally accumulated measure."""
+
+    if ascii_characters < 0 or non_ascii_characters < 0:
+        raise ValueError("character counts must be non-negative")
+    if ascii_characters == 0 and non_ascii_characters == 0:
+        return 0
     return max(1, ceil(ascii_characters / 4) + non_ascii_characters)
 
 

@@ -283,6 +283,48 @@ class ObserverRegistry:
         )
         return self.registered(observation.event, runtime_event_type=runtime_event_type)
 
+    def has_registration(
+        self,
+        event: ObservationName,
+        *,
+        runtime_event_type: str | None = None,
+        active_controller_ids: set[str] | Callable[[], set[str]] | None = None,
+    ) -> bool:
+        """Check for one enabled match without sorting or building an Observation."""
+
+        active: set[str] | None = (
+            active_controller_ids if isinstance(active_controller_ids, set) else None
+        )
+        active_resolver: Callable[[], set[str]] | None
+        if callable(active_controller_ids):
+            active_resolver = active_controller_ids
+        elif active_controller_ids is None:
+            active_resolver = self._active_controller_ids
+        else:
+            active_resolver = None
+        is_scoped = active is not None or active_resolver is not None
+        for registration in self._registrations:
+            if not registration.enabled or registration.event != event:
+                continue
+            if (
+                is_scoped
+                and registration.active_when_controller_id is not None
+            ):
+                if active is None:
+                    assert active_resolver is not None
+                    active = active_resolver()
+                if registration.active_when_controller_id not in active:
+                    continue
+            if (
+                event == "runtime_event"
+                and runtime_event_type is not None
+                and registration.event_types
+                and runtime_event_type not in registration.event_types
+            ):
+                continue
+            return True
+        return False
+
     def scoped(self, active_controller_ids: Callable[[], set[str]]) -> ObserverRegistry:
         scoped = ObserverRegistry()
         scoped.restore(self.snapshot())

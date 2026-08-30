@@ -28,6 +28,7 @@ ObserverRegistryResolver = Callable[
     [Observation],
     tuple[ObserverRegistry, Callable[[], None]],
 ]
+RuntimeEventObserverMatcher = Callable[[str | None, str], bool]
 
 
 class ApplicationEventPublisher(Protocol):
@@ -92,6 +93,7 @@ class RuntimeEventRecorder:
         self._sink_timeout_seconds = sink_timeout_seconds
         self._sink_observers: list[_SinkObserver] = []
         self._observer_registry_resolver: ObserverRegistryResolver | None = None
+        self._runtime_event_observer_matcher: RuntimeEventObserverMatcher | None = None
         self._observer_dispatcher = observer_dispatcher or ObserverDispatcher()
         self._observer_dispatcher.set_failure_sink(self.record_observer_failure)
         self._diagnostic_tasks: set[asyncio.Task[None]] = set()
@@ -116,6 +118,16 @@ class RuntimeEventRecorder:
         if self._closed:
             raise RuntimeError("event recorder is closed")
         self._observer_registry_resolver = resolver
+
+    def set_runtime_event_observer_matcher(
+        self,
+        matcher: RuntimeEventObserverMatcher,
+    ) -> None:
+        """Bind a lightweight predicate for avoiding unused event projections."""
+
+        if self._closed:
+            raise RuntimeError("event recorder is closed")
+        self._runtime_event_observer_matcher = matcher
 
     def observe(self, observation: Observation) -> None:
         """Enqueue a fact without awaiting plugin code or applying backpressure."""
@@ -294,8 +306,22 @@ class RuntimeEventRecorder:
                         f"event sink exceeded its {self._observer_queue_size}-event backlog"
                     ),
                 )
-        if notify_observers:
+        if notify_observers and self._has_runtime_event_observer(event):
             self.observe(_runtime_event_observation(event))
+
+    def _has_runtime_event_observer(self, event: EventRecord) -> bool:
+        matcher = self._runtime_event_observer_matcher
+        if matcher is not None:
+            try:
+                return matcher(event.run_id, event.event_type)
+            except Exception:
+                return True
+        if self._observer_registry_resolver is not None:
+            return True
+        return self.observers.has_registration(
+            "runtime_event",
+            runtime_event_type=event.event_type,
+        )
 
     def _ensure_sink_observers_started(self) -> None:
         for index, observer in enumerate(self._sink_observers):

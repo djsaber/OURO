@@ -12,6 +12,7 @@ from ouro.core.reasoning import ReasoningRequest
 
 _STREAM_BUFFER_CAPACITY = 256
 _STREAM_COALESCE_MAX_CHARS = 16 * 1024
+_STREAM_COALESCE_WINDOW_SECONDS = 0.008
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,8 @@ async def _interruptible(
         else None
     )
     pending: _BufferedStreamItem | None = None
+    next_plain_flush_at: dict[str, float] = {}
+    last_plain_field: str | None = None
 
     try:
         while signal is None or not signal.is_aborted():
@@ -97,9 +100,25 @@ async def _interruptible(
                     raise item.error
                 break
 
-            event, pending = _coalesce_buffered_deltas(item, buffer)
+            field = _coalescible_field(item)
+            if field is None:
+                next_plain_flush_at.clear()
+                last_plain_field = None
+            elif field != last_plain_field:
+                next_plain_flush_at.clear()
+                last_plain_field = field
+            event, pending = await _coalesce_plain_deltas(
+                item,
+                buffer,
+                abort_wait=abort_wait,
+                flush_at=(next_plain_flush_at.get(field) if field is not None else None),
+            )
             if signal is not None and signal.is_aborted():
                 break
+            if field is not None:
+                next_plain_flush_at[field] = (
+                    asyncio.get_running_loop().time() + _STREAM_COALESCE_WINDOW_SECONDS
+                )
             yield event
     finally:
         if abort_wait is not None:
@@ -135,18 +154,20 @@ async def _next_stream_item(
     buffer: asyncio.Queue[_BufferedStreamItem],
     *,
     abort_wait: asyncio.Task[None] | None,
+    timeout: float | None = None,
 ) -> _BufferedStreamItem | None:
     try:
         return buffer.get_nowait()
     except asyncio.QueueEmpty:
         pass
-    if abort_wait is None:
-        return await buffer.get()
-
     get_item = asyncio.create_task(buffer.get())
     try:
+        waiters: set[asyncio.Task[object]] = {get_item}
+        if abort_wait is not None:
+            waiters.add(abort_wait)
         done, _ = await asyncio.wait(
-            {get_item, abort_wait},
+            waiters,
+            timeout=timeout,
             return_when=asyncio.FIRST_COMPLETED,
         )
         if get_item in done:
@@ -159,11 +180,14 @@ async def _next_stream_item(
                 await get_item
 
 
-def _coalesce_buffered_deltas(
+async def _coalesce_plain_deltas(
     first: ProviderStreamEvent,
     buffer: asyncio.Queue[_BufferedStreamItem],
+    *,
+    abort_wait: asyncio.Task[None] | None,
+    flush_at: float | None,
 ) -> tuple[ProviderStreamEvent, _BufferedStreamItem | None]:
-    """Merge only adjacent, already-buffered plain deltas of the same kind."""
+    """Merge adjacent plain deltas up to one fixed, non-extending deadline."""
     field = _coalescible_field(first)
     if field is None:
         return first, None
@@ -175,7 +199,19 @@ def _coalesce_buffered_deltas(
         try:
             item = buffer.get_nowait()
         except asyncio.QueueEmpty:
-            break
+            if flush_at is None:
+                break
+            remaining = flush_at - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            next_item = await _next_stream_item(
+                buffer,
+                abort_wait=abort_wait,
+                timeout=remaining,
+            )
+            if next_item is None:
+                break
+            item = next_item
         if not isinstance(item, ProviderStreamEvent):
             pending = item
             break

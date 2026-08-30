@@ -110,9 +110,10 @@ application 用例仍负责取得 mutation lock、准备业务字段、先保存
 - `RuntimeAdapter` 以每个 provider stream 一个常驻 reader 和一个固定容量 FIFO 解耦网络生产与 Core 消费。
   reader 是 provider 迭代器的唯一调用者；FIFO 是唯一无损背压边界。持久化、Host 或 UI 的协作式等待不得直接
   暂停 socket 读取，FIFO 满后 reader 才允许等待消费者。
-- FIFO 保持事件顺序。消费者只合并队列中已经积压、连续且同为 `text_delta` 或同为
-  `reasoning_delta` 的普通分片，并受固定字符上限约束；不得等待下一分片，不得跨 continuation、tool、retry、
-  done、error 或携带 usage/completion 的事件边界。Provider 原始 chunk 边界不属于 Core 的稳定语义。
+- FIFO 保持事件顺序。每个连续语义段中首个 `text_delta` 或 `reasoning_delta` 不等待未来分片；后续快速分片以
+  上次同类发射时间为锚点，在最多 8 ms 且不续期的窗口内合并。到达时窗口已截止的慢分片立即交付。合并受
+  16 KiB 字符上限约束，不得跨 continuation、tool、retry、done、error、类型切换或携带 usage/completion 的
+  事件边界。Provider 原始 chunk 边界不属于 Core 的稳定语义。
 - Provider 异常必须在已排队事件之后按序交付，不能转换为正常 `done`。消费者结束、取消或 abort 时必须取消 reader
   并关闭 provider async iterator，不能遗留网络读取任务。
 - Provider 必须把流式 chunk 与非流式完整调用都在 adapter 边界规范化为 `tool_call_delta`；Core 不接受第二种

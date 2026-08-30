@@ -373,6 +373,80 @@ def test_tool_resource_refs_are_validated_before_canonical_message_commit(tmp_pa
     assert sessions.load_resource_references(session.session_id) == []
 
 
+def test_tool_result_batch_validates_every_resource_before_any_message_commit(tmp_path) -> None:
+    sessions, _, resources, session_service = _services(tmp_path)
+    session = session_service.create(title="Tool batch refs").session
+    source = tmp_path / "valid.txt"
+    source.write_text("valid", encoding="utf-8")
+    valid_resource = resources.import_resource(session.session_id, source).resource
+    recorder = RuntimeEventRecorder(store=sessions, observers=ObserverRegistry())
+    lifecycle = RunLifecycle(
+        store=sessions,
+        events=recorder,
+        validate_resource_refs=resources.validate_references,
+    )
+    run = RunRecord(session_id=session.session_id, status="running")
+
+    with pytest.raises(ResourceNotFoundError, match="not attached"):
+        lifecycle.append_tool_result_messages(
+            session=sessions.load_session_record(session.session_id),
+            run=run,
+            results=[
+                ToolResult(
+                    tool_call_id="call_valid",
+                    tool_name="GeneratedFile",
+                    resource_refs=[valid_resource.resource_id],
+                ),
+                ToolResult(
+                    tool_call_id="call_invalid",
+                    tool_name="GeneratedFile",
+                    resource_refs=["res_" + "0" * 64],
+                ),
+            ],
+            first_sequence=1,
+        )
+
+    assert sessions.load_session(session.session_id).messages == []
+
+
+def test_tool_result_batch_reuses_existing_message_and_commits_only_missing_suffix(
+    tmp_path,
+) -> None:
+    sessions, _, resources, session_service = _services(tmp_path)
+    session = session_service.create(title="Tool batch recovery").session
+    recorder = RuntimeEventRecorder(store=sessions, observers=ObserverRegistry())
+    lifecycle = RunLifecycle(
+        store=sessions,
+        events=recorder,
+        validate_resource_refs=resources.validate_references,
+    )
+    run = RunRecord(session_id=session.session_id, status="running")
+    sessions.save_run(run)
+    first = ToolResult(tool_call_id="call_1", tool_name="First", content="one")
+    second = ToolResult(tool_call_id="call_2", tool_name="Second", content="two")
+    existing = lifecycle.append_tool_result_message(
+        session=sessions.load_session_record(session.session_id),
+        run=run,
+        result=first,
+        sequence=1,
+    )
+
+    messages = lifecycle.append_tool_result_messages(
+        session=sessions.load_session_record(session.session_id),
+        run=run,
+        results=[first, second],
+        first_sequence=1,
+    )
+
+    snapshot = sessions.load_session(session.session_id)
+    assert messages[0] == existing
+    assert [message.sequence for message in messages] == [1, 2]
+    assert [message.tool_result.tool_call_id for message in snapshot.messages] == [
+        "call_1",
+        "call_2",
+    ]
+
+
 def test_text_resource_is_projected_with_source_label_without_mutating_canonical_message(
     tmp_path,
 ) -> None:

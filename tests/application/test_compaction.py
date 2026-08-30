@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+import ouro.application.compaction as compaction_module
 from ouro.application.compaction import LLMSummaryCompactionStrategy
 from ouro.application.runtime import RuntimeService
 from ouro.cli.context_output import NO_PREPARED_CONTEXT
@@ -296,6 +297,72 @@ def _summary_adapter(
             reasoning_request=ReasoningRequest(mode="enabled", effort="low"),
         ),
     )
+
+
+def test_summary_chunk_selection_serializes_each_message_once_and_preserves_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = SummaryRouteProvider()
+    adapter = _summary_adapter(
+        provider,
+        provider_id="runtime",
+        endpoint_id="chat",
+        context_window=8_000,
+    )
+    strategy = LLMSummaryCompactionStrategy(adapter)
+    frames = [
+        [
+            MessageRecord.text(
+                session_id="ses_linear",
+                role="user",
+                text=f"message-{index}-" + ("x" * (index % 7 + 1)),
+            )
+        ]
+        for index in range(200)
+    ]
+    previous_summary = "earlier summary"
+    summary_output_tokens = 512
+    capacity = adapter.model.context_window - summary_output_tokens
+    expected: list[MessageRecord] = []
+    expected_frames = 0
+    for frame in frames:
+        candidate = [*expected, *frame]
+        if (
+            strategy._summary_input_tokens(
+                previous_summary,
+                candidate,
+                summary_output_tokens,
+            )
+            > capacity
+        ):
+            break
+        expected = candidate
+        expected_frames += 1
+
+    visible_calls = 0
+    model_visible_message = compaction_module.model_visible_message
+
+    def count_model_visible_message(message):
+        nonlocal visible_calls
+        visible_calls += 1
+        return model_visible_message(message)
+
+    monkeypatch.setattr(
+        compaction_module,
+        "model_visible_message",
+        count_model_visible_message,
+    )
+
+    selected, consumed_frames = strategy._next_chunk(
+        frames,
+        adapter=adapter,
+        previous_summary=previous_summary,
+        summary_output_tokens=summary_output_tokens,
+    )
+
+    assert selected == expected
+    assert consumed_frames == expected_frames
+    assert visible_calls <= sum(len(frame) for frame in frames[: expected_frames + 1])
 
 
 @pytest.mark.asyncio

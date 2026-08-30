@@ -60,7 +60,9 @@
 - planned、interaction、execution、commit、terminal 或 recoverable phase。
 
 批次必须先持久化 assistant tool-call message，再执行外部工具。结果无论顺序或并行执行，都按 Provider
-原始 `source_index` 顺序提交并回灌模型。
+原始 `source_index` 顺序提交并回灌模型。同一完成批次先统一验证全部资源引用，再把缺失的结果消息作为一个
+有序 `append_messages` 批次提交；任何结果验证失败不得留下部分消息。提交成功后才投递 tool-finished Observer 并
+推进批次状态。恢复时按 tool call id 复用已有结果消息，只批量补交缺失项。
 
 ## 顺序与并行
 

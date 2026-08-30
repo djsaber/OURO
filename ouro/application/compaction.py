@@ -33,6 +33,7 @@ from ouro.core.context import (
     ContextBuilder,
     ContextView,
     estimate_text_tokens,
+    estimate_text_tokens_from_character_counts,
     project_recovery_messages,
 )
 from ouro.core.context_providers import (
@@ -412,20 +413,36 @@ class LLMSummaryCompactionStrategy:
         """Choose one provider-safe chunk using the latest rolling summary size."""
 
         capacity = adapter.model.context_window - summary_output_tokens
-        if self._summary_input_tokens(previous_summary, [], summary_output_tokens) >= capacity:
+        rendered_prompt = render_summarization_prompt(self.prompt, summary_output_tokens)
+        fixed_tokens = estimate_text_tokens(rendered_prompt) + 8
+        empty_payload = _summary_payload(previous_summary, [])
+        ascii_characters, non_ascii_characters = _text_character_counts(empty_payload)
+        if (
+            fixed_tokens
+            + estimate_text_tokens_from_character_counts(
+                ascii_characters=ascii_characters,
+                non_ascii_characters=non_ascii_characters,
+            )
+            >= capacity
+        ):
             raise ContextOverflowError(
                 "summary prompt and previous summary exceed model input budget"
             )
 
         current: list[MessageRecord] = []
         consumed_frames = 0
+        has_serialized_messages = False
         for frame in frames:
-            candidate = [*current, *frame]
+            serialized_frame = _serialize_messages(frame)
+            separator = "\n" if serialized_frame and has_serialized_messages else ""
+            added_ascii, added_non_ascii = _text_character_counts(
+                f"{separator}{serialized_frame}"
+            )
             if (
-                self._summary_input_tokens(
-                    previous_summary,
-                    candidate,
-                    summary_output_tokens,
+                fixed_tokens
+                + estimate_text_tokens_from_character_counts(
+                    ascii_characters=ascii_characters + added_ascii,
+                    non_ascii_characters=non_ascii_characters + added_non_ascii,
                 )
                 > capacity
             ):
@@ -434,7 +451,10 @@ class LLMSummaryCompactionStrategy:
                 raise ContextOverflowError(
                     "a single context frame exceeds the summary input budget"
                 )
-            current = candidate
+            current.extend(frame)
+            ascii_characters += added_ascii
+            non_ascii_characters += added_non_ascii
+            has_serialized_messages = has_serialized_messages or bool(serialized_frame)
             consumed_frames += 1
         return current, consumed_frames
 
@@ -1494,6 +1514,11 @@ def _summary_payload(
         sections.extend(["<previous_summary>", previous_summary, "</previous_summary>", ""])
     sections.extend(["<conversation>", _serialize_messages(messages), "</conversation>"])
     return "\n".join(sections)
+
+
+def _text_character_counts(text: str) -> tuple[int, int]:
+    ascii_characters = sum(ord(character) < 128 for character in text)
+    return ascii_characters, len(text) - ascii_characters
 
 
 def _merge_usage(

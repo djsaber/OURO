@@ -117,7 +117,10 @@ def test_runtime_publishes_permission_updates_to_existing_and_future_coordinator
 
 
 @pytest.mark.asyncio
-async def test_parallel_batch_preserves_one_assistant_message_and_source_order(tmp_path) -> None:
+async def test_parallel_batch_preserves_one_assistant_message_and_source_order(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     registry = ToolRegistry()
     completed: list[str] = []
     first_started = asyncio.Event()
@@ -150,6 +153,20 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(t
             ToolCallRequest(id="call_2", name="Second", source_index=1),
         ],
     )
+    tool_result_batches: list[list[str]] = []
+    append_messages = runtime.store.append_messages
+
+    def capture_message_batch(messages) -> None:
+        result_ids = [
+            message.tool_result.tool_call_id
+            for message in messages
+            if message.tool_result is not None
+        ]
+        if result_ids:
+            tool_result_batches.append(result_ids)
+        append_messages(messages)
+
+    monkeypatch.setattr(runtime.store, "append_messages", capture_message_batch)
     planned_states: list[tuple[str, str, list[str]]] = []
 
     def capture_planned_state(event) -> None:
@@ -186,6 +203,7 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(t
         for message in snapshot.messages[2:4]
         if message.tool_result is not None
     ] == ["call_1", "call_2"]
+    assert tool_result_batches == [["call_1", "call_2"]]
     tool_timings = [message.tool_execution for message in snapshot.messages[2:4]]
     assert all(timing is not None for timing in tool_timings)
     assert all(

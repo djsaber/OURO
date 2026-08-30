@@ -3,6 +3,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
+import ouro.core.adapter as adapter_module
 from ouro.core.adapter import (
     _STREAM_BUFFER_CAPACITY,
     _STREAM_COALESCE_MAX_CHARS,
@@ -97,7 +98,7 @@ async def test_backlogged_plain_deltas_coalesce_without_crossing_boundaries() ->
 
 
 @pytest.mark.asyncio
-async def test_coalescing_never_waits_for_a_future_delta() -> None:
+async def test_first_plain_delta_never_waits_for_a_future_delta() -> None:
     release = asyncio.Event()
 
     async def source() -> AsyncIterator[ProviderStreamEvent]:
@@ -110,6 +111,56 @@ async def test_coalescing_never_waits_for_a_future_delta() -> None:
     first = await asyncio.wait_for(anext(stream), timeout=0.1)
 
     assert first.text == "first"
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_fast_subsequent_plain_deltas_share_one_fixed_flush_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(adapter_module, "_STREAM_COALESCE_WINDOW_SECONDS", 0.05)
+    release = asyncio.Event()
+
+    async def source() -> AsyncIterator[ProviderStreamEvent]:
+        yield ProviderStreamEvent(type="text_delta", text="first")
+        await release.wait()
+        yield ProviderStreamEvent(type="text_delta", text="second")
+        await asyncio.sleep(0.01)
+        yield ProviderStreamEvent(type="text_delta", text=" third")
+        yield ProviderStreamEvent(type="done")
+
+    stream = _interruptible(source(), signal=None)
+    assert (await asyncio.wait_for(anext(stream), timeout=0.1)).text == "first"
+
+    release.set()
+    merged = await asyncio.wait_for(anext(stream), timeout=0.1)
+
+    assert merged.text == "second third"
+    assert (await anext(stream)).type == "done"
+
+
+@pytest.mark.asyncio
+async def test_plain_delta_arriving_after_flush_deadline_is_not_delayed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = 0.05
+    monkeypatch.setattr(adapter_module, "_STREAM_COALESCE_WINDOW_SECONDS", window)
+    second_ready = asyncio.Event()
+
+    async def source() -> AsyncIterator[ProviderStreamEvent]:
+        yield ProviderStreamEvent(type="text_delta", text="first")
+        await asyncio.sleep(window * 1.5)
+        second_ready.set()
+        yield ProviderStreamEvent(type="text_delta", text="second")
+        await asyncio.Event().wait()
+
+    stream = _interruptible(source(), signal=None)
+    assert (await anext(stream)).text == "first"
+    await asyncio.wait_for(second_ready.wait(), timeout=0.2)
+
+    started = asyncio.get_running_loop().time()
+    assert (await asyncio.wait_for(anext(stream), timeout=window / 2)).text == "second"
+    assert asyncio.get_running_loop().time() - started < window / 2
     await stream.aclose()
 
 

@@ -20,6 +20,7 @@ from textual.content import Content
 from textual.strip import Strip
 from textual.widgets import Input, OptionList, Static, TextArea
 
+import ouro.tui.app as tui_app_module
 import ouro.tui.widgets as tui_widgets
 from ouro import __version__
 from ouro.application.agent_models import AgentToolOptionView, AgentTreeNode
@@ -5287,6 +5288,101 @@ async def test_input_drafts_restore_per_surface_across_tui_restarts(tmp_path: Pa
         await resumed._new_session()
         await pilot.pause()
         assert resumed.query_one(Composer).text == "welcome edited"
+
+
+@pytest.mark.asyncio
+async def test_input_draft_persistence_debounces_to_the_latest_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        tui_app_module,
+        "_INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS",
+        0.1,
+        raising=False,
+    )
+    app = OuroTuiApp(application=_application(tmp_path))
+    saved: list[TuiInputDrafts] = []
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        if app._input_draft_save_task is not None:
+            await app._input_draft_save_task
+        monkeypatch.setattr(app._input_draft_store, "save", saved.append)
+
+        app._remember_input_draft(None, "a")
+        await asyncio.sleep(0.04)
+        assert saved == []
+
+        app._remember_input_draft(None, "ab")
+        await asyncio.sleep(0.04)
+        app._remember_input_draft(None, "abc")
+        await asyncio.sleep(0.14)
+
+        assert len(saved) == 1
+        assert saved[0].draft_for(None) == "abc"
+
+
+@pytest.mark.asyncio
+async def test_tui_close_waits_for_pending_input_draft_save(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tui_app_module, "_INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS", 0.05)
+    app = OuroTuiApp(application=_application(tmp_path))
+    saved: list[TuiInputDrafts] = []
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        if app._input_draft_save_task is not None:
+            await app._input_draft_save_task
+        monkeypatch.setattr(app._input_draft_store, "save", saved.append)
+        app._remember_input_draft(None, "saved while closing")
+
+    assert len(saved) == 1
+    assert saved[0].draft_for(None) == "saved while closing"
+
+
+@pytest.mark.asyncio
+async def test_input_draft_save_failure_allows_a_later_revision_to_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tui_app_module, "_INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS", 0.01)
+    app = OuroTuiApp(application=_application(tmp_path))
+    save_attempts = 0
+    saved: list[TuiInputDrafts] = []
+
+    def save(drafts: TuiInputDrafts) -> None:
+        nonlocal save_attempts
+        save_attempts += 1
+        if save_attempts == 1:
+            raise PersistenceError("draft storage unavailable")
+        saved.append(drafts)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        if app._input_draft_save_task is not None:
+            await app._input_draft_save_task
+        monkeypatch.setattr(app._input_draft_store, "save", save)
+
+        app._remember_input_draft(None, "first revision")
+        await _wait_until(
+            lambda: app._input_draft_save_task is None,
+            pilot,
+            description="failed draft save task to settle",
+        )
+        assert app._input_draft_error_notified is True
+
+        app._remember_input_draft(None, "retry revision")
+        await _wait_until(
+            lambda: bool(saved),
+            pilot,
+            description="later draft revision to retry persistence",
+        )
+
+    assert save_attempts == 2
+    assert saved[0].draft_for(None) == "retry revision"
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@ import threading
 
 import pytest
 
+import ouro.application.events as events_module
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.observers import ObserverDispatcher
 from ouro.core.events import EventRecord
@@ -193,6 +194,85 @@ async def test_event_observer_retains_registry_resolved_at_publish_time(tmp_path
 
     assert seen == ["first"]
     assert releases == ["released"]
+
+
+@pytest.mark.asyncio
+async def test_unmatched_runtime_event_skips_observation_projection(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Filtered events")
+    store.create_session(session)
+    observers = ObserverRegistry()
+    observers.register(
+        ObserverRegistration(
+            plugin_id="filtered",
+            observer_id="completed",
+            event="runtime_event",
+            event_types=("run_completed",),
+            handler=lambda _observation: None,
+        )
+    )
+    recorder = RuntimeEventRecorder(store=store, observers=observers)
+
+    def unexpected_projection(_event):
+        raise AssertionError("unmatched event should not build an observation")
+
+    monkeypatch.setattr(events_module, "_runtime_event_observation", unexpected_projection)
+
+    await recorder.emit(
+        [],
+        0,
+        session_id=session.session_id,
+        run_id="run_filtered",
+        event_type="run_started",
+        payload={"trigger": "user"},
+    )
+    await recorder.close()
+
+    assert store.latest_event_sequence(session.session_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_event_matcher_short_circuits_catalog_resolution(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Catalog matcher")
+    store.create_session(session)
+    observers = ObserverRegistry()
+    observers.register(
+        ObserverRegistration(
+            plugin_id="base",
+            observer_id="events",
+            event="runtime_event",
+            handler=lambda _observation: None,
+        )
+    )
+    recorder = RuntimeEventRecorder(store=store, observers=observers)
+    resolutions = 0
+
+    def resolve(_observation):
+        nonlocal resolutions
+        resolutions += 1
+        return observers, lambda: None
+
+    recorder.set_observer_registry_resolver(resolve)
+    recorder.set_runtime_event_observer_matcher(lambda _run_id, _event_type: False)
+
+    await recorder.emit(
+        [],
+        0,
+        session_id=session.session_id,
+        run_id="run_catalog",
+        event_type="run_started",
+        payload={"trigger": "user"},
+    )
+    await recorder.close()
+
+    assert resolutions == 0
+    assert store.latest_event_sequence(session.session_id) == 1
 
 
 @pytest.mark.asyncio
