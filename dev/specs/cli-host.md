@@ -118,8 +118,9 @@ reasoning 区域，不能按 Markdown 解释，也不能混入最终回答；首
   统一投影为 `1. Guide • 预览` / `2. Follow-up • 预览`。类型与正文使用 `TUI_DESIGN.inline_separator`
   连接，标签不使用全大写或粗体，正文使用低亮语义色；多行输入先以 `↵` 压平为预览，再按队列内容区的当前宽度
   单行省略，禁止软换行；
-- 审批选择面板接管焦点并禁用 Composer，使用 Up/Down 或 Left/Right 移动、Enter 确认，Y/N 保留为直接快捷键；
-  当前选项必须用可见 marker 标识，决议提交期间禁止重复输入，失败时保留选择并恢复面板。工具输入请求投影为
+- 审批选择面板接管焦点并禁用 Composer，选项只使用 Up/Down 移动、Enter 确认，Left/Right 不承担选项切换；
+  计划审批中的 Left/Right 与 PgUp/PgDn 分别复用向前/向后翻阅计划文档的动作。当前选项必须用可见 marker 标识，
+  决议提交期间禁止重复输入，失败时保留选择并恢复面板。工具输入请求投影为
   独立问题视窗，支持 Up/Down、数字键、Space、Enter、单选、多选和 Other 自由输入，决议后焦点返回 composer；
 - Ctrl+C 在 active Run 中调用协作式 abort，否则退出并由 `LocalApplication.close` 清理资源；
 - `/new`、`/sessions`、`/model`、`/clear`、`/abort`、`/help`、`/quit` 与动作面板共享同一 Host action。

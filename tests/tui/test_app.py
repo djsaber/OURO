@@ -38,6 +38,7 @@ from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_models import SessionContextStatus
 from ouro.application.supervisor_models import RuntimeActivitySnapshot, RuntimeToolCallActivity
+from ouro.builtin_plugins.plan.interaction import PlanConfirmationRequest
 from ouro.config import reasoning_preset
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import (
@@ -10206,10 +10207,16 @@ async def test_approval_panel_selects_with_arrows_and_resumes_run(tmp_path: Path
         assert "1. Allow" not in controls
         assert "2. Deny" not in controls
         assert "Y/N direct" not in controls
+        assert "↑/↓ move • Enter choose" in controls
+        assert "←/→" not in controls
 
         await pilot.press("n")
         await pilot.pause()
         assert app._projection.pending_interaction is not None
+        assert panel.selected_approved is True
+
+        await pilot.press("left", "right")
+        await pilot.pause()
         assert panel.selected_approved is True
 
         await pilot.press("down")
@@ -10378,6 +10385,12 @@ async def test_builtin_ask_user_renders_form_and_submits_structured_answer(
         rendered_question = panel.render().plain
         assert rendered_question.splitlines()[0] == "FILE  1/1"
         assert "Which file should OURO use?" in rendered_question
+        assert "↑/↓ move • Enter choose" in rendered_question
+        assert "←/→" not in rendered_question
+
+        await pilot.press("left", "right")
+        await pilot.pause()
+        assert panel.render().plain == rendered_question
 
         await pilot.press("2")
         await _wait_until(
@@ -10524,6 +10537,48 @@ async def test_plan_mode_write_approval_keeps_focus_on_approval_panel(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_plan_confirmation_arrows_page_document_without_moving_options(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    request = PlanConfirmationRequest(
+        plan_path=str(tmp_path / "plan.md"),
+        plan="# Long plan\n\n" + "\n".join(f"{index}. Verify step {index}." for index in range(30)),
+        plan_digest="digest",
+    )
+
+    async with app.run_test(size=(60, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(PlanConfirmationPanel)
+        panel.show_request(request)
+        await pilot.pause()
+
+        document = panel.query_one("#plan-confirmation-document")
+        assert document.max_scroll_y > 0
+        assert panel.selected_action == "accept"
+
+        await pilot.press("right")
+        await pilot.pause()
+        assert document.scroll_y > 0
+        assert panel.selected_action == "accept"
+
+        await pilot.press("left")
+        await pilot.pause()
+        assert document.scroll_y == 0
+        assert panel.selected_action == "accept"
+
+        await pilot.press("pagedown")
+        await pilot.pause()
+        assert document.scroll_y > 0
+        await pilot.press("pageup")
+        await pilot.pause()
+        assert document.scroll_y == 0
+
+        await pilot.press("down")
+        assert panel.selected_action == "revise"
+
+
+@pytest.mark.asyncio
 async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedback(
     tmp_path: Path,
 ) -> None:
@@ -10560,7 +10615,7 @@ async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedbac
         assert "Accept" in controls
         assert "Revise" in controls
         assert "Reject" in controls
-        assert "↑/↓ or ←/→ move • Enter choose" in controls
+        assert "←/→ or PgUp/PgDn plan • ↑/↓ move • Enter choose" in controls
         assert "1. Accept" not in controls
         assert "2. Revise" not in controls
         assert "3. Reject" not in controls

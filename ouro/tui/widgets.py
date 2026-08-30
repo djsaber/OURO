@@ -1974,8 +1974,6 @@ class ApprovalPanel(Vertical):
     BINDINGS = [
         Binding("up", "previous_option", show=False),
         Binding("down", "next_option", show=False),
-        Binding("left", "previous_option", show=False),
-        Binding("right", "next_option", show=False),
         Binding("enter", "accept", "Choose", show=False),
         Binding("tab,shift+tab", "retain_focus", show=False, priority=True),
     ]
@@ -2046,7 +2044,7 @@ class ApprovalPanel(Vertical):
         content.append(
             "\n"
             + TUI_DESIGN.inline_separator.join(
-                (*leading, "↑/↓ or ←/→ move", "Enter choose", *trailing)
+                (*leading, "↑/↓ move", "Enter choose", *trailing)
             ),
             style=TUI_DESIGN.text_lowlight,
         )
@@ -2389,8 +2387,8 @@ class PlanConfirmationPanel(ApprovalPanel):
 
     BINDINGS = [
         *ApprovalPanel.BINDINGS,
-        Binding("pageup", "scroll_plan_up", show=False),
-        Binding("pagedown", "scroll_plan_down", show=False),
+        Binding("left,pageup", "scroll_plan_up", show=False),
+        Binding("right,pagedown", "scroll_plan_down", show=False),
         Binding("escape", "back", show=False),
     ]
 
@@ -2581,7 +2579,7 @@ class PlanConfirmationPanel(ApprovalPanel):
                 )
             self._append_approval_hint(
                 content,
-                leading=("PgUp/PgDn plan",),
+                leading=("←/→ or PgUp/PgDn plan",),
             )
         elif self._stage == "option":
             content.append(
@@ -2598,7 +2596,7 @@ class PlanConfirmationPanel(ApprovalPanel):
                 )
             self._append_approval_hint(
                 content,
-                leading=("PgUp/PgDn plan",),
+                leading=("←/→ or PgUp/PgDn plan",),
                 trailing=("Esc back",),
             )
         else:
