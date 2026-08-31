@@ -1130,6 +1130,29 @@ async def test_skill_toggle_changes_subsequent_dialogue_runs_in_same_controller(
 
 
 @pytest.mark.asyncio
+async def test_controller_persists_queued_input_consumption_mode(tmp_path: Path) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=_reasoning_application(tmp_path),
+        configuration=configuration,
+    )
+    await controller.start()
+
+    try:
+        queued_inputs = await controller.queued_input_configuration()
+        assert queued_inputs.consumption_mode == "one_by_one"
+
+        queued_inputs = await controller.update_queued_input_consumption("all_at_once")
+
+        assert queued_inputs.consumption_mode == "all_at_once"
+        assert configuration.queued_input_config().consumption_mode == "all_at_once"
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
 async def test_controller_persists_complete_compaction_options_and_requires_session(
     tmp_path: Path,
 ) -> None:

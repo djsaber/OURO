@@ -19,6 +19,7 @@ MAX_RECENT_WORKSPACES = 20
 class TuiPreferences(OuroModel):
     theme: str = DEFAULT_TUI_THEME.theme_id
     reasoning_expanded: bool = False
+    input_draft_memory_enabled: bool = True
     recent_actions: tuple[str, ...] = ()
     recent_workspaces: tuple[str, ...] = ()
 

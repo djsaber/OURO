@@ -33,6 +33,7 @@ from ouro.application.configuration_models import (
     ProviderEndpointView,
     ProviderTemplateView,
     ProviderView,
+    QueuedInputConfigView,
     SkillCatalogView,
     SkillInstallScopeInput,
     SkillManagementView,
@@ -64,7 +65,7 @@ from ouro.application.session_models import (
 from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.supervisor import RuntimeSubscription
 from ouro.application.usage_models import UsageSummary, UsageTotals
-from ouro.config import EndpointReasoningConfig, ProviderType
+from ouro.config import EndpointReasoningConfig, ProviderType, QueuedInputConsumptionMode
 from ouro.core.agents import ExecutionMode, ToolSelection
 from ouro.core.approvals import (
     SESSION_APPROVAL_MODES,
@@ -1503,6 +1504,20 @@ class TuiController:
     async def compaction_configuration(self) -> CompactionConfigView:
         configuration = self._require_configuration()
         return await asyncio.to_thread(configuration.compaction_config)
+
+    async def queued_input_configuration(self) -> QueuedInputConfigView:
+        configuration = self._require_configuration()
+        return await asyncio.to_thread(configuration.queued_input_config)
+
+    async def update_queued_input_consumption(
+        self,
+        consumption_mode: QueuedInputConsumptionMode,
+    ) -> QueuedInputConfigView:
+        configuration = self._require_configuration()
+        return await asyncio.to_thread(
+            configuration.update_queued_inputs,
+            consumption_mode=consumption_mode,
+        )
 
     def compaction_strategies(self) -> tuple[str, ...]:
         return tuple(item.strategy_id for item in self._runtime().compaction_strategies.list())

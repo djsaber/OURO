@@ -11,6 +11,7 @@ from ouro.application.configuration_models import (
     SkillPolicyView,
     SkillView,
 )
+from ouro.config import QueuedInputConsumptionMode
 from ouro.core.tools import PermissionMode
 from ouro.tui.configuration_screens import (
     AgentDefinitionConfigurationScreen,
@@ -49,6 +50,8 @@ class SystemSettingAction:
 
 
 SYSTEM_SETTING_ACTIONS = (
+    SystemSettingAction("queued_inputs.delivery", "Queued input delivery", "Settings"),
+    SystemSettingAction("compaction.policy", "Compaction policy", "Settings"),
     SystemSettingAction("providers.list", "List providers", "Providers"),
     SystemSettingAction("providers.add", "Add provider", "Providers"),
     SystemSettingAction("providers.edit", "Edit provider", "Providers"),
@@ -84,8 +87,16 @@ SYSTEM_SETTING_ACTIONS = (
     SystemSettingAction("skills.validate", "Validate skill", "Skills"),
     SystemSettingAction("skills.update", "Update skill", "Skills"),
     SystemSettingAction("skills.remove", "Remove skill", "Skills"),
-    SystemSettingAction("compaction.policy", "Compaction policy", "Compaction"),
 )
+
+_QUEUED_INPUT_CONSUMPTION_LABELS: dict[QueuedInputConsumptionMode, str] = {
+    "one_by_one": "One at a time",
+    "all_at_once": "All at once",
+}
+_QUEUED_INPUT_CONSUMPTION_DETAILS: dict[QueuedInputConsumptionMode, str] = {
+    "one_by_one": "one unit per boundary",
+    "all_at_once": "all eligible units per boundary",
+}
 
 _TOOL_PERMISSION_CHOICES: dict[str, PermissionMode | None] = {
     "default": None,
@@ -170,6 +181,8 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             await self._configure_skill_sources(menu=menu)
         elif action_id.startswith("skills."):
             await self._choose_skill_action(action_id.removeprefix("skills."), menu=menu)
+        elif action_id == "queued_inputs.delivery":
+            self._configure_queued_inputs(menu=menu)
         elif action_id == "compaction.policy":
             self._configure_compaction(menu=menu)
         else:
@@ -178,6 +191,54 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 f"Unknown system setting action: {action_id}. Available: {available}",
                 error=True,
             )
+
+    @work(exclusive=True, group="configuration")
+    async def _configure_queued_inputs(self, *, menu: ChoiceScreen | None = None) -> None:
+        try:
+            config = await self._controller.queued_input_configuration()
+        except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+
+        def choices(selected: QueuedInputConsumptionMode) -> tuple[Choice, ...]:
+            return tuple(
+                Choice(
+                    mode,
+                    label,
+                    trailing=_QUEUED_INPUT_CONSUMPTION_DETAILS[mode],
+                    marker=(TUI_DESIGN.selected_choice_marker if mode == selected else ""),
+                )
+                for mode, label in _QUEUED_INPUT_CONSUMPTION_LABELS.items()
+            )
+
+        async def select_mode(value: str) -> tuple[Choice, ...] | None:
+            try:
+                mode = cast(QueuedInputConsumptionMode, value)
+                saved = await self._controller.update_queued_input_consumption(mode)
+            except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
+                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                return None
+            self.notify(f"Queued input delivery saved: {saved.consumption_mode} (next restart)")
+            return choices(saved.consumption_mode)
+
+        if menu is not None:
+            menu.push_page(
+                title="QUEUED INPUT DELIVERY",
+                placeholder="Choose how queued inputs are delivered…",
+                choices=choices(config.consumption_mode),
+                initial_value=config.consumption_mode,
+                on_select=select_mode,
+            )
+            return
+        await self.push_screen_wait(
+            ChoiceScreen(
+                title="QUEUED INPUT DELIVERY",
+                placeholder="Choose how queued inputs are delivered…",
+                choices=choices(config.consumption_mode),
+                initial_value=config.consumption_mode,
+                on_select=select_mode,
+            )
+        )
 
     @work(exclusive=True, group="configuration")
     async def _configure_compaction(self, *, menu: ChoiceScreen | None = None) -> None:

@@ -11,6 +11,7 @@ class TuiCommandArgument:
     description: str
     argument_hint: str | None = None
     label: str | None = None
+    accent: str | None = None
 
     @property
     def display_label(self) -> str:
@@ -93,9 +94,9 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
     TuiCommand("/new", "New session", "Start a clean conversation"),
     TuiCommand(
         "/workspace",
-        "Select workspace",
-        "Set the workspace for this new session",
-        "<path>",
+        "Workspace",
+        "Set a new-session workspace or clear recent workspace history",
+        "[clear|<path>]",
     ),
     TuiCommand(
         "/sessions",

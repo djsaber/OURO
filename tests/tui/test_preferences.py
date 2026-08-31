@@ -73,10 +73,12 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
     store = TuiPreferencesStore(tmp_path)
 
     assert TuiPreferences().reasoning_expanded is False
+    assert TuiPreferences().input_draft_memory_enabled is True
     store.save(
         TuiPreferences(
             theme="iris",
             reasoning_expanded=False,
+            input_draft_memory_enabled=False,
             recent_actions=("/new", "__ouro_theme__"),
             recent_workspaces=(str(tmp_path),),
         )
@@ -86,6 +88,7 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
     assert store.load() == TuiPreferences(
         theme="iris",
         reasoning_expanded=False,
+        input_draft_memory_enabled=False,
         recent_actions=("/new", "__ouro_theme__"),
         recent_workspaces=(str(tmp_path),),
     )
@@ -96,6 +99,7 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
     (
         {"theme": "neon"},
         {"theme": "harbor", "reasoning_expanded": "sometimes"},
+        {"theme": "harbor", "input_draft_memory_enabled": "sometimes"},
         {"theme": "harbor", "recent_actions": ["one", "two", "three", "four"]},
         {"theme": "harbor", "recent_actions": ["same", "same"]},
         {

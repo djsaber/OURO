@@ -2781,7 +2781,10 @@ class CommandPopup(VerticalScroll):
             row.append("› " if selected else "  ", style=theme.accent if selected else "")
             row.append(
                 argument.display_label.ljust(value_width),
-                style=(theme.accent_bright if selected else TUI_DESIGN.text_primary),
+                style=(
+                    argument.accent
+                    or (theme.accent_bright if selected else TUI_DESIGN.text_primary)
+                ),
             )
             if argument.description:
                 row.append(

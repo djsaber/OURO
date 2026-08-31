@@ -87,6 +87,11 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Added
 
+- TUI `/workspace clear` now forgets recent workspace history without mutating the active
+  Session workspace, while the Actions menu groups theme, thought display, and a persistent input
+  draft-memory toggle under `Settings`; disabling draft memory clears stored drafts. Queued-input
+  delivery and compaction policy now live in the same `Settings` group, with the former supporting
+  durable one-at-a-time or all-at-once selection.
 - A root-scoped TUI subagent navigation strip above the composer, grouping every dispatched
   child by parent Run, using green for running nodes and lowlight for finished nodes, and supporting
   direct root/child and child/child switching with `Alt+Arrow` while preserving the controlled

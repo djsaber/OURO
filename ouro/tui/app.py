@@ -179,6 +179,7 @@ _AGENT_INTERACTION_EVENTS = {
 }
 _THEME_ACTION = "__ouro_theme__"
 _THOUGHT_DISPLAY_ACTION = "__ouro_thought_display__"
+_INPUT_DRAFT_MEMORY_ACTION = "__ouro_input_draft_memory__"
 _RENAME_SESSION_ACTION = "__ouro_rename_session__"
 _ARCHIVE_SESSION_ACTION = "__ouro_archive_session__"
 _DELETE_SESSION_ACTION = "__ouro_delete_session__"
@@ -187,6 +188,22 @@ _RECENT_ACTION_PREFIX = "__ouro_recent_action__:"
 _MENU_ACTIONS: MenuDestination = "actions"
 _MENU_PLUGINS: MenuDestination = "plugins"
 _MENU_SESSIONS: MenuDestination = "sessions"
+_ACTION_GROUP_RANK = {
+    group: rank
+    for rank, group in enumerate(
+        (
+            "Settings",
+            "Session",
+            "Providers",
+            "Plugins",
+            "Tools",
+            "Subagents",
+            "MCP",
+            "Skills",
+            "Support",
+        )
+    )
+}
 _REASONING_REQUESTS: dict[str, ReasoningRequest] = {
     "default": ReasoningRequest(),
     "enabled": ReasoningRequest(mode="enabled"),
@@ -203,6 +220,12 @@ _THOUGHT_DISPLAY_LABELS = {
     "expand": "Expand thoughts",
     "collapse": "Collapse thoughts",
 }
+_INPUT_DRAFT_MEMORY_OPTIONS: dict[str, bool] = {"enable": True, "disable": False}
+_INPUT_DRAFT_MEMORY_LABELS = {
+    "enable": "Remember input drafts",
+    "disable": "Do not remember input drafts",
+}
+_CLEAR_WORKSPACE_HISTORY_ARGUMENT = "clear"
 
 
 class _OuroHostScreen(Screen):
@@ -1008,7 +1031,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._input_draft_store = TuiInputDraftStore(preference_home)
         self._input_drafts_error: str | None = None
         try:
-            input_drafts = self._input_draft_store.load()
+            input_drafts = (
+                self._input_draft_store.load()
+                if preferences.input_draft_memory_enabled
+                else TuiInputDrafts()
+            )
         except OuroError as exc:
             input_drafts = TuiInputDrafts()
             self._input_drafts_error = str(exc)
@@ -2287,16 +2314,30 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         composer.focus()
 
     def _restore_input_draft(self, session_id: str | None) -> None:
-        self.query_one(Composer).restore_command_draft(self._input_drafts.draft_for(session_id))
+        draft = (
+            self._input_drafts.draft_for(session_id)
+            if self._preferences.input_draft_memory_enabled
+            else ""
+        )
+        self.query_one(Composer).restore_command_draft(draft)
 
     def _remember_input_draft(self, session_id: str | None, text: str) -> None:
+        if not self._preferences.input_draft_memory_enabled:
+            return
         self._set_input_drafts(self._input_drafts.remember(session_id, text))
 
     def _forget_input_drafts(self, session_ids: Sequence[str]) -> None:
+        if not self._preferences.input_draft_memory_enabled:
+            return
         self._set_input_drafts(self._input_drafts.forget_sessions(session_ids))
 
-    def _set_input_drafts(self, drafts: TuiInputDrafts) -> None:
-        if drafts == self._input_drafts:
+    def _set_input_drafts(
+        self,
+        drafts: TuiInputDrafts,
+        *,
+        force_persist: bool = False,
+    ) -> None:
+        if drafts == self._input_drafts and not force_persist:
             return
         self._input_drafts = drafts
         self._input_draft_revision += 1
@@ -2322,6 +2363,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     if not self._input_draft_error_notified and not self._host_closing:
                         self._input_draft_error_notified = True
                         self.notify(str(exc), severity="warning", markup=False)
+                    if revision != self._input_draft_revision:
+                        continue
                     return
                 if revision == self._input_draft_revision:
                     return
@@ -2338,7 +2381,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         elif command.name == "/new":
             await self._new_session()
         elif command.name == "/workspace":
-            if argument:
+            if argument.casefold() == _CLEAR_WORKSPACE_HISTORY_ARGUMENT:
+                await self._clear_recent_workspaces()
+            elif argument:
                 await self._select_workspace(argument)
         elif command.name == "/sessions":
             self.action_sessions()
@@ -2381,11 +2426,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.action_help()
 
     def _command_catalog(self) -> tuple[TuiCommand, ...]:
-        catalog = [
-            command
-            for command in TUI_COMMANDS
-            if command.name != "/workspace" or self._controller.session_id is None
-        ]
+        catalog = list(TUI_COMMANDS)
         argument_owner = self._active_builtin_argument_command()
         user_message_options = (
             self._user_message_arguments()
@@ -2396,6 +2437,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if command.name == "/workspace" and argument_owner == command.name:
                 catalog[index] = replace(
                     command,
+                    argument_hint=(
+                        command.argument_hint
+                        if self._controller.session_id is None
+                        else None
+                    ),
                     argument_options=self._workspace_arguments(),
                 )
             elif command.name == "/navigate" and argument_owner == command.name:
@@ -2459,9 +2505,17 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return command.name if command is not None else None
 
     def _workspace_arguments(self) -> tuple[TuiCommandArgument, ...]:
-        return tuple(
-            TuiCommandArgument(workspace, "")
-            for workspace in self._preferences.recent_workspaces
+        recent_workspaces = (
+            self._preferences.recent_workspaces if self._controller.session_id is None else ()
+        )
+        return (
+            *(TuiCommandArgument(workspace, "") for workspace in recent_workspaces),
+            TuiCommandArgument(
+                _CLEAR_WORKSPACE_HISTORY_ARGUMENT,
+                "",
+                label="Clear",
+                accent=TUI_DESIGN.danger,
+            ),
         )
 
     async def _select_workspace(self, value: str) -> None:
@@ -3618,6 +3672,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if action_id == _THOUGHT_DISPLAY_ACTION:
                 await self._choose_thought_display(menu=action_screen)
                 return None
+            if action_id == _INPUT_DRAFT_MEMORY_ACTION:
+                await self._choose_input_draft_memory(menu=action_screen)
+                return None
             if action_id == "/sessions":
                 await self._choose_session(menu=action_screen)
                 return None
@@ -3664,37 +3721,48 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _action_choices(self) -> tuple[Choice, ...]:
         """Project Actions from the current preferences and visual theme."""
 
-        actions = (
+        system_actions = tuple(
             Choice(
-                _THEME_ACTION,
-                "Theme color",
-                accent=self._tui_theme.accent,
-                group="Appearance",
-            ),
-            Choice(
-                _THOUGHT_DISPLAY_ACTION,
-                "Model thought display",
-                group="Appearance",
-            ),
-            self._command_action_choice("/new", "Session", "new_session"),
-            self._command_action_choice("/sessions", "Session", "sessions"),
-            Choice(_RENAME_SESSION_ACTION, "Rename session", group="Session"),
-            Choice(_ARCHIVE_SESSION_ACTION, "Archive session", group="Session"),
-            Choice(_DELETE_SESSION_ACTION, "Delete session", group="Session"),
-            *(
-                Choice(
-                    f"{_SYSTEM_SETTING_ACTION_PREFIX}{action.action_id}",
-                    action.label,
-                    trailing=(
-                        self._shortcut_for_action("plugins")
-                        if action.action_id == "plugins.list"
-                        else ""
+                f"{_SYSTEM_SETTING_ACTION_PREFIX}{action.action_id}",
+                action.label,
+                trailing=(
+                    self._shortcut_for_action("plugins")
+                    if action.action_id == "plugins.list"
+                    else ""
+                ),
+                group=action.group,
+            )
+            for action in SYSTEM_SETTING_ACTIONS
+        )
+        actions = tuple(
+            sorted(
+                (
+                    Choice(
+                        _THEME_ACTION,
+                        "Theme color",
+                        accent=self._tui_theme.accent,
+                        group="Settings",
                     ),
-                    group=action.group,
-                )
-                for action in SYSTEM_SETTING_ACTIONS
-            ),
-            self._command_action_choice("/help", "Support", "help"),
+                    Choice(
+                        _THOUGHT_DISPLAY_ACTION,
+                        "Model thought display",
+                        group="Settings",
+                    ),
+                    Choice(
+                        _INPUT_DRAFT_MEMORY_ACTION,
+                        "Input draft memory",
+                        group="Settings",
+                    ),
+                    self._command_action_choice("/new", "Session", "new_session"),
+                    self._command_action_choice("/sessions", "Session", "sessions"),
+                    Choice(_RENAME_SESSION_ACTION, "Rename session", group="Session"),
+                    Choice(_ARCHIVE_SESSION_ACTION, "Archive session", group="Session"),
+                    Choice(_DELETE_SESSION_ACTION, "Delete session", group="Session"),
+                    *system_actions,
+                    self._command_action_choice("/help", "Support", "help"),
+                ),
+                key=lambda choice: _ACTION_GROUP_RANK[choice.group],
+            )
         )
         return (*self._recent_action_choices(actions), *actions)
 
@@ -3767,6 +3835,22 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify(str(exc), severity="warning", markup=False)
             return
         self._preferences = preferences
+
+    async def _clear_recent_workspaces(self) -> None:
+        """Clear the TUI-owned workspace MRU without changing the active workspace."""
+
+        if not self._preferences.recent_workspaces:
+            self.notify("Recent workspaces are already clear", markup=False)
+            return
+        preferences = self._preferences.model_copy(update={"recent_workspaces": ()})
+        try:
+            await asyncio.to_thread(self._preferences_store.save, preferences)
+        except OuroError as exc:
+            _LOG.warning("Could not clear recent TUI workspaces: %s", exc)
+            self.notify(str(exc), severity="warning", markup=False)
+            return
+        self._preferences = preferences
+        self.notify("Recent workspaces cleared", markup=False)
 
     def _shortcut_for_action(self, action: str) -> str:
         for binding in Binding.make_bindings(self.BINDINGS):
@@ -3861,6 +3945,51 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
         )
 
+    async def _choose_input_draft_memory(
+        self,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
+        def memory_choices(enabled: bool) -> tuple[Choice, ...]:
+            return tuple(
+                Choice(
+                    value,
+                    label,
+                    marker=(
+                        TUI_DESIGN.selected_choice_marker
+                        if _INPUT_DRAFT_MEMORY_OPTIONS[value] == enabled
+                        else ""
+                    ),
+                )
+                for value, label in _INPUT_DRAFT_MEMORY_LABELS.items()
+            )
+
+        async def select_memory(value: str) -> tuple[Choice, ...] | None:
+            if not await self._set_input_draft_memory(value):
+                return None
+            return memory_choices(self._preferences.input_draft_memory_enabled)
+
+        enabled = self._preferences.input_draft_memory_enabled
+        initial_value = "enable" if enabled else "disable"
+        if menu is not None:
+            menu.push_page(
+                title="INPUT DRAFT MEMORY",
+                placeholder="Choose whether input drafts are remembered…",
+                choices=memory_choices(enabled),
+                initial_value=initial_value,
+                on_select=select_memory,
+            )
+            return
+        await self.push_screen_wait(
+            ChoiceScreen(
+                title="INPUT DRAFT MEMORY",
+                placeholder="Choose whether input drafts are remembered…",
+                choices=memory_choices(enabled),
+                initial_value=initial_value,
+                on_select=select_memory,
+            )
+        )
+
     def _preview_tui_theme(self, theme_id: str) -> None:
         theme = TUI_THEMES.get(theme_id)
         if theme is not None:
@@ -3901,6 +4030,29 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._preferences = preferences
         self._session_history_states.clear()
         self.query_one(ConversationView).set_reasoning_expanded(expanded)
+        return True
+
+    async def _set_input_draft_memory(self, value: str) -> bool:
+        enabled = _INPUT_DRAFT_MEMORY_OPTIONS.get(value)
+        if enabled is None:
+            return False
+        if enabled == self._preferences.input_draft_memory_enabled:
+            return True
+        preferences = self._preferences.model_copy(update={"input_draft_memory_enabled": enabled})
+        try:
+            await asyncio.to_thread(self._preferences_store.save, preferences)
+        except OuroError as exc:
+            _LOG.warning("Could not persist TUI input draft preference: %s", exc)
+            self.notify(str(exc), severity="warning", markup=False)
+            return False
+        self._preferences = preferences
+        drafts = TuiInputDrafts()
+        if enabled and not self._visible_read_only and self.query(Composer):
+            drafts = drafts.remember(
+                self._controller.session_id,
+                self.query_one(Composer).text,
+            )
+        self._set_input_drafts(drafts, force_persist=True)
         return True
 
     def _apply_tui_theme(self, theme: TuiTheme) -> None:

@@ -6533,6 +6533,9 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         assert [choice.label for choice in action_choices] == [
             "Theme color",
             "Model thought display",
+            "Input draft memory",
+            "Queued input delivery",
+            "Compaction policy",
             "New session",
             "Open session",
             "Rename session",
@@ -6569,11 +6572,10 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Validate skill",
             "Update skill",
             "Remove skill",
-            "Compaction policy",
             "Keyboard help",
         ]
         assert [choice.group for choice in action_choices] == [
-            *("Appearance",) * 2,
+            *("Settings",) * 5,
             *("Session",) * 5,
             *("Providers",) * 9,
             *("Plugins",) * 3,
@@ -6581,7 +6583,6 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             *("Subagents",) * 5,
             *("MCP",) * 6,
             *("Skills",) * 6,
-            "Compaction",
             "Support",
         ]
         assert "Configuration" not in {choice.group for choice in action_choices}
@@ -6600,6 +6601,50 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         await pilot.pause(0.2)
         assert isinstance(app.screen, CompactionConfigurationScreen)
         await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_queued_input_delivery_uses_shared_settings_menu_and_persists_mode(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34), notifications=True) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Queued input delivery"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="QUEUED INPUT DELIVERY")
+
+        screen = app.screen
+        assert [choice.value for choice in screen._choices] == [
+            "one_by_one",
+            "all_at_once",
+        ]
+        assert [choice.trailing for choice in screen._choices] == [
+            "one unit per boundary",
+            "all eligible units per boundary",
+        ]
+        assert screen._choices[0].marker == TUI_DESIGN.selected_choice_marker
+        assert screen._choices[1].marker == ""
+
+        screen.query_one("#choice-filter", Input).value = "All at once"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_until(
+            lambda: (
+                ConfigurationFacade(tmp_path).queued_input_config().consumption_mode
+                == "all_at_once"
+            ),
+            pilot,
+            description="queued input delivery mode to persist",
+        )
+
+        assert app.screen is screen
+        assert screen._choices[0].marker == ""
+        assert screen._choices[1].marker == TUI_DESIGN.selected_choice_marker
 
 
 @pytest.mark.asyncio
@@ -9791,7 +9836,7 @@ async def test_command_and_approval_menus_fit_resized_terminal(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_workspace_command_uses_inline_history_and_freeform_only_before_session(
+async def test_workspace_command_selects_paths_only_before_session_and_keeps_clear_available(
     tmp_path: Path,
 ) -> None:
     historical = tmp_path / "historical"
@@ -9817,15 +9862,21 @@ async def test_workspace_command_uses_inline_history_and_freeform_only_before_se
         assert [argument.value for argument in popup._arguments] == [
             str(tmp_path.resolve()),
             str(historical.resolve()),
+            "clear",
         ]
         assert [argument.display_label for argument in popup._arguments] == [
             str(tmp_path.resolve()),
             str(historical.resolve()),
+            "Clear",
         ]
         assert all(not argument.description for argument in popup._arguments)
-        workspace_menu = popup.query_one("#command-popup-content", Static).render().plain
-        assert "Current workspace" not in workspace_menu
-        assert "Recent workspace" not in workspace_menu
+        assert popup._arguments[-1].accent == TUI_DESIGN.danger
+        workspace_menu = popup.query_one("#command-popup-content", Static).render()
+        assert isinstance(workspace_menu, Content)
+        assert "Current workspace" not in workspace_menu.plain
+        assert "Recent workspace" not in workspace_menu.plain
+        clear_style = workspace_menu.get_style_at_offset(workspace_menu.plain.index("Clear"))
+        assert clear_style.foreground == Color.parse(TUI_DESIGN.danger)
 
         await pilot.press("down", "enter")
         await pilot.pause()
@@ -9863,7 +9914,14 @@ async def test_workspace_command_uses_inline_history_and_freeform_only_before_se
         assert session_id is not None
         session = application.runtime.store.load_session_record(session_id)
         assert session.workspace == str(freeform.resolve())
-        assert "/workspace" not in {command.name for command in app._command_catalog()}
+        assert "/workspace" in {command.name for command in app._command_catalog()}
+
+        composer.load_text("/workspace ")
+        composer.move_cursor((0, len(composer.document.lines[0])))
+        await pilot.pause()
+        assert [argument.value for argument in popup._arguments] == ["clear"]
+        assert popup.argument_command is not None
+        assert popup.argument_command.input_hint is None
 
         await app._dispatch_command(f"/workspace {rejected}")
         await pilot.pause()
@@ -9884,6 +9942,34 @@ async def test_workspace_history_records_startup_directory_and_keeps_twenty(
         await pilot.pause()
         stored = preferences.load().recent_workspaces
         assert stored == (str(tmp_path.resolve()), *previous[:19])
+
+
+@pytest.mark.asyncio
+async def test_workspace_clear_argument_forgets_saved_history_without_changing_workspace(
+    tmp_path: Path,
+) -> None:
+    historical = tmp_path / "historical"
+    historical.mkdir()
+    preferences = TuiPreferencesStore(tmp_path)
+    preferences.save(TuiPreferences(recent_workspaces=(str(historical.resolve()),)))
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32), notifications=True) as pilot:
+        await pilot.pause()
+        active_workspace = app._active_workspace
+        composer = app.query_one(Composer)
+        composer.load_text("/workspace clear")
+        composer.move_cursor((0, len(composer.document.lines[0])))
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert preferences.load().recent_workspaces == ()
+        assert app._active_workspace == active_workspace
+        assert "Recent workspaces cleared" in {
+            toast.render().plain
+            for toast in app.screen.query_one("#textual-toastrack").query("Toast")
+        }
 
 
 @pytest.mark.asyncio
@@ -11297,6 +11383,62 @@ async def test_action_menu_updates_thought_display_without_closing_picker(
         assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
 
         await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_action_menu_toggles_input_draft_memory_and_clears_disabled_state(
+    tmp_path: Path,
+) -> None:
+    preferences = TuiPreferencesStore(tmp_path)
+    drafts = TuiInputDraftStore(tmp_path)
+    drafts.save(TuiInputDrafts().remember(None, "remember this draft"))
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        composer = app.query_one(Composer)
+        assert composer.text == "remember this draft"
+
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Input draft memory"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        memory_screen = app.screen
+        assert isinstance(memory_screen, ChoiceScreen)
+        assert memory_screen.query_one("#choice-title", Static).render().plain == (
+            "INPUT DRAFT MEMORY"
+        )
+        choices = {choice.value: choice for choice in memory_screen._choices}
+        assert choices["enable"].marker == TUI_DESIGN.selected_choice_marker
+        assert choices["disable"].marker == ""
+
+        memory_screen.query_one("#choice-filter", Input).value = "Do not remember"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_until(
+            lambda: drafts.load() == TuiInputDrafts(),
+            pilot,
+            description="disabled draft memory to clear durable drafts",
+        )
+        assert app.screen is memory_screen
+        assert preferences.load().input_draft_memory_enabled is False
+        assert composer.text == "remember this draft"
+
+        memory_screen.query_one("#choice-filter", Input).value = "Remember input"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_until(
+            lambda: drafts.load().draft_for(None) == "remember this draft",
+            pilot,
+            description="re-enabled draft memory to remember the visible draft",
+        )
+        choices = {choice.value: choice for choice in memory_screen._choices}
+        assert choices["enable"].marker == TUI_DESIGN.selected_choice_marker
+        assert choices["disable"].marker == ""
+        assert preferences.load().input_draft_memory_enabled is True
 
 
 @pytest.mark.asyncio
