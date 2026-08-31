@@ -67,6 +67,7 @@ from ouro.core.agents import (
 )
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.base import new_id, utc_now
+from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import (
     CompactionAbortedError,
@@ -1214,6 +1215,7 @@ class RuntimeService:
             AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None
         ) = None,
         _prepared_run: RunRecord | None = None,
+        _on_provider_stream_start: Callable[[], None] | None = None,
     ) -> RunResult:
         if approval_mode is not None and approval_mode not in SESSION_APPROVAL_MODES:
             raise ValueError(f"invalid session approval mode: {approval_mode}")
@@ -1314,7 +1316,8 @@ class RuntimeService:
                             )
                         ],
                     )
-                    session = self.create_session(
+                    session = await run_blocking(
+                        self.create_session,
                         title=candidate_session.title,
                         _session_id=candidate_session.session_id,
                         initial_model=selected_model.key,
@@ -1327,7 +1330,8 @@ class RuntimeService:
                     self._release_extension_snapshot(preapproved_new_run.run_id)
                     raise
             else:
-                session = self.create_session(
+                session = await run_blocking(
+                    self.create_session,
                     title=title or _title_from_input(prompt, skill_invocation),
                     initial_model=initial_model,
                     reasoning_request=initial_reasoning_request,
@@ -1337,9 +1341,11 @@ class RuntimeService:
                 )
             snapshot = RuntimeSessionSnapshot(session=session)
         else:
-            should_reconcile = _prepared_run is None and not self.run_ownership.is_locked(
-                session_id
+            session_locked = await run_blocking(
+                self.run_ownership.is_locked,
+                session_id,
             )
+            should_reconcile = _prepared_run is None and not session_locked
             if should_reconcile:
                 snapshot, reconciliation_diagnostics = await self._reconcile_session(session_id)
                 self._raise_incompatible_target(
@@ -1347,7 +1353,8 @@ class RuntimeService:
                     reconciliation_diagnostics,
                 )
             else:
-                snapshot = self._load_runtime_snapshot(
+                snapshot = await run_blocking(
+                    self._load_runtime_snapshot,
                     session_id,
                     recover=False,
                 )
@@ -1429,9 +1436,16 @@ class RuntimeService:
                 trigger=attributed_source or "user",
             )
         )
-        run_lock = self.run_ownership.acquire(session.session_id, run.run_id)
+        run_lock = await run_blocking(
+            self.run_ownership.acquire,
+            session.session_id,
+            run.run_id,
+        )
         if run_lock is None:
-            snapshot = self.store.load_runtime_session(session.session_id)
+            snapshot = await run_blocking(
+                self.store.load_runtime_session,
+                session.session_id,
+            )
             active_run = maybe_active_run(snapshot.runs)
             self._validate_model_resource_refs(
                 snapshot.session,
@@ -1461,11 +1475,17 @@ class RuntimeService:
         abort_signal: AbortSignal | None = None
         result: RunResult | None = None
         try:
-            latest_session = self.store.load_session_record(session.session_id)
+            latest_session = await run_blocking(
+                self.store.load_session_record,
+                session.session_id,
+            )
             locked_snapshot = (
                 snapshot
                 if latest_session == snapshot.session
-                else self.store.load_runtime_session(session.session_id)
+                else await run_blocking(
+                    self.store.load_runtime_session,
+                    session.session_id,
+                )
             )
             locked_snapshot = await self.run_recovery.reconcile(locked_snapshot)
             session = locked_snapshot.session
@@ -1499,19 +1519,12 @@ class RuntimeService:
             if interaction_mode is not None and interaction_mode != session.interaction_mode:
                 policy_updates["interaction_mode"] = interaction_mode
             if policy_updates:
-                with self.store.session_mutation(session.session_id):
-                    latest_session_record = self.store.load_session_record(session.session_id)
-                    now = utc_now()
-                    session = latest_session_record.model_copy(
-                        update={
-                            **policy_updates,
-                            "updated_at": now,
-                            "last_activity_at": now,
-                        }
-                    )
-                    self.store.save_session(session)
+                session = await run_blocking(
+                    self._persist_session_policy_updates,
+                    session.session_id,
+                    policy_updates,
+                )
                 locked_snapshot = locked_snapshot.model_copy(update={"session": session})
-                self.store.refresh_catalog(session.session_id)
             session, active_adapter = self._resolve_session_adapter(session)
             existing_messages = locked_snapshot.messages
             run = run.model_copy(update={"model": active_adapter.model.model_id})
@@ -1604,7 +1617,8 @@ class RuntimeService:
                 )
             is_queued_run = _queued_inputs is not None
             if is_queued_run:
-                session, run, input_messages = self._start_queued_run(
+                session, run, input_messages = await run_blocking(
+                    self._start_queued_run,
                     session=session,
                     run=run,
                     snapshot=locked_snapshot,
@@ -1612,14 +1626,18 @@ class RuntimeService:
                     existing_message_count=len(existing_messages),
                 )
             else:
-                session, run = self.run_lifecycle.start(
+                session, run = await run_blocking(
+                    self.run_lifecycle.start,
                     session=session,
                     run=run,
                     snapshot=locked_snapshot,
                 )
                 input_messages = []
 
-            sequence = self.store.latest_event_sequence(session.session_id)
+            sequence = await run_blocking(
+                self.store.latest_event_sequence,
+                session.session_id,
+            )
             sequence = await self.event_recorder.emit(
                 emitted,
                 sequence,
@@ -1633,7 +1651,8 @@ class RuntimeService:
                 if is_queued_run:
                     input_message = input_messages[index]
                 else:
-                    input_message = self._append_session_input(
+                    input_message = await run_blocking(
+                        self._append_session_input,
                         session=session,
                         run=run,
                         item=queued_input,
@@ -1671,7 +1690,10 @@ class RuntimeService:
                     },
                 )
 
-            abort_signal = self.run_ownership.activate_signal(session.session_id, run.run_id)
+            abort_signal = await self.run_ownership.activate_signal(
+                session.session_id,
+                run.run_id,
+            )
             result = await self._continue_model_loop(
                 session=session,
                 run=run,
@@ -1680,10 +1702,11 @@ class RuntimeService:
                 emitted=emitted,
                 abort_signal=abort_signal,
                 adapter=active_adapter,
+                on_provider_stream_start=_on_provider_stream_start,
             )
         finally:
             if abort_signal is not None:
-                self.run_ownership.release_signal(run.run_id, abort_signal)
+                await self.run_ownership.release_signal(run.run_id, abort_signal)
             if result is None:
                 self._release_extension_snapshot(run.run_id)
             self.run_ownership.release(run_lock)
@@ -1722,6 +1745,7 @@ class RuntimeService:
         tool_results: list[ToolResult] | None = None,
         abort_signal: AbortSignal,
         adapter: RuntimeAdapter,
+        on_provider_stream_start: Callable[[], None] | None = None,
     ) -> RunResult:
         tool_calls = self._tool_calls_for_run(run.run_id)
         tools = tool_calls.registry
@@ -1765,6 +1789,7 @@ class RuntimeService:
                         if self._agent_controls is not None
                         else None
                     ),
+                    notify_provider_stream_start=on_provider_stream_start,
                 ),
                 emit=self.event_recorder.emit,
                 handle_tool_batch=tool_calls.handle_batch,
@@ -1815,12 +1840,16 @@ class RuntimeService:
             trigger="manual_compaction",
             status="running",
         )
-        run_lock = self.run_ownership.acquire(session_id, run.run_id)
+        run_lock = await run_blocking(
+            self.run_ownership.acquire,
+            session_id,
+            run.run_id,
+        )
         if run_lock is None:
             raise SessionBusyError(f"session is already locked: {session_id}")
         emitted: list[EventRecord] = []
         sequence = self.store.latest_event_sequence(session_id)
-        abort_signal = self.run_ownership.activate_signal(session_id, run.run_id)
+        abort_signal = await self.run_ownership.activate_signal(session_id, run.run_id)
         terminal_run = run
         try:
             snapshot = self.store.load_runtime_session(session_id)
@@ -1906,7 +1935,7 @@ class RuntimeService:
                 skipped=execution.skipped,
             )
         finally:
-            self.run_ownership.release_signal(run.run_id, abort_signal)
+            await self.run_ownership.release_signal(run.run_id, abort_signal)
             self.run_ownership.release(run_lock)
             if terminal_run.status in ACTIVE_RUN_STATUSES:
                 self._finish_run_observers(terminal_run)
@@ -1928,17 +1957,16 @@ class RuntimeService:
         run_id: str | None = None,
         reason: str = "User aborted",
     ) -> RunResult:
-        session = self.store.load_session_record(session_id)
-        runs = self.store.load_runs(session_id)
-        run = find_run(runs, run_id) if run_id else find_active_run(runs)
+        session, run = await run_blocking(self._load_abort_target, session_id, run_id)
         if run.status not in ACTIVE_RUN_STATUSES:
             return RunResult(session=session, run=run)
 
         emitted: list[EventRecord] = []
-        has_active_owner = self.run_ownership.is_locked(session_id)
+        has_active_owner = await run_blocking(self.run_ownership.is_locked, session_id)
         signal = self.run_ownership.signal_for(run.run_id)
         if has_active_owner:
-            session, run, changed = request_run_abort_state(
+            session, run, changed = await run_blocking(
+                request_run_abort_state,
                 self.store,
                 session_id=session_id,
                 run_id=run.run_id,
@@ -1947,21 +1975,25 @@ class RuntimeService:
             if changed:
                 await self.event_recorder.emit(
                     emitted,
-                    self.store.latest_event_sequence(session_id),
+                    await run_blocking(self.store.latest_event_sequence, session_id),
                     session_id=session.session_id,
                     run_id=run.run_id,
                     event_type="run_abort_requested",
                     payload={"reason": reason},
                 )
             if signal is not None:
-                signal.abort(reason)
+                self.run_ownership.record_abort_state(session, run, reason=reason)
             await self.run_ownership.wait_for_settlement(session_id, run.run_id)
-            session = self.store.load_session_record(session_id)
-            run = self.store.load_run(session_id, run.run_id)
+            session, run = await run_blocking(
+                self._load_abort_target,
+                session_id,
+                run.run_id,
+            )
             if run.status not in ACTIVE_RUN_STATUSES:
                 return RunResult(session=session, run=run, events=emitted)
 
-        session, run, changed = abort_run_state(
+        session, run, changed = await run_blocking(
+            abort_run_state,
             self.store,
             session_id=session_id,
             run_id=run.run_id,
@@ -1971,7 +2003,7 @@ class RuntimeService:
             return RunResult(session=session, run=run)
         await self.event_recorder.emit(
             emitted,
-            self.store.latest_event_sequence(session_id),
+            await run_blocking(self.store.latest_event_sequence, session_id),
             session_id=session.session_id,
             run_id=run.run_id,
             event_type="run_aborted",
@@ -1979,6 +2011,15 @@ class RuntimeService:
         )
         result = RunResult(session=session, run=run, events=emitted)
         return await self._finalize_run_boundary(result, drain_queued_inputs=False)
+
+    def _load_abort_target(
+        self,
+        session_id: str,
+        run_id: str | None,
+    ) -> tuple[SessionRecord, RunRecord]:
+        session = self.store.load_session_record(session_id)
+        runs = self.store.load_runs(session_id)
+        return session, find_run(runs, run_id) if run_id else find_active_run(runs)
 
     async def submit_plugin_input(
         self,
@@ -2004,10 +2045,7 @@ class RuntimeService:
     ) -> RunResult:
         """Durably accept and consume one attributed atomic input unit."""
 
-        snapshot = self._load_runtime_snapshot(
-            session_id,
-            recover=not self.run_ownership.is_locked(session_id),
-        )
+        snapshot = await self._load_submission_snapshot(session_id)
         active = maybe_active_run(snapshot.runs)
         queued_session, queued, _ = await self._queue_input_batch(
             snapshot=snapshot,
@@ -2018,10 +2056,7 @@ class RuntimeService:
             return RunResult(session=queued_session, run=active)
         target_ids = {item.queue_id for item in queued}
         while True:
-            snapshot = self._load_runtime_snapshot(
-                session_id,
-                recover=not self.run_ownership.is_locked(session_id),
-            )
+            snapshot = await self._load_submission_snapshot(session_id)
             active = maybe_active_run(snapshot.runs)
             if active is not None:
                 return RunResult(session=snapshot.session, run=active)
@@ -2037,9 +2072,13 @@ class RuntimeService:
                 )
             except _QueuedInputSelectionChanged:
                 continue
+            consumed_snapshot = await run_blocking(
+                self.store.load_runtime_session,
+                session_id,
+            )
             consumed_ids = {
                 str(message.metadata.get("queued_input_id"))
-                for message in self.store.load_runtime_session(session_id).messages
+                for message in consumed_snapshot.messages
             }
             if target_ids <= consumed_ids or result.run.status != "completed":
                 return result
@@ -2053,10 +2092,7 @@ class RuntimeService:
     ) -> HostInputReceipt:
         """Durably accept an OURO-owned scaffold input without awaiting execution."""
 
-        snapshot = self._load_runtime_snapshot(
-            session_id,
-            recover=not self.run_ownership.is_locked(session_id),
-        )
+        snapshot = await self._load_submission_snapshot(session_id)
         self._validate_model_resource_refs(
             snapshot.session,
             session_input.resource_refs,
@@ -2081,10 +2117,7 @@ class RuntimeService:
         """Consume a previously accepted Host input through the ordinary Run path."""
 
         while True:
-            snapshot = self._load_runtime_snapshot(
-                receipt.session_id,
-                recover=not self.run_ownership.is_locked(receipt.session_id),
-            )
+            snapshot = await self._load_submission_snapshot(receipt.session_id)
             active = maybe_active_run(snapshot.runs)
             if active is not None:
                 return RunResult(session=snapshot.session, run=active)
@@ -2384,10 +2417,7 @@ class RuntimeService:
 
     async def _drain_queued_input_queue(self, session_id: str) -> None:
         while True:
-            snapshot = self._load_runtime_snapshot(
-                session_id,
-                recover=not self.run_ownership.is_locked(session_id),
-            )
+            snapshot = await self._load_submission_snapshot(session_id)
             if maybe_active_run(snapshot.runs) is not None:
                 return
             pending = self._pending_queued_inputs(snapshot)
@@ -2463,7 +2493,10 @@ class RuntimeService:
         assistant_continuation: ProviderContinuationArtifact | None,
         turn_id: str,
     ) -> TurnBoundaryInputResult:
-        snapshot = self.store.load_runtime_session(session.session_id)
+        snapshot = await run_blocking(
+            self.store.load_runtime_session,
+            session.session_id,
+        )
         units = self.queued_inputs.eligible_units(snapshot, mode="steer")
         if self.queued_input_config.consumption_mode == "one_by_one":
             units = units[:1]
@@ -2473,7 +2506,8 @@ class RuntimeService:
 
         appended: list[MessageRecord] = []
         if assistant_text or assistant_reasoning or assistant_continuation is not None:
-            assistant_message = self.run_lifecycle.append_assistant_message(
+            assistant_message = await run_blocking(
+                self.run_lifecycle.append_assistant_message,
                 session=session,
                 run=run,
                 text=assistant_text,
@@ -2487,7 +2521,8 @@ class RuntimeService:
                 appended.append(assistant_message)
 
         for item in eligible:
-            input_message, newly_consumed = self._consume_queued_turn_input(
+            input_message, newly_consumed = await run_blocking(
+                self._consume_queued_turn_input,
                 session=session,
                 run=run,
                 item=item,
@@ -2562,7 +2597,8 @@ class RuntimeService:
         if not evaluation.should_continue:
             return TurnCompletionPolicyResult(sequence=sequence)
 
-        assistant_message = self.run_lifecycle.append_assistant_message(
+        assistant_message = await run_blocking(
+            self.run_lifecycle.append_assistant_message,
             session=session,
             run=run,
             text=assistant_text,
@@ -2580,7 +2616,8 @@ class RuntimeService:
             }
             for item in evaluation.decisions
         ]
-        feedback_message = self.run_lifecycle.append_input_message(
+        feedback_message = await run_blocking(
+            self.run_lifecycle.append_input_message,
             session=session,
             run=run,
             prompt=evaluation.feedback,
@@ -2631,6 +2668,27 @@ class RuntimeService:
         )
         self.run_lifecycle.append_messages(session=session, run=run, messages=[message])
         return message
+
+    def _persist_session_policy_updates(
+        self,
+        session_id: str,
+        updates: Mapping[str, object],
+    ) -> SessionRecord:
+        """Persist one live policy transition and its catalog projection."""
+
+        with self.store.session_mutation(session_id):
+            latest = self.store.load_session_record(session_id)
+            now = utc_now()
+            session = latest.model_copy(
+                update={
+                    **updates,
+                    "updated_at": now,
+                    "last_activity_at": now,
+                }
+            )
+            self.store.save_session(session)
+        self.store.refresh_catalog(session_id)
+        return session
 
     def _create_session_input_message(
         self,
@@ -2903,6 +2961,16 @@ class RuntimeService:
     def _queued_input_is_durable(messages: list[MessageRecord], queue_id: str) -> bool:
         return any(message.metadata.get("queued_input_id") == queue_id for message in messages)
 
+    async def _load_submission_snapshot(self, session_id: str) -> RuntimeSessionSnapshot:
+        """Load one Host submission snapshot without blocking the orchestration loop."""
+
+        locked = await run_blocking(self.run_ownership.is_locked, session_id)
+        return await run_blocking(
+            self._load_runtime_snapshot,
+            session_id,
+            recover=not locked,
+        )
+
     def _load_runtime_snapshot(
         self,
         session_id: str,
@@ -2934,7 +3002,11 @@ class RuntimeService:
         resolved_approval_id = approval_id or run.pending_approval_id
         if resolved_approval_id is None:
             raise ValueError("run has no pending approval")
-        run_lock = self.run_ownership.acquire(session.session_id, run.run_id)
+        run_lock = await run_blocking(
+            self.run_ownership.acquire,
+            session.session_id,
+            run.run_id,
+        )
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run.run_id}")
         try:
@@ -2962,7 +3034,8 @@ class RuntimeService:
                 if call.approval is not None and call.approval.approval_id == resolved_approval_id
             )
             suspension = tool_batch_suspension(batch)
-            session, run = self.run_lifecycle.save_batch_state(
+            session, run = await run_blocking(
+                self.run_lifecycle.save_batch_state,
                 session=session,
                 run=run,
                 batch=batch,
@@ -3041,7 +3114,11 @@ class RuntimeService:
         waiting_call = next((call for call in batch.calls if call.status == "waiting_user"), None)
         if waiting_call is None:
             raise ValueError("run has no tool call waiting for user input")
-        run_lock = self.run_ownership.acquire(session.session_id, run.run_id)
+        run_lock = await run_blocking(
+            self.run_ownership.acquire,
+            session.session_id,
+            run.run_id,
+        )
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run.run_id}")
         try:
@@ -3138,7 +3215,11 @@ class RuntimeService:
         run = find_run(snapshot.runs, run_id)
         if run.status != "waiting_child":
             raise ValueError(f"run is not waiting for a child: {run.status}")
-        run_lock = self.run_ownership.acquire(session_id, run_id)
+        run_lock = await run_blocking(
+            self.run_ownership.acquire,
+            session_id,
+            run_id,
+        )
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run_id}")
         try:
@@ -3239,7 +3320,8 @@ class RuntimeService:
             batch = batch.model_copy(
                 update={"phase": suspension.batch_phase, "updated_at": utc_now()}
             )
-            session, run = self.run_lifecycle.save_batch_state(
+            session, run = await run_blocking(
+                self.run_lifecycle.save_batch_state,
                 session=session,
                 run=run,
                 batch=batch,
@@ -3271,7 +3353,10 @@ class RuntimeService:
                 )
             return RunResult(session=session, run=run, events=emitted)
 
-        active_signal = self.run_ownership.activate_signal(session.session_id, run.run_id)
+        active_signal = await self.run_ownership.activate_signal(
+            session.session_id,
+            run.run_id,
+        )
         try:
             try:
                 handling = await self._tool_calls_for_run(run.run_id).execute_batch(
@@ -3342,7 +3427,7 @@ class RuntimeService:
                 adapter=active_adapter,
             )
         finally:
-            self.run_ownership.release_signal(run.run_id, active_signal)
+            await self.run_ownership.release_signal(run.run_id, active_signal)
         return resumed
 
     async def _finalize_requested_abort(self, result: RunResult) -> RunResult:
@@ -3544,20 +3629,24 @@ class RuntimeService:
         model_round: int,
     ) -> RunRecord:
         del session
-        metadata = dict(run.metadata)
-        snapshot = self._extension_snapshots.get(run.run_id)
-        metadata["session_control_snapshot"] = self._session_control_snapshot(
-            run.session_id,
-            run_id=run.run_id,
-            model_round=model_round,
-            catalog=snapshot,
-        )
-        update: dict[str, object] = {"metadata": metadata}
-        if run.kind == "agent" and snapshot is not None:
-            update["continuation"] = self._continuation_checkpoint(run, snapshot)
-        updated = run.model_copy(update=update)
-        self.store.save_run(updated)
-        return updated
+        with self.store.session_mutation(run.session_id):
+            latest = self.store.load_run(run.session_id, run.run_id)
+            if latest.abort_requested or latest.status not in ACTIVE_RUN_STATUSES:
+                return latest
+            metadata = dict(latest.metadata)
+            snapshot = self._extension_snapshots.get(latest.run_id)
+            metadata["session_control_snapshot"] = self._session_control_snapshot(
+                latest.session_id,
+                run_id=latest.run_id,
+                model_round=model_round,
+                catalog=snapshot,
+            )
+            update: dict[str, object] = {"metadata": metadata}
+            if latest.kind == "agent" and snapshot is not None:
+                update["continuation"] = self._continuation_checkpoint(latest, snapshot)
+            updated = latest.model_copy(update=update)
+            self.store.save_run(updated)
+            return updated
 
     def _commit_model_request(
         self,
@@ -3569,9 +3658,15 @@ class RuntimeService:
         """Persist one provider request after context preparation succeeds."""
 
         del session, model_round
-        updated = run.model_copy(update={"model_round_count": run.model_round_count + 1})
-        self.store.save_run(updated)
-        return updated
+        with self.store.session_mutation(run.session_id):
+            latest = self.store.load_run(run.session_id, run.run_id)
+            if latest.abort_requested or latest.status not in ACTIVE_RUN_STATUSES:
+                return latest
+            updated = latest.model_copy(
+                update={"model_round_count": latest.model_round_count + 1}
+            )
+            self.store.save_run(updated)
+            return updated
 
     def _session_control_snapshot(
         self,

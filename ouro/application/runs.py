@@ -7,6 +7,7 @@ from ouro.application.events import RuntimeEventRecorder
 from ouro.application.usage import UsageService
 from ouro.core.base import utc_now
 from ouro.core.billing import UsagePurpose
+from ouro.core.callbacks import run_blocking
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.message_roles import MessageRole
@@ -477,6 +478,54 @@ class RunLifecycle:
         turn_id: str | None = None,
         tool_results: list[ToolResult],
     ) -> RunResult:
+        persisted = await run_blocking(
+            self._complete,
+            emitted=emitted,
+            session=session,
+            run=run,
+            messages=messages,
+            final_text=final_text,
+            reasoning_content=reasoning_content,
+            model_response=model_response,
+            provider_continuation=provider_continuation,
+            turn_id=turn_id,
+            tool_results=tool_results,
+        )
+        if isinstance(persisted, RunResult):
+            return persisted
+        completed_session, completed_run = persisted
+        await self.events.emit(
+            emitted,
+            sequence,
+            session_id=completed_session.session_id,
+            run_id=completed_run.run_id,
+            event_type="run_completed",
+            payload={"final_text_length": len(final_text)},
+        )
+        return RunResult(
+            session=completed_session,
+            run=completed_run,
+            final_text=final_text,
+            events=emitted,
+            tool_results=tool_results,
+        )
+
+    def _complete(
+        self,
+        *,
+        emitted: list[EventRecord],
+        session: SessionRecord,
+        run: RunRecord,
+        messages: list[MessageRecord],
+        final_text: str,
+        reasoning_content: str,
+        model_response: ModelResponseRecord | None,
+        provider_continuation: ProviderContinuationArtifact | None,
+        turn_id: str | None,
+        tool_results: list[ToolResult],
+    ) -> tuple[SessionRecord, RunRecord] | RunResult:
+        """Persist the complete transition as one blocking operation."""
+
         with self.store.session_mutation(session.session_id):
             latest_run = self.store.load_run(session.session_id, run.run_id)
             if latest_run.status not in ACTIVE_RUN_STATUSES or latest_run.abort_requested:
@@ -537,21 +586,7 @@ class RunLifecycle:
             completed_run = transition.run
             completed_session = transition.session
         self.store.refresh_catalog(completed_session.session_id)
-        await self.events.emit(
-            emitted,
-            sequence,
-            session_id=completed_session.session_id,
-            run_id=completed_run.run_id,
-            event_type="run_completed",
-            payload={"final_text_length": len(final_text)},
-        )
-        return RunResult(
-            session=completed_session,
-            run=completed_run,
-            final_text=final_text,
-            events=emitted,
-            tool_results=tool_results,
-        )
+        return completed_session, completed_run
 
     async def fail(
         self,
@@ -568,6 +603,54 @@ class RunLifecycle:
         turn_id: str | None = None,
         tool_results: list[ToolResult],
     ) -> RunResult:
+        persisted = await run_blocking(
+            self._fail,
+            emitted=emitted,
+            session=session,
+            run=run,
+            error=error,
+            final_text=final_text,
+            reasoning_content=reasoning_content,
+            model_response=model_response,
+            provider_continuation=provider_continuation,
+            turn_id=turn_id,
+            tool_results=tool_results,
+        )
+        if isinstance(persisted, RunResult):
+            return persisted
+        failed_session, failed_run = persisted
+        await self.events.emit(
+            emitted,
+            sequence,
+            session_id=failed_session.session_id,
+            run_id=failed_run.run_id,
+            event_type="run_failed",
+            payload={"error": error},
+        )
+        return RunResult(
+            session=failed_session,
+            run=failed_run,
+            final_text=final_text,
+            events=emitted,
+            tool_results=tool_results,
+        )
+
+    def _fail(
+        self,
+        *,
+        emitted: list[EventRecord],
+        session: SessionRecord,
+        run: RunRecord,
+        error: str,
+        final_text: str,
+        reasoning_content: str,
+        model_response: ModelResponseRecord | None,
+        provider_continuation: ProviderContinuationArtifact | None,
+        turn_id: str | None,
+        tool_results: list[ToolResult],
+    ) -> tuple[SessionRecord, RunRecord] | RunResult:
+        """Persist the failed transition as one blocking operation."""
+
         with self.store.session_mutation(session.session_id):
             latest_session = self.store.load_session_record(session.session_id)
             latest_run = self.store.load_run(session.session_id, run.run_id)
@@ -625,21 +708,7 @@ class RunLifecycle:
             failed_run = transition.run
             failed_session = transition.session
         self.store.refresh_catalog(failed_session.session_id)
-        await self.events.emit(
-            emitted,
-            sequence,
-            session_id=failed_session.session_id,
-            run_id=failed_run.run_id,
-            event_type="run_failed",
-            payload={"error": error},
-        )
-        return RunResult(
-            session=failed_session,
-            run=failed_run,
-            final_text=final_text,
-            events=emitted,
-            tool_results=tool_results,
-        )
+        return failed_session, failed_run
 
     async def pause(
         self,
@@ -653,6 +722,52 @@ class RunLifecycle:
         final_text: str,
         tool_results: list[ToolResult],
     ) -> RunResult:
+        persisted = await run_blocking(
+            self._pause,
+            emitted=emitted,
+            session=session,
+            run=run,
+            reason=reason,
+            next_model_round=next_model_round,
+            final_text=final_text,
+            tool_results=tool_results,
+        )
+        if isinstance(persisted, RunResult):
+            return persisted
+        paused_session, paused_run = persisted
+        await self.events.emit(
+            emitted,
+            sequence,
+            session_id=paused_session.session_id,
+            run_id=paused_run.run_id,
+            event_type="run_paused",
+            payload={
+                "reason": reason,
+                "next_model_round": next_model_round,
+                "usage": paused_run.usage,
+            },
+        )
+        return RunResult(
+            session=paused_session,
+            run=paused_run,
+            final_text=final_text,
+            events=emitted,
+            tool_results=tool_results,
+        )
+
+    def _pause(
+        self,
+        *,
+        emitted: list[EventRecord],
+        session: SessionRecord,
+        run: RunRecord,
+        reason: RunPauseReason,
+        next_model_round: int,
+        final_text: str,
+        tool_results: list[ToolResult],
+    ) -> tuple[SessionRecord, RunRecord] | RunResult:
+        """Persist the paused transition as one blocking operation."""
+
         with self.store.session_mutation(session.session_id):
             latest_session = self.store.load_session_record(session.session_id)
             latest_run = self.store.load_run(session.session_id, run.run_id)
@@ -697,25 +812,7 @@ class RunLifecycle:
             paused_run = transition.run
             paused_session = transition.session
         self.store.refresh_catalog(paused_session.session_id)
-        await self.events.emit(
-            emitted,
-            sequence,
-            session_id=paused_session.session_id,
-            run_id=paused_run.run_id,
-            event_type="run_paused",
-            payload={
-                "reason": reason,
-                "next_model_round": next_model_round,
-                "usage": paused_run.usage,
-            },
-        )
-        return RunResult(
-            session=paused_session,
-            run=paused_run,
-            final_text=final_text,
-            events=emitted,
-            tool_results=tool_results,
-        )
+        return paused_session, paused_run
 
     def _append_message(
         self,

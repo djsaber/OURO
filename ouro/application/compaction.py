@@ -13,6 +13,7 @@ from ouro.config.compaction import CompactionConfig, CompactionModelConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id, utc_now
 from ouro.core.billing import UsagePurpose
+from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal, settle_owned_tasks
 from ouro.core.compaction import (
     CompactionAbortedError,
@@ -699,7 +700,8 @@ class ContextPreparationService:
                 "required context provider failed: "
                 f"{failure.plugin_id}:{failure.provider_id}: {failure.error_type}"
             )
-        added_context = self._materialize_context_fragments(
+        added_context = await run_blocking(
+            self._materialize_context_fragments,
             provider_result.fragments,
             session=session,
             run=run,
@@ -715,8 +717,9 @@ class ContextPreparationService:
             )
         injected_message_count = sum(fragment.target == "message" for fragment in added_context)
         budget = self._input_budget(active_adapter)
-        active = self.store.load_active_compaction(session.session_id)
-        source_messages, view = self._project_context(
+        active = await run_blocking(self.store.load_active_compaction, session.session_id)
+        source_messages, view = await run_blocking(
+            self._project_context,
             messages=messages,
             active=active,
             tools=tools,
@@ -748,7 +751,10 @@ class ContextPreparationService:
             except CompactionError as exc:
                 if isinstance(exc, CompactionAbortedError):
                     raise
-                sequence = self.store.latest_event_sequence(session.session_id)
+                sequence = await run_blocking(
+                    self.store.latest_event_sequence,
+                    session.session_id,
+                )
                 if view.metrics.over_budget:
                     raise ContextBlockedError(
                         f"context compaction is required before the run can continue: {exc}"
@@ -783,7 +789,8 @@ class ContextPreparationService:
                     "for compaction"
                 )
             active = execution.record or active
-            source_messages, view = self._project_context(
+            source_messages, view = await run_blocking(
+                self._project_context,
                 messages=messages,
                 active=active,
                 tools=tools,
@@ -930,25 +937,16 @@ class ContextPreparationService:
     ) -> tuple[ContextView, int]:
         context_id = new_id("ctx")
         prepared = view.model_copy(update={"context_id": context_id})
-        self.store.save_latest_context(
-            ContextSnapshotRecord(
-                context_id=context_id,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                turn_id=turn_id,
-                model_round=model_round,
-                provider_id=adapter.model.provider_id,
-                endpoint_id=adapter.model.endpoint_id,
-                model_id=adapter.model.model_id,
-                supports_vision=adapter.model.supports_vision,
-                system_prompt=prepared.system_prompt,
-                injected_messages=prepared.model_messages[:injected_message_count],
-                source_messages=source_messages,
-                tool_definitions=prepared.tool_definitions,
-                metrics=prepared.metrics,
-                context_metadata=prepared.context_metadata,
-                context_digest=context_view_digest(prepared),
-            )
+        await run_blocking(
+            self._save_prepared_context,
+            context=prepared,
+            session=session,
+            run=run,
+            turn_id=turn_id,
+            model_round=model_round,
+            adapter=adapter,
+            source_messages=source_messages,
+            injected_message_count=injected_message_count,
         )
         self._observe_built_context(
             session=session,
@@ -957,6 +955,43 @@ class ContextPreparationService:
             model_round=model_round,
         )
         return prepared, sequence
+
+    def _save_prepared_context(
+        self,
+        *,
+        context: ContextView,
+        session: SessionRecord,
+        run: RunRecord,
+        turn_id: str,
+        model_round: int,
+        adapter: RuntimeAdapter,
+        source_messages: list[MessageRecord],
+        injected_message_count: int,
+    ) -> None:
+        """Persist one fully materialized context snapshot on the I/O worker."""
+
+        if context.context_id is None:
+            raise ValueError("prepared model context is missing its identity")
+        self.store.save_latest_context(
+            ContextSnapshotRecord(
+                context_id=context.context_id,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                turn_id=turn_id,
+                model_round=model_round,
+                provider_id=adapter.model.provider_id,
+                endpoint_id=adapter.model.endpoint_id,
+                model_id=adapter.model.model_id,
+                supports_vision=adapter.model.supports_vision,
+                system_prompt=context.system_prompt,
+                injected_messages=context.model_messages[:injected_message_count],
+                source_messages=source_messages,
+                tool_definitions=context.tool_definitions,
+                metrics=context.metrics,
+                context_metadata=context.context_metadata,
+                context_digest=context_view_digest(context),
+            )
+        )
 
     async def compact(
         self,

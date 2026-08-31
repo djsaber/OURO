@@ -143,11 +143,22 @@ Conversation 是按事件序列增长的时间线，而不是一个可永久回�
 assistant segment 必须封口；下一轮 `model_reasoning_delta` 或 `model_text_delta` 创建位于工具行之后的新 segment。
 高频 delta 可以合并，但只能合并连续且不跨工具状态边界的前缀，不得为减少刷新而重排事件。
 
+同一工具批次的新增活动行通过一次 `mount_all` 进入 live 区；批次全部终止后，按 source order 一次写入历史 strip
+缓冲并只发布一次历史尺寸，再通过一次 `remove_children` 批量卸载 live 行。不得把工具数量重新放大为逐项 DOM
+布局、历史尺寸传播或卸载布局。
+
+会话页 spinner、计时和 hover 等高频视觉帧只请求局部重绘；固定几何组件不得把字形变化升级为布局。`width:auto`
+的状态内容仅在渲染单元格宽度变化时请求布局，使显示尺寸变化仍由 Textual 正确传播。
+
 answer 活动尾部在 Markdown 结构仍可能变化时按源文本展示：完成视觉行只渲染一次，只有末尾未完成视觉行随新增文本重绘。
 短尾部可在新增换行时用共享 Markdown parser 识别并冻结已经完成的顶层块；边界检测受固定字符上限约束，超过上限的
 长未闭合块保持纯文本增量展示，直到 turn 结束后再解析一次。冻结块、最终尾块和重载历史统一通过
 `assistant_markdown` 渲染。正常帧不得重复拼接完整 answer、构造完整 Rich Markdown，或执行与无界活动块长度成比例
 的解析/渲染工作；宽度变化允许显式重建一次 strip 缓冲。
+
+达到固定字符阈值的活动尾部边界解析、收束解析，以及成组历史的 Rich Markdown 解析和语法高亮在工作线程完成；
+UI 事件循环只提交捕获宽度下生成的 strips，并按历史 chunk 发布一次尺寸。小文本保留同步快路，工作线程只接收
+脱离 Widget 的不可变渲染快照，不能在后台修改 Textual DOM 或历史缓冲。
 
 实时渲染的回归用例必须分别让 Provider 在首个 `model_text_delta` 和首个 `model_reasoning_delta` 后保持阻塞，
 并在 `runtime.run()` 尚未返回时验证对应活动源流已更新。只用立即返回的 Faux Provider 或只断言最终

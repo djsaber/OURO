@@ -140,6 +140,7 @@ _MCP_STATUS_SYNC_INTERVAL_SECONDS = 0.25
 _INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS = 0.3
 _SESSION_TITLE_MAX_CELLS = 56
 _RUNTIME_EVENT_BUFFER_MAX = 1000
+_RUNTIME_EVENT_APPLY_MAX = 64
 _SESSION_HISTORY_CACHE_SIZE = 3
 _RUNTIME_RENDER_BOUNDARY_EVENTS = {
     "compaction_completed",
@@ -156,6 +157,17 @@ _SESSION_INPUT_MESSAGE_EVENTS = {
     "user_message_added",
     "host_message_added",
     "plugin_message_added",
+}
+_TOOL_PRESENTATION_BOUNDARY_EVENTS = {
+    "run_started",
+    "model_request_started",
+    "model_reasoning_delta",
+    "model_text_delta",
+    "tool_batch_planned",
+    "tool_batch_completed",
+    "compaction_completed",
+    "queued_input_consumed",
+    *_SESSION_INPUT_MESSAGE_EVENTS,
 }
 _AGENT_INTERACTION_EVENTS = {
     "agent_spawned",
@@ -1509,9 +1521,17 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _flush_pending_runtime_events(self) -> None:
         if not self._pending_runtime_events:
             return
-        events = tuple(self._pending_runtime_events)
-        self._pending_runtime_events.clear()
+        events = tuple(self._pending_runtime_events[:_RUNTIME_EVENT_APPLY_MAX])
+        del self._pending_runtime_events[: len(events)]
         await self._apply_runtime_events(events)
+        if (
+            self._pending_runtime_events
+            and not self._runtime_events_ready_posted
+            and not self._runtime_events_frame_scheduled
+        ):
+            self._runtime_events_frame_scheduled = self.call_after_refresh(
+                self._post_runtime_events_ready,
+            )
 
     async def _apply_runtime_events(
         self,
@@ -1560,6 +1580,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         stream_kind: str | None = None
         stream_parts: list[str] = []
         stream_started_at: datetime | None = None
+        tools_dirty = False
         refresh_session_controls = any(
             event.event_type in _SESSION_CONTROL_REFRESH_EVENTS for event in events
         )
@@ -1591,12 +1612,25 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 stream_started_at = started_at
             stream_parts.append(text)
 
+        async def flush_tools() -> None:
+            nonlocal tools_dirty
+            if not tools_dirty:
+                return
+            await conversation.sync_tools(projection.activity.tool_calls)
+            tools_dirty = False
+
         for event in events:
+            if tools_dirty and event.event_type in _TOOL_PRESENTATION_BOUNDARY_EVENTS:
+                await flush_tools()
             previous_tools = projection.activity.tool_calls
             update = projection.apply(event)
             if update is None:
                 continue
             latest_update = update
+            if update.activity.tool_calls != previous_tools:
+                if not tools_dirty:
+                    await flush_stream()
+                tools_dirty = True
             if event.event_type == "model_request_started":
                 await flush_stream()
                 await conversation.finish_assistant()
@@ -1654,13 +1688,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 conversation.finish_reasoning(update.reasoning_duration_seconds)
             if update.assistant_delta:
                 await append_stream("assistant", update.assistant_delta)
-            if update.activity.tool_calls != previous_tools:
-                await flush_stream()
-                await conversation.sync_tools(update.activity.tool_calls)
             if update.diagnostic:
                 diagnostics.append(update.diagnostic)
 
         await flush_stream()
+        await flush_tools()
 
         if self._host_closing or not conversation.is_attached:
             return

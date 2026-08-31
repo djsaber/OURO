@@ -31,6 +31,7 @@ from ouro.application.supervisor_models import (
 )
 from ouro.core.agents import AgentWaitResolution
 from ouro.core.base import utc_now
+from ouro.core.callbacks import run_blocking
 from ouro.core.errors import OuroError, SessionBusyError, SessionNotFoundError
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
@@ -69,6 +70,9 @@ class _RunJob:
     done: asyncio.Event = field(default_factory=asyncio.Event)
     result: RunResult | None = None
     cancelled: bool = False
+    start_after: asyncio.Event | None = None
+    provider_stream_started: asyncio.Event = field(default_factory=asyncio.Event)
+    run_identified: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
@@ -177,6 +181,8 @@ class RuntimeSupervisor:
         self._activities: dict[str, RuntimeActivitySnapshot] = {}
         self._subscriptions: dict[str, set[RuntimeSubscription]] = {}
         self._parked_session_locks: dict[str, asyncio.Lock] = {}
+        self._latest_job_start = asyncio.Event()
+        self._latest_job_start.set()
         self._lifecycle_lock = asyncio.Lock()
         self._started = False
         self._closed = False
@@ -244,21 +250,7 @@ class RuntimeSupervisor:
 
         handle = RunHandle(session_id=session_id)
         job = _RunJob(handle=handle, prompt=prompt, title=title)
-        self._jobs_by_session[session_id] = job
-        self._jobs_by_handle[handle.handle_id] = job
-        self._completion_events[handle.handle_id] = job.done
-        self._snapshots[handle.handle_id] = RuntimeStatusSnapshot(
-            handle=handle,
-            session_id=session_id,
-            status="queued",
-        )
-        self._publish_activity(
-            queued_runtime_activity(
-                session_id,
-                sequence=self.store.latest_event_sequence(session_id),
-            )
-        )
-        self._queue.put_nowait(job)
+        self._enqueue_job(job)
         return handle
 
     async def submit_prepared(
@@ -289,22 +281,7 @@ class RuntimeSupervisor:
             prepared_run=run,
             session_input=session_input,
         )
-        self._jobs_by_session[session_id] = job
-        self._jobs_by_handle[handle.handle_id] = job
-        self._completion_events[handle.handle_id] = job.done
-        self._snapshots[handle.handle_id] = RuntimeStatusSnapshot(
-            handle=handle,
-            session_id=session_id,
-            run_id=run.run_id,
-            status="queued",
-        )
-        self._publish_activity(
-            queued_runtime_activity(
-                session_id,
-                sequence=self.store.latest_event_sequence(session_id),
-            ).model_copy(update={"run_id": run.run_id})
-        )
-        self._queue.put_nowait(job)
+        self._enqueue_job(job, run_id=run.run_id)
         return handle
 
     async def resume_agent_wait(
@@ -448,6 +425,8 @@ class RuntimeSupervisor:
 
     def _enqueue_job(self, job: _RunJob, *, run_id: str | None = None) -> None:
         session_id = job.handle.session_id
+        job.start_after = self._latest_job_start
+        self._latest_job_start = job.provider_stream_started
         self._jobs_by_session[session_id] = job
         self._jobs_by_handle[job.handle.handle_id] = job
         self._completion_events[job.handle.handle_id] = job.done
@@ -654,6 +633,14 @@ class RuntimeSupervisor:
             "waiting_approval",
             "waiting_child",
         }:
+            if snapshot.run_id is None:
+                # A worker is between its process-local running transition and
+                # the first durable Run event. Wait for that identity instead of
+                # guessing the active Run from a snapshot that may still be empty.
+                await job.run_identified.wait()
+                snapshot = self._snapshots[job.handle.handle_id]
+                if job.done.is_set() or snapshot.run_id is None:
+                    return snapshot
             result = await self.runtime.abort_run(
                 session_id=job.handle.session_id,
                 run_id=snapshot.run_id,
@@ -679,7 +666,13 @@ class RuntimeSupervisor:
         self._closed = True
         jobs = list(self._jobs_by_session.values())
         if policy.mode == "abort":
-            for job in jobs:
+            # Stop queued jobs before awaiting active abort settlement. Otherwise
+            # a worker can dequeue a not-yet-durable Run while shutdown yields.
+            ordered = sorted(
+                jobs,
+                key=lambda job: self._snapshots[job.handle.handle_id].status != "queued",
+            )
+            for job in ordered:
                 with suppress(OuroError, KeyError):
                     await self.abort(job.handle, reason="Runtime supervisor is shutting down")
         try:
@@ -741,6 +734,10 @@ class RuntimeSupervisor:
             try:
                 if job.cancelled:
                     continue
+                if job.start_after is not None:
+                    await job.start_after.wait()
+                if job.cancelled:
+                    continue
                 queued_snapshot = self._snapshots[job.handle.handle_id]
                 self._snapshots[job.handle.handle_id] = queued_snapshot.model_copy(
                     update={"status": "running", "updated_at": utc_now()}
@@ -759,6 +756,7 @@ class RuntimeSupervisor:
                 )
                 try:
                     if job.interaction_kind == "approval":
+                        job.provider_stream_started.set()
                         run_id = self._snapshots[job.handle.handle_id].run_id
                         assert run_id is not None
                         assert job.approval_id is not None
@@ -772,6 +770,7 @@ class RuntimeSupervisor:
                             arguments_override=job.approval_arguments,
                         )
                     elif job.interaction_kind == "user_input":
+                        job.provider_stream_started.set()
                         run_id = self._snapshots[job.handle.handle_id].run_id
                         assert run_id is not None
                         job.result = await self.runtime.answer_user(
@@ -780,6 +779,7 @@ class RuntimeSupervisor:
                             answer=job.user_answer,
                         )
                     elif job.agent_wait_resolution is not None:
+                        job.provider_stream_started.set()
                         assert job.agent_wait_result is not None
                         assert job.agent_wait_tool_call_id is not None
                         run_id = self._snapshots[job.handle.handle_id].run_id
@@ -792,18 +792,21 @@ class RuntimeSupervisor:
                             result=job.agent_wait_result,
                         )
                     elif job.prepared_run is not None:
+                        job.provider_stream_started.set()
                         assert job.session_input is not None
                         job.result = await self.runtime.run_prepared(
                             job.prepared_run,
                             job.session_input,
                         )
                     elif job.host_input_receipt is not None:
+                        job.provider_stream_started.set()
                         job.result = await self.runtime.consume_host_input(job.host_input_receipt)
                     else:
                         job.result = await self.runtime.run(
                             job.prompt,
                             session_id=job.handle.session_id,
                             title=job.title,
+                            _on_provider_stream_start=job.provider_stream_started.set,
                         )
                 except asyncio.CancelledError:
                     self._finish_interrupted_job(job)
@@ -837,6 +840,7 @@ class RuntimeSupervisor:
                         ),
                     )
             finally:
+                job.provider_stream_started.set()
                 self._queue.task_done()
 
     async def _on_event(self, event: EventRecord) -> None:
@@ -851,13 +855,14 @@ class RuntimeSupervisor:
                     "updated_at": utc_now(),
                 }
             )
+            job.run_identified.set()
         subscriptions = tuple(self._subscriptions.get(event.session_id, ()))
         notification = RuntimeNotification(kind="event", event=project_runtime_event(event))
         for subscription in subscriptions:
             subscription._offer(notification)
         previous_activity = self._activities.get(event.session_id)
         if previous_activity is None:
-            current_activity = self._load_activity(event.session_id)
+            current_activity = await run_blocking(self._load_activity, event.session_id)
         else:
             current_activity = reduce_runtime_activity(previous_activity, event)
         self._activities[event.session_id] = current_activity
@@ -908,6 +913,8 @@ class RuntimeSupervisor:
         return job
 
     def _finish_job(self, job: _RunJob, snapshot: RuntimeStatusSnapshot) -> None:
+        job.provider_stream_started.set()
+        job.run_identified.set()
         self._snapshots[job.handle.handle_id] = snapshot
         current_activity = self._activities.get(job.handle.session_id)
         if current_activity is None:

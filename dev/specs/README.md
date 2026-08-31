@@ -30,7 +30,7 @@
 | [子智能体](subagents.md) | AgentDefinition、durable Delegation、前后台执行、Agent tree/HITL、权限、结果交付与恢复 | `ouro/core/agents.py`、`ouro/application/agents.py`、`ouro/tools/builtin_agents.py`、`ouro/sessions` |
 | [Host 会话观察与子智能体导航](session-observation.md) | Host-neutral ToolCall→child 关系、Session snapshot/event cursor 与 TUI 多会话只读切换 | `ouro/application`、`ouro/sessions`、`ouro/tui` |
 | [插件系统](plugin-system.md) | 不可变 Catalog、原子 generation、Observer、Prompt Policy 与稳定执行契约 | `ouro/plugins`、`ouro/application/observers.py`、`ouro/core/observers.py`、`ouro/core/prompt_policies.py` |
-| [运行热路径性能](performance-hot-paths.md) | 流式事件有界降频、压缩线性选块、零观察者短路、草稿防抖与工具结果批提交 | `ouro/core/adapter.py`、`ouro/application`、`ouro/tui/app.py` |
+| [运行热路径性能](performance-hot-paths.md) | 流式降频、阻塞事务 worker 边界、取消快路径、TUI 有界帧消费与批提交 | `ouro/core`、`ouro/application`、`ouro/tui` |
 
 ## 目标规格
 

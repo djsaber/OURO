@@ -554,6 +554,39 @@ async def test_host_detach_does_not_abort_but_explicit_abort_does(tmp_path) -> N
 
 
 @pytest.mark.asyncio
+async def test_abort_waits_for_a_starting_job_to_gain_its_durable_run_identity(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    provider = BlockingProvider()
+    runtime = _runtime(tmp_path, provider)
+    supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
+    reconcile_started = asyncio.Event()
+    release_reconcile = asyncio.Event()
+    original_reconcile = runtime._reconcile_session
+
+    async def delayed_reconcile(*args, **kwargs):
+        reconcile_started.set()
+        await release_reconcile.wait()
+        return await original_reconcile(*args, **kwargs)
+
+    monkeypatch.setattr(runtime, "_reconcile_session", delayed_reconcile)
+    handle = await supervisor.submit("starting")
+    await asyncio.wait_for(reconcile_started.wait(), timeout=1)
+
+    abort = asyncio.create_task(supervisor.abort(handle, reason="abort during startup"))
+    await asyncio.sleep(0)
+    assert not abort.done()
+
+    release_reconcile.set()
+    snapshot = await asyncio.wait_for(abort, timeout=2)
+
+    assert snapshot.run_id is not None
+    assert snapshot.status == "aborted"
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_target_recovery_recovers_interrupted_durable_run_from_store(tmp_path) -> None:
     runtime = _runtime(tmp_path, FauxProvider())
     session = SessionRecord(status="running", active_run_id="run_interrupted")

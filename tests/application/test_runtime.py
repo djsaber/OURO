@@ -1,5 +1,7 @@
 import asyncio
 import sys
+import time
+from threading import get_ident
 
 import pytest
 
@@ -74,6 +76,101 @@ def _tools() -> ToolRegistry:
     for tool in builtin_tools():
         registry.register(tool)
     return registry
+
+
+@pytest.mark.asyncio
+async def test_runtime_durable_boundaries_do_not_block_the_event_loop(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    tools = ToolRegistry()
+
+    def probe(invocation: ToolInvocation) -> ToolResult:
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            content="ok",
+        )
+
+    tools.register(
+        Tool(
+            definition=ToolDefinition(
+                name="Probe",
+                description="Exercise durable Runtime boundaries.",
+                permission_mode="auto",
+            ),
+            handler=probe,
+        )
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                event_batches=[
+                    [
+                        ProviderStreamEvent.from_tool_call(
+                            {"id": "probe_1", "name": "Probe", "arguments": {}}
+                        ),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                    [
+                        ProviderStreamEvent(type="text_delta", text="finished"),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                ]
+            ),
+            ModelMetadata(model_id="persistence-boundary", provider_id="faux"),
+        ),
+        tools=tools,
+    )
+
+    ticks = [0]
+    finished = asyncio.Event()
+    main_thread_id = get_ident()
+    observations: dict[str, tuple[int, int, int]] = {}
+
+    async def ticker() -> None:
+        while not finished.is_set():
+            ticks[0] += 1
+            await asyncio.sleep(0.001)
+
+    original_save_run = store.save_run
+    original_save_context = store.save_latest_context
+
+    def delay(label: str) -> None:
+        if label in observations:
+            return
+        started = ticks[0]
+        time.sleep(0.06)
+        observations[label] = (get_ident(), started, ticks[0])
+
+    def save_run(record):
+        if record.active_tool_batch is not None:
+            delay("tool_checkpoint")
+        elif record.status == "completed":
+            delay("run_terminal")
+        original_save_run(record)
+
+    def save_context(record):
+        delay("context_snapshot")
+        original_save_context(record)
+
+    monkeypatch.setattr(store, "save_run", save_run)
+    monkeypatch.setattr(store, "save_latest_context", save_context)
+    ticker_task = asyncio.create_task(ticker())
+    try:
+        result = await runtime.run("Use the probe")
+    finally:
+        finished.set()
+        await ticker_task
+
+    assert result.final_text == "finished"
+    assert observations.keys() == {"context_snapshot", "tool_checkpoint", "run_terminal"}
+    for thread_id, started, ended in observations.values():
+        assert thread_id != main_thread_id
+        assert ended - started >= 2
 
 
 def test_abort_state_does_not_load_message_history(tmp_path, monkeypatch) -> None:

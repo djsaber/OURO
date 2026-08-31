@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
@@ -16,6 +17,8 @@ class RunExecutionOwnership:
     def __init__(self, store: SessionStore) -> None:
         self.store = store
         self._abort_signals: dict[str, AbortSignal] = {}
+        self._abort_states: dict[str, tuple[SessionRecord, RunRecord]] = {}
+        self._abort_pollers: dict[str, asyncio.Task[None]] = {}
 
     def acquire(self, session_id: str, run_id: str) -> SessionLock | None:
         return self.store.acquire_session_lock(session_id, run_id)
@@ -34,8 +37,8 @@ class RunExecutionOwnership:
     ) -> None:
         """Wait until the durable Run is terminal or its execution owner releases the lock."""
 
-        while self.is_locked(session_id):
-            run = self.store.load_run(session_id, run_id)
+        while await run_blocking(self.is_locked, session_id):
+            run = await run_blocking(self.store.load_run, session_id, run_id)
             if run.status not in ACTIVE_RUN_STATUSES:
                 return
             await asyncio.sleep(poll_interval)
@@ -43,20 +46,54 @@ class RunExecutionOwnership:
     def is_locked(self, session_id: str) -> bool:
         return self.store.is_session_locked(session_id)
 
-    def activate_signal(self, session_id: str, run_id: str) -> AbortSignal:
-        signal = AbortSignal(lambda: self.abort_state(session_id, run_id) is not None)
+    async def activate_signal(self, session_id: str, run_id: str) -> AbortSignal:
+        signal = AbortSignal()
         self._abort_signals[run_id] = signal
+        self._abort_states.pop(run_id, None)
+        # Close the startup race where a durable abort is requested after the
+        # Run starts but before its process-local signal exists.
+        abort_state = await run_blocking(self.abort_state, session_id, run_id)
+        if abort_state is not None:
+            session, run = abort_state
+            self.record_abort_state(session, run)
+            return signal
+        self._abort_pollers[run_id] = asyncio.create_task(
+            self._poll_durable_abort(session_id, run_id, signal),
+            name=f"ouro-abort-poll-{run_id}",
+        )
         return signal
 
-    def release_signal(self, run_id: str, signal: AbortSignal) -> None:
-        if self._abort_signals.get(run_id) is signal:
-            self._abort_signals.pop(run_id, None)
+    async def release_signal(self, run_id: str, signal: AbortSignal) -> None:
+        if self._abort_signals.get(run_id) is not signal:
+            return
+        self._abort_signals.pop(run_id, None)
+        self._abort_states.pop(run_id, None)
+        poller = self._abort_pollers.pop(run_id, None)
+        if poller is not None:
+            poller.cancel()
+            await asyncio.gather(poller, return_exceptions=True)
 
     def signal_for(self, run_id: str) -> AbortSignal | None:
         return self._abort_signals.get(run_id)
 
     def is_aborted(self, session_id: str, run_id: str) -> bool:
-        return self.abort_state(session_id, run_id) is not None
+        del session_id
+        signal = self._abort_signals.get(run_id)
+        return run_id in self._abort_states or bool(signal and signal.is_aborted())
+
+    def record_abort_state(
+        self,
+        session: SessionRecord,
+        run: RunRecord,
+        *,
+        reason: str | None = None,
+    ) -> None:
+        """Publish a durable abort transition to the process-local fast path."""
+
+        self._abort_states[run.run_id] = (session, run)
+        signal = self._abort_signals.get(run.run_id)
+        if signal is not None:
+            signal.abort(reason or _abort_reason(run))
 
     def abort_state(
         self,
@@ -83,7 +120,8 @@ class RunExecutionOwnership:
         emitted: list[EventRecord],
         tool_results: list[ToolResult],
     ) -> RunResult | None:
-        abort_state = self.abort_state(session_id, run_id)
+        del session_id
+        abort_state = self._abort_states.get(run_id)
         if abort_state is None:
             return None
         session, run = abort_state
@@ -94,3 +132,27 @@ class RunExecutionOwnership:
             events=emitted,
             tool_results=tool_results,
         )
+
+    async def _poll_durable_abort(
+        self,
+        session_id: str,
+        run_id: str,
+        signal: AbortSignal,
+        *,
+        poll_interval: float = 0.05,
+    ) -> None:
+        """Bridge cross-process durable cancellation into the local signal."""
+
+        while self._abort_signals.get(run_id) is signal and not signal.is_aborted():
+            await asyncio.sleep(poll_interval)
+            abort_state = await run_blocking(self.abort_state, session_id, run_id)
+            if abort_state is None:
+                continue
+            session, run = abort_state
+            self.record_abort_state(session, run)
+            return
+
+
+def _abort_reason(run: RunRecord) -> str:
+    reason = run.metadata.get("abort_reason")
+    return reason if isinstance(reason, str) and reason else "User aborted"

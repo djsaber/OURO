@@ -21,6 +21,27 @@ def _tool_delta(index: int) -> ProviderStreamEvent:
 
 
 @pytest.mark.asyncio
+async def test_stream_start_notifier_precedes_provider_iteration() -> None:
+    order: list[str] = []
+
+    async def source() -> AsyncIterator[ProviderStreamEvent]:
+        order.append("provider")
+        yield ProviderStreamEvent(type="done")
+
+    received = [
+        event
+        async for event in _interruptible(
+            source(),
+            signal=None,
+            on_stream_start=lambda: order.append("notifier"),
+        )
+    ]
+
+    assert order == ["notifier", "provider"]
+    assert [event.type for event in received] == ["done"]
+
+
+@pytest.mark.asyncio
 async def test_stream_reader_runs_ahead_but_remains_bounded() -> None:
     produced = 0
     closed = asyncio.Event()

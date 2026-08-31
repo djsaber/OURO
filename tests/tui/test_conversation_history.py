@@ -1,3 +1,6 @@
+import asyncio
+import threading
+
 import pytest
 from rich.console import Console
 from textual.app import App, ComposeResult
@@ -46,6 +49,20 @@ Final paragraph.
 
 def _style_at(text, fragment: str):
     return text.get_style_at_offset(Console(), text.plain.index(fragment))
+
+
+def test_single_tool_entry_uses_background_rendering() -> None:
+    entry = TranscriptEntry(
+        kind="tool",
+        tool=RuntimeToolCallActivity(
+            tool_call_id="tool_background",
+            tool_name="Probe",
+            source_index=0,
+            status="completed",
+        ),
+    )
+
+    assert ConversationHistory._requires_background_render((entry,))
 
 
 def test_reasoning_label_uses_regular_title_and_lowlight_timing() -> None:
@@ -292,6 +309,52 @@ async def test_cold_history_load_publishes_virtual_size_once_per_chunk(
 
         assert 0 < sync_count <= 3
         assert app.history.entries == entries
+
+
+@pytest.mark.asyncio
+async def test_large_history_markdown_renders_outside_the_ui_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _HistoryApp()
+    source = "```python\n" + "value = 1\n" * 512 + "```\n"
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        entered = threading.Event()
+        release = threading.Event()
+        render_threads: list[int] = []
+        render_entries = conversation_history._render_entry_requests
+
+        def blocking_render(*args, **kwargs):
+            render_threads.append(threading.get_ident())
+            entered.set()
+            release.wait()
+            return render_entries(*args, **kwargs)
+
+        monkeypatch.setattr(
+            conversation_history,
+            "_render_entry_requests",
+            blocking_render,
+        )
+        watchdog = threading.Timer(1, release.set)
+        watchdog.start()
+        event_loop_thread = threading.get_ident()
+        loading = asyncio.create_task(
+            app.history.load((TranscriptEntry(kind="assistant", text=source),))
+        )
+
+        try:
+            render_entered = await asyncio.to_thread(entered.wait, 2)
+            event_loop_remained_responsive = not loading.done()
+        finally:
+            release.set()
+            watchdog.cancel()
+        await loading
+
+        assert render_entered is True
+        assert event_loop_remained_responsive is True
+        assert render_threads != [event_loop_thread]
+        assert "value = 1" in app.history.rendered_text
 
 
 @pytest.mark.asyncio

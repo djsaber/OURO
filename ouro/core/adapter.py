@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 
@@ -41,6 +41,7 @@ class RuntimeAdapter:
         *,
         signal: AbortSignal | None = None,
         max_output_tokens: int | None = None,
+        on_stream_start: Callable[[], None] | None = None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         model = self.model
         if max_output_tokens is not None:
@@ -54,7 +55,11 @@ class RuntimeAdapter:
             messages=provider_context.messages,
             tools=provider_context.tools,
         )
-        async for event in _interruptible(provider_events, signal=signal):
+        async for event in _interruptible(
+            provider_events,
+            signal=signal,
+            on_stream_start=on_stream_start,
+        ):
             yield event
 
 
@@ -62,6 +67,7 @@ async def _interruptible(
     events: AsyncIterator[ProviderStreamEvent],
     *,
     signal: AbortSignal | None,
+    on_stream_start: Callable[[], None] | None = None,
     poll_interval: float = 0.05,
 ) -> AsyncIterator[ProviderStreamEvent]:
     """Read the provider independently from persistence and presentation.
@@ -74,7 +80,9 @@ async def _interruptible(
     buffer: asyncio.Queue[_BufferedStreamItem] = asyncio.Queue(
         maxsize=_STREAM_BUFFER_CAPACITY
     )
-    reader = asyncio.create_task(_read_provider_stream(events, buffer))
+    reader = asyncio.create_task(
+        _read_provider_stream(events, buffer, on_stream_start=on_stream_start)
+    )
     abort_wait = (
         asyncio.create_task(signal.wait(poll_interval=poll_interval))
         if signal is not None
@@ -137,9 +145,13 @@ async def _interruptible(
 async def _read_provider_stream(
     events: AsyncIterator[ProviderStreamEvent],
     buffer: asyncio.Queue[_BufferedStreamItem],
+    *,
+    on_stream_start: Callable[[], None] | None = None,
 ) -> None:
     """Continuously pump one provider stream into its bounded FIFO."""
     try:
+        if on_stream_start is not None:
+            on_stream_start()
         async for event in events:
             await buffer.put(event)
     except asyncio.CancelledError:

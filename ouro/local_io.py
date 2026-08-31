@@ -37,7 +37,7 @@ def write_text_atomic(path: Path, text: str) -> None:
             tmp.flush()
             os.fsync(tmp.fileno())
             temp_path = Path(tmp.name)
-        _replace_with_retry(temp_path, path)
+        replace_path_with_retry(temp_path, path)
     except (OSError, TypeError, ValueError) as exc:
         raise PersistenceError(f"could not write {path}: {exc}") from exc
     finally:
@@ -59,7 +59,7 @@ def read_text_atomic(path: Path) -> str:
     raise AssertionError("unreachable")
 
 
-def _replace_with_retry(source: Path, target: Path) -> None:
+def replace_path_with_retry(source: Path, target: Path) -> None:
     """Atomically replace ``target``, tolerating bounded Windows sharing races."""
 
     for delay in (*_WINDOWS_TRANSIENT_IO_DELAYS, None):

@@ -33,6 +33,30 @@ async def invoke_owned_callback(
     return await _invoke_callback(handler, args, kwargs, own_sync_cancellation=True)
 
 
+async def run_blocking[ResultT](
+    operation: Callable[..., ResultT],
+    *args: Any,
+    **kwargs: Any,
+) -> ResultT:
+    """Run one complete synchronous operation outside the event loop.
+
+    Cancellation does not abandon the owned thread while it may still hold a
+    persistence lock or mutate durable state. The caller regains cancellation
+    only after the operation has settled.
+    """
+
+    task = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await settle_owned_tasks(task)
+        if not task.cancelled():
+            # Retrieve a possible exception so the task is never reported as an
+            # unobserved failure. Cancellation remains the caller-visible result.
+            task.exception()
+        raise
+
+
 async def _invoke_callback(
     handler: Callable[..., Any],
     args: tuple[Any, ...],
@@ -78,4 +102,5 @@ __all__ = [
     "invoke_bounded_callback",
     "invoke_callback",
     "invoke_owned_callback",
+    "run_blocking",
 ]

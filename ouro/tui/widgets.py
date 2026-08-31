@@ -137,7 +137,7 @@ _ACTIVITY_LABELS = {
     "recoverable": "Recovery required",
 }
 _TRANSCRIPT_BACKGROUND_ENTRY_THRESHOLD = 64
-_TRANSCRIPT_BACKGROUND_TEXT_THRESHOLD = 64 * 1024
+_TRANSCRIPT_BACKGROUND_TEXT_THRESHOLD = 8 * 1024
 _PlaceholderTone = Literal["text", "separator", "key"]
 _PlaceholderPart = tuple[str, _PlaceholderTone]
 _SUBAGENT_ACTIVITY_LABELS = {
@@ -408,7 +408,9 @@ class ActivityIndicator(Static):
                 style=TUI_DESIGN.separator_tone,
             )
             content.append(self._reasoning, style=style)
-        self.update(content)
+        # This row is constrained to the single-line remainder of StatusLine;
+        # spinner and status changes can only alter its paint, not its geometry.
+        self.update(content, layout=False)
 
 
 class ReasoningLabel(RangeSelectionOnly, Label):
@@ -421,8 +423,9 @@ class ReasoningLabel(RangeSelectionOnly, Label):
         super().__init__(content, classes=classes)
 
     def set_content(self, content: Text) -> None:
+        layout = content.cell_len != self._content.cell_len
         self._content = content
-        self._update_displayed_content()
+        self._update_displayed_content(layout=layout)
 
     def on_enter(self, _event: events.Enter) -> None:
         self._hovered = True
@@ -432,11 +435,11 @@ class ReasoningLabel(RangeSelectionOnly, Label):
         self._hovered = False
         self._update_displayed_content()
 
-    def _update_displayed_content(self) -> None:
+    def _update_displayed_content(self, *, layout: bool = False) -> None:
         content = self._content.copy()
         if self._hovered:
             content.stylize(TUI_DESIGN.text_highlight)
-        self.update(content)
+        self.update(content, layout=layout)
 
     def on_click(self, event: events.Click) -> None:
         if event.button == 1:
@@ -579,6 +582,7 @@ class AssistantTurn(RangeSelectionOnly, Vertical):
         self.tail.display = False
         self._stream = AssistantMarkdownStream()
         self._reasoning_pending = True
+        self._tail_reset_pending = False
 
     def compose(self) -> ComposeResult:
         yield self.reasoning
@@ -596,27 +600,48 @@ class AssistantTurn(RangeSelectionOnly, Vertical):
     def reasoning_pending(self) -> bool:
         return self._reasoning_pending
 
-    def feed(self, text: str) -> tuple[str, ...]:
+    async def feed(self, text: str) -> tuple[str, ...]:
         """Accumulate streamed markdown; return blocks ready to freeze."""
         if not text:
             return ()
         self.reasoning.finish()
-        blocks, tail_reset = self._stream.append(text)
+        if self._stream.should_parse_in_background(text):
+            blocks, tail_reset = await asyncio.to_thread(self._stream.append, text)
+        else:
+            blocks, tail_reset = self._stream.append(text)
         if tail_reset:
-            tail = self._stream.tail
-            self.tail.display = bool(tail)
-            self.tail.replace(tail)
+            # Keep the completed source visible while its immutable strips are
+            # rendered off-loop. The caller commits the shorter tail immediately
+            # after those strips enter history, avoiding a transient blank region.
+            self._tail_reset_pending = True
+            self.tail.display = True
+            self.tail.append(text)
         else:
             self.tail.display = True
             self.tail.append(text)
         return blocks
 
-    def close(self) -> tuple[str, ...]:
+    def commit_frozen_blocks(self) -> None:
+        if not self._tail_reset_pending:
+            return
+        self._tail_reset_pending = False
+        tail = self._stream.tail
+        self.tail.display = bool(tail)
+        self.tail.replace(tail)
+
+    async def close(self) -> tuple[str, ...]:
         """Freeze the trailing block along with the round."""
-        blocks = self._stream.close()
+        if self._stream.should_close_in_background:
+            blocks = await asyncio.to_thread(self._stream.close)
+        else:
+            blocks = self._stream.close()
+
+        return blocks
+
+    def clear_tail(self) -> None:
+        self._tail_reset_pending = False
         self.tail.replace("")
         self.tail.display = False
-        return blocks
 
     def take_reasoning(self) -> tuple[str, float | None]:
         """Detach the live reasoning block for immutable rendering."""
@@ -711,20 +736,20 @@ class ToolActivityRow(RangeSelectionOnly, Static):
 
     def _tick(self) -> None:
         self._frame = (self._frame + 1) % len(TUI_DESIGN.spinner_frames)
-        self._render_tool()
+        self._render_tool(layout=False)
 
     def refresh_theme(self) -> None:
-        self._render_tool()
+        self._render_tool(layout=False)
 
     def on_enter(self, _event: events.Enter) -> None:
         if self._clickable:
             self._hovered = True
-            self._render_tool()
+            self._render_tool(layout=False)
 
     def on_leave(self, _event: events.Leave) -> None:
         if self._hovered:
             self._hovered = False
-            self._render_tool()
+            self._render_tool(layout=False)
 
     def on_click(self, event: events.Click) -> None:
         if event.button == 1 and self.run_id is not None and self._tool.tool_name == "SpawnAgent":
@@ -736,7 +761,7 @@ class ToolActivityRow(RangeSelectionOnly, Static):
             )
             event.stop()
 
-    def _render_tool(self) -> None:
+    def _render_tool(self, *, layout: bool = True) -> None:
         self.update(
             _tool_activity_text(
                 self._tool,
@@ -744,7 +769,8 @@ class ToolActivityRow(RangeSelectionOnly, Static):
                 theme=theme_for(self),
                 agent=self._agent,
                 highlighted=self._hovered,
-            )
+            ),
+            layout=layout,
         )
 
 
@@ -1777,12 +1803,12 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         if turn is None:
             turn = self._create_turn()
             self._assistant = turn
-            blocks = turn.feed(text)
+            blocks = await turn.feed(text)
             await self._transcript.mount(turn)
         else:
-            blocks = turn.feed(text)
-        for block in blocks:
-            await self._freeze_block(turn, block)
+            blocks = await turn.feed(text)
+        await self._freeze_blocks(turn, blocks)
+        turn.commit_frozen_blocks()
 
     async def append_reasoning(
         self,
@@ -1811,9 +1837,10 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             reasoning_expanded=self._reasoning_expanded,
         )
 
-    async def _freeze_block(self, turn: AssistantTurn, block: str) -> None:
-        """Freeze one completed block, promoting pending reasoning ahead of it."""
-        if not block.strip():
+    async def _freeze_blocks(self, turn: AssistantTurn, blocks: Iterable[str]) -> None:
+        """Freeze completed blocks, promoting pending reasoning ahead of them."""
+        materialized = tuple(block for block in blocks if block.strip())
+        if not materialized:
             return
         if turn.reasoning_pending:
             reasoning_expanded = turn.reasoning_expanded
@@ -1828,15 +1855,18 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                     ),
                     reasoning_expanded=reasoning_expanded,
                 )
-        self._history.append(TranscriptEntry(kind="assistant", text=block, run_id=turn.run_id))
+        await self._history.append_many_rendered(
+            TranscriptEntry(kind="assistant", text=block, run_id=turn.run_id)
+            for block in materialized
+        )
 
     async def finish_assistant(self) -> None:
         """Freeze the live round into the immutable history."""
         turn = self._assistant
         if turn is None:
             return
-        for block in turn.close():
-            await self._freeze_block(turn, block)
+        await self._freeze_blocks(turn, await turn.close())
+        turn.clear_tail()
         if turn.reasoning_pending:
             reasoning_expanded = turn.reasoning_expanded
             reasoning, seconds = turn.take_reasoning()
@@ -1889,6 +1919,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             # A tool call is a chronological boundary between model rounds.
             # Freeze the preceding assistant segment before rendering the tool.
             await self.finish_assistant()
+        new_rows: list[ToolActivityRow] = []
         for tool in tools:
             if tool.tool_call_id in historical_tool_ids:
                 continue
@@ -1896,9 +1927,11 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             if row is None:
                 row = ToolActivityRow(tool, run_id=self._current_run_id)
                 self._tools[tool.tool_call_id] = row
-                await self._transcript.mount(row)
+                new_rows.append(row)
             else:
                 row.apply_tool(tool)
+        if new_rows:
+            await self._transcript.mount_all(new_rows)
 
         # Keep a tool batch live until every row is terminal. Archiving rows one
         # by one would move a later-completing row ahead of an earlier active row
@@ -1906,16 +1939,16 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         if self._tools and all(_is_terminal_tool(row.tool) for row in self._tools.values()):
             terminal_rows = tuple(self._tools.values())
             self._tools.clear()
-            for row in terminal_rows:
-                self._history.append(
-                    TranscriptEntry(
-                        kind="tool",
-                        run_id=row.run_id,
-                        tool=row.tool,
-                        agent=row.agent,
-                    )
+            await self._history.append_many_rendered(
+                TranscriptEntry(
+                    kind="tool",
+                    run_id=row.run_id,
+                    tool=row.tool,
+                    agent=row.agent,
                 )
-                await row.remove()
+                for row in terminal_rows
+            )
+            await self._transcript.remove_children(terminal_rows)
 
     def sync_agents(self, agents: Iterable[AgentTreeNode]) -> None:
         materialized = tuple(agents)
@@ -3172,6 +3205,7 @@ class StatusLine(Horizontal):
     def __init__(self) -> None:
         super().__init__()
         self._context_metrics: ContextMetrics | None = None
+        self._context_width = 0
 
     def compose(self) -> ComposeResult:
         yield ActivityIndicator()
@@ -3238,7 +3272,12 @@ class StatusLine(Horizontal):
                 )
                 percentage_tone = TUI_DESIGN.warning if ratio > 0.8 else TUI_DESIGN.text_lowlight
                 content.append(f" {ratio:.0%}", style=percentage_tone)
-        self.query_one("#context-detail", Static).update(content)
+        content_width = content.cell_len
+        self.query_one("#context-detail", Static).update(
+            content,
+            layout=content_width != self._context_width,
+        )
+        self._context_width = content_width
 
 
 def user_message_text(message: MessageRecord) -> str:

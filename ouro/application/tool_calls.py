@@ -24,6 +24,7 @@ from ouro.core.agents import (
     AgentWaitRequest,
 )
 from ouro.core.base import utc_now
+from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal
 from ouro.core.errors import SessionBusyError
 from ouro.core.events import EventRecord
@@ -166,7 +167,8 @@ class ToolCallCoordinator:
         assistant_continuation: ProviderContinuationArtifact | None,
         abort_signal: AbortSignal,
     ) -> ToolBatchHandlingResult:
-        assistant_message = self.runs.append_assistant_tool_batch_message(
+        assistant_message = await run_blocking(
+            self.runs.append_assistant_tool_batch_message,
             session=session,
             run=run,
             tool_calls=tool_calls,
@@ -184,7 +186,8 @@ class ToolCallCoordinator:
             max_concurrency=self.execution_config.max_concurrency,
             calls=[ToolBatchCall(request=request) for request in tool_calls],
         )
-        self.runs.save_batch_state(
+        await run_blocking(
+            self.runs.save_batch_state,
             session=session,
             run=run,
             batch=batch,
@@ -273,7 +276,8 @@ class ToolCallCoordinator:
             batch = batch.model_copy(
                 update={"phase": suspension.batch_phase, "updated_at": utc_now()}
             )
-            self.runs.save_batch_state(
+            await run_blocking(
+                self.runs.save_batch_state,
                 session=session,
                 run=run,
                 batch=batch,
@@ -302,7 +306,8 @@ class ToolCallCoordinator:
             )
 
         batch = batch.model_copy(update={"phase": "ready", "updated_at": utc_now()})
-        self.runs.save_batch_state(
+        await run_blocking(
+            self.runs.save_batch_state,
             session=session,
             run=run,
             batch=batch,
@@ -333,7 +338,8 @@ class ToolCallCoordinator:
     ) -> ToolBatchHandlingResult:
         ready_calls = [call for call in batch.calls if call.status == "ready" and call.invocation]
         batch = batch.model_copy(update={"phase": "executing", "updated_at": utc_now()})
-        self.runs.save_batch_state(
+        await run_blocking(
+            self.runs.save_batch_state,
             session=session,
             run=run,
             batch=batch,
@@ -443,7 +449,8 @@ class ToolCallCoordinator:
                     (call for call in checkpoint_batch.calls if call.status == "waiting_user"),
                     None,
                 )
-                self.runs.save_batch_state(
+                await run_blocking(
+                    self.runs.save_batch_state,
                     session=session,
                     run=run,
                     batch=checkpoint_batch,
@@ -527,7 +534,8 @@ class ToolCallCoordinator:
                 )
                 try:
                     suspension = tool_batch_suspension(checkpoint_batch)
-                    self.runs.save_batch_state(
+                    await run_blocking(
+                        self.runs.save_batch_state,
                         session=session,
                         run=run,
                         batch=checkpoint_batch,
@@ -667,7 +675,8 @@ class ToolCallCoordinator:
                 checkpoint_batch = checkpoint_batch.model_copy(
                     update={"calls": calls, "updated_at": utc_now()}
                 )
-                self.runs.save_batch_state(
+                await run_blocking(
+                    self.runs.save_batch_state,
                     session=session,
                     run=run,
                     batch=checkpoint_batch,
@@ -724,7 +733,8 @@ class ToolCallCoordinator:
             aborted_batch = checkpoint_batch.model_copy(
                 update={"phase": "aborted", "updated_at": utc_now()}
             )
-            self.runs.save_aborted_batch(
+            await run_blocking(
+                self.runs.save_aborted_batch,
                 session_id=session.session_id,
                 run_id=run.run_id,
                 batch=aborted_batch,
@@ -751,7 +761,8 @@ class ToolCallCoordinator:
             waiting_batch = checkpoint_batch.model_copy(
                 update={"phase": suspension.batch_phase, "updated_at": utc_now()}
             )
-            self.runs.save_batch_state(
+            await run_blocking(
+                self.runs.save_batch_state,
                 session=session,
                 run=run,
                 batch=waiting_batch,
@@ -795,7 +806,8 @@ class ToolCallCoordinator:
             }
         )
         try:
-            self.runs.save_batch_state(
+            await run_blocking(
+                self.runs.save_batch_state,
                 session=session,
                 run=run,
                 batch=batch,
@@ -820,7 +832,8 @@ class ToolCallCoordinator:
 
         ordered_calls = sorted(batch.calls, key=lambda item: item.request.source_index)
         results = [call.result for call in ordered_calls if call.result is not None]
-        messages = self.runs.append_tool_result_messages(
+        messages = await run_blocking(
+            self.runs.append_tool_result_messages,
             session=session,
             run=run,
             results=results,
@@ -848,13 +861,15 @@ class ToolCallCoordinator:
             }
         )
         if terminal_phase == "aborted":
-            self.runs.save_aborted_batch(
+            await run_blocking(
+                self.runs.save_aborted_batch,
                 session_id=session.session_id,
                 run_id=run.run_id,
                 batch=completed_batch,
             )
         else:
-            self.runs.save_batch_state(
+            await run_blocking(
+                self.runs.save_batch_state,
                 session=session,
                 run=run,
                 batch=None,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from threading import get_ident
 
 import pytest
 
@@ -20,7 +21,7 @@ async def test_run_execution_ownership_tracks_lock_and_signal_lifecycle(tmp_path
     ownership = RunExecutionOwnership(store)
 
     lock = ownership.acquire(session.session_id, run.run_id)
-    signal = ownership.activate_signal(session.session_id, run.run_id)
+    signal = await ownership.activate_signal(session.session_id, run.run_id)
 
     assert lock is not None
     assert ownership.is_locked(session.session_id)
@@ -41,6 +42,10 @@ async def test_run_execution_ownership_tracks_lock_and_signal_lifecycle(tmp_path
 
     aborted = run.model_copy(update={"status": "aborted", "abort_requested": True})
     store.save_run(aborted)
+    for _ in range(100):
+        if signal.is_aborted():
+            break
+        await asyncio.sleep(0.01)
     assert signal.is_aborted()
     result = ownership.aborted_result(
         session_id=session.session_id,
@@ -52,6 +57,41 @@ async def test_run_execution_ownership_tracks_lock_and_signal_lifecycle(tmp_path
     assert result is not None
     assert result.run.status == "aborted"
 
-    ownership.release_signal(run.run_id, signal)
+    await ownership.release_signal(run.run_id, signal)
     assert ownership.signal_for(run.run_id) is None
     assert not ownership.is_locked(session.session_id)
+
+
+@pytest.mark.asyncio
+async def test_abort_signal_checks_never_read_durable_state_on_the_event_loop(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(session_id="ses_abort_fast_path")
+    run = RunRecord(run_id="run_abort_fast_path", session_id=session.session_id, status="running")
+    store.create_session(session)
+    store.save_run(run)
+    ownership = RunExecutionOwnership(store)
+    loop_thread = get_ident()
+    load_threads: list[int] = []
+    original_load_run = store.load_run
+
+    def recording_load_run(session_id: str, run_id: str) -> RunRecord:
+        load_threads.append(get_ident())
+        return original_load_run(session_id, run_id)
+
+    monkeypatch.setattr(store, "load_run", recording_load_run)
+    signal = await ownership.activate_signal(session.session_id, run.run_id)
+
+    for _ in range(100):
+        assert not signal.is_aborted()
+    for _ in range(100):
+        if load_threads:
+            break
+        await asyncio.sleep(0.01)
+
+    assert load_threads
+    assert loop_thread not in load_threads
+    await ownership.release_signal(run.run_id, signal)

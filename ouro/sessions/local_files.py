@@ -31,7 +31,12 @@ from ouro.core.session_extensions import (
     SessionExtensionStateRecord,
 )
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.local_io import read_text_atomic, write_json_atomic, write_model_atomic
+from ouro.local_io import (
+    read_text_atomic,
+    replace_path_with_retry,
+    write_json_atomic,
+    write_model_atomic,
+)
 from ouro.local_locks import is_lock_held
 from ouro.sessions.base import (
     RuntimeSessionSnapshot,
@@ -263,7 +268,7 @@ class LocalSessionStore:
                     states=sorted(states, key=lambda item: item.owner_id)
                 ),
             )
-            staging_dir.replace(session_dir)
+            replace_path_with_retry(staging_dir, session_dir)
             self._event_sequence_cache[session.session_id] = (0, 0)
             self._event_sequence_index_cache[session.session_id] = None
         except (OSError, PersistenceError) as exc:

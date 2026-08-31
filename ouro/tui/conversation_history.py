@@ -82,6 +82,7 @@ _MARKDOWN_PARSER = MarkdownIt().enable("strikethrough").enable("table")
 
 _ATOMIC_BLOCKS = frozenset({"fence", "hr", "code_block", "html_block"})
 _LIVE_MARKDOWN_BOUNDARY_MAX_CHARS = 8 * 1024
+_BACKGROUND_MARKDOWN_CHARS = 2 * 1024
 
 
 def assistant_markdown(text: str) -> RichMarkdown:
@@ -131,6 +132,19 @@ class AssistantMarkdownStream:
     @property
     def tail(self) -> str:
         return self._unfrozen()
+
+    def should_parse_in_background(self, text: str) -> bool:
+        """Return whether this append would perform frame-sized boundary parsing."""
+
+        tail_chars = self._tail_chars + len(text)
+        return (
+            "\n" in text
+            and _BACKGROUND_MARKDOWN_CHARS <= tail_chars <= _LIVE_MARKDOWN_BOUNDARY_MAX_CHARS
+        )
+
+    @property
+    def should_close_in_background(self) -> bool:
+        return self._tail_chars >= _BACKGROUND_MARKDOWN_CHARS
 
     def feed(self, text: str) -> tuple[tuple[str, ...], str]:
         """Accumulate a fragment; return newly completed blocks and the live tail."""
@@ -563,6 +577,25 @@ class _Piece:
     entry_index: int = -1
 
 
+@dataclass(frozen=True)
+class _EntryRenderRequest:
+    """Detached input for rendering one history entry outside the UI loop."""
+
+    entry: TranscriptEntry
+    previous_kind: TranscriptEntryKind | None
+    entry_index: int
+    theme: TuiTheme
+    reasoning_expanded: bool
+    tool_highlighted: bool = False
+    reasoning_highlighted: bool = False
+
+
+@dataclass(frozen=True)
+class _RenderedEntry:
+    entry_index: int
+    pieces: tuple[tuple[list[Strip], _PieceTag], ...]
+
+
 @dataclass(slots=True)
 class ConversationHistoryState:
     """Detached rendered history owned by one Session.
@@ -687,6 +720,108 @@ def _reasoning_area(
     else:
         area = label
     return Padding(area, (top, 2, 1, 2)), "reasoning"
+
+
+def _entry_renderables(
+    request: _EntryRenderRequest,
+    render_tool: ToolActivityRenderer,
+) -> list[tuple[RenderableType, _PieceTag]]:
+    """Build Rich renderables from a detached presentation snapshot."""
+
+    entry = request.entry
+    theme = request.theme
+    if entry.kind == "user":
+        return [
+            (
+                Padding(_UserMessageContent(entry.text, theme.accent), (1, 2, 2, 2)),
+                "user",
+            )
+        ]
+    if entry.kind == "tool":
+        assert entry.tool is not None
+        rendered = render_tool(
+            entry.tool,
+            frame=0,
+            theme=theme,
+            agent=entry.agent,
+        )
+        if entry.tool.tool_name == "SpawnAgent" and entry.run_id is not None:
+            interaction_style = Style(meta={_TOOL_NAVIGATION_META: request.entry_index})
+            if request.tool_highlighted:
+                interaction_style += Style(color=TUI_DESIGN.text_highlight)
+            rendered.stylize(interaction_style, 0, len(rendered))
+        return [(Padding(rendered, (0, 2, 0, 2)), "body")]
+    if entry.kind == "notice":
+        tone = TUI_DESIGN.critical if entry.error else theme.accent
+        top = 1 if request.previous_kind == "tool" else 0
+        return [(Padding(Text(entry.text, style=tone), (top, 1, 1, 1)), "body")]
+    if entry.kind == "compaction":
+        assert entry.compaction is not None
+        top = 1 if request.previous_kind == "tool" else 0
+        summary = _compaction_summary(entry.compaction, theme)
+        return [(Padding(summary, (top, 1, 1, 2)), "body")]
+    if entry.kind == "run":
+        assert entry.run is not None
+        summary = _run_summary(entry.run, theme)
+        return [(Padding(summary, (0, 1, 1, 2)), "body")]
+
+    pieces: list[tuple[RenderableType, _PieceTag]] = []
+    top = 1 if request.previous_kind == "tool" else 0
+    if entry.reasoning:
+        pieces.append(
+            _reasoning_area(
+                entry,
+                entry_index=request.entry_index,
+                expanded=request.reasoning_expanded,
+                top=top,
+                highlighted=request.reasoning_highlighted,
+            )
+        )
+    if entry.text:
+        text_top = 0 if entry.reasoning else top
+        pieces.append(
+            (
+                Padding(assistant_markdown(entry.text), (text_top, 2, 1, 2)),
+                "body",
+            )
+        )
+    return pieces
+
+
+def _render_strips_at_width(
+    console: Console,
+    options: ConsoleOptions,
+    renderable: RenderableType,
+) -> list[Strip]:
+    """Render one immutable piece using captured console geometry."""
+
+    segments = console.render(renderable, options)
+    strips = [
+        strip.adjust_cell_length(options.max_width)
+        for strip in Strip.from_lines(list(Segment.split_lines(segments)))
+    ]
+    return strips or [Strip.blank(options.max_width)]
+
+
+def _render_entry_requests(
+    requests: tuple[_EntryRenderRequest, ...],
+    *,
+    render_tool: ToolActivityRenderer,
+    console: Console,
+    options: ConsoleOptions,
+) -> tuple[_RenderedEntry, ...]:
+    """Parse Markdown, highlight code, and render a detached entry batch."""
+
+    return tuple(
+        _RenderedEntry(
+            entry_index=request.entry_index,
+            pieces=tuple(
+                (_render_strips_at_width(console, options, renderable), tag)
+                for renderable, tag in _entry_renderables(request, render_tool)
+            ),
+        )
+        for request in requests
+    )
 
 
 class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
@@ -884,36 +1019,57 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._hovered_tool_entry_index = None
         self._hovered_reasoning_entry_index = None
         materialized = list(entries)
+        if materialized and (
+            not self._size_known or self.scrollable_content_region.width <= 0
+        ):
+            # Reveal an empty/reused log before attaching entries. Layout can
+            # establish the render width without synchronously rendering content
+            # from Resize, which keeps both cold loads and cached restores on
+            # their intended paths.
+            self.display = True
+            for _attempt in range(4):
+                await self.wait_for_refresh()
+                if self._size_known and self.scrollable_content_region.width > 0:
+                    break
         rendered = self._restore_state(reusable_state, materialized)
         if rendered is None:
             self._reasoning_expanded_by_entry.clear()
             if not self._reset_buffer(materialized):
-                if self._entries:
-                    # Width is unknown (the log was hidden while empty); render as
-                    # soon as layout provides one instead of leaving callers racing
-                    # an async mount.
-                    self.call_after_refresh(self._render_entries)
-                    await self.wait_until_rendered()
-                return
+                if not self._entries:
+                    return
             rendered = 0
         elif rendered == len(self._entries):
             return
         if not self._size_known or self.scrollable_content_region.width <= 0:
-            if self._entries:
+            # Making a previously empty log visible schedules layout. Wait for
+            # geometry before choosing the render path so a large first load does
+            # not fall back to synchronous Markdown parsing on the UI loop.
+            for _attempt in range(4):
+                await self.wait_for_refresh()
+                if self._size_known and self.scrollable_content_region.width > 0:
+                    break
+            else:
                 self.call_after_refresh(self._render_entries)
                 await self.wait_until_rendered()
-            return
+                return
         try:
-            for start in range(rendered, len(self._entries), _LOAD_CHUNK_ENTRIES):
-                rendered = self._write_entries(
-                    start, min(start + _LOAD_CHUNK_ENTRIES, len(self._entries))
+            while rendered < len(self._entries):
+                next_rendered = await self._write_entries_async(
+                    rendered,
+                    min(rendered + _LOAD_CHUNK_ENTRIES, len(self._entries)),
                 )
                 await self.wait_for_refresh()
+                rendered = next_rendered
         except asyncio.CancelledError:
             # Exclusive workers supersede an in-flight session load; finish the
-            # remaining entries synchronously so the buffer never rests
-            # half-rendered before the cancellation propagates.
-            self._write_entries(rendered, len(self._entries))
+            # remaining entries off-loop so the buffer never rests half-rendered
+            # before the cancellation propagates.
+            while rendered < len(self._entries):
+                rendered = await self._write_entries_async(
+                    rendered,
+                    len(self._entries),
+                    background=True,
+                )
             raise
         self._render_width = self.scrollable_content_region.width
 
@@ -1022,22 +1178,55 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._sync_virtual_size()
         return stop
 
+    async def _write_entries_async(
+        self,
+        start: int,
+        stop: int,
+        *,
+        background: bool = False,
+    ) -> int:
+        """Render a history chunk, moving frame-sized Rich work off the UI loop."""
+
+        entries = tuple(self._entries[start:stop])
+        if not entries:
+            return stop
+        if not background and not self._requires_background_render(entries):
+            return self._write_entries(start, stop)
+
+        requests = self._render_requests(
+            entries,
+            start_index=start,
+            previous_kind=self._entries[start - 1].kind if start else None,
+        )
+        console = self.app.console
+        render_width = max(self.scrollable_content_region.width, self.min_width)
+        options = console.options.update_width(render_width)
+        expected_piece_count = len(self._pieces)
+        rendered = await asyncio.to_thread(
+            _render_entry_requests,
+            requests,
+            render_tool=self._render_tool,
+            console=console,
+            options=options,
+        )
+        if len(self._pieces) != expected_piece_count:
+            # A resize or theme refresh rebuilt the complete buffer while this
+            # detached batch was rendering; that newer complete buffer wins.
+            return len(self._entries)
+        if self.scrollable_content_region.width != render_width:
+            # Geometry changed before its Resize callback rebuilt history. Retry
+            # this chunk after the next refresh instead of committing stale strips.
+            return start
+        self._append_rendered_entries(rendered)
+        return stop
+
     def append(
         self,
         entry: TranscriptEntry,
         *,
         reasoning_expanded: bool | None = None,
     ) -> None:
-        entry_index = len(self._entries)
-        self._entries.append(entry)
-        if entry.tool is not None:
-            self._tool_entry_indexes[(entry.run_id, entry.tool.tool_call_id)] = entry_index
-        if (
-            entry.reasoning
-            and reasoning_expanded is not None
-            and reasoning_expanded != self._reasoning_expanded
-        ):
-            self._reasoning_expanded_by_entry[entry_index] = reasoning_expanded
+        entry_index = self._register_entry(entry, reasoning_expanded=reasoning_expanded)
         self.display = True
         if self._size_known and self.scrollable_content_region.width > 0:
             previous_kind = self._entries[-2].kind if len(self._entries) > 1 else None
@@ -1048,6 +1237,94 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             )
         else:
             self.call_after_refresh(self._render_entries)
+
+    def append_many(self, entries: Iterable[TranscriptEntry]) -> None:
+        """Append one immutable batch and publish its history size once."""
+
+        materialized = tuple(entries)
+        if not materialized:
+            return
+        start = len(self._entries)
+        for entry in materialized:
+            self._register_entry(entry)
+        self.display = True
+        if self._size_known and self.scrollable_content_region.width > 0:
+            self._write_entries(start, len(self._entries))
+        else:
+            self.call_after_refresh(self._render_entries)
+
+    async def append_many_rendered(self, entries: Iterable[TranscriptEntry]) -> None:
+        """Append Markdown entries while keeping expensive Rich work off-loop."""
+
+        materialized = tuple(entries)
+        if not materialized:
+            return
+        if (
+            not self._size_known
+            or self.scrollable_content_region.width <= 0
+            or not self._requires_background_render(materialized)
+        ):
+            self.append_many(materialized)
+            return
+
+        start = len(self._entries)
+        previous_kind = self._entries[-1].kind if self._entries else None
+        requests = self._render_requests(
+            materialized,
+            start_index=start,
+            previous_kind=previous_kind,
+        )
+        console = self.app.console
+        render_width = max(self.scrollable_content_region.width, self.min_width)
+        options = console.options.update_width(render_width)
+        rendered = await asyncio.to_thread(
+            _render_entry_requests,
+            requests,
+            render_tool=self._render_tool,
+            console=console,
+            options=options,
+        )
+        if len(self._entries) != start:
+            # The message pump normally serializes transcript mutations. Keep
+            # the buffer internally consistent if an external caller races this await.
+            self.append_many(materialized)
+            return
+        if (
+            self.scrollable_content_region.width != render_width
+            or theme_for(self).theme_id != requests[0].theme.theme_id
+        ):
+            await self.append_many_rendered(materialized)
+            return
+        for entry in materialized:
+            self._register_entry(entry)
+        self.display = True
+        self._append_rendered_entries(rendered)
+
+    def _register_entry(
+        self,
+        entry: TranscriptEntry,
+        *,
+        reasoning_expanded: bool | None = None,
+    ) -> int:
+        entry_index = len(self._entries)
+        self._entries.append(entry)
+        if entry.tool is not None:
+            self._tool_entry_indexes[(entry.run_id, entry.tool.tool_call_id)] = entry_index
+        if (
+            entry.reasoning
+            and reasoning_expanded is not None
+            and reasoning_expanded != self._reasoning_expanded
+        ):
+            self._reasoning_expanded_by_entry[entry_index] = reasoning_expanded
+        return entry_index
+
+    @staticmethod
+    def _requires_background_render(entries: tuple[TranscriptEntry, ...]) -> bool:
+        if len(entries) > 1:
+            return True
+        if any(entry.tool is not None for entry in entries):
+            return True
+        return sum(len(entry.text) for entry in entries) >= _BACKGROUND_MARKDOWN_CHARS
 
     async def wait_until_rendered(self) -> None:
         """Render the initial line buffer once layout geometry becomes available."""
@@ -1232,12 +1509,31 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         entry_index: int,
         sync_size: bool = True,
     ) -> None:
-        for renderable, tag in self._entry_pieces(
-            entry,
-            previous_kind=previous_kind,
-            entry_index=entry_index,
-        ):
-            strips = self._render_strips(renderable)
+        pieces = tuple(
+            (self._render_strips(renderable), tag)
+            for renderable, tag in self._entry_pieces(
+                entry,
+                previous_kind=previous_kind,
+                entry_index=entry_index,
+            )
+        )
+        self._append_rendered_entry(
+            _RenderedEntry(entry_index=entry_index, pieces=pieces),
+            sync_size=sync_size,
+        )
+
+    def _append_rendered_entries(self, entries: tuple[_RenderedEntry, ...]) -> None:
+        for entry in entries:
+            self._append_rendered_entry(entry, sync_size=False)
+        self._sync_virtual_size()
+
+    def _append_rendered_entry(
+        self,
+        rendered: _RenderedEntry,
+        *,
+        sync_size: bool,
+    ) -> None:
+        for strips, tag in rendered.pieces:
             if tag == "user":
                 self._user_lines.append(len(self.lines))
             self._piece_line_starts.append(len(self.lines))
@@ -1246,10 +1542,12 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 _Piece(
                     strips=strips,
                     tag=tag,
-                    entry_index=entry_index,
+                    entry_index=rendered.entry_index,
                 )
             )
-            self._piece_indexes_by_entry.setdefault(entry_index, []).append(len(self._pieces) - 1)
+            self._piece_indexes_by_entry.setdefault(rendered.entry_index, []).append(
+                len(self._pieces) - 1
+            )
         if sync_size:
             self._sync_virtual_size()
 
@@ -1298,83 +1596,48 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         previous_kind: TranscriptEntryKind | None,
         entry_index: int,
     ) -> list[tuple[RenderableType, _PieceTag]]:
-        theme = theme_for(self)
-        if entry.kind == "user":
-            return [
-                (
-                    Padding(_UserMessageContent(entry.text, theme.accent), (1, 2, 2, 2)),
-                    "user",
-                )
-            ]
-        if entry.kind == "tool":
-            assert entry.tool is not None
-            rendered = self._render_tool(
-                entry.tool,
-                frame=0,
-                theme=theme,
-                agent=entry.agent,
-            )
-            if entry.tool.tool_name == "SpawnAgent" and entry.run_id is not None:
-                interaction_style = Style(meta={_TOOL_NAVIGATION_META: entry_index})
-                if self._hovered_tool_entry_index == entry_index:
-                    interaction_style += Style(color=TUI_DESIGN.text_highlight)
-                rendered.stylize(interaction_style, 0, len(rendered))
-            return [
-                (
-                    Padding(
-                        rendered,
-                        (0, 2, 0, 2),
-                    ),
-                    "body",
-                )
-            ]
-        if entry.kind == "notice":
-            tone = TUI_DESIGN.critical if entry.error else theme.accent
-            top = 1 if previous_kind == "tool" else 0
-            return [(Padding(Text(entry.text, style=tone), (top, 1, 1, 1)), "body")]
-        if entry.kind == "compaction":
-            assert entry.compaction is not None
-            top = 1 if previous_kind == "tool" else 0
-            summary = _compaction_summary(entry.compaction, theme)
-            return [(Padding(summary, (top, 1, 1, 2)), "body")]
-        if entry.kind == "run":
-            assert entry.run is not None
-            summary = _run_summary(entry.run, theme)
-            return [(Padding(summary, (0, 1, 1, 2)), "body")]
+        request = self._render_requests(
+            (entry,),
+            start_index=entry_index,
+            previous_kind=previous_kind,
+        )[0]
+        return _entry_renderables(request, self._render_tool)
 
-        pieces: list[tuple[RenderableType, _PieceTag]] = []
-        top = 1 if previous_kind == "tool" else 0
-        if entry.reasoning:
-            pieces.append(
-                _reasoning_area(
-                    entry,
+    def _render_requests(
+        self,
+        entries: tuple[TranscriptEntry, ...],
+        *,
+        start_index: int,
+        previous_kind: TranscriptEntryKind | None,
+    ) -> tuple[_EntryRenderRequest, ...]:
+        theme = theme_for(self)
+        requests: list[_EntryRenderRequest] = []
+        previous = previous_kind
+        for offset, entry in enumerate(entries):
+            entry_index = start_index + offset
+            requests.append(
+                _EntryRenderRequest(
+                    entry=entry,
+                    previous_kind=previous,
                     entry_index=entry_index,
-                    expanded=self.is_reasoning_expanded(entry_index),
-                    top=top,
-                    highlighted=self._hovered_reasoning_entry_index == entry_index,
+                    theme=theme,
+                    reasoning_expanded=self._reasoning_expanded_by_entry.get(
+                        entry_index,
+                        self._reasoning_expanded,
+                    ),
+                    tool_highlighted=self._hovered_tool_entry_index == entry_index,
+                    reasoning_highlighted=(self._hovered_reasoning_entry_index == entry_index),
                 )
             )
-        if entry.text:
-            text_top = 0 if entry.reasoning else top
-            pieces.append(
-                (
-                    Padding(assistant_markdown(entry.text), (text_top, 2, 1, 2)),
-                    "body",
-                )
-            )
-        return pieces
+            previous = entry.kind
+        return tuple(requests)
 
     def _render_strips(self, renderable: RenderableType) -> list[Strip]:
         """Render one piece at the content width, mirroring ``RichLog.write``."""
         console = self.app.console
         render_width = max(self.scrollable_content_region.width, self.min_width)
         options = console.options.update_width(render_width)
-        segments = console.render(renderable, options)
-        strips = [
-            strip.adjust_cell_length(render_width)
-            for strip in Strip.from_lines(list(Segment.split_lines(segments)))
-        ]
-        return strips or [Strip.blank(render_width)]
+        return _render_strips_at_width(console, options, renderable)
 
     def _append_strips(self, strips: list[Strip]) -> None:
         self.lines.extend(strips)

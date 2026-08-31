@@ -23,7 +23,7 @@ connectivity-extensions -> plugin-observers-prompt-policy
 | [子智能体（已完成）](subagents.md) | 工作流 C 的实现记录：AgentDefinition、durable Delegation、控制工具、事件树、HITL、权限和恢复 | Session/Run、Tool/HITL、config、ExtensionCatalog、ResourceService、RuntimeSupervisor |
 | [TUI 子智能体会话视图（已完成）](tui-subagent-session-views.md) | Host-neutral 会话观察契约与 TUI 主/多 child 只读连续切换 | 子智能体、RuntimeSupervisor、TUI 实施基线 |
 | [桌面 Host](desktop-host.md) | 基于 application DTO 的本地桌面端 | 配置门面、Supervisor；资源视图依赖 ResourceService |
-| [运行热路径性能改进（已完成）](runtime-performance-hot-paths.md) | 流式降频、压缩线性化、Observer 短路、草稿防抖和工具结果批提交 | 当前 Runtime/Session/TUI/Plugin 契约与性能审查证据 |
+| [运行热路径性能改进（已完成）](runtime-performance-hot-paths.md) | 流式降频、阻塞事务 worker 边界、取消快路径、TUI 有界帧消费与批提交 | 当前 Runtime/Session/TUI/Plugin 契约与性能审查证据 |
 
 ## 使用规则
 

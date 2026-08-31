@@ -8,6 +8,7 @@ from datetime import datetime
 
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id, utc_now
+from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextView
 from ouro.core.errors import ContextBlockedError
@@ -55,6 +56,7 @@ TurnBoundaryInputConsumer = Callable[..., Awaitable[TurnBoundaryInputResult]]
 TurnCompletionPolicyEvaluator = Callable[..., Awaitable[TurnCompletionPolicyResult]]
 ModelRoundUpdater = Callable[..., RunRecord]
 SharedBudgetReasonProvider = Callable[[RunRecord, int], RunBudgetReason | None]
+ProviderStreamStartNotifier = Callable[[], None]
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,7 @@ class InnerLoopTurnBoundaries:
     begin_model_round: ModelRoundUpdater | None = None
     commit_model_request: ModelRoundUpdater | None = None
     shared_budget_reason: SharedBudgetReasonProvider | None = None
+    notify_provider_stream_start: ProviderStreamStartNotifier | None = None
 
 
 @dataclass(frozen=True)
@@ -192,7 +195,8 @@ class InnerAgentLoop:
                     tool_results=state.tool_results,
                 )
             if self.ports.turns.begin_model_round is not None:
-                state.run = self.ports.turns.begin_model_round(
+                state.run = await run_blocking(
+                    self.ports.turns.begin_model_round,
                     session=state.session,
                     run=state.run,
                     model_round=model_round,
@@ -200,7 +204,8 @@ class InnerAgentLoop:
             round_state = _RoundState()
             try:
                 if self.ports.context.resolve_model_request is not None:
-                    state.session, self.adapter = self.ports.context.resolve_model_request(
+                    state.session, self.adapter = await run_blocking(
+                        self.ports.context.resolve_model_request,
                         session=state.session,
                         run=state.run,
                         model_round=model_round,
@@ -229,7 +234,8 @@ class InnerAgentLoop:
                 return await self._fail(state, f"context preparation failed: {exc}")
             round_state.model_started_at = utc_now()
             if self.ports.turns.commit_model_request is not None:
-                state.run = self.ports.turns.commit_model_request(
+                state.run = await run_blocking(
+                    self.ports.turns.commit_model_request,
                     session=state.session,
                     run=state.run,
                     model_round=model_round,
@@ -261,7 +267,10 @@ class InnerAgentLoop:
             if round_state.tool_calls:
                 try:
                     if self.ports.refresh_session is not None:
-                        state.session = self.ports.refresh_session(state.session.session_id)
+                        state.session = await run_blocking(
+                            self.ports.refresh_session,
+                            state.session.session_id,
+                        )
                     batch_result = await self._handle_round_tool_batch(
                         state=state,
                         round_state=round_state,
@@ -467,18 +476,24 @@ class InnerAgentLoop:
         abort_signal: AbortSignal,
     ) -> RunResult | None:
         try:
-            async for provider_event in self.adapter.stream(context, signal=abort_signal):
+            async for provider_event in self.adapter.stream(
+                context,
+                signal=abort_signal,
+                on_stream_start=self.ports.turns.notify_provider_stream_start,
+            ):
                 if provider_event.type == "done":
                     if context.context_id is None:
                         raise ValueError("prepared model context is missing its identity")
                     if self.ports.context.record_completion is not None:
-                        self.ports.context.record_completion(
+                        await run_blocking(
+                            self.ports.context.record_completion,
                             session_id=state.session.session_id,
                             context_id=context.context_id,
                             usage=provider_event.usage,
                         )
                 if provider_event.type == "done" and provider_event.usage is not None:
-                    state.run = self.ports.runs.record_usage(
+                    state.run = await run_blocking(
+                        self.ports.runs.record_usage,
                         state.run,
                         provider_event.usage,
                         model=self.adapter.model,
@@ -733,7 +748,8 @@ class InnerAgentLoop:
         )
         state.run = transition.run
         state.session = transition.session
-        state.session = self.ports.runs.save_waiting_state(
+        state.session = await run_blocking(
+            self.ports.runs.save_waiting_state,
             session=state.session,
             run=state.run,
         )
