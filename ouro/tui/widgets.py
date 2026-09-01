@@ -108,6 +108,7 @@ _BUSY_ACTIVITIES = {
     "committing_results",
     "finalizing_response",
     "compacting",
+    "forking",
     "cancelling",
 }
 _ACTIVITY_LABELS = {
@@ -129,6 +130,7 @@ _ACTIVITY_LABELS = {
     "committing_results": "Saving tool results",
     "finalizing_response": "Finalizing",
     "compacting": "Compacting context",
+    "forking": "Forking session",
     "cancelling": "Cancelling",
     "completed": "Ready",
     "aborted": "Aborted",

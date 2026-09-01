@@ -1691,6 +1691,48 @@ async def test_controller_keeps_archive_policy_in_tui_and_unarchives_after_updat
 
 
 @pytest.mark.asyncio
+async def test_controller_session_catalog_only_projects_primary_sessions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _reasoning_application(tmp_path)
+    root = application.runtime.sessions.create(
+        session_id="ses_catalog_root",
+        title="Root",
+    ).session
+    child = SessionRecord(
+        session_id="ses_catalog_child",
+        title="Child",
+        session_kind="subagent",
+        root_session_id=root.session_id,
+        parent_session_id=root.session_id,
+        delegation_id="dlg_catalog_child",
+    )
+    application.runtime.store.create_session(child)
+    assert application.runtime.store.refresh_catalog(child.session_id) is None
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+    )
+    await controller.start()
+
+    def unexpected_canonical_load(_session_id: str) -> SessionRecord:
+        raise AssertionError("classified catalog entries must not reload canonical Sessions")
+
+    monkeypatch.setattr(
+        application.runtime.store,
+        "load_session_record",
+        unexpected_canonical_load,
+    )
+
+    try:
+        assert [entry.session_id for entry in await controller.sessions()] == [root.session_id]
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
 async def test_controller_does_not_replay_events_for_completed_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

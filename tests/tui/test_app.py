@@ -5549,7 +5549,7 @@ async def test_session_picker_closes_modal_before_rendering_selected_history(
 
 
 @pytest.mark.asyncio
-async def test_session_picker_opens_child_as_root_owned_read_only_surface(
+async def test_session_picker_hides_child_and_agent_tree_keeps_it_navigable(
     tmp_path: Path,
 ) -> None:
     application = _application(tmp_path)
@@ -5564,14 +5564,19 @@ async def test_session_picker_opens_child_as_root_owned_read_only_surface(
         )
         await pilot.press("ctrl+s")
         await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
-        options = app.screen.query_one("#choice-list", OptionList)
-        options.highlighted = options.get_option_index(child_session_id)
-        options.focus()
+        assert [choice.value for choice in app.screen._choices] == [root_session_id]
         await pilot.press("enter")
+        await _wait_until(
+            lambda: app._visible_session_id() == root_session_id,
+            pilot,
+            description="root session surface",
+        )
+
+        app.post_message(events.Key("alt+right", None))
         await _wait_until(
             lambda: app._visible_session_id() == child_session_id,
             pilot,
-            description="direct child session surface",
+            description="direct child session surface from Agent tree",
         )
 
         panel = app.query_one(SubagentNavigationPanel)
@@ -5622,6 +5627,72 @@ async def test_session_picker_opens_child_as_root_owned_read_only_surface(
             pilot,
             description="root surface after clicking its navigation node",
         )
+
+
+@pytest.mark.asyncio
+async def test_fork_projects_animated_activity_until_the_branch_is_created(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _application(tmp_path)
+    session = application.runtime.sessions.create(
+        session_id="ses_fork_activity",
+        title="Fork activity",
+    ).session
+    application.runtime.store.append_message(
+        MessageRecord.text(
+            session_id=session.session_id,
+            role="user",
+            text="Fork this conversation",
+            sequence=1,
+        )
+    )
+    app = OuroTuiApp(
+        application=application,
+        resume_session_id=session.session_id,
+    )
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await _wait_for_active_session(app, pilot, session.session_id)
+        original_branch = app._controller.branch_session
+        branch_started = asyncio.Event()
+        release_branch = asyncio.Event()
+
+        async def delayed_branch(message_id: str | None = None):
+            branch_started.set()
+            await release_branch.wait()
+            return await original_branch(message_id)
+
+        monkeypatch.setattr(app._controller, "branch_session", delayed_branch)
+        app._fork_session("full")
+        await asyncio.wait_for(branch_started.wait(), timeout=2)
+        await pilot.pause()
+
+        indicator = app.query_one(ActivityIndicator)
+        assert indicator._activity == "forking"
+        assert "Forking session" in indicator.render().plain
+        assert indicator.render().plain.strip()[0] in TUI_DESIGN.spinner_frames
+        frame = indicator._frame
+        indicator._tick()
+        assert indicator._frame != frame
+
+        release_branch.set()
+        await _wait_for_worker_group(app, pilot, group="navigation")
+        assert app._controller.session_id != session.session_id
+        assert "Ready" in indicator.render().plain
+
+        branch_session_id = app._controller.session_id
+
+        async def fail_branch(_message_id: str | None = None):
+            raise PersistenceError("branch storage unavailable")
+
+        monkeypatch.setattr(app._controller, "branch_session", fail_branch)
+        app._fork_session("full")
+        await _wait_for_worker_group(app, pilot, group="navigation")
+
+        assert app._controller.session_id == branch_session_id
+        assert app._activity_override is None
+        assert "Ready" in indicator.render().plain
 
 
 @pytest.mark.asyncio

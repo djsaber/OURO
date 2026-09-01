@@ -110,6 +110,37 @@ def test_catalog_uses_bounded_projection_without_loading_runtime_history(
     assert "historical-needle" not in catalog.model_dump_json()
 
 
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+def test_catalog_projects_primary_and_subagent_session_identity(
+    backend: str,
+    tmp_path,
+) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
+    )
+    store.initialize()
+    root = SessionRecord(session_id="ses_catalog_root", title="Root")
+    child = SessionRecord(
+        session_id="ses_catalog_child",
+        title="Child",
+        session_kind="subagent",
+        root_session_id=root.session_id,
+        parent_session_id=root.session_id,
+        delegation_id="dlg_catalog_child",
+    )
+    store.create_session(root)
+    store.create_session(child)
+    assert store.refresh_catalog(root.session_id) is None
+    assert store.refresh_catalog(child.session_id) is None
+
+    entries = {entry.session_id: entry for entry in store.read_catalog().sessions}
+
+    assert entries[root.session_id].session_kind == "primary"
+    assert entries[child.session_id].session_kind == "subagent"
+
+
 def test_sqlite_catalog_read_uses_only_projection_rows(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

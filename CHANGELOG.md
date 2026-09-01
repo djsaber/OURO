@@ -10,6 +10,10 @@ This project records user-visible and framework-contract changes in this file.
   composition and candidate windows anchor to the input on first focus and after relocation.
 - Multiline TUI inputs now finish cursor scrolling after edit geometry settles, keeping the
   active line visible through repeated newlines and other viewport-crossing edits.
+- TUI Session menus now project only user-managed primary Sessions; subagent Sessions remain
+  available through the Agent tree without leaking into open, rename, archive, or delete lists.
+- Session forks now enter the shared animated activity state while the branch is being created,
+  then hand status ownership to the destination Session load or restore the source on failure.
 - OpenAI-compatible streaming responses now require a provider `finish_reason` before they can
   complete, so prematurely ended SSE streams fail explicitly instead of saving truncated output or
   surfacing a misleading empty-assistant error.

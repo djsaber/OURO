@@ -64,6 +64,7 @@ def catalog_entry_from_session(
         pending_interaction = "user"
     return SessionIndexEntry(
         session_id=session.session_id,
+        session_kind=session.session_kind,
         root_session_id=session.root_session_id or session.session_id,
         parent_session_id=session.parent_session_id,
         title=session.title,

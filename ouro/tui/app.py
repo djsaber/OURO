@@ -1055,6 +1055,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
         self._resume_session_id = resume_session_id
         self._projection: TuiSessionProjection | None = None
+        self._activity_override: str | None = None
         self._visible_read_only = False
         self._visible_agent: AgentTreeNode | None = None
         self._observation_subscription: RuntimeSubscription | None = None
@@ -1513,7 +1514,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.post_message(LifecycleStatusReceived(status))
 
     def on_lifecycle_status_received(self, message: LifecycleStatusReceived) -> None:
-        self.query_one(StatusLine).set_activity(message.status.activity)
+        if self._activity_override is None:
+            self.query_one(StatusLine).set_activity(message.status.activity)
 
     def _apply_system_status(self, bootstrap: TuiBootstrap) -> None:
         self._system_status = bootstrap.system_status
@@ -2262,11 +2264,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def _sync_activity(self, activity: RuntimeActivitySnapshot) -> None:
         status_line = self.query_one(StatusLine)
-        status_line.set_activity(
-            activity.activity,
-            model_attempt=activity.model_attempt,
-            model_max_attempts=activity.model_max_attempts,
-        )
+        if self._activity_override is None:
+            status_line.set_activity(
+                activity.activity,
+                model_attempt=activity.model_attempt,
+                model_max_attempts=activity.model_max_attempts,
+            )
         status_line.set_context_metrics(activity.effective_context_metrics)
         if activity.session_id == self._controller.session_id:
             root_status_changed = activity.status != self._agent_root_status
@@ -3454,6 +3457,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._controller.session_id is None:
             return
         selected_message: MessageRecord | None = None
+        previous_projection = self._projection
+        self._activity_override = "forking"
+        self.query_one(StatusLine).set_activity(self._activity_override)
         try:
             if target == "full":
                 result = await self._controller.branch_session()
@@ -3466,12 +3472,28 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     raise ValueError(f"user message is not a fork point: {target}")
                 selected_message = points[index]
                 result = await self._controller.branch_session(selected_message.message_id)
+            self._activity_override = None
             await self._open_session(result.session.session_id)
+        except asyncio.CancelledError:
+            self._activity_override = None
+            self._restore_projection_activity(previous_projection)
+            raise
         except Exception as exc:  # noqa: BLE001 - branch validation is user-visible.
+            self._activity_override = None
+            self._restore_projection_activity(previous_projection)
             self.notify(str(exc), severity="error", markup=False)
             return
         if selected_message is not None:
             self._edit_draft(user_message_text(selected_message))
+
+    def _restore_projection_activity(
+        self,
+        projection: TuiSessionProjection | None,
+    ) -> None:
+        if projection is None:
+            self.query_one(StatusLine).set_activity("idle")
+        else:
+            self._sync_activity(projection.activity)
 
     @staticmethod
     def _prepare_loaded_session(

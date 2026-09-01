@@ -742,7 +742,25 @@ class TuiController:
 
     async def sessions(self) -> tuple[SessionCatalogEntry, ...]:
         runtime = self._runtime()
-        return await asyncio.to_thread(lambda: runtime.sessions.catalog().entries)
+
+        def primary_catalog() -> tuple[SessionCatalogEntry, ...]:
+            """Project the durable catalog onto user-managed primary Sessions."""
+
+            entries = runtime.sessions.catalog().entries
+
+            def is_primary(entry: SessionCatalogEntry) -> bool:
+                if entry.session_kind is not None:
+                    return entry.session_kind == "primary"
+                try:
+                    session = runtime.store.load_session_record(entry.session_id)
+                except (FileNotFoundError, PersistenceError):
+                    # Preserve unreadable legacy catalog entries as manageable.
+                    return True
+                return session.session_kind == "primary"
+
+            return tuple(entry for entry in entries if is_primary(entry))
+
+        return await asyncio.to_thread(primary_catalog)
 
     async def set_session_archived(self, session_id: str, *, archived: bool) -> None:
         sessions = self._runtime().sessions

@@ -34,6 +34,7 @@ class SessionIndexEntry(OuroModel):
     """Rebuildable catalog projection for one canonical session."""
 
     session_id: str
+    session_kind: Literal["primary", "subagent"] | None = None
     root_session_id: str
     parent_session_id: str | None = None
     title: str
