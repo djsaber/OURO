@@ -570,8 +570,8 @@ class ChoiceScreen(ModalScreen[str | None]):
         worker = self.app.run_worker(wait_for_child(), group="choice-child")
         return await worker.wait()
 
-    def show_child(self, screen: ModalScreen[None]) -> None:
-        """Show a result-free child without creating a waiting worker."""
+    def show_child(self, screen: ModalScreen[ScreenResult]) -> None:
+        """Show a child whose result is intentionally ignored."""
 
         self._hide_for_child()
         self.app.push_screen(screen)

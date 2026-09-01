@@ -6,6 +6,11 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- TUI Session catalogs now isolate invalid entries instead of failing the whole menu, render
+  unhealthy entries with semantic tones, explain unreadable entries in a dialog, and allow them
+  to be moved directly to trash without first loading or archiving corrupt canonical data.
+- File and SQLite Session catalog writes now persist required primary/subagent identity through
+  `session_kind`; invalid projections retain any readable identity without being treated as valid.
 - Focused TUI text inputs now resynchronize the terminal cursor after layout, so IME
   composition and candidate windows anchor to the input on first focus and after relocation.
 - Multiline TUI inputs now finish cursor scrolling after edit geometry settles, keeping the
@@ -14,6 +19,11 @@ This project records user-visible and framework-contract changes in this file.
   available through the Agent tree without leaking into open, rename, archive, or delete lists.
 - Session forks now enter the shared animated activity state while the branch is being created,
   then hand status ownership to the destination Session load or restore the source on failure.
+- Opening a TUI menu no longer cancels an in-flight Session fork; its activity animation continues
+  and the completed fork dismisses the menu before opening the new Session.
+- `Ctrl+S` Session menu refreshes now read only the disposable Session index and filter its
+  required identity projection in memory, without loading canonical Session records, applying
+  no-op query predicates, or sorting the same catalog more than once.
 - OpenAI-compatible streaming responses now require a provider `finish_reason` before they can
   complete, so prematurely ended SSE streams fail explicitly instead of saving truncated output or
   surfacing a misleading empty-assistant error.

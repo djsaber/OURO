@@ -40,7 +40,7 @@ from ouro.sessions.catalog import (
     catalog_entry_from_session,
     sort_catalog_entries,
 )
-from ouro.sessions.index import SessionIndex, SessionIndexEntry
+from ouro.sessions.index import SessionIndex, SessionIndexEntry, invalid_session_index_entry
 from ouro.sessions.locks import SessionRunLock
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
@@ -925,12 +925,23 @@ class SQLiteSessionStore:
     def read_catalog(self) -> SessionIndex:
         with self._read_connection() as connection:
             rows = connection.execute(
-                "SELECT payload FROM session_catalog ORDER BY session_id"
+                "SELECT payload, session_id FROM session_catalog"
             ).fetchall()
-        try:
-            entries = [SessionIndexEntry.model_validate_json(row[0]) for row in rows]
-        except (ValidationError, ValueError, TypeError) as exc:
-            raise PersistenceError(f"could not load SQLite session index: {exc}") from exc
+        entries: list[SessionIndexEntry] = []
+        for payload, session_id in rows:
+            try:
+                entry = SessionIndexEntry.model_validate_json(payload)
+            except (ValidationError, ValueError, TypeError) as exc:
+                try:
+                    raw_entry = json.loads(payload)
+                except (json.JSONDecodeError, TypeError):
+                    raw_entry = None
+                entry = invalid_session_index_entry(
+                    raw_entry,
+                    error=str(exc),
+                    fallback_session_id=str(session_id),
+                )
+            entries.append(entry)
         return SessionIndex(sessions=sort_catalog_entries(entries))
 
     def rebuild_catalog(self) -> SessionIndex:
@@ -1004,11 +1015,24 @@ class SQLiteSessionStore:
                     row[1],
                     f"session {session_id}",
                 )
-            except MigrationRequiredError:
-                entries.append(self._unreadable_catalog_entry(session_id, migration=True))
+            except MigrationRequiredError as exc:
+                entries.append(
+                    invalid_session_index_entry(
+                        _json_object(row[1]),
+                        fallback_session_id=session_id,
+                        health="migration_required",
+                        error=str(exc),
+                    )
+                )
                 continue
-            except PersistenceError:
-                entries.append(self._unreadable_catalog_entry(session_id))
+            except PersistenceError as exc:
+                entries.append(
+                    invalid_session_index_entry(
+                        _json_object(row[1]),
+                        fallback_session_id=session_id,
+                        error=str(exc),
+                    )
+                )
                 continue
             try:
                 latest_message = (
@@ -1029,11 +1053,23 @@ class SQLiteSessionStore:
                         f"latest Run for catalog {session_id}",
                     )
                 )
-            except MigrationRequiredError:
-                entries.append(catalog_entry_from_session(session, health="migration_required"))
+            except MigrationRequiredError as exc:
+                entries.append(
+                    catalog_entry_from_session(
+                        session,
+                        health="migration_required",
+                        error_detail=str(exc),
+                    )
+                )
                 continue
-            except PersistenceError:
-                entries.append(catalog_entry_from_session(session, health="corrupt"))
+            except PersistenceError as exc:
+                entries.append(
+                    catalog_entry_from_session(
+                        session,
+                        health="corrupt",
+                        error_detail=str(exc),
+                    )
+                )
                 continue
             entries.append(
                 catalog_entry_from_projection(
@@ -1058,24 +1094,6 @@ class SQLiteSessionStore:
         connection.executemany(
             "INSERT INTO session_catalog(session_id, payload) VALUES(?, ?)",
             [(entry.session_id, entry.model_dump_json()) for entry in entries],
-        )
-
-    @staticmethod
-    def _unreadable_catalog_entry(
-        session_id: str,
-        *,
-        migration: bool = False,
-    ) -> SessionIndexEntry:
-        now = utc_now()
-        return SessionIndexEntry(
-            session_id=session_id,
-            root_session_id=session_id,
-            title="Migration required" if migration else "Corrupt session",
-            created_at=now,
-            updated_at=now,
-            last_activity_at=now,
-            status="failed",
-            health="migration_required" if migration else "corrupt",
         )
 
     @staticmethod
@@ -1372,3 +1390,10 @@ def _validated_page_args(cursor: int, limit: int) -> tuple[int, int]:
     if not 1 <= limit <= 1000:
         raise ValueError("limit must be between 1 and 1000")
     return cursor, limit
+
+
+def _json_object(payload: str) -> object:
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        return None

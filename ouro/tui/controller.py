@@ -88,6 +88,7 @@ from ouro.core.tools import PermissionMode, ToolEffect, ToolSource
 from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
 from ouro.mcp import MCPServerConfig
+from ouro.sessions.index import UNREADABLE_SESSION_HEALTHS
 from ouro.skills import SkillMetadata
 from ouro.tui.state import PendingInteraction
 
@@ -742,25 +743,13 @@ class TuiController:
 
     async def sessions(self) -> tuple[SessionCatalogEntry, ...]:
         runtime = self._runtime()
-
-        def primary_catalog() -> tuple[SessionCatalogEntry, ...]:
-            """Project the durable catalog onto user-managed primary Sessions."""
-
-            entries = runtime.sessions.catalog().entries
-
-            def is_primary(entry: SessionCatalogEntry) -> bool:
-                if entry.session_kind is not None:
-                    return entry.session_kind == "primary"
-                try:
-                    session = runtime.store.load_session_record(entry.session_id)
-                except (FileNotFoundError, PersistenceError):
-                    # Preserve unreadable legacy catalog entries as manageable.
-                    return True
-                return session.session_kind == "primary"
-
-            return tuple(entry for entry in entries if is_primary(entry))
-
-        return await asyncio.to_thread(primary_catalog)
+        return await asyncio.to_thread(
+            lambda: tuple(
+                entry
+                for entry in runtime.sessions.catalog().entries
+                if entry.session_kind == "primary"
+            )
+        )
 
     async def set_session_archived(self, session_id: str, *, archived: bool) -> None:
         sessions = self._runtime().sessions
@@ -773,33 +762,43 @@ class TuiController:
         result = await asyncio.to_thread(sessions.rename, session_id, title)
         return result.session
 
-    async def delete_archived_sessions(
+    async def delete_sessions(
         self,
         session_ids: tuple[str, ...],
     ) -> tuple[str, ...]:
-        removed = await asyncio.to_thread(self._delete_archived_sessions, session_ids)
+        removed = await asyncio.to_thread(self._delete_sessions, session_ids)
         if self._session_id in removed:
             self._session_id = None
             self._session_archived = False
         return removed
 
-    def _delete_archived_sessions(self, session_ids: tuple[str, ...]) -> tuple[str, ...]:
+    def _delete_sessions(self, session_ids: tuple[str, ...]) -> tuple[str, ...]:
         sessions = self._runtime().sessions
         catalog = {entry.session_id: entry for entry in sessions.catalog().entries}
         selected = tuple(dict.fromkeys(session_ids))
-        not_archived = tuple(
+        ineligible = tuple(
             session_id
             for session_id in selected
-            if (entry := catalog.get(session_id)) is not None and not entry.archived
+            if (entry := catalog.get(session_id)) is not None
+            and not entry.archived
+            and entry.health not in UNREADABLE_SESSION_HEALTHS
         )
-        if not_archived:
-            raise ValueError("only archived sessions can be deleted: " + ", ".join(not_archived))
+        if ineligible:
+            raise ValueError(
+                "only archived or unreadable sessions can be deleted: "
+                + ", ".join(ineligible)
+            )
         remaining = set(catalog)
         removed: list[str] = []
         for session_id in selected:
             if session_id not in remaining:
                 continue
-            result = sessions.trash(session_id)
+            entry = catalog[session_id]
+            result = (
+                sessions.trash_invalid(session_id)
+                if entry.health in UNREADABLE_SESSION_HEALTHS
+                else sessions.trash(session_id)
+            )
             removed.extend(result.session_ids)
             remaining.difference_update(result.session_ids)
         return tuple(dict.fromkeys(removed))

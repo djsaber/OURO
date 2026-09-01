@@ -52,6 +52,7 @@ from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord, SessionTitleSource
 from ouro.sessions import SessionIndexEntry, SessionLock, SessionSnapshot, SessionStore
+from ouro.sessions.index import UNREADABLE_SESSION_HEALTHS
 
 if TYPE_CHECKING:
     from ouro.application.resources import ResourceService
@@ -300,7 +301,7 @@ class SessionService:
 
     def catalog(self, query: SessionCatalogQuery | None = None) -> SessionCatalogResult:
         index = self._store.read_catalog()
-        entries = _filter_entries(index.sessions, query or SessionCatalogQuery())
+        entries = index.sessions if query is None else _filter_entries(index.sessions, query)
         return SessionCatalogResult(
             entries=tuple(SessionCatalogEntry.from_index(entry) for entry in entries),
         )
@@ -577,6 +578,62 @@ class SessionService:
             trash_id=trash_id,
             session_ids=session_ids,
             diagnostics=tuple(diagnostics),
+        )
+
+    def trash_invalid(self, session_id: str) -> SessionTrashResult:
+        """Trash an unreadable Session tree without decoding its canonical records."""
+
+        catalog = {entry.session_id: entry for entry in self._store.read_catalog().sessions}
+        target = catalog.get(session_id)
+        if target is None:
+            raise SessionNotFoundError(f"session not found: {session_id}")
+        if target.health not in UNREADABLE_SESSION_HEALTHS:
+            raise ValueError(f"session is not marked unreadable: {session_id}")
+
+        scoped_ids = {session_id}
+        changed = True
+        while changed:
+            changed = False
+            for entry in catalog.values():
+                if (
+                    entry.session_kind == "subagent"
+                    and (
+                        entry.parent_session_id in scoped_ids
+                        or entry.root_session_id == session_id
+                    )
+                    and entry.session_id not in scoped_ids
+                ):
+                    scoped_ids.add(entry.session_id)
+                    changed = True
+        session_ids = tuple(
+            sorted(scoped_ids, key=lambda item: (item != session_id, item))
+        )
+        locks: list[SessionLock] = []
+        lock_owner = new_id("trash_invalid_tree")
+        try:
+            for scoped_session_id in session_ids:
+                lock = self._store.acquire_session_lock(scoped_session_id, lock_owner)
+                if lock is None:
+                    raise SessionBusyError(
+                        "cannot remove Session tree while a live runtime owns "
+                        f"{scoped_session_id}"
+                    )
+                locks.append(lock)
+            trash_id = self._store.trash_session_tree(session_id, session_ids)
+        finally:
+            for lock in reversed(locks):
+                lock.release()
+
+        diagnostics = tuple(
+            diagnostic
+            for removed_session_id in session_ids
+            for diagnostic in self._refresh_index_diagnostics(removed_session_id)
+        )
+        return SessionTrashResult(
+            session_id=session_id,
+            trash_id=trash_id,
+            session_ids=session_ids,
+            diagnostics=diagnostics,
         )
 
     def _trash_scope_records(

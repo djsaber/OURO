@@ -55,6 +55,7 @@ def catalog_entry_from_session(
     resource_count: int = 0,
     last_message_preview: str = "",
     last_activity_at: datetime | None = None,
+    error_detail: str | None = None,
 ) -> SessionIndexEntry:
     provider, endpoint = _split_model_route(session.current_model)
     pending_interaction: PendingInteraction | None = None
@@ -91,6 +92,7 @@ def catalog_entry_from_session(
         resource_count=resource_count,
         last_message_preview=last_message_preview,
         health=health,
+        error_detail=error_detail,
     )
 
 

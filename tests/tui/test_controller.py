@@ -273,12 +273,45 @@ async def test_controller_deleting_current_session_invalidates_current_pointer(
         session_id = result.session.session_id
         await controller.set_session_archived(session_id, archived=True)
 
-        removed = await controller.delete_archived_sessions((session_id,))
+        removed = await controller.delete_sessions((session_id,))
         draft = await controller.new_session()
 
         assert removed == (session_id,)
         assert controller.session_id is None
         assert draft.key == "faux/default"
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_deletes_unreadable_session_without_archiving(
+    tmp_path: Path,
+) -> None:
+    application = two_route_application(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+    )
+    await controller.start()
+
+    try:
+        session = application.runtime.sessions.create(
+            session_id="ses_unreadable",
+            title="Unreadable",
+        ).session
+        session_path = tmp_path / "sessions" / session.session_id / "session.json"
+        session_path.write_text("{broken", encoding="utf-8")
+        application.runtime.store.rebuild_catalog()
+
+        entries = {entry.session_id: entry for entry in await controller.sessions()}
+        removed = await controller.delete_sessions((session.session_id,))
+
+        assert entries[session.session_id].health == "corrupt"
+        assert entries[session.session_id].error_detail is not None
+        assert removed == (session.session_id,)
+        assert not session_path.parent.exists()
+        assert await controller.sessions() == ()
     finally:
         await controller.close()
 
@@ -1683,7 +1716,7 @@ async def test_controller_keeps_archive_policy_in_tui_and_unarchives_after_updat
         ).session
         await controller.set_session_archived(first.session_id, archived=True)
         await controller.set_session_archived(second.session_id, archived=True)
-        removed = await controller.delete_archived_sessions((first.session_id, second.session_id))
+        removed = await controller.delete_sessions((first.session_id, second.session_id))
         assert set(removed) == {first.session_id, second.session_id}
         assert {item.session_id for item in await controller.sessions()} == {session.session_id}
     finally:
@@ -1720,10 +1753,18 @@ async def test_controller_session_catalog_only_projects_primary_sessions(
     def unexpected_canonical_load(_session_id: str) -> SessionRecord:
         raise AssertionError("classified catalog entries must not reload canonical Sessions")
 
+    def unexpected_canonical_scan() -> list[SessionRecord]:
+        raise AssertionError("TUI session menus must only read the catalog")
+
     monkeypatch.setattr(
         application.runtime.store,
         "load_session_record",
         unexpected_canonical_load,
+    )
+    monkeypatch.setattr(
+        application.runtime.store,
+        "list_sessions",
+        unexpected_canonical_scan,
     )
 
     try:

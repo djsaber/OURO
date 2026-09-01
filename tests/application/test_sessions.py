@@ -7,6 +7,7 @@ from contextlib import closing
 
 import pytest
 
+import ouro.application.sessions as session_service_module
 from ouro.application.session_models import SessionCatalogQuery, SessionView
 from ouro.application.sessions import SessionService
 from ouro.core.agents import (
@@ -451,6 +452,29 @@ def test_catalog_filters_rebuildable_typed_entries(tmp_path) -> None:
     assert store.read_catalog().data_layout_version == DATA_LAYOUT_VERSION
 
 
+def test_unfiltered_catalog_reuses_the_store_projection_order(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, sessions = _service(tmp_path)
+    sessions.create(session_id="ses_first", title="First")
+    sessions.create(session_id="ses_second", title="Second")
+    expected = tuple(entry.session_id for entry in store.read_catalog().sessions)
+
+    def unexpected_query_projection(*_args: object) -> None:
+        raise AssertionError("an unfiltered catalog must not filter or re-sort its projection")
+
+    monkeypatch.setattr(
+        session_service_module,
+        "_filter_entries",
+        unexpected_query_projection,
+    )
+
+    result = sessions.catalog()
+
+    assert tuple(entry.session_id for entry in result.entries) == expected
+
+
 def test_archive_does_not_load_complete_session_history(tmp_path, monkeypatch) -> None:
     store, sessions = _service(tmp_path)
     session = sessions.create(title="Archive").session
@@ -512,6 +536,34 @@ def test_catalog_keeps_valid_sessions_visible_when_another_session_is_corrupt(tm
     by_id = {entry.session_id: entry for entry in result.entries}
     assert by_id[valid.session_id].health == "ok"
     assert by_id["ses_corrupt"].health == "corrupt"
+
+
+def test_unreadable_session_tree_can_be_trashed_without_decoding_records(tmp_path) -> None:
+    store, sessions = _service(tmp_path)
+    root = sessions.create(session_id="ses_corrupt_root", title="Corrupt root").session
+    child = SessionRecord(
+        session_id="ses_corrupt_child",
+        title="Child",
+        session_kind="subagent",
+        root_session_id=root.session_id,
+        parent_session_id=root.session_id,
+        delegation_id="dlg_corrupt_child",
+    )
+    store.create_session(child)
+    root_path = store.sessions_dir / root.session_id / "session.json"
+    root_path.write_text("{broken", encoding="utf-8")
+    store.rebuild_catalog()
+
+    result = sessions.trash_invalid(root.session_id)
+
+    assert result.session_id == root.session_id
+    assert set(result.session_ids) == {root.session_id, child.session_id}
+    assert not (store.sessions_dir / root.session_id).exists()
+    assert not (store.sessions_dir / child.session_id).exists()
+    assert store.read_catalog().sessions == []
+    trashed = store.trash_sessions_dir / result.trash_id / "sessions"
+    assert (trashed / root.session_id).is_dir()
+    assert (trashed / child.session_id).is_dir()
 
 
 def test_catalog_marks_incompatible_session_record_as_migration_required(tmp_path) -> None:

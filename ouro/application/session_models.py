@@ -51,7 +51,7 @@ class SessionCatalogQuery(ApplicationDTO):
 
 class SessionCatalogEntry(ApplicationDTO):
     session_id: str
-    session_kind: Literal["primary", "subagent"] | None = None
+    session_kind: Literal["primary", "subagent"]
     root_session_id: str
     parent_session_id: str | None = None
     title: str
@@ -78,6 +78,7 @@ class SessionCatalogEntry(ApplicationDTO):
     resource_count: int = 0
     last_message_preview: str = ""
     health: SessionHealth = "ok"
+    error_detail: str | None = None
 
     @classmethod
     def from_index(cls, entry: SessionIndexEntry) -> SessionCatalogEntry:

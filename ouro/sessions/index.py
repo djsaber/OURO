@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.base import OuroModel, new_id, utc_now
@@ -27,6 +27,9 @@ SessionHealth = Literal[
     "missing_resource",
     "migration_required",
 ]
+UNREADABLE_SESSION_HEALTHS: frozenset[SessionHealth] = frozenset(
+    {"corrupt", "migration_required"}
+)
 PendingInteraction = Literal["approval", "user"]
 
 
@@ -34,7 +37,7 @@ class SessionIndexEntry(OuroModel):
     """Rebuildable catalog projection for one canonical session."""
 
     session_id: str
-    session_kind: Literal["primary", "subagent"] | None = None
+    session_kind: Literal["primary", "subagent"]
     root_session_id: str
     parent_session_id: str | None = None
     title: str
@@ -61,6 +64,61 @@ class SessionIndexEntry(OuroModel):
     resource_count: int = 0
     last_message_preview: str = ""
     health: SessionHealth = "ok"
+    error_detail: str | None = None
+
+
+def invalid_session_index_entry(
+    payload: object,
+    *,
+    error: str,
+    fallback_session_id: str,
+    health: SessionHealth = "corrupt",
+) -> SessionIndexEntry:
+    """Retain one invalid catalog row without poisoning sibling entries."""
+
+    if isinstance(payload, dict):
+        raw_session_kind = payload.get("session_kind")
+        session_kind = (
+            raw_session_kind
+            if raw_session_kind in {"primary", "subagent"}
+            else "primary"
+        )
+        candidate = {
+            **payload,
+            "session_kind": session_kind,
+            "status": "failed",
+            "health": health,
+            "error_detail": error,
+        }
+        try:
+            return SessionIndexEntry.model_validate(candidate)
+        except ValidationError:
+            session_id = payload.get("session_id")
+            title = payload.get("title")
+    else:
+        session_id = None
+        title = None
+        session_kind = "primary"
+    now = utc_now()
+    identity = session_id if isinstance(session_id, str) and session_id else fallback_session_id
+    return SessionIndexEntry(
+        session_id=identity,
+        session_kind=session_kind,
+        root_session_id=identity,
+        title=(
+            title
+            if isinstance(title, str) and title
+            else "Migration required"
+            if health == "migration_required"
+            else "Corrupt session"
+        ),
+        created_at=now,
+        updated_at=now,
+        last_activity_at=now,
+        status="failed",
+        health=health,
+        error_detail=error,
+    )
 
 
 class SessionIndex(OuroModel):

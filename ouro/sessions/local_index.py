@@ -20,7 +20,12 @@ from ouro.sessions.catalog import (
     catalog_entry_from_session,
     sort_catalog_entries,
 )
-from ouro.sessions.index import SessionHealth, SessionIndex, SessionIndexEntry
+from ouro.sessions.index import (
+    SessionHealth,
+    SessionIndex,
+    SessionIndexEntry,
+    invalid_session_index_entry,
+)
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _MAX_PREVIEW_SCAN_BYTES = 64 * 1024
@@ -105,7 +110,23 @@ class LocalSessionIndex:
 
     def load(self) -> SessionIndex:
         try:
-            return SessionIndex.model_validate_json(self.index_path.read_text("utf-8"))
+            payload = json.loads(self.index_path.read_text("utf-8"))
+            raw_sessions = payload.get("sessions") if isinstance(payload, dict) else None
+            if not isinstance(payload, dict) or not isinstance(raw_sessions, list):
+                raise ValueError("session index must contain a sessions list")
+            header = SessionIndex.model_validate({**payload, "sessions": []})
+            entries: list[SessionIndexEntry] = []
+            for index, raw_entry in enumerate(raw_sessions):
+                try:
+                    entry = SessionIndexEntry.model_validate(raw_entry)
+                except ValidationError as exc:
+                    entry = invalid_session_index_entry(
+                        raw_entry,
+                        error=str(exc),
+                        fallback_session_id=f"invalid_catalog_entry_{index}",
+                    )
+                entries.append(entry)
+            return header.model_copy(update={"sessions": entries})
         except (OSError, ValidationError, ValueError) as exc:
             raise PersistenceError(
                 f"could not load session index {self.index_path}; rebuild required: {exc}"
@@ -122,22 +143,43 @@ class LocalSessionIndex:
         if not _RECORD_ID.fullmatch(session_id):
             return self._corrupt_entry(session_dir)
         try:
+            raw_session = (session_dir / "session.json").read_text("utf-8")
+        except OSError as exc:
+            return self._corrupt_entry(session_dir, error_detail=str(exc))
+        try:
             session = decode_versioned_record_json(
                 SessionRecord,
-                (session_dir / "session.json").read_text("utf-8"),
+                raw_session,
                 label=f"session record {session_id}",
             )
-        except MigrationRequiredError:
-            return self._corrupt_entry(session_dir, health="migration_required")
-        except (OSError, PersistenceError, ValidationError, ValueError):
-            return self._corrupt_entry(session_dir)
+        except MigrationRequiredError as exc:
+            return invalid_session_index_entry(
+                _json_object(raw_session),
+                fallback_session_id=session_id,
+                health="migration_required",
+                error=str(exc),
+            )
+        except (PersistenceError, ValidationError, ValueError) as exc:
+            return invalid_session_index_entry(
+                _json_object(raw_session),
+                fallback_session_id=session_id,
+                error=str(exc),
+            )
 
         try:
             projection = self._load_projection(session_dir, session)
-        except MigrationRequiredError:
-            return catalog_entry_from_session(session, health="migration_required")
-        except (FileNotFoundError, PersistenceError):
-            return catalog_entry_from_session(session, health="corrupt")
+        except MigrationRequiredError as exc:
+            return catalog_entry_from_session(
+                session,
+                health="migration_required",
+                error_detail=str(exc),
+            )
+        except (FileNotFoundError, PersistenceError) as exc:
+            return catalog_entry_from_session(
+                session,
+                health="corrupt",
+                error_detail=str(exc),
+            )
         return catalog_entry_from_projection(session, projection)
 
     def _load_projection(
@@ -199,6 +241,7 @@ class LocalSessionIndex:
         session_dir: Path,
         *,
         health: SessionHealth = "corrupt",
+        error_detail: str | None = None,
     ) -> SessionIndexEntry:
         try:
             modified = datetime.fromtimestamp(session_dir.stat().st_mtime, UTC)
@@ -206,6 +249,7 @@ class LocalSessionIndex:
             modified = utc_now()
         return SessionIndexEntry(
             session_id=session_dir.name,
+            session_kind="primary",
             root_session_id=session_dir.name,
             title=("Migration required" if health == "migration_required" else "Corrupt session"),
             created_at=modified,
@@ -213,6 +257,7 @@ class LocalSessionIndex:
             last_activity_at=modified,
             status="failed",
             health=health,
+            error_detail=error_detail,
         )
 
     def _resource_counts(self, session_id: str) -> tuple[int, bool]:
@@ -235,3 +280,10 @@ class LocalSessionIndex:
     def _write(self, index: SessionIndex) -> SessionIndex:
         write_model_atomic(self.index_path, index)
         return index
+
+
+def _json_object(payload: str) -> object:
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        return None

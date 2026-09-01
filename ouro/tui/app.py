@@ -45,6 +45,7 @@ from ouro.core.reasoning import REASONING_EFFORTS, ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
+from ouro.sessions.index import UNREADABLE_SESSION_HEALTHS
 from ouro.tui.clipboard import ClipboardWriteError, write_system_clipboard
 from ouro.tui.commands import (
     TUI_COMMANDS,
@@ -3093,6 +3094,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         session_menu: ChoiceScreen
 
         async def select_session(session_id: str) -> tuple[Choice, ...] | None:
+            session = next(item for item in self._sessions if item.session_id == session_id)
+            if session.health in UNREADABLE_SESSION_HEALTHS:
+                session_menu.show_child(
+                    self._session_load_error_screen(
+                        session_id,
+                        session.error_detail or f"Session health is {session.health}",
+                    )
+                )
+                return None
             # History rendering waits for the main Screen to refresh. Close the
             # modal before loading so the destination view can participate in
             # that refresh instead of waiting behind the picker that initiated it.
@@ -3203,8 +3213,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _choose_session_delete(self, *, menu: ChoiceScreen) -> None:
         if not await self._refresh_sessions():
             return
-        archived = tuple(session for session in self._sessions if session.archived)
-        if not archived:
+        deletable = tuple(
+            session
+            for session in self._sessions
+            if session.archived or session.health in UNREADABLE_SESSION_HEALTHS
+        )
+        if not deletable:
             return
 
         async def delete_selected(
@@ -3212,7 +3226,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         ) -> tuple[Choice, ...] | None:
             current_session_id = self._controller.session_id
             try:
-                removed = await self._controller.delete_archived_sessions(session_ids)
+                removed = await self._controller.delete_sessions(session_ids)
             except Exception as exc:  # noqa: BLE001
                 self.notify(str(exc), severity="error", markup=False)
                 return None
@@ -3221,17 +3235,21 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await self._new_session()
             if not await self._refresh_sessions():
                 return None
-            archived_sessions = tuple(session for session in self._sessions if session.archived)
+            deletable_sessions = tuple(
+                session
+                for session in self._sessions
+                if session.archived or session.health in UNREADABLE_SESSION_HEALTHS
+            )
             return _session_choices(
-                archived_sessions,
+                deletable_sessions,
                 selected_session_id=self._visible_session_id(),
             )
 
         delete_screen = MultiChoiceScreen(
             title="DELETE SESSIONS",
-            placeholder="Filter archived sessions…",
+            placeholder="Filter archived or unreadable sessions…",
             choices=_session_choices(
-                archived,
+                deletable,
                 selected_session_id=self._visible_session_id(),
             ),
             on_confirm=delete_selected,
@@ -3433,7 +3451,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         session_id: str,
         error: Exception,
     ) -> None:
-        screen = ChoiceScreen(
+        self.push_screen(self._session_load_error_screen(session_id, str(error)))
+
+    @staticmethod
+    def _session_load_error_screen(
+        session_id: str,
+        error: str,
+    ) -> ChoiceScreen:
+        return ChoiceScreen(
             title="SESSION LOAD FAILED",
             placeholder="Press Enter to close…",
             choices=(
@@ -3444,9 +3469,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 ),
             ),
         )
-        self.push_screen(screen)
 
-    @work(exclusive=True, group="navigation")
+    @work(exclusive=True, group="session-fork")
     async def _fork_session(
         self,
         target: str,
@@ -3472,6 +3496,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     raise ValueError(f"user message is not a fork point: {target}")
                 selected_message = points[index]
                 result = await self._controller.branch_session(selected_message.message_id)
+            menu = self._active_navigation_menu()
+            if menu is not None:
+                menu.dismiss(None)
             self._activity_override = None
             await self._open_session(result.session.session_id)
         except asyncio.CancelledError:
@@ -4385,6 +4412,13 @@ def _session_choices(
             value=item.session_id,
             label=_truncate_session_title(("★ " if item.pinned else "") + item.title),
             trailing=item.status,
+            accent=(
+                TUI_DESIGN.failure
+                if item.health in UNREADABLE_SESSION_HEALTHS
+                else TUI_DESIGN.warning
+                if item.health != "ok"
+                else None
+            ),
             marker=(
                 TUI_DESIGN.selected_choice_marker if item.session_id == selected_session_id else ""
             ),

@@ -325,6 +325,23 @@ def test_session_choices_mark_only_the_selected_session(tmp_path: Path) -> None:
     assert choices[second.session_id].marker == TUI_DESIGN.selected_choice_marker
 
 
+def test_session_choices_use_semantic_health_tones(tmp_path: Path) -> None:
+    application = _application(tmp_path)
+    template = application.runtime.sessions.create(title="Template").session
+    entry = application.runtime.sessions.catalog().entries[0]
+    sessions = (
+        entry.model_copy(update={"session_id": template.session_id, "health": "ok"}),
+        entry.model_copy(update={"session_id": "ses_warning", "health": "recoverable"}),
+        entry.model_copy(update={"session_id": "ses_failure", "health": "corrupt"}),
+    )
+
+    choices = {choice.value: choice for choice in _session_choices(sessions)}
+
+    assert choices[template.session_id].accent is None
+    assert choices["ses_warning"].accent == TUI_DESIGN.warning
+    assert choices["ses_failure"].accent == TUI_DESIGN.failure
+
+
 def test_choice_screen_projects_group_headers_as_disabled_options() -> None:
     options = ChoiceScreen._options(
         (
@@ -5519,6 +5536,46 @@ async def test_session_picker_marks_the_session_open_on_the_conversation_page(
 
 
 @pytest.mark.asyncio
+async def test_session_picker_reads_only_the_catalog_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _application(tmp_path)
+    sessions = tuple(
+        application.runtime.sessions.create(
+            session_id=f"ses_index_only_{index}",
+            title=f"Indexed {index}",
+        ).session
+        for index in range(3)
+    )
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+
+        def unexpected_canonical_read(*_args: object) -> None:
+            raise AssertionError("Ctrl+S must not load canonical Session records")
+
+        with monkeypatch.context() as catalog_guard:
+            catalog_guard.setattr(
+                application.runtime.store,
+                "load_session_record",
+                unexpected_canonical_read,
+            )
+            catalog_guard.setattr(
+                application.runtime.store,
+                "list_sessions",
+                unexpected_canonical_read,
+            )
+            await pilot.press("ctrl+s")
+            await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+
+        assert {choice.value for choice in app.screen._choices} == {
+            session.session_id for session in sessions
+        }
+
+
+@pytest.mark.asyncio
 async def test_session_picker_closes_modal_before_rendering_selected_history(
     tmp_path: Path,
 ) -> None:
@@ -5676,9 +5733,18 @@ async def test_fork_projects_animated_activity_until_the_branch_is_created(
         indicator._tick()
         assert indicator._frame != frame
 
+        await pilot.press("ctrl+s")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+        assert indicator._activity == "forking"
+        assert "Forking session" in indicator.render().plain
+        menu_frame = indicator._frame
+        await pilot.pause(0.2)
+        assert indicator._frame != menu_frame
+
         release_branch.set()
-        await _wait_for_worker_group(app, pilot, group="navigation")
+        await _wait_for_worker_group(app, pilot, group="session-fork")
         assert app._controller.session_id != session.session_id
+        assert not isinstance(app.screen, ChoiceScreen)
         assert "Ready" in indicator.render().plain
 
         branch_session_id = app._controller.session_id
@@ -5688,7 +5754,7 @@ async def test_fork_projects_animated_activity_until_the_branch_is_created(
 
         monkeypatch.setattr(app._controller, "branch_session", fail_branch)
         app._fork_session("full")
-        await _wait_for_worker_group(app, pilot, group="navigation")
+        await _wait_for_worker_group(app, pilot, group="session-fork")
 
         assert app._controller.session_id == branch_session_id
         assert app._activity_override is None
