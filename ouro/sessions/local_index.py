@@ -124,6 +124,7 @@ class LocalSessionIndex:
                         raw_entry,
                         error=str(exc),
                         fallback_session_id=f"invalid_catalog_entry_{index}",
+                        error_scope="catalog",
                     )
                 entries.append(entry)
             return header.model_copy(update={"sessions": entries})

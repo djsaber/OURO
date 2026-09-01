@@ -1743,6 +1743,11 @@ async def test_controller_session_catalog_only_projects_primary_sessions(
     )
     application.runtime.store.create_session(child)
     assert application.runtime.store.refresh_catalog(child.session_id) is None
+    index_path = application.runtime.store._catalog.index_path
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    root_entry = next(item for item in payload["sessions"] if item["session_id"] == root.session_id)
+    root_entry.pop("session_kind")
+    index_path.write_text(json.dumps(payload), encoding="utf-8")
     controller = TuiController(
         lambda _event: None,
         lambda _status: None,
@@ -1768,7 +1773,11 @@ async def test_controller_session_catalog_only_projects_primary_sessions(
     )
 
     try:
-        assert [entry.session_id for entry in await controller.sessions()] == [root.session_id]
+        entries = await controller.sessions()
+        assert [entry.session_id for entry in entries] == [root.session_id]
+        assert entries[0].session_kind is None
+        assert entries[0].health is None
+        assert entries[0].catalog_error is not None
     finally:
         await controller.close()
 

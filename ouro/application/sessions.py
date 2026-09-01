@@ -581,14 +581,22 @@ class SessionService:
         )
 
     def trash_invalid(self, session_id: str) -> SessionTrashResult:
-        """Trash an unreadable Session tree without decoding its canonical records."""
+        """Trash a catalog-marked unreadable tree after canonical verification."""
 
         catalog = {entry.session_id: entry for entry in self._store.read_catalog().sessions}
         target = catalog.get(session_id)
         if target is None:
             raise SessionNotFoundError(f"session not found: {session_id}")
-        if target.health not in UNREADABLE_SESSION_HEALTHS:
+        if target.catalog_error is not None or target.health not in UNREADABLE_SESSION_HEALTHS:
             raise ValueError(f"session is not marked unreadable: {session_id}")
+        try:
+            self._store.load_session_observation(session_id)
+        except FileNotFoundError as exc:
+            raise SessionNotFoundError(f"session not found: {session_id}") from exc
+        except PersistenceError:
+            pass
+        else:
+            raise ValueError(f"session canonical data is readable: {session_id}")
 
         scoped_ids = {session_id}
         changed = True

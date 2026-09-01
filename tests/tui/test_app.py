@@ -333,13 +333,49 @@ def test_session_choices_use_semantic_health_tones(tmp_path: Path) -> None:
         entry.model_copy(update={"session_id": template.session_id, "health": "ok"}),
         entry.model_copy(update={"session_id": "ses_warning", "health": "recoverable"}),
         entry.model_copy(update={"session_id": "ses_failure", "health": "corrupt"}),
+        entry.model_copy(
+            update={
+                "session_id": "ses_index_error",
+                "session_kind": None,
+                "health": None,
+                "catalog_error": "session_kind is missing",
+            }
+        ),
     )
 
-    choices = {choice.value: choice for choice in _session_choices(sessions)}
+    projected = _session_choices(sessions)
+    choices = {choice.value: choice for choice in projected}
 
     assert choices[template.session_id].accent is None
     assert choices["ses_warning"].accent == TUI_DESIGN.warning
     assert choices["ses_failure"].accent == TUI_DESIGN.failure
+    assert choices["ses_index_error"].accent == TUI_DESIGN.failure
+    assert choices["ses_index_error"].trailing == "index error"
+    assert choices["ses_index_error"].group == "Index issues"
+    assert projected[-1].value == "ses_index_error"
+
+
+def test_choice_description_can_use_failure_semantics() -> None:
+    option = ChoiceScreen._options(
+        (
+            Choice(
+                "close",
+                "Close",
+                description="Could not load Session",
+                description_accent=TUI_DESIGN.failure,
+            ),
+        ),
+        group_accent="#ffffff",
+    )[0]
+    prompt = option.prompt
+
+    assert isinstance(prompt, Text)
+    description_style = prompt.get_style_at_offset(
+        Console(),
+        prompt.plain.index("Could not load Session"),
+    )
+    assert description_style.color is not None
+    assert description_style.color.get_truecolor().hex == TUI_DESIGN.failure
 
 
 def test_choice_screen_projects_group_headers_as_disabled_options() -> None:
@@ -5576,6 +5612,49 @@ async def test_session_picker_reads_only_the_catalog_projection(
 
 
 @pytest.mark.asyncio
+async def test_session_picker_opens_canonical_session_when_catalog_entry_is_invalid(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    session = application.runtime.sessions.create(
+        session_id="ses_invalid_index",
+        title="Canonical session",
+    ).session
+    application.runtime.store.append_message(
+        MessageRecord.text(
+            session_id=session.session_id,
+            role="user",
+            text="Canonical history remains readable",
+            sequence=1,
+        )
+    )
+    index_path = application.runtime.store._catalog.index_path
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    indexed = next(item for item in payload["sessions"] if item["session_id"] == session.session_id)
+    indexed.pop("session_kind")
+    index_path.write_text(json.dumps(payload), encoding="utf-8")
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+        choice = next(item for item in app.screen._choices if item.value == session.session_id)
+
+        assert choice.accent == TUI_DESIGN.failure
+        assert choice.trailing == "index error"
+        assert choice.group == "Index issues"
+
+        await pilot.press("enter")
+        await _wait_for_active_session(app, pilot, session.session_id)
+
+        assert app.query_one(ConversationHistory).user_turns == (
+            "Canonical history remains readable",
+        )
+        assert not isinstance(app.screen, ChoiceScreen)
+
+
+@pytest.mark.asyncio
 async def test_session_picker_closes_modal_before_rendering_selected_history(
     tmp_path: Path,
 ) -> None:
@@ -6163,6 +6242,7 @@ async def test_session_picker_contains_load_failure_in_choice_dialog(
         error = app.screen._choices[0].description
         assert session.session_id in error
         assert "message journal is invalid" in error
+        assert app.screen._choices[0].description_accent == TUI_DESIGN.failure
         assert "Ready" in app.query_one(ActivityIndicator).render().plain
 
         await pilot.press("escape")

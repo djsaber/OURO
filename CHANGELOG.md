@@ -6,11 +6,16 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
-- TUI Session catalogs now isolate invalid entries instead of failing the whole menu, render
-  unhealthy entries with semantic tones, explain unreadable entries in a dialog, and allow them
-  to be moved directly to trash without first loading or archiving corrupt canonical data.
+- TUI Session catalogs now isolate invalid entries instead of failing the whole menu and render
+  index errors in a trailing group separately from canonical Session health. A selectable invalid
+  projection still opens through the target Session's canonical data; only that load can produce a
+  load failure, whose menu detail uses the design system's failure tone.
 - File and SQLite Session catalog writes now persist required primary/subagent identity through
-  `session_kind`; invalid projections retain any readable identity without being treated as valid.
+  `session_kind`; legacy or damaged projections retain readable identity with unknown kind and
+  health instead of being fabricated as failed, corrupt primary Sessions.
+- Direct removal of an unreadable, unarchived Session now requires both a canonical-health catalog
+  mark and a failing canonical observation read, so an invalid or stale index cannot authorize
+  removal of a readable Session.
 - Focused TUI text inputs now resynchronize the terminal cursor after layout, so IME
   composition and candidate windows anchor to the input on first focus and after relocation.
 - Multiline TUI inputs now finish cursor scrolling after edit geometry settles, keeping the

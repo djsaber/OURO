@@ -41,6 +41,10 @@ extension state collection；版本 5 的 transcript-bearing disposable Catalog 
 canonical 迁移成功后才推进 layout manifest；迁移可重入。其他不兼容布局必须在
 初始化时抛出 `MigrationRequiredError`，不能猜测迁移。
 
+当前 Catalog 写入必须投影 `session_kind`。同为 layout v6 的旧 Catalog 行若缺少该字段，严格读取将其保留为
+`catalog_error` 降级条目，不猜测 primary/subagent，也不把索引结构错误改写成 canonical Session 损坏。该兼容路径
+不推进全局 layout version、不扫描 canonical 数据；显式 `rebuild_catalog` 或目标 Session 后续刷新会重建合法投影。
+
 版本 6 启动期仍执行一次性 builtin Goal/Plan/Todo 私有文件迁移，成功后删除源文件，孤儿移入 trash，运行时没有
 读回旧路径的 fallback。该启动扫描的删除窗口是 `data_layout_version=7`：v7 migrator 必须先转换或明确拒绝全部旧
 路径，再从 composition root 删除 `migrate_builtin_session_state`。同理，无 `turn_id` 的历史未完成模型轮次只在 v6
@@ -77,6 +81,12 @@ Store 不通过字段默认值猜测旧格式；需要兼容的历史版本必�
 查询是严格只读的投影查询：只读取并校验索引自身的结构，不抢 catalog lock、不打开 Session 目录/表，也不因为
 索引缺失、过期或损坏而隐式扫描 canonical 数据。指定 Session 的 `open/messages/runs` 查询才读取并严格校验该
 Session 的 canonical records；一个坏 Session 不能把列表查询升级成全库数据质量检查。
+
+Catalog 行自身的结构错误使用独立 `catalog_error` 表达，此时 `health=None`，缺失的 `session_kind` 保持未知；
+`health=corrupt | migration_required` 只表示构建投影时实际读取 canonical 数据所得的健康结论。Host 可以对
+`catalog_error` 使用失败语义色并提示重建，但只要有可定位的 `session_id`，就必须允许用户尝试打开；打开成功或失败
+只由目标 Session 的 canonical snapshot/observation 决定。Catalog 状态不得成为 `open` 的前置授权条件，也不得为了
+补齐未知身份在列表路径逐项读取 canonical Session。
 
 Canonical mutation 成功后，adapter 在独立 catalog 边界只重算受影响的一个条目；删除则移除该条目。该刷新最多
 读取目标 Session 的有界 `latest + count` 投影，不扫描无关 Session。刷新、索引写入或 catalog lock 失败时 canonical
@@ -208,6 +218,10 @@ extension state 位于同一 Session tree 或外键事务内，因此不依赖 f
 
 发布 trash 后，ResourceService 对该 Session 原引用执行可达性清理；共享资源仍被其他活动 Session 引用时
 不得删除。清理失败只形成可重试 diagnostic，不破坏已经完成的 trash 事务。
+
+未归档 Session 只有在 Catalog 没有结构错误、健康投影标记为不可读，并且删除动作当下的 canonical observation
+读取仍失败时，才可进入无法解码记录的直接 trash 路径。单独的 `catalog_error` 或已经过期的不可读投影都不能授权
+删除；该目标读取属于显式破坏性操作边界，不进入 Catalog 列表热路径。
 
 ## 验收证据
 

@@ -39,6 +39,7 @@ class Choice:
     edit_value: str | None = None
     edit_placeholder: str = ""
     loading: bool = False
+    description_accent: str | None = None
 
 
 _HELP_SHORTCUTS = (
@@ -152,7 +153,10 @@ def _choice_option(
         row.add_row(label, "", "", Text(choice.trailing, style=TUI_DESIGN.text_choice))
         return Option(row, id=choice.value, disabled=choice.disabled)
     if choice.description:
-        label.append(f"\n{choice.description}", style=TUI_DESIGN.text_choice)
+        label.append(
+            f"\n{choice.description}",
+            style=choice.description_accent or TUI_DESIGN.text_choice,
+        )
     return Option(label, id=choice.value, disabled=choice.disabled)
 
 

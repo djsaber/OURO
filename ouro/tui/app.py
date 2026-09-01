@@ -45,7 +45,6 @@ from ouro.core.reasoning import REASONING_EFFORTS, ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
-from ouro.sessions.index import UNREADABLE_SESSION_HEALTHS
 from ouro.tui.clipboard import ClipboardWriteError, write_system_clipboard
 from ouro.tui.commands import (
     TUI_COMMANDS,
@@ -3094,15 +3093,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         session_menu: ChoiceScreen
 
         async def select_session(session_id: str) -> tuple[Choice, ...] | None:
-            session = next(item for item in self._sessions if item.session_id == session_id)
-            if session.health in UNREADABLE_SESSION_HEALTHS:
-                session_menu.show_child(
-                    self._session_load_error_screen(
-                        session_id,
-                        session.error_detail or f"Session health is {session.health}",
-                    )
-                )
-                return None
             # History rendering waits for the main Screen to refresh. Close the
             # modal before loading so the destination view can participate in
             # that refresh instead of waiting behind the picker that initiated it.
@@ -3216,7 +3206,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         deletable = tuple(
             session
             for session in self._sessions
-            if session.archived or session.health in UNREADABLE_SESSION_HEALTHS
+            if session.archived or session.catalog_marks_unreadable
         )
         if not deletable:
             return
@@ -3238,7 +3228,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             deletable_sessions = tuple(
                 session
                 for session in self._sessions
-                if session.archived or session.health in UNREADABLE_SESSION_HEALTHS
+                if session.archived or session.catalog_marks_unreadable
             )
             return _session_choices(
                 deletable_sessions,
@@ -3466,6 +3456,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     "close",
                     "Close",
                     description=f"Could not open {session_id}:\n{error}",
+                    description_accent=TUI_DESIGN.failure,
                 ),
             ),
         )
@@ -4404,17 +4395,18 @@ def _session_choices(
 ) -> tuple[Choice, ...]:
     local_today = today or datetime.now().astimezone().date()
     ordered = (
-        *(item for item in sessions if not item.archived),
-        *(item for item in sessions if item.archived),
+        *(item for item in sessions if item.catalog_error is None and not item.archived),
+        *(item for item in sessions if item.catalog_error is None and item.archived),
+        *(item for item in sessions if item.catalog_error is not None),
     )
     return tuple(
         Choice(
             value=item.session_id,
             label=_truncate_session_title(("★ " if item.pinned else "") + item.title),
-            trailing=item.status,
+            trailing="index error" if item.catalog_error is not None else item.status,
             accent=(
                 TUI_DESIGN.failure
-                if item.health in UNREADABLE_SESSION_HEALTHS
+                if (item.catalog_error is not None or item.catalog_marks_unreadable)
                 else TUI_DESIGN.warning
                 if item.health != "ok"
                 else None
@@ -4423,7 +4415,9 @@ def _session_choices(
                 TUI_DESIGN.selected_choice_marker if item.session_id == selected_session_id else ""
             ),
             group=(
-                "Archived"
+                "Index issues"
+                if item.catalog_error is not None
+                else "Archived"
                 if item.archived
                 else _session_date_group(item.last_activity_at, today=local_today)
             ),

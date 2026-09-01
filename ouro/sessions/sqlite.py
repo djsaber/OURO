@@ -940,6 +940,7 @@ class SQLiteSessionStore:
                     raw_entry,
                     error=str(exc),
                     fallback_session_id=str(session_id),
+                    error_scope="catalog",
                 )
             entries.append(entry)
         return SessionIndex(sessions=sort_catalog_entries(entries))

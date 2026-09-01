@@ -235,9 +235,13 @@ def test_catalog_read_isolates_one_invalid_projection_entry(
 
     assert entries[valid.session_id].health == "ok"
     assert entries[invalid.session_id].title == "Invalid"
-    assert entries[invalid.session_id].health == "corrupt"
-    assert entries[invalid.session_id].error_detail is not None
-    assert "session_kind" in entries[invalid.session_id].error_detail
+    assert entries[invalid.session_id].session_kind is None
+    assert entries[invalid.session_id].health is None
+    assert entries[invalid.session_id].error_detail is None
+    assert entries[invalid.session_id].catalog_error is not None
+    assert "session_kind" in entries[invalid.session_id].catalog_error
+    assert store.load_session(invalid.session_id).session == invalid
+    assert store.load_session_observation(invalid.session_id).session == invalid
 
 
 def test_sqlite_catalog_read_uses_only_projection_rows(

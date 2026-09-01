@@ -22,6 +22,7 @@ from ouro.core.state import (
     SessionTitleSource,
 )
 from ouro.sessions.index import (
+    UNREADABLE_SESSION_HEALTHS,
     PendingInteraction,
     SessionHealth,
     SessionIndexEntry,
@@ -51,7 +52,7 @@ class SessionCatalogQuery(ApplicationDTO):
 
 class SessionCatalogEntry(ApplicationDTO):
     session_id: str
-    session_kind: Literal["primary", "subagent"]
+    session_kind: Literal["primary", "subagent"] | None = None
     root_session_id: str
     parent_session_id: str | None = None
     title: str
@@ -77,8 +78,13 @@ class SessionCatalogEntry(ApplicationDTO):
     run_count: int = 0
     resource_count: int = 0
     last_message_preview: str = ""
-    health: SessionHealth = "ok"
+    health: SessionHealth | None = "ok"
     error_detail: str | None = None
+    catalog_error: str | None = None
+
+    @property
+    def catalog_marks_unreadable(self) -> bool:
+        return self.catalog_error is None and self.health in UNREADABLE_SESSION_HEALTHS
 
     @classmethod
     def from_index(cls, entry: SessionIndexEntry) -> SessionCatalogEntry:

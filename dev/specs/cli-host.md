@@ -90,6 +90,11 @@ producer provenance，不能决定是否显示；实时链收到任一输入事�
 其 `role/scaffold`。语义标签只影响模型包络，不参与 TUI 可见性。会话选择器只调用 Catalog 投影查询，不能在打开
 具体 Session 之前触发 canonical history 扫描或数据质量维修。
 
+会话选择器将 `catalog_error` 条目放入菜单末尾的独立索引错误分组并使用失败语义色，但不得据此显示“Session load failed”或
+阻止选择。具有可定位 `session_id` 的条目一律进入 Application 的 canonical observation 加载；只有该加载失败才显示
+会话加载错误；菜单中呈现的错误消息使用 design token 的失败语义色。合法 subagent 投影继续由 Agent tree 导航，未知
+`session_kind` 不通过 canonical 回读补齐。
+
 每个 assistant turn 分别拥有 reasoning 纯文本行缓冲与 answer 源流。`model_reasoning_delta` 只追加到 dim
 reasoning 区域，不能按 Markdown 解释，也不能混入最终回答；首次可见增量创建该 turn 并标记 `THINKING`，activity 离开
 `streaming_reasoning` 后收敛为 `THOUGHT`。后续模型轮次再次产生 reasoning 时复用同一区域并恢复 live 状态。

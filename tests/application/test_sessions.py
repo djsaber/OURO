@@ -538,7 +538,7 @@ def test_catalog_keeps_valid_sessions_visible_when_another_session_is_corrupt(tm
     assert by_id["ses_corrupt"].health == "corrupt"
 
 
-def test_unreadable_session_tree_can_be_trashed_without_decoding_records(tmp_path) -> None:
+def test_unreadable_session_tree_can_be_trashed_after_canonical_verification(tmp_path) -> None:
     store, sessions = _service(tmp_path)
     root = sessions.create(session_id="ses_corrupt_root", title="Corrupt root").session
     child = SessionRecord(
@@ -564,6 +564,39 @@ def test_unreadable_session_tree_can_be_trashed_without_decoding_records(tmp_pat
     trashed = store.trash_sessions_dir / result.trash_id / "sessions"
     assert (trashed / root.session_id).is_dir()
     assert (trashed / child.session_id).is_dir()
+
+
+def test_catalog_error_does_not_authorize_trashing_readable_session(tmp_path) -> None:
+    store, sessions = _service(tmp_path)
+    session = sessions.create(session_id="ses_catalog_error", title="Readable").session
+    index_path = store._catalog.index_path
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    payload["sessions"][0].pop("session_kind")
+    index_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    entry = sessions.catalog().entries[0]
+
+    assert entry.catalog_error is not None
+    assert entry.health is None
+    with pytest.raises(ValueError, match="not marked unreadable"):
+        sessions.trash_invalid(session.session_id)
+    assert store.load_session_record(session.session_id).session_id == session.session_id
+
+
+def test_stale_unreadable_projection_does_not_authorize_trashing_repaired_session(
+    tmp_path,
+) -> None:
+    store, sessions = _service(tmp_path)
+    session = sessions.create(session_id="ses_repaired", title="Repaired").session
+    session_path = store.sessions_dir / session.session_id / "session.json"
+    canonical_payload = session_path.read_text(encoding="utf-8")
+    session_path.write_text("{broken", encoding="utf-8")
+    store.rebuild_catalog()
+    session_path.write_text(canonical_payload, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="canonical data is readable"):
+        sessions.trash_invalid(session.session_id)
+    assert store.load_session_record(session.session_id).session_id == session.session_id
 
 
 def test_catalog_marks_incompatible_session_record_as_migration_required(tmp_path) -> None:

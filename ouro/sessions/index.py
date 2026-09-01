@@ -37,7 +37,7 @@ class SessionIndexEntry(OuroModel):
     """Rebuildable catalog projection for one canonical session."""
 
     session_id: str
-    session_kind: Literal["primary", "subagent"]
+    session_kind: Literal["primary", "subagent"] | None = None
     root_session_id: str
     parent_session_id: str | None = None
     title: str
@@ -63,8 +63,21 @@ class SessionIndexEntry(OuroModel):
     run_count: int = 0
     resource_count: int = 0
     last_message_preview: str = ""
-    health: SessionHealth = "ok"
+    health: SessionHealth | None = "ok"
     error_detail: str | None = None
+    catalog_error: str | None = None
+
+    @model_validator(mode="after")
+    def require_complete_valid_projection(self) -> SessionIndexEntry:
+        if self.catalog_error is not None:
+            if self.health is not None:
+                raise ValueError("an invalid catalog projection cannot claim Session health")
+            return self
+        if self.health is None:
+            raise ValueError("a valid catalog projection requires Session health")
+        if self.session_kind is None and self.health not in UNREADABLE_SESSION_HEALTHS:
+            raise ValueError("a readable catalog projection requires session_kind")
+        return self
 
 
 def invalid_session_index_entry(
@@ -73,23 +86,22 @@ def invalid_session_index_entry(
     error: str,
     fallback_session_id: str,
     health: SessionHealth = "corrupt",
+    error_scope: Literal["canonical", "catalog"] = "canonical",
 ) -> SessionIndexEntry:
-    """Retain one invalid catalog row without poisoning sibling entries."""
+    """Retain readable identity while keeping catalog and canonical errors distinct."""
 
     if isinstance(payload, dict):
         raw_session_kind = payload.get("session_kind")
-        session_kind = (
-            raw_session_kind
-            if raw_session_kind in {"primary", "subagent"}
-            else "primary"
-        )
+        session_kind = raw_session_kind if raw_session_kind in {"primary", "subagent"} else None
         candidate = {
             **payload,
             "session_kind": session_kind,
-            "status": "failed",
-            "health": health,
-            "error_detail": error,
+            "health": None if error_scope == "catalog" else health,
+            "error_detail": error if error_scope == "canonical" else None,
+            "catalog_error": error if error_scope == "catalog" else None,
         }
+        if error_scope == "canonical":
+            candidate["status"] = "failed"
         try:
             return SessionIndexEntry.model_validate(candidate)
         except ValidationError:
@@ -98,7 +110,7 @@ def invalid_session_index_entry(
     else:
         session_id = None
         title = None
-        session_kind = "primary"
+        session_kind = None
     now = utc_now()
     identity = session_id if isinstance(session_id, str) and session_id else fallback_session_id
     return SessionIndexEntry(
@@ -108,6 +120,8 @@ def invalid_session_index_entry(
         title=(
             title
             if isinstance(title, str) and title
+            else "Invalid session index entry"
+            if error_scope == "catalog"
             else "Migration required"
             if health == "migration_required"
             else "Corrupt session"
@@ -116,8 +130,9 @@ def invalid_session_index_entry(
         updated_at=now,
         last_activity_at=now,
         status="failed",
-        health=health,
-        error_detail=error,
+        health=None if error_scope == "catalog" else health,
+        error_detail=error if error_scope == "canonical" else None,
+        catalog_error=error if error_scope == "catalog" else None,
     )
 
 

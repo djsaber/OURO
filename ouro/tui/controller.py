@@ -88,7 +88,6 @@ from ouro.core.tools import PermissionMode, ToolEffect, ToolSource
 from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
 from ouro.mcp import MCPServerConfig
-from ouro.sessions.index import UNREADABLE_SESSION_HEALTHS
 from ouro.skills import SkillMetadata
 from ouro.tui.state import PendingInteraction
 
@@ -747,7 +746,7 @@ class TuiController:
             lambda: tuple(
                 entry
                 for entry in runtime.sessions.catalog().entries
-                if entry.session_kind == "primary"
+                if entry.session_kind != "subagent"
             )
         )
 
@@ -781,7 +780,7 @@ class TuiController:
             for session_id in selected
             if (entry := catalog.get(session_id)) is not None
             and not entry.archived
-            and entry.health not in UNREADABLE_SESSION_HEALTHS
+            and not entry.catalog_marks_unreadable
         )
         if ineligible:
             raise ValueError(
@@ -796,7 +795,7 @@ class TuiController:
             entry = catalog[session_id]
             result = (
                 sessions.trash_invalid(session_id)
-                if entry.health in UNREADABLE_SESSION_HEALTHS
+                if entry.catalog_marks_unreadable
                 else sessions.trash(session_id)
             )
             removed.extend(result.session_ids)
