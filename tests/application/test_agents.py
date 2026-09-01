@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from threading import get_ident
 
 import pytest
 
@@ -667,6 +668,32 @@ async def _services(
     store.create_session(root)
     store.save_run(parent)
     return service, supervisor, store, provider
+
+
+@pytest.mark.asyncio
+async def test_terminal_agent_settlement_queries_store_outside_the_event_loop(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    service, supervisor, store, _provider = await _services(tmp_path)
+    parent = store.load_run("ses_root", "run_parent").model_copy(update={"status": "completed"})
+    event_loop_thread = get_ident()
+    reader_threads: list[int] = []
+    load_session = store.load_session_record
+
+    def recording_load_session(session_id: str) -> SessionRecord:
+        reader_threads.append(get_ident())
+        return load_session(session_id)
+
+    monkeypatch.setattr(store, "load_session_record", recording_load_session)
+    try:
+        await service.settle_terminal_run(parent)
+    finally:
+        await service.close()
+        await supervisor.shutdown()
+
+    assert reader_threads
+    assert event_loop_thread not in reader_threads
 
 
 async def _active_subagent_services(

@@ -62,6 +62,45 @@ from ouro.tools import ToolRegistry
 TEST_GOAL_PLUGIN_ID = "dev.example.goal"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_continuation_terminal_query_runs_outside_the_event_loop(
+    tmp_path,
+    backend,
+    monkeypatch,
+) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.sqlite3")
+    )
+    store.initialize()
+    session = SessionRecord()
+    run = RunRecord(session_id=session.session_id, status="completed")
+    store.create_session(session)
+    store.save_run(run)
+    service = RunContinuationService(
+        store=store,
+        registry=RunContinuationRegistry(),
+        queue=QueuedInputQueue(store),
+    )
+    event_loop_thread = threading.get_ident()
+    reader_threads: list[int] = []
+    load_run = store.load_run
+
+    def recording_load_run(session_id: str, run_id: str) -> RunRecord:
+        reader_threads.append(threading.get_ident())
+        return load_run(session_id, run_id)
+
+    monkeypatch.setattr(store, "load_run", recording_load_run)
+
+    settlement = await service.settle(session_id=session.session_id, run_id=run.run_id)
+
+    assert settlement.settled is False
+    assert reader_threads
+    assert event_loop_thread not in reader_threads
+
+
 class CountingProvider:
     provider_id = "continuation-test"
 

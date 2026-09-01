@@ -121,7 +121,7 @@ from ouro.core.prompt_policies import (
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.redaction import SensitiveValueRedactor, redact_text
 from ouro.core.results import RunResult
-from ouro.core.run_budget import RunBudgetPolicy
+from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     AttributedSessionInput,
@@ -1785,7 +1785,7 @@ class RuntimeService:
                     ),
                     commit_model_request=self._commit_model_request,
                     shared_budget_reason=(
-                        self._agent_controls.budget_reason
+                        self._shared_budget_reason
                         if self._agent_controls is not None
                         else None
                     ),
@@ -1827,6 +1827,16 @@ class RuntimeService:
         if not isinstance(raw, dict):
             raise ValueError("run has invalid delegated budget metadata")
         return RunBudgetPolicy.model_validate(raw)
+
+    async def _shared_budget_reason(
+        self,
+        run: RunRecord,
+        next_model_round: int,
+    ) -> RunBudgetReason | None:
+        controls = self._agent_controls
+        if controls is None:
+            return None
+        return await run_blocking(controls.budget_reason, run, next_model_round)
 
     async def compact(self, *, session_id: str) -> CompactionCommandResult:
         """Manually compact a session through the same durable summary pipeline as auto mode."""
@@ -2991,7 +3001,11 @@ class RuntimeService:
         reason: str = "User rejected",
         arguments_override: dict[str, object] | None = None,
     ) -> RunResult:
-        snapshot = self._load_runtime_snapshot(session_id, recover=True)
+        snapshot = await run_blocking(
+            self._load_runtime_snapshot,
+            session_id,
+            recover=True,
+        )
         session = snapshot.session
         run = find_run(snapshot.runs, run_id) if run_id else find_active_run(snapshot.runs)
         if run.status != "waiting_approval":
@@ -3010,7 +3024,7 @@ class RuntimeService:
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run.run_id}")
         try:
-            snapshot = self.store.load_runtime_session(session_id)
+            snapshot = await run_blocking(self.store.load_runtime_session, session_id)
             session = snapshot.session
             run = find_run(snapshot.runs, run.run_id)
             if run.status != "waiting_approval":
@@ -3042,7 +3056,7 @@ class RuntimeService:
                 status=suspension.status if suspension is not None else "running",
                 phase=suspension.run_phase if suspension is not None else "tool_execution",
             )
-            sequence = self.store.latest_event_sequence(session_id)
+            sequence = await run_blocking(self.store.latest_event_sequence, session_id)
             emitted: list[EventRecord] = []
             sequence = await self.event_recorder.emit(
                 emitted,
@@ -3103,7 +3117,11 @@ class RuntimeService:
         run_id: str,
         answer: JsonValue,
     ) -> RunResult:
-        snapshot = self._load_runtime_snapshot(session_id, recover=True)
+        snapshot = await run_blocking(
+            self._load_runtime_snapshot,
+            session_id,
+            recover=True,
+        )
         session = snapshot.session
         run = find_run(snapshot.runs, run_id)
         if run.status != "waiting_user":
@@ -3122,7 +3140,7 @@ class RuntimeService:
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run.run_id}")
         try:
-            snapshot = self.store.load_runtime_session(session_id)
+            snapshot = await run_blocking(self.store.load_runtime_session, session_id)
             session = snapshot.session
             run = find_run(snapshot.runs, run.run_id)
             if run.status != "waiting_user":
@@ -3147,7 +3165,7 @@ class RuntimeService:
             resolved_call = next(
                 call for call in batch.calls if call.request.id == waiting_call.request.id
             )
-            sequence = self.store.latest_event_sequence(session_id)
+            sequence = await run_blocking(self.store.latest_event_sequence, session_id)
             emitted: list[EventRecord] = []
             sequence = await self.event_recorder.emit(
                 emitted,
@@ -3211,7 +3229,11 @@ class RuntimeService:
     ) -> RunResult:
         """Resolve one durable child join and continue the original parent Run."""
 
-        snapshot = self._load_runtime_snapshot(session_id, recover=True)
+        snapshot = await run_blocking(
+            self._load_runtime_snapshot,
+            session_id,
+            recover=True,
+        )
         run = find_run(snapshot.runs, run_id)
         if run.status != "waiting_child":
             raise ValueError(f"run is not waiting for a child: {run.status}")
@@ -3223,7 +3245,7 @@ class RuntimeService:
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run_id}")
         try:
-            snapshot = self.store.load_runtime_session(session_id)
+            snapshot = await run_blocking(self.store.load_runtime_session, session_id)
             session = snapshot.session
             run = find_run(snapshot.runs, run_id)
             if run.status != "waiting_child" or run.active_tool_batch is None:
@@ -3260,7 +3282,7 @@ class RuntimeService:
             ]
             batch = batch.model_copy(update={"calls": calls, "updated_at": utc_now()})
             await self._ensure_extension_snapshot(run)
-            sequence = self.store.latest_event_sequence(session_id)
+            sequence = await run_blocking(self.store.latest_event_sequence, session_id)
             emitted: list[EventRecord] = []
             sequence = await self.event_recorder.emit(
                 emitted,
@@ -3369,11 +3391,17 @@ class RuntimeService:
                     abort_signal=active_signal,
                 )
             except Exception as exc:  # noqa: BLE001 - coordinator is a runtime boundary.
-                latest = self.store.load_runtime_session(session.session_id)
+                latest = await run_blocking(
+                    self.store.load_runtime_session,
+                    session.session_id,
+                )
                 latest_run = find_run(latest.runs, run.run_id)
                 failed = await self.run_lifecycle.fail(
                     emitted,
-                    self.store.latest_event_sequence(session.session_id),
+                    await run_blocking(
+                        self.store.latest_event_sequence,
+                        session.session_id,
+                    ),
                     session=latest.session,
                     run=latest_run,
                     error=f"tool batch handling failed: {exc}",
@@ -3381,7 +3409,11 @@ class RuntimeService:
                     tool_results=[],
                 )
                 return await self._finalize_requested_abort(failed)
-            latest = self._load_runtime_snapshot(session.session_id, recover=True)
+            latest = await run_blocking(
+                self._load_runtime_snapshot,
+                session.session_id,
+                recover=True,
+            )
             session = latest.session
             run = find_run(latest.runs, run.run_id)
             abort_result = self.run_ownership.aborted_result(
@@ -3412,10 +3444,16 @@ class RuntimeService:
                 assistant_continuation=None,
                 turn_id=batch.turn_id,
             )
-            latest = self.store.load_runtime_session(session.session_id)
+            latest = await run_blocking(
+                self.store.load_runtime_session,
+                session.session_id,
+            )
             session = latest.session
             run = find_run(latest.runs, run.run_id)
-            session, active_adapter = self._resolve_session_adapter(session)
+            session, active_adapter = await run_blocking(
+                self._resolve_session_adapter,
+                session,
+            )
             resumed = await self._continue_model_loop(
                 session=session,
                 run=run,
@@ -3433,13 +3471,37 @@ class RuntimeService:
     async def _finalize_requested_abort(self, result: RunResult) -> RunResult:
         """Publish terminal abort only after the active owner has settled its work."""
 
-        latest_run = self.store.load_run(result.run.session_id, result.run.run_id)
+        session, aborted_run, changed, reason, sequence = await run_blocking(
+            self._settle_requested_abort_state,
+            result.run.session_id,
+            result.run.run_id,
+        )
+        if changed:
+            assert reason is not None
+            assert sequence is not None
+            await self.event_recorder.emit(
+                result.events,
+                sequence,
+                session_id=aborted_run.session_id,
+                run_id=aborted_run.run_id,
+                event_type="run_aborted",
+                payload={"reason": reason},
+            )
+        return result.model_copy(update={"session": session, "run": aborted_run})
+
+    def _settle_requested_abort_state(
+        self,
+        session_id: str,
+        run_id: str,
+    ) -> tuple[SessionRecord, RunRecord, bool, str | None, int | None]:
+        latest_run = self.store.load_run(session_id, run_id)
         if latest_run.status not in ACTIVE_RUN_STATUSES or not latest_run.abort_requested:
-            return result.model_copy(
-                update={
-                    "session": self.store.load_session_record(latest_run.session_id),
-                    "run": latest_run,
-                }
+            return (
+                self.store.load_session_record(latest_run.session_id),
+                latest_run,
+                False,
+                None,
+                None,
             )
         raw_reason = latest_run.metadata.get("abort_reason")
         reason = raw_reason if isinstance(raw_reason, str) and raw_reason else "User aborted"
@@ -3449,16 +3511,8 @@ class RuntimeService:
             run_id=latest_run.run_id,
             reason=reason,
         )
-        if changed:
-            await self.event_recorder.emit(
-                result.events,
-                self.store.latest_event_sequence(latest_run.session_id),
-                session_id=latest_run.session_id,
-                run_id=latest_run.run_id,
-                event_type="run_aborted",
-                payload={"reason": reason},
-            )
-        return result.model_copy(update={"session": session, "run": aborted_run})
+        sequence = self.store.latest_event_sequence(latest_run.session_id) if changed else None
+        return session, aborted_run, changed, reason, sequence
 
     async def _finalize_run_boundary(
         self,
@@ -3509,7 +3563,10 @@ class RuntimeService:
         updated = result.model_copy(
             update={
                 "run": run,
-                "session": self.store.load_session_record(run.session_id),
+                "session": await run_blocking(
+                    self.store.load_session_record,
+                    run.session_id,
+                ),
             }
         )
         if drain_queued_inputs and run.status == "completed":
@@ -3529,7 +3586,7 @@ class RuntimeService:
             return
         await self.event_recorder.emit(
             events,
-            self.store.latest_event_sequence(run.session_id),
+            await run_blocking(self.store.latest_event_sequence, run.session_id),
             session_id=run.session_id,
             run_id=run.run_id,
             event_type="run_continuation_resolved",

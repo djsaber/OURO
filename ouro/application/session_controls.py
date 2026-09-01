@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Literal
+
 from ouro.application.queued_inputs import QueuedInputQueue
 from ouro.core.base import utc_now
+from ouro.core.callbacks import run_blocking
 from ouro.core.errors import OuroError
 from ouro.core.run_transitions import plan_run_transition
 from ouro.core.session_controls import (
@@ -35,6 +39,32 @@ class SessionControlContractError(SessionControlError):
 
 class SessionControlStaleRevisionError(SessionControlError):
     pass
+
+
+type _SessionKind = Literal["primary", "subagent"]
+
+
+@dataclass(frozen=True)
+class _AcquirePreparation:
+    session_kind: _SessionKind
+    activation: SessionControlActivation
+    controller: PluginSessionController
+
+
+@dataclass(frozen=True)
+class _ReleasePreparation:
+    session_kind: _SessionKind
+    activation: SessionControlActivation
+    controller: PluginSessionController
+
+
+@dataclass(frozen=True)
+class _ReplacePreparation:
+    session_kind: _SessionKind
+    activation: SessionControlActivation
+    controller: PluginSessionController
+    targets: tuple[SessionControlActivation, ...]
+    target_controllers: tuple[tuple[SessionControlActivation, PluginSessionController], ...]
 
 
 class SessionControlCoordinator:
@@ -193,6 +223,53 @@ class SessionControlCoordinator:
         controllers: PluginSessionControllerRegistry,
         workspace: str | None,
     ) -> SessionControlTransitionResult:
+        prepared = await run_blocking(
+            self._prepare_acquire,
+            transition,
+            session_id=session_id,
+            controllers=controllers,
+        )
+        if isinstance(prepared, SessionControlTransitionResult):
+            return prepared
+
+        try:
+            output = await prepared.controller.activate(
+                session_id=session_id,
+                session_kind=prepared.session_kind,
+                activation_id=prepared.activation.activation_id,
+                payload=transition.payload,
+                workspace=workspace,
+            )
+        except PluginSessionControllerError as exc:
+            await run_blocking(
+                self._rollback_activation,
+                session_id,
+                prepared.activation.activation_id,
+            )
+            raise SessionControlError(str(exc)) from exc
+
+        active, session_revision = await run_blocking(
+            self._commit_acquire,
+            session_id,
+            prepared.activation.activation_id,
+            output,
+        )
+        return SessionControlTransitionResult(
+            action="acquire",
+            changed=True,
+            session_revision=session_revision,
+            activation=active,
+            output=output.output,
+            data=dict(output.data),
+        )
+
+    def _prepare_acquire(
+        self,
+        transition: AttributedSessionControlTransition,
+        *,
+        session_id: str,
+        controllers: PluginSessionControllerRegistry,
+    ) -> _AcquirePreparation | SessionControlTransitionResult:
         assert transition.controller_id is not None
         canonical_id = f"{transition.plugin_id}/session_controllers/{transition.controller_id}"
         controller = self._controller_for_transition(
@@ -202,7 +279,6 @@ class SessionControlCoordinator:
         )
         with self.store.session_mutation(session_id):
             session = self.store.load_session_record(session_id)
-            session_kind = session.session_kind
             self._check_session_revision(session.controls, transition.expected_session_revision)
             existing = next(
                 (
@@ -242,26 +318,24 @@ class SessionControlCoordinator:
                 [*session.controls.activations, activation],
             )
             self._save_controls(session, preparing)
+        return _AcquirePreparation(
+            session_kind=session.session_kind,
+            activation=activation,
+            controller=controller,
+        )
 
-        try:
-            output = await controller.activate(
-                session_id=session_id,
-                session_kind=session_kind,
-                activation_id=activation.activation_id,
-                payload=transition.payload,
-                workspace=workspace,
-            )
-        except PluginSessionControllerError as exc:
-            self._rollback_activation(session_id, activation.activation_id)
-            raise SessionControlError(str(exc)) from exc
-
+    def _commit_acquire(
+        self,
+        session_id: str,
+        activation_id: str,
+        output: PluginSessionControllerOutput,
+    ) -> tuple[SessionControlActivation, int]:
         with self.store.session_mutation(session_id):
             session = self.store.load_session_record(session_id)
-            current = _require_activation(session.controls, activation.activation_id)
+            current = _require_activation(session.controls, activation_id)
             if current.phase != "activating":
                 raise SessionControlConflictError(
-                    "session controller activation changed before commit: "
-                    f"{activation.activation_id}"
+                    f"session controller activation changed before commit: {activation_id}"
                 )
             active = current.model_copy(
                 update={
@@ -274,14 +348,7 @@ class SessionControlCoordinator:
             )
             controls = _replace_activation(session.controls, active)
             self._save_controls(session, controls)
-        return SessionControlTransitionResult(
-            action="acquire",
-            changed=True,
-            session_revision=controls.revision,
-            activation=active,
-            output=output.output,
-            data=dict(output.data),
-        )
+        return active, controls.revision
 
     async def _release(
         self,
@@ -292,9 +359,62 @@ class SessionControlCoordinator:
         workspace: str | None,
         resolving_tool_call_id: str | None,
     ) -> SessionControlTransitionResult:
+        prepared = await run_blocking(
+            self._prepare_release,
+            transition,
+            session_id=session_id,
+            controllers=controllers,
+        )
+        if isinstance(prepared, SessionControlTransitionResult):
+            return prepared
+
+        cleanup_error: PluginSessionControllerError | None = None
+        output = PluginSessionControllerOutput()
+        try:
+            output = await prepared.controller.deactivate(
+                session_id=session_id,
+                session_kind=prepared.session_kind,
+                activation_id=prepared.activation.activation_id,
+                payload=transition.payload,
+                reason=transition.reason,
+                workspace=workspace,
+            )
+        except PluginSessionControllerError as exc:
+            cleanup_error = exc
+
+        session_revision, cancelled_run_id, cancelled_queue_ids = await run_blocking(
+            self._commit_release,
+            session_id=session_id,
+            activation=prepared.activation,
+            resolving_tool_call_id=resolving_tool_call_id,
+        )
+        if cleanup_error is not None:
+            raise SessionControlError(
+                f"Session controller was released, but owner cleanup failed: {cleanup_error}"
+            ) from cleanup_error
+        data = dict(output.data)
+        if cancelled_run_id is not None:
+            data["cancelled_run_id"] = cancelled_run_id
+        if cancelled_queue_ids:
+            data["cancelled_queue_ids"] = list(cancelled_queue_ids)
+        return SessionControlTransitionResult(
+            action="release",
+            changed=True,
+            session_revision=session_revision,
+            released_activation_ids=[prepared.activation.activation_id],
+            output=output.output,
+            data=data,
+        )
+
+    def _prepare_release(
+        self,
+        transition: AttributedSessionControlTransition,
+        *,
+        session_id: str,
+        controllers: PluginSessionControllerRegistry,
+    ) -> _ReleasePreparation | SessionControlTransitionResult:
         with self.store.session_mutation(session_id):
             session = self.store.load_session_record(session_id)
-            session_kind = session.session_kind
             self._check_session_revision(session.controls, transition.expected_session_revision)
             activation = _select_release_activation(session.controls, transition)
             if activation is None:
@@ -346,21 +466,19 @@ class SessionControlCoordinator:
             )
             controls = _replace_activation(session.controls, deactivating)
             self._save_controls(session, controls)
+        return _ReleasePreparation(
+            session_kind=session.session_kind,
+            activation=activation,
+            controller=controller,
+        )
 
-        cleanup_error: PluginSessionControllerError | None = None
-        output = PluginSessionControllerOutput()
-        try:
-            output = await controller.deactivate(
-                session_id=session_id,
-                session_kind=session_kind,
-                activation_id=activation.activation_id,
-                payload=transition.payload,
-                reason=transition.reason,
-                workspace=workspace,
-            )
-        except PluginSessionControllerError as exc:
-            cleanup_error = exc
-
+    def _commit_release(
+        self,
+        *,
+        session_id: str,
+        activation: SessionControlActivation,
+        resolving_tool_call_id: str | None,
+    ) -> tuple[int, str | None, tuple[str, ...]]:
         with self.store.session_mutation(session_id):
             session = self.store.load_session_record(session_id)
             current = next(
@@ -394,23 +512,7 @@ class SessionControlCoordinator:
             controller_id=activation.controller_id,
             activation_id=activation.activation_id,
         )
-        if cleanup_error is not None:
-            raise SessionControlError(
-                f"Session controller was released, but owner cleanup failed: {cleanup_error}"
-            ) from cleanup_error
-        data = dict(output.data)
-        if cancelled_run_id is not None:
-            data["cancelled_run_id"] = cancelled_run_id
-        if cancelled_queue_ids:
-            data["cancelled_queue_ids"] = list(cancelled_queue_ids)
-        return SessionControlTransitionResult(
-            action="release",
-            changed=True,
-            session_revision=controls.revision,
-            released_activation_ids=[activation.activation_id],
-            output=output.output,
-            data=data,
-        )
+        return controls.revision, cancelled_run_id, tuple(cancelled_queue_ids)
 
     async def _replace(
         self,
@@ -421,6 +523,75 @@ class SessionControlCoordinator:
         workspace: str | None,
         resolving_tool_call_id: str | None,
     ) -> SessionControlTransitionResult:
+        prepared = await run_blocking(
+            self._prepare_replace,
+            transition,
+            session_id=session_id,
+            controllers=controllers,
+        )
+
+        try:
+            output = await prepared.controller.activate(
+                session_id=session_id,
+                session_kind=prepared.session_kind,
+                activation_id=prepared.activation.activation_id,
+                payload=transition.payload,
+                workspace=workspace,
+            )
+        except PluginSessionControllerError as exc:
+            await run_blocking(
+                self._rollback_replacement,
+                session_id,
+                prepared.activation.activation_id,
+                prepared.targets,
+            )
+            raise SessionControlError(str(exc)) from exc
+
+        cleanup_errors: list[str] = []
+        for target, target_controller in prepared.target_controllers:
+            try:
+                await target_controller.deactivate(
+                    session_id=session_id,
+                    session_kind=prepared.session_kind,
+                    activation_id=target.activation_id,
+                    reason=transition.reason or "replaced",
+                    workspace=workspace,
+                )
+            except PluginSessionControllerError as exc:
+                cleanup_errors.append(f"{target.controller_id}: {exc}")
+
+        active, session_revision, cancelled_run_ids, cancelled_queue_ids = await run_blocking(
+            self._commit_replace,
+            session_id=session_id,
+            activation=prepared.activation,
+            targets=prepared.targets,
+            output=output,
+            resolving_tool_call_id=resolving_tool_call_id,
+        )
+        data = dict(output.data)
+        if cleanup_errors:
+            data["cleanup_errors"] = cleanup_errors
+        if cancelled_run_ids:
+            data["cancelled_run_ids"] = list(cancelled_run_ids)
+        if cancelled_queue_ids:
+            data["cancelled_queue_ids"] = list(cancelled_queue_ids)
+        return SessionControlTransitionResult(
+            action="replace",
+            changed=True,
+            session_revision=session_revision,
+            activation=active,
+            released_activation_ids=sorted(transition.replace_activation_ids),
+            output=output.output,
+            data=data,
+        )
+
+    def _prepare_replace(
+        self,
+        transition: AttributedSessionControlTransition,
+        *,
+        session_id: str,
+        controllers: PluginSessionControllerRegistry,
+    ) -> _ReplacePreparation:
         assert transition.controller_id is not None
         canonical_id = f"{transition.plugin_id}/session_controllers/{transition.controller_id}"
         controller = self._controller_for_transition(
@@ -431,7 +602,6 @@ class SessionControlCoordinator:
         replaced_ids = set(transition.replace_activation_ids)
         with self.store.session_mutation(session_id):
             session = self.store.load_session_record(session_id)
-            session_kind = session.session_kind
             self._check_session_revision(session.controls, transition.expected_session_revision)
             targets = [
                 activation
@@ -501,36 +671,24 @@ class SessionControlCoordinator:
                 + [activation],
             )
             self._save_controls(session, staged)
+        return _ReplacePreparation(
+            session_kind=session.session_kind,
+            activation=activation,
+            controller=controller,
+            targets=tuple(targets),
+            target_controllers=tuple(target_controllers),
+        )
 
-        try:
-            output = await controller.activate(
-                session_id=session_id,
-                session_kind=session_kind,
-                activation_id=activation.activation_id,
-                payload=transition.payload,
-                workspace=workspace,
-            )
-        except PluginSessionControllerError as exc:
-            self._rollback_replacement(
-                session_id,
-                activation.activation_id,
-                targets,
-            )
-            raise SessionControlError(str(exc)) from exc
-
-        cleanup_errors: list[str] = []
-        for target, target_controller in target_controllers:
-            try:
-                await target_controller.deactivate(
-                    session_id=session_id,
-                    session_kind=session_kind,
-                    activation_id=target.activation_id,
-                    reason=transition.reason or "replaced",
-                    workspace=workspace,
-                )
-            except PluginSessionControllerError as exc:
-                cleanup_errors.append(f"{target.controller_id}: {exc}")
-
+    def _commit_replace(
+        self,
+        *,
+        session_id: str,
+        activation: SessionControlActivation,
+        targets: tuple[SessionControlActivation, ...],
+        output: PluginSessionControllerOutput,
+        resolving_tool_call_id: str | None,
+    ) -> tuple[SessionControlActivation, int, tuple[str, ...], tuple[str, ...]]:
+        replaced_ids = {target.activation_id for target in targets}
         with self.store.session_mutation(session_id):
             session = self.store.load_session_record(session_id)
             current = _require_activation(session.controls, activation.activation_id)
@@ -555,9 +713,6 @@ class SessionControlCoordinator:
             ]
             controls = _replace_control_state(session.controls, [*values, active])
             self._save_controls(session, controls)
-        data = dict(output.data)
-        if cleanup_errors:
-            data["cleanup_errors"] = cleanup_errors
         cancelled_run_ids = {
             run_id
             for target in targets
@@ -571,8 +726,6 @@ class SessionControlCoordinator:
             )
             is not None
         }
-        if cancelled_run_ids:
-            data["cancelled_run_ids"] = sorted(cancelled_run_ids)
         cancelled_queue_ids = [
             queue_id
             for target in targets
@@ -582,16 +735,11 @@ class SessionControlCoordinator:
                 activation_id=target.activation_id,
             )
         ]
-        if cancelled_queue_ids:
-            data["cancelled_queue_ids"] = sorted(cancelled_queue_ids)
-        return SessionControlTransitionResult(
-            action="replace",
-            changed=True,
-            session_revision=controls.revision,
-            activation=active,
-            released_activation_ids=sorted(replaced_ids),
-            output=output.output,
-            data=data,
+        return (
+            active,
+            controls.revision,
+            tuple(sorted(cancelled_run_ids)),
+            tuple(sorted(cancelled_queue_ids)),
         )
 
     @staticmethod
@@ -685,7 +833,7 @@ class SessionControlCoordinator:
         self,
         session_id: str,
         activation_id: str,
-        targets: list[SessionControlActivation],
+        targets: tuple[SessionControlActivation, ...],
     ) -> None:
         originals = {item.activation_id: item for item in targets}
         with self.store.session_mutation(session_id):

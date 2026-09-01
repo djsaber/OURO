@@ -1082,6 +1082,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._runtime_events_ready_posted = False
         self._runtime_events_frame_scheduled = False
         self._runtime_event_apply_lock = asyncio.Lock()
+        self._session_controls_refresh_requested = False
+        self._session_controls_refresh_task: asyncio.Task[None] | None = None
         self._mcp_status_timer: Timer | None = None
         self._input_surface: WelcomePanel | None = None
         self._input_draft_revision = 0
@@ -1158,6 +1160,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     async def on_unmount(self) -> None:
         self._begin_host_close()
+        if self._session_controls_refresh_task is not None:
+            await asyncio.gather(
+                self._session_controls_refresh_task,
+                return_exceptions=True,
+            )
         if self._input_draft_save_task is not None:
             await self._input_draft_save_task
         await self._controller.close()
@@ -1181,6 +1188,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._agent_tree_subscription = None
         self._agent_nodes.clear()
         self._runtime_events_frame_scheduled = False
+        self._session_controls_refresh_requested = False
+        if self._session_controls_refresh_task is not None:
+            self._session_controls_refresh_task.cancel()
         if self._mcp_status_timer is not None:
             self._mcp_status_timer.stop()
             self._mcp_status_timer = None
@@ -1271,15 +1281,39 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             status_line.set_subagent(self._visible_agent)
             status_line.set_session_controls(())
             return
+        session_id = self._controller.session_id
         try:
             statuses = await self._controller.session_control_statuses()
         except Exception:  # noqa: BLE001 - status projection must not interrupt the Session.
             return
-        if not self._surface_available():
+        if (
+            not self._surface_available()
+            or self._visible_read_only
+            or self._controller.session_id != session_id
+        ):
             return
         status_line = self.query_one(StatusLine)
         status_line.set_subagent(None)
         status_line.set_session_controls(tuple(status.label for status in statuses))
+
+    def _schedule_session_controls_refresh(self) -> None:
+        if self._host_closing or self._visible_read_only:
+            return
+        self._session_controls_refresh_requested = True
+        task = self._session_controls_refresh_task
+        if task is None or task.done():
+            self._session_controls_refresh_task = asyncio.create_task(
+                self._drain_session_controls_refresh(),
+                name="tui-session-controls-refresh",
+            )
+
+    async def _drain_session_controls_refresh(self) -> None:
+        try:
+            while self._session_controls_refresh_requested and not self._host_closing:
+                self._session_controls_refresh_requested = False
+                await self._refresh_session_controls()
+        finally:
+            self._session_controls_refresh_task = None
 
     def _publish_runtime_event(self, event: EventRecord) -> None:
         """Accept fallback sink events not already owned by the visible subscription."""
@@ -1545,12 +1579,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         await self._flush_pending_runtime_events()
 
-    async def _flush_pending_runtime_events(self) -> None:
+    async def _flush_pending_runtime_events(
+        self,
+        *,
+        allow_new_projection: bool = False,
+    ) -> None:
         if not self._pending_runtime_events:
             return
         events = tuple(self._pending_runtime_events[:_RUNTIME_EVENT_APPLY_MAX])
         del self._pending_runtime_events[: len(events)]
-        await self._apply_runtime_events(events)
+        await self._apply_runtime_events(
+            events,
+            allow_new_projection=allow_new_projection,
+        )
         if (
             self._pending_runtime_events
             and not self._runtime_events_ready_posted
@@ -1724,7 +1765,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._host_closing or not conversation.is_attached:
             return
         if refresh_session_controls and not self._visible_read_only:
-            await self._refresh_session_controls()
+            self._schedule_session_controls_refresh()
 
         if self._host_closing or not conversation.is_attached:
             return
@@ -1829,7 +1870,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     async def _apply_run_result(self, result: RunResult) -> None:
         await self._flush_pending_runtime_events()
-        await self._apply_runtime_events(result.events, allow_new_projection=True)
+        await self._apply_run_result_events(result.events)
         if not self._surface_available():
             return
         if self._visible_read_only:
@@ -1856,6 +1897,54 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         await self._refresh_usage_status()
         await self._refresh_interaction()
         await self._refresh_session_controls()
+
+    async def _apply_run_result_events(self, events: Sequence[EventRecord]) -> None:
+        if not events or self._host_closing:
+            return
+        session_id = events[0].session_id
+        projection = self._projection
+        high_water = (
+            projection.last_sequence
+            if projection is not None and projection.session_id == session_id
+            else 0
+        )
+        high_water = max(
+            (
+                high_water,
+                *(
+                    event.sequence
+                    for event in self._pending_runtime_events
+                    if event.session_id == session_id
+                ),
+            )
+        )
+        target_sequence = high_water
+        for event in events:
+            if event.session_id != session_id or event.sequence <= high_water:
+                continue
+            if not self._queue_runtime_event(event):
+                self._signal_runtime_event_buffer_lag(event.session_id)
+                break
+            high_water = event.sequence
+            target_sequence = event.sequence
+        if target_sequence == 0:
+            return
+
+        await self._flush_pending_runtime_events(allow_new_projection=True)
+        while not self._host_closing:
+            projection = self._projection
+            if (
+                projection is not None
+                and projection.session_id == session_id
+                and projection.last_sequence >= target_sequence
+            ):
+                return
+            if not any(
+                event.session_id == session_id and event.sequence <= target_sequence
+                for event in self._pending_runtime_events
+            ):
+                return
+            await self.wait_for_refresh()
 
     async def _refresh_usage_status(self) -> None:
         usage = await self._controller.usage_totals()

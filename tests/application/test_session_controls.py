@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from threading import get_ident
+
 import pytest
 
 from ouro.application.session_controls import (
@@ -84,6 +86,52 @@ def _transition(
         generation_id=generation_id,
         execution_contract_hash=_CONTRACT,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_session_control_persistence_phases_run_outside_the_event_loop(
+    tmp_path,
+    backend,
+    monkeypatch,
+) -> None:
+    store = _store(tmp_path, backend)
+    session = SessionRecord()
+    store.create_session(session)
+    events: list[str] = []
+    controller = _controller(
+        "dev.example.thread-boundary",
+        "main",
+        "dev.example.thread-boundary",
+        events,
+    )
+    registry = PluginSessionControllerRegistry()
+    registry.replace_owner("thread-boundary", (controller,))
+    coordinator = SessionControlCoordinator(store)
+    event_loop_thread = get_ident()
+    reader_threads: list[int] = []
+    load_session = store.load_session_record
+
+    def recording_load_session(session_id: str):
+        reader_threads.append(get_ident())
+        return load_session(session_id)
+
+    monkeypatch.setattr(store, "load_session_record", recording_load_session)
+
+    acquired = await coordinator.apply(
+        _transition(
+            "dev.example.thread-boundary",
+            "generation-main",
+            "main",
+            "acquire",
+        ),
+        session_id=session.session_id,
+        controllers=registry,
+    )
+
+    assert acquired.changed is True
+    assert len(reader_threads) >= 2
+    assert event_loop_thread not in reader_threads
 
 
 @pytest.mark.asyncio

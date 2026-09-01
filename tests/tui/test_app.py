@@ -68,6 +68,7 @@ from ouro.core.provider import (
     ProviderStreamEvent,
 )
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
+from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest, ToolSource
 from ouro.local_application import LocalApplication
@@ -112,6 +113,7 @@ from ouro.tui.controller import (
     TuiPluginCommandExecution,
     TuiPluginInstallConfiguration,
     TuiProviderConfiguration,
+    TuiSessionControlStatus,
 )
 from ouro.tui.conversation_history import (
     AssistantTailLines,
@@ -2957,6 +2959,189 @@ async def test_tui_runtime_event_staging_applies_one_bounded_prefix_per_frame(
         assert app._pending_runtime_events == [events[2]]
         assert app._runtime_events_frame_scheduled is not None
         app._pending_runtime_events.clear()
+
+
+@pytest.mark.asyncio
+async def test_terminal_run_events_reuse_the_bounded_runtime_event_consumer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("ouro.tui.app._RUNTIME_EVENT_APPLY_MAX", 2)
+    app = OuroTuiApp(application=_application(tmp_path))
+    session = SessionRecord(session_id="ses_terminal_prefix", title="Terminal prefix")
+    run = RunRecord(
+        session_id=session.session_id,
+        run_id="run_terminal_prefix",
+        status="completed",
+    )
+    events = [
+        EventRecord(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            event_type="model_text_delta",
+            sequence=sequence,
+            payload={"text": str(sequence)},
+        )
+        for sequence in range(1, 6)
+    ]
+    prefixes: list[tuple[int, ...]] = []
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app._projection = TuiSessionProjection(session.session_id)
+        apply_events = app._apply_runtime_events
+
+        async def recording_apply(events, *, allow_new_projection=False):
+            prefixes.append(tuple(event.sequence for event in events))
+            await apply_events(events, allow_new_projection=allow_new_projection)
+
+        monkeypatch.setattr(app, "_apply_runtime_events", recording_apply)
+
+        await app._apply_run_result(
+            RunResult(
+                session=session,
+                run=run,
+                final_text="12345",
+                events=events,
+            )
+        )
+
+        assert prefixes
+        assert all(len(prefix) <= 2 for prefix in prefixes)
+        assert tuple(sequence for prefix in prefixes for sequence in prefix) == (1, 2, 3, 4, 5)
+        assert app._projection.last_sequence == 5
+
+
+@pytest.mark.asyncio
+async def test_terminal_run_events_skip_live_and_pending_event_prefixes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("ouro.tui.app._RUNTIME_EVENT_APPLY_MAX", 2)
+    app = OuroTuiApp(application=_application(tmp_path))
+    session = SessionRecord(session_id="ses_terminal_dedup", title="Terminal dedup")
+    run = RunRecord(
+        session_id=session.session_id,
+        run_id="run_terminal_dedup",
+        status="completed",
+    )
+    events = [
+        EventRecord(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            event_type="model_text_delta",
+            sequence=sequence,
+            payload={"text": str(sequence)},
+        )
+        for sequence in range(1, 6)
+    ]
+    prefixes: list[tuple[int, ...]] = []
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        projection = TuiSessionProjection(session.session_id)
+        projection.apply(events[0])
+        projection.apply(events[1])
+        app._projection = projection
+        app._pending_runtime_events.append(events[2])
+        apply_events = app._apply_runtime_events
+
+        async def recording_apply(events, *, allow_new_projection=False):
+            prefixes.append(tuple(event.sequence for event in events))
+            await apply_events(events, allow_new_projection=allow_new_projection)
+
+        monkeypatch.setattr(app, "_apply_runtime_events", recording_apply)
+
+        await app._apply_run_result(RunResult(session=session, run=run, events=events))
+
+        assert tuple(sequence for prefix in prefixes for sequence in prefix) == (3, 4, 5)
+        assert app._projection.last_sequence == 5
+
+
+@pytest.mark.asyncio
+async def test_runtime_event_handler_schedules_session_control_refresh_without_awaiting_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _application(tmp_path)
+    session_id = application.runtime.sessions.create(title="Control refresh").session.session_id
+    app = OuroTuiApp(application=application)
+    app._projection = TuiSessionProjection(session_id)
+    app._controller._session_id = session_id
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_statuses() -> tuple[TuiSessionControlStatus, ...]:
+        entered.set()
+        await release.wait()
+        return (TuiSessionControlStatus(controller_id="control", label="Control"),)
+
+    monkeypatch.setattr(app._controller, "session_control_statuses", delayed_statuses)
+    event = EventRecord(
+        session_id=session_id,
+        run_id="run_control_refresh",
+        event_type="tool_call_completed",
+        sequence=1,
+        payload={"tool_call_id": "call_control_refresh"},
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        applying = asyncio.create_task(app._apply_runtime_events((event,)))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            await asyncio.sleep(0)
+            assert applying.done() is True
+        finally:
+            release.set()
+        await applying
+        refresh_task = app._session_controls_refresh_task
+        assert refresh_task is not None
+        await refresh_task
+        assert app.query_one(ActivityIndicator)._session_control_labels == ("Control",)
+
+
+@pytest.mark.asyncio
+async def test_session_control_refresh_coalesces_requests_and_discards_stale_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _application(tmp_path)
+    first = application.runtime.sessions.create(title="First controls").session
+    second = application.runtime.sessions.create(title="Second controls").session
+    app = OuroTuiApp(application=application)
+    app._projection = TuiSessionProjection(first.session_id)
+    app._controller._session_id = first.session_id
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def delayed_statuses() -> tuple[TuiSessionControlStatus, ...]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered.set()
+            await release.wait()
+            return (TuiSessionControlStatus(controller_id="stale", label="Stale"),)
+        return (TuiSessionControlStatus(controller_id="fresh", label="Fresh"),)
+
+    monkeypatch.setattr(app._controller, "session_control_statuses", delayed_statuses)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app._schedule_session_controls_refresh()
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        app._schedule_session_controls_refresh()
+        app._schedule_session_controls_refresh()
+        task = app._session_controls_refresh_task
+        assert task is not None
+        app._controller._session_id = second.session_id
+        app._projection = TuiSessionProjection(second.session_id)
+        release.set()
+        await task
+
+        assert calls == 2
+        assert app.query_one(ActivityIndicator)._session_control_labels == ("Fresh",)
 
 
 @pytest.mark.asyncio

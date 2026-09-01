@@ -1,12 +1,15 @@
 # 运行热路径性能规格
 
-状态：当前
+状态：当前；目标增量（第三里程碑真实终端响应性验收）
 
 ## 目标与原则
 
 运行热路径按业务语义边界分配工作，而不是按传输碎片、UI 按键或可重复派生投影分配工作。异步事件循环只做
 编排和轻量投影；可能等待文件锁、`fsync`、SQLite writer 或执行大对象物化的同步工作必须离开事件循环。性能改进
 不能改变 canonical 顺序、原子提交、恢复、取消、插件 generation 隔离或 Host 观察语义。
+
+本文的 Runtime loop 所有权、投影门禁和 TUI dispatch 条款描述当前实现；第三里程碑的真实终端 Key/spinner 分布与
+完整诊断归因仍是目标增量，不能在完成验收前宣称第三里程碑整体关闭。
 
 ## 流式事件
 
@@ -94,7 +97,7 @@ Provider 和工具执行中的 `AbortSignal.is_aborted()` 是高频同步检查�
   lagged 后 durable reload 语义保持不变；
 - `batch_update()` 只用于合并可合并的刷新，不能被当作消除 `AwaitMount`、`AwaitRemove` 或结构布局成本的替代品。
 
-## 验收证据
+## 当前契约验收证据
 
 - `tests/core/test_adapter_stream.py`
 - `tests/application/test_compaction.py`
@@ -108,3 +111,101 @@ Provider 和工具执行中的 `AbortSignal.is_aborted()` 是高频同步检查�
 - `tests/application/test_run_ownership.py`
 - `tests/application/test_supervisor.py`
 - `tests/tui/test_conversation_history.py`
+
+## 第三里程碑契约
+
+本节的工具边界 loop 同步段、投影成本门禁和 TUI dispatch 条款已经实现，属于当前强制契约；“最小诊断与响应性
+预算”以及最终兼容与验收中的分布目标仍是尚待完成的验收增量。
+
+### 范围与实施门禁
+
+工具进入、完成、下一轮和 Run 终态是第三里程碑的唯一交互范围。用户键入与状态动画同时停顿表示 event loop 没有
+得到运行机会；键入单独延迟还可能表示 App pump 被长 handler 或 await 链占有。
+
+已确认在 event loop 上直接执行 Store、文件锁或 SQLite I/O 的路径违反 loop 所有权，并且等待时长不受进程控制，
+即使短样本偶尔未超预算也属于无条件实施项；当前实现已满足该所有权约束。除此之外，后续候选改动必须依次满足
+以下条件：
+
+1. 在重复的真实复现场景中与超预算 Key、spinner 或 event-loop lag 同相位；
+2. 当前支持配置和现实 payload 下稳定超预算，而不是只在合成极端规模下变慢；
+3. 已排除移动一个现有调用边界、消除一次重复工作或复用现有 consumer 等更小修复；
+4. 实际减少工作量，不新增未经必要性证明的事实源、缓存、后台服务或异步提交状态机。
+
+未通过门禁的增长阶或重构设想不是当前目标契约。若动态证据要求扩大数据布局、Host DTO 或 renderer 边界，必须先更新
+本规格和对应计划，再开始编码。
+
+### 最小诊断与响应性预算
+
+- 诊断只记录 event-loop lag、`RuntimeEventsReady` handler wall time、最长 loop 同步段、结构提交、controller await，
+  以及同相位 worker operation 的阶段、时长和字节数。
+- 诊断不得记录 prompt、reasoning、工具参数或结果内容；关闭时不得复制 payload、执行第二次序列化或保留常驻遥测
+  pipeline。
+- 受控基准目标为：1 ms ticker 的 event-loop lag p99 不超过 16 ms、最大值不超过 32 ms；Key 注入到 Composer 状态
+  变化的 p95 不超过 50 ms；标称 120 ms 的状态动画不得连续错过两个周期。
+- thread id 与 loop thread 不同只是所有权证据，不是响应性证据；总 wall time 也不能替代最长不可让出片段的归因。
+
+### 工具边界 loop 同步段
+
+- `shared_budget_reason` 不得在 event loop 直接执行同步 port；使用现有 `run_blocking()` 执行完整 query。
+- 工具/Run 边界可达的 abort/boundary finalization、continuation/terminal settlement、delegation query 和 Session
+  control mutation，一旦执行 Store、文件锁或 SQLite 访问，必须以完整 query/mutation 为单位在同一 worker settle。
+- 迁移范围只由工具边界可达性决定，不以“全仓库同步调用数量归零”为目标；冷路径不因此自动异步化。
+- caller cancellation、Session lock、SQLite transaction 和“durable 后发布 event”顺序保持现有语义。
+- Session control 的同步 prepare/commit/rollback 持久化相位在 worker 中执行；插件 controller coroutine 仍在原 async
+  边界执行，不把整个 Runtime 或插件执行迁入线程。
+
+### 投影成本验证
+
+- `project_runtime_event`、activity reduction/change detection、redaction 和 `freeze_json` 必须可被分项测量，不得只以整个
+  Supervisor handler wall time 归因。
+- 现实 payload 下单段稳定超过 8 ms，或与超预算样本持续同相位，才允许实施投影短路。优先消除重复 dump/compare，
+  或在已知无匹配 Observer 时跳过 freeze。
+- 活动 TUI Session 已有 event subscription；“无订阅者不构造 event view”不能作为当前 TUI 卡顿的默认修复。
+- 改变 `RuntimeActivitySnapshot` 字段、裁剪 Host payload 或增加摘要 DTO 不属于默认范围，必须先完成 Host 兼容审查并
+  更新本规格。
+
+### TUI dispatch 契约（已修复）
+
+- live subscription 与 `RunResult.events` 复用同一个按 sequence 去重、每帧最多 64 条的 consumer；terminal result
+  不得旁路上限，也不得重新应用已经消费的事件前缀。
+- 一个 applied prefix 最多登记一次 Session controls refresh。Store 查询在线程中执行，但 App 的
+  `RuntimeEventsReady` handler 不等待该查询；结果提交前验证当前 Session，过时结果不更新页面。
+- 现有 batch mount、immutable history append 和 batch remove 顺序保持不变。单调时钟 deadline 只有在诊断证明
+  多事件累计而非单个不可让出单元主导时才允许加入现有 64 条上限。
+- pump 外 prepare/commit、render generation 协议和第二个 renderer 不属于默认目标；只有上述局部修复后 App pump
+  仍然主导超预算样本，才允许先更新设计与规格再评审。
+
+上述 dispatch 约束由同一 pending event buffer 实现：terminal result 按 projection/pending sequence high-water 去重，
+然后复用每帧最多 64 条的 consumer。Session controls 使用 dirty flag 和单一 refresh task 合并请求；提交查询结果前
+必须再次校验当前 Session，不能建立第二份 controls 状态。
+
+### 证据触发范围与停止规则
+
+- Context completion sidecar 只在完整 ContextSnapshot 序列化被现实 Session 证明为主导 GIL stall 后另行设计；
+- Run/tool checkpoint 拆分只在现实工具结果的重复编码被证明主导后另行设计；
+- reasoning 后台化只针对展开 reasoning 且确实超预算的路径，默认折叠路径不得增加额外工作；
+- files catalog 的大规模写放大属于独立扩展性目标，不因当前 TUI 卡顿进入第三里程碑；
+- 达到响应性预算后立即停止，其余候选改动继续保持未实现状态。
+
+### 第三里程碑兼容与验收
+
+- 不降低 Event、Message、Run 或 Context 耐久性，不改变 canonical event 顺序、Observer、Host subscription、跨进程
+  abort、工具结果 source order、interrupted reconciliation 或 TUI assistant→tool 顺序。
+- 不通过扩大 delta 窗口、降低动画频率、减少 checkpoint 或隐藏状态满足预算。
+- 必须新增：诊断隐私/关闭开销测试、目标 Store port 线程所有权测试、投影分项门禁测试、`RunResult.events` budget/
+  dedup 测试、controls refresh 合并/过时结果测试，以及工具进入/完成/终态的 loop-lag、Key 和 spinner 基准。
+- 第三里程碑退出时，未通过门禁的数据布局、DTO 和 renderer 改造不得出现在实现中；任何通过门禁的范围扩展必须已经
+  先更新本规格，并具备其新增恢复状态所需的崩溃和兼容测试。
+
+### 当前实现验收证据
+
+- `tests/application/test_runtime.py`
+- `tests/application/test_session_controls.py`
+- `tests/application/test_run_continuations.py`
+- `tests/application/test_agents.py`
+- `tests/core/test_inner_loop.py`
+- `tests/tui/test_app.py`
+- `tests/tui/test_conversation_history.py`
+
+投影分项在现实默认输出量级未稳定越过 8 ms 门禁，因此当前实现没有增加 projection cache、摘要 DTO 或 Host payload
+分叉。真实终端 Key p95、spinner cadence 和两个工具边界的最终分布仍须按本节预算完成后，才可把规格状态改为纯“当前”。

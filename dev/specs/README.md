@@ -7,6 +7,7 @@
 
 - `状态：当前` 表示规格由当前代码和测试实现。
 - `状态：目标` 表示规格是未来实现必须满足的契约，不能据此宣称功能已经可用。
+- `状态：当前；目标增量` 表示未标记章节是当前契约，文内明确标记的目标章节尚未实现；目标完成后必须移除该混合状态。
 - 当前行为与规格冲突时，以代码和可重复测试作为事实证据，并立即校正规格或实现。
 - 产品范围以 [`docs/OURO_AGENT_项目概述.md`](../../docs/OURO_AGENT_项目概述.md) 为准。
 - 模块归属以 [`docs/OURO_AGENT_开发架构.md`](../../docs/OURO_AGENT_开发架构.md) 为准。
@@ -30,7 +31,7 @@
 | [子智能体](subagents.md) | AgentDefinition、durable Delegation、前后台执行、Agent tree/HITL、权限、结果交付与恢复 | `ouro/core/agents.py`、`ouro/application/agents.py`、`ouro/tools/builtin_agents.py`、`ouro/sessions` |
 | [Host 会话观察与子智能体导航](session-observation.md) | Host-neutral ToolCall→child 关系、Session snapshot/event cursor 与 TUI 多会话只读切换 | `ouro/application`、`ouro/sessions`、`ouro/tui` |
 | [插件系统](plugin-system.md) | 不可变 Catalog、原子 generation、Observer、Prompt Policy 与稳定执行契约 | `ouro/plugins`、`ouro/application/observers.py`、`ouro/core/observers.py`、`ouro/core/prompt_policies.py` |
-| [运行热路径性能](performance-hot-paths.md) | 流式降频、阻塞事务 worker 边界、取消快路径、TUI 有界帧消费与批提交 | `ouro/core`、`ouro/application`、`ouro/tui` |
+| [运行热路径性能（当前实现；含 M3 验收目标）](performance-hot-paths.md) | 流式降频、worker 边界、工具边界 loop 所有权、投影成本门禁与 TUI 有界 dispatch | `ouro/core`、`ouro/application`、`ouro/tui` |
 
 ## 目标规格
 

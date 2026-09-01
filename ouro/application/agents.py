@@ -52,6 +52,7 @@ from ouro.core.agents import (
     delivery_policy_for_execution_mode,
 )
 from ouro.core.base import new_id, utc_now
+from ouro.core.callbacks import run_blocking
 from ouro.core.errors import DelegationRevisionConflictError, PersistenceError, SessionBusyError
 from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason
 from ouro.core.run_transitions import plan_run_transition
@@ -147,6 +148,12 @@ class _RootBudgetState:
     output_tokens: int
     model_rounds: int
     elapsed_seconds: float
+
+
+@dataclass(frozen=True)
+class _TerminalSettlementTargets:
+    child_delegation_id: str | None = None
+    bound_relations: tuple[DelegationRecord, ...] = ()
 
 
 class AgentService:
@@ -346,31 +353,14 @@ class AgentService:
 
         if run.status in ACTIVE_RUN_STATUSES:
             return
-        parent_session = self.store.load_session_record(run.session_id)
-        if parent_session.session_kind == "subagent":
-            assert parent_session.root_session_id is not None
-            relation = self.store.find_delegation_by_child_session(
-                parent_session.root_session_id,
-                parent_session.session_id,
-            )
-            if relation is not None and relation.current_child_run_id == run.run_id:
-                await self._finalize_result(relation.delegation_id)
-                self._completion_event(relation.delegation_id).set()
+        targets = await run_blocking(self._terminal_settlement_targets, run)
+        if targets.child_delegation_id is not None:
+            await self._finalize_result(targets.child_delegation_id)
+            self._completion_event(targets.child_delegation_id).set()
             return
-        if run.status not in {"aborted", "failed"}:
+        relations = targets.bound_relations
+        if not relations:
             return
-        root_id = parent_session.agent_root_session_id
-        self._resolve_interrupted_parent_wait(run.session_id, run.run_id)
-        relations = [
-            relation
-            for relation in self.store.list_delegations(
-                root_id,
-                parent_session_id=run.session_id,
-            )
-            if relation.parent_run_id == run.run_id
-            and relation.lifecycle_binding == "bound"
-            and not self._is_terminal(relation)
-        ]
         results = await asyncio.gather(
             *(
                 self._cascade_bound_child(relation, parent_run_id=run.run_id)
@@ -399,6 +389,37 @@ class AgentService:
                 },
             )
 
+    def _terminal_settlement_targets(
+        self,
+        run: RunRecord,
+    ) -> _TerminalSettlementTargets:
+        parent_session = self.store.load_session_record(run.session_id)
+        if parent_session.session_kind == "subagent":
+            assert parent_session.root_session_id is not None
+            relation = self.store.find_delegation_by_child_session(
+                parent_session.root_session_id,
+                parent_session.session_id,
+            )
+            if relation is not None and relation.current_child_run_id == run.run_id:
+                return _TerminalSettlementTargets(
+                    child_delegation_id=relation.delegation_id,
+                )
+            return _TerminalSettlementTargets()
+        if run.status not in {"aborted", "failed"}:
+            return _TerminalSettlementTargets()
+        self._resolve_interrupted_parent_wait(run.session_id, run.run_id)
+        relations = tuple(
+            relation
+            for relation in self.store.list_delegations(
+                parent_session.agent_root_session_id,
+                parent_session_id=run.session_id,
+            )
+            if relation.parent_run_id == run.run_id
+            and relation.lifecycle_binding == "bound"
+            and not self._is_terminal(relation)
+        )
+        return _TerminalSettlementTargets(bound_relations=relations)
+
     async def _cascade_bound_child(
         self,
         relation: DelegationRecord,
@@ -408,7 +429,7 @@ class AgentService:
         if relation.child_session_id is None:
             raise ValueError("bound Delegation has no child Session")
         async with asyncio.timeout(self.cascade_timeout_seconds):
-            durable = self._load_by_id(relation.delegation_id)
+            durable = await run_blocking(self._load_by_id, relation.delegation_id)
             if durable.child_session_id is None:
                 raise ValueError("bound Delegation has no child Session")
             await self.scheduler.abort(
@@ -1423,20 +1444,44 @@ class AgentService:
         self,
         delegation_id: str,
     ) -> DelegationRecord:
+        relation, terminal_status, delivery_id = await run_blocking(
+            self._finalize_result_state,
+            delegation_id,
+        )
+        if terminal_status is None or delivery_id is None:
+            return relation
+        await self.events.publish(
+            session_id=relation.root_session_id,
+            run_id=relation.parent_run_id,
+            event_type="agent_result_ready",
+            payload={
+                "delegation_id": relation.delegation_id,
+                "child_session_id": relation.child_session_id,
+                "child_run_id": relation.current_child_run_id,
+                "terminal_status": terminal_status,
+                "delivery_id": delivery_id,
+            },
+        )
+        return relation
+
+    def _finalize_result_state(
+        self,
+        delegation_id: str,
+    ) -> tuple[DelegationRecord, str | None, str | None]:
         relation = self._load_by_id(delegation_id)
         if relation.result is not None:
-            return relation
+            return relation, None, None
         if not self.recovery.relation_is_consistent(relation):
-            return relation
+            return relation, None, None
         if relation.child_session_id is None or relation.current_child_run_id is None:
-            return relation
+            return relation, None, None
         snapshot = self.store.load_runtime_session(relation.child_session_id)
         run = next(
             (item for item in snapshot.runs if item.run_id == relation.current_child_run_id),
             None,
         )
         if run is None or run.status in ACTIVE_RUN_STATUSES:
-            return relation
+            return relation, None, None
         messages = [item for item in snapshot.messages if item.run_id == run.run_id]
         first_input = next(
             (
@@ -1497,20 +1542,8 @@ class AgentService:
                 or updated.result.child_run_id != run.run_id
             ):
                 raise
-            return updated
-        await self.events.publish(
-            session_id=updated.root_session_id,
-            run_id=updated.parent_run_id,
-            event_type="agent_result_ready",
-            payload={
-                "delegation_id": updated.delegation_id,
-                "child_session_id": updated.child_session_id,
-                "child_run_id": updated.current_child_run_id,
-                "terminal_status": run.status,
-                "delivery_id": result.delivery.delivery_id,
-            },
-        )
-        return updated
+            return updated, None, None
+        return updated, run.status, result.delivery.delivery_id
 
     def _result_delivery_policy(
         self,
@@ -1538,35 +1571,48 @@ class AgentService:
 
         lock = self._result_locks.setdefault(relation.delegation_id, asyncio.Lock())
         async with lock:
-            relation = self._load_by_id(relation.delegation_id)
-            result = relation.result
-            if result is None or result.delivery.status != "pending":
-                return relation
-            if result.delivery.policy in {"notify_only", "resume_waiter"}:
-                return relation
-            parent_resource_refs = self._copy_result_resources_to_parent(
-                (relation,),
-                parent_session_id=relation.parent_session_id,
+            relation, parent_resource_refs, existing_target, should_route = await run_blocking(
+                self._prepare_result_delivery,
+                relation.delegation_id,
             )
-            existing_target = self._existing_delivery_target(relation)
+            if not should_route:
+                return relation
             if existing_target is not None:
                 return await self._record_delivery(relation, **existing_target)
-        receipt = await self.scheduler.route_host_input(
-            HostSessionInput(
-                prompt=self._delivery_prompt(relation),
-                mode="steer",
-                host_source_id=f"ouro.subagents/results/{result.delivery.delivery_id}",
-                semantic_tag="subagent-result",
-                queue_id=result.delivery.delivery_id,
-                resource_refs=parent_resource_refs,
-            ),
-            session_id=relation.parent_session_id,
-        )
-        async with lock:
+            result = relation.result
+            assert result is not None
+            prompt = await run_blocking(self._delivery_prompt, relation)
+            receipt = await self.scheduler.route_host_input(
+                HostSessionInput(
+                    prompt=prompt,
+                    mode="steer",
+                    host_source_id=f"ouro.subagents/results/{result.delivery.delivery_id}",
+                    semantic_tag="subagent-result",
+                    queue_id=result.delivery.delivery_id,
+                    resource_refs=parent_resource_refs,
+                ),
+                session_id=relation.parent_session_id,
+            )
             return await self._record_delivery(
-                self._load_by_id(relation.delegation_id),
+                await run_blocking(self._load_by_id, relation.delegation_id),
                 target_queue_id=receipt.queue_id,
             )
+
+    def _prepare_result_delivery(
+        self,
+        delegation_id: str,
+    ) -> tuple[DelegationRecord, tuple[str, ...], dict[str, str] | None, bool]:
+        relation = self._load_by_id(delegation_id)
+        result = relation.result
+        if result is None or result.delivery.status != "pending":
+            return relation, (), None, False
+        if result.delivery.policy in {"notify_only", "resume_waiter"}:
+            return relation, (), None, False
+        parent_resource_refs = self._copy_result_resources_to_parent(
+            (relation,),
+            parent_session_id=relation.parent_session_id,
+        )
+        return relation, parent_resource_refs, self._existing_delivery_target(relation), True
 
     def _delivery_prompt(self, relation: DelegationRecord) -> str:
         assert relation.result is not None
@@ -1606,8 +1652,40 @@ class AgentService:
         target_message_id: str | None = None,
         target_queue_id: str | None = None,
     ) -> DelegationRecord:
+        updated, delivery = await run_blocking(
+            self._record_delivery_state,
+            relation,
+            target_run_id=target_run_id,
+            target_message_id=target_message_id,
+            target_queue_id=target_queue_id,
+        )
+        if delivery is None:
+            return updated
+        await self.events.publish(
+            session_id=updated.root_session_id,
+            run_id=target_run_id or updated.parent_run_id,
+            event_type="agent_result_delivered",
+            payload={
+                "delegation_id": updated.delegation_id,
+                "delivery_id": delivery.delivery_id,
+                "policy": delivery.policy,
+                "target_run_id": target_run_id,
+                "target_message_id": target_message_id,
+                "target_queue_id": target_queue_id,
+            },
+        )
+        return updated
+
+    def _record_delivery_state(
+        self,
+        relation: DelegationRecord,
+        *,
+        target_run_id: str | None = None,
+        target_message_id: str | None = None,
+        target_queue_id: str | None = None,
+    ) -> tuple[DelegationRecord, ResultDelivery | None]:
         if relation.result is None or relation.result.delivery.status == "delivered":
-            return relation
+            return relation, None
         delivery = relation.result.delivery.model_copy(
             update={
                 "status": "delivered",
@@ -1632,21 +1710,8 @@ class AgentService:
                 or updated.result.delivery.status != "delivered"
             ):
                 raise
-            return updated
-        await self.events.publish(
-            session_id=updated.root_session_id,
-            run_id=target_run_id or updated.parent_run_id,
-            event_type="agent_result_delivered",
-            payload={
-                "delegation_id": updated.delegation_id,
-                "delivery_id": delivery.delivery_id,
-                "policy": delivery.policy,
-                "target_run_id": target_run_id,
-                "target_message_id": target_message_id,
-                "target_queue_id": target_queue_id,
-            },
-        )
-        return updated
+            return updated, None
+        return updated, delivery
 
     async def _await_agent_wait(
         self,
@@ -1659,14 +1724,13 @@ class AgentService:
     ) -> None:
         completion = self._completion_event(wait.delegation_id)
         while True:
-            parent_run = self.store.load_run(session_id, run_id)
+            parent_run = await run_blocking(self.store.load_run, session_id, run_id)
             if parent_run.status != "waiting_child":
                 return
-            relation = self._load_by_id(wait.delegation_id)
-            if self._is_terminal(relation):
+            if await run_blocking(self._delegation_is_terminal, wait.delegation_id):
                 break
             completion.clear()
-            if self._is_terminal(self._load_by_id(wait.delegation_id)):
+            if await run_blocking(self._delegation_is_terminal, wait.delegation_id):
                 break
             await completion.wait()
 
@@ -1675,12 +1739,13 @@ class AgentService:
             reason="condition_met",
         )
         await self._finalize_result(wait.delegation_id)
-        relation = self._load_by_id(wait.delegation_id)
-        resource_refs = self._copy_result_resources_to_parent(
-            (relation,),
+        _relation, resource_refs = await run_blocking(
+            self._load_and_copy_result_resources,
+            wait.delegation_id,
             parent_session_id=session_id,
         )
-        result = self._spawn_tool_result(
+        result = await run_blocking(
+            self._spawn_tool_result,
             tool_call_id=tool_call_id,
             tool_name=tool_name,
             resolution=resolution,
@@ -1697,12 +1762,28 @@ class AgentService:
         except (FileNotFoundError, SessionBusyError, ValueError):
             return
         await self.scheduler.wait(handle)
-        if self._tool_result_is_committed(
+        if await run_blocking(
+            self._tool_result_is_committed,
             session_id=session_id,
             run_id=run_id,
             tool_call_id=tool_call_id,
         ):
             await self._mark_waiter_delivery(wait.delegation_id, target_run_id=run_id)
+
+    def _delegation_is_terminal(self, delegation_id: str) -> bool:
+        return self._is_terminal(self._load_by_id(delegation_id))
+
+    def _load_and_copy_result_resources(
+        self,
+        delegation_id: str,
+        *,
+        parent_session_id: str,
+    ) -> tuple[DelegationRecord, tuple[str, ...]]:
+        relation = self._load_by_id(delegation_id)
+        return relation, self._copy_result_resources_to_parent(
+            (relation,),
+            parent_session_id=parent_session_id,
+        )
 
     def _spawn_tool_result(
         self,
@@ -1829,7 +1910,7 @@ class AgentService:
         *,
         target_run_id: str,
     ) -> None:
-        relation = self._load_by_id(delegation_id)
+        relation = await run_blocking(self._load_by_id, delegation_id)
         if relation.result is None:
             return
         delivery = relation.result.delivery

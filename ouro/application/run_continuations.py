@@ -6,6 +6,7 @@ from ouro.application.queued_inputs import QueuedInputQueue
 from ouro.application.runs import maybe_active_run
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.core.base import utc_now
+from ouro.core.callbacks import run_blocking
 from ouro.core.continuations import (
     AttributedContinuationDecision,
     ContinuationFailure,
@@ -74,7 +75,7 @@ class RunContinuationService:
         run_id: str,
         final_text: str = "",
     ) -> RunContinuationSettlement:
-        run = self.store.load_run(session_id, run_id)
+        run = await run_blocking(self.store.load_run, session_id, run_id)
         checkpoint = run.continuation
         if (
             run.kind != "agent"
@@ -85,16 +86,16 @@ class RunContinuationService:
         ):
             return RunContinuationSettlement(run=run)
 
+        recovered_final_text = final_text
+        if not recovered_final_text:
+            snapshot = await run_blocking(self.store.load_runtime_session, session_id)
+            recovered_final_text = _last_assistant_text(snapshot.messages, run.run_id)
         outcome = RunOutcome(
             session_id=run.session_id,
             run_id=run.run_id,
             status=run.status,
             origin=run.origin,
-            final_text=final_text
-            or _last_assistant_text(
-                self.store.load_runtime_session(session_id).messages,
-                run.run_id,
-            ),
+            final_text=recovered_final_text,
             error=run.error,
             usage=dict(run.usage),
         )
@@ -116,14 +117,16 @@ class RunContinuationService:
         )
         failures = tuple(evaluation.failures)
         if failures:
-            return self._settle_failures(
+            return await run_blocking(
+                self._settle_failures,
                 run,
                 failures=failures,
                 reason="continuation_policy_failed",
                 diagnostic="one or more continuation policies failed",
             )
         if len(evaluation.decisions) > 1:
-            resolved = self._resolve(
+            resolved = await run_blocking(
+                self._resolve,
                 run,
                 action="pause",
                 reason="continuation_policy_conflict",
@@ -138,11 +141,10 @@ class RunContinuationService:
             )
         if not evaluation.decisions:
             if run.status != "completed":
-                bound = tuple(
-                    controller
-                    for controller in checkpoint.controllers
-                    if controller.activation_id is not None
-                    and self._controller_is_current(run.session_id, controller)
+                bound = await run_blocking(
+                    self._current_bound_controllers,
+                    run.session_id,
+                    checkpoint,
                 )
                 if bound:
                     missing = tuple(
@@ -158,7 +160,8 @@ class RunContinuationService:
                         )
                         for controller in bound
                     )
-                    return self._settle_failures(
+                    return await run_blocking(
+                        self._settle_failures,
                         run,
                         failures=missing,
                         reason="continuation_terminal_decision_missing",
@@ -167,13 +170,15 @@ class RunContinuationService:
                             "abnormal terminal Run"
                         ),
                     )
-                resolved = self._resolve(
+                resolved = await run_blocking(
+                    self._resolve,
                     run,
                     action="pause",
                     reason=f"terminal_run_{run.status}",
                 )
                 return RunContinuationSettlement(run=resolved, settled=True)
-            resolved = self._resolve(
+            resolved = await run_blocking(
+                self._resolve,
                 run,
                 action="complete",
                 reason="no_continuation_requested",
@@ -191,14 +196,15 @@ class RunContinuationService:
                 type(exc).__name__,
                 redact_text(str(exc)),
             )
-            return self._settle_failures(
+            return await run_blocking(
+                self._settle_failures,
                 run,
                 failures=(failure,),
                 reason="continuation_decision_invalid",
                 diagnostic="continuation policy returned an invalid terminal decision",
             )
 
-        staged = self._stage_plan(run, plan)
+        staged = await run_blocking(self._stage_plan, run, plan)
         staged_checkpoint = staged.continuation
         if staged_checkpoint is None or staged_checkpoint.state == "resolved":
             return RunContinuationSettlement(run=staged)
@@ -353,14 +359,18 @@ class RunContinuationService:
                     "ContinuationPolicyUnavailable",
                     "staged continuation control transition owner is unavailable",
                 )
-                return self._settle_failures(
+                return await run_blocking(
+                    self._settle_failures,
                     run,
                     failures=(failure,),
                     reason="continuation_policy_failed",
                     diagnostic="staged continuation owner was unavailable during replay",
                 )
             try:
-                session = self.store.load_session_record(run.session_id)
+                session = await run_blocking(
+                    self.store.load_session_record,
+                    run.session_id,
+                )
                 for transition in plan.session_control_transitions:
                     await self.session_controls.apply(
                         AttributedSessionControlTransition(
@@ -381,7 +391,8 @@ class RunContinuationService:
                     type(exc).__name__,
                     redact_text(str(exc)),
                 )
-                return self._settle_failures(
+                return await run_blocking(
+                    self._settle_failures,
                     run,
                     failures=(failure,),
                     reason="continuation_control_transition_failed",
@@ -389,7 +400,8 @@ class RunContinuationService:
                 )
 
         if plan.action != "continue":
-            resolved = self._resolve(
+            resolved = await run_blocking(
+                self._resolve,
                 run,
                 action=plan.action,
                 controller_id=controller_id,
@@ -407,14 +419,16 @@ class RunContinuationService:
                 "ContinuationPolicyUnavailable",
                 "staged continuation policy execution contract is unavailable",
             )
-            return self._settle_failures(
+            return await run_blocking(
+                self._settle_failures,
                 run,
                 failures=(failure,),
                 reason="continuation_policy_failed",
                 diagnostic="staged continuation policy was unavailable during replay",
             )
         assert plan.prompt is not None
-        queued, resolved, diagnostic = self._enqueue_continuation(
+        queued, resolved, diagnostic = await run_blocking(
+            self._enqueue_continuation,
             run=run,
             checkpoint=checkpoint,
             plugin_id=plan.plugin_id,
@@ -679,6 +693,18 @@ class RunContinuationService:
             and activation.controller_id == controller.active_when_controller_id
             and activation.phase == "active"
             for activation in session.controls.activations
+        )
+
+    def _current_bound_controllers(
+        self,
+        session_id: str,
+        checkpoint: RunContinuationCheckpoint,
+    ) -> tuple[RunContinuationControllerRef, ...]:
+        return tuple(
+            controller
+            for controller in checkpoint.controllers
+            if controller.activation_id is not None
+            and self._controller_is_current(session_id, controller)
         )
 
     def _resolve(

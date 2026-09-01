@@ -55,7 +55,7 @@ RunPauser = Callable[..., Awaitable[RunResult]]
 TurnBoundaryInputConsumer = Callable[..., Awaitable[TurnBoundaryInputResult]]
 TurnCompletionPolicyEvaluator = Callable[..., Awaitable[TurnCompletionPolicyResult]]
 ModelRoundUpdater = Callable[..., RunRecord]
-SharedBudgetReasonProvider = Callable[[RunRecord, int], RunBudgetReason | None]
+SharedBudgetReasonProvider = Callable[[RunRecord, int], Awaitable[RunBudgetReason | None]]
 ProviderStreamStartNotifier = Callable[[], None]
 
 
@@ -183,7 +183,7 @@ class InnerAgentLoop:
         for model_round in itertools.count(1):
             if aborted := self._aborted_result(state):
                 return aborted
-            if reason := self._budget_reason(state.run, model_round):
+            if reason := await self._budget_reason(state.run, model_round):
                 return await self.ports.runs.pause(
                     state.emitted,
                     state.sequence,
@@ -363,7 +363,7 @@ class InnerAgentLoop:
 
         raise AssertionError("unreachable model loop termination")
 
-    def _budget_reason(
+    async def _budget_reason(
         self,
         run: RunRecord,
         next_model_round: int,
@@ -377,7 +377,7 @@ class InnerAgentLoop:
         )
         if local_reason is not None or self.ports.turns.shared_budget_reason is None:
             return local_reason
-        return self.ports.turns.shared_budget_reason(run, next_model_round)
+        return await self.ports.turns.shared_budget_reason(run, next_model_round)
 
     async def _build_context(
         self,

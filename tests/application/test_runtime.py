@@ -1,7 +1,7 @@
 import asyncio
 import sys
 import time
-from threading import get_ident
+from threading import Event, Timer, get_ident
 
 import pytest
 
@@ -40,6 +40,7 @@ from ouro.core.provider import (
     ToolCallDelta,
     Usage,
 )
+from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.session_controls import AttributedSessionInput
 from ouro.core.state import RunRecord, SessionRecord
@@ -79,11 +80,119 @@ def _tools() -> ToolRegistry:
 
 
 @pytest.mark.asyncio
-async def test_runtime_durable_boundaries_do_not_block_the_event_loop(
+async def test_shared_agent_budget_query_runs_outside_the_event_loop(
     tmp_path,
     monkeypatch,
 ) -> None:
     store = LocalSessionStore(tmp_path)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider([ProviderStreamEvent(type="done")]),
+            ModelMetadata(model_id="shared-budget", provider_id="faux"),
+        ),
+        tools=ToolRegistry(),
+    )
+    run = RunRecord(session_id="ses_shared_budget", status="running")
+    entered = Event()
+    release = Event()
+    caller_thread = get_ident()
+    worker_threads: list[int] = []
+
+    class AgentControls:
+        def budget_reason(self, candidate: RunRecord, next_model_round: int):
+            assert candidate == run
+            assert next_model_round == 2
+            worker_threads.append(get_ident())
+            entered.set()
+            release.wait()
+            return None
+
+    monkeypatch.setattr(runtime, "_agent_controls", AgentControls())
+    watchdog = Timer(1, release.set)
+    watchdog.start()
+    checking = asyncio.create_task(runtime._shared_budget_reason(run, 2))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2) is True
+        assert checking.done() is False
+    finally:
+        release.set()
+        watchdog.cancel()
+    assert await checking is None
+    assert worker_threads != [caller_thread]
+
+
+@pytest.mark.asyncio
+async def test_requested_abort_finalization_reads_store_outside_the_event_loop(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    run = RunRecord(
+        session_id="ses_finalize_abort",
+        status="running",
+        abort_requested=True,
+        metadata={"abort_reason": "stop"},
+    )
+    session = SessionRecord(
+        session_id=run.session_id,
+        status="running",
+        active_run_id=run.run_id,
+    )
+    store.create_session(session)
+    store.save_run(run)
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider([ProviderStreamEvent(type="done")]),
+            ModelMetadata(model_id="abort-finalize", provider_id="faux"),
+        ),
+        tools=ToolRegistry(),
+    )
+    entered = Event()
+    release = Event()
+    caller_thread = get_ident()
+    reader_threads: list[int] = []
+    load_run = store.load_run
+
+    def blocking_load_run(session_id: str, run_id: str) -> RunRecord:
+        reader_threads.append(get_ident())
+        entered.set()
+        release.wait()
+        return load_run(session_id, run_id)
+
+    monkeypatch.setattr(store, "load_run", blocking_load_run)
+    watchdog = Timer(1, release.set)
+    watchdog.start()
+    finalizing = asyncio.create_task(
+        runtime._finalize_requested_abort(RunResult(session=session, run=run))
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, 2) is True
+        assert finalizing.done() is False
+    finally:
+        release.set()
+        watchdog.cancel()
+    result = await finalizing
+    assert result.run.status == "aborted"
+    assert reader_threads
+    assert caller_thread not in reader_threads
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_runtime_durable_boundaries_do_not_block_the_event_loop(
+    tmp_path,
+    backend,
+    monkeypatch,
+) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.sqlite3")
+    )
     store.initialize()
     tools = ToolRegistry()
 
