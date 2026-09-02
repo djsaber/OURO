@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from functools import partial
 from pathlib import Path
@@ -156,6 +157,9 @@ if TYPE_CHECKING:
     from ouro.application.tool_calls import AgentControlExecutor
     from ouro.plugins.catalog import ExtensionCatalogLease
     from ouro.plugins.runtime import PluginRuntimeResource
+
+
+_LOG = logging.getLogger(__name__)
 
 
 class _QueuedInputSelectionChanged(RuntimeError):
@@ -385,9 +389,7 @@ class RuntimeService:
         self._extensions_bound = True
         if catalog is not None:
             self.event_recorder.set_observer_registry_resolver(self._observers_for_observation)
-            self.event_recorder.set_runtime_event_observer_matcher(
-                self._has_runtime_event_observer
-            )
+            self.event_recorder.set_runtime_event_observer_matcher(self._has_runtime_event_observer)
 
     def _has_runtime_event_observer(
         self,
@@ -607,42 +609,16 @@ class RuntimeService:
         )
         for candidate_id in session_ids:
             for run in self.store.load_runs(candidate_id):
-                checkpoint = run.continuation
-                if (
-                    run.kind != "agent"
-                    or run.status in ACTIVE_RUN_STATUSES
-                    or checkpoint is None
-                    or checkpoint.state == "resolved"
-                ):
+                if not self._run_continuation_is_pending(run):
                     continue
-                snapshot_error: str | None = None
                 try:
-                    await self._ensure_extension_snapshot(run)
-                except Exception as exc:  # noqa: BLE001 - recovery must fail closed
-                    snapshot_error = type(exc).__name__
-                try:
-                    settlement = await RunContinuationService(
-                        store=self.store,
-                        registry=self._continuations_for_run(run.run_id, active_only=False),
-                        queue=self.queued_inputs,
-                        session_controls=self.session_controls,
-                        session_controllers=self._session_controllers_for_run(run.run_id),
-                    ).settle(
-                        session_id=run.session_id,
-                        run_id=run.run_id,
-                    )
+                    settlement = await self._settle_run_continuation(run)
                     if not settlement.settled:
                         continue
                     settled_run_ids.append(run.run_id)
-                    diagnostics = (
-                        (f"extension snapshot recovery failed: {snapshot_error}",)
-                        if snapshot_error is not None
-                        else ()
-                    )
                     await self._emit_continuation_resolution(
                         settlement,
                         [],
-                        extra_diagnostics=diagnostics,
                     )
                 finally:
                     self._release_extension_snapshot(run.run_id)
@@ -1359,6 +1335,19 @@ class RuntimeService:
                     recover=False,
                 )
             session = snapshot.session
+            pending_continuation = next(
+                (
+                    candidate
+                    for candidate in snapshot.runs
+                    if self._run_continuation_is_pending(candidate)
+                ),
+                None,
+            )
+            if pending_continuation is not None:
+                raise SessionBusyError(
+                    "session has an unresolved terminal Run continuation: "
+                    f"{pending_continuation.run_id}"
+                )
             active_run = maybe_active_run(snapshot.runs)
             self._validate_model_resource_refs(
                 session,
@@ -1785,9 +1774,7 @@ class RuntimeService:
                     ),
                     commit_model_request=self._commit_model_request,
                     shared_budget_reason=(
-                        self._shared_budget_reason
-                        if self._agent_controls is not None
-                        else None
+                        self._shared_budget_reason if self._agent_controls is not None else None
                     ),
                     notify_provider_stream_start=on_provider_stream_start,
                 ),
@@ -3524,16 +3511,8 @@ class RuntimeService:
         if run.status not in ACTIVE_RUN_STATUSES:
             try:
                 await self._settle_terminal_run(run)
-                continuation_service = RunContinuationService(
-                    store=self.store,
-                    registry=self._continuations_for_run(run.run_id, active_only=False),
-                    queue=self.queued_inputs,
-                    session_controls=self.session_controls,
-                    session_controllers=self._session_controllers_for_run(run.run_id),
-                )
-                settlement = await continuation_service.settle(
-                    session_id=run.session_id,
-                    run_id=run.run_id,
+                settlement = await self._settle_run_continuation(
+                    run,
                     final_text=result.final_text,
                 )
                 run = settlement.run
@@ -3569,9 +3548,61 @@ class RuntimeService:
                 ),
             }
         )
-        if drain_queued_inputs and run.status == "completed":
+        if (
+            drain_queued_inputs
+            and run.status == "completed"
+            and not self._run_continuation_is_pending(run)
+        ):
             await self._drain_queued_input_queue(run.session_id)
         return updated
+
+    async def _settle_run_continuation(
+        self,
+        run: RunRecord,
+        *,
+        final_text: str = "",
+    ) -> RunContinuationSettlement:
+        if not self._run_continuation_is_pending(run):
+            return RunContinuationSettlement(run=run)
+
+        try:
+            await self._ensure_extension_snapshot(run)
+            if self._run_has_extension_binding(run) and (
+                run.run_id not in self._extension_snapshots
+            ):
+                raise RuntimeError("Run-bound extension Catalog was not restored")
+        except Exception as exc:  # noqa: BLE001 - leave the durable checkpoint retryable
+            diagnostic = (
+                f"extension snapshot recovery failed for Run {run.run_id}: "
+                f"{type(exc).__name__}: {redact_text(str(exc))}"
+            )
+            _LOG.warning(diagnostic)
+            return RunContinuationSettlement(
+                run=run,
+                diagnostics=(diagnostic,),
+            )
+
+        return await RunContinuationService(
+            store=self.store,
+            registry=self._continuations_for_run(run.run_id, active_only=False),
+            queue=self.queued_inputs,
+            session_controls=self.session_controls,
+            session_controllers=self._session_controllers_for_run(run.run_id),
+        ).settle(
+            session_id=run.session_id,
+            run_id=run.run_id,
+            final_text=final_text,
+        )
+
+    @staticmethod
+    def _run_continuation_is_pending(run: RunRecord) -> bool:
+        checkpoint = run.continuation
+        return (
+            run.kind == "agent"
+            and run.status not in ACTIVE_RUN_STATUSES
+            and checkpoint is not None
+            and checkpoint.state != "resolved"
+        )
 
     async def _emit_continuation_resolution(
         self,
@@ -3719,9 +3750,7 @@ class RuntimeService:
             latest = self.store.load_run(run.session_id, run.run_id)
             if latest.abort_requested or latest.status not in ACTIVE_RUN_STATUSES:
                 return latest
-            updated = latest.model_copy(
-                update={"model_round_count": latest.model_round_count + 1}
-            )
+            updated = latest.model_copy(update={"model_round_count": latest.model_round_count + 1})
             self.store.save_run(updated)
             return updated
 
@@ -3948,7 +3977,11 @@ class RuntimeService:
         self._restore_run_tool_cap(run)
         if run.agent_catalog is not None:
             self._run_agent_catalogs[run.run_id] = run.agent_catalog
-        if self._extension_catalog is None or run.run_id in self._extension_snapshots:
+        if run.run_id in self._extension_snapshots:
+            return
+        if self._extension_catalog is None:
+            if self._run_has_extension_binding(run):
+                raise RuntimeError("Run-bound extension Catalog is unavailable")
             return
         raw = run.metadata.get("extension_generations", [])
         if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
@@ -3960,6 +3993,10 @@ class RuntimeService:
             catalog_id=catalog_id,
         )
         self._restore_session_control_snapshot(run)
+
+    @staticmethod
+    def _run_has_extension_binding(run: RunRecord) -> bool:
+        return "extension_catalog_id" in run.metadata or "extension_generations" in run.metadata
 
 
 def _queued_user_input_view(item: QueuedInput) -> QueuedUserInputView:

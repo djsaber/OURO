@@ -21,6 +21,7 @@ from ouro.core.continuations import (
     ContinuationPolicyRegistration,
     RunContinuationRegistry,
 )
+from ouro.core.errors import SessionBusyError
 from ouro.core.observers import ObserverRegistration, ObserverRegistry, RunFinishedObservation
 from ouro.core.prompt_policies import (
     PromptPolicyCall,
@@ -949,6 +950,64 @@ async def test_runtime_startup_reconciliation_replays_pending_settlement_without
     assert queued[0].semantic_tag == "goal-continue"
     assert queued[0].coalesce_key == "goal-continuation"
     assert [event.event_type for event in events].count("run_continuation_resolved") == 1
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_recovery_failure_keeps_continuation_retryable(tmp_path, caplog) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    plugin_id = "dev.example.owner"
+    activation = _activation(plugin_id, "mode")
+    session = SessionRecord(controls=SessionControlState(revision=1, activations=[activation]))
+    store.create_session(session)
+    controller_ref = _controller(plugin_id, "boundary", "gen-owner").model_copy(
+        update={
+            "active_when_controller_id": activation.controller_id,
+            "activation_id": activation.activation_id,
+        }
+    )
+    run = RunRecord(
+        session_id=session.session_id,
+        status="aborted",
+        metadata={
+            "extension_catalog_id": "cat-unavailable",
+            "extension_generations": [],
+        },
+        continuation=RunContinuationCheckpoint(controllers=[controller_ref]),
+    )
+    store.save_run(run)
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            CountingProvider(),
+            ModelMetadata(model_id="recovery", provider_id="continuation-test"),
+        ),
+        tools=ToolRegistry(),
+    )
+
+    class UnavailableCatalog:
+        async def snapshot_for(self, expected_generations, *, catalog_id=None):
+            del expected_generations, catalog_id
+            raise RuntimeError("catalog storage is unavailable")
+
+    runtime.bind_extensions(catalog=UnavailableCatalog())  # type: ignore[arg-type]
+
+    first = await runtime.reconcile_pending_run_continuations()
+    second = await runtime.reconcile_pending_run_continuations()
+
+    restored = store.load_run(session.session_id, run.run_id)
+    remaining = store.load_session_record(session.session_id).controls.activations
+    assert first == ()
+    assert second == ()
+    assert restored.continuation is not None
+    assert restored.continuation.state == "pending"
+    assert restored.continuation.action is None
+    assert [item.activation_id for item in remaining] == [activation.activation_id]
+    assert "extension snapshot recovery failed" in caplog.text
+    assert "catalog storage is unavailable" in caplog.text
+    with pytest.raises(SessionBusyError, match="unresolved terminal Run continuation"):
+        await runtime.run("Do not start a newer Run", session_id=session.session_id)
     await runtime.close()
 
 

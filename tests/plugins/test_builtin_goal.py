@@ -18,12 +18,12 @@ from ouro.core.provider import (
     ProviderStreamEvent,
     Usage,
 )
-from ouro.core.tools import ToolCallRequest
+from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.local_application import LocalApplication
 from ouro.plugins.api import ScopedPluginDataStore
 from ouro.sdk.plugins import v1 as sdk
 from ouro.sessions import LocalSessionStore
-from ouro.tools import ToolRegistry
+from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 
 PLUGIN_ID = "dev.ouro.goal"
 
@@ -77,6 +77,52 @@ class _EndToEndGoalProvider:
             type="done",
             usage=Usage(input_tokens=3, output_tokens=2),
         )
+
+    async def check_connection(self, model) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            model_id=model.model_id,
+            ok=True,
+            message="ok",
+        )
+
+
+class _AbortableGoalProvider:
+    provider_id = "goal-abort"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(
+        self,
+        *,
+        model,
+        system_prompt="",
+        messages,
+        tools=None,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        del model, system_prompt, messages, tools
+        call = self.calls
+        self.calls += 1
+        if call == 0:
+            yield ProviderStreamEvent.from_tool_call(
+                ToolCallRequest(
+                    id="create_goal",
+                    name="CreateGoal",
+                    arguments={"objective": "Recover after interruption"},
+                )
+            )
+        elif call == 1:
+            yield ProviderStreamEvent.from_tool_call(
+                ToolCallRequest(
+                    id="hold_goal",
+                    name="HoldGoal",
+                    arguments={},
+                )
+            )
+        else:
+            raise AssertionError("aborted Goal started another model round")
+        yield ProviderStreamEvent(type="done")
 
     async def check_connection(self, model) -> ProviderCheckResult:
         return ProviderCheckResult(
@@ -355,6 +401,100 @@ async def test_goal_runs_end_to_end_and_retains_final_usage(tmp_path) -> None:
         await application.close()
 
 
+@pytest.mark.asyncio
+async def test_cold_abort_restores_goal_snapshot_and_pauses_goal(tmp_path) -> None:
+    home = tmp_path / "home"
+    store = LocalSessionStore(home)
+    store.initialize()
+    provider = _AbortableGoalProvider()
+    tools = ToolRegistry()
+
+    def hold_goal(invocation: ToolInvocation) -> ToolResult:
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            content="not reached",
+        )
+
+    tools.register(
+        Tool(
+            definition=ToolDefinition(
+                name="HoldGoal",
+                description="Keep the Goal Run at an approval boundary.",
+                permission_mode="approval",
+            ),
+            handler=hold_goal,
+        )
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="goal-abort", provider_id=provider.provider_id),
+        ),
+        tools=tools,
+        environment=RuntimeEnvironment.local(home, store.sessions_dir),
+    )
+    application = LocalApplication.from_runtime(runtime, home=home)
+    await application.start()
+    assert application.plugins is not None
+    await application.plugins.enable(PLUGIN_ID)
+    session = runtime.create_session(title="Goal abort")
+
+    try:
+        command = await application.plugins.execute_command(
+            f"{PLUGIN_ID}:goal",
+            "Recover after interruption",
+            session_id=session.session_id,
+        )
+        assert command.output == "Requesting goal creation."
+        pending_create = await runtime.submit_plugin_input_batch(
+            command.session_input_batches[0],
+            session_id=session.session_id,
+        )
+        assert pending_create.run.status == "waiting_approval"
+
+        pending_hold = await runtime.approve_tool(
+            session_id=session.session_id,
+            run_id=pending_create.run.run_id,
+            approved=True,
+        )
+        assert pending_hold.run.status == "waiting_approval"
+
+        before = store.load_session_record(session.session_id)
+        assert len(before.controls.activations) == 1
+        previous_activation_id = before.controls.activations[0].activation_id
+        runtime._release_extension_snapshot(pending_hold.run.run_id)
+
+        aborted = await runtime.abort_run(
+            session_id=session.session_id,
+            run_id=pending_hold.run.run_id,
+        )
+
+        record = next(
+            item
+            for item in store.load_session_extension_states(session.session_id)
+            if item.owner_id == PLUGIN_ID
+        )
+        goal = SessionGoalState.from_json(record.payload).goal
+        controls = store.load_session_record(session.session_id).controls.activations
+        settled = store.load_run(session.session_id, aborted.run.run_id).continuation
+        assert aborted.run.status == "aborted"
+        assert goal is not None
+        assert goal.status == "paused"
+        assert goal.report is not None
+        assert "aborted" in goal.report
+        assert len(controls) == 1
+        assert controls[0].phase == "active"
+        assert controls[0].activation_id != previous_activation_id
+        assert settled is not None
+        assert settled.action == "pause"
+        assert settled.reason == "run_aborted"
+        assert provider.calls == 2
+    finally:
+        await application.close()
+
+
 @pytest.mark.parametrize(
     ("argument", "action", "budget", "objective"),
     [
@@ -534,6 +674,38 @@ def test_budget_is_settled_after_the_full_execution_and_then_stops(tmp_path) -> 
     assert goal.status == "budget_exhausted"
     assert goal.tokens_used == 13
     assert goal.tokens_used > goal.token_budget  # type: ignore[operator]
+
+
+@pytest.mark.parametrize("run_status", ["aborted", "failed", "paused", "recoverable"])
+def test_abnormal_run_status_pauses_active_goal(
+    tmp_path,
+    run_status: sdk.RunStatus,
+) -> None:
+    plugin, state = _plugin(tmp_path)
+    _create(plugin)
+
+    decision = plugin.goal_continuation(
+        sdk.RunOutcome(
+            session_id="session_1",
+            run_id="run_1",
+            status=run_status,
+            origin="user",
+            error=f"Run ended as {run_status}.",
+            usage={"input_tokens": 3, "output_tokens": 2},
+        )
+    )
+
+    assert decision.action == "pause"
+    assert decision.reason == f"run_{run_status}"
+    transition = decision.session_control_transitions[0]
+    assert transition.action == "replace"
+    assert transition.payload["operation"] == "runtime_paused"
+    _activate(plugin, activation_id="activation_2", payload=transition.payload)
+    goal = _goal(state)
+    assert goal is not None
+    assert goal.status == "paused"
+    assert goal.tokens_used == 5
+    assert goal.report == f"Run ended as {run_status}."
 
 
 def test_complete_wins_over_budget_exhaustion_in_the_same_execution(tmp_path) -> None:
