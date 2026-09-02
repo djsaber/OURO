@@ -775,29 +775,12 @@ class TuiController:
         sessions = self._runtime().sessions
         catalog = {entry.session_id: entry for entry in sessions.catalog().entries}
         selected = tuple(dict.fromkeys(session_ids))
-        ineligible = tuple(
-            session_id
-            for session_id in selected
-            if (entry := catalog.get(session_id)) is not None
-            and not entry.archived
-            and not entry.catalog_marks_unreadable
-        )
-        if ineligible:
-            raise ValueError(
-                "only archived or unreadable sessions can be deleted: "
-                + ", ".join(ineligible)
-            )
         remaining = set(catalog)
         removed: list[str] = []
         for session_id in selected:
             if session_id not in remaining:
                 continue
-            entry = catalog[session_id]
-            result = (
-                sessions.trash_invalid(session_id)
-                if entry.catalog_marks_unreadable
-                else sessions.trash(session_id)
-            )
+            result = sessions.trash_from_catalog(session_id)
             removed.extend(result.session_ids)
             remaining.difference_update(result.session_ids)
         return tuple(dict.fromkeys(removed))

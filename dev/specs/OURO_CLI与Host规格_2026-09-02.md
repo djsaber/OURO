@@ -96,6 +96,10 @@ producer provenance，不能决定是否显示；实时链收到任一输入事�
 会话加载错误；菜单中呈现的错误消息使用 design token 的失败语义色。合法 subagent 投影继续由 Agent tree 导航，未知
 `session_kind` 不通过 canonical 回读补齐。
 
+删除菜单继续只展示已归档或带索引/canonical 错误的条目；`catalog_error` 条目不因 canonical 仍可读而被排除。用户确认后，
+TUI 只把稳定 Session identity 交给 Application 的 Catalog-scope trash，不重复检查归档、health、`session_kind` 或
+canonical 可读性。退出 Host 时，等待子菜单结果的 Textual worker 取消属于正常关闭，不得向终端泄漏 traceback。
+
 每个 assistant turn 分别拥有 reasoning 纯文本行缓冲与 answer 源流。`model_reasoning_delta` 只追加到 dim
 reasoning 区域，不能按 Markdown 解释，也不能混入最终回答；首次可见增量创建该 turn 并标记 `THINKING`，activity 离开
 `streaming_reasoning` 后收敛为 `THOUGHT`。后续模型轮次再次产生 reasoning 时复用同一区域并恢复 live 状态。

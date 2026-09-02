@@ -317,6 +317,56 @@ async def test_controller_deletes_unreadable_session_without_archiving(
 
 
 @pytest.mark.asyncio
+async def test_controller_deletes_catalog_error_without_loading_canonical_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = two_route_application(tmp_path)
+    session = application.runtime.sessions.create(
+        session_id="ses_invalid_catalog_delete",
+        title="Readable canonical session",
+    ).session
+    index_path = application.runtime.store._catalog.index_path
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    indexed = next(item for item in payload["sessions"] if item["session_id"] == session.session_id)
+    indexed.pop("session_kind")
+    index_path.write_text(json.dumps(payload), encoding="utf-8")
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+    )
+    await controller.start()
+
+    def unexpected_canonical_read(*_args, **_kwargs):
+        raise AssertionError("TUI deletion must not decode canonical Session records")
+
+    load_session_record = application.runtime.store.load_session_record
+    monkeypatch.setattr(
+        application.runtime.store,
+        "load_session_record",
+        unexpected_canonical_read,
+    )
+    monkeypatch.setattr(
+        application.runtime.store,
+        "list_sessions",
+        unexpected_canonical_read,
+    )
+
+    try:
+        entries = {entry.session_id: entry for entry in await controller.sessions()}
+        removed = await controller.delete_sessions((session.session_id,))
+
+        assert entries[session.session_id].catalog_error is not None
+        assert removed == (session.session_id,)
+        with pytest.raises(FileNotFoundError):
+            load_session_record(session.session_id)
+        assert await controller.sessions() == ()
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
 async def test_controller_start_defers_session_catalog_until_requested(
     tmp_path: Path,
     monkeypatch,

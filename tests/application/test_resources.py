@@ -316,14 +316,22 @@ def test_remove_collects_content_only_after_last_session_reference(tmp_path) -> 
     assert list(resource_store.blobs_dir.iterdir()) == []
 
 
-def test_trashing_session_collects_unreachable_content_after_canonical_publish(tmp_path) -> None:
+@pytest.mark.parametrize("scope_source", ("canonical", "catalog"))
+def test_trashing_session_collects_unreachable_content_after_canonical_publish(
+    tmp_path,
+    scope_source: str,
+) -> None:
     _, resource_store, resources, session_service = _services(tmp_path)
     session = session_service.create(title="Trash").session
     source = tmp_path / "trash.txt"
     source.write_text("trash", encoding="utf-8")
     resource_id = resources.import_resource(session.session_id, source).resource.resource_id
 
-    result = session_service.trash(session.session_id)
+    result = (
+        session_service.trash(session.session_id)
+        if scope_source == "canonical"
+        else session_service.trash_from_catalog(session.session_id)
+    )
 
     assert (resource_store.root / "trash" / "sessions" / result.trash_id).is_dir()
     assert list(resource_store.records_dir.iterdir()) == []

@@ -538,8 +538,19 @@ def test_catalog_keeps_valid_sessions_visible_when_another_session_is_corrupt(tm
     assert by_id["ses_corrupt"].health == "corrupt"
 
 
-def test_unreadable_session_tree_can_be_trashed_after_canonical_verification(tmp_path) -> None:
-    store, sessions = _service(tmp_path)
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+def test_catalog_scoped_trash_does_not_decode_canonical_records(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
+    )
+    store.initialize()
+    sessions = SessionService(store)
     root = sessions.create(session_id="ses_corrupt_root", title="Corrupt root").session
     child = SessionRecord(
         session_id="ses_corrupt_child",
@@ -550,23 +561,41 @@ def test_unreadable_session_tree_can_be_trashed_after_canonical_verification(tmp
         delegation_id="dlg_corrupt_child",
     )
     store.create_session(child)
-    root_path = store.sessions_dir / root.session_id / "session.json"
-    root_path.write_text("{broken", encoding="utf-8")
+    if backend == "files":
+        root_path = store.sessions_dir / root.session_id / "session.json"
+        root_path.write_text("{broken", encoding="utf-8")
+    else:
+        with closing(sqlite3.connect(store.database)) as connection:
+            connection.execute(
+                "UPDATE sessions SET payload = '{broken' WHERE session_id = ?",
+                (root.session_id,),
+            )
+            connection.commit()
     store.rebuild_catalog()
 
-    result = sessions.trash_invalid(root.session_id)
+    def unexpected_canonical_read(_session_id: str) -> None:
+        raise AssertionError("catalog-scoped trash must not decode canonical records")
+
+    load_session_record = store.load_session_record
+    monkeypatch.setattr(store, "load_session_observation", unexpected_canonical_read)
+    monkeypatch.setattr(store, "load_session_record", unexpected_canonical_read)
+    result = sessions.trash_from_catalog(root.session_id)
 
     assert result.session_id == root.session_id
     assert set(result.session_ids) == {root.session_id, child.session_id}
-    assert not (store.sessions_dir / root.session_id).exists()
-    assert not (store.sessions_dir / child.session_id).exists()
     assert store.read_catalog().sessions == []
-    trashed = store.trash_sessions_dir / result.trash_id / "sessions"
-    assert (trashed / root.session_id).is_dir()
-    assert (trashed / child.session_id).is_dir()
+    for session_id in (root.session_id, child.session_id):
+        with pytest.raises(FileNotFoundError):
+            load_session_record(session_id)
+    if backend == "files":
+        assert not (store.sessions_dir / root.session_id).exists()
+        assert not (store.sessions_dir / child.session_id).exists()
+        trashed = store.trash_sessions_dir / result.trash_id / "sessions"
+        assert (trashed / root.session_id).is_dir()
+        assert (trashed / child.session_id).is_dir()
 
 
-def test_catalog_error_does_not_authorize_trashing_readable_session(tmp_path) -> None:
+def test_catalog_error_does_not_block_explicit_trash(tmp_path) -> None:
     store, sessions = _service(tmp_path)
     session = sessions.create(session_id="ses_catalog_error", title="Readable").session
     index_path = store._catalog.index_path
@@ -578,12 +607,14 @@ def test_catalog_error_does_not_authorize_trashing_readable_session(tmp_path) ->
 
     assert entry.catalog_error is not None
     assert entry.health is None
-    with pytest.raises(ValueError, match="not marked unreadable"):
-        sessions.trash_invalid(session.session_id)
-    assert store.load_session_record(session.session_id).session_id == session.session_id
+    result = sessions.trash_from_catalog(session.session_id)
+
+    assert result.session_ids == (session.session_id,)
+    with pytest.raises(FileNotFoundError):
+        store.load_session_record(session.session_id)
 
 
-def test_stale_unreadable_projection_does_not_authorize_trashing_repaired_session(
+def test_stale_unreadable_projection_does_not_block_explicit_trash(
     tmp_path,
 ) -> None:
     store, sessions = _service(tmp_path)
@@ -594,9 +625,11 @@ def test_stale_unreadable_projection_does_not_authorize_trashing_repaired_sessio
     store.rebuild_catalog()
     session_path.write_text(canonical_payload, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="canonical data is readable"):
-        sessions.trash_invalid(session.session_id)
-    assert store.load_session_record(session.session_id).session_id == session.session_id
+    result = sessions.trash_from_catalog(session.session_id)
+
+    assert result.session_ids == (session.session_id,)
+    with pytest.raises(FileNotFoundError):
+        store.load_session_record(session.session_id)
 
 
 def test_catalog_marks_incompatible_session_record_as_migration_required(tmp_path) -> None:
@@ -1417,9 +1450,11 @@ def test_root_archive_and_trash_preserve_agent_descendant_scope(tmp_path, backen
 
 
 @pytest.mark.parametrize("backend", ("files", "sqlite"))
+@pytest.mark.parametrize("scope_source", ("canonical", "catalog"))
 def test_trash_tree_refuses_concurrent_live_owner_without_partial_removal(
     tmp_path,
     backend: str,
+    scope_source: str,
 ) -> None:
     store = (
         LocalSessionStore(tmp_path / "files")
@@ -1438,12 +1473,16 @@ def test_trash_tree_refuses_concurrent_live_owner_without_partial_removal(
     )
     store.create_session(root)
     store.create_session(child)
+    store.rebuild_catalog()
     live_lock = store.acquire_session_lock(child.session_id, "run_live")
     assert live_lock is not None
 
     try:
         with pytest.raises(SessionBusyError, match="live runtime owns"):
-            sessions.trash(root.session_id)
+            if scope_source == "canonical":
+                sessions.trash(root.session_id)
+            else:
+                sessions.trash_from_catalog(root.session_id)
     finally:
         live_lock.release()
 

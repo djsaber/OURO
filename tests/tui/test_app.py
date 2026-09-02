@@ -6471,6 +6471,50 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
 
 
 @pytest.mark.asyncio
+async def test_delete_session_menu_force_deletes_catalog_error_and_quits_cleanly(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    session = application.runtime.sessions.create(
+        session_id="ses_delete_catalog_error",
+        title="Readable canonical session",
+    ).session
+    index_path = application.runtime.store._catalog.index_path
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    indexed = next(item for item in payload["sessions"] if item["session_id"] == session.session_id)
+    indexed.pop("session_kind")
+    index_path.write_text(json.dumps(payload), encoding="utf-8")
+    session_dir = application.runtime.store.sessions_dir / session.session_id
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        app.screen.query_one("#choice-filter", Input).value = "Delete session"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, MultiChoiceScreen, title="DELETE SESSIONS")
+
+        choice = next(item for item in app.screen._choices if item.value == session.session_id)
+        assert choice.trailing == "index error"
+
+        await pilot.press("enter", "down", "enter")
+        await _wait_until(
+            lambda: not session_dir.exists(),
+            pilot,
+            description="catalog-error Session deletion",
+        )
+
+        assert application.runtime.sessions.catalog().entries == ()
+        assert not list(app.query("Toast"))
+
+        await pilot.press("ctrl+q")
+        await pilot.pause()
+        assert app.is_running is False
+
+
+@pytest.mark.asyncio
 async def test_delete_session_menu_keeps_current_marker_separate_from_multi_selection(
     tmp_path: Path,
 ) -> None:

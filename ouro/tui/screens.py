@@ -17,6 +17,7 @@ from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
+from textual.worker import WorkerCancelled
 
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import TUI_COMMANDS, TuiCommand
@@ -572,7 +573,10 @@ class ChoiceScreen(ModalScreen[str | None]):
             return await self.app.push_screen_wait(screen)
 
         worker = self.app.run_worker(wait_for_child(), group="choice-child")
-        return await worker.wait()
+        try:
+            return await worker.wait()
+        except WorkerCancelled:
+            return None
 
     def show_child(self, screen: ModalScreen[ScreenResult]) -> None:
         """Show a child whose result is intentionally ignored."""

@@ -90,9 +90,10 @@ This project records user-visible and framework-contract changes in this file.
 - File and SQLite Session catalog writes now persist required primary/subagent identity through
   `session_kind`; legacy or damaged projections retain readable identity with unknown kind and
   health instead of being fabricated as failed, corrupt primary Sessions.
-- Direct removal of an unreadable, unarchived Session now requires both a canonical-health catalog
-  mark and a failing canonical observation read, so an invalid or stale index cannot authorize
-  removal of a readable Session.
+- Confirmed TUI Session removal now uses stable catalog identities without decoding canonical
+  records or treating catalog/canonical health as a second authorization boundary. Catalog errors,
+  stale health, and unreadable Session data therefore cannot block deletion; live-owner locks and
+  the backend's atomic trash publication remain enforced.
 - Focused TUI text inputs now resynchronize the terminal cursor after layout, so IME
   composition and candidate windows anchor to the input on first focus and after relocation.
 - Multiline TUI inputs now finish cursor scrolling after edit geometry settles, keeping the

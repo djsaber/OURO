@@ -3206,7 +3206,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         deletable = tuple(
             session
             for session in self._sessions
-            if session.archived or session.catalog_marks_unreadable
+            if (
+                session.archived
+                or session.catalog_error is not None
+                or session.catalog_marks_unreadable
+            )
         )
         if not deletable:
             return
@@ -3228,7 +3232,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             deletable_sessions = tuple(
                 session
                 for session in self._sessions
-                if session.archived or session.catalog_marks_unreadable
+                if (
+                    session.archived
+                    or session.catalog_error is not None
+                    or session.catalog_marks_unreadable
+                )
             )
             return _session_choices(
                 deletable_sessions,
@@ -3237,7 +3245,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         delete_screen = MultiChoiceScreen(
             title="DELETE SESSIONS",
-            placeholder="Filter archived or unreadable sessions…",
+            placeholder="Filter archived or invalid sessions…",
             choices=_session_choices(
                 deletable,
                 selected_session_id=self._visible_session_id(),
