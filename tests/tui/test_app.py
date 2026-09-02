@@ -4764,6 +4764,120 @@ async def test_completed_tool_batch_archives_in_source_order(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_streaming_tool_row_mounts_after_its_name_and_updates_in_place_on_start(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    session_id = "ses_streaming_tool"
+    run_id = "run_streaming_tool"
+    app._projection = TuiSessionProjection(session_id)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        conversation = app.query_one(ConversationView)
+        await app._apply_runtime_events(
+            (
+                EventRecord(
+                    session_id=session_id,
+                    run_id=run_id,
+                    event_type="run_started",
+                    sequence=1,
+                ),
+                EventRecord(
+                    session_id=session_id,
+                    run_id=run_id,
+                    event_type="model_request_started",
+                    sequence=2,
+                    payload={"turn_id": "turn_streaming_tool"},
+                ),
+                EventRecord(
+                    session_id=session_id,
+                    run_id=run_id,
+                    event_type="model_tool_call_delta",
+                    sequence=3,
+                    payload={
+                        "turn_id": "turn_streaming_tool",
+                        "index": 0,
+                        "name_delta": "Write",
+                    },
+                ),
+            )
+        )
+        assert not conversation.query(".tool-row")
+
+        await app._apply_runtime_events(
+            (
+                EventRecord(
+                    session_id=session_id,
+                    run_id=run_id,
+                    event_type="model_tool_call_delta",
+                    sequence=4,
+                    payload={
+                        "turn_id": "turn_streaming_tool",
+                        "index": 0,
+                        "arguments_delta": '{"path":"out',
+                    },
+                ),
+            )
+        )
+        row = conversation.query_one(tui_widgets.ToolActivityRow)
+        assert row.tool.status == "streaming"
+        assert row.tool.argument_stream_tail == '{"path":"out'
+        assert f"Write {TUI_DESIGN.tool_stream_marker}" in str(row.render())
+        provisional_id = row.tool_call_id
+
+        await app._apply_runtime_events(
+            (
+                EventRecord(
+                    session_id=session_id,
+                    run_id=run_id,
+                    event_type="model_message_completed",
+                    sequence=5,
+                    payload={"tool_call_count": 1},
+                ),
+                EventRecord(
+                    session_id=session_id,
+                    run_id=run_id,
+                    event_type="tool_batch_planned",
+                    sequence=6,
+                    payload={"batch_id": "batch_streaming_tool"},
+                ),
+                EventRecord(
+                    session_id=session_id,
+                    run_id=run_id,
+                    event_type="tool_call_requested",
+                    sequence=7,
+                    payload={
+                        "tool_call_id": "call_streaming_tool",
+                        "tool_name": "Write",
+                        "source_index": 0,
+                        "arguments": {"path": "out.txt", "content": "hello"},
+                    },
+                ),
+                EventRecord(
+                    session_id=session_id,
+                    run_id=run_id,
+                    event_type="tool_call_started",
+                    sequence=8,
+                    payload={
+                        "tool_call_id": "call_streaming_tool",
+                        "tool_name": "Write",
+                        "source_index": 0,
+                    },
+                ),
+            )
+        )
+
+        assert conversation.query_one(tui_widgets.ToolActivityRow) is row
+        assert len(conversation.query(".tool-row")) == 1
+        assert provisional_id not in conversation._tools
+        assert conversation._tools["call_streaming_tool"] is row
+        assert row.tool.argument_stream_tail is None
+        assert "out.txt" in str(row.render())
+        assert TUI_DESIGN.tool_stream_marker not in str(row.render()).splitlines()[0]
+
+
+@pytest.mark.asyncio
 async def test_tool_batch_mounts_publishes_history_and_unmounts_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

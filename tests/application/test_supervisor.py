@@ -13,7 +13,12 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import AgentCatalogSnapshot
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
-from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
+from ouro.core.provider import (
+    ModelMetadata,
+    ProviderCheckResult,
+    ProviderStreamEvent,
+    ToolCallDelta,
+)
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.mcp import MCPConfigStore, MCPRuntimeResource, MCPServerConfig
 from ouro.providers import FauxProvider
@@ -79,6 +84,33 @@ class BlockingProvider:
 
     async def check_connection(self, model) -> ProviderCheckResult:
         return ProviderCheckResult(provider_id=self.provider_id, ok=True, model_id=model.model_id)
+
+
+class BlockingToolStreamProvider:
+    provider_id = "blocking-tool-stream"
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
+        del model, system_prompt, messages, tools
+        yield ProviderStreamEvent(
+            type="tool_call_delta",
+            tool_call_delta=ToolCallDelta(
+                index=0,
+                id_delta="call_stream",
+                name_delta="Inspect",
+            ),
+        )
+        yield ProviderStreamEvent(
+            type="tool_call_delta",
+            tool_call_delta=ToolCallDelta(
+                index=0,
+                arguments_delta='{\n\t"path":',
+            ),
+        )
+        await self.release.wait()
+        yield ProviderStreamEvent(type="done")
 
 
 class RecordingManagedResource:
@@ -297,6 +329,35 @@ async def test_activity_subscription_exposes_initial_and_live_fine_grained_state
     assert terminal.status == "completed"
     assert "streaming_text" in observed
     assert supervisor.activity(handle).activity == "completed"
+    subscription.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_activity_subscription_exposes_host_neutral_streaming_tool_state(tmp_path) -> None:
+    provider = BlockingToolStreamProvider()
+    supervisor = RuntimeSupervisor(_runtime(tmp_path, provider), max_concurrency=1)
+    handle = await supervisor.submit("inspect")
+    subscription = supervisor.subscribe(handle.session_id, include_activity=True)
+
+    while True:
+        notification = await asyncio.wait_for(subscription.get(), timeout=2)
+        if notification.kind != "event" or notification.event is None:
+            continue
+        if (
+            notification.event.event_type == "model_tool_call_delta"
+            and notification.event.data.get("arguments_delta")
+        ):
+            break
+
+    streamed_tool = supervisor.activity(handle).tool_calls[0]
+
+    assert streamed_tool.status == "streaming"
+    assert streamed_tool.tool_name == "Inspect"
+    assert streamed_tool.source_index == 0
+    assert streamed_tool.argument_stream_tail == '{\n\t"path":'
+
+    await supervisor.abort(handle, reason="test observed streaming activity")
     subscription.close()
     await supervisor.shutdown()
 

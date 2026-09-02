@@ -13,7 +13,12 @@ from ouro.core.context import ContextMetrics
 from ouro.core.state import RunPhase
 from ouro.core.tool_batches import ToolBatchPhase, ToolCallStatus
 
-RuntimeToolCallStatus = ToolCallStatus | Literal["cancelling"]
+RuntimeToolCallStatus = ToolCallStatus | Literal["streaming", "cancelling"]
+
+# Runtime snapshots retain a bounded, verbatim suffix rather than an ever-growing
+# incomplete JSON document. Hosts can consume or ignore it without taking on work
+# proportional to the total streamed argument size.
+RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS = 256
 
 SupervisorRunStatus = Literal[
     "idle",
@@ -79,11 +84,26 @@ class RuntimeStatusSnapshot(ApplicationDTO):
 
 
 class RuntimeToolCallActivity(ApplicationDTO):
+    """Host-neutral projection of a tool call's current runtime activity.
+
+    Before ``requested_at`` is set, ``tool_call_id`` is a stream-scoped
+    projection identity and ``tool_name`` contains the received name fragments.
+    A non-None ``argument_stream_tail`` means argument streaming has begun.
+    """
+
     tool_call_id: str
     tool_name: str
     status: RuntimeToolCallStatus
     source_index: int = Field(ge=0)
     arguments: dict[str, JsonValue] = Field(default_factory=dict)
+    argument_stream_tail: str | None = Field(
+        default=None,
+        max_length=RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS,
+        description=(
+            "Bounded verbatim suffix observed while serialized arguments streamed; "
+            "None before argument streaming and cleared on execution or terminal state"
+        ),
+    )
     result_data: dict[str, JsonValue] = Field(default_factory=dict)
     requested_at: datetime | None = None
     started_at: datetime | None = None

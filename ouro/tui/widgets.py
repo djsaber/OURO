@@ -9,7 +9,7 @@ from time import monotonic
 from typing import Literal
 
 from pydantic import JsonValue
-from rich.cells import cell_len
+from rich.cells import cell_len, get_character_cell_size
 from rich.text import Text
 from textual import events, work
 from textual.app import ComposeResult
@@ -151,12 +151,21 @@ _SUBAGENT_ACTIVITY_LABELS = {
     "recoverable": "Failed",
 }
 _ACTIVE_TOOL_STATUSES = frozenset(
-    {"planned", "ready", "resolving_input", "running", "cancelling", "waiting_child"}
+    {
+        "planned",
+        "ready",
+        "resolving_input",
+        "running",
+        "cancelling",
+        "waiting_child",
+    }
 )
 _FAILED_TOOL_STATUSES = frozenset({"failed", "rejected", "aborted"})
 _FAILED_SUBAGENT_STATUSES = frozenset({"failed", "aborted", "recoverable"})
 _CONTEXT_PROGRESS_WIDTH = 11
 _HEADER_MIN_GAP = 3
+_TOOL_ARGUMENT_STREAM_WINDOW_CELLS = 48
+_SINGLE_LINE_TOOL_ARGUMENT_TRANSLATION = str.maketrans("\r\n\t", "   ")
 
 
 def _compact_names(names: tuple[str, ...], *, limit: int = 3) -> str:
@@ -681,7 +690,7 @@ class ToolActivityRow(RangeSelectionOnly, Static):
         run_id: str | None,
         agent: AgentTreeNode | None = None,
     ) -> None:
-        clickable = run_id is not None and tool.tool_name == "SpawnAgent"
+        clickable = _tool_is_clickable(tool, run_id=run_id)
         super().__init__(classes="tool-row clickable" if clickable else "tool-row")
         self._clickable = clickable
         self._hovered = False
@@ -706,6 +715,11 @@ class ToolActivityRow(RangeSelectionOnly, Static):
         if tool == self._tool:
             return
         self._tool = tool
+        self.tool_call_id = tool.tool_call_id
+        clickable = _tool_is_clickable(tool, run_id=self.run_id)
+        if clickable != self._clickable:
+            self._clickable = clickable
+            self.set_class(clickable, "clickable")
         self._sync_timer()
         self._render_tool()
 
@@ -734,7 +748,10 @@ class ToolActivityRow(RangeSelectionOnly, Static):
 
     @property
     def _is_active(self) -> bool:
-        return self._tool.status in _ACTIVE_TOOL_STATUSES
+        return (
+            self._tool.argument_stream_tail is not None
+            or self._tool.status in _ACTIVE_TOOL_STATUSES
+        )
 
     def _tick(self) -> None:
         self._frame = (self._frame + 1) % len(TUI_DESIGN.spinner_frames)
@@ -785,6 +802,23 @@ def _tool_activity_text(
     highlighted: bool = False,
 ) -> Text:
     """Render one tool state without coupling it to a mounted widget."""
+
+    if tool.argument_stream_tail is not None:
+        text = Text(no_wrap=True, overflow="ellipsis")
+        text.append(
+            f"{TUI_DESIGN.spinner_frames[frame]} ",
+            style=theme.accent,
+        )
+        text.append(tool.tool_name, style=TUI_DESIGN.text_faint)
+        text.append(
+            f" {TUI_DESIGN.tool_stream_marker} ",
+            style=TUI_DESIGN.separator_tone,
+        )
+        text.append(
+            _tool_argument_stream_window(tool.argument_stream_tail),
+            style=TUI_DESIGN.text_faint,
+        )
+        return text
 
     presentation = present_tool(tool)
     is_spawn_agent = tool.tool_name.casefold() == "spawnagent"
@@ -861,6 +895,29 @@ def _tool_activity_text(
     if highlighted:
         text.stylize(TUI_DESIGN.text_highlight)
     return text
+
+
+def _tool_argument_stream_window(value: str) -> str:
+    """Return the rightmost argument cells in a fixed-width sliding window."""
+
+    value = value.translate(_SINGLE_LINE_TOOL_ARGUMENT_TRANSLATION)
+    used = 0
+    start = len(value)
+    for index in range(len(value) - 1, -1, -1):
+        width = get_character_cell_size(value[index])
+        if used + width > _TOOL_ARGUMENT_STREAM_WINDOW_CELLS:
+            break
+        used += width
+        start = index
+    return f"{value[start:]}{' ' * (_TOOL_ARGUMENT_STREAM_WINDOW_CELLS - used)}"
+
+
+def _tool_is_clickable(tool: RuntimeToolCallActivity, *, run_id: str | None) -> bool:
+    return (
+        run_id is not None
+        and tool.tool_name == "SpawnAgent"
+        and tool.status != "streaming"
+    )
 
 
 def _subagent_identity(agent: AgentTreeNode) -> str:
@@ -1909,10 +1966,20 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
 
     async def sync_tools(self, tools: tuple[RuntimeToolCallActivity, ...]) -> None:
         await self._dismiss_welcome()
+        tools = tuple(
+            tool
+            for tool in tools
+            if tool.tool_name
+            and (
+                tool.status != "streaming"
+                or tool.argument_stream_tail is not None
+            )
+        )
         historical_tool_ids = self._history.update_tools(
             tools,
             run_id=self._current_run_id,
         )
+        self._adopt_streaming_tool_rows(tools)
         has_new_tool = any(
             tool.tool_call_id not in historical_tool_ids and tool.tool_call_id not in self._tools
             for tool in tools
@@ -1951,6 +2018,27 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                 for row in terminal_rows
             )
             await self._transcript.remove_children(terminal_rows)
+
+    def _adopt_streaming_tool_rows(
+        self,
+        tools: tuple[RuntimeToolCallActivity, ...],
+    ) -> None:
+        """Re-key provisional stream rows when canonical tool ids arrive."""
+
+        provisional_by_index = {
+            row.tool.source_index: tool_call_id
+            for tool_call_id, row in self._tools.items()
+            if row.tool.status == "streaming"
+        }
+        for tool in tools:
+            if tool.tool_call_id in self._tools:
+                continue
+            provisional_id = provisional_by_index.get(tool.source_index)
+            if provisional_id is None:
+                continue
+            row = self._tools.pop(provisional_id)
+            row.apply_tool(tool)
+            self._tools[tool.tool_call_id] = row
 
     def sync_agents(self, agents: Iterable[AgentTreeNode]) -> None:
         materialized = tuple(agents)

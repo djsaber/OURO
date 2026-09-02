@@ -3,14 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from rich.cells import cell_len
 from rich.console import Console
 from textual.app import App, ComposeResult
 
 from ouro.application.agent_models import AgentTreeNode
-from ouro.application.supervisor_models import (
-    RuntimeActivitySnapshot,
-    RuntimeToolCallActivity,
-)
+from ouro.application.supervisor_models import RuntimeActivitySnapshot, RuntimeToolCallActivity
 from ouro.tui.conversation_history import ConversationHistory, TranscriptEntry
 from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_DESIGN
 from ouro.tui.tool_presentations import present_tool
@@ -290,6 +288,53 @@ def test_active_tool_retains_spinner_without_a_right_status_label() -> None:
 
     assert first == f"{TUI_DESIGN.spinner_frames[0]} Read"
     assert second == f"{TUI_DESIGN.spinner_frames[1]} Read"
+
+
+def test_streaming_tool_uses_lowlight_left_filled_window_without_execution_details() -> None:
+    preview = 'prefix:{"content":"实时参数流"}'
+    tool = _tool(
+        "Write",
+        arguments={"path": "should-not-render.txt", "content": "hidden"},
+        status="streaming",
+    ).model_copy(update={"argument_stream_tail": preview})
+
+    rendered_text = _tool_activity_text(
+        tool,
+        frame=9,
+        theme=DEFAULT_TUI_THEME,
+    )
+    rendered = rendered_text.plain
+    prefix = f"{TUI_DESIGN.spinner_frames[9]} Write {TUI_DESIGN.tool_stream_marker} "
+    window = rendered.removeprefix(prefix)
+
+    assert rendered.startswith(prefix)
+    assert window.startswith(preview)
+    assert window.rstrip() == preview
+    assert len(window) > len(preview)
+    assert "should-not-render.txt" not in rendered
+    assert "\n" not in rendered
+    assert cell_len(window) == 48
+    tool_style = rendered_text.get_style_at_offset(Console(), rendered.index("Write"))
+    preview_style = rendered_text.get_style_at_offset(Console(), rendered.index(preview))
+    assert tool_style.color == preview_style.color
+    assert tool_style.color is not None
+    assert tool_style.color.triplet is not None
+    assert tool_style.color.triplet.hex == TUI_DESIGN.text_faint
+
+
+
+def test_streaming_tool_window_keeps_the_latest_fixed_width_tail() -> None:
+    tool = _tool("Write", status="streaming").model_copy(
+        update={"argument_stream_tail": f"discard-{'x' * 48}"}
+    )
+    overflow_window = _tool_activity_text(
+        tool,
+        frame=0,
+        theme=DEFAULT_TUI_THEME,
+    ).plain.removeprefix(
+        f"{TUI_DESIGN.spinner_frames[0]} Write {TUI_DESIGN.tool_stream_marker} "
+    )
+    assert overflow_window == "x" * 48
 
 
 def test_tool_elapsed_time_omits_zero_and_uses_shared_duration_format() -> None:

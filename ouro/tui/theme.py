@@ -20,6 +20,7 @@ class TuiDesignTokens:
     active_item_marker: str = "◉"
     completed_item_marker: str = "●"
     pending_item_marker: str = "○"
+    tool_stream_marker: str = "●"
     session_node_mark: str = "■"
     selected_session_node_mark: str = "▣"
     expanded_disclosure_marker: str = "-"

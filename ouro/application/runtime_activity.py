@@ -8,6 +8,7 @@ from pydantic import JsonValue
 
 from ouro.application.session_models import SessionContextStatus
 from ouro.application.supervisor_models import (
+    RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS,
     RuntimeActivity,
     RuntimeActivitySnapshot,
     RuntimeToolCallActivity,
@@ -36,6 +37,9 @@ _TERMINAL_ACTIVITY: dict[str, RuntimeActivity] = {
     "paused": "paused",
     "recoverable": "recoverable",
 }
+_TERMINAL_TOOL_STATUSES = frozenset(
+    {"rejected", "completed", "failed", "aborted", "unknown_outcome"}
+)
 
 
 def queued_runtime_activity(
@@ -209,7 +213,11 @@ def reduce_runtime_activity(
     elif event_type == "model_text_delta":
         updates.update(activity="streaming_text", status="running")
     elif event_type == "model_tool_call_delta":
-        updates.update(activity="streaming_tool_call", status="running")
+        updates.update(
+            activity="streaming_tool_call",
+            status="running",
+            tool_calls=_append_streaming_tool_call(current.tool_calls, payload),
+        )
     elif event_type == "model_message_completed":
         tool_call_count = payload.get("tool_call_count")
         updates["activity"] = (
@@ -239,7 +247,13 @@ def reduce_runtime_activity(
             run_phase="tool_preflight",
             batch_phase="planned",
             batch_id=_string_or_none(payload.get("batch_id")),
-            tool_calls=(),
+            # Preserve stream activity through preflight so the canonical
+            # request promotes it instead of exposing a duplicate call.
+            tool_calls=tuple(
+                item
+                for item in current.tool_calls
+                if item.status == "streaming"
+            ),
         )
     elif event_type == "tool_call_requested":
         updates["tool_calls"] = _upsert_tool_call(
@@ -376,6 +390,8 @@ def reduce_runtime_activity(
         updates.update(status=terminal_status, activity=terminal_status, compaction_id=None)
         if event_type == "run_aborted":
             updates["tool_calls"] = _mark_unsettled_tool_calls(current.tool_calls, "aborted")
+        elif event_type == "run_failed":
+            updates["tool_calls"] = _mark_unsettled_tool_calls(current.tool_calls, "failed")
 
     return current.model_copy(update=updates)
 
@@ -384,7 +400,17 @@ def runtime_activity_changed(
     previous: RuntimeActivitySnapshot,
     current: RuntimeActivitySnapshot,
 ) -> bool:
-    excluded = {"sequence", "updated_at"}
+    # Stream content is already delivered by the ordered event channel. Retain
+    # its bounded tail for snapshot/resync consumers without publishing a
+    # second high-frequency activity notification for every provider delta.
+    excluded = cast(
+        "Any",
+        {
+            "sequence": True,
+            "updated_at": True,
+            "tool_calls": {"__all__": {"argument_stream_tail"}},
+        },
+    )
     return previous.model_dump(exclude=excluded) != current.model_dump(exclude=excluded)
 
 
@@ -479,8 +505,11 @@ def _upsert_tool_call(
     updated: list[RuntimeToolCallActivity] = []
     matched = False
     for item in calls:
-        if item.tool_call_id == tool_call_id:
+        if item.tool_call_id == tool_call_id or (
+            item.status == "streaming" and item.source_index == normalized_index
+        ):
             changes: dict[str, object] = {
+                "tool_call_id": tool_call_id,
                 "tool_name": tool_name if tool_name != "unknown" else item.tool_name,
                 "status": status,
             }
@@ -488,6 +517,8 @@ def _upsert_tool_call(
                 changes["arguments"] = arguments
             if result_data is not None:
                 changes["result_data"] = result_data
+            if transition in {"started", "ended"}:
+                changes["argument_stream_tail"] = None
             changes[f"{transition}_at"] = occurred_at
             updated.append(item.model_copy(update=changes))
             matched = True
@@ -518,7 +549,18 @@ def _update_tool_call_status(
     if tool_call_id is None:
         return calls
     return tuple(
-        item.model_copy(update={"status": status}) if item.tool_call_id == tool_call_id else item
+        item.model_copy(
+            update={
+                "status": status,
+                **(
+                    {"argument_stream_tail": None}
+                    if status in _TERMINAL_TOOL_STATUSES
+                    else {}
+                ),
+            }
+        )
+        if item.tool_call_id == tool_call_id
+        else item
         for item in calls
     )
 
@@ -527,11 +569,82 @@ def _mark_unsettled_tool_calls(
     calls: tuple[RuntimeToolCallActivity, ...],
     status: RuntimeToolCallStatus,
 ) -> tuple[RuntimeToolCallActivity, ...]:
-    terminal = {"rejected", "completed", "failed", "aborted", "unknown_outcome"}
     return tuple(
-        item if item.status in terminal else item.model_copy(update={"status": status})
+        item
+        if item.status in _TERMINAL_TOOL_STATUSES
+        else item.model_copy(
+            update={
+                "status": status,
+                **(
+                    {"argument_stream_tail": None}
+                    if status in _TERMINAL_TOOL_STATUSES
+                    else {}
+                ),
+            }
+        )
         for item in calls
     )
+
+
+def _append_streaming_tool_call(
+    calls: tuple[RuntimeToolCallActivity, ...],
+    payload: dict[str, Any],
+) -> tuple[RuntimeToolCallActivity, ...]:
+    index = payload.get("index")
+    if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+        return calls
+    name_delta = payload.get("name_delta")
+    arguments_delta = payload.get("arguments_delta")
+    if not isinstance(name_delta, str):
+        name_delta = ""
+    if not isinstance(arguments_delta, str):
+        arguments_delta = ""
+
+    updated: list[RuntimeToolCallActivity] = []
+    matched = False
+    for item in calls:
+        if item.status != "streaming" or item.source_index != index:
+            updated.append(item)
+            continue
+        argument_tail = item.argument_stream_tail
+        if arguments_delta:
+            argument_tail = _append_argument_stream_tail(argument_tail, arguments_delta)
+        updated.append(
+            item.model_copy(
+                update={
+                    "tool_name": item.tool_name + name_delta,
+                    "argument_stream_tail": argument_tail,
+                }
+            )
+        )
+        matched = True
+    if not matched:
+        turn_id = _string_or_none(payload.get("turn_id")) or "turn"
+        # A provider id may itself arrive in fragments. Turn plus canonical
+        # source index gives the activity a stable identity until the parsed
+        # request promotes it to the provider's final tool-call id.
+        updated.append(
+            RuntimeToolCallActivity(
+                tool_call_id=f"stream:{turn_id}:{index}",
+                tool_name=name_delta,
+                status="streaming",
+                source_index=index,
+                argument_stream_tail=(
+                    _append_argument_stream_tail(None, arguments_delta)
+                    if arguments_delta
+                    else None
+                ),
+            )
+        )
+    return tuple(sorted(updated, key=lambda item: (item.source_index, item.tool_call_id)))
+
+
+def _append_argument_stream_tail(current: str | None, delta: str) -> str:
+    """Append one provider fragment while keeping snapshot work strictly bounded."""
+
+    if len(delta) >= RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS:
+        return delta[-RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS:]
+    return f"{current or ''}{delta}"[-RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS:]
 
 
 def _tool_calls_from_payload(
@@ -567,6 +680,9 @@ def _tool_calls_from_payload(
                 status=status,
                 source_index=source_index,
                 arguments=arguments or (previous.arguments if previous is not None else {}),
+                argument_stream_tail=(
+                    previous.argument_stream_tail if previous is not None else None
+                ),
                 result_data=previous.result_data if previous is not None else {},
                 requested_at=previous.requested_at if previous is not None else None,
                 started_at=previous.started_at if previous is not None else None,
@@ -599,6 +715,11 @@ def _overlay_tool_calls(
                 status=call.status,
                 source_index=call.request.source_index,
                 arguments=cast("dict[str, JsonValue]", dict(call.request.arguments)),
+                argument_stream_tail=(
+                    previous.argument_stream_tail
+                    if previous is not None and previous.started_at is None
+                    else None
+                ),
                 result_data=(
                     cast("dict[str, JsonValue]", dict(result.structured))
                     if result is not None

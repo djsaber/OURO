@@ -4,6 +4,7 @@ from ouro.application.runtime_activity import (
     reduce_runtime_activity,
     runtime_activity_changed,
 )
+from ouro.application.supervisor_models import RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS
 from ouro.core.context import ContextMetrics
 from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord, SessionRecord
@@ -169,6 +170,95 @@ def test_runtime_activity_reduces_model_interaction_and_tool_execution() -> None
     assert activity.activity == "preparing_model"
     assert activity.tool_calls == ()
     assert activity.batch_id is None
+
+
+def test_runtime_activity_promotes_bounded_streaming_tool_state_into_the_final_call() -> None:
+    activity = reduce_runtime_activity(
+        queued_runtime_activity("ses_1"),
+        _event(1, "model_request_started", {"turn_id": "turn_stream"}),
+    )
+    activity = reduce_runtime_activity(
+        activity,
+        _event(
+            2,
+            "model_tool_call_delta",
+            {
+                "turn_id": "turn_stream",
+                "index": 0,
+                "name_delta": "Wr",
+                "arguments_delta": "",
+            },
+        ),
+    )
+
+    partial = activity.tool_calls[0]
+    assert partial.status == "streaming"
+    assert partial.tool_name == "Wr"
+    assert partial.argument_stream_tail is None
+    failed_before_arguments = reduce_runtime_activity(
+        activity,
+        _event(3, "run_failed", {"error": "provider stream failed"}),
+    )
+    assert failed_before_arguments.tool_calls[0].status == "failed"
+    assert failed_before_arguments.tool_calls[0].argument_stream_tail is None
+
+    long_tail = "x" * 1_024
+    for sequence, payload in (
+        (3, {"turn_id": "turn_stream", "index": 0, "name_delta": "ite"}),
+        (4, {"turn_id": "turn_stream", "index": 0, "arguments_delta": "{\n\t"}),
+        (5, {"turn_id": "turn_stream", "index": 0, "arguments_delta": long_tail}),
+    ):
+        activity = reduce_runtime_activity(
+            activity,
+            _event(sequence, "model_tool_call_delta", payload),
+        )
+
+    streamed = activity.tool_calls[0]
+    assert streamed.tool_name == "Write"
+    assert streamed.argument_stream_tail == (
+        "x" * RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS
+    )
+
+    for event in (
+        _event(6, "model_message_completed", {"tool_call_count": 1}),
+        _event(7, "tool_batch_planned", {"batch_id": "batch_stream"}),
+        _event(
+            8,
+            "tool_call_requested",
+            {
+                "tool_call_id": "call_stream",
+                "tool_name": "Write",
+                "source_index": 0,
+                "arguments": {"path": "out.txt", "content": long_tail},
+            },
+        ),
+    ):
+        activity = reduce_runtime_activity(activity, event)
+
+    prepared = activity.tool_calls[0]
+    assert prepared.tool_call_id == "call_stream"
+    assert prepared.status == "planned"
+    assert prepared.argument_stream_tail == streamed.argument_stream_tail
+    assert prepared.started_at is None
+
+    activity = reduce_runtime_activity(
+        activity,
+        _event(
+            9,
+            "tool_call_started",
+            {
+                "tool_call_id": "call_stream",
+                "tool_name": "Write",
+                "source_index": 0,
+            },
+        ),
+    )
+
+    running = activity.tool_calls[0]
+    assert running.status == "running"
+    assert running.argument_stream_tail is None
+    assert running.arguments == {"path": "out.txt", "content": long_tail}
+    assert running.started_at is not None
 
 
 def test_runtime_activity_tracks_provider_retry_attempts_per_model_request() -> None:
@@ -370,6 +460,31 @@ def test_repeated_stream_deltas_advance_cursor_without_republishing_activity() -
 
     assert next_activity.sequence == 2
     assert runtime_activity_changed(activity, next_activity) is False
+
+    tool_activity = reduce_runtime_activity(
+        next_activity,
+        _event(
+            3,
+            "model_tool_call_delta",
+            {
+                "turn_id": "turn_1",
+                "index": 0,
+                "name_delta": "Write",
+                "arguments_delta": "a",
+            },
+        ),
+    )
+    next_tool_activity = reduce_runtime_activity(
+        tool_activity,
+        _event(
+            4,
+            "model_tool_call_delta",
+            {"turn_id": "turn_1", "index": 0, "arguments_delta": "b"},
+        ),
+    )
+
+    assert next_tool_activity.tool_calls[0].argument_stream_tail == "ab"
+    assert runtime_activity_changed(tool_activity, next_tool_activity) is False
 
 
 def test_runtime_activity_tracks_live_context_estimate_and_provider_usage() -> None:

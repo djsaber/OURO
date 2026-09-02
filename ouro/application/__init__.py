@@ -58,6 +58,7 @@ from ouro.application.session_models import (
 from ouro.application.sessions import SessionService, SessionTitleGenerator
 from ouro.application.supervisor import RuntimeSubscription, RuntimeSupervisor
 from ouro.application.supervisor_models import (
+    RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS,
     HostInputReceipt,
     RunHandle,
     RuntimeActivity,
@@ -103,6 +104,7 @@ __all__ = [
     "MCPServerConfigView",
     "ModelReasoningState",
     "QueuedUserInputView",
+    "RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS",
     "RunResult",
     "RuntimeEventRecorder",
     "RuntimeEventSinkRegistration",
