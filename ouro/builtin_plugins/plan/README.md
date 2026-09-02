@@ -1,41 +1,118 @@
-# Plan 内置插件
+# Plan Built-in Plugin
 
-`dev.ouro.plan` 用插件贡献实现 Session 级计划模式，不在 Runtime 中建立专用执行分支。插件默认启用，
-仍可通过标准 builtin 管理入口显式禁用。
+## Overview
 
-## 职责
+`dev.ouro.plan` implements Session-scoped Plan mode entirely through standard plugin
+contributions. It does not add a Plan-specific branch to Runtime execution. The plugin owns the mode
+lifecycle and planning restrictions while the framework continues to own persistence, tool
+execution, approvals, resumable input, and Run scheduling.
 
-- `EnterPlanMode` 原子创建当前 Session 的计划状态并取得 `ouro.mode` controller claim；
-- Context Provider 在计划模式有效时注入计划约束；
-- Tool Policy 依据冻结的阶段和 revision 限制工具 effect；
-- Turn Policy 在计划尚未完成时阻止 Run 以普通文本提前结束；
-- `ExitPlanMode` 通过 resumable tool 协议保存退出请求、接收用户选择或 AFK resolution，并释放 controller；
-- `/plan` Command 通过标准 Session input 进入同一生命周期。
+## Plugin Metadata
 
-## 状态与执行边界
+| Field | Value |
+|---|---|
+| Plugin ID | `dev.ouro.plan` |
+| Namespace | `plan` |
+| Version | `1.0.0` |
+| Runtime | In-process Python (`python-inprocess`) |
+| Default state | Enabled |
+| Dependencies | None |
+| Declared permissions | None |
 
-计划记录保存在 Session extension state 的 `dev.ouro.plan` namespace 中，并使用版本化 envelope 与原子更新。
-状态包含模式阶段、计划正文、可选选项、revision 和待处理退出请求。插件私有目录不保存 canonical Session 状态。
+The plugin is shipped with OURO and participates in the standard built-in enable/disable lifecycle.
+It does not use the user-plugin installation lifecycle.
 
-每个 Run 冻结自身的 Catalog execution contract；上下文、策略和工具恢复都按该快照筛选对应 activation。
-同一轮已开始的工具调用使用冻结 revision，状态变化从下一模型轮次生效。普通退出、拒绝、AFK 和进程恢复均通过
-同一 resumable checkpoint 收敛，不伪造用户回答。
+## Contributions
 
-Plan 只拥有计划生命周期。权限、审批、工具执行、Run 调度、持久化和 Agent Loop 仍由框架公共边界负责。
+| Type | ID / Public Name | Contract |
+|---|---|---|
+| Tool | `enter` / `EnterPlanMode` | Auto-approved, state-changing, exclusive-batch acquisition of Plan mode |
+| Tool | `exit` / `ExitPlanMode` | Auto-approved, state-changing, exclusive-batch resumable Plan review; supports unattended resolution |
+| Command | `/plan` | Enters, leaves, or reports Plan mode for the current Session |
+| Session Controller | `mode` | Owns the Plan lifecycle and exclusively claims `ouro.session.primary_behavior` |
+| Context Provider | `plan-scaffold` | Injects Plan instructions while the controller is active; failure mode `block` |
+| Tool Policy | `plan-tool-gate` | Enforces read-only investigation and restricts writes to the designated Plan file |
 
-## 源码入口
+Plan mode does not register a Turn Policy. Completion behavior is driven by the injected scaffold,
+the tool policy, `ExitPlanMode`, and the framework's resumable tool protocol. Exact contribution
+declarations are defined in [`definition.py`](definition.py) and
+[`plan_plugin.py`](plan_plugin.py).
 
-- `definition.py`：builtin definition 与 manifest；
-- `plan_plugin.py`：贡献声明与 handler；
-- `state.py`：版本化状态及转换；
-- `interaction.py`：退出选择和 resolution 解析。
+## Behavior
 
-精确工具描述与 JSON Schema 以 `plan_plugin.py` 和 `definition.py` 为单一事实源。
+### Entering and Leaving Plan Mode
 
-## 验证
+`EnterPlanMode` and `/plan on` acquire the same Session controller. `/plan status` reads the
+current phase and Plan-file path. `/plan off` releases the controller and cancels any pending review
+through the standard Session-control transition.
+
+Activation creates a unique Markdown artifact under:
+
+```text
+<artifact-root>/sessions/<session-id>/plans/plan_<timestamp>_<suffix>.md
+```
+
+The Context Provider tells the Agent to investigate, design, verify, write that file, and call
+`ExitPlanMode` before implementation.
+
+### Tool Restrictions
+
+While Plan mode is active:
+
+- read-only tools remain available;
+- OURO's built-in `Write` and `Edit` tools may modify only the exact designated Plan file;
+- all other state-changing or unknown-effect tools are denied;
+- approval cannot override the Plan tool policy;
+- shell, MCP, plugin, or other indirect write paths cannot be used to modify the Plan.
+
+The policy evaluates the active state revision and canonical target path. Planning restrictions do
+not replace workspace policy, tool permissions, or normal execution safety checks.
+
+### Review and Resumption
+
+`ExitPlanMode` requires a readable, non-empty Plan file. It snapshots the Plan digest and may
+publish one to three mutually exclusive implementation options. The Host resolves the resumable
+request with `accept`, `revise`, or `reject`:
+
+- acceptance releases Plan mode and returns the accepted Plan;
+- revision returns feedback and keeps Plan mode active;
+- rejection keeps Plan mode active;
+- unattended resolution releases Plan mode under the configured AFK policy.
+
+Recovery reuses the same checkpoint. A changed or missing Plan file invalidates the pending review,
+and repeated resume delivery returns the previously stored output rather than applying the decision
+twice.
+
+## State and Boundaries
+
+- Plan state is canonical Session extension state in the `dev.ouro.plan` namespace.
+- Phases are `inactive`, `active`, and `awaiting_approval`.
+- State records the Plan path, revision, activation identity, pending tool call, Plan digest,
+  options, and last resume output.
+- State uses a versioned envelope, atomic updates, and `branch_policy="reset"`.
+- The Plan Markdown file is a Host-owned artifact; plugin private data does not contain canonical
+  Session state.
+- Each Run uses its frozen Catalog execution contract. A tool invocation already in progress keeps
+  its frozen activation/revision; later model rounds observe updated state.
+- Normal review, rejection, AFK resolution, deactivation, and process recovery converge through the
+  same resumable checkpoint and Session-controller release path.
+
+## Source Layout
+
+- [`definition.py`](definition.py): built-in definition and manifest.
+- [`plan_plugin.py`](plan_plugin.py): tools, command, controller, Context Provider, Tool Policy, and
+  resumable review.
+- [`state.py`](state.py): versioned Plan state and persistence.
+- [`interaction.py`](interaction.py): review options and Host-resolution parsing.
+
+The implementation and manifest are the source of truth for tool descriptions, JSON schemas,
+policy decisions, state transitions, and error text.
+
+## Verification
 
 ```bash
 uv run pytest tests/plugins/test_builtin_plan.py -q
 ```
 
-框架级 Session claim、工具恢复和 AFK 组合契约由对应 application/runtime 测试覆盖。
+Application and Runtime tests additionally cover Session claims, resumable tool recovery, AFK
+resolution, frozen execution contracts, and tool-policy composition.

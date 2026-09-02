@@ -1,34 +1,103 @@
-# Toolkit 内置插件
+# Toolkit Built-in Plugin
 
-`dev.ouro.toolkit` 提供常用只读检索和 Session Todo 工具。它通过普通 builtin Plugin SDK factory 进入
-Generation 与 Catalog，不在 Runtime 或 CLI 中注册旁路工具。插件默认启用，仍可通过标准 builtin 管理入口显式禁用。
+## Overview
 
-## 工具
+`dev.ouro.toolkit` contributes common workspace search tools and a Session-scoped Todo list through
+the standard plugin SDK. It does not register tools through Runtime or CLI bypasses.
 
-- `Glob`：按 glob pattern 枚举 workspace 内文件，应用忽略规则并返回稳定、有界的相对路径列表；
-- `Grep`：在 workspace 内按文本或正则搜索，支持 glob、大小写和结果上限；
-- `TodoList`：读取或替换当前 Session 的结构化 Todo 列表。
+## Plugin Metadata
 
-`Glob` 和 `Grep` 仅访问 `ToolExecutionContext` 授权的 workspace，拒绝路径逃逸；搜索结果按确定顺序返回并受
-数量与输出预算约束。忽略规则由 `ignore.py` 统一解析，搜索实现位于 `search.py`。
+| Field | Value |
+|---|---|
+| Plugin ID | `dev.ouro.toolkit` |
+| Namespace | `toolkit` |
+| Version | `1.0.0` |
+| Runtime | In-process Python (`python-inprocess`) |
+| Default state | Enabled |
+| Dependencies | None |
+| Declared permissions | None |
 
-Todo 是 canonical Session extension state，由插件的 Session state store 按 Session 隔离。列表使用版本化 envelope
-和原子更新；每个条目包含标题和 `pending | in_progress | done` 状态。插件私有 data 目录不保存 Todo 状态。
+The plugin is shipped with OURO and participates in the standard built-in enable/disable lifecycle.
+It does not use the user-plugin installation lifecycle.
 
-## 源码入口
+## Contributions
 
-- `definition.py`：builtin definition 与 manifest；
-- `toolkit_plugin.py`：工具贡献、schema 与 handler；
-- `search.py`：有界文件枚举和文本搜索；
-- `ignore.py`：忽略规则；
-- `todos.py`：Todo 数据模型和状态转换。
+| Type | ID / Public Name | Contract |
+|---|---|---|
+| Tool | `glob` / `Glob` | Auto-approved, read-only workspace file discovery |
+| Tool | `grep` / `Grep` | Auto-approved, read-only regular-expression content search |
+| Tool | `todolist` / `TodoList` | Auto-approved replacement or retrieval of Session Todo state |
 
-精确工具描述、参数 Schema、默认值和错误文本以 `toolkit_plugin.py` 为单一事实源，README 不复制这些实现常量。
+Exact model-facing descriptions and JSON schemas are defined in
+[`definition.py`](definition.py) and [`toolkit_plugin.py`](toolkit_plugin.py).
 
-## 验证
+## Behavior
+
+### Glob
+
+`Glob` discovers files below an authorized workspace directory. Bare filename patterns such as
+`*.py` match recursively; anchored paths and brace expansion are supported. Results contain files,
+not directories, and are ordered by most-recent modification time with deterministic tie handling.
+
+The tool respects hierarchical `.gitignore`, `.ignore`, and `.rgignore` rules unless
+`include_ignored=true`. It always excludes VCS metadata directories and sensitive `.env` files.
+Results are capped at 100 paths and include an explicit truncation marker when the cap is exceeded.
+
+### Grep
+
+`Grep` searches an exact file or authorized directory with ripgrep-compatible regular expressions.
+It supports case-insensitive and multiline matching, before/after context, line numbers, glob or
+file-type filters, and three output modes:
+
+- `files_with_matches`;
+- `content`;
+- `count_matches`.
+
+Hidden files are included by default. Ignore and sensitive-file rules match `Glob`. Output defaults
+to 250 lines or entries and supports `offset` plus `head_limit` pagination; the framework's tool
+output budget remains authoritative when an explicit unlimited result is requested.
+
+### TodoList
+
+Calling `TodoList` without `todos` reads the current list. Supplying `todos` replaces the complete
+list atomically, and an empty list clears it. Every item contains a non-empty title and one status:
+
+- `pending`;
+- `in_progress`;
+- `done`.
+
+The model-facing guidance requires exactly one `in_progress` item while tracked work is underway
+and discourages updates when no meaningful progress has occurred. These are usage instructions;
+the persisted schema validates titles and status values but does not invent task progress.
+
+## State and Boundaries
+
+- `Glob` and `Grep` resolve paths through `ToolExecutionContext` and cannot escape the authorized
+  workspace.
+- Search traversal cooperatively checks cancellation and never exposes `.env` or VCS metadata,
+  including when ignored files are requested.
+- Todo data is canonical Session extension state in the `dev.ouro.toolkit` namespace.
+- Todo state uses a versioned envelope, atomic replacement, and `branch_policy="reset"`; an empty
+  list deletes the state record.
+- Plugin private data does not contain canonical Todo state.
+- Search tools are read-only; `TodoList` is state-changing only within its Session state boundary.
+
+## Source Layout
+
+- [`definition.py`](definition.py): built-in definition and manifest.
+- [`toolkit_plugin.py`](toolkit_plugin.py): contributions, schemas, handlers, and output rendering.
+- [`search.py`](search.py): bounded file discovery and regular-expression search.
+- [`ignore.py`](ignore.py): hierarchical ignore rules and sensitive-path exclusions.
+- [`todos.py`](todos.py): Todo data model and versioned Session state.
+
+The implementation and manifest are the source of truth for parameters, defaults, limits, output
+formats, and error behavior.
+
+## Verification
 
 ```bash
 uv run pytest tests/plugins/test_builtin_toolkit.py -q
 ```
 
-路径限制、Session extension state 和输出上限由对应 core/application 契约测试共同约束。
+Core and Application tests additionally enforce workspace path policy, Session extension-state
+semantics, cancellation, and global tool-output limits.

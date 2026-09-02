@@ -19,7 +19,7 @@ times depend on maintainer availability and are not guaranteed.
 ## Security boundaries
 
 - `deny` is the hard tool-disable policy; `approval` is a human authorization boundary.
-- Workspace-only mode constrains built-in file paths and Bash working directories. It is not an
+- Workspace-only mode constrains built-in file paths and detected-shell working directories. It is not an
   operating-system sandbox: an approved shell command can still access resources allowed to the
   OURO process.
 - Prefer environment-backed credential references. Inline credentials are stored as local plain

@@ -15,5 +15,5 @@ uv run ouro plugin validate examples/plugins/declarative-skill --json
 ```
 
 Installation never enables a plugin. Enabling explicitly accepts and runs the selected immutable
-digest. Follow
-[`docs/OURO_插件开发指南.md`](../../docs/OURO_插件开发指南.md) for the complete local flow.
+digest. Follow the [plugin development guide](../../docs/OURO_插件开发指南_2026-09-02.md) for the
+complete local flow.

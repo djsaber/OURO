@@ -4,8 +4,85 @@ This project records user-visible and framework-contract changes in this file.
 
 ## Unreleased
 
+### Added
+
+- TUI `/workspace clear` now forgets recent workspace history without mutating the active
+  Session workspace, while the Actions menu groups theme, thought display, and a persistent input
+  draft-memory toggle under `Settings`; disabling draft memory clears stored drafts. Queued-input
+  delivery and compaction policy now live in the same `Settings` group, with the former supporting
+  durable one-at-a-time or all-at-once selection.
+- A root-scoped TUI subagent navigation strip above the composer, grouping every dispatched
+  child by parent Run, using green for running nodes and lowlight for finished nodes, and supporting
+  direct root/child and child/child switching with `Alt+Arrow` while preserving the controlled
+  primary Session. Read-only child composer shortcuts are highlighted without adding a redundant
+  `Subagent` label to the bottom activity line, and primary active-run hints apply the same
+  highlight treatment to `Enter` and `Ctrl+Enter`. Primary composer drafts are parked while a
+  child surface is visible and restored unchanged on return instead of leaking into the child view.
+- Preset-created providers now retain compact template provenance and support atomic three-way
+  updates through CLI and the TUI provider submenu. Unmodified preset values follow the latest
+  template, while customized, deleted, unknown, and colliding endpoints are preserved and
+  reported; legacy providers are adopted conservatively on their first update.
+- TUI `/workspace <path>` selection for new-session drafts, with inline history/freeform input,
+  immutable created-session workspaces, and a persistent twenty-entry recent-workspace list that
+  records each terminal startup directory.
+- CLI coverage for Session tag replacement, plugin default permissions, and the complete mutable
+  Agent dispatch policy (agent/model allowlists, execution modes, and capability ceilings).
+- OpenAI-compatible reasoning decoding now accepts both DeepSeek-style `reasoning_content` and the
+  bare `reasoning` response field used by OpenRouter-style vendors, for streaming deltas and
+  non-streaming messages alike (string or block-array shapes, `reasoning_content` first), with
+  tool-call continuation replay still canonicalized to `reasoning_content`.
+- Ten restrained, persistent TUI accent palettes selectable and keyboard-previewable from the
+  Actions menu, with live synchronization across CSS chrome and Rich-text status content in a
+  frontend-owned preference file.
+- Textual 8.2 / Rich 15 full-screen TUI foundation behind the default `ouro` entry point, with
+  terminal-native styling,
+  coalesced streaming Markdown, canonical Runtime activity/tool projection, session and model
+  pickers, queued running input, approvals, AskUser answers, MCP startup status, abort, command
+  palette, shortcuts, and explicit application resource cleanup.
+- Builtin `dev.ouro.agent_context` plugin with request-time, broad-to-specific `AGENTS.md`
+  discovery across user, OURO home, Git-root, and workspace scopes; strict UTF-8 and bounded
+  context assembly; and the unchanged runtime-facts injection from the renamed System Information
+  builtin.
+- Builtin `dev.ouro.goal` plugin with `/goal` create/status/pause/resume/replace/cancel
+  lifecycle commands, explicit model create/read/settle tools, durable Goal state, bounded-Run
+  continuation, canonical token accounting, optional user-owned budgets, and Plan-mode claim
+  arbitration.
+- Native OURO plugin system with strict manifests, local/Git/archive installation, immutable
+  package storage, explicit digest-bound activation, declarative/in-process/worker
+  runtimes, owner-atomic contributions, plugin Skills/MCP/background services, generation-safe
+  durable Run metadata, dependency resolution, compatibility reports, application DTOs, and CLI.
+- Typed plugin Run continuation policies with generation-frozen durable checkpoints, deterministic
+  conflict/failure pausing, idempotent follow-up queueing, provenance-bearing synthetic inputs,
+  permission-gated command input requests, and canonical/unique-alias Interactive slash routing.
+- Host-owned plugin tool execution context with workspace/path/cancellation services, plus
+  owner-atomic restrictive tool policies for approval escalation and denial across in-process and
+  worker runtimes. Policy failures are fail-closed and modified approval arguments are rechecked.
+- Global provider-response usage ledger for agent and compaction requests, with date/route/session
+  filters, grouped token and partial-cost summaries, audited corrections, selective resets, and CLI.
+- Typed application configuration facade shared by CLI hosts.
+- Anthropic Messages protocol adapter, provider adapter registry, and reviewed multi-endpoint CLI
+  templates for OpenAI, Anthropic, Gemini, DeepSeek, Qwen, KIMI, GLM, OpenRouter, and Mistral.
+- Provider retry policy with observable retry events and structured-output capability checks.
+- Provider-neutral reasoning intent/capability contracts, declarative native payload profiles,
+  custom endpoint presets, and strict pre-request effort validation.
+- Session-scoped Interactive `/thinking` controls with Endpoint-aware choices, durable isolation,
+  atomic model compatibility checks, and request-local adapter binding.
+- Route-scoped reasoning continuation for OpenAI-compatible tool turns and opaque signed
+  Anthropic thinking blocks.
+- Tool permission modes, workspace path policy, and bounded tool output.
+- Tool-controlled `auto`/`deny` permissions for indispensable Harness control tools, isolated from
+  user overrides, Session approval modes, and restrictive tool policies.
+- Request-local text and image resource projection from canonical Session resource references.
+- Interactive next-message attachments with `/attach`, `/attachments`, and `/detach`, reusing the
+  canonical resource projection and preserving the draft when endpoint capability validation fails.
+- Cursor-based incremental Session message and event queries.
+- Cross-platform CI, branch coverage enforcement, and security/contribution guidance.
+
 ### Changed
 
+- Project documentation now separates current specifications, future plans, and dated research;
+  overlapping implementation reports were merged into canonical domain documents, topic files use
+  consistent dated names, and all internal links target the current code-based documentation set.
 - TUI Session catalogs now isolate invalid entries instead of failing the whole menu and render
   index errors in a trailing group separately from canonical Session health. A selectable invalid
   projection still opens through the target Session's canonical data; only that load can produce a
@@ -108,81 +185,6 @@ This project records user-visible and framework-contract changes in this file.
   Redundant capability/code-trust grants and their CLI/TUI states have been removed; package
   integrity, configuration, dependency, credential, and tool-permission boundaries remain enforced.
 
-### Added
-
-- TUI `/workspace clear` now forgets recent workspace history without mutating the active
-  Session workspace, while the Actions menu groups theme, thought display, and a persistent input
-  draft-memory toggle under `Settings`; disabling draft memory clears stored drafts. Queued-input
-  delivery and compaction policy now live in the same `Settings` group, with the former supporting
-  durable one-at-a-time or all-at-once selection.
-- A root-scoped TUI subagent navigation strip above the composer, grouping every dispatched
-  child by parent Run, using green for running nodes and lowlight for finished nodes, and supporting
-  direct root/child and child/child switching with `Alt+Arrow` while preserving the controlled
-  primary Session. Read-only child composer shortcuts are highlighted without adding a redundant
-  `Subagent` label to the bottom activity line, and primary active-run hints apply the same
-  highlight treatment to `Enter` and `Ctrl+Enter`. Primary composer drafts are parked while a
-  child surface is visible and restored unchanged on return instead of leaking into the child view.
-- Preset-created providers now retain compact template provenance and support atomic three-way
-  updates through CLI and the TUI provider submenu. Unmodified preset values follow the latest
-  template, while customized, deleted, unknown, and colliding endpoints are preserved and
-  reported; legacy providers are adopted conservatively on their first update.
-- TUI `/workspace <path>` selection for new-session drafts, with inline history/freeform input,
-  immutable created-session workspaces, and a persistent twenty-entry recent-workspace list that
-  records each terminal startup directory.
-- CLI coverage for Session tag replacement, plugin default permissions, and the complete mutable
-  Agent dispatch policy (agent/model allowlists, execution modes, and capability ceilings).
-- OpenAI-compatible reasoning decoding now accepts both DeepSeek-style `reasoning_content` and the
-  bare `reasoning` response field used by OpenRouter-style vendors, for streaming deltas and
-  non-streaming messages alike (string or block-array shapes, `reasoning_content` first), with
-  tool-call continuation replay still canonicalized to `reasoning_content`.
-- Ten restrained, persistent TUI accent palettes selectable and keyboard-previewable from the
-  Actions menu, with live synchronization across CSS chrome and Rich-text status content in a
-  frontend-owned preference file.
-- Textual 8.2 / Rich 15 full-screen TUI foundation behind the default `ouro` entry point, with
-  terminal-native styling,
-  coalesced streaming Markdown, canonical Runtime activity/tool projection, session and model
-  pickers, queued running input, approvals, AskUser answers, MCP startup status, abort, command
-  palette, shortcuts, and explicit application resource cleanup.
-- Builtin `dev.ouro.agent_context` plugin with request-time, broad-to-specific `AGENTS.md`
-  discovery across user, OURO home, Git-root, and workspace scopes; strict UTF-8 and bounded
-  context assembly; and the unchanged runtime-facts injection from the renamed System Information
-  builtin.
-- Builtin `dev.ouro.goal` plugin with `/goal` create/status/pause/resume/replace/cancel
-  lifecycle commands, explicit model create/read/settle tools, durable Goal state, bounded-Run
-  continuation, canonical token accounting, optional user-owned budgets, and Plan-mode claim
-  arbitration.
-- Native OURO plugin system with strict manifests, local/Git/archive installation, immutable
-  package storage, explicit digest-bound activation, declarative/in-process/worker
-  runtimes, owner-atomic contributions, plugin Skills/MCP/background services, generation-safe
-  durable Run metadata, dependency resolution, compatibility reports, application DTOs, and CLI.
-- Typed plugin Run continuation policies with generation-frozen durable checkpoints, deterministic
-  conflict/failure pausing, idempotent follow-up queueing, provenance-bearing synthetic inputs,
-  permission-gated command input requests, and canonical/unique-alias Interactive slash routing.
-- Host-owned plugin tool execution context with workspace/path/cancellation services, plus
-  owner-atomic restrictive tool policies for approval escalation and denial across in-process and
-  worker runtimes. Policy failures are fail-closed and modified approval arguments are rechecked.
-- Global provider-response usage ledger for agent and compaction requests, with date/route/session
-  filters, grouped token and partial-cost summaries, audited corrections, selective resets, and CLI.
-- Typed application configuration facade shared by CLI hosts.
-- Anthropic Messages protocol adapter, provider adapter registry, and reviewed multi-endpoint CLI
-  templates for OpenAI, Anthropic, Gemini, DeepSeek, Qwen, KIMI, GLM, OpenRouter, and Mistral.
-- Provider retry policy with observable retry events and structured-output capability checks.
-- Provider-neutral reasoning intent/capability contracts, declarative native payload profiles,
-  custom endpoint presets, and strict pre-request effort validation.
-- Session-scoped Interactive `/thinking` controls with Endpoint-aware choices, durable isolation,
-  atomic model compatibility checks, and request-local adapter binding.
-- Route-scoped reasoning continuation for OpenAI-compatible tool turns and opaque signed
-  Anthropic thinking blocks.
-- Tool permission modes, workspace path policy, and bounded tool output.
-- Tool-controlled `auto`/`deny` permissions for indispensable Harness control tools, isolated from
-  user overrides, Session approval modes, and restrictive tool policies.
-- Request-local text and image resource projection from canonical Session resource references.
-- Interactive next-message attachments with `/attach`, `/attachments`, and `/detach`, reusing the
-  canonical resource projection and preserving the draft when endpoint capability validation fails.
-- Cursor-based incremental Session message and event queries.
-- Cross-platform CI, branch coverage enforcement, and security/contribution guidance.
-
-### Changed
 
 - TUI reasoning blocks now show a live elapsed counter, retain each model call's completed thinking
   time after tool continuations, and append the effective Endpoint plus total duration after every

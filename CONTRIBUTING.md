@@ -21,8 +21,8 @@ uv build
 ```
 
 Implementation and review must follow the
-[Chinese coding guidelines](docs/OURO_AGENT_编码准则_ZH.md) or the
-[English coding guidelines](docs/OURO_AGENT_编码准则_EN.md). Keep domain contracts in `core`,
+[Chinese coding guidelines](docs/OURO_编码准则_ZH_2026-09-02.md) or the
+[English coding guidelines](docs/OURO_编码准则_EN_2026-09-02.md). Keep domain contracts in `core`,
 orchestration in `application`, adapters in infrastructure packages, and presentation behavior in
 hosts such as `cli`. Do not make a Host depend directly on persistence files or configuration
 managers when an application boundary exists.
