@@ -92,6 +92,7 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
                 "input_tokens": 12,
                 "output_tokens": 7,
                 "cache_read_input_tokens": 3,
+                "cache_creation_input_tokens": 2,
             },
             "stop_reason": "tool_use",
         }
@@ -184,7 +185,9 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
     assert events[3].continuation is not None
     assert events[3].continuation.blocks[0]["signature"] == "sig_1"
     assert events[-1].usage is not None
+    assert events[-1].usage.input_tokens == 17
     assert events[-1].usage.cache_read_tokens == 3
+    assert events[-1].usage.cache_write_tokens == 2
     assert events[-1].completion is not None
     assert events[-1].completion.finish_reason == "tool_call"
     assert events[-1].completion.provider_finish_reason == "tool_use"
@@ -222,7 +225,14 @@ async def test_anthropic_provider_streams_text_tool_deltas_and_usage() -> None:
         [
             {
                 "type": "message_start",
-                "message": {"usage": {"input_tokens": 5, "output_tokens": 0}},
+                "message": {
+                    "usage": {
+                        "input_tokens": 5,
+                        "output_tokens": 0,
+                        "cache_read_input_tokens": 3,
+                        "cache_creation_input_tokens": 2,
+                    }
+                },
             },
             {
                 "type": "content_block_start",
@@ -306,8 +316,10 @@ async def test_anthropic_provider_streams_text_tool_deltas_and_usage() -> None:
     assert deltas[2].id_delta == "call_2"
     assert deltas[3].arguments_delta == '{"command":"pwd"}'
     assert events[-1].usage is not None
-    assert events[-1].usage.input_tokens == 5
+    assert events[-1].usage.input_tokens == 10
     assert events[-1].usage.output_tokens == 4
+    assert events[-1].usage.cache_read_tokens == 3
+    assert events[-1].usage.cache_write_tokens == 2
     assert events[-1].completion is not None
     assert events[-1].completion.finish_reason == "length"
 

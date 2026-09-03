@@ -15,9 +15,9 @@ UsageLedgerEventType = Literal["record", "replace", "reset"]
 class ProviderUsageEntry(VersionedOuroModel):
     """One provider-reported usage result for one completed model request.
 
-    Context-size estimates never enter this model. Cache token fields preserve the
-    provider adapter's canonical usage categories and are informational subsets or
-    supplements of input usage according to that provider's wire contract.
+    Context-size estimates never enter this model. Provider adapters normalize
+    ``input_tokens`` to include cached input, while cache token fields preserve its
+    informational read/write breakdown.
     """
 
     entry_id: str

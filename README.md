@@ -394,8 +394,9 @@ uv run ouro usage audit --home ./.ouro-dev --limit 100 --json
 ```
 
 `summary`、`list` 和 `reset` 共享 `--since`、`--until`、`--provider`、`--endpoint`、`--model`、
-`--session`、`--run`、`--purpose` 过滤器，重复同一参数表示匹配其中任意值。cache read/write token 保留为
-供应商 usage 的独立类别；`total_tokens` 只计算 input + output，避免把供应商的 cache 明细重复计入。
+`--session`、`--run`、`--purpose` 过滤器，重复同一参数表示匹配其中任意值。Provider adapter 会把
+`input_tokens` 统一为包含缓存读写的总输入，cache read/write token 保留为其中的独立明细；
+`total_tokens` 只计算 input + output，避免重复计入缓存明细。
 全局账本不从 `run.usage` 猜测或回填缺少请求路由与请求边界的记录；统计从账本实际记录的供应商调用开始。
 人工修改或重置只改变可审计的全局费用视图，不改写
 Session 中保存的原始 Run usage。

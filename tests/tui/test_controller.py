@@ -12,9 +12,11 @@ from ouro.application.models import AvailableModel
 from ouro.application.plugin_models import PluginCommandExecutionView, PluginCommandView
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.usage_models import UsageSummary, UsageSummaryGroup, UsageTotals
 from ouro.config import reasoning_preset
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import ToolSelection
+from ouro.core.billing import UsageFilter
 from ouro.core.compaction import CompactionRecord, compaction_source_digest
 from ouro.core.errors import ConfigError
 from ouro.core.events import EventRecord
@@ -38,9 +40,51 @@ from ouro.tui.controller import (
     TuiMCPServerConfiguration,
     TuiPluginInstallConfiguration,
     TuiProviderConfiguration,
+    TuiSystemStatus,
     TuiToolExecutionConfiguration,
+    project_usage_system_status,
 )
 from tests.tui.helpers import two_route_application
+
+
+def test_usage_status_projects_cache_totals_and_complete_recent_daily_detail() -> None:
+    groups = tuple(
+        UsageSummaryGroup(
+            key=f"2026-08-{day:02d}",
+            totals=UsageTotals(
+                request_count=day,
+                input_tokens=day * 100,
+                output_tokens=day * 10,
+                cache_read_tokens=day * 25,
+                estimated_cost=day / 100,
+                priced_request_count=day,
+            ),
+        )
+        for day in range(1, 12)
+    )
+    summary = UsageSummary(
+        usage_filter=UsageFilter(),
+        totals=UsageTotals(
+            request_count=66,
+            input_tokens=6_600,
+            output_tokens=660,
+            cache_read_tokens=1_650,
+        ),
+        group_by="date",
+        groups=groups,
+    )
+
+    status = project_usage_system_status(TuiSystemStatus(), summary)
+
+    assert status.usage_cache_read_tokens == 1_650
+    assert [day.date for day in status.usage_daily] == [
+        f"2026-08-{day:02d}" for day in range(2, 12)
+    ]
+    assert status.usage_daily[-1].request_count == 11
+    assert status.usage_daily[-1].input_tokens == 1_100
+    assert status.usage_daily[-1].output_tokens == 110
+    assert status.usage_daily[-1].cache_read_tokens == 275
+    assert status.usage_daily[-1].total_tokens == 1_210
 
 
 def _reasoning_application(tmp_path: Path) -> LocalApplication:

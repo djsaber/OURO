@@ -66,6 +66,8 @@ class Usage(OuroModel):
     """Canonical token usage decoded from a provider response.
 
     This type must never be populated from OURO's context-size estimator.
+    ``input_tokens`` always includes cached input; cache read/write fields are
+    informational subsets of that total regardless of the provider wire protocol.
     ``estimated_cost``, when supplied by an adapter, is denominated in USD.
     """
 

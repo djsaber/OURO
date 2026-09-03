@@ -115,6 +115,21 @@ class McpServerStatus:
 
 
 @dataclass(frozen=True)
+class TuiDailyUsage:
+    date: str
+    request_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    estimated_cost: float = 0.0
+    priced_request_count: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+
+@dataclass(frozen=True)
 class TuiSystemStatus:
     workspace: str | None = None
     provider_ids: tuple[str, ...] = ()
@@ -133,9 +148,40 @@ class TuiSystemStatus:
     usage_request_count: int = 0
     usage_input_tokens: int = 0
     usage_output_tokens: int = 0
+    usage_cache_read_tokens: int = 0
     usage_estimated_cost: float = 0.0
     usage_priced_request_count: int = 0
-    usage_daily_tokens: tuple[int, ...] = ()
+    usage_daily: tuple[TuiDailyUsage, ...] = ()
+
+
+def project_usage_system_status(
+    status: TuiSystemStatus,
+    usage: UsageSummary,
+) -> TuiSystemStatus:
+    """Project canonical ledger totals and recent daily detail into the Host view."""
+
+    totals = usage.totals
+    return replace(
+        status,
+        usage_request_count=totals.request_count,
+        usage_input_tokens=totals.input_tokens,
+        usage_output_tokens=totals.output_tokens,
+        usage_cache_read_tokens=totals.cache_read_tokens,
+        usage_estimated_cost=totals.estimated_cost,
+        usage_priced_request_count=totals.priced_request_count,
+        usage_daily=tuple(
+            TuiDailyUsage(
+                date=group.key,
+                request_count=group.totals.request_count,
+                input_tokens=group.totals.input_tokens,
+                output_tokens=group.totals.output_tokens,
+                cache_read_tokens=group.totals.cache_read_tokens,
+                estimated_cost=group.totals.estimated_cost,
+                priced_request_count=group.totals.priced_request_count,
+            )
+            for group in usage.groups[-10:]
+        ),
+    )
 
 
 def project_mcp_system_status(
@@ -514,23 +560,17 @@ class TuiController:
         plugins = (
             tuple(self._application.plugins.list()) if self._application.plugins is not None else ()
         )
-        totals = usage.totals
         return project_plugin_system_status(
             project_mcp_system_status(
-                TuiSystemStatus(
-                    workspace=self._draft_workspace or runtime.default_workspace,
-                    provider_ids=tuple(sorted({model.provider_id for model in models})),
-                    model_count=len(models),
-                    skill_count=len(skills),
-                    skill_names=tuple(sorted(item.name for item in skills)),
-                    usage_request_count=totals.request_count,
-                    usage_input_tokens=totals.input_tokens,
-                    usage_output_tokens=totals.output_tokens,
-                    usage_estimated_cost=totals.estimated_cost,
-                    usage_priced_request_count=totals.priced_request_count,
-                    usage_daily_tokens=tuple(
-                        group.totals.total_tokens for group in usage.groups[-10:]
+                project_usage_system_status(
+                    TuiSystemStatus(
+                        workspace=self._draft_workspace or runtime.default_workspace,
+                        provider_ids=tuple(sorted({model.provider_id for model in models})),
+                        model_count=len(models),
+                        skill_count=len(skills),
+                        skill_names=tuple(sorted(item.name for item in skills)),
                     ),
+                    usage,
                 ),
                 mcp_servers,
             ),

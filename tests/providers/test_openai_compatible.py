@@ -386,7 +386,11 @@ async def test_openai_compatible_provider_streams_text_response() -> None:
                     "finish_reason": "length",
                 }
             ],
-            "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+            "usage": {
+                "prompt_tokens": 3,
+                "completion_tokens": 2,
+                "prompt_tokens_details": {"cached_tokens": 2},
+            },
         }
     )
     provider = OpenAICompatibleProvider(
@@ -410,6 +414,7 @@ async def test_openai_compatible_provider_streams_text_response() -> None:
     assert events[-1].usage is not None
     assert events[-1].usage.input_tokens == 3
     assert events[-1].usage.output_tokens == 2
+    assert events[-1].usage.cache_read_tokens == 2
     assert events[-1].completion is not None
     assert events[-1].completion.finish_reason == "length"
     assert events[-1].completion.provider_finish_reason == "length"

@@ -414,6 +414,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Fixed
 
+- Anthropic Messages-compatible usage now normalizes uncached input, cache reads, and cache
+  creation into the same total-input invariant used by OpenAI-compatible providers, keeping cache
+  fields as breakdowns so ledgers, budgets, Goal accounting, and cache-hit rates stay comparable.
 - Follow-up Runs of synchronously dispatched subagents now reach the parent context. Each
   result's delivery policy is chosen at finalization time: the first result keeps the
   spawn-time contract (a parked synchronous SpawnAgent resumes its ToolCall), while later

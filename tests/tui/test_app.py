@@ -110,11 +110,13 @@ from ouro.tui.controller import (
     LoadedSession,
     McpServerStatus,
     TuiBootstrap,
+    TuiDailyUsage,
     TuiEndpointConfiguration,
     TuiPluginCommandExecution,
     TuiPluginInstallConfiguration,
     TuiProviderConfiguration,
     TuiSessionControlStatus,
+    TuiSystemStatus,
 )
 from ouro.tui.conversation_history import (
     AssistantTailLines,
@@ -1934,6 +1936,75 @@ async def test_welcome_refreshes_live_system_status_each_time_it_opens(tmp_path:
 
         assert app._system_status.skill_names == ("live-skill",)
         assert "1 available • live-skill" in welcome._system._skills.render().plain
+
+
+@pytest.mark.asyncio
+async def test_welcome_usage_hover_selects_day_without_changing_color_and_previews_totals(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    status = TuiSystemStatus(
+        usage_request_count=3,
+        usage_input_tokens=2_000,
+        usage_output_tokens=500,
+        usage_cache_read_tokens=500,
+        usage_estimated_cost=0.03,
+        usage_priced_request_count=3,
+        usage_daily=(
+            TuiDailyUsage(
+                date="2026-09-01",
+                request_count=1,
+                input_tokens=800,
+                output_tokens=200,
+                cache_read_tokens=100,
+                estimated_cost=0.01,
+                priced_request_count=1,
+            ),
+            TuiDailyUsage(
+                date="2026-09-02",
+                request_count=2,
+                input_tokens=1_200,
+                output_tokens=300,
+                cache_read_tokens=400,
+                estimated_cost=0.02,
+                priced_request_count=2,
+            ),
+        ),
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
+        usage = welcome._usage
+        usage.set_system_status(status)
+        await pilot.pause()
+
+        chart = usage._chart.render()
+        initial_colors = [chart.get_style_at_offset(index).foreground for index in range(2)]
+        assert chart.plain == "■■ • last 2 days"
+        assert usage._requests.render().plain == "3 request(s) • $0.0300"
+        assert usage._tokens.render().plain == "2.0K in • 500 out • 25.00% cache"
+
+        await pilot.hover(usage._chart, offset=(0, 0))
+        await pilot.pause()
+
+        hovered_chart = usage._chart.render()
+        hovered_colors = [
+            hovered_chart.get_style_at_offset(index).foreground for index in range(2)
+        ]
+        assert hovered_chart.plain == "▣■ • 2026-09-01"
+        assert hovered_colors == initial_colors
+        assert usage._requests.render().plain == "1 request(s) • $0.0100"
+        assert usage._tokens.render().plain == "800 in • 200 out • 12.50% cache"
+
+        await pilot.hover(None, offset=(0, 31))
+        await pilot.pause()
+
+        assert usage._chart.render().plain == "■■ • last 2 days"
+        assert usage._tokens.render().plain == "2.0K in • 500 out • 25.00% cache"
+
+
+def test_welcome_usage_cache_hit_rate_is_zero_without_input_tokens() -> None:
+    assert tui_widgets._cache_hit_rate(100, 0) == 0.0
 
 
 @pytest.mark.asyncio

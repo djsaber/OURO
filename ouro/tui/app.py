@@ -68,6 +68,7 @@ from ouro.tui.controller import (
     TuiLifecycleStatus,
     TuiSystemStatus,
     project_mcp_system_status,
+    project_usage_system_status,
 )
 from ouro.tui.conversation_history import (
     ConversationHistory,
@@ -1962,16 +1963,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self.wait_for_refresh()
 
     async def _refresh_usage_status(self) -> None:
-        usage = await self._controller.usage_totals()
+        usage = await self._controller.usage_summary()
         if not self._surface_available():
             return
-        self._system_status = replace(
+        self._system_status = project_usage_system_status(
             self._system_status,
-            usage_request_count=usage.request_count,
-            usage_input_tokens=usage.input_tokens,
-            usage_output_tokens=usage.output_tokens,
-            usage_estimated_cost=usage.estimated_cost,
-            usage_priced_request_count=usage.priced_request_count,
+            usage,
         )
         self.query_one(ConversationView).set_system_status(self._system_status)
 

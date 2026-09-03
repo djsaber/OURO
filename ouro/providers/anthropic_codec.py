@@ -103,11 +103,14 @@ def continuation_blocks_from_response(
 
 def usage_from_anthropic(value: object) -> Usage:
     raw = value if isinstance(value, Mapping) else {}
+    uncached_input_tokens = int(raw.get("input_tokens") or 0)
+    cache_read_tokens = int(raw.get("cache_read_input_tokens") or 0)
+    cache_write_tokens = int(raw.get("cache_creation_input_tokens") or 0)
     return Usage(
-        input_tokens=int(raw.get("input_tokens") or 0),
+        input_tokens=uncached_input_tokens + cache_read_tokens + cache_write_tokens,
         output_tokens=int(raw.get("output_tokens") or 0),
-        cache_read_tokens=int(raw.get("cache_read_input_tokens") or 0),
-        cache_write_tokens=int(raw.get("cache_creation_input_tokens") or 0),
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
     )
 
 

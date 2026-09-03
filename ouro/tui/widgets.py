@@ -10,6 +10,7 @@ from typing import Literal
 
 from pydantic import JsonValue
 from rich.cells import cell_len, get_character_cell_size
+from rich.style import Style as RichStyle
 from rich.text import Text
 from textual import events, work
 from textual.app import ComposeResult
@@ -1071,6 +1072,7 @@ _INPUT_TIPS = (
     ("Ctrl+P", "Actions"),
     ("Ctrl+H", "Help"),
 )
+_USAGE_DAY_META = "ouro.welcome_usage.date"
 
 
 def _blend_hex(background: str, foreground: str, ratio: float) -> str:
@@ -1263,6 +1265,7 @@ class _WelcomeUsageBlock(Vertical):
         self._chart = Static(classes="welcome-usage-line")
         self._requests = Static(classes="welcome-usage-line")
         self._tokens = Static(classes="welcome-usage-line")
+        self._hovered_date: str | None = None
         self._render_values()
 
     def compose(self) -> ComposeResult:
@@ -1276,48 +1279,107 @@ class _WelcomeUsageBlock(Vertical):
 
     def set_system_status(self, status: TuiSystemStatus) -> None:
         self._status = status
+        if self._hovered_date not in {day.date for day in status.usage_daily}:
+            self._hovered_date = None
         self._render_values()
 
     def refresh_theme(self) -> None:
         self._render_values()
 
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        date = None
+        if event.style is not None:
+            candidate = event.style.meta.get(_USAGE_DAY_META)
+            if isinstance(candidate, str):
+                date = candidate
+        self._set_hovered_date(date)
+
+    def on_leave(self, _event: events.Leave) -> None:
+        self._set_hovered_date(None)
+
+    def _set_hovered_date(self, date: str | None) -> None:
+        if date == self._hovered_date:
+            return
+        self._hovered_date = date
+        self._render_values()
+
     def _render_values(self) -> None:
         status = self._status
         theme = theme_for(self)
-        daily_tokens = status.usage_daily_tokens
+        daily = status.usage_daily
+        daily_tokens = tuple(day.total_tokens for day in daily)
+        selected = next((day for day in daily if day.date == self._hovered_date), None)
         chart = Text()
-        for color in _usage_block_colors(daily_tokens, theme):
-            chart.append("■", style=color)
-        if daily_tokens:
-            days = len(daily_tokens)
-            chart.append(
-                f"{theme.section_separator}last {days} day{'s' if days != 1 else ''}",
-                style=theme.text_faint,
+        colors = _usage_block_colors(daily_tokens, theme) if daily else ()
+        for day, color in zip(daily, colors, strict=True):
+            mark = (
+                theme.selected_session_node_mark
+                if day.date == self._hovered_date
+                else theme.session_node_mark
             )
+            chart.append(mark, style=RichStyle(color=color, meta={_USAGE_DAY_META: day.date}))
+        if daily:
+            chart.append(theme.section_separator, style=theme.separator_tone)
+            if selected is not None:
+                chart.append(selected.date, style=theme.text_faint)
+            else:
+                days = len(daily)
+                chart.append(
+                    f"last {days} day{'s' if days != 1 else ''}",
+                    style=theme.text_faint,
+                )
         else:
             chart.append(
-                f"{theme.section_separator}no records",
+                theme.session_node_mark,
+                style=_usage_block_colors((), theme)[0],
+            )
+            chart.append(theme.section_separator, style=theme.separator_tone)
+            chart.append(
+                "no records",
                 style=theme.text_faint,
             )
         self._chart.update(chart)
 
+        request_count = (
+            selected.request_count if selected is not None else status.usage_request_count
+        )
+        estimated_cost = (
+            selected.estimated_cost if selected is not None else status.usage_estimated_cost
+        )
+        priced_request_count = (
+            selected.priced_request_count
+            if selected is not None
+            else status.usage_priced_request_count
+        )
         requests = Text(
-            f"{status.usage_request_count} request(s)",
+            f"{request_count} request(s)",
             style=theme.text_muted,
         )
-        if status.usage_priced_request_count:
-            requests.append(
-                f"{theme.section_separator}${status.usage_estimated_cost:.4f}",
-                style=theme.text_faint,
-            )
+        if priced_request_count:
+            requests.append(theme.section_separator, style=theme.separator_tone)
+            requests.append(f"${estimated_cost:.4f}", style=theme.text_faint)
         self._requests.update(requests)
-        self._tokens.update(
-            Text(
-                f"{format_compact_count(status.usage_input_tokens)} in"
-                f" / {format_compact_count(status.usage_output_tokens)} out",
-                style=theme.text_faint,
-            )
+        input_tokens = selected.input_tokens if selected is not None else status.usage_input_tokens
+        output_tokens = (
+            selected.output_tokens if selected is not None else status.usage_output_tokens
         )
+        cache_read_tokens = (
+            selected.cache_read_tokens
+            if selected is not None
+            else status.usage_cache_read_tokens
+        )
+        tokens = Text(f"{format_compact_count(input_tokens)} in", style=theme.text_faint)
+        for value in (
+            f"{format_compact_count(output_tokens)} out",
+            f"{_cache_hit_rate(cache_read_tokens, input_tokens):.2f}% cache",
+        ):
+            tokens.append(theme.inline_separator, style=theme.separator_tone)
+            tokens.append(value, style=theme.text_faint)
+        self._tokens.update(tokens)
+
+
+def _cache_hit_rate(cache_read_tokens: int, input_tokens: int) -> float:
+    return cache_read_tokens / input_tokens * 100 if input_tokens else 0.0
 
 
 class _WelcomeTipsBlock(Vertical):
