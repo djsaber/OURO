@@ -304,7 +304,10 @@ def test_streaming_tool_uses_lowlight_left_filled_window_without_execution_detai
         theme=DEFAULT_TUI_THEME,
     )
     rendered = rendered_text.plain
-    prefix = f"{TUI_DESIGN.spinner_frames[9]} Write {TUI_DESIGN.tool_stream_marker} "
+    prefix = (
+        f"{TUI_DESIGN.spinner_frames[9]} Write "
+        f"{TUI_DESIGN.inline_separator_mark} "
+    )
     window = rendered.removeprefix(prefix)
 
     assert rendered.startswith(prefix)
@@ -332,7 +335,8 @@ def test_streaming_tool_window_keeps_the_latest_fixed_width_tail() -> None:
         frame=0,
         theme=DEFAULT_TUI_THEME,
     ).plain.removeprefix(
-        f"{TUI_DESIGN.spinner_frames[0]} Write {TUI_DESIGN.tool_stream_marker} "
+        f"{TUI_DESIGN.spinner_frames[0]} Write "
+        f"{TUI_DESIGN.inline_separator_mark} "
     )
     assert overflow_window == "x" * 48
 

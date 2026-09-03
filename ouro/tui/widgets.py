@@ -811,7 +811,7 @@ def _tool_activity_text(
         )
         text.append(tool.tool_name, style=TUI_DESIGN.text_faint)
         text.append(
-            f" {TUI_DESIGN.tool_stream_marker} ",
+            f" {TUI_DESIGN.inline_separator_mark} ",
             style=TUI_DESIGN.separator_tone,
         )
         text.append(

@@ -4823,7 +4823,7 @@ async def test_streaming_tool_row_mounts_after_its_name_and_updates_in_place_on_
         row = conversation.query_one(tui_widgets.ToolActivityRow)
         assert row.tool.status == "streaming"
         assert row.tool.argument_stream_tail == '{"path":"out'
-        assert f"Write {TUI_DESIGN.tool_stream_marker}" in str(row.render())
+        assert f"Write {TUI_DESIGN.inline_separator_mark}" in str(row.render())
         provisional_id = row.tool_call_id
 
         await app._apply_runtime_events(
@@ -4874,7 +4874,7 @@ async def test_streaming_tool_row_mounts_after_its_name_and_updates_in_place_on_
         assert conversation._tools["call_streaming_tool"] is row
         assert row.tool.argument_stream_tail is None
         assert "out.txt" in str(row.render())
-        assert TUI_DESIGN.tool_stream_marker not in str(row.render()).splitlines()[0]
+        assert '{"path":"out' not in str(row.render())
 
 
 @pytest.mark.asyncio
