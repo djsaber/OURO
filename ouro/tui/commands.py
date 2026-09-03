@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ouro.tui.theme import TUI_DESIGN
+from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
 
 
 @dataclass(frozen=True)
@@ -292,6 +292,6 @@ def _bracket_choices(branch: str) -> tuple[str, ...] | None:
     return choices
 
 
-def slash_command_help() -> str:
+def slash_command_help(*, theme: TuiTheme = DEFAULT_TUI_THEME) -> str:
     """Render command usage as a wrap-friendly, bullet-separated cloud."""
-    return TUI_DESIGN.inline_separator.join(command.usage for command in TUI_COMMANDS)
+    return theme.inline_separator.join(command.usage for command in TUI_COMMANDS)

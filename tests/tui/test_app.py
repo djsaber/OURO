@@ -6,6 +6,7 @@ import re
 import threading
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -143,7 +144,7 @@ from ouro.tui.state import (
     project_run_presentation,
 )
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
-from ouro.tui.theme import TUI_DESIGN, TUI_THEMES
+from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
 from ouro.tui.widgets import (
     ActivityIndicator,
     AskUserPanel,
@@ -191,16 +192,15 @@ def test_brand_header_renders_session_detail_as_lowlight_metadata() -> None:
         detail,
         None,
         width=80,
-        accent="#ffffff",
     )
 
-    assert f"Scout{TUI_DESIGN.inline_separator}{detail}" in content.plain
+    assert f"Scout{DEFAULT_TUI_THEME.inline_separator}{detail}" in content.plain
     title_style = content.get_style_at_offset(Console(), content.plain.index("Scout"))
     assert not title_style.bold
     style = content.get_style_at_offset(Console(), content.plain.index(detail))
     assert style.color is not None
     assert style.color.triplet is not None
-    assert style.color.triplet.hex == TUI_DESIGN.text_lowlight
+    assert style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
 
 
 async def _wait_for_active_session(
@@ -322,7 +322,7 @@ def test_session_choices_mark_only_the_selected_session(tmp_path: Path) -> None:
     }
 
     assert choices[first.session_id].marker == ""
-    assert choices[second.session_id].marker == TUI_DESIGN.selected_choice_marker
+    assert choices[second.session_id].marker == DEFAULT_TUI_THEME.selected_choice_marker
 
 
 def test_session_choices_use_semantic_health_tones(tmp_path: Path) -> None:
@@ -347,9 +347,9 @@ def test_session_choices_use_semantic_health_tones(tmp_path: Path) -> None:
     choices = {choice.value: choice for choice in projected}
 
     assert choices[template.session_id].accent is None
-    assert choices["ses_warning"].accent == TUI_DESIGN.warning
-    assert choices["ses_failure"].accent == TUI_DESIGN.failure
-    assert choices["ses_index_error"].accent == TUI_DESIGN.failure
+    assert choices["ses_warning"].accent == DEFAULT_TUI_THEME.warning
+    assert choices["ses_failure"].accent == DEFAULT_TUI_THEME.failure
+    assert choices["ses_index_error"].accent == DEFAULT_TUI_THEME.failure
     assert choices["ses_index_error"].trailing == "index error"
     assert choices["ses_index_error"].group == "Index issues"
     assert projected[-1].value == "ses_index_error"
@@ -362,7 +362,7 @@ def test_choice_description_can_use_failure_semantics() -> None:
                 "close",
                 "Close",
                 description="Could not load Session",
-                description_accent=TUI_DESIGN.failure,
+                description_accent=DEFAULT_TUI_THEME.failure,
             ),
         ),
         group_accent="#ffffff",
@@ -375,7 +375,7 @@ def test_choice_description_can_use_failure_semantics() -> None:
         prompt.plain.index("Could not load Session"),
     )
     assert description_style.color is not None
-    assert description_style.color.get_truecolor().hex == TUI_DESIGN.failure
+    assert description_style.color.get_truecolor().hex == DEFAULT_TUI_THEME.failure
 
 
 def test_choice_screen_projects_group_headers_as_disabled_options() -> None:
@@ -2509,7 +2509,7 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         mcp_label = welcome.query_one("#welcome-mcp-label", Static)
         connecting_label = mcp_label.render().plain
         assert connecting_label.endswith(" MCP")
-        assert connecting_label[0] in TUI_DESIGN.spinner_frames
+        assert connecting_label[0] in DEFAULT_TUI_THEME.spinner_frames
         starting_status = welcome._system._mcp.render()
         assert "0/1 connected • 0 tool(s) • 1 connecting" in starting_status.plain
         assert starting_status.get_style_at_offset(
@@ -2656,7 +2656,8 @@ async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Pa
         # immutable history freezes with, so markup stays literal text.
         assert reasoning._content.rendered_text == f"│ {expected}"
         assert reasoning.label.render().plain.startswith(
-            f"{TUI_DESIGN.expanded_disclosure_marker} Thinking{TUI_DESIGN.inline_separator}"
+            f"{DEFAULT_TUI_THEME.expanded_disclosure_marker} Thinking"
+            f"{DEFAULT_TUI_THEME.inline_separator}"
         )
         assert reasoning.label.render().plain.endswith("s")
         assert "Thinking" in reasoning.label.render_line(0).text
@@ -3324,13 +3325,13 @@ async def test_queued_input_rows_use_single_line_tokenized_previews(tmp_path: Pa
         assert isinstance(source, Text)
         assert source.plain.count("\n") == len(inputs) - 1
         assert source.plain.startswith(
-            f"1. Guide{TUI_DESIGN.inline_separator}first line ↵ second line"
+            f"1. Guide{DEFAULT_TUI_THEME.inline_separator}first line ↵ second line"
         )
-        assert f"2. Follow-up{TUI_DESIGN.inline_separator}follow next" in source.plain
+        assert f"2. Follow-up{DEFAULT_TUI_THEME.inline_separator}follow next" in source.plain
 
         label_style = source.get_style_at_offset(Console(), source.plain.index("Guide"))
         separator_style = source.get_style_at_offset(
-            Console(), source.plain.index(TUI_DESIGN.inline_separator_mark)
+            Console(), source.plain.index(DEFAULT_TUI_THEME.inline_separator_mark)
         )
         message_style = source.get_style_at_offset(
             Console(), source.plain.index("first line")
@@ -3338,16 +3339,16 @@ async def test_queued_input_rows_use_single_line_tokenized_previews(tmp_path: Pa
         assert not label_style.bold
         assert separator_style.color is not None
         assert separator_style.color.triplet is not None
-        assert separator_style.color.triplet.hex == TUI_DESIGN.separator_tone
+        assert separator_style.color.triplet.hex == DEFAULT_TUI_THEME.separator_tone
         assert message_style.color is not None
         assert message_style.color.triplet is not None
-        assert message_style.color.triplet.hex == TUI_DESIGN.text_lowlight
+        assert message_style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
 
         assert content_widget.styles.text_wrap == "nowrap"
         assert content_widget.styles.text_overflow == "ellipsis"
         assert content_widget.content_size.height == len(inputs)
         first_visible_line = content_widget.render_line(0).text.rstrip()
-        assert first_visible_line.startswith(f"1. Guide{TUI_DESIGN.inline_separator}")
+        assert first_visible_line.startswith(f"1. Guide{DEFAULT_TUI_THEME.inline_separator}")
         assert first_visible_line.endswith("…")
         assert "hidden suffix" not in first_visible_line
 
@@ -3385,7 +3386,7 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
         queue_text = queue_panel.query_one("#queued-input-content").render().plain
         assert "QUEUED INPUTS" not in queue_text
         assert "Follow-up" in queue_text
-        assert f"Follow-up{TUI_DESIGN.inline_separator}follow next" in queue_text
+        assert f"Follow-up{DEFAULT_TUI_THEME.inline_separator}follow next" in queue_text
         assert "follow next" in queue_text
         history = conversation.query_one(ConversationHistory)
         assert history.user_turns == ("first",)
@@ -4093,7 +4094,7 @@ async def test_guide_shortcuts_steer_the_active_run_at_the_next_model_turn(
             queue_text = queue_panel.query_one("#queued-input-content").render().plain
             assert queue_panel.display is True
             assert "Guide" in queue_text
-            assert f"Guide{TUI_DESIGN.inline_separator}guide now" in queue_text
+            assert f"Guide{DEFAULT_TUI_THEME.inline_separator}guide now" in queue_text
             assert "guide now" in queue_text
             assert "guide now" not in app.query_one(ConversationHistory).user_turns
         finally:
@@ -4369,10 +4370,10 @@ async def test_history_loads_failed_run_summary_with_failure_semantics(tmp_path:
         assert summary.run is not None
         assert summary.run.status == "failed"
         assert (
-            f"{TUI_DESIGN.brand_mark} deepseek-v4-flash"
-            f"{TUI_DESIGN.section_separator}5m 16.4s"
-            f"{TUI_DESIGN.section_separator}failed"
-            f"{TUI_DESIGN.section_separator}provider returned an empty assistant message"
+            f"{DEFAULT_TUI_THEME.brand_mark} deepseek-v4-flash"
+            f"{DEFAULT_TUI_THEME.section_separator}5m 16.4s"
+            f"{DEFAULT_TUI_THEME.section_separator}failed"
+            f"{DEFAULT_TUI_THEME.section_separator}provider returned an empty assistant message"
         ) in history.rendered_text
 
 
@@ -4525,10 +4526,10 @@ async def test_history_restores_compaction_boundaries_in_chronological_order(
             ("user", None),
         ]
         assert (
-            f"{TUI_DESIGN.brand_mark} Context compacted"
-            f"{TUI_DESIGN.section_separator}1 message"
-            f"{TUI_DESIGN.section_separator}500 tokens"
-            f"{TUI_DESIGN.section_separator}57m 05.4s"
+            f"{DEFAULT_TUI_THEME.brand_mark} Context compacted"
+            f"{DEFAULT_TUI_THEME.section_separator}1 message"
+            f"{DEFAULT_TUI_THEME.section_separator}500 tokens"
+            f"{DEFAULT_TUI_THEME.section_separator}57m 05.4s"
         ) in history.rendered_text
 
         invalid = compactions[0].model_copy(update={"history_boundary_message_id": "msg_missing"})
@@ -4580,10 +4581,10 @@ async def test_compaction_completion_updates_context_and_transcript_without_next
             duration_seconds=65.4,
         )
         assert (
-            f"{TUI_DESIGN.brand_mark} Context compacted"
-            f"{TUI_DESIGN.section_separator}4 messages"
-            f"{TUI_DESIGN.section_separator}550 tokens"
-            f"{TUI_DESIGN.section_separator}1m 05.4s"
+            f"{DEFAULT_TUI_THEME.brand_mark} Context compacted"
+            f"{DEFAULT_TUI_THEME.section_separator}4 messages"
+            f"{DEFAULT_TUI_THEME.section_separator}550 tokens"
+            f"{DEFAULT_TUI_THEME.section_separator}1m 05.4s"
         ) in history.rendered_text
         assert app.query_one("#context-detail", Static).render().plain.startswith("250 ")
 
@@ -4823,7 +4824,7 @@ async def test_streaming_tool_row_mounts_after_its_name_and_updates_in_place_on_
         row = conversation.query_one(tui_widgets.ToolActivityRow)
         assert row.tool.status == "streaming"
         assert row.tool.argument_stream_tail == '{"path":"out'
-        assert f"Write {TUI_DESIGN.inline_separator_mark}" in str(row.render())
+        assert f"Write {DEFAULT_TUI_THEME.inline_separator_mark}" in str(row.render())
         provisional_id = row.tool_call_id
 
         await app._apply_runtime_events(
@@ -5681,7 +5682,7 @@ async def test_session_picker_marks_the_session_open_on_the_conversation_page(
         await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
 
         choices = {choice.value: choice for choice in app.screen._choices}
-        assert choices[current.session_id].marker == TUI_DESIGN.selected_choice_marker
+        assert choices[current.session_id].marker == DEFAULT_TUI_THEME.selected_choice_marker
         assert choices[other.session_id].marker == ""
 
 
@@ -5755,7 +5756,7 @@ async def test_session_picker_opens_canonical_session_when_catalog_entry_is_inva
         await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
         choice = next(item for item in app.screen._choices if item.value == session.session_id)
 
-        assert choice.accent == TUI_DESIGN.failure
+        assert choice.accent == DEFAULT_TUI_THEME.failure
         assert choice.trailing == "index error"
         assert choice.group == "Index issues"
 
@@ -5921,7 +5922,7 @@ async def test_fork_projects_animated_activity_until_the_branch_is_created(
         indicator = app.query_one(ActivityIndicator)
         assert indicator._activity == "forking"
         assert "Forking session" in indicator.render().plain
-        assert indicator.render().plain.strip()[0] in TUI_DESIGN.spinner_frames
+        assert indicator.render().plain.strip()[0] in DEFAULT_TUI_THEME.spinner_frames
         frame = indicator._frame
         indicator._tick()
         assert indicator._frame != frame
@@ -6356,7 +6357,7 @@ async def test_session_picker_contains_load_failure_in_choice_dialog(
         error = app.screen._choices[0].description
         assert session.session_id in error
         assert "message journal is invalid" in error
-        assert app.screen._choices[0].description_accent == TUI_DESIGN.failure
+        assert app.screen._choices[0].description_accent == DEFAULT_TUI_THEME.failure
         assert "Ready" in app.query_one(ActivityIndicator).render().plain
 
         await pilot.press("escape")
@@ -6442,7 +6443,7 @@ async def test_session_picker_and_archive_menu_project_and_toggle_archived_group
         await pilot.pause()
         archive_screen = app.screen
         initial = {choice.value: choice for choice in archive_screen._choices}
-        assert initial[active.session_id].marker == TUI_DESIGN.selected_choice_marker
+        assert initial[active.session_id].marker == DEFAULT_TUI_THEME.selected_choice_marker
         assert initial[archived.session_id].marker == ""
 
         archive_screen.query_one("#choice-filter", Input).value = "Active session"
@@ -6453,7 +6454,7 @@ async def test_session_picker_and_archive_menu_project_and_toggle_archived_group
         choices = {choice.value: choice for choice in archive_screen._choices}
         assert choices[active.session_id].group == "Archived"
         assert choices[archived.session_id].group == "Archived"
-        assert choices[active.session_id].marker == TUI_DESIGN.selected_choice_marker
+        assert choices[active.session_id].marker == DEFAULT_TUI_THEME.selected_choice_marker
 
         archive_screen.query_one("#choice-filter", Input).value = "Archived session"
         await pilot.pause()
@@ -6516,7 +6517,7 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         assert rename_screen.styles.background.a == 0.45
         assert [choice.value for choice in rename_screen._choices] == [active.session_id]
         assert {choice.group for choice in rename_screen._choices} == {"Today"}
-        assert rename_screen._choices[0].marker == TUI_DESIGN.selected_choice_marker
+        assert rename_screen._choices[0].marker == DEFAULT_TUI_THEME.selected_choice_marker
 
         rename_screen.query_one("#choice-filter", Input).value = "Original title"
         await pilot.pause()
@@ -6554,7 +6555,7 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         )
         assert rename_screen.query_one("#choice-filter", Input).value == ""
         assert rename_screen._choices[0].edit_value == "Renamed title"
-        assert rename_screen._choices[0].marker == TUI_DESIGN.selected_choice_marker
+        assert rename_screen._choices[0].marker == DEFAULT_TUI_THEME.selected_choice_marker
         assert application.runtime.sessions.open(active.session_id).session.title == (
             "Renamed title"
         )
@@ -6667,10 +6668,16 @@ async def test_delete_session_menu_keeps_current_marker_separate_from_multi_sele
 
         delete_screen = app.screen
         choices = {choice.value: choice for choice in delete_screen._choices}
-        assert choices[current.session_id].marker == TUI_DESIGN.selected_choice_marker
+        assert choices[current.session_id].marker == DEFAULT_TUI_THEME.selected_choice_marker
         assert choices[other.session_id].marker == ""
-        assert choices[current.session_id].selection_marker == (TUI_DESIGN.unselected_choice_marker)
-        assert choices[other.session_id].selection_marker == (TUI_DESIGN.unselected_choice_marker)
+        assert (
+            choices[current.session_id].selection_marker
+            == DEFAULT_TUI_THEME.unselected_choice_marker
+        )
+        assert (
+            choices[other.session_id].selection_marker
+            == DEFAULT_TUI_THEME.unselected_choice_marker
+        )
 
         options = delete_screen.query_one("#choice-list", OptionList)
         options.highlighted = options.get_option_index(other.session_id)
@@ -6679,9 +6686,15 @@ async def test_delete_session_menu_keeps_current_marker_separate_from_multi_sele
         await pilot.pause()
 
         choices = {choice.value: choice for choice in delete_screen._choices}
-        assert choices[current.session_id].marker == TUI_DESIGN.selected_choice_marker
-        assert choices[current.session_id].selection_marker == (TUI_DESIGN.unselected_choice_marker)
-        assert choices[other.session_id].selection_marker == TUI_DESIGN.selected_choice_marker
+        assert choices[current.session_id].marker == DEFAULT_TUI_THEME.selected_choice_marker
+        assert (
+            choices[current.session_id].selection_marker
+            == DEFAULT_TUI_THEME.unselected_choice_marker
+        )
+        assert (
+            choices[other.session_id].selection_marker
+            == DEFAULT_TUI_THEME.selected_choice_marker
+        )
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         await pilot.press("escape")
@@ -7091,7 +7104,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         assert "/thinking" not in action_values
         assert "/compact" not in action_values
         assert [choice.label for choice in action_choices] == [
-            "Theme color",
+            "Theme",
             "Model thought display",
             "Input draft memory",
             "Queued input delivery",
@@ -7187,7 +7200,7 @@ async def test_queued_input_delivery_uses_shared_settings_menu_and_persists_mode
             "one unit per boundary",
             "all eligible units per boundary",
         ]
-        assert screen._choices[0].marker == TUI_DESIGN.selected_choice_marker
+        assert screen._choices[0].marker == DEFAULT_TUI_THEME.selected_choice_marker
         assert screen._choices[1].marker == ""
 
         screen.query_one("#choice-filter", Input).value = "All at once"
@@ -7204,7 +7217,7 @@ async def test_queued_input_delivery_uses_shared_settings_menu_and_persists_mode
 
         assert app.screen is screen
         assert screen._choices[0].marker == ""
-        assert screen._choices[1].marker == TUI_DESIGN.selected_choice_marker
+        assert screen._choices[1].marker == DEFAULT_TUI_THEME.selected_choice_marker
 
 
 @pytest.mark.asyncio
@@ -7746,7 +7759,7 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
         ]
         assert [choice.label for choice in app.screen._choices] == ["shared", "shared"]
         assert [choice.marker for choice in app.screen._choices] == [
-            TUI_DESIGN.selected_choice_marker,
+            DEFAULT_TUI_THEME.selected_choice_marker,
             "",
         ]
         assert [choice.group for choice in app.screen._choices] == [
@@ -7876,7 +7889,10 @@ async def test_setting_default_endpoint_also_switches_default_provider(tmp_path:
         assert choices["primary/primary-chat"].label == "primary-chat"
         assert choices["primary/primary-chat"].marker == ""
         assert choices["secondary/secondary-chat"].label == "secondary-chat"
-        assert choices["secondary/secondary-chat"].marker == TUI_DESIGN.selected_choice_marker
+        assert (
+            choices["secondary/secondary-chat"].marker
+            == DEFAULT_TUI_THEME.selected_choice_marker
+        )
         assert all(choice.trailing == "" for choice in choices.values())
         catalog = ConfigurationFacade(tmp_path).provider_catalog()
         assert catalog.default_provider_id == "secondary"
@@ -8139,7 +8155,7 @@ async def test_actions_persists_three_distinct_recent_choices_across_restart(
     async with app.run_test(size=(100, 34)) as pilot:
         await pilot.pause()
         for label, screen_type in (
-            ("Theme color", ChoiceScreen),
+            ("Theme", ChoiceScreen),
             ("Compaction policy", CompactionConfigurationScreen),
             ("Add MCP server", MCPConfigurationScreen),
         ):
@@ -8165,7 +8181,7 @@ async def test_actions_persists_three_distinct_recent_choices_across_restart(
         assert [choice.label for choice in app.screen._choices[:3]] == [
             "Add MCP server",
             "Compaction policy",
-            "Theme color",
+            "Theme",
         ]
         assert all(choice.group == "Recent" for choice in app.screen._choices[:3])
 
@@ -8177,7 +8193,7 @@ async def test_actions_persists_three_distinct_recent_choices_across_restart(
         assert [choice.label for choice in restarted.screen._choices[:3]] == [
             "Add MCP server",
             "Compaction policy",
-            "Theme color",
+            "Theme",
         ]
         assert all(choice.group == "Recent" for choice in restarted.screen._choices[:3])
 
@@ -8980,7 +8996,7 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
         current = next(choice for choice in app.screen._choices if choice.value == "default")
         assert current.label == "default"
-        assert current.marker == TUI_DESIGN.selected_choice_marker
+        assert current.marker == DEFAULT_TUI_THEME.selected_choice_marker
         assert current.trailing == "approval"
         assert all(choice.trailing != "current" for choice in app.screen._choices)
         app.screen.query_one("#choice-filter", Input).value = "auto"
@@ -9323,7 +9339,7 @@ async def test_action_choice_submenus_reuse_the_action_screen_without_flash(
     async with app.run_test(size=(100, 34)) as pilot:
         await pilot.pause()
         for action_label, title in (
-            ("Theme color", "THEME COLOR"),
+            ("Theme", "THEME"),
             ("Open session", "SESSIONS"),
             ("Archive session", "ARCHIVE SESSIONS"),
             ("Keyboard help", "KEYBOARD HELP"),
@@ -9910,7 +9926,7 @@ async def test_subagent_policy_uses_shared_grouped_inline_menu(tmp_path: Path) -
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="ALLOWED SUBAGENTS")
         general = next(choice for choice in app.screen._choices if choice.value == "general")
-        assert general.marker == TUI_DESIGN.selected_choice_marker
+        assert general.marker == DEFAULT_TUI_THEME.selected_choice_marker
         await pilot.press("enter")
         await pilot.pause()
         general = next(choice for choice in app.screen._choices if choice.value == "general")
@@ -9929,7 +9945,7 @@ async def test_subagent_policy_uses_shared_grouped_inline_menu(tmp_path: Path) -
         await _wait_for_screen(app, ChoiceScreen, title="ALLOWED SUBAGENT MODELS")
         assert (
             next(choice for choice in app.screen._choices if choice.value == models[0].key).marker
-            == TUI_DESIGN.selected_choice_marker
+            == DEFAULT_TUI_THEME.selected_choice_marker
         )
         await pilot.press("escape")
         await _wait_for_screen(
@@ -9995,7 +10011,7 @@ async def test_subagent_definition_editor_does_not_limit_selected_tool_count(
             next(
                 choice for choice in app.screen._choices if choice.value == "__ouro_runtime_model__"
             ).marker
-            == TUI_DESIGN.selected_choice_marker
+            == DEFAULT_TUI_THEME.selected_choice_marker
         )
         model_options = app.screen.query_one("#choice-list", OptionList)
         model_options.highlighted = model_options.get_option_index(models[0].key)
@@ -10430,13 +10446,13 @@ async def test_workspace_command_selects_paths_only_before_session_and_keeps_cle
             "Clear",
         ]
         assert all(not argument.description for argument in popup._arguments)
-        assert popup._arguments[-1].accent == TUI_DESIGN.danger
+        assert popup._arguments[-1].accent == DEFAULT_TUI_THEME.danger
         workspace_menu = popup.query_one("#command-popup-content", Static).render()
         assert isinstance(workspace_menu, Content)
         assert "Current workspace" not in workspace_menu.plain
         assert "Recent workspace" not in workspace_menu.plain
         clear_style = workspace_menu.get_style_at_offset(workspace_menu.plain.index("Clear"))
-        assert clear_style.foreground == Color.parse(TUI_DESIGN.danger)
+        assert clear_style.foreground == Color.parse(DEFAULT_TUI_THEME.danger)
 
         await pilot.press("down", "enter")
         await pilot.pause()
@@ -11789,13 +11805,13 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         await pilot.pause()
 
         actions = app.screen.query_one(OptionList)
-        assert "Theme color" in str(actions.get_option_at_index(1).prompt)
+        assert "Theme" in str(actions.get_option_at_index(1).prompt)
         await pilot.press("enter")
         await pilot.pause()
 
         assert isinstance(app.screen, ChoiceScreen)
         theme_screen = app.screen
-        assert app.screen.query_one("#choice-title", Static).render().plain == "THEME COLOR"
+        assert app.screen.query_one("#choice-title", Static).render().plain == "THEME"
         theme_options = app.screen.query_one(OptionList)
         assert theme_options.option_count == len(TUI_THEMES)
         assert all(choice.description == "" for choice in app.screen._choices)
@@ -11807,30 +11823,44 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         await pilot.pause()
 
         harbor = TUI_THEMES["harbor"]
-        assert app.tui_theme == harbor
+        assert app.tui_theme == TUI_THEMES["original"]
         preview_preferences = TuiPreferencesStore(tmp_path).load()
         assert preview_preferences.theme == "original"
         assert len(preview_preferences.recent_actions) == 1
+        preview_title = theme_screen.query_one("#choice-title", Static)
+        assert preview_title.styles.color == Color.parse(harbor.accent)
+        assert preview_title.styles.border_left[1] == Color.parse(harbor.accent)
+        assert theme_screen.query_one("#choice-filter", Input).styles.border_left[1] == (
+            Color.parse(harbor.accent)
+        )
+        preview_highlight = theme_options.get_component_rich_style(
+            "option-list--option-highlighted"
+        )
+        assert preview_highlight.color is not None
+        assert Color.from_rich_color(preview_highlight.color) == Color.parse(harbor.accent)
         preview = app.query_one(BrandHeader).render()
         assert preview.get_style_at_offset(preview.plain.index("OURO")).foreground == Color.parse(
-            harbor.accent
+            TUI_THEMES["original"].accent
         )
-        assert app.query_one(Composer).styles.border_left[1] == Color.parse(harbor.accent)
-        context = status_line.query_one("#context-detail", Static).render()
-        assert context.get_style_at_offset(context.plain.index("█")).foreground == Color.parse(
-            harbor.accent
+        assert app.query_one(Composer).styles.border_left[1] == Color.parse(
+            TUI_THEMES["original"].accent
         )
 
         await pilot.press("down", "enter")
-        await pilot.pause(0.2)
+        await _wait_until(
+            lambda: not app._theme_switch_active,
+            pilot,
+            description="theme switch",
+        )
 
         sage = TUI_THEMES["sage"]
         assert app.screen is theme_screen
         assert isinstance(app.screen, ChoiceScreen)
         assert (
             next(choice for choice in app.screen._choices if choice.value == "sage").marker
-            == TUI_DESIGN.selected_choice_marker
+            == DEFAULT_TUI_THEME.selected_choice_marker
         )
+        assert not any(choice.loading for choice in app.screen._choices)
         assert app.tui_theme == sage
         header = app.query_one(BrandHeader).render()
         assert header.get_style_at_offset(header.plain.index("OURO")).foreground == Color.parse(
@@ -11844,7 +11874,7 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
 
         await pilot.press("down")
         await pilot.pause()
-        assert app.tui_theme == TUI_THEMES["iris"]
+        assert app.tui_theme == sage
         assert TuiPreferencesStore(tmp_path).load().theme == "sage"
 
         await pilot.press("escape")
@@ -11852,7 +11882,7 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         assert app.tui_theme == sage
         assert app.screen.query_one("#choice-title", Static).render().plain == "ACTIONS"
         theme_action = next(
-            choice for choice in app.screen._choices if choice.label == "Theme color"
+            choice for choice in app.screen._choices if choice.label == "Theme"
         )
         assert theme_action.accent == sage.accent
         theme_prompt = app.screen.query_one(OptionList).get_option(theme_action.value).prompt
@@ -11864,6 +11894,229 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
 
     restarted = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
     assert restarted.tui_theme == TUI_THEMES["sage"]
+
+
+@pytest.mark.asyncio
+async def test_theme_switch_stays_interactive_coalesces_and_outlives_picker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Theme"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        theme_screen = app.screen
+        assert isinstance(theme_screen, ChoiceScreen)
+        entered = threading.Event()
+        release = threading.Event()
+        saved_themes: list[str] = []
+        save_preferences = app._preferences_store.save
+
+        def blocking_save(preferences: TuiPreferences) -> None:
+            saved_themes.append(preferences.theme)
+            if len(saved_themes) == 1:
+                entered.set()
+                release.wait()
+            save_preferences(preferences)
+
+        monkeypatch.setattr(app._preferences_store, "save", blocking_save)
+        watchdog = threading.Timer(2, release.set)
+        watchdog.start()
+        try:
+            await pilot.press("down", "enter")
+            assert await asyncio.to_thread(entered.wait, 1)
+            choices = {choice.value: choice for choice in theme_screen._choices}
+            assert choices["harbor"].loading is True
+            assert choices["sage"].loading is False
+            assert app.tui_theme == TUI_THEMES["original"]
+
+            await pilot.press("down", "enter")
+            await pilot.pause()
+            choices = {choice.value: choice for choice in theme_screen._choices}
+            assert choices["harbor"].loading is False
+            assert choices["sage"].loading is True
+            assert app.tui_theme == TUI_THEMES["original"]
+
+            reasoning_update = asyncio.create_task(app._set_reasoning_expanded("expand"))
+            await pilot.pause()
+            assert reasoning_update.done() is False
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is theme_screen
+            assert theme_screen.page_title == "ACTIONS"
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is not theme_screen
+            assert app._theme_switch_active is True
+        finally:
+            release.set()
+            watchdog.cancel()
+
+        await _wait_until(
+            lambda: not app._theme_switch_active,
+            pilot,
+            description="coalesced background theme switch",
+        )
+        assert await reasoning_update is True
+        assert saved_themes[0] == "harbor"
+        assert saved_themes[-1] == "sage"
+        assert app.tui_theme == TUI_THEMES["sage"]
+        stored_preferences = TuiPreferencesStore(tmp_path).load()
+        assert stored_preferences.theme == "sage"
+        assert stored_preferences.reasoning_expanded is True
+
+
+@pytest.mark.asyncio
+async def test_theme_loading_ends_after_history_reaches_the_new_theme(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+    message = MessageRecord(
+        session_id="ses_theme_loading",
+        role="assistant",
+        content=[TextContent(text="```python\nvalue = 1\n```\n")],
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        await app.query_one(ConversationView).load_messages((message,))
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Theme"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        theme_screen = app.screen
+        assert isinstance(theme_screen, ChoiceScreen)
+        entered = threading.Event()
+        release = threading.Event()
+        render_entries = conversation_history._render_entry_requests
+
+        def blocking_render(*args, **kwargs):
+            entered.set()
+            release.wait()
+            return render_entries(*args, **kwargs)
+
+        monkeypatch.setattr(
+            conversation_history,
+            "_render_entry_requests",
+            blocking_render,
+        )
+        watchdog = threading.Timer(2, release.set)
+        watchdog.start()
+        try:
+            await pilot.press("down", "enter")
+            assert await asyncio.to_thread(entered.wait, 1)
+            await pilot.pause()
+            assert app.tui_theme == TUI_THEMES["harbor"]
+            assert app._theme_switch_active is True
+            assert next(
+                choice for choice in theme_screen._choices if choice.value == "harbor"
+            ).loading is True
+        finally:
+            release.set()
+            watchdog.cancel()
+
+        await _wait_until(
+            lambda: not app._theme_switch_active,
+            pilot,
+            description="theme history render",
+        )
+        assert not any(choice.loading for choice in theme_screen._choices)
+
+
+@pytest.mark.asyncio
+async def test_theme_persistence_failure_keeps_current_theme_and_clears_loading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32), notifications=True) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Theme"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        theme_screen = app.screen
+        assert isinstance(theme_screen, ChoiceScreen)
+
+        def fail_save(_preferences: TuiPreferences) -> None:
+            raise PersistenceError("theme storage unavailable")
+
+        monkeypatch.setattr(app._preferences_store, "save", fail_save)
+        await pilot.press("down", "enter")
+        await _wait_until(
+            lambda: not app._theme_switch_active,
+            pilot,
+            description="failed theme switch",
+        )
+        await pilot.pause()
+
+        assert app.tui_theme == TUI_THEMES["original"]
+        assert TuiPreferencesStore(tmp_path).load().theme == "original"
+        assert not any(choice.loading for choice in theme_screen._choices)
+        assert list(theme_screen.query_one("#textual-toastrack").query("Toast"))
+
+
+@pytest.mark.asyncio
+async def test_host_injected_theme_controls_css_rich_glyphs_and_static_spinner(
+    tmp_path: Path,
+) -> None:
+    theme = replace(
+        DEFAULT_TUI_THEME,
+        theme_id="graphite",
+        label="Graphite",
+        description="Host injected test theme",
+        accent="#57a9c2",
+        panel="#15212a",
+        text_primary="#dce5ea",
+        brand_mark="◆",
+        section_separator_mark="·",
+        inline_separator_mark="·",
+        selected_choice_marker="■",
+        unselected_choice_marker="□",
+        spinner_frames=("◐",),
+        spinner_interval_seconds=0.2,
+    )
+    app = OuroTuiApp(
+        application=_application(tmp_path),
+        theme=theme,
+    )
+
+    assert app.tui_theme is theme
+    assert app.get_css_variables()["ouro-panel"] == theme.panel
+    markdown_code_color = app.console.get_style("markdown.code").color
+    assert markdown_code_color is not None
+    assert markdown_code_color.triplet.hex == theme.accent
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        header = app.query_one(BrandHeader).render()
+        assert header.plain.startswith(f" {theme.brand_mark} OURO ")
+        assert header.get_style_at_offset(header.plain.index("OURO")).foreground == (
+            Color.parse(theme.accent)
+        )
+        composer = app.query_one(Composer)
+        assert composer.styles.background == Color.parse(theme.panel)
+
+        indicator = app.query_one(ActivityIndicator)
+        indicator.set_activity("waiting_model")
+        await pilot.pause()
+        assert indicator.render().plain.strip().startswith(theme.spinner_frames[0])
+        assert indicator._timer is None
 
 
 @pytest.mark.parametrize(
@@ -11928,7 +12181,7 @@ async def test_action_menu_updates_thought_display_without_closing_picker(
             "MODEL THOUGHT DISPLAY"
         )
         choices = {choice.value: choice for choice in thought_screen._choices}
-        assert choices["collapse"].marker == TUI_DESIGN.selected_choice_marker
+        assert choices["collapse"].marker == DEFAULT_TUI_THEME.selected_choice_marker
         assert choices["expand"].marker == ""
 
         thought_screen.query_one("#choice-filter", Input).value = "Expand"
@@ -11937,7 +12190,7 @@ async def test_action_menu_updates_thought_display_without_closing_picker(
         await pilot.pause()
         assert app.screen is thought_screen
         choices = {choice.value: choice for choice in thought_screen._choices}
-        assert choices["expand"].marker == TUI_DESIGN.selected_choice_marker
+        assert choices["expand"].marker == DEFAULT_TUI_THEME.selected_choice_marker
         assert choices["collapse"].marker == ""
         assert preferences.load().reasoning_expanded is True
         assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
@@ -11972,7 +12225,7 @@ async def test_action_menu_toggles_input_draft_memory_and_clears_disabled_state(
             "INPUT DRAFT MEMORY"
         )
         choices = {choice.value: choice for choice in memory_screen._choices}
-        assert choices["enable"].marker == TUI_DESIGN.selected_choice_marker
+        assert choices["enable"].marker == DEFAULT_TUI_THEME.selected_choice_marker
         assert choices["disable"].marker == ""
 
         memory_screen.query_one("#choice-filter", Input).value = "Do not remember"
@@ -11996,13 +12249,15 @@ async def test_action_menu_toggles_input_draft_memory_and_clears_disabled_state(
             description="re-enabled draft memory to remember the visible draft",
         )
         choices = {choice.value: choice for choice in memory_screen._choices}
-        assert choices["enable"].marker == TUI_DESIGN.selected_choice_marker
+        assert choices["enable"].marker == DEFAULT_TUI_THEME.selected_choice_marker
         assert choices["disable"].marker == ""
         assert preferences.load().input_draft_memory_enabled is True
 
 
 @pytest.mark.asyncio
-async def test_theme_preview_is_reverted_when_picker_is_cancelled(tmp_path: Path) -> None:
+async def test_theme_preview_is_local_and_cleared_when_picker_is_cancelled(
+    tmp_path: Path,
+) -> None:
     preferences = TuiPreferencesStore(tmp_path)
     preferences.save(TuiPreferences(theme="iris"))
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
@@ -12011,22 +12266,33 @@ async def test_theme_preview_is_reverted_when_picker_is_cancelled(tmp_path: Path
         await pilot.pause()
         await pilot.press("ctrl+p", "enter")
         await pilot.pause()
-        assert app.screen.query_one(OptionList).highlighted == 3
+        theme_screen = app.screen
+        assert isinstance(theme_screen, ChoiceScreen)
+        assert theme_screen.query_one(OptionList).highlighted == 3
 
         await pilot.press("down")
         await pilot.pause()
 
-        assert app.tui_theme == TUI_THEMES["rosewood"]
+        assert app.tui_theme == TUI_THEMES["iris"]
+        assert theme_screen.query_one("#choice-title", Static).styles.color == Color.parse(
+            TUI_THEMES["rosewood"].accent
+        )
+        assert app.query_one(Composer).styles.border_left[1] == Color.parse(
+            TUI_THEMES["iris"].accent
+        )
 
         await pilot.press("escape")
-        await pilot.pause(0.2)
+        await pilot.pause()
 
         assert app.tui_theme == TUI_THEMES["iris"]
+        assert theme_screen.query_one("#choice-title", Static).styles.color == Color.parse(
+            TUI_THEMES["iris"].accent
+        )
         assert app.query_one(Composer).styles.border_left[1] == Color.parse(
             TUI_THEMES["iris"].accent
         )
         theme_action = next(
-            choice for choice in app.screen._choices if choice.label == "Theme color"
+            choice for choice in app.screen._choices if choice.label == "Theme"
         )
         assert theme_action.accent == TUI_THEMES["iris"].accent
         assert preferences.load() == TuiPreferences(

@@ -6,7 +6,7 @@ from typing import Literal
 from pydantic import JsonValue
 
 from ouro.application.supervisor_models import RuntimeToolCallActivity
-from ouro.tui.theme import TUI_DESIGN
+from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
 
 ToolLineState = Literal["pending", "active", "done", "muted"]
 ToolTextTone = Literal["default", "muted", "added", "removed"]
@@ -39,20 +39,24 @@ class ToolPresentation:
     lines: tuple[ToolPresentationLine, ...] = ()
 
 
-def present_tool(tool: RuntimeToolCallActivity) -> ToolPresentation:
+def present_tool(
+    tool: RuntimeToolCallActivity,
+    *,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
+) -> ToolPresentation:
     """Project canonical tool activity into compact, tool-aware display content."""
 
     name = tool.tool_name.casefold()
     if name == "read":
-        return _present_read(tool.arguments, tool.result_data)
+        return _present_read(tool.arguments, tool.result_data, theme=theme)
     if name == "write":
-        return _present_write(tool.arguments)
+        return _present_write(tool.arguments, theme=theme)
     if name == "edit":
-        return _present_edit(tool.arguments)
+        return _present_edit(tool.arguments, theme=theme)
     if name in _COMMAND_TOOLS:
         return _present_command(tool.arguments)
     if name == "todolist":
-        return _present_todos(tool.arguments, tool.result_data)
+        return _present_todos(tool.arguments, tool.result_data, theme=theme)
     if name == "spawnagent":
         return _present_spawn_agent(tool.arguments, tool.result_data)
     return ToolPresentation()
@@ -74,6 +78,8 @@ def _present_spawn_agent(
 def _present_read(
     arguments: dict[str, JsonValue],
     result: dict[str, JsonValue],
+    *,
+    theme: TuiTheme,
 ) -> ToolPresentation:
     path = _path(arguments.get("path"))
     offset = (
@@ -94,38 +100,38 @@ def _present_read(
         summary = (
             f"{offset} - {offset + limit - 1} lines" if limit is not None else None
         )
-    return ToolPresentation(lines=_file_detail_line(path, summary))
+    return ToolPresentation(lines=_file_detail_line(path, summary, theme=theme))
 
 
-def _present_write(arguments: dict[str, JsonValue]) -> ToolPresentation:
+def _present_write(arguments: dict[str, JsonValue], *, theme: TuiTheme) -> ToolPresentation:
     path = _path(arguments.get("path"))
     content = arguments.get("content")
     line_count = _text_line_count(content) if isinstance(content, str) else None
     mode = arguments.get("mode", "overwrite")
     detail = list(_path_parts(path))
     if detail and (line_count is not None or mode in {"overwrite", "append"}):
-        detail.append(ToolPresentationPart(TUI_DESIGN.inline_separator, "muted"))
+        detail.append(ToolPresentationPart(theme.inline_separator, "muted"))
     if line_count is not None:
         detail.append(ToolPresentationPart(f"+{line_count}", "added"))
         detail.append(ToolPresentationPart(f" {_plural_noun(line_count, 'line')}", "muted"))
     if mode in {"overwrite", "append"}:
         if line_count is not None:
-            detail.append(ToolPresentationPart(TUI_DESIGN.inline_separator, "muted"))
+            detail.append(ToolPresentationPart(theme.inline_separator, "muted"))
         detail.append(ToolPresentationPart(str(mode), "muted"))
     return ToolPresentation(
         lines=(ToolPresentationLine("└", tuple(detail)),) if detail else (),
     )
 
 
-def _present_edit(arguments: dict[str, JsonValue]) -> ToolPresentation:
+def _present_edit(arguments: dict[str, JsonValue], *, theme: TuiTheme) -> ToolPresentation:
     path = _path(arguments.get("path"))
     old = arguments.get("old")
     new = arguments.get("new")
     if not isinstance(old, str) or not isinstance(new, str):
-        return ToolPresentation(lines=_file_detail_line(path))
+        return ToolPresentation(lines=_file_detail_line(path, theme=theme))
     detail = list(_path_parts(path))
     if detail:
-        detail.append(ToolPresentationPart(TUI_DESIGN.inline_separator, "muted"))
+        detail.append(ToolPresentationPart(theme.inline_separator, "muted"))
     detail.extend(
         (
             ToolPresentationPart(f"+{_text_line_count(new)}", "added"),
@@ -135,7 +141,7 @@ def _present_edit(arguments: dict[str, JsonValue]) -> ToolPresentation:
         )
     )
     if arguments.get("replace_all") is True:
-        detail.append(ToolPresentationPart(f"{TUI_DESIGN.inline_separator}replace all", "muted"))
+        detail.append(ToolPresentationPart(f"{theme.inline_separator}replace all", "muted"))
     return ToolPresentation(lines=(ToolPresentationLine("└", tuple(detail)),))
 
 
@@ -157,6 +163,8 @@ def _present_command(arguments: dict[str, JsonValue]) -> ToolPresentation:
 def _present_todos(
     arguments: dict[str, JsonValue],
     result: dict[str, JsonValue],
+    *,
+    theme: TuiTheme,
 ) -> ToolPresentation:
     raw_todos = arguments.get("todos")
     if not isinstance(raw_todos, list):
@@ -179,11 +187,11 @@ def _present_todos(
         state: ToolLineState
         if status == "done":
             done_count += 1
-            marker, state = TUI_DESIGN.completed_item_marker, "done"
+            marker, state = theme.completed_item_marker, "done"
         elif status == "in_progress":
-            marker, state = TUI_DESIGN.active_item_marker, "active"
+            marker, state = theme.active_item_marker, "active"
         else:
-            marker, state = TUI_DESIGN.pending_item_marker, "pending"
+            marker, state = theme.pending_item_marker, "pending"
         if len(lines) < _MAX_TODO_LINES:
             lines.append(ToolPresentationLine(marker, (ToolPresentationPart(title),), state))
 
@@ -216,11 +224,13 @@ def _path_parts(path: str | None) -> tuple[ToolPresentationPart, ...]:
 def _file_detail_line(
     path: str | None,
     summary: str | None = None,
+    *,
+    theme: TuiTheme,
 ) -> tuple[ToolPresentationLine, ...]:
     parts = list(_path_parts(path))
     if summary:
         if parts:
-            parts.append(ToolPresentationPart(TUI_DESIGN.inline_separator, "muted"))
+            parts.append(ToolPresentationPart(theme.inline_separator, "muted"))
         parts.append(ToolPresentationPart(summary, "muted"))
     return (ToolPresentationLine("└", tuple(parts)),) if parts else ()
 

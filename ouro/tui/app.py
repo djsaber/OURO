@@ -11,6 +11,7 @@ from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Literal
+from weakref import ReferenceType, ref
 
 from pydantic import JsonValue
 from rich.text import Text
@@ -68,7 +69,11 @@ from ouro.tui.controller import (
     TuiSystemStatus,
     project_mcp_system_status,
 )
-from ouro.tui.conversation_history import ConversationHistoryState, ToolNavigationRequested
+from ouro.tui.conversation_history import (
+    ConversationHistory,
+    ConversationHistoryState,
+    ToolNavigationRequested,
+)
 from ouro.tui.input_drafts import TuiInputDrafts, TuiInputDraftStore
 from ouro.tui.plan_confirmation import project_plan_confirmation
 from ouro.tui.preferences import (
@@ -96,7 +101,7 @@ from ouro.tui.state import (
     project_run_presentations,
 )
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
-from ouro.tui.theme import TUI_DESIGN, TUI_THEMES, TuiTheme
+from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES, TuiTheme
 from ouro.tui.widgets import (
     COMMAND_POPUP_MAX_HEIGHT,
     COMMAND_POPUP_MIN_HEIGHT,
@@ -266,11 +271,8 @@ class _OuroHostScreen(Screen):
 
 
 _OURO_TUI_CSS = """
-    /* Design tokens — one source of truth for the flat OURO chrome.
-       $ouro-theme is the single accent color: borders, titles, the logo, and
-       active highlights all derive from it, so the whole TUI recolors by
-       changing one value. The owning app injects the persisted TUI palette so
-       CSS and Rich-text styling share one source of truth (see theme.py). */
+    /* Geometry remains fixed here; the owning app injects every visual token
+       from its complete TuiTheme so CSS and Rich rendering share one source. */
     $conversation-left-gutter: 2;
     $conversation-right-gutter: 1;
     $welcome-width: 72%;
@@ -1012,6 +1014,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         approval_mode: SessionApprovalMode = "inherit",
         interaction_mode: SessionInteractionMode = "interactive",
         resume_session_id: str | None = None,
+        theme: TuiTheme | None = None,
         application: LocalApplication | None = None,
         close_application: bool = True,
     ) -> None:
@@ -1040,8 +1043,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             input_drafts = TuiInputDrafts()
             self._input_drafts_error = str(exc)
         self._input_drafts = input_drafts
-        self._tui_theme = TUI_THEMES[preferences.theme]
+        self._tui_theme = theme if theme is not None else TUI_THEMES[preferences.theme]
         super().__init__()
+        self.console.push_theme(self._tui_theme.rich_theme())
         self._controller = TuiController(
             self._publish_runtime_event,
             self._publish_lifecycle_status,
@@ -1090,6 +1094,16 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._input_draft_revision = 0
         self._input_draft_save_task: asyncio.Task[None] | None = None
         self._input_draft_error_notified = False
+        self._preferences_save_lock = asyncio.Lock()
+        self._pending_tui_theme_id: str | None = None
+        self._theme_switch_revision = 0
+        self._theme_switch_success_revision = 0
+        self._theme_switch_active = False
+        self._theme_switch_changed = asyncio.Event()
+        self._theme_switch_settled = asyncio.Event()
+        self._theme_switch_settled.set()
+        self._theme_picker_ref: ReferenceType[ChoiceScreen] | None = None
+        self._theme_picker_revision = 0
 
     @property
     def tui_theme(self) -> TuiTheme:
@@ -1098,8 +1112,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def get_css_variables(self) -> dict[str, str]:
         return {
             **super().get_css_variables(),
-            **TUI_DESIGN.css_variables(),
-            "ouro-theme": self._tui_theme.accent,
+            **self._tui_theme.css_variables(),
             "welcome-max-width": str(WELCOME_MAX_WIDTH),
             "command-popup-min-height": str(COMMAND_POPUP_MIN_HEIGHT),
             "command-popup-max-height": str(COMMAND_POPUP_MAX_HEIGHT),
@@ -2606,7 +2619,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 _CLEAR_WORKSPACE_HISTORY_ARGUMENT,
                 "",
                 label="Clear",
-                accent=TUI_DESIGN.danger,
+                accent=self._tui_theme.danger,
             ),
         )
 
@@ -2755,7 +2768,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 name=name,
                 title=(
                     item.description
-                    or f"Plugin command{TUI_DESIGN.inline_separator}{item.plugin_id}"
+                    or f"Plugin command{self._tui_theme.inline_separator}{item.plugin_id}"
                 ),
                 description=f"Plugin: {item.plugin_id}",
                 argument_hint=item.usage or None,
@@ -3089,6 +3102,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         choices = _session_choices(
             self._sessions,
             selected_session_id=self._visible_session_id(),
+            theme=self._tui_theme,
         )
         session_menu: ChoiceScreen
 
@@ -3149,6 +3163,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return _session_choices(
                 self._sessions,
                 selected_session_id=self._visible_session_id(),
+                theme=self._tui_theme,
             )
 
         menu.push_page(
@@ -3157,6 +3172,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             choices=_session_choices(
                 self._sessions,
                 selected_session_id=self._visible_session_id(),
+                theme=self._tui_theme,
             ),
             on_select=toggle_archive,
             retain_focus_position_on_select=True,
@@ -3187,6 +3203,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return _rename_session_choices(
                 active_sessions,
                 selected_session_id=self._visible_session_id(),
+                theme=self._tui_theme,
             )
 
         screen = EditableChoiceScreen(
@@ -3195,6 +3212,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             choices=_rename_session_choices(
                 active,
                 selected_session_id=self._visible_session_id(),
+                theme=self._tui_theme,
             ),
             on_save=rename_session,
         )
@@ -3241,6 +3259,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return _session_choices(
                 deletable_sessions,
                 selected_session_id=self._visible_session_id(),
+                theme=self._tui_theme,
             )
 
         delete_screen = MultiChoiceScreen(
@@ -3249,10 +3268,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             choices=_session_choices(
                 deletable,
                 selected_session_id=self._visible_session_id(),
+                theme=self._tui_theme,
             ),
             on_confirm=delete_selected,
-            selected_marker=TUI_DESIGN.selected_choice_marker,
-            unselected_marker=TUI_DESIGN.unselected_choice_marker,
+            selected_marker=self._tui_theme.selected_choice_marker,
+            unselected_marker=self._tui_theme.unselected_choice_marker,
             confirm_label="Delete",
         )
         await menu.open_child(delete_screen)
@@ -3451,8 +3471,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     ) -> None:
         self.push_screen(self._session_load_error_screen(session_id, str(error)))
 
-    @staticmethod
     def _session_load_error_screen(
+        self,
         session_id: str,
         error: str,
     ) -> ChoiceScreen:
@@ -3464,7 +3484,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     "close",
                     "Close",
                     description=f"Could not open {session_id}:\n{error}",
-                    description_accent=TUI_DESIGN.failure,
+                    description_accent=self._tui_theme.failure,
                 ),
             ),
         )
@@ -3606,7 +3626,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         status_line.set_context_metrics(metrics)
         if applies_to_next_request:
             reasoning = (
-                f"{TUI_DESIGN.inline_separator}{_format_reasoning_state(self._reasoning_state)}"
+                f"{self._tui_theme.inline_separator}{_format_reasoning_state(self._reasoning_state)}"
                 if self._reasoning_state is not None
                 else ""
             )
@@ -3638,7 +3658,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             Choice(
                 value=mode,
                 label=mode,
-                marker=TUI_DESIGN.selected_choice_marker if mode == current else "",
+                marker=self._tui_theme.selected_choice_marker if mode == current else "",
                 trailing="current" if mode == current else "",
             )
             for mode in TUI_APPROVAL_PRESETS
@@ -3707,7 +3727,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             Choice(
                 value=argument.value,
                 label=argument.value,
-                marker=(TUI_DESIGN.selected_choice_marker if argument.value == current else ""),
+                marker=(
+                    self._tui_theme.selected_choice_marker
+                    if argument.value == current
+                    else ""
+                ),
                 trailing="current" if argument.value == current else "",
             )
             for argument in arguments
@@ -3876,7 +3900,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 (
                     Choice(
                         _THEME_ACTION,
-                        "Theme color",
+                        "Theme",
                         accent=self._tui_theme.accent,
                         group="Settings",
                     ),
@@ -3942,51 +3966,56 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _remember_action(self, action_id: str) -> None:
         """Persist a distinct three-entry MRU using canonical action IDs."""
 
-        recent_actions = (
-            action_id,
-            *(item for item in self._preferences.recent_actions if item != action_id),
-        )[:3]
-        if recent_actions == self._preferences.recent_actions:
-            return
-        preferences = self._preferences.model_copy(update={"recent_actions": recent_actions})
-        try:
-            await asyncio.to_thread(self._preferences_store.save, preferences)
-        except OuroError as exc:
-            _LOG.warning("Could not persist recent TUI actions: %s", exc)
-        self._preferences = preferences
+        async with self._preferences_save_lock:
+            recent_actions = (
+                action_id,
+                *(item for item in self._preferences.recent_actions if item != action_id),
+            )[:3]
+            if recent_actions == self._preferences.recent_actions:
+                return
+            preferences = self._preferences.model_copy(update={"recent_actions": recent_actions})
+            try:
+                await asyncio.to_thread(self._preferences_store.save, preferences)
+            except OuroError as exc:
+                _LOG.warning("Could not persist recent TUI actions: %s", exc)
+            self._preferences = preferences
 
     async def _remember_workspace(self, workspace: str) -> None:
         """Persist a distinct twenty-entry MRU using resolved workspace paths."""
 
-        recent_workspaces = (
-            workspace,
-            *(item for item in self._preferences.recent_workspaces if item != workspace),
-        )[:MAX_RECENT_WORKSPACES]
-        if recent_workspaces == self._preferences.recent_workspaces:
-            return
-        preferences = self._preferences.model_copy(update={"recent_workspaces": recent_workspaces})
-        try:
-            await asyncio.to_thread(self._preferences_store.save, preferences)
-        except OuroError as exc:
-            _LOG.warning("Could not persist recent TUI workspaces: %s", exc)
-            self.notify(str(exc), severity="warning", markup=False)
-            return
-        self._preferences = preferences
+        async with self._preferences_save_lock:
+            recent_workspaces = (
+                workspace,
+                *(item for item in self._preferences.recent_workspaces if item != workspace),
+            )[:MAX_RECENT_WORKSPACES]
+            if recent_workspaces == self._preferences.recent_workspaces:
+                return
+            preferences = self._preferences.model_copy(
+                update={"recent_workspaces": recent_workspaces}
+            )
+            try:
+                await asyncio.to_thread(self._preferences_store.save, preferences)
+            except OuroError as exc:
+                _LOG.warning("Could not persist recent TUI workspaces: %s", exc)
+                self.notify(str(exc), severity="warning", markup=False)
+                return
+            self._preferences = preferences
 
     async def _clear_recent_workspaces(self) -> None:
         """Clear the TUI-owned workspace MRU without changing the active workspace."""
 
-        if not self._preferences.recent_workspaces:
-            self.notify("Recent workspaces are already clear", markup=False)
-            return
-        preferences = self._preferences.model_copy(update={"recent_workspaces": ()})
-        try:
-            await asyncio.to_thread(self._preferences_store.save, preferences)
-        except OuroError as exc:
-            _LOG.warning("Could not clear recent TUI workspaces: %s", exc)
-            self.notify(str(exc), severity="warning", markup=False)
-            return
-        self._preferences = preferences
+        async with self._preferences_save_lock:
+            if not self._preferences.recent_workspaces:
+                self.notify("Recent workspaces are already clear", markup=False)
+                return
+            preferences = self._preferences.model_copy(update={"recent_workspaces": ()})
+            try:
+                await asyncio.to_thread(self._preferences_store.save, preferences)
+            except OuroError as exc:
+                _LOG.warning("Could not clear recent TUI workspaces: %s", exc)
+                self.notify(str(exc), severity="warning", markup=False)
+                return
+            self._preferences = preferences
         self.notify("Recent workspaces cleared", markup=False)
 
     def _shortcut_for_action(self, action: str) -> str:
@@ -3996,52 +4025,41 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return ""
 
     async def _choose_theme(self, *, menu: ChoiceScreen | None = None) -> None:
-        committed_theme = self._tui_theme
-
-        def theme_choices(selected: TuiTheme) -> tuple[Choice, ...]:
-            return tuple(
-                Choice(
-                    theme.theme_id,
-                    theme.label,
-                    accent=theme.accent,
-                    marker=TUI_DESIGN.selected_choice_marker if theme == selected else "",
-                )
-                for theme in TUI_THEMES.values()
-            )
-
         async def select_theme(theme_id: str) -> tuple[Choice, ...] | None:
-            nonlocal committed_theme
-            if not await self._set_tui_theme(theme_id, restore_theme=committed_theme):
-                return None
-            committed_theme = self._tui_theme
-            return theme_choices(committed_theme)
+            self._request_tui_theme(theme_id)
+            return self._theme_choices()
 
-        def restore_committed_theme() -> bool:
-            self._apply_tui_theme(committed_theme)
-            return False
+        def preview_theme(screen: ChoiceScreen, theme_id: str) -> None:
+            theme = TUI_THEMES.get(theme_id)
+            if theme is not None:
+                screen.preview_accent(theme.accent)
 
         if menu is not None:
             menu.push_page(
-                title="THEME COLOR",
-                placeholder="Filter theme colors…",
-                choices=theme_choices(committed_theme),
-                initial_value=committed_theme.theme_id,
-                on_highlight=self._preview_tui_theme,
+                title="THEME",
+                placeholder="Filter themes…",
+                choices=self._theme_choices(),
+                initial_value=self._pending_tui_theme_id or self._tui_theme.theme_id,
+                on_highlight=lambda theme_id: preview_theme(menu, theme_id),
                 on_select=select_theme,
-                on_cancel=restore_committed_theme,
             )
+            self._register_theme_picker(menu)
             return
-        await self.push_screen_wait(
-            ChoiceScreen(
-                title="THEME COLOR",
-                placeholder="Filter theme colors…",
-                choices=theme_choices(committed_theme),
-                initial_value=committed_theme.theme_id,
-                on_highlight=self._preview_tui_theme,
-                on_select=select_theme,
-            )
+        theme_screen: ChoiceScreen
+
+        def preview_standalone_theme(theme_id: str) -> None:
+            preview_theme(theme_screen, theme_id)
+
+        theme_screen = ChoiceScreen(
+            title="THEME",
+            placeholder="Filter themes…",
+            choices=self._theme_choices(),
+            initial_value=self._pending_tui_theme_id or self._tui_theme.theme_id,
+            on_highlight=preview_standalone_theme,
+            on_select=select_theme,
         )
-        self._apply_tui_theme(committed_theme)
+        self._register_theme_picker(theme_screen)
+        await self.push_screen_wait(theme_screen)
 
     async def _choose_thought_display(self, *, menu: ChoiceScreen | None = None) -> None:
         def display_choices(expanded: bool) -> tuple[Choice, ...]:
@@ -4050,7 +4068,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     value,
                     label,
                     marker=(
-                        TUI_DESIGN.selected_choice_marker
+                        self._tui_theme.selected_choice_marker
                         if _THOUGHT_DISPLAY_OPTIONS[value] == expanded
                         else ""
                     ),
@@ -4093,7 +4111,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     value,
                     label,
                     marker=(
-                        TUI_DESIGN.selected_choice_marker
+                        self._tui_theme.selected_choice_marker
                         if _INPUT_DRAFT_MEMORY_OPTIONS[value] == enabled
                         else ""
                     ),
@@ -4127,44 +4145,153 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
         )
 
-    def _preview_tui_theme(self, theme_id: str) -> None:
+    def _theme_choices(self) -> tuple[Choice, ...]:
+        return tuple(
+            Choice(
+                theme.theme_id,
+                theme.label,
+                accent=theme.accent,
+                marker=(
+                    self._tui_theme.selected_choice_marker
+                    if theme == self._tui_theme
+                    else ""
+                ),
+                loading=theme.theme_id == self._pending_tui_theme_id,
+            )
+            for theme in TUI_THEMES.values()
+        )
+
+    def _register_theme_picker(self, screen: ChoiceScreen) -> None:
+        self._theme_picker_ref = ref(screen)
+        self._theme_picker_revision = screen.page_revision
+
+    async def _refresh_theme_picker(self) -> None:
+        screen = self._theme_picker_ref() if self._theme_picker_ref is not None else None
+        if screen is None:
+            return
+        if screen.update_choices(
+            self._theme_choices(),
+            expected_revision=self._theme_picker_revision,
+            preferred_value=self._pending_tui_theme_id or self._tui_theme.theme_id,
+        ):
+            return
+        await screen.refresh_choices()
+
+    def _request_tui_theme(self, theme_id: str) -> int | None:
         theme = TUI_THEMES.get(theme_id)
-        if theme is not None:
-            self._apply_tui_theme(theme)
+        if theme is None:
+            self.notify(f"Unknown TUI theme: {theme_id}", severity="error", markup=False)
+            return None
+        if theme_id == self._pending_tui_theme_id:
+            return self._theme_switch_revision
+        if (
+            self._pending_tui_theme_id is None
+            and theme == self._tui_theme
+            and self._preferences.theme == theme_id
+        ):
+            return self._theme_switch_success_revision
+
+        self._theme_switch_revision += 1
+        self._pending_tui_theme_id = theme_id
+        self._theme_switch_changed.set()
+        self._theme_switch_settled.clear()
+        if not self._theme_switch_active:
+            self._theme_switch_active = True
+            self.run_worker(
+                self._switch_tui_themes(),
+                name="tui-theme-switch",
+                group="theme-switch",
+            )
+        return self._theme_switch_revision
 
     async def _set_tui_theme(
         self,
         theme_id: str,
-        *,
-        restore_theme: TuiTheme | None = None,
     ) -> bool:
-        theme = TUI_THEMES.get(theme_id)
-        if theme is None:
-            self.notify(f"Unknown TUI theme: {theme_id}", severity="error", markup=False)
+        revision = self._request_tui_theme(theme_id)
+        if revision is None:
             return False
-        preferences = self._preferences.model_copy(update={"theme": theme_id})
+        if self._pending_tui_theme_id is not None:
+            await self._theme_switch_settled.wait()
+        return self._theme_switch_success_revision == revision
+
+    async def _switch_tui_themes(self) -> None:
+        """Persist and render only the latest requested complete theme."""
+
         try:
-            await asyncio.to_thread(self._preferences_store.save, preferences)
-        except OuroError as exc:
-            if restore_theme is not None:
-                self._apply_tui_theme(restore_theme)
-            self.notify(str(exc), severity="error", markup=False)
-            return False
-        self._preferences = preferences
-        self._apply_tui_theme(theme)
-        return True
+            while self._pending_tui_theme_id is not None:
+                revision = self._theme_switch_revision
+                theme_id = self._pending_tui_theme_id
+                theme = TUI_THEMES[theme_id]
+                self._theme_switch_changed.clear()
+                save_error: OuroError | None = None
+                async with self._preferences_save_lock:
+                    if revision != self._theme_switch_revision:
+                        continue
+                    preferences = self._preferences.model_copy(update={"theme": theme_id})
+                    try:
+                        await asyncio.to_thread(self._preferences_store.save, preferences)
+                    except OuroError as exc:
+                        save_error = exc
+                    if save_error is None and revision == self._theme_switch_revision:
+                        self._preferences = preferences
+                if save_error is not None:
+                    if revision != self._theme_switch_revision:
+                        continue
+                    self._pending_tui_theme_id = None
+                    self._theme_switch_settled.set()
+                    self.notify(str(save_error), severity="error", markup=False)
+                    await self._refresh_theme_picker()
+                    return
+                if revision != self._theme_switch_revision:
+                    continue
+
+                self._apply_tui_theme(theme)
+                await self._wait_for_theme_render_or_request()
+                if revision != self._theme_switch_revision:
+                    continue
+
+                self._pending_tui_theme_id = None
+                self._theme_switch_success_revision = revision
+                self._theme_switch_settled.set()
+                await self._refresh_theme_picker()
+        finally:
+            self._theme_switch_active = False
+            self._theme_switch_settled.set()
+
+    async def _wait_for_theme_render_or_request(self) -> None:
+        histories = tuple(self.query(ConversationHistory))
+        if not histories:
+            return
+
+        async def wait_for_histories() -> None:
+            await asyncio.gather(*(history.wait_for_theme_refresh() for history in histories))
+
+        render_task = asyncio.create_task(wait_for_histories())
+        request_task = asyncio.create_task(self._theme_switch_changed.wait())
+        done, pending = await asyncio.wait(
+            (render_task, request_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        if render_task in done:
+            await render_task
 
     async def _set_reasoning_expanded(self, value: str) -> bool:
         expanded = _THOUGHT_DISPLAY_OPTIONS.get(value)
         if expanded is None:
             return False
-        preferences = self._preferences.model_copy(update={"reasoning_expanded": expanded})
-        try:
-            await asyncio.to_thread(self._preferences_store.save, preferences)
-        except OuroError as exc:
-            self.notify(str(exc), severity="error", markup=False)
-            return False
-        self._preferences = preferences
+        async with self._preferences_save_lock:
+            preferences = self._preferences.model_copy(update={"reasoning_expanded": expanded})
+            try:
+                await asyncio.to_thread(self._preferences_store.save, preferences)
+            except OuroError as exc:
+                self.notify(str(exc), severity="error", markup=False)
+                return False
+            self._preferences = preferences
         self._session_history_states.clear()
         self.query_one(ConversationView).set_reasoning_expanded(expanded)
         return True
@@ -4173,16 +4300,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         enabled = _INPUT_DRAFT_MEMORY_OPTIONS.get(value)
         if enabled is None:
             return False
-        if enabled == self._preferences.input_draft_memory_enabled:
-            return True
-        preferences = self._preferences.model_copy(update={"input_draft_memory_enabled": enabled})
-        try:
-            await asyncio.to_thread(self._preferences_store.save, preferences)
-        except OuroError as exc:
-            _LOG.warning("Could not persist TUI input draft preference: %s", exc)
-            self.notify(str(exc), severity="warning", markup=False)
-            return False
-        self._preferences = preferences
+        async with self._preferences_save_lock:
+            if enabled == self._preferences.input_draft_memory_enabled:
+                return True
+            preferences = self._preferences.model_copy(
+                update={"input_draft_memory_enabled": enabled}
+            )
+            try:
+                await asyncio.to_thread(self._preferences_store.save, preferences)
+            except OuroError as exc:
+                _LOG.warning("Could not persist TUI input draft preference: %s", exc)
+                self.notify(str(exc), severity="warning", markup=False)
+                return False
+            self._preferences = preferences
         drafts = TuiInputDrafts()
         if enabled and not self._visible_read_only and self.query(Composer):
             drafts = drafts.remember(
@@ -4193,15 +4323,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return True
 
     def _apply_tui_theme(self, theme: TuiTheme) -> None:
+        if theme == self._tui_theme:
+            return
         self._session_history_states.clear()
         self._tui_theme = theme
+        self.console.pop_theme()
+        self.console.push_theme(theme.rich_theme())
         self.refresh_css(animate=False)
         self._refresh_theme_content()
 
     def _refresh_theme_content(self) -> None:
         for screen in self.screen_stack:
-            for widget in screen.walk_children():
-                refresh_theme = getattr(widget, "refresh_theme", None)
+            for node in (screen, *screen.walk_children()):
+                refresh_theme = getattr(node, "refresh_theme", None)
                 if callable(refresh_theme):
                     refresh_theme()
 
@@ -4400,6 +4534,7 @@ def _session_choices(
     *,
     selected_session_id: str | None = None,
     today: date | None = None,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[Choice, ...]:
     local_today = today or datetime.now().astimezone().date()
     ordered = (
@@ -4413,14 +4548,16 @@ def _session_choices(
             label=_truncate_session_title(("★ " if item.pinned else "") + item.title),
             trailing="index error" if item.catalog_error is not None else item.status,
             accent=(
-                TUI_DESIGN.failure
+                theme.failure
                 if (item.catalog_error is not None or item.catalog_marks_unreadable)
-                else TUI_DESIGN.warning
+                else theme.warning
                 if item.health != "ok"
                 else None
             ),
             marker=(
-                TUI_DESIGN.selected_choice_marker if item.session_id == selected_session_id else ""
+                theme.selected_choice_marker
+                if item.session_id == selected_session_id
+                else ""
             ),
             group=(
                 "Index issues"
@@ -4438,6 +4575,7 @@ def _rename_session_choices(
     sessions: tuple[SessionCatalogEntry, ...],
     *,
     selected_session_id: str | None = None,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[Choice, ...]:
     titles = {session.session_id: session.title for session in sessions}
     return tuple(
@@ -4445,6 +4583,7 @@ def _rename_session_choices(
         for choice in _session_choices(
             sessions,
             selected_session_id=selected_session_id,
+            theme=theme,
         )
     )
 

@@ -67,7 +67,7 @@ from ouro.tui.state import (
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
 from ouro.tui.text_inputs import TuiTextArea
 from ouro.tui.theme import (
-    TUI_DESIGN,
+    DEFAULT_TUI_THEME,
     TuiTheme,
     theme_for,
 )
@@ -215,7 +215,7 @@ class BrandHeader(Static):
         self._render_header()
 
     def _render_header(self, *, width: int | None = None) -> None:
-        accent = theme_for(self).accent
+        theme = theme_for(self)
         available_width = self.size.width if width is None else width
         self.update(
             _brand_header_content(
@@ -223,7 +223,7 @@ class BrandHeader(Static):
                 self._session_detail,
                 self._workspace,
                 width=available_width,
-                accent=accent,
+                theme=theme,
             )
         )
 
@@ -234,21 +234,21 @@ def _brand_header_content(
     workspace: str | None,
     *,
     width: int,
-    accent: str,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> Text:
     """Lay out the title and right-aligned workspace with workspace priority."""
 
     content = Text()
-    content.append(f" {TUI_DESIGN.brand_mark} OURO ", style=f"bold {accent}")
-    title = Text(session_title, style=TUI_DESIGN.text_primary)
+    content.append(f" {theme.brand_mark} OURO ", style=f"bold {theme.accent}")
+    title = Text(session_title, style=theme.text_primary)
     if session_detail:
-        title.append(TUI_DESIGN.inline_separator, style=TUI_DESIGN.separator_tone)
-        title.append(session_detail, style=TUI_DESIGN.text_lowlight)
+        title.append(theme.inline_separator, style=theme.separator_tone)
+        title.append(session_detail, style=theme.text_lowlight)
     if width <= 0:
         content.append_text(title)
         if workspace:
             content.append(" " * _HEADER_MIN_GAP)
-            content.append(workspace, style=accent)
+            content.append(workspace, style=theme.accent)
         return content
 
     content.truncate(width, overflow="ellipsis")
@@ -267,12 +267,12 @@ def _brand_header_content(
         title.truncate(title_width, overflow="ellipsis")
         content.append_text(title)
         content.append(" " * (width - content.cell_len - workspace_width))
-        content.append(workspace, style=accent)
+        content.append(workspace, style=theme.accent)
         return content
 
     # When both fields cannot fit, omit the title before shortening the workspace.
     workspace_gap = min(_HEADER_MIN_GAP, max(1, remaining - workspace_width))
-    workspace_text = Text(workspace, style=accent)
+    workspace_text = Text(workspace, style=theme.accent)
     workspace_text.truncate(max(0, remaining - workspace_gap), overflow="ellipsis")
     content.append(" " * workspace_gap)
     content.append_text(workspace_text)
@@ -297,12 +297,13 @@ class ActivityIndicator(Static):
         self._timer: Timer | None = None
 
     def on_mount(self) -> None:
-        self._timer = self.set_interval(
-            0.12,
-            self._tick,
-            pause=self._activity not in _BUSY_ACTIVITIES,
-        )
+        self._sync_spinner_timer(force=True)
         self._render_indicator()
+
+    def on_unmount(self) -> None:
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
 
     def set_activity(
         self,
@@ -320,12 +321,9 @@ class ActivityIndicator(Static):
         self._activity = activity
         self._model_attempt = model_attempt
         self._model_max_attempts = model_max_attempts
-        if self._timer is not None:
-            if activity in _BUSY_ACTIVITIES:
-                self._timer.resume()
-            else:
-                self._timer.pause()
-                self._frame = 0
+        self._sync_spinner_timer()
+        if activity not in _BUSY_ACTIVITIES:
+            self._frame = 0
         self._render_indicator()
 
     def set_model(self, model: str) -> None:
@@ -366,17 +364,42 @@ class ActivityIndicator(Static):
         self._render_indicator()
 
     def refresh_theme(self) -> None:
+        self._frame = 0
+        self._sync_spinner_timer(force=True)
         self._render_indicator()
 
     def _tick(self) -> None:
-        self._frame = (self._frame + 1) % len(TUI_DESIGN.spinner_frames)
+        theme = theme_for(self)
+        self._frame = (self._frame + 1) % len(theme.spinner_frames)
         self._render_indicator()
 
+    def _sync_spinner_timer(self, *, force: bool = False) -> None:
+        if not self.is_attached:
+            return
+        if force and self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+        theme = theme_for(self)
+        animated = len(theme.spinner_frames) > 1
+        busy = self._activity in _BUSY_ACTIVITIES
+        if animated and self._timer is None:
+            self._timer = self.set_interval(
+                theme.spinner_interval_seconds,
+                self._tick,
+                pause=not busy,
+            )
+        elif self._timer is not None:
+            if busy:
+                self._timer.resume()
+            else:
+                self._timer.pause()
+
     def _render_indicator(self) -> None:
-        accent = theme_for(self).accent
+        theme = theme_for(self)
+        accent = theme.accent
         busy = self._activity in _BUSY_ACTIVITIES
         ready = self._activity in {"idle", "completed"}
-        mark = TUI_DESIGN.spinner_frames[self._frame] if busy else TUI_DESIGN.brand_mark
+        mark = theme.spinner_frames[self._frame] if busy else theme.brand_mark
         label = _ACTIVITY_LABELS.get(self._activity, self._activity.replace("_", " ").title())
         if self._subagent is not None and ready:
             label = _subagent_task_status(self._subagent).title()
@@ -390,33 +413,33 @@ class ActivityIndicator(Static):
         content = Text()
         content.append(
             f" {mark} ",
-            style=f"bold {accent}" if busy or ready else TUI_DESIGN.text_muted,
+            style=f"bold {accent}" if busy or ready else theme.text_muted,
         )
         for control_label in self._session_control_labels:
             content.append(control_label, style=f"bold {accent}")
             content.append(
-                TUI_DESIGN.section_separator,
-                style=TUI_DESIGN.separator_tone,
+                theme.section_separator,
+                style=theme.separator_tone,
             )
-        content.append(label, style=accent if ready else TUI_DESIGN.text_muted)
+        content.append(label, style=accent if ready else theme.text_muted)
         content.append(
-            TUI_DESIGN.section_separator,
-            style=TUI_DESIGN.separator_tone,
+            theme.section_separator,
+            style=theme.separator_tone,
         )
         approval_style = (
-            TUI_DESIGN.danger if self._approval_mode in {"auto", "afk"} else TUI_DESIGN.text_faint
+            theme.danger if self._approval_mode in {"auto", "afk"} else theme.text_faint
         )
         content.append(self._approval_mode, style=approval_style)
         content.append(
-            TUI_DESIGN.section_separator,
-            style=TUI_DESIGN.separator_tone,
+            theme.section_separator,
+            style=theme.separator_tone,
         )
-        content.append(self._model, style=TUI_DESIGN.text_faint)
+        content.append(self._model, style=theme.text_faint)
         if self._reasoning:
-            style = f"bold {accent}" if self._reasoning_peak else TUI_DESIGN.text_faint
+            style = f"bold {accent}" if self._reasoning_peak else theme.text_faint
             content.append(
-                TUI_DESIGN.section_separator,
-                style=TUI_DESIGN.separator_tone,
+                theme.section_separator,
+                style=theme.separator_tone,
             )
             content.append(self._reasoning, style=style)
         # This row is constrained to the single-line remainder of StatusLine;
@@ -449,7 +472,7 @@ class ReasoningLabel(RangeSelectionOnly, Label):
     def _update_displayed_content(self, *, layout: bool = False) -> None:
         content = self._content.copy()
         if self._hovered:
-            content.stylize(TUI_DESIGN.text_highlight)
+            content.stylize(theme_for(self).text_highlight)
         self.update(content, layout=layout)
 
     def on_click(self, event: events.Click) -> None:
@@ -480,6 +503,12 @@ class ReasoningView(RangeSelectionOnly, Vertical):
         self._completed_seconds: float | None = None
         self._content = ReasoningLines()
         self._content.set_class(not expanded, "collapsed")
+
+    def on_mount(self) -> None:
+        self._render_label()
+
+    def refresh_theme(self) -> None:
+        self._render_label()
 
     def compose(self) -> ComposeResult:
         yield self.label
@@ -531,7 +560,13 @@ class ReasoningView(RangeSelectionOnly, Vertical):
             else:
                 elapsed = self._elapsed_seconds()
             self._completed_seconds = elapsed
-            self.label.set_content(_completed_reasoning_label(elapsed, expanded=self.expanded))
+            self.label.set_content(
+                _completed_reasoning_label(
+                    elapsed,
+                    expanded=self.expanded,
+                    theme=theme_for(self),
+                )
+            )
         self._stop_timer()
 
     def _tick(self) -> None:
@@ -543,6 +578,7 @@ class ReasoningView(RangeSelectionOnly, Vertical):
                 "Thinking",
                 self._elapsed_seconds(),
                 expanded=self.expanded,
+                theme=theme_for(self),
             )
         )
 
@@ -554,6 +590,7 @@ class ReasoningView(RangeSelectionOnly, Vertical):
             _completed_reasoning_label(
                 self._completed_seconds,
                 expanded=self.expanded,
+                theme=theme_for(self),
             )
         )
 
@@ -678,8 +715,14 @@ def _completed_reasoning_label(
     duration_seconds: float | None,
     *,
     expanded: bool,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> Text:
-    return _reasoning_label_text("Thought", duration_seconds, expanded=expanded)
+    return _reasoning_label_text(
+        "Thought",
+        duration_seconds,
+        expanded=expanded,
+        theme=theme,
+    )
 
 
 class ToolActivityRow(RangeSelectionOnly, Static):
@@ -703,8 +746,8 @@ class ToolActivityRow(RangeSelectionOnly, Static):
         self._render_tool()
 
     def on_mount(self) -> None:
-        if self._is_active:
-            self._timer = self.set_interval(0.1, self._tick)
+        self._sync_timer()
+        self._render_tool(layout=False)
 
     def on_unmount(self) -> None:
         if self._timer is not None:
@@ -737,12 +780,17 @@ class ToolActivityRow(RangeSelectionOnly, Static):
     def agent(self) -> AgentTreeNode | None:
         return self._agent
 
-    def _sync_timer(self) -> None:
+    def _sync_timer(self, *, force: bool = False) -> None:
         if not self.is_attached:
             return
-        if self._is_active and self._timer is None:
-            self._timer = self.set_interval(0.1, self._tick)
-        elif not self._is_active and self._timer is not None:
+        if force and self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+        theme = theme_for(self)
+        should_animate = self._is_active and len(theme.spinner_frames) > 1
+        if should_animate and self._timer is None:
+            self._timer = self.set_interval(theme.spinner_interval_seconds, self._tick)
+        elif not should_animate and self._timer is not None:
             self._timer.stop()
             self._timer = None
 
@@ -754,10 +802,12 @@ class ToolActivityRow(RangeSelectionOnly, Static):
         )
 
     def _tick(self) -> None:
-        self._frame = (self._frame + 1) % len(TUI_DESIGN.spinner_frames)
+        self._frame = (self._frame + 1) % len(theme_for(self).spinner_frames)
         self._render_tool(layout=False)
 
     def refresh_theme(self) -> None:
+        self._frame = 0
+        self._sync_timer(force=True)
         self._render_tool(layout=False)
 
     def on_enter(self, _event: events.Enter) -> None:
@@ -806,52 +856,52 @@ def _tool_activity_text(
     if tool.argument_stream_tail is not None:
         text = Text(no_wrap=True, overflow="ellipsis")
         text.append(
-            f"{TUI_DESIGN.spinner_frames[frame]} ",
+            f"{theme.spinner_frames[frame % len(theme.spinner_frames)]} ",
             style=theme.accent,
         )
-        text.append(tool.tool_name, style=TUI_DESIGN.text_faint)
+        text.append(tool.tool_name, style=theme.text_faint)
         text.append(
-            f" {TUI_DESIGN.inline_separator_mark} ",
-            style=TUI_DESIGN.separator_tone,
+            theme.inline_separator,
+            style=theme.separator_tone,
         )
         text.append(
             _tool_argument_stream_window(tool.argument_stream_tail),
-            style=TUI_DESIGN.text_faint,
+            style=theme.text_faint,
         )
         return text
 
-    presentation = present_tool(tool)
+    presentation = present_tool(tool, theme=theme)
     is_spawn_agent = tool.tool_name.casefold() == "spawnagent"
     subagent = agent if agent is not None and is_spawn_agent else None
     title = presentation.title or tool.tool_name
     if subagent is not None:
-        title = _subagent_identity(subagent)
+        title = _subagent_identity(subagent, theme=theme)
     failed = tool.status in _FAILED_TOOL_STATUSES or (
         subagent is not None and subagent.status in _FAILED_SUBAGENT_STATUSES
     )
     text = Text(no_wrap=True, overflow="ellipsis")
     if tool.status in _ACTIVE_TOOL_STATUSES:
         text.append(
-            f"{TUI_DESIGN.spinner_frames[frame]} ",
+            f"{theme.spinner_frames[frame % len(theme.spinner_frames)]} ",
             style=theme.accent,
         )
     text.append(
         title,
-        style=TUI_DESIGN.failure if failed else TUI_DESIGN.text_primary,
+        style=theme.failure if failed else theme.text_primary,
     )
     if presentation.summary:
         text.append(
-            f" {TUI_DESIGN.inline_separator}{presentation.summary}",
-            style=TUI_DESIGN.text_detail,
+            f" {theme.inline_separator}{presentation.summary}",
+            style=theme.text_detail,
         )
     if subagent is not None:
         status_label = _subagent_task_status(subagent)
         text.append(
             f"  {status_label}",
             style=(
-                TUI_DESIGN.failure
+                theme.failure
                 if status_label == "failed"
-                else TUI_DESIGN.text_metadata
+                else theme.text_metadata
             ),
         )
     elif is_spawn_agent:
@@ -859,29 +909,29 @@ def _tool_activity_text(
         text.append(
             f"  {status_label}",
             style=(
-                TUI_DESIGN.failure
+                theme.failure
                 if status_label == "failed"
-                else TUI_DESIGN.text_metadata
+                else theme.text_metadata
             ),
         )
     elapsed = _tool_elapsed_seconds(tool)
     elapsed_label = format_duration(elapsed) if elapsed is not None else None
     if elapsed_label is not None and elapsed_label != "0ms":
         text.append(
-            f"{TUI_DESIGN.inline_separator}{elapsed_label}",
-            style=TUI_DESIGN.text_faint,
+            f"{theme.inline_separator}{elapsed_label}",
+            style=theme.text_faint,
         )
     line_styles: dict[ToolLineState, str] = {
-        "pending": TUI_DESIGN.text_detail,
+        "pending": theme.text_detail,
         "active": theme.accent,
-        "done": TUI_DESIGN.success,
-        "muted": TUI_DESIGN.text_faint,
+        "done": theme.success,
+        "muted": theme.text_faint,
     }
     part_styles: dict[ToolTextTone, str] = {
-        "default": TUI_DESIGN.text_faint,
-        "muted": TUI_DESIGN.text_faint,
-        "added": TUI_DESIGN.success,
-        "removed": TUI_DESIGN.failure,
+        "default": theme.text_faint,
+        "muted": theme.text_faint,
+        "added": theme.success,
+        "removed": theme.failure,
     }
     for line in presentation.lines:
         text.append(f"\n  {line.marker} ", style=line_styles[line.state])
@@ -889,11 +939,11 @@ def _tool_activity_text(
             style = part_styles[part.tone]
             text.append(part.text, style=style)
     if subagent is not None:
-        _append_subagent_activity(text, subagent)
+        _append_subagent_activity(text, subagent, theme=theme)
     elif is_spawn_agent:
-        _append_subagent_preview(text, tool)
+        _append_subagent_preview(text, tool, theme=theme)
     if highlighted:
-        text.stylize(TUI_DESIGN.text_highlight)
+        text.stylize(theme.text_highlight)
     return text
 
 
@@ -920,10 +970,10 @@ def _tool_is_clickable(tool: RuntimeToolCallActivity, *, run_id: str | None) -> 
     )
 
 
-def _subagent_identity(agent: AgentTreeNode) -> str:
+def _subagent_identity(agent: AgentTreeNode, *, theme: TuiTheme) -> str:
     nickname = agent.nickname.strip() if agent.nickname is not None else ""
     if nickname and nickname != agent.agent_name:
-        return TUI_DESIGN.inline_separator.join((agent.agent_name, nickname))
+        return theme.inline_separator.join((agent.agent_name, nickname))
     return agent.agent_name
 
 
@@ -952,7 +1002,12 @@ def _spawn_agent_preview_status(tool: RuntimeToolCallActivity) -> str:
     return _subagent_execution_status(tool.arguments.get("execution_mode", "sync"))
 
 
-def _append_subagent_preview(text: Text, tool: RuntimeToolCallActivity) -> None:
+def _append_subagent_preview(
+    text: Text,
+    tool: RuntimeToolCallActivity,
+    *,
+    theme: TuiTheme,
+) -> None:
     description = tool.arguments.get("description")
     if not isinstance(description, str) or not description.strip():
         return
@@ -962,12 +1017,14 @@ def _append_subagent_preview(text: Text, tool: RuntimeToolCallActivity) -> None:
         label = "Done"
     else:
         label = "Dispatching"
-    _append_subagent_detail(text, label, description.strip())
+    _append_subagent_detail(text, label, description.strip(), theme=theme)
 
 
 def _append_subagent_activity(
     text: Text,
     agent: AgentTreeNode,
+    *,
+    theme: TuiTheme,
 ) -> None:
     activity = agent.activity
     activity_name = activity.activity if activity is not None else agent.status
@@ -975,13 +1032,19 @@ def _append_subagent_activity(
         activity_name,
         activity_name.replace("_", " ").title(),
     )
-    _append_subagent_detail(text, label, agent.task_description)
+    _append_subagent_detail(text, label, agent.task_description, theme=theme)
 
 
-def _append_subagent_detail(text: Text, label: str, description: str) -> None:
+def _append_subagent_detail(
+    text: Text,
+    label: str,
+    description: str,
+    *,
+    theme: TuiTheme,
+) -> None:
     text.append(
-        f"\n  └ {label}{TUI_DESIGN.inline_separator}{description}",
-        style=TUI_DESIGN.text_lowlight,
+        f"\n  └ {label}{theme.inline_separator}{description}",
+        style=theme.text_lowlight,
     )
 
 
@@ -1023,20 +1086,20 @@ def _blend_hex(background: str, foreground: str, ratio: float) -> str:
     return "#" + "".join(f"{channel:02x}" for channel in blended)
 
 
-def _usage_block_colors(values: tuple[int, ...], accent: str) -> tuple[str, ...]:
+def _usage_block_colors(values: tuple[int, ...], theme: TuiTheme) -> tuple[str, ...]:
     """Map daily token totals onto a theme-derived dark-to-accent scale."""
 
     darkest_ratio = 0.28
     if not values:
-        return (_blend_hex(TUI_DESIGN.background, accent, darkest_ratio),)
+        return (_blend_hex(theme.background, theme.accent, darkest_ratio),)
     lowest = min(values)
     highest = max(values)
     if lowest == highest:
-        return tuple(accent for _ in values)
+        return tuple(theme.accent for _ in values)
     return tuple(
         _blend_hex(
-            TUI_DESIGN.background,
-            accent,
+            theme.background,
+            theme.accent,
             darkest_ratio + (1.0 - darkest_ratio) * ((value - lowest) / (highest - lowest)),
         )
         for value in values
@@ -1079,6 +1142,7 @@ class _WelcomeSystemBlock(Vertical):
 
     def on_mount(self) -> None:
         self._sync_mcp_spinner()
+        self._render_values()
 
     def on_unmount(self) -> None:
         if self._spinner_timer is not None:
@@ -1090,11 +1154,15 @@ class _WelcomeSystemBlock(Vertical):
         self._sync_mcp_spinner()
         self._render_values()
 
-    def _sync_mcp_spinner(self) -> None:
-        if self._status.mcp_connecting_count:
+    def _sync_mcp_spinner(self, *, force: bool = False) -> None:
+        if force and self._spinner_timer is not None:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
+        theme = theme_for(self)
+        if self._status.mcp_connecting_count and len(theme.spinner_frames) > 1:
             if self._spinner_timer is None:
                 self._spinner_timer = self.set_interval(
-                    0.12,
+                    theme.spinner_interval_seconds,
                     self._advance_mcp_spinner,
                 )
         else:
@@ -1104,55 +1172,57 @@ class _WelcomeSystemBlock(Vertical):
             self._spinner_frame = 0
 
     def _advance_mcp_spinner(self) -> None:
-        self._spinner_frame = (self._spinner_frame + 1) % len(TUI_DESIGN.spinner_frames)
+        self._spinner_frame = (self._spinner_frame + 1) % len(theme_for(self).spinner_frames)
         self._render_mcp_label()
 
     def _render_mcp_label(self) -> None:
+        theme = theme_for(self)
         label = Text()
         if self._status.mcp_connecting_count:
             label.append(
-                f"{TUI_DESIGN.spinner_frames[self._spinner_frame]} ",
-                style=f"bold {theme_for(self).accent}",
+                f"{theme.spinner_frames[self._spinner_frame]} ",
+                style=f"bold {theme.accent}",
             )
         label.append("MCP")
         self._mcp_label.update(label)
 
     def _render_values(self) -> None:
         status = self._status
+        theme = theme_for(self)
         self._render_mcp_label()
-        self._workspace.update(Text(status.workspace or "not set", style=TUI_DESIGN.text_primary))
+        self._workspace.update(Text(status.workspace or "not set", style=theme.text_primary))
 
         providers = Text(
             _compact_names(status.provider_ids) or "none configured",
-            style=TUI_DESIGN.text_primary,
+            style=theme.text_primary,
         )
         providers.append(
-            f"{TUI_DESIGN.section_separator}{status.model_count} model(s)",
-            style=TUI_DESIGN.text_muted,
+            f"{theme.section_separator}{status.model_count} model(s)",
+            style=theme.text_muted,
         )
         self._providers.update(providers)
 
-        skills = Text(f"{status.skill_count} available", style=TUI_DESIGN.text_muted)
+        skills = Text(f"{status.skill_count} available", style=theme.text_muted)
         if status.skill_names:
             skills.append(
-                f"{TUI_DESIGN.section_separator}{_compact_names(status.skill_names)}",
-                style=TUI_DESIGN.text_faint,
+                f"{theme.section_separator}{_compact_names(status.skill_names)}",
+                style=theme.text_faint,
             )
         self._skills.update(skills)
 
         plugins = Text(
             f"{status.plugin_active_count}/{status.plugin_total_count} active",
-            style=TUI_DESIGN.text_muted,
+            style=theme.text_muted,
         )
         if status.plugin_active_names:
             plugins.append(
-                f"{TUI_DESIGN.section_separator}{_compact_names(status.plugin_active_names)}",
-                style=TUI_DESIGN.text_faint,
+                f"{theme.section_separator}{_compact_names(status.plugin_active_names)}",
+                style=theme.text_faint,
             )
         if status.plugin_issue_count:
             plugins.append(
-                f"{TUI_DESIGN.section_separator}{status.plugin_issue_count} need attention",
-                style=TUI_DESIGN.critical,
+                f"{theme.section_separator}{status.plugin_issue_count} need attention",
+                style=theme.critical,
             )
         self._plugins.update(plugins)
 
@@ -1160,27 +1230,29 @@ class _WelcomeSystemBlock(Vertical):
         if status.mcp_total_count:
             mcp.append(
                 f"{status.mcp_connected_count}/{status.mcp_total_count} connected",
-                style=theme_for(self).accent,
+                style=theme.accent,
             )
             mcp.append(
-                f"{TUI_DESIGN.section_separator}{status.mcp_tool_count} tool(s)",
-                style=TUI_DESIGN.text_muted,
+                f"{theme.section_separator}{status.mcp_tool_count} tool(s)",
+                style=theme.text_muted,
             )
             if status.mcp_connecting_count:
                 mcp.append(
-                    f"{TUI_DESIGN.section_separator}{status.mcp_connecting_count} connecting",
-                    style=theme_for(self).accent,
+                    f"{theme.section_separator}{status.mcp_connecting_count} connecting",
+                    style=theme.accent,
                 )
             if status.mcp_failed_count:
                 mcp.append(
-                    f"{TUI_DESIGN.section_separator}{status.mcp_failed_count} failed",
-                    style=TUI_DESIGN.critical,
+                    f"{theme.section_separator}{status.mcp_failed_count} failed",
+                    style=theme.critical,
                 )
         else:
-            mcp.append("not configured", style=TUI_DESIGN.text_faint)
+            mcp.append("not configured", style=theme.text_faint)
         self._mcp.update(mcp)
 
     def refresh_theme(self) -> None:
+        self._spinner_frame = 0
+        self._sync_mcp_spinner(force=True)
         self._render_values()
 
 
@@ -1199,6 +1271,9 @@ class _WelcomeUsageBlock(Vertical):
         yield self._requests
         yield self._tokens
 
+    def on_mount(self) -> None:
+        self._render_values()
+
     def set_system_status(self, status: TuiSystemStatus) -> None:
         self._status = status
         self._render_values()
@@ -1208,39 +1283,39 @@ class _WelcomeUsageBlock(Vertical):
 
     def _render_values(self) -> None:
         status = self._status
-        accent = theme_for(self).accent
+        theme = theme_for(self)
         daily_tokens = status.usage_daily_tokens
         chart = Text()
-        for color in _usage_block_colors(daily_tokens, accent):
+        for color in _usage_block_colors(daily_tokens, theme):
             chart.append("■", style=color)
         if daily_tokens:
             days = len(daily_tokens)
             chart.append(
-                f"{TUI_DESIGN.section_separator}last {days} day{'s' if days != 1 else ''}",
-                style=TUI_DESIGN.text_faint,
+                f"{theme.section_separator}last {days} day{'s' if days != 1 else ''}",
+                style=theme.text_faint,
             )
         else:
             chart.append(
-                f"{TUI_DESIGN.section_separator}no records",
-                style=TUI_DESIGN.text_faint,
+                f"{theme.section_separator}no records",
+                style=theme.text_faint,
             )
         self._chart.update(chart)
 
         requests = Text(
             f"{status.usage_request_count} request(s)",
-            style=TUI_DESIGN.text_muted,
+            style=theme.text_muted,
         )
         if status.usage_priced_request_count:
             requests.append(
-                f"{TUI_DESIGN.section_separator}${status.usage_estimated_cost:.4f}",
-                style=TUI_DESIGN.text_faint,
+                f"{theme.section_separator}${status.usage_estimated_cost:.4f}",
+                style=theme.text_faint,
             )
         self._requests.update(requests)
         self._tokens.update(
             Text(
                 f"{format_compact_count(status.usage_input_tokens)} in"
                 f" / {format_compact_count(status.usage_output_tokens)} out",
-                style=TUI_DESIGN.text_faint,
+                style=theme.text_faint,
             )
         )
 
@@ -1248,18 +1323,22 @@ class _WelcomeUsageBlock(Vertical):
 class _WelcomeTipsBlock(Vertical):
     def __init__(self) -> None:
         super().__init__(classes="welcome-section welcome-tips")
+        self._title = Static(classes="welcome-title")
 
     def compose(self) -> ComposeResult:
-        yield Static(
-            f"{TUI_DESIGN.section_separator_mark} TIPS",
-            classes="welcome-title",
-        )
+        yield self._title
         for key, description in _INPUT_TIPS:
             yield Horizontal(
                 Static(key, classes="welcome-tip-key"),
                 Static(description, classes="welcome-tip-description"),
                 classes="welcome-row",
             )
+
+    def on_mount(self) -> None:
+        self.refresh_theme()
+
+    def refresh_theme(self) -> None:
+        self._title.update(f"{theme_for(self).section_separator_mark} TIPS")
 
 
 class WelcomePanel(Vertical):
@@ -1360,8 +1439,6 @@ class WelcomePanel(Vertical):
 
     def refresh_theme(self) -> None:
         self._render_logo()
-        self._system.refresh_theme()
-        self._usage.refresh_theme()
 
     def _render_logo(self) -> None:
         self._logo.update(Text(_OURO_LOGO.strip("\n"), style=f"bold {theme_for(self).accent}"))
@@ -2148,17 +2225,17 @@ class ApprovalPanel(Vertical):
         content.append("› " if active else "  ", style=theme.accent if active else "")
         content.append(
             label,
-            style=f"bold {tone}" if active else f"bold {TUI_DESIGN.text_primary}",
+            style=f"bold {tone}" if active else f"bold {theme.text_primary}",
         )
         if description:
             content.append(
                 f"  {description}",
-                style=(TUI_DESIGN.text_primary if active else TUI_DESIGN.text_lowlight),
+                style=(theme.text_primary if active else theme.text_lowlight),
             )
         content.append("\n")
 
-    @staticmethod
     def _append_approval_hint(
+        self,
         content: Text,
         *,
         leading: tuple[str, ...] = (),
@@ -2166,10 +2243,10 @@ class ApprovalPanel(Vertical):
     ) -> None:
         content.append(
             "\n"
-            + TUI_DESIGN.inline_separator.join(
+            + theme_for(self).inline_separator.join(
                 (*leading, "↑/↓ move", "Enter choose", *trailing)
             ),
-            style=TUI_DESIGN.text_lowlight,
+            style=theme_for(self).text_lowlight,
         )
 
     def _approval_choice_count(self) -> int:
@@ -2258,22 +2335,23 @@ class InteractionBar(ApprovalPanel):
         interaction = self._interaction
         if interaction is None:
             return
+        theme = theme_for(self)
         self._render_approval_title("APPROVAL")
         summary = Text()
         if interaction.is_subagent:
             summary.append(
                 f"Subagent {interaction.agent_name or interaction.delegation_id}\n",
-                style=TUI_DESIGN.text_lowlight,
+                style=theme.text_lowlight,
             )
         summary.append(
             f"{interaction.tool_name} wants to run",
-            style=f"bold {TUI_DESIGN.text_primary}",
+            style=f"bold {theme.text_primary}",
         )
         self._summary.update(summary)
         content = Text()
         options = (
-            ("Allow", "Run this tool", TUI_DESIGN.success),
-            ("Deny", "Reject this tool", TUI_DESIGN.failure),
+            ("Allow", "Run this tool", theme.success),
+            ("Deny", "Reject this tool", theme.failure),
         )
         for index, (label, description, tone) in enumerate(options):
             self._append_approval_option(
@@ -2461,7 +2539,7 @@ class AskUserPanel(Static):
         )
         content.append(
             f"{question.prompt}\n\n",
-            style=f"bold {TUI_DESIGN.text_primary}",
+            style=f"bold {theme.text_primary}",
         )
         for index, option in enumerate(question.options):
             active = index == self._cursor
@@ -2470,18 +2548,18 @@ class AskUserPanel(Static):
                 marker = "[x]" if checked else "[ ]"
             else:
                 marker = (
-                    TUI_DESIGN.selected_choice_marker
+                    theme.selected_choice_marker
                     if active
-                    else TUI_DESIGN.unselected_choice_marker
+                    else theme.unselected_choice_marker
                 )
             content.append("› " if active else "  ", style=theme.accent if active else "")
             content.append(
                 f"{index + 1}. {marker} {option.label}",
-                style=f"bold {TUI_DESIGN.text_primary}" if active else "",
+                style=f"bold {theme.text_primary}" if active else "",
             )
             content.append(
                 f"  {option.description}\n",
-                style=(TUI_DESIGN.text_primary if active else TUI_DESIGN.text_lowlight),
+                style=(theme.text_primary if active else theme.text_lowlight),
             )
         other_index = len(question.options)
         other_active = self._cursor == other_index
@@ -2489,16 +2567,16 @@ class AskUserPanel(Static):
         content.append(
             f"{other_index + 1}. Other…",
             style=(
-                f"bold {theme.accent_bright}" if other_active else f"bold {TUI_DESIGN.text_primary}"
+                f"bold {theme.accent_bright}" if other_active else f"bold {theme.text_primary}"
             ),
         )
         hint = (
             "\n\n"
-            + TUI_DESIGN.inline_separator.join(("↑/↓ move", "Space toggle", "Enter continue"))
+            + theme.inline_separator.join(("↑/↓ move", "Space toggle", "Enter continue"))
             if question.multi_select
-            else "\n\n" + TUI_DESIGN.inline_separator.join(("↑/↓ move", "Enter choose"))
+            else "\n\n" + theme.inline_separator.join(("↑/↓ move", "Enter choose"))
         )
-        content.append(hint, style=TUI_DESIGN.text_lowlight)
+        content.append(hint, style=theme.text_lowlight)
         self.update(content)
 
     def refresh_theme(self) -> None:
@@ -2667,28 +2745,29 @@ class PlanConfirmationPanel(ApprovalPanel):
         request = self._request
         if request is None:
             return
+        theme = theme_for(self)
         with self.app.batch_update():
             self._render_approval_title("PLAN APPROVAL")
-            self._plan_body.update(Text(request.plan, style=TUI_DESIGN.text_primary))
+            self._plan_body.update(Text(request.plan, style=theme.text_primary))
             self._render_controls(request)
 
     def _render_controls(self, request: PlanConfirmationRequest) -> None:
         theme = theme_for(self)
         content = Text()
         if request.error:
-            content.append(f"{request.error}\n\n", style=TUI_DESIGN.danger)
+            content.append(f"{request.error}\n\n", style=theme.danger)
         if self._stage == "action":
             content.append(
                 "Choose how Plan mode should continue\n\n",
-                style=TUI_DESIGN.text_secondary,
+                style=theme.text_secondary,
             )
             presentations = {
-                "accept": ("Accept", "Approve the plan and exit Plan mode", TUI_DESIGN.success),
+                "accept": ("Accept", "Approve the plan and exit Plan mode", theme.success),
                 "revise": ("Revise", "Keep planning and provide feedback", theme.accent),
                 "reject": (
                     "Reject",
                     "Reject the plan and keep Plan mode active",
-                    TUI_DESIGN.danger,
+                    theme.danger,
                 ),
             }
             for index, action in enumerate(request.actions):
@@ -2707,7 +2786,7 @@ class PlanConfirmationPanel(ApprovalPanel):
         elif self._stage == "option":
             content.append(
                 "Choose an implementation approach\n\n",
-                style=TUI_DESIGN.text_secondary,
+                style=theme.text_secondary,
             )
             for index, option in enumerate(request.options):
                 self._append_approval_option(
@@ -2726,7 +2805,7 @@ class PlanConfirmationPanel(ApprovalPanel):
             content.append("REVISION FEEDBACK\n", style=f"bold {theme.accent_bright}")
             content.append(
                 "Type the requested plan changes below, then press Enter",
-                style=TUI_DESIGN.text_lowlight,
+                style=theme.text_lowlight,
             )
         self._controls.update(content)
 
@@ -2839,15 +2918,15 @@ class CommandPopup(VerticalScroll):
         rows: list[Text] = []
         for index, command in enumerate(self._commands):
             selected = index == self._selected
-            row = Text(style=f"on {TUI_DESIGN.highlight}" if selected else "")
+            row = Text(style=f"on {theme.highlight}" if selected else "")
             row.append("› " if selected else "  ", style=theme.accent if selected else "")
             row.append(
                 command.name.ljust(name_width),
-                style=(theme.accent_bright if selected else TUI_DESIGN.text_primary),
+                style=(theme.accent_bright if selected else theme.text_primary),
             )
             row.append(
                 f"  {command.title}",
-                style=(TUI_DESIGN.text_primary if selected else TUI_DESIGN.text_lowlight),
+                style=(theme.text_primary if selected else theme.text_lowlight),
             )
             rows.append(row)
         self._render_rows(tuple(rows))
@@ -2860,26 +2939,26 @@ class CommandPopup(VerticalScroll):
         if not self._arguments:
             content = Text()
             content.append("› ", style=theme.accent)
-            content.append(command.title, style=TUI_DESIGN.text_primary)
+            content.append(command.title, style=theme.text_primary)
             self._content.update(content)
             return
         value_width = max(len(argument.display_label) for argument in self._arguments)
         rows: list[Text] = []
         for index, argument in enumerate(self._arguments):
             selected = index == self._selected
-            row = Text(style=f"on {TUI_DESIGN.highlight}" if selected else "")
+            row = Text(style=f"on {theme.highlight}" if selected else "")
             row.append("› " if selected else "  ", style=theme.accent if selected else "")
             row.append(
                 argument.display_label.ljust(value_width),
                 style=(
                     argument.accent
-                    or (theme.accent_bright if selected else TUI_DESIGN.text_primary)
+                    or (theme.accent_bright if selected else theme.text_primary)
                 ),
             )
             if argument.description:
                 row.append(
                     f"  {argument.description}",
-                    style=(TUI_DESIGN.text_secondary if selected else TUI_DESIGN.text_lowlight),
+                    style=(theme.text_secondary if selected else theme.text_lowlight),
                 )
             rows.append(row)
         self._render_rows(tuple(rows))
@@ -2973,10 +3052,10 @@ class QueuedInputPanel(VerticalScroll):
                     prompt = f"/skill {item.skill_name}{f' {prompt}' if prompt else ''}"
                 content.append(f"{index}. {label}", style=tone)
                 content.append(
-                    TUI_DESIGN.inline_separator,
-                    style=TUI_DESIGN.separator_tone,
+                    theme.inline_separator,
+                    style=theme.separator_tone,
                 )
-                content.append(prompt, style=TUI_DESIGN.text_lowlight)
+                content.append(prompt, style=theme.text_lowlight)
                 if index < len(inputs):
                     content.append("\n")
             self._content.update(content)
@@ -2985,29 +3064,12 @@ class QueuedInputPanel(VerticalScroll):
 
 class Composer(TuiTextArea):
     DEFAULT_PLACEHOLDER = "Ask anything..."
-    ACTIVE_RUN_PLACEHOLDER = TUI_DESIGN.inline_separator.join(
+    ACTIVE_RUN_PLACEHOLDER = DEFAULT_TUI_THEME.inline_separator.join(
         ("Enter queues a follow-up", "Ctrl+Enter guides the active run…")
     )
     QUESTION_PLACEHOLDER = "Choose an option above…"
     FREEFORM_PLACEHOLDER = "Type another answer…"
     PLAN_FEEDBACK_PLACEHOLDER = "Describe the requested plan changes…"
-    _ACTIVE_RUN_PLACEHOLDER_PARTS: tuple[_PlaceholderPart, ...] = (
-        ("Enter", "key"),
-        (" queues a follow-up", "text"),
-        (TUI_DESIGN.inline_separator, "separator"),
-        ("Ctrl+Enter", "key"),
-        (" guides the active run…", "text"),
-    )
-    _SUBAGENT_PLACEHOLDER_PARTS: tuple[_PlaceholderPart, ...] = (
-        ("Subagent view is read-only", "text"),
-        (TUI_DESIGN.inline_separator, "separator"),
-        ("Alt+↑", "key"),
-        (" main", "text"),
-        (TUI_DESIGN.inline_separator, "separator"),
-        ("Alt+←/→", "key"),
-        (" switch", "text"),
-    )
-
     BINDINGS = [
         *TextArea.BINDINGS,
         Binding("enter", "submit", "Send", show=False, priority=True),
@@ -3059,6 +3121,7 @@ class Composer(TuiTextArea):
         self._command_draft: str | None = None
         self._suggestion_resolver: Callable[[], str] | None = None
         self._placeholder_parts: tuple[_PlaceholderPart, ...] = ()
+        self._placeholder_kind: Literal["active_run", "subagent"] | None = None
 
     def set_suggestion_resolver(self, resolver: Callable[[], str]) -> None:
         """Resolve inline suggestions synchronously with text edits."""
@@ -3070,17 +3133,43 @@ class Composer(TuiTextArea):
         if not self._placeholder_parts and self.placeholder == placeholder:
             return
         self._placeholder_parts = ()
+        self._placeholder_kind = None
         self.placeholder = placeholder
 
     def set_active_run_placeholder(self) -> None:
-        self._set_styled_placeholder(self._ACTIVE_RUN_PLACEHOLDER_PARTS)
+        self._set_styled_placeholder("active_run")
 
     def set_subagent_placeholder(self) -> None:
-        self._set_styled_placeholder(self._SUBAGENT_PLACEHOLDER_PARTS)
+        self._set_styled_placeholder("subagent")
 
-    def _set_styled_placeholder(self, parts: tuple[_PlaceholderPart, ...]) -> None:
-        if self._placeholder_parts == parts:
+    def _set_styled_placeholder(
+        self,
+        kind: Literal["active_run", "subagent"],
+        *,
+        force: bool = False,
+    ) -> None:
+        theme = theme_for(self)
+        if kind == "active_run":
+            parts: tuple[_PlaceholderPart, ...] = (
+                ("Enter", "key"),
+                (" queues a follow-up", "text"),
+                (theme.inline_separator, "separator"),
+                ("Ctrl+Enter", "key"),
+                (" guides the active run…", "text"),
+            )
+        else:
+            parts = (
+                ("Subagent view is read-only", "text"),
+                (theme.inline_separator, "separator"),
+                ("Alt+↑", "key"),
+                (" main", "text"),
+                (theme.inline_separator, "separator"),
+                ("Alt+←/→", "key"),
+                (" switch", "text"),
+            )
+        if not force and self._placeholder_parts == parts:
             return
+        self._placeholder_kind = kind
         self._placeholder_parts = parts
         self._refresh_styled_placeholder()
 
@@ -3095,12 +3184,13 @@ class Composer(TuiTextArea):
         self,
         parts: tuple[_PlaceholderPart, ...],
     ) -> Content:
+        theme = theme_for(self)
         key_style = Style(
-            foreground=Color.parse(theme_for(self).accent_bright),
+            foreground=Color.parse(theme.accent_bright),
             bold=False,
         )
-        lowlight_style = Style(foreground=Color.parse(TUI_DESIGN.text_lowlight))
-        separator_style = Style(foreground=Color.parse(TUI_DESIGN.separator_tone))
+        lowlight_style = Style(foreground=Color.parse(theme.text_lowlight))
+        separator_style = Style(foreground=Color.parse(theme.separator_tone))
         styles = {
             "text": lowlight_style,
             "separator": separator_style,
@@ -3111,8 +3201,8 @@ class Composer(TuiTextArea):
         )
 
     def refresh_theme(self) -> None:
-        if self._placeholder_parts:
-            self._refresh_styled_placeholder()
+        if self._placeholder_kind is not None:
+            self._set_styled_placeholder(self._placeholder_kind, force=True)
 
     def render_line(self, y: int) -> Strip:
         if isinstance(self.placeholder, Content) and (
@@ -3346,6 +3436,7 @@ class StatusLine(Horizontal):
 
     def _render_context(self) -> None:
         metrics = self._context_metrics
+        theme = theme_for(self)
         if metrics is None:
             content = Text()
         else:
@@ -3358,12 +3449,12 @@ class StatusLine(Horizontal):
                 bounded_ratio = min(ratio, 1.0)
                 completed = ceil(bounded_ratio * _CONTEXT_PROGRESS_WIDTH)
                 content = Text(f"{format_compact_count(used)} ")
-                content.append("█" * completed, style=theme_for(self).accent)
+                content.append("█" * completed, style=theme.accent)
                 content.append(
                     "▒" * (_CONTEXT_PROGRESS_WIDTH - completed),
-                    style=TUI_DESIGN.progress_track,
+                    style=theme.progress_track,
                 )
-                percentage_tone = TUI_DESIGN.warning if ratio > 0.8 else TUI_DESIGN.text_lowlight
+                percentage_tone = theme.warning if ratio > 0.8 else theme.text_lowlight
                 content.append(f" {ratio:.0%}", style=percentage_tone)
         content_width = content.cell_len
         self.query_one("#context-detail", Static).update(

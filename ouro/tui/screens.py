@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from typing import Literal, TypeVar
 
 from rich.cells import get_character_cell_size
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 from textual import events, work
@@ -22,7 +23,7 @@ from textual.worker import WorkerCancelled
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import TUI_COMMANDS, TuiCommand
 from ouro.tui.text_inputs import TuiInput
-from ouro.tui.theme import TUI_DESIGN, theme_for
+from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 
 
 @dataclass(frozen=True)
@@ -131,16 +132,44 @@ class _ChoiceGroupHeaderText(Text):
     """Marks a text-backed group heading without conflating it with disabled rows."""
 
 
+class _ChoiceOptionList(OptionList):
+    """Option list with a local foreground projection for theme previews."""
+
+    _accent_preview: Color | None = None
+
+    def set_accent_preview(self, color: Color | None) -> None:
+        if color == self._accent_preview:
+            return
+        self._accent_preview = color
+        self.refresh()
+
+    def get_component_rich_style(
+        self,
+        *names: str,
+        partial: bool = False,
+        default: Style | None = None,
+    ) -> Style:
+        style = super().get_component_rich_style(
+            *names,
+            partial=partial,
+            default=default,
+        )
+        if self._accent_preview is None or "option-list--option-highlighted" not in names:
+            return style
+        return style + Style(color=self._accent_preview.rich_color)
+
+
 def _choice_option(
     choice: Choice,
     *,
     group_accent: str,
     spinner_frame: int = 0,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> Option:
     """Render one selectable row independently from its surrounding group chrome."""
 
     label = Text(overflow="ellipsis", no_wrap=True)
-    marker = TUI_DESIGN.spinner_frames[spinner_frame] if choice.loading else choice.marker
+    marker = theme.spinner_frames[spinner_frame] if choice.loading else choice.marker
     markers = tuple(value for value in (choice.selection_marker, marker) if value)
     if markers:
         label.append(f"{' '.join(markers)} ", style=f"bold {group_accent}")
@@ -151,12 +180,12 @@ def _choice_option(
         row.add_column(ratio=1)
         row.add_column(width=2)
         row.add_column(justify="right", no_wrap=True)
-        row.add_row(label, "", "", Text(choice.trailing, style=TUI_DESIGN.text_choice))
+        row.add_row(label, "", "", Text(choice.trailing, style=theme.text_choice))
         return Option(row, id=choice.value, disabled=choice.disabled)
     if choice.description:
         label.append(
             f"\n{choice.description}",
-            style=choice.description_accent or TUI_DESIGN.text_choice,
+            style=choice.description_accent or theme.text_choice,
         )
     return Option(label, id=choice.value, disabled=choice.disabled)
 
@@ -164,12 +193,14 @@ def _choice_option(
 def grouped_choice_options(
     choices: tuple[Choice, ...],
     *,
-    group_accent: str = TUI_DESIGN.text_choice,
+    group_accent: str | None = None,
     spinner_frame: int = 0,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> list[Option]:
     """Render choices with the shared TUI group headers and row treatment."""
 
     options: list[Option] = []
+    resolved_group_accent = theme.text_choice if group_accent is None else group_accent
     previous_group: object = object()
     for choice in choices:
         if choice.group != previous_group:
@@ -182,14 +213,14 @@ def grouped_choice_options(
                     row.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
                     row.add_column(justify="right", no_wrap=True)
                     row.add_row(
-                        Text(choice.group, style=f"bold {group_accent}"),
-                        Text(choice.group_trailing, style=TUI_DESIGN.text_choice),
+                        Text(choice.group, style=f"bold {resolved_group_accent}"),
+                        Text(choice.group_trailing, style=theme.text_choice),
                     )
                     group_header = row
                 else:
                     group_header = _ChoiceGroupHeaderText(
                         choice.group,
-                        style=f"bold {group_accent}",
+                        style=f"bold {resolved_group_accent}",
                         overflow="ellipsis",
                         no_wrap=True,
                     )
@@ -198,8 +229,9 @@ def grouped_choice_options(
         options.append(
             _choice_option(
                 choice,
-                group_accent=group_accent,
+                group_accent=resolved_group_accent,
                 spinner_frame=spinner_frame,
+                theme=theme,
             )
         )
     return options
@@ -210,10 +242,10 @@ class ChoiceScreen(ModalScreen[str | None]):
     MAX_LIST_HEIGHT = 20
     # Fixed title, filter, and hint rows surrounding the scrollable list.
     MENU_CHROME_HEIGHT = 7
-    DEFAULT_HINT = TUI_DESIGN.inline_separator.join(
+    DEFAULT_HINT = DEFAULT_TUI_THEME.inline_separator.join(
         ("↑/↓ move", "←/→ group", "Enter select", "Esc close")
     )
-    BACK_HINT = TUI_DESIGN.inline_separator.join(
+    BACK_HINT = DEFAULT_TUI_THEME.inline_separator.join(
         ("↑/↓ move", "←/→ group", "Enter select", "Esc back")
     )
 
@@ -260,6 +292,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._page_revision = 0
         self._spinner_frame = 0
         self._spinner_timer: Timer | None = None
+        self._accent_preview: Color | None = None
 
     @property
     def navigation_id(self) -> MenuDestination | None:
@@ -300,8 +333,12 @@ class ChoiceScreen(ModalScreen[str | None]):
     def _choice_list(self) -> OptionList:
         """Build the menu body; specialized screens can replace it without copying the frame."""
 
-        return OptionList(
-            *self._options(self._choices, group_accent=theme_for(self).accent),
+        return _ChoiceOptionList(
+            *self._options(
+                self._choices,
+                group_accent=theme_for(self).accent,
+                theme=theme_for(self),
+            ),
             id="choice-list",
             classes="grouped-menu-list",
         )
@@ -314,11 +351,15 @@ class ChoiceScreen(ModalScreen[str | None]):
     def _resolved_hint(self, hint: str | None = None) -> str:
         """Resolve page customization before the screen's navigation-aware default."""
 
-        return (
+        resolved = (
             hint
             or self._interaction_hint
             or (self.BACK_HINT if self._page_stack else self.DEFAULT_HINT)
         )
+        theme = theme_for(self)
+        if theme.inline_separator == DEFAULT_TUI_THEME.inline_separator:
+            return resolved
+        return theme.inline_separator.join(resolved.split(DEFAULT_TUI_THEME.inline_separator))
 
     def on_mount(self) -> None:
         self._sync_loading_timer()
@@ -367,6 +408,7 @@ class ChoiceScreen(ModalScreen[str | None]):
     ) -> None:
         """Replace one menu level without stacking another modal screen."""
 
+        self.clear_accent_preview()
         self._page_revision += 1
         self._title = title
         self._placeholder = placeholder
@@ -543,6 +585,32 @@ class ChoiceScreen(ModalScreen[str | None]):
         )
         return True
 
+    def preview_accent(self, accent: str) -> None:
+        """Project one accent onto this menu without changing the App theme."""
+
+        color = Color.parse(accent)
+        if color == self._accent_preview:
+            return
+        self._accent_preview = color
+        title = self.query_one("#choice-title", Static)
+        title.styles.color = color
+        title.styles.border_left = ("solid", color)
+        self.query_one("#choice-filter", Input).styles.border_left = ("solid", color)
+        self.query_one("#choice-list", _ChoiceOptionList).set_accent_preview(color)
+
+    def clear_accent_preview(self) -> None:
+        """Return menu accent rendering to the active App theme."""
+
+        if self._accent_preview is None or not self.is_mounted:
+            self._accent_preview = None
+            return
+        self._accent_preview = None
+        title = self.query_one("#choice-title", Static)
+        title.styles.color = None
+        title.styles.border_left = None
+        self.query_one("#choice-filter", Input).styles.border_left = None
+        self.query_one("#choice-list", _ChoiceOptionList).set_accent_preview(None)
+
     async def refresh_choices(self) -> bool:
         """Refresh whichever page is still visible after background work completes."""
 
@@ -635,6 +703,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         preferred_value: str | None,
         preferred_position: int | None = None,
     ) -> None:
+        theme = theme_for(self)
         normalized_needle = needle.casefold().strip()
         choices = tuple(
             choice for choice in self._choices if self._matches_filter(choice, normalized_needle)
@@ -644,8 +713,9 @@ class ChoiceScreen(ModalScreen[str | None]):
         options.add_options(
             self._options(
                 choices,
-                group_accent=theme_for(self).accent,
+                group_accent=theme.accent,
                 spinner_frame=self._spinner_frame,
+                theme=theme,
             )
         )
         options.highlighted = (
@@ -659,11 +729,15 @@ class ChoiceScreen(ModalScreen[str | None]):
         )
         self._sync_loading_timer()
 
-    def _sync_loading_timer(self) -> None:
-        if any(choice.loading for choice in self._choices):
+    def _sync_loading_timer(self, *, force: bool = False) -> None:
+        theme = theme_for(self)
+        if force and self._spinner_timer is not None:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
+        if any(choice.loading for choice in self._choices) and len(theme.spinner_frames) > 1:
             if self._spinner_timer is None:
                 self._spinner_timer = self.set_interval(
-                    0.12,
+                    theme.spinner_interval_seconds,
                     self._advance_loading_animation,
                 )
         else:
@@ -673,13 +747,14 @@ class ChoiceScreen(ModalScreen[str | None]):
             self._spinner_frame = 0
 
     def _advance_loading_animation(self) -> None:
-        self._spinner_frame = (self._spinner_frame + 1) % len(TUI_DESIGN.spinner_frames)
+        theme = theme_for(self)
+        self._spinner_frame = (self._spinner_frame + 1) % len(theme.spinner_frames)
         loading = {choice.value: choice for choice in self._choices if choice.loading}
         if not loading:
             self._sync_loading_timer()
             return
         options = self.query_one("#choice-list", OptionList)
-        accent = theme_for(self).accent
+        accent = theme.accent
         for index in range(options.option_count):
             option = options.get_option_at_index(index)
             choice = loading.get(str(option.id)) if option.id is not None else None
@@ -689,6 +764,7 @@ class ChoiceScreen(ModalScreen[str | None]):
                 choice,
                 group_accent=accent,
                 spinner_frame=self._spinner_frame,
+                theme=theme,
             ).prompt
             options.replace_option_prompt_at_index(index, prompt)
 
@@ -836,14 +912,25 @@ class ChoiceScreen(ModalScreen[str | None]):
     def _options(
         choices: tuple[Choice, ...],
         *,
-        group_accent: str = TUI_DESIGN.text_choice,
+        group_accent: str | None = None,
         spinner_frame: int = 0,
+        theme: TuiTheme = DEFAULT_TUI_THEME,
     ) -> list[Option]:
         return grouped_choice_options(
             choices,
             group_accent=group_accent,
             spinner_frame=spinner_frame,
+            theme=theme,
         )
+
+    def refresh_theme(self) -> None:
+        self._spinner_frame = 0
+        self._sync_loading_timer(force=True)
+        self._refresh_options(
+            needle=self.query_one("#choice-filter", Input).value,
+            preferred_value=self._selected_value(),
+        )
+        self._show_hint()
 
     @staticmethod
     def _highlight_index(
@@ -888,7 +975,7 @@ class _MultiChoiceFilterInput(TuiInput):
             screen.action_toggle_choice()
 
 
-class _EditableChoiceList(OptionList):
+class _EditableChoiceList(_ChoiceOptionList):
     """Reserve right-click for paste without duplicating OptionList activation."""
 
     async def _on_click(self, event: events.Click) -> None:
@@ -903,13 +990,13 @@ class EditableChoiceScreen(ChoiceScreen):
     """Edit the selected choice label in place without opening another screen."""
 
     CURSOR_BLINK_INTERVAL = 0.5
-    DEFAULT_HINT = TUI_DESIGN.inline_separator.join(
+    DEFAULT_HINT = DEFAULT_TUI_THEME.inline_separator.join(
         ("↑/↓ move", "←/→ group", "Enter edit", "Esc close")
     )
-    BACK_HINT = TUI_DESIGN.inline_separator.join(
+    BACK_HINT = DEFAULT_TUI_THEME.inline_separator.join(
         ("↑/↓ move", "←/→ group", "Enter edit", "Esc back")
     )
-    EDIT_HINT = TUI_DESIGN.inline_separator.join(
+    EDIT_HINT = DEFAULT_TUI_THEME.inline_separator.join(
         ("Type edit", "←/→ cursor", "Enter save", "Esc cancel")
     )
 
@@ -961,7 +1048,11 @@ class EditableChoiceScreen(ChoiceScreen):
 
     def _choice_list(self) -> OptionList:
         return _EditableChoiceList(
-            *self._options(self._choices, group_accent=theme_for(self).accent),
+            *self._options(
+                self._choices,
+                group_accent=theme_for(self).accent,
+                theme=theme_for(self),
+            ),
             id="choice-list",
             classes="grouped-menu-list",
         )
@@ -1171,7 +1262,8 @@ class EditableChoiceScreen(ChoiceScreen):
         )
         if option_index is None:
             return
-        accent = theme_for(self).accent
+        theme = theme_for(self)
+        accent = theme.accent
         display_text = self._editor_display_text(self._edit_text)
         prompt = Text(no_wrap=True)
         cursor_style = (
@@ -1186,7 +1278,7 @@ class EditableChoiceScreen(ChoiceScreen):
             if choice is not None and choice.edit_placeholder:
                 prompt.append(
                     choice.edit_placeholder,
-                    style=f"not bold {TUI_DESIGN.text_choice} italic",
+                    style=f"not bold {theme.text_choice} italic",
                 )
             options.replace_option_prompt_at_index(option_index, prompt)
             return
@@ -1197,7 +1289,7 @@ class EditableChoiceScreen(ChoiceScreen):
         )
         view_start, view_end = self._editor_view_bounds(display_text, editor_width)
         if view_start:
-            prompt.append("…", style=f"not bold {TUI_DESIGN.text_choice}")
+            prompt.append("…", style=f"not bold {theme.text_choice}")
         prompt.append(display_text[view_start : self._edit_cursor], style="not bold")
         if self._edit_cursor < len(display_text):
             prompt.append(
@@ -1211,7 +1303,7 @@ class EditableChoiceScreen(ChoiceScreen):
         else:
             prompt.append(" ", style=cursor_style)
         if view_end < len(display_text):
-            prompt.append("…", style=f"not bold {TUI_DESIGN.text_choice}")
+            prompt.append("…", style=f"not bold {theme.text_choice}")
         options.replace_option_prompt_at_index(option_index, prompt)
 
     def _editor_view_bounds(self, display_text: str, width: int) -> tuple[int, int]:
@@ -1252,13 +1344,15 @@ class EditableChoiceScreen(ChoiceScreen):
 class MultiChoiceScreen(ChoiceScreen):
     """Keep a filtered selection set while Enter confirms one or many choices."""
 
-    DEFAULT_HINT = TUI_DESIGN.inline_separator.join(
+    DEFAULT_HINT = DEFAULT_TUI_THEME.inline_separator.join(
         ("↑/↓ move", "←/→ group", "Space toggle", "Enter confirm", "Esc close")
     )
-    BACK_HINT = TUI_DESIGN.inline_separator.join(
+    BACK_HINT = DEFAULT_TUI_THEME.inline_separator.join(
         ("↑/↓ move", "←/→ group", "Space toggle", "Enter confirm", "Esc back")
     )
-    CONFIRM_HINT = TUI_DESIGN.inline_separator.join(("↑/↓ move", "Enter select", "Esc back"))
+    CONFIRM_HINT = DEFAULT_TUI_THEME.inline_separator.join(
+        ("↑/↓ move", "Enter select", "Esc back")
+    )
 
     BINDINGS = [
         Binding("up", "previous_choice", "Previous", show=False, priority=True),
@@ -1315,6 +1409,7 @@ class MultiChoiceScreen(ChoiceScreen):
         prompt = _choice_option(
             choice,
             group_accent=theme_for(self).accent,
+            theme=theme_for(self),
         ).prompt
         options.replace_option_prompt_at_index(
             option_index,
@@ -1431,8 +1526,12 @@ class ConfirmationScreen(ChoiceScreen):
 class HelpScreen(ChoiceScreen):
     """Expose root-level help through the same searchable menu as in-menu help."""
 
-    DEFAULT_HINT = TUI_DESIGN.inline_separator.join(("↑/↓ move", "←/→ group", "Esc close"))
-    BACK_HINT = TUI_DESIGN.inline_separator.join(("↑/↓ move", "←/→ group", "Esc back"))
+    DEFAULT_HINT = DEFAULT_TUI_THEME.inline_separator.join(
+        ("↑/↓ move", "←/→ group", "Esc close")
+    )
+    BACK_HINT = DEFAULT_TUI_THEME.inline_separator.join(
+        ("↑/↓ move", "←/→ group", "Esc back")
+    )
 
     def __init__(self, *, plugin_commands: tuple[TuiCommand, ...] = ()) -> None:
         super().__init__(

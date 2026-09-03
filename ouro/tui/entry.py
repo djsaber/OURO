@@ -7,6 +7,7 @@ from ouro.core.interactions import SessionInteractionMode
 from ouro.deployment import SessionBackend
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.terminal import set_terminal_title, tui_terminal_guard
+from ouro.tui.theme import TuiTheme
 
 
 def run_tui(
@@ -17,6 +18,7 @@ def run_tui(
     approval_mode: SessionApprovalMode = "inherit",
     interaction_mode: SessionInteractionMode = "interactive",
     resume_session_id: str | None = None,
+    theme: TuiTheme | None = None,
 ) -> int:
     """Run the full-screen Textual Host and return its process exit code."""
 
@@ -29,5 +31,6 @@ def run_tui(
             approval_mode=approval_mode,
             interaction_mode=interaction_mode,
             resume_session_id=resume_session_id,
+            theme=theme,
         ).run()
     return result if isinstance(result, int) else 0

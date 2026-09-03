@@ -37,7 +37,7 @@ from ouro.tui.controller import (
 )
 from ouro.tui.model_menus import model_choices
 from ouro.tui.screens import Choice, ChoiceScreen, EditableChoiceScreen
-from ouro.tui.theme import TUI_DESIGN
+from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 
 _RUNTIME_MODEL = "__ouro_runtime_model__"
 _NO_FALLBACK = "__ouro_no_fallback__"
@@ -180,7 +180,9 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
         *,
         definitions: tuple[AgentDefinitionView, ...],
         models: tuple[AvailableModel, ...],
+        theme: TuiTheme = DEFAULT_TUI_THEME,
     ) -> None:
+        self._initial_tui_theme = theme
         policy = config.spawn_policy
         self._revision = config.revision
         self._definitions = definitions
@@ -304,16 +306,17 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
         return ""
 
     def _agent_choices(self) -> tuple[Choice, ...]:
+        theme = theme_for(self)
         return tuple(
             Choice(
                 definition.agent_id,
                 definition.name,
-                trailing=TUI_DESIGN.inline_separator.join(
+                trailing=theme.inline_separator.join(
                     (definition.agent_id, definition.compatibility)
                 ),
                 group="BUILT-IN" if definition.source == "builtin" else "USER",
                 marker=(
-                    TUI_DESIGN.selected_choice_marker
+                    theme.selected_choice_marker
                     if definition.agent_id in self._allowed_agent_ids
                     else ""
                 ),
@@ -322,16 +325,17 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
         )
 
     def _model_choices(self) -> tuple[Choice, ...]:
+        theme = theme_for(self)
         return tuple(
             replace(
                 choice,
                 marker=(
-                    TUI_DESIGN.selected_choice_marker
+                    theme.selected_choice_marker
                     if choice.value in self._allowed_model_keys
                     else ""
                 ),
             )
-            for choice in model_choices(self._models)
+            for choice in model_choices(self._models, theme=theme)
         )
 
     def _policy_choices(self) -> tuple[Choice, ...]:
@@ -419,7 +423,10 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
         tools: tuple[AgentToolOptionView, ...],
         models: tuple[AvailableModel, ...],
         existing: AgentDefinitionDetail | None = None,
+        *,
+        theme: TuiTheme = DEFAULT_TUI_THEME,
     ) -> None:
+        self._initial_tui_theme = theme
         self._existing = existing
         self._tools = {tool.name: tool for tool in tools}
         self._models = models
@@ -433,7 +440,7 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
             **{model.key: model.display_name or model.model_id for model in models},
         }
         if configured_model not in self._model_labels:
-            self._model_labels[configured_model] = TUI_DESIGN.inline_separator.join(
+            self._model_labels[configured_model] = theme_for(self).inline_separator.join(
                 ("Unavailable", configured_model)
             )
         self._values = {
@@ -550,6 +557,7 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
         return ""
 
     def _definition_choices(self) -> tuple[Choice, ...]:
+        theme = theme_for(self)
         error = self._validation_error()
         choices = [
             Choice(
@@ -609,7 +617,7 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
                         tool_name,
                         trailing=("Unavailable" if tool is None else tool.effect.replace("_", " ")),
                         group="SELECTED TOOLS",
-                        marker=TUI_DESIGN.selected_choice_marker if selected else "",
+                        marker=theme.selected_choice_marker if selected else "",
                     )
                 )
         choices.append(
@@ -624,22 +632,23 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
         return tuple(choices)
 
     def _model_choices(self) -> tuple[Choice, ...]:
+        theme = theme_for(self)
         selected = self._values["agent-definition-model"]
         choices = [
             Choice(
                 _RUNTIME_MODEL,
                 "Inherit session model",
-                marker=(TUI_DESIGN.selected_choice_marker if selected == _RUNTIME_MODEL else ""),
+                marker=(theme.selected_choice_marker if selected == _RUNTIME_MODEL else ""),
                 group="SESSION",
             )
         ]
-        choices.extend(model_choices(self._models, selected=selected))
+        choices.extend(model_choices(self._models, selected=selected, theme=theme))
         if selected != _RUNTIME_MODEL and not any(model.key == selected for model in self._models):
             choices.append(
                 Choice(
                     selected,
                     self._model_labels[selected],
-                    marker=TUI_DESIGN.selected_choice_marker,
+                    marker=theme.selected_choice_marker,
                     group="UNAVAILABLE",
                     disabled=True,
                 )
@@ -656,7 +665,9 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
         *,
         models: tuple[AvailableModel, ...],
         strategy_ids: tuple[str, ...],
+        theme: TuiTheme = DEFAULT_TUI_THEME,
     ) -> None:
+        self._initial_tui_theme = theme
         self._models = models
         self._strategy_ids = tuple(
             dict.fromkeys(
@@ -678,7 +689,7 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
             **{model.key: model.display_name or model.key for model in models},
         }
         if configured_model not in self._model_labels:
-            self._model_labels[configured_model] = TUI_DESIGN.inline_separator.join(
+            self._model_labels[configured_model] = theme_for(self).inline_separator.join(
                 ("Unavailable", configured_model)
             )
         reasoning = _reasoning_value(config.model.reasoning)
@@ -765,22 +776,23 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
         self._refresh("compaction-model")
 
     def _model_choices(self) -> tuple[Choice, ...]:
+        theme = theme_for(self)
         selected = self._values["compaction-model"]
         choices = [
             Choice(
                 _RUNTIME_MODEL,
                 "Session runtime model",
-                marker=(TUI_DESIGN.selected_choice_marker if selected == _RUNTIME_MODEL else ""),
+                marker=(theme.selected_choice_marker if selected == _RUNTIME_MODEL else ""),
                 group="SESSION",
             )
         ]
-        choices.extend(model_choices(self._models, selected=selected))
+        choices.extend(model_choices(self._models, selected=selected, theme=theme))
         if selected != _RUNTIME_MODEL and self._model(selected) is None:
             choices.append(
                 Choice(
                     selected,
                     self._model_labels[selected],
-                    marker=TUI_DESIGN.selected_choice_marker,
+                    marker=theme.selected_choice_marker,
                     group="UNAVAILABLE",
                     disabled=True,
                 )
@@ -969,7 +981,13 @@ class MCPConfigurationScreen(EditableChoiceScreen):
     _TOGGLES = frozenset({"mcp-enabled", "mcp-auto-start", "mcp-auto-reconnect"})
     _MASKED = frozenset({"mcp-env", "mcp-headers", "mcp-credential-refs"})
 
-    def __init__(self, existing: MCPServerConfigView | None = None) -> None:
+    def __init__(
+        self,
+        existing: MCPServerConfigView | None = None,
+        *,
+        theme: TuiTheme = DEFAULT_TUI_THEME,
+    ) -> None:
+        self._initial_tui_theme = theme
         self._existing = existing
         transport = existing.transport if existing is not None else "stdio"
         self._values = {
@@ -1038,7 +1056,9 @@ class MCPConfigurationScreen(EditableChoiceScreen):
 
     def _editor_display_text(self, value: str) -> str:
         return (
-            TUI_DESIGN.mask_character * len(value) if self._editing_value in self._MASKED else value
+            theme_for(self).mask_character * len(value)
+            if self._editing_value in self._MASKED
+            else value
         )
 
     def _refresh(self, selected: str) -> None:
@@ -1111,7 +1131,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
     def _mcp_choices(self) -> tuple[Choice, ...]:
         error = self._validation_error()
         existing = self._existing
-        preserved = TUI_DESIGN.inline_separator.join(("Configured", "preserved"))
+        preserved = theme_for(self).inline_separator.join(("Configured", "preserved"))
         return (
             Choice(
                 "mcp-server-id",
@@ -1361,7 +1381,13 @@ class PluginInstallScreen(EditableChoiceScreen):
 class PluginConfigurationScreen(EditableChoiceScreen):
     """Edit the application-owned plugin configuration JSON contract."""
 
-    def __init__(self, plugin: PluginDetail) -> None:
+    def __init__(
+        self,
+        plugin: PluginDetail,
+        *,
+        theme: TuiTheme = DEFAULT_TUI_THEME,
+    ) -> None:
+        self._initial_tui_theme = theme
         self._plugin_id = plugin.plugin_id
         self._values = {
             "plugin-config-values": json.dumps(
@@ -1376,7 +1402,7 @@ class PluginConfigurationScreen(EditableChoiceScreen):
             ),
         }
         super().__init__(
-            title=TUI_DESIGN.inline_separator.join(("PLUGIN CONFIGURATION", plugin.name)),
+            title=theme_for(self).inline_separator.join(("PLUGIN CONFIGURATION", plugin.name)),
             placeholder="Filter plugin configuration…",
             choices=self._configuration_choices(),
             on_save=self._save_field,

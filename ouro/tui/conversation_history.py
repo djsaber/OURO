@@ -4,15 +4,13 @@ import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from itertools import pairwise
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 
 from markdown_it import MarkdownIt
 from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
-from rich.markdown import Markdown as RichMarkdown
 from rich.padding import Padding
 from rich.segment import Segment
 from rich.style import Style
-from rich.syntax import Syntax, SyntaxTheme
 from rich.text import Text
 from textual import events
 from textual.events import Resize
@@ -25,6 +23,7 @@ from textual.widgets import RichLog
 
 from ouro.application.agent_models import AgentTreeNode
 from ouro.application.supervisor_models import RuntimeToolCallActivity
+from ouro.tui.markdown import assistant_markdown
 from ouro.tui.selection import RangeSelectionOnly
 from ouro.tui.state import (
     RunPresentation,
@@ -32,7 +31,7 @@ from ouro.tui.state import (
     format_duration,
     format_reasoning_label_parts,
 )
-from ouro.tui.theme import TUI_DESIGN, TuiTheme, theme_for
+from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 
 
 class ToolActivityRenderer(Protocol):
@@ -61,21 +60,6 @@ class ToolNavigationRequested(Message):
         self.parent_tool_call_id = parent_tool_call_id
 
 
-class _PanelCodeTheme(SyntaxTheme):
-    """Preserve Monokai token colors on OURO's shared panel surface."""
-
-    def __init__(self) -> None:
-        self._base = Syntax.get_theme("monokai")
-
-    def get_style_for_token(self, token_type: Any) -> Style:
-        return self._base.get_style_for_token(token_type) + Style(bgcolor=TUI_DESIGN.panel)
-
-    def get_background_style(self) -> Style:
-        return Style(bgcolor=TUI_DESIGN.panel)
-
-
-_PANEL_CODE_THEME = _PanelCodeTheme()
-
 # Rich's Markdown renders through this same parser configuration, so block
 # boundaries detected for freezing always agree with the rendered structure.
 _MARKDOWN_PARSER = MarkdownIt().enable("strikethrough").enable("table")
@@ -83,15 +67,6 @@ _MARKDOWN_PARSER = MarkdownIt().enable("strikethrough").enable("table")
 _ATOMIC_BLOCKS = frozenset({"fence", "hr", "code_block", "html_block"})
 _LIVE_MARKDOWN_BOUNDARY_MAX_CHARS = 8 * 1024
 _BACKGROUND_MARKDOWN_CHARS = 2 * 1024
-
-
-def assistant_markdown(text: str) -> RichMarkdown:
-    """The one assistant markdown rendering definition.
-
-    Streamed tails, frozen blocks, and reloaded history all pass through this
-    factory, so the three paths cannot drift apart stylistically.
-    """
-    return RichMarkdown(text, code_theme=_PANEL_CODE_THEME)  # type: ignore[arg-type]
 
 
 def _block_starts(source: str) -> list[int]:
@@ -220,11 +195,17 @@ def _thought_label(
     *,
     entry_index: int,
     expanded: bool,
+    theme: TuiTheme,
     highlighted: bool = False,
 ) -> Text:
-    label = _reasoning_label_text("Thought", reasoning_seconds, expanded=expanded)
+    label = _reasoning_label_text(
+        "Thought",
+        reasoning_seconds,
+        expanded=expanded,
+        theme=theme,
+    )
     if highlighted:
-        label.stylize(TUI_DESIGN.text_highlight)
+        label.stylize(theme.text_highlight)
     label.stylize(Style(meta={_REASONING_ENTRY_META: entry_index}))
     return label
 
@@ -234,19 +215,21 @@ def _reasoning_label_text(
     duration_seconds: float | None,
     *,
     expanded: bool,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> Text:
     title, duration = format_reasoning_label_parts(
         label,
         duration_seconds,
         expanded=expanded,
+        theme=theme,
     )
-    text = Text(title, style=Style(color=TUI_DESIGN.text_secondary))
+    text = Text(title, style=Style(color=theme.text_secondary))
     if duration is not None:
         text.append(
-            TUI_DESIGN.inline_separator,
-            style=Style(color=TUI_DESIGN.separator_tone),
+            theme.inline_separator,
+            style=Style(color=theme.separator_tone),
         )
-        text.append(duration, style=Style(color=TUI_DESIGN.text_faint))
+        text.append(duration, style=Style(color=theme.text_faint))
     return text
 
 
@@ -278,7 +261,7 @@ class _UserMessageContent:
     """Render the original user-turn frame without adding a Textual widget."""
 
     text: str
-    accent: str
+    theme: TuiTheme
 
     def __rich_console__(
         self,
@@ -292,10 +275,10 @@ class _UserMessageContent:
         right_width = min(right, interior_width - left_width)
         content_width = interior_width - left_width - right_width
         content_options = options.update_width(max(1, content_width))
-        panel_style = Style(bgcolor=TUI_DESIGN.panel)
-        content = Text(self.text, style=TUI_DESIGN.text_highlight)
+        panel_style = Style(bgcolor=self.theme.panel)
+        content = Text(self.text, style=self.theme.text_highlight)
         lines = console.render_lines(content, content_options, pad=False)
-        border = Segment("│", Style(color=self.accent))
+        border = Segment("│", Style(color=self.theme.accent))
 
         def framed_line(line: list[Segment]) -> RenderResult:
             yield border
@@ -329,6 +312,7 @@ class _ReasoningContent:
     """
 
     text: str
+    theme: TuiTheme = DEFAULT_TUI_THEME
 
     def __rich_console__(
         self,
@@ -337,9 +321,9 @@ class _ReasoningContent:
     ) -> RenderResult:
         prefix_width = 2
         content_options = options.update_width(max(1, options.max_width - prefix_width))
-        content = Text(self.text, style=f"dim italic {TUI_DESIGN.text_muted}")
+        content = Text(self.text, style=f"dim italic {self.theme.text_muted}")
         lines = console.render_lines(content, content_options, pad=False)
-        border = Segment("│", Style(color=TUI_DESIGN.border))
+        border = Segment("│", Style(color=self.theme.border))
         gap = Segment(" ")
         for line in lines:
             yield border
@@ -435,6 +419,13 @@ class ReasoningLines(RangeSelectionOnly, Widget):
         if not text:
             self.refresh(layout=True)
 
+    def refresh_theme(self) -> None:
+        source = self.text
+        self._line_strips.clear()
+        self._pending_strips.clear()
+        self._pending_parts = [source] if source else []
+        self._render_updates()
+
     def on_resize(self, event: Resize) -> None:
         self._render_updates()
 
@@ -452,7 +443,10 @@ class ReasoningLines(RangeSelectionOnly, Widget):
         elif y - committed < len(self._pending_strips):
             line = self._pending_strips[y - committed]
         else:
-            return Strip.blank(self.size.width or 1)
+            return Strip.blank(
+                self.size.width or 1,
+                Style(color=theme_for(self).text_primary),
+            )
         # Pre-rendered strips carry neither selection styling nor Textual's
         # source-offset metadata, so both are attached per line here.
         selection = self.text_selection
@@ -525,10 +519,11 @@ class ReasoningLines(RangeSelectionOnly, Widget):
         separate bordered row matches the equivalent whole-block row.
         """
         console = self.app.console
+        base_style = Style(color=theme_for(self).text_primary)
         options = console.options.update_width(self._render_width)
-        segments = console.render(_ReasoningContent(line), options)
+        segments = console.render(_ReasoningContent(line, theme_for(self)), options)
         return [
-            strip.adjust_cell_length(self._render_width)
+            strip.adjust_cell_length(self._render_width, base_style).apply_style(base_style)
             for strip in Strip.from_lines(list(Segment.split_lines(segments)))
         ]
 
@@ -549,12 +544,16 @@ class AssistantTailLines(ReasoningLines):
 
     def _render_source_line(self, line: str) -> list[Strip]:
         console = self.app.console
+        base_style = Style(color=theme_for(self).text_primary)
         options = console.options.update_width(self._render_width)
-        rendered_lines = console.render_lines(Text(line), options, pad=False)
+        rendered_lines = console.render_lines(Text(line, style=base_style), options, pad=False)
         if not rendered_lines:
-            return [Strip.blank(self._render_width)]
+            return [Strip.blank(self._render_width, base_style)]
         return [
-            Strip(segments).adjust_cell_length(self._render_width) for segments in rendered_lines
+            Strip(segments)
+            .adjust_cell_length(self._render_width, base_style)
+            .apply_style(base_style)
+            for segments in rendered_lines
         ]
 
 
@@ -614,7 +613,7 @@ class ConversationHistoryState:
     render_width: int
     reasoning_expanded: bool
     reasoning_expanded_by_entry: dict[int, bool]
-    theme_id: str
+    theme: TuiTheme
 
 
 def _summary_line(
@@ -622,17 +621,18 @@ def _summary_line(
     *,
     marker_tone: str,
     details: Iterable[tuple[str, str]],
+    theme: TuiTheme,
     emphasized: bool = True,
 ) -> Text:
     summary = Text()
     marker_style = f"bold {marker_tone}" if emphasized else marker_tone
     title_style = (
-        f"bold {TUI_DESIGN.text_secondary}" if emphasized else TUI_DESIGN.text_secondary
+        f"bold {theme.text_secondary}" if emphasized else theme.text_secondary
     )
-    summary.append(f"{TUI_DESIGN.brand_mark} ", style=marker_style)
+    summary.append(f"{theme.brand_mark} ", style=marker_style)
     summary.append(title, style=title_style)
     for value, tone in details:
-        summary.append(TUI_DESIGN.section_separator, style=TUI_DESIGN.separator_tone)
+        summary.append(theme.section_separator, style=theme.separator_tone)
         summary.append(value, style=tone)
     return summary
 
@@ -642,50 +642,52 @@ def _compaction_summary(compaction: CompactionPresentation, theme: TuiTheme) -> 
     details = [
         (
             f"{compaction.covered_message_count} {noun}",
-            TUI_DESIGN.text_metadata,
+            theme.text_metadata,
         )
     ]
     if compaction.tokens_reduced is not None:
         details.append(
             (
                 f"{format_compact_count(compaction.tokens_reduced)} tokens",
-                TUI_DESIGN.text_metadata,
+                theme.text_metadata,
             )
         )
     if compaction.duration_seconds is not None:
         details.append(
             (
                 format_duration(compaction.duration_seconds),
-                TUI_DESIGN.text_metadata,
+                theme.text_metadata,
             )
         )
     return _summary_line(
         "Context compacted",
         marker_tone=theme.accent,
         details=details,
+        theme=theme,
     )
 
 
 def _run_summary(run: RunPresentation, theme: TuiTheme) -> Text:
     marker_tone = (
-        TUI_DESIGN.failure
+        theme.failure
         if run.status == "failed"
         else theme.accent
         if run.status == "completed"
-        else TUI_DESIGN.text_muted
+        else theme.text_muted
     )
     details: list[tuple[str, str]] = []
     if run.duration_seconds is not None:
-        details.append((format_duration(run.duration_seconds), TUI_DESIGN.text_metadata))
+        details.append((format_duration(run.duration_seconds), theme.text_metadata))
     if run.status != "completed":
-        status_tone = TUI_DESIGN.failure if run.status == "failed" else TUI_DESIGN.text_metadata
+        status_tone = theme.failure if run.status == "failed" else theme.text_metadata
         details.append((run.status, status_tone))
     if run.status == "failed" and run.error:
-        details.append((" ".join(run.error.split()), TUI_DESIGN.failure))
+        details.append((" ".join(run.error.split()), theme.failure))
     return _summary_line(
         run.model,
         marker_tone=marker_tone,
         details=details,
+        theme=theme,
         emphasized=False,
     )
 
@@ -696,6 +698,7 @@ def _reasoning_area(
     entry_index: int,
     expanded: bool,
     top: int,
+    theme: TuiTheme,
     highlighted: bool = False,
 ) -> tuple[RenderableType, _PieceTag]:
     """The reasoning area of one entry: label plus the togglable body.
@@ -707,6 +710,7 @@ def _reasoning_area(
         entry.reasoning_seconds,
         entry_index=entry_index,
         expanded=expanded,
+        theme=theme,
         highlighted=highlighted,
     )
     if expanded:
@@ -715,7 +719,7 @@ def _reasoning_area(
             # Keep the border in the label's column. The trailing cell mirrors
             # ReasoningLines' right padding, so live and frozen thoughts retain
             # the same content width and wrapping when the stream is promoted.
-            Padding(_ReasoningContent(entry.reasoning), (1, 1, 0, 0)),
+            Padding(_ReasoningContent(entry.reasoning, theme), (1, 1, 0, 0)),
         )
     else:
         area = label
@@ -733,7 +737,7 @@ def _entry_renderables(
     if entry.kind == "user":
         return [
             (
-                Padding(_UserMessageContent(entry.text, theme.accent), (1, 2, 2, 2)),
+                Padding(_UserMessageContent(entry.text, theme), (1, 2, 2, 2)),
                 "user",
             )
         ]
@@ -748,11 +752,11 @@ def _entry_renderables(
         if entry.tool.tool_name == "SpawnAgent" and entry.run_id is not None:
             interaction_style = Style(meta={_TOOL_NAVIGATION_META: request.entry_index})
             if request.tool_highlighted:
-                interaction_style += Style(color=TUI_DESIGN.text_highlight)
+                interaction_style += Style(color=theme.text_highlight)
             rendered.stylize(interaction_style, 0, len(rendered))
         return [(Padding(rendered, (0, 2, 0, 2)), "body")]
     if entry.kind == "notice":
-        tone = TUI_DESIGN.critical if entry.error else theme.accent
+        tone = theme.critical if entry.error else theme.accent
         top = 1 if request.previous_kind == "tool" else 0
         return [(Padding(Text(entry.text, style=tone), (top, 1, 1, 1)), "body")]
     if entry.kind == "compaction":
@@ -774,6 +778,7 @@ def _entry_renderables(
                 entry_index=request.entry_index,
                 expanded=request.reasoning_expanded,
                 top=top,
+                theme=theme,
                 highlighted=request.reasoning_highlighted,
             )
         )
@@ -781,7 +786,7 @@ def _entry_renderables(
         text_top = 0 if entry.reasoning else top
         pieces.append(
             (
-                Padding(assistant_markdown(entry.text), (text_top, 2, 1, 2)),
+                Padding(assistant_markdown(entry.text, theme), (text_top, 2, 1, 2)),
                 "body",
             )
         )
@@ -812,11 +817,40 @@ def _render_entry_requests(
 ) -> tuple[_RenderedEntry, ...]:
     """Parse Markdown, highlight code, and render a detached entry batch."""
 
+    render_contexts: dict[TuiTheme, tuple[Console, ConsoleOptions]] = {}
+
+    def context_for(theme: TuiTheme) -> tuple[Console, ConsoleOptions]:
+        try:
+            return render_contexts[theme]
+        except KeyError:
+            render_console = Console(
+                color_system=console.color_system,  # type: ignore[arg-type]
+                force_terminal=console.is_terminal,
+                theme=theme.rich_theme(),
+                width=options.max_width,
+                no_color=console.no_color,
+                tab_size=console.tab_size,
+                legacy_windows=console.legacy_windows,
+                safe_box=console.safe_box,
+            )
+            context = (
+                render_console,
+                render_console.options.update_width(options.max_width),
+            )
+            render_contexts[theme] = context
+            return context
+
     return tuple(
         _RenderedEntry(
             entry_index=request.entry_index,
             pieces=tuple(
-                (_render_strips_at_width(console, options, renderable), tag)
+                (
+                    _render_strips_at_width(
+                        *context_for(request.theme),
+                        renderable,
+                    ),
+                    tag,
+                )
                 for renderable, tag in _entry_renderables(request, render_tool)
             ),
         )
@@ -865,6 +899,10 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._reasoning_expanded_by_entry: dict[int, bool] = {}
         self._hovered_tool_entry_index: int | None = None
         self._hovered_reasoning_entry_index: int | None = None
+        self._theme_render_revision = 0
+        self._theme_render_active = False
+        self._theme_render_idle = asyncio.Event()
+        self._theme_render_idle.set()
 
     @property
     def entries(self) -> tuple[TranscriptEntry, ...]:
@@ -987,7 +1025,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             render_width=self._render_width,
             reasoning_expanded=self._reasoning_expanded,
             reasoning_expanded_by_entry=self._reasoning_expanded_by_entry,
-            theme_id=theme_for(self).theme_id,
+            theme=theme_for(self),
         )
         self._entries = []
         self._pieces = []
@@ -1087,7 +1125,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             or width <= 0
             or state.render_width != width
             or state.reasoning_expanded != self._reasoning_expanded
-            or state.theme_id != theme_for(self).theme_id
+            or state.theme != theme_for(self)
         ):
             return None
 
@@ -1199,7 +1237,8 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             previous_kind=self._entries[start - 1].kind if start else None,
         )
         console = self.app.console
-        render_width = max(self.scrollable_content_region.width, self.min_width)
+        viewport_width = self.scrollable_content_region.width
+        render_width = max(viewport_width, self.min_width)
         options = console.options.update_width(render_width)
         expected_piece_count = len(self._pieces)
         rendered = await asyncio.to_thread(
@@ -1213,7 +1252,11 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             # A resize or theme refresh rebuilt the complete buffer while this
             # detached batch was rendering; that newer complete buffer wins.
             return len(self._entries)
-        if self.scrollable_content_region.width != render_width:
+        if theme_for(self) != requests[0].theme:
+            # Theme preview changed while this detached chunk was rendering.
+            # Retry with the latest immutable theme instead of committing stale strips.
+            return start
+        if self.scrollable_content_region.width != viewport_width:
             # Geometry changed before its Resize callback rebuilt history. Retry
             # this chunk after the next refresh instead of committing stale strips.
             return start
@@ -1267,38 +1310,47 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             self.append_many(materialized)
             return
 
-        start = len(self._entries)
-        previous_kind = self._entries[-1].kind if self._entries else None
-        requests = self._render_requests(
-            materialized,
-            start_index=start,
-            previous_kind=previous_kind,
-        )
-        console = self.app.console
-        render_width = max(self.scrollable_content_region.width, self.min_width)
-        options = console.options.update_width(render_width)
-        rendered = await asyncio.to_thread(
-            _render_entry_requests,
-            requests,
-            render_tool=self._render_tool,
-            console=console,
-            options=options,
-        )
-        if len(self._entries) != start:
-            # The message pump normally serializes transcript mutations. Keep
-            # the buffer internally consistent if an external caller races this await.
-            self.append_many(materialized)
-            return
-        if (
-            self.scrollable_content_region.width != render_width
-            or theme_for(self).theme_id != requests[0].theme.theme_id
-        ):
-            await self.append_many_rendered(materialized)
-            return
-        for entry in materialized:
-            self._register_entry(entry)
-        self.display = True
-        self._append_rendered_entries(rendered)
+        while True:
+            start = len(self._entries)
+            previous_kind = self._entries[-1].kind if self._entries else None
+            requests = self._render_requests(
+                materialized,
+                start_index=start,
+                previous_kind=previous_kind,
+            )
+            console = self.app.console
+            viewport_width = self.scrollable_content_region.width
+            render_width = max(viewport_width, self.min_width)
+            options = console.options.update_width(render_width)
+            rendered = await asyncio.to_thread(
+                _render_entry_requests,
+                requests,
+                render_tool=self._render_tool,
+                console=console,
+                options=options,
+            )
+            if len(self._entries) != start:
+                # The message pump normally serializes transcript mutations. Keep
+                # the buffer internally consistent if an external caller races this await.
+                self.append_many(materialized)
+                return
+            if (
+                self.scrollable_content_region.width == viewport_width
+                and theme_for(self) == requests[0].theme
+            ):
+                for entry in materialized:
+                    self._register_entry(entry)
+                self.display = True
+                self._append_rendered_entries(rendered)
+                return
+            await self.wait_for_refresh()
+            if (
+                not self._size_known
+                or self.scrollable_content_region.width <= 0
+                or not self._requires_background_render(materialized)
+            ):
+                self.append_many(materialized)
+                return
 
     def _register_entry(
         self,
@@ -1396,8 +1448,72 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 self._render_entries()
 
     def refresh_theme(self) -> None:
-        if self._entries:
-            self._render_entries()
+        self._theme_render_revision += 1
+        if not self._entries or not self.is_mounted or self._theme_render_active:
+            return
+        self._theme_render_active = True
+        self._theme_render_idle.clear()
+        self.run_worker(
+            self._refresh_theme_async(),
+            group="conversation-history-theme",
+        )
+
+    async def wait_for_theme_refresh(self) -> None:
+        """Wait until the latest coalesced theme render reaches the visible buffer."""
+
+        await self._theme_render_idle.wait()
+
+    async def _refresh_theme_async(self) -> None:
+        """Render a complete themed buffer off-loop, then replace it atomically."""
+
+        try:
+            while self._entries:
+                revision = self._theme_render_revision
+                width = self.scrollable_content_region.width
+                entries = tuple(self._entries)
+                if width <= 0:
+                    return
+                requests = self._render_requests(
+                    entries,
+                    start_index=0,
+                    previous_kind=None,
+                )
+                console = self.app.console
+                render_width = max(width, self.min_width)
+                options = console.options.update_width(render_width)
+                rendered = await asyncio.to_thread(
+                    _render_entry_requests,
+                    requests,
+                    render_tool=self._render_tool,
+                    console=console,
+                    options=options,
+                )
+                current_requests = self._render_requests(
+                    tuple(self._entries),
+                    start_index=0,
+                    previous_kind=None,
+                )
+                if (
+                    revision != self._theme_render_revision
+                    or self.scrollable_content_region.width != width
+                    or current_requests != requests
+                ):
+                    continue
+
+                self._pieces.clear()
+                self._piece_line_starts.clear()
+                self._piece_indexes_by_entry.clear()
+                self._user_lines.clear()
+                self._widest_line_width = 0
+                self._line_cache.clear()
+                self.lines.clear()
+                self._append_rendered_entries(rendered)
+                self._render_width = width
+                self.refresh(layout=True)
+                return
+        finally:
+            self._theme_render_active = False
+            self._theme_render_idle.set()
 
     def set_reasoning_expanded(self, expanded: bool, *, above_line: int) -> int:
         """Switch reasoning pieces between their collapsed and expanded variants.
@@ -1461,6 +1577,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             entry_index=entry_index,
             expanded=expanded,
             top=top,
+            theme=theme_for(self),
             highlighted=self._hovered_reasoning_entry_index == entry_index,
         )
         return self._render_strips(renderable)

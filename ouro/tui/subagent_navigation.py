@@ -11,7 +11,7 @@ from textual.message import Message
 from textual.widgets import Static
 
 from ouro.application.agent_models import AgentTreeNode
-from ouro.tui.theme import TUI_DESIGN
+from ouro.tui.theme import theme_for
 
 _MAX_VISIBLE_CHILDREN = 10
 _SESSION_NODE_META = "ouro.subagent_navigation.session_id"
@@ -197,6 +197,7 @@ class SubagentNavigationPanel(Static):
         return self.render_content(max(1, width))
 
     def render_content(self, width: int) -> Text:
+        theme = theme_for(self)
         suffix = self._node_text()
         detail = Text()
         selected = self._hovered_session_id or self._selected_session_id
@@ -207,9 +208,9 @@ class SubagentNavigationPanel(Static):
         if selected_agent is not None:
             identity = selected_agent.nickname or selected_agent.agent_name
             detail.append(
-                TUI_DESIGN.inline_separator.join((selected_agent.task_description, identity))
-                + TUI_DESIGN.inline_separator,
-                style=TUI_DESIGN.text_lowlight,
+                theme.inline_separator.join((selected_agent.task_description, identity))
+                + theme.inline_separator,
+                style=theme.text_lowlight,
             )
         available_detail_width = max(0, width - suffix.cell_len)
         detail.truncate(available_detail_width, overflow="ellipsis")
@@ -257,26 +258,27 @@ class SubagentNavigationPanel(Static):
     def _node_text(self) -> Text:
         if not self._agents or self._root_session_id is None:
             return Text()
+        theme = theme_for(self)
         selected = self._hovered_session_id or self._selected_session_id
         nodes = Text()
         root_mark = (
-            TUI_DESIGN.selected_session_node_mark
+            theme.selected_session_node_mark
             if selected == self._root_session_id
-            else TUI_DESIGN.session_node_mark
+            else theme.session_node_mark
         )
         nodes.append(
             root_mark,
             style=self._node_style(self._root_status, self._root_session_id),
         )
-        nodes.append(" | ", style=TUI_DESIGN.text_faint)
+        nodes.append(" | ", style=theme.text_faint)
         previous_run_id: str | None = None
         for agent in self._visible_agents():
             if previous_run_id is not None and agent.parent_run_id != previous_run_id:
                 nodes.append(" ")
             mark = (
-                TUI_DESIGN.selected_session_node_mark
+                theme.selected_session_node_mark
                 if selected == agent.session_id
-                else TUI_DESIGN.session_node_mark
+                else theme.session_node_mark
             )
             nodes.append(mark, style=self._node_style(agent.status, agent.session_id))
             previous_run_id = agent.parent_run_id
@@ -289,11 +291,12 @@ class SubagentNavigationPanel(Static):
         )
 
     def _status_color(self, status: str) -> str:
+        theme = theme_for(self)
         if status in _FAILED_STATUSES:
-            return TUI_DESIGN.failure
+            return theme.failure
         if status in _RUNNING_STATUSES:
-            return TUI_DESIGN.running
-        return TUI_DESIGN.text_lowlight
+            return theme.running
+        return theme.text_lowlight
 
     def _refresh_content(self) -> None:
         self.refresh(layout=True)

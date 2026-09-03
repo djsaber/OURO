@@ -11,7 +11,7 @@ from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, RunStatus
-from ouro.tui.theme import TUI_DESIGN
+from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
 
 InteractionKind = Literal["approval", "question"]
 
@@ -53,14 +53,16 @@ def format_reasoning_label(
     duration_seconds: float | None,
     *,
     expanded: bool,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> str:
     text, duration = format_reasoning_label_parts(
         label,
         duration_seconds,
         expanded=expanded,
+        theme=theme,
     )
     if duration is not None:
-        text += f"{TUI_DESIGN.inline_separator}{duration}"
+        text += f"{theme.inline_separator}{duration}"
     return text
 
 
@@ -69,11 +71,12 @@ def format_reasoning_label_parts(
     duration_seconds: float | None,
     *,
     expanded: bool,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[str, str | None]:
     state_mark = (
-        TUI_DESIGN.expanded_disclosure_marker
+        theme.expanded_disclosure_marker
         if expanded
-        else TUI_DESIGN.collapsed_disclosure_marker
+        else theme.collapsed_disclosure_marker
     )
     duration = format_duration(duration_seconds) if duration_seconds is not None else None
     return f"{state_mark} {label}", duration

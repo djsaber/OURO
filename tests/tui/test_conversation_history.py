@@ -1,5 +1,6 @@
 import asyncio
 import threading
+from dataclasses import replace
 
 import pytest
 from rich.console import Console
@@ -7,9 +8,11 @@ from textual.app import App, ComposeResult
 from textual.color import Color
 
 import ouro.tui.conversation_history as conversation_history
+import ouro.tui.markdown as tui_markdown
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.tui.conversation_history import (
     AssistantMarkdownStream,
+    AssistantTailLines,
     CompactionPresentation,
     ConversationHistory,
     ToolNavigationRequested,
@@ -17,10 +20,11 @@ from ouro.tui.conversation_history import (
     _compaction_summary,
     _reasoning_label_text,
     _run_summary,
+    _UserMessageContent,
     split_markdown_blocks,
 )
 from ouro.tui.state import RunPresentation
-from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_DESIGN
+from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
 from ouro.tui.widgets import ReasoningLabel, ToolActivityRow
 
 _MULTIBLOCK_ANSWER = """Here is the plan:
@@ -75,10 +79,97 @@ def test_reasoning_label_uses_regular_title_and_lowlight_timing() -> None:
     assert not duration_style.bold
     assert title_style.color is not None
     assert title_style.color.triplet is not None
-    assert title_style.color.triplet.hex == TUI_DESIGN.text_secondary
+    assert title_style.color.triplet.hex == DEFAULT_TUI_THEME.text_secondary
     assert duration_style.color is not None
     assert duration_style.color.triplet is not None
-    assert duration_style.color.triplet.hex == TUI_DESIGN.text_faint
+    assert duration_style.color.triplet.hex == DEFAULT_TUI_THEME.text_faint
+
+
+def test_assistant_markdown_and_user_message_share_custom_theme_tokens() -> None:
+    theme = replace(
+        DEFAULT_TUI_THEME,
+        theme_id="contrast",
+        label="Contrast",
+        description="Token projection test",
+        text_primary="#c1c2c3",
+        accent="#41a2c3",
+        panel="#18222c",
+        syntax_keyword="#d16d9e",
+        syntax_name="#a4b5c6",
+    )
+    source = """# Heading
+
+`inline`
+
+```python
+def example(value):
+    return value
+```
+
+```unknown-ouro-lexer
+plain value
+```
+"""
+    console = Console(force_terminal=True, color_system="truecolor", width=60)
+    markdown_segments = list(
+        console.render(tui_markdown.assistant_markdown(source, theme))
+    )
+
+    heading = next(segment for segment in markdown_segments if segment.text == "Heading")
+    inline = next(segment for segment in markdown_segments if segment.text == "inline")
+    keyword = next(segment for segment in markdown_segments if segment.text == "def")
+    unknown = next(
+        segment for segment in markdown_segments if "plain value" in segment.text
+    )
+    assert heading.style is not None and heading.style.bold
+    assert heading.style.color is not None
+    assert heading.style.color.triplet.hex == theme.text_primary
+    assert inline.style is not None and inline.style.color is not None
+    assert inline.style.color.triplet.hex == theme.accent
+    assert keyword.style is not None and keyword.style.color is not None
+    assert keyword.style.bgcolor is not None
+    assert keyword.style.color.triplet.hex == theme.syntax_keyword
+    assert keyword.style.bgcolor.triplet.hex == theme.panel
+    assert unknown.style is not None and unknown.style.color is not None
+    assert unknown.style.bgcolor is not None
+    assert unknown.style.color.triplet.hex == theme.syntax_name
+    assert unknown.style.bgcolor.triplet.hex == theme.panel
+
+    user_segments = list(
+        console.render(
+            _UserMessageContent("user message", theme),
+            console.options.update_width(60),
+        )
+    )
+    user_message = next(
+        segment for segment in user_segments if "user message" in segment.text
+    )
+    assert user_message.style is not None and user_message.style.bgcolor is not None
+    assert user_message.style.bgcolor.triplet.hex == theme.panel
+
+
+def test_assistant_markdown_failure_degrades_only_to_canonical_text(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    source = "sensitive markdown source"
+
+    class BrokenMarkdown:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            raise RuntimeError(source)
+
+    monkeypatch.setattr(tui_markdown, "RichMarkdown", BrokenMarkdown)
+    console = Console(width=40)
+    rendered = "".join(
+        segment.text
+        for segment in console.render(
+            tui_markdown.assistant_markdown(source, DEFAULT_TUI_THEME)
+        )
+    )
+
+    assert source in rendered
+    assert source not in caplog.text
+    assert "Could not render assistant Markdown" in caplog.text
 
 
 class _ReasoningLabelApp(App[None]):
@@ -103,7 +194,7 @@ async def test_live_reasoning_label_highlights_only_its_text_on_hover() -> None:
         hovered = label.render()
         hovered_style = hovered.get_style_at_offset(hovered.plain.index("Thought"))
 
-        assert hovered_style.foreground == Color.parse(TUI_DESIGN.text_highlight)
+        assert hovered_style.foreground == Color.parse(DEFAULT_TUI_THEME.text_highlight)
         assert hovered_style.background == before_style.background
         assert "Thought" in label.render_line(0).text
 
@@ -130,7 +221,7 @@ async def test_historical_reasoning_label_highlights_only_its_text_on_hover() ->
         assert hovered.style is not None
         assert hovered.style.color is not None
         assert hovered.style.color.triplet is not None
-        assert hovered.style.color.triplet.hex == TUI_DESIGN.text_highlight
+        assert hovered.style.color.triplet.hex == DEFAULT_TUI_THEME.text_highlight
         assert hovered.style.bgcolor == before.style.bgcolor
 
 
@@ -147,6 +238,32 @@ class _HistoryApp(App[None]):
 
     def on_tool_navigation_requested(self, message: ToolNavigationRequested) -> None:
         self.navigation.append((message.parent_run_id, message.parent_tool_call_id))
+
+
+class _ThemedHistoryApp(_HistoryApp):
+    def __init__(self) -> None:
+        self._tui_theme = DEFAULT_TUI_THEME
+        super().__init__()
+        self.console.push_theme(self._tui_theme.rich_theme())
+
+    @property
+    def tui_theme(self) -> TuiTheme:
+        return self._tui_theme
+
+    def apply_theme(self, theme: TuiTheme) -> None:
+        self._tui_theme = theme
+        self.console.pop_theme()
+        self.console.push_theme(theme.rich_theme())
+        self.history.refresh_theme()
+
+
+class _StreamingLinesApp(App[None]):
+    def __init__(self) -> None:
+        super().__init__()
+        self.tail = AssistantTailLines()
+
+    def compose(self) -> ComposeResult:
+        yield self.tail
 
 
 class _LiveToolApp(App[None]):
@@ -167,6 +284,20 @@ class _LiveToolApp(App[None]):
 
     def on_tool_navigation_requested(self, message: ToolNavigationRequested) -> None:
         self.navigation.append((message.parent_run_id, message.parent_tool_call_id))
+
+
+@pytest.mark.asyncio
+async def test_streaming_tail_strips_always_carry_a_base_style() -> None:
+    app = _StreamingLinesApp()
+
+    async with app.run_test(size=(40, 8)) as pilot:
+        await pilot.pause()
+        app.tail.append("streaming tail")
+        await pilot.pause()
+
+        strips = (*app.tail._line_strips, *app.tail._pending_strips)
+        assert strips
+        assert all(segment.style is not None for strip in strips for segment in strip)
 
 
 @pytest.mark.asyncio
@@ -358,6 +489,92 @@ async def test_large_history_markdown_renders_outside_the_ui_event_loop(
 
 
 @pytest.mark.asyncio
+async def test_theme_refresh_is_off_loop_and_coalesces_rapid_theme_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _ThemedHistoryApp()
+    source = "```python\n" + "value = 1\n" * 512 + "```\n"
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await app.history.load((TranscriptEntry(kind="assistant", text=source),))
+        entered = threading.Event()
+        release = threading.Event()
+        guard = threading.Lock()
+        active_renders = 0
+        maximum_active_renders = 0
+        render_threads: list[int] = []
+        render_entries = conversation_history._render_entry_requests
+
+        def blocking_render(*args, **kwargs):
+            nonlocal active_renders, maximum_active_renders
+            with guard:
+                active_renders += 1
+                maximum_active_renders = max(maximum_active_renders, active_renders)
+            render_threads.append(threading.get_ident())
+            if len(render_threads) == 1:
+                entered.set()
+                release.wait()
+            try:
+                return render_entries(*args, **kwargs)
+            finally:
+                with guard:
+                    active_renders -= 1
+
+        monkeypatch.setattr(
+            conversation_history,
+            "_render_entry_requests",
+            blocking_render,
+        )
+        first = replace(
+            DEFAULT_TUI_THEME,
+            theme_id="first",
+            label="First",
+            description="First preview",
+            syntax_name="#88aacc",
+        )
+        latest = replace(
+            first,
+            theme_id="latest",
+            label="Latest",
+            description="Latest preview",
+            syntax_name="#bbccdd",
+        )
+        watchdog = threading.Timer(1, release.set)
+        watchdog.start()
+        event_loop_thread = threading.get_ident()
+        app.apply_theme(first)
+
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            app.apply_theme(latest)
+            await pilot.pause(0.05)
+            assert maximum_active_renders == 1
+        finally:
+            release.set()
+            watchdog.cancel()
+
+        for _attempt in range(40):
+            if not app.history._theme_render_active:
+                break
+            await pilot.pause(0.05)
+
+        assert app.tui_theme == latest
+        assert app.history._theme_render_active is False
+        assert render_threads
+        assert all(thread_id != event_loop_thread for thread_id in render_threads)
+        assert maximum_active_renders == 1
+        value_segment = next(
+            segment
+            for strip in app.history.lines
+            for segment in strip
+            if "value" in segment.text
+        )
+        assert value_segment.style is not None and value_segment.style.color is not None
+        assert value_segment.style.color.triplet.hex == latest.syntax_name
+
+
+@pytest.mark.asyncio
 async def test_historical_spawn_tool_click_preserves_parent_run_identity() -> None:
     app = _HistoryApp()
 
@@ -389,7 +606,7 @@ async def test_historical_spawn_tool_click_preserves_parent_run_identity() -> No
         assert hovered.style.bgcolor == before_hover.style.bgcolor
         assert hovered.style.color is not None
         assert hovered.style.color.triplet is not None
-        assert hovered.style.color.triplet.hex == TUI_DESIGN.text_highlight
+        assert hovered.style.color.triplet.hex == DEFAULT_TUI_THEME.text_highlight
 
         await pilot.click(app.history, offset=(3, 0))
 
@@ -407,7 +624,7 @@ async def test_live_spawn_tool_click_preserves_parent_run_identity() -> None:
         await pilot.pause()
         hovered = row.render()
         highlighted_style = hovered.get_style_at_offset(hovered.plain.index("Subagent"))
-        assert highlighted_style.foreground == Color.parse(TUI_DESIGN.text_highlight)
+        assert highlighted_style.foreground == Color.parse(DEFAULT_TUI_THEME.text_highlight)
         assert row.styles.background.a == 0
         await pilot.click(row)
 
@@ -473,18 +690,21 @@ def test_compaction_and_run_summaries_share_visual_structure_and_failure_semanti
     )
     assert _style_at(compaction, "Context compacted").bold is True
     assert not _style_at(failed, "deepseek-v4-flash").bold
-    assert not _style_at(failed, TUI_DESIGN.brand_mark).bold
+    assert not _style_at(failed, DEFAULT_TUI_THEME.brand_mark).bold
     assert _style_at(compaction, "Context compacted").color is not None
     assert _style_at(compaction, "Context compacted").color.triplet.hex == (
-        TUI_DESIGN.text_secondary
+        DEFAULT_TUI_THEME.text_secondary
     )
-    compaction_separator = compaction.plain.index(TUI_DESIGN.section_separator_mark)
-    failed_separator = failed.plain.index(TUI_DESIGN.section_separator_mark)
+    compaction_separator = compaction.plain.index(DEFAULT_TUI_THEME.section_separator_mark)
+    failed_separator = failed.plain.index(DEFAULT_TUI_THEME.section_separator_mark)
     assert compaction.get_style_at_offset(Console(), compaction_separator) == (
         failed.get_style_at_offset(Console(), failed_separator)
     )
-    assert _style_at(failed, TUI_DESIGN.brand_mark).color is not None
-    assert _style_at(failed, TUI_DESIGN.brand_mark).color.triplet.hex == TUI_DESIGN.failure
+    assert _style_at(failed, DEFAULT_TUI_THEME.brand_mark).color is not None
+    assert (
+        _style_at(failed, DEFAULT_TUI_THEME.brand_mark).color.triplet.hex
+        == DEFAULT_TUI_THEME.failure
+    )
 
 
 def test_split_markdown_blocks_preserves_every_block() -> None:

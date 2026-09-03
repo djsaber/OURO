@@ -36,7 +36,7 @@ from ouro.tui.controller import (
 )
 from ouro.tui.plugin_workflows import PluginManagementWorkflows
 from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
-from ouro.tui.theme import TUI_DESIGN
+from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 from ouro.tui.widgets import ConversationView
 
 
@@ -206,7 +206,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                     mode,
                     label,
                     trailing=_QUEUED_INPUT_CONSUMPTION_DETAILS[mode],
-                    marker=(TUI_DESIGN.selected_choice_marker if mode == selected else ""),
+                    marker=(theme_for(self).selected_choice_marker if mode == selected else ""),
                 )
                 for mode, label in _QUEUED_INPUT_CONSUMPTION_LABELS.items()
             )
@@ -253,6 +253,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             config,
             models=models,
             strategy_ids=strategies,
+            theme=theme_for(self),
         )
         draft = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
@@ -288,7 +289,9 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             screen.replace_page(
                 title="TOOL PERMISSIONS",
                 placeholder="Filter tools…",
-                choices=_tool_choices(tuple(tool_catalog.values())),
+                choices=_tool_choices(
+                    tuple(tool_catalog.values()), theme=theme_for(self)
+                ),
                 initial_value=initial_value,
                 on_select=select_tool_or_permission,
                 on_cancel=cancel_submenu,
@@ -313,11 +316,12 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 active_tool = tool
                 current = tool.permission_override or "default"
                 screen.replace_page(
-                    title=f"TOOL PERMISSION{TUI_DESIGN.inline_separator}{tool.name}",
+                    title=f"TOOL PERMISSION{theme_for(self).inline_separator}{tool.name}",
                     placeholder="Filter permission modes…",
                     choices=_tool_permission_choices(
                         current,
                         default_permission=tool.inherited_permission,
+                        theme=theme_for(self),
                     ),
                     initial_value=current,
                     on_select=select_tool_or_permission,
@@ -356,7 +360,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             screen.push_page(
                 title="TOOL PERMISSIONS",
                 placeholder="Filter tools…",
-                choices=_tool_choices(tools),
+                choices=_tool_choices(tools, theme=theme_for(self)),
                 on_select=select_tool_or_permission,
                 on_cancel=cancel_submenu,
             )
@@ -364,7 +368,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         screen = ChoiceScreen(
             title="TOOL PERMISSIONS",
             placeholder="Filter tools…",
-            choices=_tool_choices(tools),
+            choices=_tool_choices(tools, theme=theme_for(self)),
             on_select=select_tool_or_permission,
             on_cancel=cancel_submenu,
         )
@@ -403,6 +407,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             current,
             definitions=catalog.definitions,
             models=models,
+            theme=theme_for(self),
         )
         draft = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
@@ -433,7 +438,9 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             except Exception as exc:  # noqa: BLE001
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
-            return _agent_definition_choices(refreshed.definitions)
+            return _agent_definition_choices(
+                refreshed.definitions, theme=theme_for(self)
+            )
 
         async def select_definition(agent_id: str) -> tuple[Choice, ...] | None:
             try:
@@ -459,7 +466,9 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             screen.push_page(
                 title="SUBAGENTS",
                 placeholder="Filter subagents…",
-                choices=_agent_definition_choices(catalog.definitions),
+                choices=_agent_definition_choices(
+                    catalog.definitions, theme=theme_for(self)
+                ),
                 on_select=select_definition,
                 on_refresh=refresh_definitions,
             )
@@ -467,7 +476,9 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         screen = ChoiceScreen(
             title="SUBAGENTS",
             placeholder="Filter subagents…",
-            choices=_agent_definition_choices(catalog.definitions),
+            choices=_agent_definition_choices(
+                catalog.definitions, theme=theme_for(self)
+            ),
             on_select=select_definition,
             on_refresh=refresh_definitions,
         )
@@ -495,13 +506,15 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 )
             if saved is not None:
                 menu.pop_page(
-                    choices=_agent_definition_choices(saved.definitions),
+                    choices=_agent_definition_choices(
+                        saved.definitions, theme=theme_for(self)
+                    ),
                     initial_value=definition.agent_id,
                 )
             return None
 
         menu.push_page(
-            title=f"SUBAGENT{TUI_DESIGN.inline_separator}{definition.name}",
+            title=f"SUBAGENT{theme_for(self).inline_separator}{definition.name}",
             placeholder="Choose an action…",
             choices=(
                 Choice("edit", "Edit subagent"),
@@ -518,7 +531,9 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        screen = AgentDefinitionConfigurationScreen(tools, models)
+        screen = AgentDefinitionConfigurationScreen(
+            tools, models, theme=theme_for(self)
+        )
         draft = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
         )
@@ -545,7 +560,9 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        choices = _agent_definition_choices(catalog.definitions)
+        choices = _agent_definition_choices(
+            catalog.definitions, theme=theme_for(self)
+        )
 
         async def select_agent(agent_id: str) -> tuple[Choice, ...] | None:
             nonlocal catalog
@@ -567,7 +584,9 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             if menu is not None:
                 menu.pop_page()
                 return None
-            return _agent_definition_choices(saved.definitions)
+            return _agent_definition_choices(
+                saved.definitions, theme=theme_for(self)
+            )
 
         title = "EDIT SUBAGENT" if action == "edit" else "DELETE SUBAGENT"
         if menu is not None:
@@ -601,7 +620,12 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return None
-        screen = AgentDefinitionConfigurationScreen(tools, models, existing)
+        screen = AgentDefinitionConfigurationScreen(
+            tools,
+            models,
+            existing,
+            theme=theme_for(self),
+        )
         draft = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
         )
@@ -663,7 +687,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return
         selected = selector
         if selected is None:
-            choices = _mcp_choices(configs, runtime)
+            choices = _mcp_choices(configs, runtime, theme=theme_for(self))
             if not choices:
                 return
             if menu is not None:
@@ -680,7 +704,9 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                         return None
                     servers.clear()
                     servers.update({config.server_id: config for config in refreshed})
-                    return _mcp_choices(refreshed, refreshed_runtime)
+                    return _mcp_choices(
+                        refreshed, refreshed_runtime, theme=theme_for(self)
+                    )
 
                 async def select_server(server_id: str) -> tuple[Choice, ...] | None:
                     if server_id not in servers:
@@ -737,7 +763,9 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         }[action]
         if not configs:
             return
-        choices = _mcp_action_choices(action, configs, runtime)
+        choices = _mcp_action_choices(
+            action, configs, runtime, theme=theme_for(self)
+        )
         if action == "toggle":
             servers = {config.server_id: config for config in configs}
 
@@ -766,6 +794,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                         trailing=_mcp_labels(
                             config,
                             refreshed_runtime.get(config.server_id),
+                            theme=theme_for(self),
                         ),
                     )
                     for config in sorted(
@@ -803,6 +832,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                     tuple(servers.values()),
                     runtime if current_runtime is None else current_runtime,
                     loading=loading_servers,
+                    theme=theme_for(self),
                 )
 
             async def refresh_action_candidates() -> tuple[Choice, ...] | None:
@@ -967,7 +997,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                     preferred_value=action,
                 ):
                     menu.update_parent_choices(
-                        _mcp_choices(configs, runtime),
+                        _mcp_choices(configs, runtime, theme=theme_for(self)),
                         initial_value=server_id,
                     )
                 else:
@@ -990,7 +1020,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                     config = next(item for item in configs if item.server_id == server_id)
                     status = runtime.get(server_id)
                     menu.update_parent_choices(
-                        _mcp_choices(configs, runtime),
+                        _mcp_choices(configs, runtime, theme=theme_for(self)),
                         initial_value=server_id,
                     )
                     return _mcp_management_choices(config, status)
@@ -1018,7 +1048,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 return None
 
             menu.push_page(
-                title=f"MCP{TUI_DESIGN.inline_separator}{config.name}",
+                title=f"MCP{theme_for(self).inline_separator}{config.name}",
                 placeholder="Choose an action…",
                 choices=actions,
                 on_select=select_action,
@@ -1027,7 +1057,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return
         selected = await self.push_screen_wait(
             ChoiceScreen(
-                title=f"MCP{TUI_DESIGN.inline_separator}{config.name}",
+                title=f"MCP{theme_for(self).inline_separator}{config.name}",
                 placeholder="Choose an action…",
                 choices=actions,
             )
@@ -1049,7 +1079,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         *,
         menu: ChoiceScreen | None = None,
     ) -> None:
-        screen = MCPConfigurationScreen(existing)
+        screen = MCPConfigurationScreen(existing, theme=theme_for(self))
         draft = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
         )
@@ -1063,7 +1093,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return
         self._refresh_mcp_system_status()
         self.notify(
-            f"MCP configuration saved: {saved.server_id}{TUI_DESIGN.inline_separator}"
+            f"MCP configuration saved: {saved.server_id}{theme_for(self).inline_separator}"
             "tool policy active; restart for connection changes"
         )
 
@@ -1075,12 +1105,12 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return
         if result.ok:
             self.notify(
-                f"MCP check passed: {server_id}{TUI_DESIGN.inline_separator}"
+                f"MCP check passed: {server_id}{theme_for(self).inline_separator}"
                 f"{len(result.tool_names)} tool(s)"
             )
         else:
             await self.query_one(ConversationView).add_notice(
-                f"MCP check failed: {server_id}{TUI_DESIGN.inline_separator}"
+                f"MCP check failed: {server_id}{theme_for(self).inline_separator}"
                 f"{result.error or result.status}",
                 error=True,
             )
@@ -1104,7 +1134,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         self._refresh_mcp_system_status()
         if status.status == "failed":
             self.notify(
-                f"MCP {server_id}: {status.status}{TUI_DESIGN.inline_separator}"
+                f"MCP {server_id}: {status.status}{theme_for(self).inline_separator}"
                 f"{status.tool_count} tool(s)",
                 severity="error",
             )
@@ -1164,7 +1194,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
-            return _skill_source_choices(policy)
+            return _skill_source_choices(policy, theme=theme_for(self))
 
         async def toggle_source(source_id: str) -> tuple[Choice, ...] | None:
             nonlocal policy
@@ -1187,9 +1217,9 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
             self._refresh_skill_system_status()
-            return _skill_source_choices(policy)
+            return _skill_source_choices(policy, theme=theme_for(self))
 
-        choices = _skill_source_choices(policy)
+        choices = _skill_source_choices(policy, theme=theme_for(self))
         if menu is not None:
             menu.push_page(
                 title="SKILL SOURCES",
@@ -1223,7 +1253,9 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return
         selected = selector
         if selected is None:
-            choices = tuple(_skill_choice(skill) for skill in catalog.skills)
+            choices = tuple(
+                _skill_choice(skill, theme=theme_for(self)) for skill in catalog.skills
+            )
             if not choices:
                 return
             if menu is not None:
@@ -1237,7 +1269,10 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                         return None
                     skills.clear()
                     skills.update({skill.name: skill for skill in refreshed.skills})
-                    return tuple(_skill_choice(skill) for skill in refreshed.skills)
+                    return tuple(
+                        _skill_choice(skill, theme=theme_for(self))
+                        for skill in refreshed.skills
+                    )
 
                 async def select_skill(name: str) -> tuple[Choice, ...] | None:
                     if name not in skills:
@@ -1296,7 +1331,9 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             "update": "UPDATE",
             "remove": "REMOVE",
         }[action]
-        choices = tuple(_skill_choice(skill) for skill in candidates)
+        choices = tuple(
+            _skill_choice(skill, theme=theme_for(self)) for skill in candidates
+        )
         if action == "toggle":
             skills = {skill.name: skill for skill in candidates}
 
@@ -1314,7 +1351,10 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                     return None
                 skills.clear()
                 skills.update({skill.name: skill for skill in refreshed.skills})
-                return tuple(_skill_choice(skill) for skill in skills.values())
+                return tuple(
+                    _skill_choice(skill, theme=theme_for(self))
+                    for skill in skills.values()
+                )
 
             if menu is not None:
                 menu.push_page(
@@ -1349,7 +1389,10 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 )
                 skills.clear()
                 skills.update({skill.name: skill for skill in refreshed_candidates})
-                return tuple(_skill_choice(skill) for skill in refreshed_candidates)
+                return tuple(
+                    _skill_choice(skill, theme=theme_for(self))
+                    for skill in refreshed_candidates
+                )
 
             async def select_skill(name: str) -> tuple[Choice, ...] | None:
                 skill = skills[name]
@@ -1452,7 +1495,10 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                         return None
                     skill = refreshed
                     menu.update_parent_choices(
-                        tuple(_skill_choice(item) for item in catalog.skills),
+                        tuple(
+                            _skill_choice(item, theme=theme_for(self))
+                            for item in catalog.skills
+                        ),
                         initial_value=name,
                     )
                     return _skill_management_choices(skill)
@@ -1465,7 +1511,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 return None
 
             menu.push_page(
-                title=f"SKILL{TUI_DESIGN.inline_separator}{name}",
+                title=f"SKILL{theme_for(self).inline_separator}{name}",
                 placeholder="Choose an action…",
                 choices=actions,
                 on_select=select_action,
@@ -1474,7 +1520,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return
         selected = await self.push_screen_wait(
             ChoiceScreen(
-                title=f"SKILL{TUI_DESIGN.inline_separator}{name}",
+                title=f"SKILL{theme_for(self).inline_separator}{name}",
                 placeholder="Choose an action…",
                 choices=actions,
             )
@@ -1533,7 +1579,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return
         messages = "; ".join(item.message for item in result.diagnostics) or "invalid skill"
         await self.query_one(ConversationView).add_notice(
-            f"Skill validation failed: {name}{TUI_DESIGN.inline_separator}{messages}",
+            f"Skill validation failed: {name}{theme_for(self).inline_separator}{messages}",
             error=True,
         )
 
@@ -1576,6 +1622,8 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
 
 def _tool_choices(
     tools: tuple[TuiToolConfiguration, ...],
+    *,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[Choice, ...]:
     ordered = sorted(
         tools,
@@ -1602,7 +1650,7 @@ def _tool_choices(
                     if tool.plugin_id is not None and tool.plugin_name is not None
                     else ""
                 ),
-                trailing=_tool_labels(tool),
+                trailing=_tool_labels(tool, theme=theme),
                 disabled=tool.permission_control == "tool",
             )
         )
@@ -1611,13 +1659,15 @@ def _tool_choices(
 
 def _agent_definition_choices(
     definitions: tuple[AgentDefinitionView, ...],
+    *,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[Choice, ...]:
     return tuple(
         Choice(
             definition.agent_id,
             definition.name,
             group="BUILT-IN" if definition.source == "builtin" else "USER",
-            trailing=TUI_DESIGN.inline_separator.join(
+            trailing=theme.inline_separator.join(
                 (definition.agent_id, definition.compatibility)
             ),
             disabled=not definition.editable,
@@ -1630,6 +1680,7 @@ def _tool_permission_choices(
     current: str,
     *,
     default_permission: PermissionMode | None,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[Choice, ...]:
     return tuple(
         Choice(
@@ -1638,34 +1689,40 @@ def _tool_permission_choices(
             trailing=(
                 default_permission if value == "default" and default_permission is not None else ""
             ),
-            marker=TUI_DESIGN.selected_choice_marker if value == current else "",
+            marker=theme.selected_choice_marker if value == current else "",
         )
         for value in _TOOL_PERMISSION_CHOICES
     )
 
 
-def _tool_labels(tool: TuiToolConfiguration) -> str:
+def _tool_labels(
+    tool: TuiToolConfiguration,
+    *,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
+) -> str:
     permission: str
     if tool.permission_control == "tool":
         permission = tool.effective_permission or "unavailable"
-        return TUI_DESIGN.inline_separator.join(("contract", permission))
+        return theme.inline_separator.join(("contract", permission))
     elif tool.permission_override is not None:
         permission = tool.permission_override
     elif tool.effective_permission is not None:
-        permission = TUI_DESIGN.inline_separator.join(("default", tool.effective_permission))
+        permission = theme.inline_separator.join(("default", tool.effective_permission))
     else:
         permission = "unavailable"
-    availability = "" if tool.available else f"{TUI_DESIGN.inline_separator}unavailable"
+    availability = "" if tool.available else f"{theme.inline_separator}unavailable"
     return f"{permission}{availability}"
 
 
 def _mcp_labels(
     config: MCPServerConfigView,
     status: McpServerStatus | None,
+    *,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> str:
     enabled = "enabled" if config.enabled else "disabled"
     runtime = status.status if status is not None else "next restart"
-    return TUI_DESIGN.inline_separator.join((enabled, runtime))
+    return theme.inline_separator.join((enabled, runtime))
 
 
 def _mcp_action_available(
@@ -1695,13 +1752,14 @@ def _mcp_action_choices(
     runtime: dict[str, McpServerStatus],
     *,
     loading: set[str] | frozenset[str] = frozenset(),
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[Choice, ...]:
     return tuple(
         Choice(
             config.server_id,
             config.name,
             group=config.transport.upper(),
-            trailing=_mcp_labels(config, runtime.get(config.server_id)),
+            trailing=_mcp_labels(config, runtime.get(config.server_id), theme=theme),
             disabled=(
                 action in {"connect", "disconnect"}
                 and not _mcp_action_available(action, config, runtime)
@@ -1721,13 +1779,15 @@ def _mcp_action_choices(
 def _mcp_choices(
     configs: tuple[MCPServerConfigView, ...],
     runtime: dict[str, McpServerStatus],
+    *,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[Choice, ...]:
     return tuple(
         Choice(
             config.server_id,
             config.name,
             group=config.transport.upper(),
-            trailing=_mcp_labels(config, runtime.get(config.server_id)),
+            trailing=_mcp_labels(config, runtime.get(config.server_id), theme=theme),
             loading=_mcp_status_is_loading(runtime.get(config.server_id)),
         )
         for config in sorted(
@@ -1797,24 +1857,32 @@ def _mcp_status_is_loading(status: McpServerStatus | None) -> bool:
     return status is not None and status.status in {"starting", "reconnecting", "stopping"}
 
 
-def _skill_choice(skill: SkillView) -> Choice:
+def _skill_choice(
+    skill: SkillView,
+    *,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
+) -> Choice:
     plugin_id = _plugin_skill_owner(skill)
     source_label = (
         "plugin"
         if skill.source == "plugin"
-        else TUI_DESIGN.inline_separator.join((skill.origin, skill.source))
+        else theme.inline_separator.join((skill.origin, skill.source))
     )
     return Choice(
         skill.name,
         skill.name,
-        trailing=TUI_DESIGN.inline_separator.join(
+        trailing=theme.inline_separator.join(
             (source_label, "enabled" if skill.enabled else "disabled")
         ),
         disabled=plugin_id is not None,
     )
 
 
-def _skill_source_choices(policy: SkillPolicyView) -> tuple[Choice, ...]:
+def _skill_source_choices(
+    policy: SkillPolicyView,
+    *,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
+) -> tuple[Choice, ...]:
     choices = [
         Choice(
             "discovery",
@@ -1826,7 +1894,7 @@ def _skill_source_choices(policy: SkillPolicyView) -> tuple[Choice, ...]:
     choices.extend(
         Choice(
             source.source_id,
-            TUI_DESIGN.inline_separator.join((source.origin, source.scope)),
+            theme.inline_separator.join((source.origin, source.scope)),
             trailing="enabled" if source.enabled else "disabled",
             group=f"{source.scope.upper()} DIRECTORIES",
         )

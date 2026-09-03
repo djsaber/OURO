@@ -1,41 +1,75 @@
-"""Accent palettes and runtime theme lookup for the OURO TUI."""
+"""Immutable visual themes and runtime theme lookup for the OURO TUI."""
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, cast
+from functools import lru_cache
+from math import isfinite
+from types import MappingProxyType
+from typing import Any, ClassVar, cast
+
+from pygments.token import Token  # type: ignore[import-untyped]
+from rich.cells import cell_len
+from rich.style import Style
+from rich.syntax import SyntaxTheme, TokenType
+from rich.theme import Theme as RichTheme
+
+_HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}\Z")
+_MIN_SPINNER_INTERVAL_SECONDS = 0.05
+_MAX_SPINNER_INTERVAL_SECONDS = 2.0
+
+
+class _TuiSyntaxTheme(SyntaxTheme):
+    """A compact Pygments projection backed only by immutable theme colors."""
+
+    def __init__(self, theme: TuiTheme) -> None:
+        def token_style(color: str) -> Style:
+            return Style(color=color, bgcolor=theme.panel)
+
+        self._styles: Mapping[TokenType, Style] = {
+            Token: token_style(theme.syntax_name),
+            Token.Text: token_style(theme.syntax_name),
+            Token.Name: token_style(theme.syntax_name),
+            Token.Name.Builtin: token_style(theme.syntax_keyword),
+            Token.Comment: token_style(theme.syntax_comment),
+            Token.Keyword: token_style(theme.syntax_keyword),
+            Token.Literal.String: token_style(theme.syntax_string),
+            Token.Literal.Number: token_style(theme.syntax_number),
+            Token.Operator: token_style(theme.syntax_operator),
+            Token.Punctuation: token_style(theme.syntax_operator),
+            Token.Error: token_style(theme.syntax_error),
+        }
+        self._background = Style(bgcolor=theme.panel)
+        self._cache: dict[TokenType, Style] = {}
+
+    def get_style_for_token(self, token_type: TokenType) -> Style:
+        try:
+            return self._cache[token_type]
+        except KeyError:
+            token = token_type
+            while token not in self._styles and token:
+                token = token[:-1]
+            style = self._styles.get(token, self._styles[Token])
+            self._cache[token_type] = style
+            return style
+
+    def get_background_style(self) -> Style:
+        return self._background
 
 
 @dataclass(frozen=True, slots=True)
-class TuiDesignTokens:
-    """Theme-independent visual vocabulary shared by CSS and Rich content."""
+class TuiTheme:
+    """One complete, declarative visual theme for an OURO TUI App."""
 
-    section_separator_mark: str = "•"
-    inline_separator_mark: str = "•"
-    brand_mark: str = "▣"
-    mask_character: str = "•"
-    selected_choice_marker: str = "●"
-    unselected_choice_marker: str = "○"
-    active_item_marker: str = "◉"
-    completed_item_marker: str = "●"
-    pending_item_marker: str = "○"
-    session_node_mark: str = "■"
-    selected_session_node_mark: str = "▣"
-    expanded_disclosure_marker: str = "-"
-    collapsed_disclosure_marker: str = "+"
-    spinner_frames: tuple[str, ...] = (
-        "⠋",
-        "⠙",
-        "⠹",
-        "⠸",
-        "⠼",
-        "⠴",
-        "⠦",
-        "⠧",
-        "⠇",
-        "⠏",
-    )
+    theme_id: str
+    label: str
+    description: str
+    accent: str
+    accent_bright: str
+
     background: str = "#0c0c0c"
     panel: str = "#171717"
     highlight: str = "#242424"
@@ -63,6 +97,145 @@ class TuiDesignTokens:
     running: str = "#77b083"
     success: str = "#77b083"
 
+    syntax_comment: str = "#647180"
+    syntax_keyword: str = "#7aa2c7"
+    syntax_string: str = "#77b083"
+    syntax_number: str = "#968264"
+    syntax_operator: str = "#8f9aa8"
+    syntax_name: str = "#d6d9df"
+    syntax_error: str = "#d87575"
+
+    section_separator_mark: str = "•"
+    inline_separator_mark: str = "•"
+    brand_mark: str = "▣"
+    mask_character: str = "•"
+    selected_choice_marker: str = "●"
+    unselected_choice_marker: str = "○"
+    active_item_marker: str = "◉"
+    completed_item_marker: str = "●"
+    pending_item_marker: str = "○"
+    session_node_mark: str = "■"
+    selected_session_node_mark: str = "▣"
+    expanded_disclosure_marker: str = "-"
+    collapsed_disclosure_marker: str = "+"
+    spinner_frames: tuple[str, ...] = (
+        "⠋",
+        "⠙",
+        "⠹",
+        "⠸",
+        "⠼",
+        "⠴",
+        "⠦",
+        "⠧",
+        "⠇",
+        "⠏",
+    )
+    spinner_interval_seconds: float = 0.12
+
+    _COLOR_FIELDS: ClassVar[tuple[str, ...]] = (
+        "accent",
+        "accent_bright",
+        "background",
+        "panel",
+        "highlight",
+        "input_highlight",
+        "progress_track",
+        "border_focus",
+        "separator_tone",
+        "border",
+        "text_disabled",
+        "text_faint",
+        "scrollbar_hover",
+        "text_lowlight",
+        "text_metadata",
+        "text_detail",
+        "text_choice",
+        "text_muted",
+        "warning",
+        "text_secondary",
+        "danger",
+        "text_primary",
+        "failure",
+        "critical",
+        "text_highlight",
+        "warning_bright",
+        "running",
+        "success",
+        "syntax_comment",
+        "syntax_keyword",
+        "syntax_string",
+        "syntax_number",
+        "syntax_operator",
+        "syntax_name",
+        "syntax_error",
+    )
+    _GLYPH_FIELDS: ClassVar[tuple[str, ...]] = (
+        "section_separator_mark",
+        "inline_separator_mark",
+        "brand_mark",
+        "mask_character",
+        "selected_choice_marker",
+        "unselected_choice_marker",
+        "active_item_marker",
+        "completed_item_marker",
+        "pending_item_marker",
+        "session_node_mark",
+        "selected_session_node_mark",
+        "expanded_disclosure_marker",
+        "collapsed_disclosure_marker",
+    )
+
+    def __post_init__(self) -> None:
+        for name in ("theme_id", "label", "description"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must not be empty")
+        for name in self._COLOR_FIELDS:
+            value = getattr(self, name)
+            if not isinstance(value, str) or not _HEX_COLOR.fullmatch(value):
+                raise ValueError(f"{name} must be a #RRGGBB color")
+            object.__setattr__(self, name, value.lower())
+        for name in self._GLYPH_FIELDS:
+            self._validate_glyph(name, getattr(self, name))
+        if self.selected_choice_marker == self.unselected_choice_marker:
+            raise ValueError("selected and unselected choice markers must differ")
+        if self.expanded_disclosure_marker == self.collapsed_disclosure_marker:
+            raise ValueError("expanded and collapsed disclosure markers must differ")
+        if not isinstance(self.spinner_frames, tuple):
+            raise ValueError("spinner_frames must be a tuple")
+        if not self.spinner_frames:
+            raise ValueError("spinner_frames must not be empty")
+        if len(set(self.spinner_frames)) != len(self.spinner_frames):
+            raise ValueError("spinner_frames must be unique")
+        for frame in self.spinner_frames:
+            self._validate_glyph("spinner frame", frame)
+        interval = self.spinner_interval_seconds
+        if (
+            isinstance(interval, bool)
+            or not isinstance(interval, (int, float))
+            or not isfinite(interval)
+            or not _MIN_SPINNER_INTERVAL_SECONDS
+            <= interval
+            <= _MAX_SPINNER_INTERVAL_SECONDS
+        ):
+            raise ValueError(
+                "spinner_interval_seconds must be between "
+                f"{_MIN_SPINNER_INTERVAL_SECONDS} and "
+                f"{_MAX_SPINNER_INTERVAL_SECONDS}"
+            )
+        object.__setattr__(self, "spinner_interval_seconds", float(interval))
+
+    @staticmethod
+    def _validate_glyph(name: str, value: str) -> None:
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{name} must not be empty")
+        if "\x1b" in value or any(
+            unicodedata.category(character).startswith("C") for character in value
+        ):
+            raise ValueError(f"{name} must not contain control characters")
+        if cell_len(value) != 1:
+            raise ValueError(f"{name} must occupy exactly one terminal cell")
+
     @property
     def section_separator(self) -> str:
         return f" {self.section_separator_mark} "
@@ -76,9 +249,10 @@ class TuiDesignTokens:
         return self.inline_separator_mark
 
     def css_variables(self) -> dict[str, str]:
-        """Project design colors into Textual's CSS token namespace."""
+        """Project theme colors into Textual's CSS token namespace."""
 
         return {
+            "ouro-theme": self.accent,
             "ouro-background": self.background,
             "ouro-panel": self.panel,
             "ouro-highlight": self.highlight,
@@ -91,28 +265,72 @@ class TuiDesignTokens:
             "ouro-text-faint": self.text_faint,
             "ouro-scrollbar-hover": self.scrollbar_hover,
             "ouro-text-lowlight": self.text_lowlight,
+            "ouro-text-metadata": self.text_metadata,
             "ouro-text-detail": self.text_detail,
+            "ouro-text-choice": self.text_choice,
             "ouro-text-muted": self.text_muted,
             "ouro-text-secondary": self.text_secondary,
             "ouro-text-primary": self.text_primary,
             "ouro-text-highlight": self.text_highlight,
-            "ouro-danger": self.danger,
+            "ouro-running": self.running,
+            "ouro-success": self.success,
+            "ouro-warning": self.warning,
             "ouro-warning-bright": self.warning_bright,
+            "ouro-danger": self.danger,
+            "ouro-failure": self.failure,
+            "ouro-critical": self.critical,
         }
 
+    def rich_theme(self) -> RichTheme:
+        """Return the bounded cached Rich style projection for this value."""
 
-TUI_DESIGN = TuiDesignTokens()
+        return _rich_theme(self)
+
+    def syntax_theme(self) -> SyntaxTheme:
+        """Return the bounded cached Pygments projection for this value."""
+
+        return _syntax_theme(self)
 
 
-@dataclass(frozen=True, slots=True)
-class TuiTheme:
-    """One restrained accent palette used by both CSS and Rich content."""
+@lru_cache(maxsize=32)
+def _rich_theme(theme: TuiTheme) -> RichTheme:
+    return RichTheme(
+        {
+            "markdown.paragraph": Style(color=theme.text_primary),
+            "markdown.text": Style(color=theme.text_primary),
+            "markdown.em": Style(italic=True),
+            "markdown.emph": Style(italic=True),
+            "markdown.strong": Style(bold=True),
+            "markdown.code": Style(color=theme.accent),
+            "markdown.code_block": Style(color=theme.syntax_name, bgcolor=theme.panel),
+            "markdown.block_quote": Style(color=theme.text_muted),
+            "markdown.list": Style(color=theme.text_muted),
+            "markdown.item": Style(color=theme.text_primary),
+            "markdown.item.bullet": Style(color=theme.text_muted),
+            "markdown.item.number": Style(color=theme.text_muted),
+            "markdown.hr": Style(color=theme.separator_tone, dim=True),
+            "markdown.h1.border": Style(color=theme.separator_tone),
+            "markdown.h1": Style(color=theme.text_primary, bold=True),
+            "markdown.h2": Style(color=theme.text_primary, bold=True),
+            "markdown.h3": Style(color=theme.text_primary, bold=True),
+            "markdown.h4": Style(color=theme.text_secondary, bold=True),
+            "markdown.h5": Style(color=theme.text_secondary, bold=True),
+            "markdown.h6": Style(color=theme.text_secondary, bold=True),
+            "markdown.h7": Style(color=theme.text_secondary, dim=True),
+            "markdown.link": Style(color=theme.accent, underline=True),
+            "markdown.link_url": Style(color=theme.accent, underline=True),
+            "markdown.s": Style(strike=True),
+            "markdown.table.border": Style(color=theme.separator_tone),
+            "markdown.table.header": Style(color=theme.text_primary, bold=True),
+            "markdown.kbd": Style(color=theme.accent_bright, bold=True),
+        },
+        inherit=True,
+    )
 
-    theme_id: str
-    label: str
-    description: str
-    accent: str
-    accent_bright: str
+
+@lru_cache(maxsize=32)
+def _syntax_theme(theme: TuiTheme) -> SyntaxTheme:
+    return _TuiSyntaxTheme(theme)
 
 
 _THEMES = (
@@ -195,25 +413,28 @@ _THEMES = (
     ),
 )
 
-TUI_THEMES: Mapping[str, TuiTheme] = {theme.theme_id: theme for theme in _THEMES}
+TUI_THEMES: Mapping[str, TuiTheme] = MappingProxyType(
+    {theme.theme_id: theme for theme in _THEMES}
+)
 DEFAULT_TUI_THEME = TUI_THEMES["original"]
 
 
 def theme_for(node: object) -> TuiTheme:
-    """Resolve the owning app's palette, with a safe pre-mount default."""
+    """Resolve the owning App's theme, with a safe pre-mount default."""
 
+    initial = getattr(node, "_initial_tui_theme", None)
     try:
         theme = getattr(cast(Any, node).app, "tui_theme", None)
     except (AttributeError, RuntimeError):
-        return DEFAULT_TUI_THEME
-    return theme if isinstance(theme, TuiTheme) else DEFAULT_TUI_THEME
+        return initial if isinstance(initial, TuiTheme) else DEFAULT_TUI_THEME
+    if isinstance(theme, TuiTheme):
+        return theme
+    return initial if isinstance(initial, TuiTheme) else DEFAULT_TUI_THEME
 
 
 __all__ = [
     "DEFAULT_TUI_THEME",
-    "TUI_DESIGN",
     "TUI_THEMES",
-    "TuiDesignTokens",
     "TuiTheme",
     "theme_for",
 ]

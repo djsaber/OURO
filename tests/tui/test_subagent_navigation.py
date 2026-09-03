@@ -8,7 +8,7 @@ from textual.app import App, ComposeResult
 from ouro.application.agent_models import AgentTreeNode
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
-from ouro.tui.theme import TUI_DESIGN
+from ouro.tui.theme import DEFAULT_TUI_THEME
 
 
 def _agent(
@@ -225,10 +225,10 @@ def test_subagent_panel_node_colors_follow_runtime_outcomes() -> None:
     node_colors = [rendered.get_style_at_offset(Console(), offset).color for offset in node_offsets]
 
     assert node_colors == [
-        Color.parse(TUI_DESIGN.running),
-        Color.parse(TUI_DESIGN.running),
-        Color.parse(TUI_DESIGN.text_lowlight),
-        Color.parse(TUI_DESIGN.failure),
+        Color.parse(DEFAULT_TUI_THEME.running),
+        Color.parse(DEFAULT_TUI_THEME.running),
+        Color.parse(DEFAULT_TUI_THEME.text_lowlight),
+        Color.parse(DEFAULT_TUI_THEME.failure),
     ]
     assert panel.tooltip is None
 

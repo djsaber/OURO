@@ -22,7 +22,7 @@ from ouro.tui.provider_screens import (
     profile_for_provider,
 )
 from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
-from ouro.tui.theme import TUI_DESIGN
+from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 from ouro.tui.widgets import ConversationView
 
 
@@ -39,7 +39,10 @@ class ProviderConfigurationWorkflows(App[int]):
             return
         if not catalog.providers:
             return
-        choices = tuple(_provider_choice(provider) for provider in catalog.providers)
+        choices = tuple(
+            _provider_choice(provider, theme=theme_for(self))
+            for provider in catalog.providers
+        )
         if menu is not None:
             async def refresh_providers() -> tuple[Choice, ...] | None:
                 try:
@@ -47,7 +50,10 @@ class ProviderConfigurationWorkflows(App[int]):
                 except Exception as exc:  # noqa: BLE001
                     await self.query_one(ConversationView).add_notice(str(exc), error=True)
                     return None
-                return tuple(_provider_choice(provider) for provider in refreshed.providers)
+                return tuple(
+                    _provider_choice(provider, theme=theme_for(self))
+                    for provider in refreshed.providers
+                )
 
             async def select_provider(provider_id: str) -> tuple[Choice, ...] | None:
                 refreshed = await self._controller.provider_catalog()
@@ -139,7 +145,7 @@ class ProviderConfigurationWorkflows(App[int]):
         *,
         menu: ChoiceScreen | None = None,
     ) -> None:
-        screen = ProviderConfigurationScreen(profile)
+        screen = ProviderConfigurationScreen(profile, theme=theme_for(self))
         draft = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
         )
@@ -157,7 +163,9 @@ class ProviderConfigurationWorkflows(App[int]):
             else "add an endpoint to make it usable"
         )
         self.notify(
-            TUI_DESIGN.inline_separator.join((f"Provider added: {provider.provider_id}", suffix))
+            theme_for(self).inline_separator.join(
+                (f"Provider added: {provider.provider_id}", suffix)
+            )
         )
 
     async def _choose_provider_action(
@@ -184,6 +192,7 @@ class ProviderConfigurationWorkflows(App[int]):
             _provider_choice(
                 provider,
                 disabled=action == "toggle" and provider.default,
+                theme=theme_for(self),
             )
             for provider in candidates
         )
@@ -211,7 +220,11 @@ class ProviderConfigurationWorkflows(App[int]):
                     {provider.provider_id: provider for provider in refreshed.providers}
                 )
                 return tuple(
-                    _provider_choice(provider, disabled=provider.default)
+                    _provider_choice(
+                        provider,
+                        disabled=provider.default,
+                        theme=theme_for(self),
+                    )
                     for provider in providers.values()
                 )
 
@@ -247,7 +260,10 @@ class ProviderConfigurationWorkflows(App[int]):
                 providers.update(
                     {provider.provider_id: provider for provider in refreshed.providers}
                 )
-                return tuple(_provider_choice(provider) for provider in providers.values())
+                return tuple(
+                    _provider_choice(provider, theme=theme_for(self))
+                    for provider in providers.values()
+                )
 
             async def select_provider(provider_id: str) -> tuple[Choice, ...] | None:
                 provider = providers[provider_id]
@@ -286,7 +302,7 @@ class ProviderConfigurationWorkflows(App[int]):
         *,
         menu: ChoiceScreen | None = None,
     ) -> None:
-        choices = _provider_management_choices(provider)
+        choices = _provider_management_choices(provider, theme=theme_for(self))
         if menu is not None:
 
             async def refresh_provider_actions() -> tuple[Choice, ...] | None:
@@ -307,7 +323,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 if refreshed is None:
                     return ()
                 provider = refreshed
-                return _provider_management_choices(provider)
+                return _provider_management_choices(provider, theme=theme_for(self))
 
             async def select_action(selected: str) -> tuple[Choice, ...] | None:
                 nonlocal provider
@@ -320,10 +336,13 @@ class ProviderConfigurationWorkflows(App[int]):
                     provider = saved
                     catalog = await self._controller.provider_catalog()
                     menu.update_parent_choices(
-                        tuple(_provider_choice(item) for item in catalog.providers),
+                        tuple(
+                            _provider_choice(item, theme=theme_for(self))
+                            for item in catalog.providers
+                        ),
                         initial_value=provider.provider_id,
                     )
-                    return _provider_management_choices(provider)
+                    return _provider_management_choices(provider, theme=theme_for(self))
                 elif selected == "toggle":
                     saved = await self._set_provider_enabled(
                         provider,
@@ -334,10 +353,13 @@ class ProviderConfigurationWorkflows(App[int]):
                     provider = saved
                     catalog = await self._controller.provider_catalog()
                     menu.update_parent_choices(
-                        tuple(_provider_choice(item) for item in catalog.providers),
+                        tuple(
+                            _provider_choice(item, theme=theme_for(self))
+                            for item in catalog.providers
+                        ),
                         initial_value=provider.provider_id,
                     )
-                    return _provider_management_choices(provider)
+                    return _provider_management_choices(provider, theme=theme_for(self))
                 elif selected == "endpoints":
                     await self._choose_endpoints(provider, menu=menu)
                 elif selected == "add-endpoint":
@@ -347,7 +369,9 @@ class ProviderConfigurationWorkflows(App[int]):
                 return None
 
             menu.push_page(
-                title=TUI_DESIGN.inline_separator.join(("PROVIDER", provider.provider_id)),
+                title=theme_for(self).inline_separator.join(
+                    ("PROVIDER", provider.provider_id)
+                ),
                 placeholder="Choose an action…",
                 choices=choices,
                 on_select=select_action,
@@ -356,7 +380,9 @@ class ProviderConfigurationWorkflows(App[int]):
             return
         selected = await self.push_screen_wait(
             ChoiceScreen(
-                title=TUI_DESIGN.inline_separator.join(("PROVIDER", provider.provider_id)),
+                title=theme_for(self).inline_separator.join(
+                    ("PROVIDER", provider.provider_id)
+                ),
                 placeholder="Choose an action…",
                 choices=choices,
             )
@@ -386,7 +412,11 @@ class ProviderConfigurationWorkflows(App[int]):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        screen = ProviderConfigurationScreen(profile, existing=provider)
+        screen = ProviderConfigurationScreen(
+            profile,
+            existing=provider,
+            theme=theme_for(self),
+        )
         draft = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
         )
@@ -419,7 +449,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 error=True,
             )
             return None
-        self.notify(_provider_template_update_notice(report))
+        self.notify(_provider_template_update_notice(report, theme=theme_for(self)))
         return updated
 
     async def _set_provider_enabled(
@@ -496,7 +526,8 @@ class ProviderConfigurationWorkflows(App[int]):
                         {provider.provider_id: provider for provider in refreshed.providers}
                     )
                     return tuple(
-                        _provider_choice(provider) for provider in providers_by_id.values()
+                        _provider_choice(provider, theme=theme_for(self))
+                        for provider in providers_by_id.values()
                     )
 
                 async def select_provider(provider_id: str) -> tuple[Choice, ...] | None:
@@ -508,18 +539,28 @@ class ProviderConfigurationWorkflows(App[int]):
                     return None
 
                 menu.push_page(
-                    title=TUI_DESIGN.inline_separator.join(("ADD ENDPOINT", "PROVIDER")),
+                    title=theme_for(self).inline_separator.join(
+                        ("ADD ENDPOINT", "PROVIDER")
+                    ),
                     placeholder="Choose a provider…",
-                    choices=tuple(_provider_choice(provider) for provider in providers),
+                    choices=tuple(
+                        _provider_choice(provider, theme=theme_for(self))
+                        for provider in providers
+                    ),
                     on_select=select_provider,
                     on_refresh=refresh_provider_choices,
                 )
                 return
             provider_id = await self.push_screen_wait(
                 ChoiceScreen(
-                    title=TUI_DESIGN.inline_separator.join(("ADD ENDPOINT", "PROVIDER")),
+                    title=theme_for(self).inline_separator.join(
+                        ("ADD ENDPOINT", "PROVIDER")
+                    ),
                     placeholder="Choose a provider…",
-                    choices=tuple(_provider_choice(provider) for provider in providers),
+                    choices=tuple(
+                        _provider_choice(provider, theme=theme_for(self))
+                        for provider in providers
+                    ),
                 )
             )
             if provider_id is None:
@@ -536,7 +577,8 @@ class ProviderConfigurationWorkflows(App[int]):
         if not routes:
             return
         choices = tuple(
-            _endpoint_route_choice(provider, endpoint) for provider, endpoint in routes.values()
+            _endpoint_route_choice(provider, endpoint, theme=theme_for(self))
+            for provider, endpoint in routes.values()
         )
 
         async def refresh_routes() -> tuple[Choice, ...] | None:
@@ -554,7 +596,8 @@ class ProviderConfigurationWorkflows(App[int]):
                 }
             )
             return tuple(
-                _endpoint_route_choice(item, candidate) for item, candidate in routes.values()
+                _endpoint_route_choice(item, candidate, theme=theme_for(self))
+                for item, candidate in routes.values()
             )
         if action == "use":
 
@@ -579,7 +622,8 @@ class ProviderConfigurationWorkflows(App[int]):
                     }
                 )
                 return tuple(
-                    _endpoint_route_choice(item, candidate) for item, candidate in routes.values()
+                    _endpoint_route_choice(item, candidate, theme=theme_for(self))
+                    for item, candidate in routes.values()
                 )
 
             if menu is not None:
@@ -672,6 +716,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 endpoint,
                 available=provider.enabled,
                 default=provider.default and endpoint.default,
+                theme=theme_for(self),
             )
             for endpoint in candidates
         )
@@ -710,6 +755,7 @@ class ProviderConfigurationWorkflows(App[int]):
                         endpoint,
                         available=provider.enabled,
                         default=provider.default and endpoint.default,
+                        theme=theme_for(self),
                     )
                     for endpoint in refreshed_candidates
                 )
@@ -731,7 +777,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 return None
 
             menu.push_page(
-                title=TUI_DESIGN.inline_separator.join(
+                title=theme_for(self).inline_separator.join(
                     (_endpoint_action_label(action), provider.provider_id)
                 ),
                 placeholder="Filter endpoints…",
@@ -742,7 +788,7 @@ class ProviderConfigurationWorkflows(App[int]):
             return
         selected = await self.push_screen_wait(
             ChoiceScreen(
-                title=TUI_DESIGN.inline_separator.join(
+                title=theme_for(self).inline_separator.join(
                     (_endpoint_action_label(action), provider.provider_id)
                 ),
                 placeholder="Filter endpoints…",
@@ -823,7 +869,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 return None
 
             menu.push_page(
-                title=TUI_DESIGN.inline_separator.join(
+                title=theme_for(self).inline_separator.join(
                     ("ENDPOINT", f"{provider.provider_id}/{endpoint.endpoint_id}")
                 ),
                 placeholder="Choose an action…",
@@ -834,7 +880,7 @@ class ProviderConfigurationWorkflows(App[int]):
             return
         selected = await self.push_screen_wait(
             ChoiceScreen(
-                title=TUI_DESIGN.inline_separator.join(
+                title=theme_for(self).inline_separator.join(
                     ("ENDPOINT", f"{provider.provider_id}/{endpoint.endpoint_id}")
                 ),
                 placeholder="Choose an action…",
@@ -855,7 +901,11 @@ class ProviderConfigurationWorkflows(App[int]):
         *,
         menu: ChoiceScreen | None = None,
     ) -> None:
-        screen = EndpointConfigurationScreen(provider, existing=existing)
+        screen = EndpointConfigurationScreen(
+            provider,
+            existing=existing,
+            theme=theme_for(self),
+        )
         draft = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
         )
@@ -907,26 +957,35 @@ class ProviderConfigurationWorkflows(App[int]):
         self.notify(f"Endpoint removed: {provider_id}/{endpoint_id} (next request)")
 
 
-def _provider_choice(provider: ProviderView, *, disabled: bool = False) -> Choice:
+def _provider_choice(
+    provider: ProviderView,
+    *,
+    disabled: bool = False,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
+) -> Choice:
     state = "enabled" if provider.enabled else "disabled"
     return Choice(
         provider.provider_id,
         provider.provider_id,
-        marker=TUI_DESIGN.selected_choice_marker if provider.default else "",
-        trailing=TUI_DESIGN.inline_separator.join(
+        marker=theme.selected_choice_marker if provider.default else "",
+        trailing=theme.inline_separator.join(
             (provider.provider_type, str(provider.endpoint_count), state)
         ),
         disabled=disabled,
     )
 
 
-def _provider_management_choices(provider: ProviderView) -> tuple[Choice, ...]:
+def _provider_management_choices(
+    provider: ProviderView,
+    *,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
+) -> tuple[Choice, ...]:
     choices = [Choice("edit", "Edit provider")]
     if provider.template_id is not None:
         template_version = (
             f"{provider.template_id} r{provider.template_revision}"
             if provider.template_revision is not None
-            else TUI_DESIGN.inline_separator.join((provider.template_id, "untracked"))
+            else theme.inline_separator.join((provider.template_id, "untracked"))
         )
         choices.append(
             Choice(
@@ -950,7 +1009,11 @@ def _provider_management_choices(provider: ProviderView) -> tuple[Choice, ...]:
     return tuple(choices)
 
 
-def _provider_template_update_notice(update: ProviderTemplateUpdateView) -> str:
+def _provider_template_update_notice(
+    update: ProviderTemplateUpdateView,
+    *,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
+) -> str:
     mode = "preset adopted" if update.adopted else f"updated to r{update.to_revision}"
     changes = (
         f"{len(update.added_endpoints)} added",
@@ -959,7 +1022,7 @@ def _provider_template_update_notice(update: ProviderTemplateUpdateView) -> str:
         f"{len(update.preserved_endpoints)} preserved",
         f"{len(update.conflicted_endpoints)} conflicts",
     )
-    return TUI_DESIGN.inline_separator.join(
+    return theme.inline_separator.join(
         (f"Provider preset {mode}: {update.template_id}", *changes)
     )
 
@@ -969,11 +1032,12 @@ def _endpoint_choice(
     *,
     available: bool,
     default: bool = False,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> Choice:
     return Choice(
         endpoint.endpoint_id,
         endpoint.endpoint_id,
-        marker=TUI_DESIGN.selected_choice_marker if default else "",
+        marker=theme.selected_choice_marker if default else "",
         disabled=not available,
     )
 
@@ -981,11 +1045,14 @@ def _endpoint_choice(
 def _endpoint_route_choice(
     provider: ProviderView,
     endpoint: ProviderEndpointView,
+    *,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> Choice:
     choice = _endpoint_choice(
         endpoint,
         available=provider.enabled,
         default=provider.default and endpoint.default,
+        theme=theme,
     )
     return Choice(
         f"{provider.provider_id}/{endpoint.endpoint_id}",

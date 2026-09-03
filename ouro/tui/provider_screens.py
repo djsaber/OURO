@@ -17,7 +17,7 @@ from ouro.config import (
 from ouro.config.provider_models import validate_reasoning_protocol_compatibility
 from ouro.tui.controller import TuiEndpointConfiguration, TuiProviderConfiguration
 from ouro.tui.screens import Choice, ChoiceScreen, EditableChoiceScreen
-from ouro.tui.theme import TUI_DESIGN
+from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 
 _REASONING_PRESET_LABELS = {
     "none": "None",
@@ -91,7 +91,10 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
         self,
         profile: ProviderSetupProfile,
         existing: ProviderView | None = None,
+        *,
+        theme: TuiTheme = DEFAULT_TUI_THEME,
     ) -> None:
+        self._initial_tui_theme = theme
         self._profile = profile
         self._existing = existing
         provider_options = _json_text(
@@ -142,7 +145,7 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
 
     def _editor_display_text(self, value: str) -> str:
         if self._editing_value == "provider-api-key":
-            return TUI_DESIGN.mask_character * len(value)
+            return theme_for(self).mask_character * len(value)
         return value
 
     def _submit(self) -> None:
@@ -198,14 +201,15 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
         return ""
 
     def _provider_choices(self) -> tuple[Choice, ...]:
+        theme = theme_for(self)
         api_key = self._values["provider-api-key"]
         existing_credential = (
             self._existing is not None and self._existing.credential.reference != "none"
         )
         api_key_display = (
-            TUI_DESIGN.mask_character * 8
+            theme.mask_character * 8
             if api_key
-            else TUI_DESIGN.inline_separator.join(("Configured", "preserved"))
+            else theme.inline_separator.join(("Configured", "preserved"))
             if existing_credential and not self._values["provider-api-key-env"]
             else "Not set"
         )
@@ -288,7 +292,10 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         self,
         provider: ProviderView,
         existing: ProviderEndpointView | None = None,
+        *,
+        theme: TuiTheme = DEFAULT_TUI_THEME,
     ) -> None:
+        self._initial_tui_theme = theme
         self._provider = provider
         self._existing = existing
         request_options = _json_text(existing.request_options if existing is not None else {})
@@ -363,6 +370,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         )
 
     def _reasoning_preset_choices(self) -> tuple[Choice, ...]:
+        theme = theme_for(self)
         current_name = self._reasoning_preset_name()
         choices: list[Choice] = []
         if current_name is None:
@@ -370,10 +378,12 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                 Choice(
                     "custom-reasoning-config",
                     "Custom configuration",
-                    trailing=_reasoning_summary(self._values["endpoint-reasoning-config"]),
+                    trailing=_reasoning_summary(
+                        self._values["endpoint-reasoning-config"], theme=theme
+                    ),
                     group="CURRENT",
                     disabled=True,
-                    marker=TUI_DESIGN.selected_choice_marker,
+                    marker=theme.selected_choice_marker,
                 )
             )
         for name in REASONING_PRESETS:
@@ -394,11 +404,11 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                     trailing=(
                         "Protocol incompatible"
                         if incompatible
-                        else _reasoning_capability_summary(reasoning)
+                        else _reasoning_capability_summary(reasoning, theme=theme)
                     ),
                     group="PRESETS",
                     disabled=incompatible,
-                    marker=(TUI_DESIGN.selected_choice_marker if name == current_name else ""),
+                    marker=(theme.selected_choice_marker if name == current_name else ""),
                 )
             )
         return tuple(choices)
@@ -480,6 +490,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         return ""
 
     def _endpoint_choices(self) -> tuple[Choice, ...]:
+        theme = theme_for(self)
         error = self._validation_error()
 
         def state(field: str) -> str:
@@ -553,7 +564,9 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             Choice(
                 "endpoint-reasoning-config",
                 "Reasoning config",
-                trailing=_reasoning_summary(self._values["endpoint-reasoning-config"]),
+                trailing=_reasoning_summary(
+                    self._values["endpoint-reasoning-config"], theme=theme
+                ),
                 group="REASONING",
                 edit_value=self._values["endpoint-reasoning-config"],
                 edit_placeholder="Enter a reasoning JSON object",
@@ -649,14 +662,22 @@ def _reasoning_config(raw: str) -> EndpointReasoningConfig:
         raise ValueError(f"Reasoning config is invalid: {exc}") from exc
 
 
-def _reasoning_summary(raw: str) -> str:
+def _reasoning_summary(
+    raw: str,
+    *,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
+) -> str:
     try:
-        return _reasoning_capability_summary(_reasoning_config(raw))
+        return _reasoning_capability_summary(_reasoning_config(raw), theme=theme)
     except ValueError:
         return "Invalid config"
 
 
-def _reasoning_capability_summary(value: EndpointReasoningConfig) -> str:
+def _reasoning_capability_summary(
+    value: EndpointReasoningConfig,
+    *,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
+) -> str:
     capability = value.capability
     if capability.activation == "unsupported":
         return "Unsupported"
@@ -665,7 +686,7 @@ def _reasoning_capability_summary(value: EndpointReasoningConfig) -> str:
     return (
         activation
         if not effort_count
-        else TUI_DESIGN.inline_separator.join((activation, f"{effort_count} efforts"))
+        else theme.inline_separator.join((activation, f"{effort_count} efforts"))
     )
 
 

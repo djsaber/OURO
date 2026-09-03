@@ -10,7 +10,7 @@ from textual.app import App, ComposeResult
 from ouro.application.agent_models import AgentTreeNode
 from ouro.application.supervisor_models import RuntimeActivitySnapshot, RuntimeToolCallActivity
 from ouro.tui.conversation_history import ConversationHistory, TranscriptEntry
-from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_DESIGN
+from ouro.tui.theme import DEFAULT_TUI_THEME
 from ouro.tui.tool_presentations import present_tool
 from ouro.tui.widgets import _tool_activity_text
 
@@ -129,7 +129,7 @@ def test_command_presentation_keeps_full_flattened_command_for_layout_time() -> 
     assert rendered.overflow == "ellipsis"
     assert command_style.color is not None
     assert command_style.color.triplet is not None
-    assert command_style.color.triplet.hex == TUI_DESIGN.text_faint
+    assert command_style.color.triplet.hex == DEFAULT_TUI_THEME.text_faint
 
 
 def test_todolist_presentation_exposes_progress_and_item_states() -> None:
@@ -192,8 +192,8 @@ def test_spawn_agent_uses_agent_identity_and_places_task_below_header() -> None:
 
     assert "SpawnAgent" not in rendered
     assert rendered.splitlines()[0] == (
-        f"{TUI_DESIGN.spinner_frames[0]} "
-        f"General Agent{TUI_DESIGN.inline_separator}Scout  background"
+        f"{DEFAULT_TUI_THEME.spinner_frames[0]} "
+        f"General Agent{DEFAULT_TUI_THEME.inline_separator}Scout  background"
     )
     assert "Inspect the event pipeline" not in rendered.splitlines()[0]
     assert "└ Responding • Inspect the event pipeline" in rendered
@@ -201,7 +201,7 @@ def test_spawn_agent_uses_agent_identity_and_places_task_below_header() -> None:
     detail_style = rendered_text.get_style_at_offset(Console(), detail_offset)
     assert detail_style.color is not None
     assert detail_style.color.triplet is not None
-    assert detail_style.color.triplet.hex == TUI_DESIGN.text_lowlight
+    assert detail_style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
 
 
 @pytest.mark.parametrize(
@@ -244,8 +244,8 @@ def test_spawn_agent_first_frame_uses_request_for_complete_preview(
     ).plain.splitlines()
 
     assert initial == [
-        f"{TUI_DESIGN.spinner_frames[0]} general  {expected_status}",
-        f"  └ Dispatching{TUI_DESIGN.inline_separator}Inspect the event pipeline",
+        f"{DEFAULT_TUI_THEME.spinner_frames[0]} general  {expected_status}",
+        f"  └ Dispatching{DEFAULT_TUI_THEME.inline_separator}Inspect the event pipeline",
     ]
     assert len(updated) == len(initial)
     assert updated[0].endswith(f"General Agent  {expected_status}")
@@ -255,10 +255,10 @@ def test_spawn_agent_first_frame_uses_request_for_complete_preview(
 @pytest.mark.parametrize(
     ("status", "expected_color"),
     (
-        ("completed", TUI_DESIGN.text_primary),
-        ("failed", TUI_DESIGN.failure),
-        ("rejected", TUI_DESIGN.failure),
-        ("aborted", TUI_DESIGN.failure),
+        ("completed", DEFAULT_TUI_THEME.text_primary),
+        ("failed", DEFAULT_TUI_THEME.failure),
+        ("rejected", DEFAULT_TUI_THEME.failure),
+        ("aborted", DEFAULT_TUI_THEME.failure),
     ),
 )
 def test_tool_header_omits_status_chrome_and_only_colors_failures(
@@ -294,8 +294,8 @@ def test_active_tool_retains_spinner_without_a_right_status_label() -> None:
         theme=DEFAULT_TUI_THEME,
     ).plain
 
-    assert first == f"{TUI_DESIGN.spinner_frames[0]} Read"
-    assert second == f"{TUI_DESIGN.spinner_frames[1]} Read"
+    assert first == f"{DEFAULT_TUI_THEME.spinner_frames[0]} Read"
+    assert second == f"{DEFAULT_TUI_THEME.spinner_frames[1]} Read"
 
 
 def test_streaming_tool_uses_lowlight_left_filled_window_without_execution_details() -> None:
@@ -313,8 +313,8 @@ def test_streaming_tool_uses_lowlight_left_filled_window_without_execution_detai
     )
     rendered = rendered_text.plain
     prefix = (
-        f"{TUI_DESIGN.spinner_frames[9]} Write "
-        f"{TUI_DESIGN.inline_separator_mark} "
+        f"{DEFAULT_TUI_THEME.spinner_frames[9]} Write "
+        f"{DEFAULT_TUI_THEME.inline_separator_mark} "
     )
     window = rendered.removeprefix(prefix)
 
@@ -330,7 +330,7 @@ def test_streaming_tool_uses_lowlight_left_filled_window_without_execution_detai
     assert tool_style.color == preview_style.color
     assert tool_style.color is not None
     assert tool_style.color.triplet is not None
-    assert tool_style.color.triplet.hex == TUI_DESIGN.text_faint
+    assert tool_style.color.triplet.hex == DEFAULT_TUI_THEME.text_faint
 
 
 
@@ -343,8 +343,8 @@ def test_streaming_tool_window_keeps_the_latest_fixed_width_tail() -> None:
         frame=0,
         theme=DEFAULT_TUI_THEME,
     ).plain.removeprefix(
-        f"{TUI_DESIGN.spinner_frames[0]} Write "
-        f"{TUI_DESIGN.inline_separator_mark} "
+        f"{DEFAULT_TUI_THEME.spinner_frames[0]} Write "
+        f"{DEFAULT_TUI_THEME.inline_separator_mark} "
     )
     assert overflow_window == "x" * 48
 
@@ -431,7 +431,7 @@ def test_spawn_agent_uses_dispatching_as_its_initial_detail_status() -> None:
     ).plain
 
     assert rendered.splitlines()[0].endswith(
-        f"General Agent{TUI_DESIGN.inline_separator}Scout  background"
+        f"General Agent{DEFAULT_TUI_THEME.inline_separator}Scout  background"
     )
     assert "└ Dispatching • Inspect the event pipeline" in rendered
 
@@ -452,7 +452,7 @@ def test_spawn_agent_distinguishes_foreground_work_from_background_work() -> Non
     ).plain
 
     assert rendered.splitlines()[0].endswith(
-        f"General Agent{TUI_DESIGN.inline_separator}Scout  working"
+        f"General Agent{DEFAULT_TUI_THEME.inline_separator}Scout  working"
     )
 
 
@@ -482,7 +482,7 @@ def test_spawn_agent_uses_task_outcome_status(
     header, detail = rendered.splitlines()
 
     assert header.strip() == (
-        f"General Agent{TUI_DESIGN.inline_separator}Scout  {expected}"
+        f"General Agent{DEFAULT_TUI_THEME.inline_separator}Scout  {expected}"
     )
     assert f"└ {expected.title()} • Inspect the event pipeline" == detail.strip()
     title_style = rendered_text.get_style_at_offset(
@@ -491,7 +491,7 @@ def test_spawn_agent_uses_task_outcome_status(
     assert title_style.color is not None
     assert title_style.color.triplet is not None
     assert title_style.color.triplet.hex == (
-        TUI_DESIGN.failure if expected == "failed" else TUI_DESIGN.text_primary
+        DEFAULT_TUI_THEME.failure if expected == "failed" else DEFAULT_TUI_THEME.text_primary
     )
     assert not title_style.bold
 
