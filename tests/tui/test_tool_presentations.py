@@ -62,7 +62,13 @@ def _agent(
 
 
 def test_file_tool_presentations_expose_target_and_line_semantics() -> None:
-    read = present_tool(_tool("Read", arguments={"path": "src/app.py"}, result={"line_count": 42}))
+    read = present_tool(
+        _tool(
+            "Read",
+            arguments={"path": "src/app.py", "offset": 120},
+            result={"line_count": 51},
+        )
+    )
     write = present_tool(
         _tool(
             "Write",
@@ -80,7 +86,9 @@ def test_file_tool_presentations_expose_target_and_line_semantics() -> None:
         )
     )
 
-    assert [(line.marker, line.text) for line in read.lines] == [("└", "src/app.py • 42 lines")]
+    assert [(line.marker, line.text) for line in read.lines] == [
+        ("└", "src/app.py • 120 - 170 lines")
+    ]
     assert [(line.marker, line.text) for line in write.lines] == [
         ("└", "src/new.py • +2 lines • append")
     ]
@@ -516,13 +524,13 @@ async def test_tool_groups_only_add_spacing_at_non_tool_boundaries() -> None:
         lines = [line.strip() for line in raw_lines]
         before = lines.index("Before.")
         first_header = next(index for index, line in enumerate(lines) if line == "Read")
-        first_detail = lines.index("└ first.py • 1 line")
+        first_detail = lines.index("└ first.py • 1 - 1 lines")
         second_header = next(
             index
             for index, line in enumerate(lines[first_header + 1 :], first_header + 1)
             if line == "Read"
         )
-        second_detail = lines.index("└ second.py • 2 lines")
+        second_detail = lines.index("└ second.py • 1 - 2 lines")
         after = lines.index("After.")
 
         assert raw_lines[first_header].startswith("  Read")

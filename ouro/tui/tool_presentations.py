@@ -76,13 +76,24 @@ def _present_read(
     result: dict[str, JsonValue],
 ) -> ToolPresentation:
     path = _path(arguments.get("path"))
+    offset = (
+        _positive_int(result.get("offset"))
+        or _positive_int(arguments.get("offset"))
+        or 1
+    )
     line_count = _non_negative_int(result.get("line_count"))
     summary: str | None
     if line_count is not None:
-        summary = _plural(line_count, "line")
+        summary = (
+            "0 lines"
+            if line_count == 0
+            else f"{offset} - {offset + line_count - 1} lines"
+        )
     else:
         limit = _positive_int(arguments.get("limit"))
-        summary = f"up to {_plural(limit, 'line')}" if limit is not None else None
+        summary = (
+            f"{offset} - {offset + limit - 1} lines" if limit is not None else None
+        )
     return ToolPresentation(lines=_file_detail_line(path, summary))
 
 
