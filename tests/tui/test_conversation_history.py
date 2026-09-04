@@ -686,7 +686,7 @@ def test_compaction_and_run_summaries_share_visual_structure_and_failure_semanti
         "▣ Context compacted • 8 messages • 1.2K tokens • 57m 05.4s"
     )
     assert failed.plain == (
-        "▣ deepseek-v4-flash • 5m 16.4s • failed • provider returned an empty assistant message"
+        "▣ deepseek-v4-flash • 5m 16.4s • provider returned an empty assistant message"
     )
     assert _style_at(compaction, "Context compacted").bold is True
     assert not _style_at(failed, "deepseek-v4-flash").bold
@@ -703,6 +703,11 @@ def test_compaction_and_run_summaries_share_visual_structure_and_failure_semanti
     assert _style_at(failed, DEFAULT_TUI_THEME.brand_mark).color is not None
     assert (
         _style_at(failed, DEFAULT_TUI_THEME.brand_mark).color.triplet.hex
+        == DEFAULT_TUI_THEME.failure
+    )
+    assert _style_at(failed, "provider returned an empty assistant message").color is not None
+    assert (
+        _style_at(failed, "provider returned an empty assistant message").color.triplet.hex
         == DEFAULT_TUI_THEME.failure
     )
 

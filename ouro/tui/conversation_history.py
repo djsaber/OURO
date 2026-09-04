@@ -678,9 +678,8 @@ def _run_summary(run: RunPresentation, theme: TuiTheme) -> Text:
     details: list[tuple[str, str]] = []
     if run.duration_seconds is not None:
         details.append((format_duration(run.duration_seconds), theme.text_metadata))
-    if run.status != "completed":
-        status_tone = theme.failure if run.status == "failed" else theme.text_metadata
-        details.append((run.status, status_tone))
+    if run.status not in {"completed", "failed"}:
+        details.append((run.status, theme.text_metadata))
     if run.status == "failed" and run.error:
         details.append((" ".join(run.error.split()), theme.failure))
     return _summary_line(

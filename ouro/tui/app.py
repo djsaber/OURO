@@ -4534,6 +4534,15 @@ def _truncate_session_title(title: str) -> str:
     return rendered.plain
 
 
+def _session_choice_label(item: SessionCatalogEntry, *, theme: TuiTheme) -> str:
+    title = item.title
+    if item.session_kind == "primary" and item.parent_session_id is not None:
+        title = f"forked{theme.inline_separator}{title}"
+    if item.pinned:
+        title = f"★ {title}"
+    return _truncate_session_title(title)
+
+
 def _session_choices(
     sessions: tuple[SessionCatalogEntry, ...],
     *,
@@ -4550,7 +4559,7 @@ def _session_choices(
     return tuple(
         Choice(
             value=item.session_id,
-            label=_truncate_session_title(("★ " if item.pinned else "") + item.title),
+            label=_session_choice_label(item, theme=theme),
             trailing="index error" if item.catalog_error is not None else item.status,
             accent=(
                 theme.failure

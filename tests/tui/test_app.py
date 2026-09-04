@@ -327,6 +327,22 @@ def test_session_choices_mark_only_the_selected_session(tmp_path: Path) -> None:
     assert choices[second.session_id].marker == DEFAULT_TUI_THEME.selected_choice_marker
 
 
+def test_session_choices_prefix_forks_with_the_theme_separator(tmp_path: Path) -> None:
+    application = _application(tmp_path)
+    source = application.runtime.sessions.create(title="Shared title").session
+    branch = application.runtime.sessions.branch(source.session_id, None).session
+
+    choices = {
+        choice.value: choice
+        for choice in _session_choices(application.runtime.sessions.catalog().entries)
+    }
+
+    assert choices[source.session_id].label == "Shared title"
+    assert choices[branch.session_id].label == (
+        f"forked{DEFAULT_TUI_THEME.inline_separator}Shared title"
+    )
+
+
 def test_session_choices_use_semantic_health_tones(tmp_path: Path) -> None:
     application = _application(tmp_path)
     template = application.runtime.sessions.create(title="Template").session
@@ -4444,9 +4460,9 @@ async def test_history_loads_failed_run_summary_with_failure_semantics(tmp_path:
         assert (
             f"{DEFAULT_TUI_THEME.brand_mark} deepseek-v4-flash"
             f"{DEFAULT_TUI_THEME.section_separator}5m 16.4s"
-            f"{DEFAULT_TUI_THEME.section_separator}failed"
             f"{DEFAULT_TUI_THEME.section_separator}provider returned an empty assistant message"
         ) in history.rendered_text
+        assert f"{DEFAULT_TUI_THEME.section_separator}failed" not in history.rendered_text
 
 
 @pytest.mark.asyncio

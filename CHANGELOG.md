@@ -80,6 +80,8 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Failed Run summaries now show the error directly without a redundant `failed` label, and
+  forked Sessions use a theme-aware `forked • title` prefix across paginated Session menus.
 - Reasoning-capable endpoints now resolve bare `enabled` intent to a typed `default_effort`
   whenever effort controls exist, while the TUI `/thinking` menu and `Alt+T` cycle expose only
   distinct effective settings instead of repeating endpoint-default and generic-enabled states.
