@@ -290,6 +290,7 @@ def _summary_adapter(
             reasoning=ReasoningCapability(
                 activation="toggle",
                 supported_efforts=("low", "high"),
+                default_effort="low",
                 default=ReasoningRequest(mode="enabled", effort="low"),
                 output="text",
                 continuation="text",

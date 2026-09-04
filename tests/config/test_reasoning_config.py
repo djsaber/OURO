@@ -21,6 +21,7 @@ def test_reasoning_profile_requires_every_controllable_variant() -> None:
             capability=ReasoningCapability(
                 activation="toggle",
                 supported_efforts=("high",),
+                default_effort="high",
                 default=ReasoningRequest(mode="enabled", effort="high"),
             ),
             profile=ReasoningProfileConfig(
@@ -66,6 +67,7 @@ def test_reasoning_encoder_owns_exact_native_payload_variant() -> None:
         name="native-effort",
         activation="toggle",
         supported_efforts=("high", "max"),
+        default_effort="high",
         default=ReasoningRequest(mode="enabled", effort="high"),
         variants={
             "enabled": {"thinking": {"type": "enabled"}},
@@ -88,6 +90,37 @@ def test_reasoning_encoder_owns_exact_native_payload_variant() -> None:
         "model": "custom",
         "thinking": {"type": "enabled"},
         "native_effort": "m",
+    }
+
+
+def test_enabled_reasoning_encodes_the_default_effort_variant() -> None:
+    reasoning = mapped_reasoning(
+        name="native-effort",
+        activation="toggle",
+        supported_efforts=("high", "max"),
+        default_effort="high",
+        default=ReasoningRequest(mode="disabled"),
+        variants={
+            "enabled": {"thinking": {"type": "enabled"}},
+            "disabled": {"thinking": {"type": "disabled"}},
+            "high": {"thinking": {"type": "enabled"}, "native_effort": "h"},
+            "max": {"thinking": {"type": "enabled"}, "native_effort": "m"},
+        },
+    )
+    model = ModelMetadata(
+        model_id="custom",
+        provider_id="custom",
+        reasoning=reasoning.capability,
+        reasoning_request=ReasoningRequest(mode="enabled"),
+    )
+    payload: dict[str, object] = {"model": "custom"}
+
+    ReasoningPayloadEncoder(reasoning.profile).apply(payload, model)
+
+    assert payload == {
+        "model": "custom",
+        "thinking": {"type": "enabled"},
+        "native_effort": "h",
     }
 
 

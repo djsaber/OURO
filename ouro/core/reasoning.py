@@ -51,6 +51,10 @@ class ReasoningCapability(OuroModel):
 
     activation: ReasoningActivation = "unsupported"
     supported_efforts: tuple[ReasoningEffort, ...] = Field(default_factory=tuple)
+    default_effort: ReasoningEffort | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     default: ReasoningRequest = Field(default_factory=ReasoningRequest)
     output: ReasoningOutput = "none"
     continuation: ReasoningContinuation = "none"
@@ -62,12 +66,30 @@ class ReasoningCapability(OuroModel):
         if self.activation == "unsupported":
             if self.supported_efforts:
                 raise ValueError("unsupported reasoning cannot declare effort controls")
+            if self.default_effort is not None:
+                raise ValueError("unsupported reasoning cannot declare a default effort")
             if self.default.mode != "default" or self.default.effort is not None:
                 raise ValueError("unsupported reasoning cannot declare a non-default intent")
         if self.activation == "always_on" and self.default.mode == "disabled":
             raise ValueError("always-on reasoning cannot be disabled by default")
         if self.default.effort is not None and self.default.effort not in self.supported_efforts:
             raise ValueError("default reasoning effort must be supported by the endpoint")
+        if not self.supported_efforts:
+            if self.default_effort is not None:
+                raise ValueError(
+                    "reasoning without effort controls cannot declare a default effort"
+                )
+        else:
+            enabled_effort = self.default_effort or self.default.effort
+            if enabled_effort is None and len(self.supported_efforts) == 1:
+                enabled_effort = self.supported_efforts[0]
+            if enabled_effort is None:
+                raise ValueError(
+                    "reasoning with multiple efforts must declare a default effort"
+                )
+            if enabled_effort not in self.supported_efforts:
+                raise ValueError("enabled default effort must be supported by the endpoint")
+            self.default_effort = enabled_effort
         if self.continuation == "text" and self.output not in {"summary", "text"}:
             raise ValueError("text reasoning continuation requires summary or text output")
         return self
@@ -102,6 +124,10 @@ def resolve_reasoning(
             raise ValueError("endpoint reasoning is always on and cannot be disabled")
         if effective.mode == "default":
             effective = effective.model_copy(update={"mode": "enabled"})
+
+    if effective.mode == "enabled" and effective.effort is None:
+        if capability.default_effort is not None:
+            effective = effective.model_copy(update={"effort": capability.default_effort})
 
     if effective.effort is not None:
         if effective.effort not in capability.supported_efforts:

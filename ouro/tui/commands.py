@@ -143,16 +143,8 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
         "/thinking",
         "Model thinking",
         "Set reasoning mode or effort for this session",
-        "[default|enabled|disabled|effort]",
+        "[setting]",
         aliases=("/reasoning",),
-        argument_options=tuple(
-            TuiCommandArgument(value, description)
-            for value, description in (
-                ("default", "Use the endpoint reasoning default"),
-                ("enabled", "Enable model reasoning"),
-                ("disabled", "Disable model reasoning"),
-            )
-        ),
     ),
     TuiCommand(
         "/thoughts",

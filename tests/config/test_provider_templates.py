@@ -94,6 +94,7 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
         "xhigh",
         "max",
     )
+    assert openai.capability.default_effort == "medium"
     assert openai.capability.output == "none"
     assert openai.profile is not None
     assert openai.profile.variants["enabled"] == {"reasoning_effort": "medium"}
@@ -123,10 +124,11 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
         "thinking": {"type": "enabled"},
         "reasoning_effort": "max",
     }
-    assert templates["deepseek"].revision == 2
+    assert deepseek.capability.default_effort == "high"
+    assert templates["deepseek"].revision == 3
 
     qwen = templates["qwen"]
-    assert qwen.revision == 3
+    assert qwen.revision == 4
     qwen_max = qwen.endpoint()
     assert qwen_max.model_id == "qwen3.8-max"
     assert qwen_max.context_window == 1_000_000
@@ -170,11 +172,12 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     k3_reasoning = kimi.endpoint("kimi-k3").reasoning
     assert k3_reasoning.capability.activation == "always_on"
     assert k3_reasoning.capability.supported_efforts == ("max",)
+    assert k3_reasoning.capability.default_effort == "max"
     assert k3_reasoning.profile is not None
     assert k3_reasoning.profile.variants["enabled"] == {"reasoning_effort": "max"}
 
     glm = templates["glm"]
-    assert glm.revision == 2
+    assert glm.revision == 3
     glm_53 = glm.endpoint().reasoning
     assert glm_53.capability.activation == "always_on"
     assert glm_53.capability.supported_efforts == ("low", "high", "max")
@@ -218,6 +221,7 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     assert grok.metadata["provider_output_limit"] == "unlimited"
     assert grok.reasoning.capability.activation == "always_on"
     assert grok.reasoning.capability.supported_efforts == ("low", "medium", "high", "xhigh")
+    assert grok.reasoning.capability.default_effort == "high"
     assert grok.reasoning.profile is not None
     assert grok.reasoning.profile.variants["enabled"] == {"reasoning_effort": "high"}
 

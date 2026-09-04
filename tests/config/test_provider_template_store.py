@@ -127,7 +127,7 @@ def test_formatting_only_edits_still_upgrade_to_new_inline_revision(
     assert any("updated to inline revision" in notice for notice in snapshot.notices)
     entry = _read_json(tmp_path)["templates"]["openai"]
     assert entry["display_name"] == "OpenAI v2"
-    assert entry["meta"]["baseline_revision"] == 2
+    assert entry["meta"]["baseline_revision"] == bumped.revision
 
 
 def test_qwen_revision_upgrade_replaces_incomplete_cached_template(
@@ -203,7 +203,7 @@ def test_user_modified_template_is_preserved_with_revision_advanced(
     assert openai.template.display_name == "My OpenAI fork"
     assert any("keeps the user version" in notice for notice in snapshot.notices)
     meta = _read_json(tmp_path)["templates"]["openai"]["meta"]
-    assert meta["baseline_revision"] == 2
+    assert meta["baseline_revision"] == bumped.revision
     assert meta["baseline_fingerprint"] == materialized_fingerprint
 
     again = store.catalog()
@@ -462,7 +462,7 @@ def test_restore_replaces_user_overlay_with_inline_content(tmp_path, monkeypatch
     assert restored.display_name == "OpenAI v2"
     entry = _read_json(tmp_path)["templates"]["openai"]
     assert entry["display_name"] == "OpenAI v2"
-    assert entry["meta"]["baseline_revision"] == 2
+    assert entry["meta"]["baseline_revision"] == bumped.revision
     settled = store.catalog()
     assert not any("openai" in notice for notice in settled.notices)
 

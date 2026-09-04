@@ -29,7 +29,7 @@ from ouro.application.agent_models import AgentToolOptionView, AgentTreeNode
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import SkillView
 from ouro.application.event_models import project_runtime_event
-from ouro.application.models import AvailableModel
+from ouro.application.models import AvailableModel, ModelReasoningState
 from ouro.application.plugin_models import (
     PluginCommandArgumentView,
     PluginCommandExecutionView,
@@ -1340,6 +1340,7 @@ def _thinking_application(tmp_path: Path) -> LocalApplication:
                 reasoning=ReasoningCapability(
                     activation="toggle",
                     supported_efforts=("low", "high"),
+                    default_effort="low",
                     default=ReasoningRequest(mode="enabled", effort="low"),
                     output="summary",
                 ),
@@ -6983,11 +6984,9 @@ async def test_session_setting_shortcuts_cycle_and_wrap_available_values(
         await pilot.pause()
 
         for expected in (
-            ReasoningRequest(mode="enabled"),
+            ReasoningRequest(mode="enabled", effort="high"),
             ReasoningRequest(mode="disabled"),
             ReasoningRequest(mode="enabled", effort="low"),
-            ReasoningRequest(mode="enabled", effort="high"),
-            ReasoningRequest(),
         ):
             await pilot.press("alt+t")
             await pilot.pause()
@@ -6999,6 +6998,72 @@ async def test_session_setting_shortcuts_cycle_and_wrap_available_values(
             assert await app._controller.session_approval_preset() == expected
 
         assert app.query_one(Composer).text == ""
+
+
+@pytest.mark.parametrize(
+    ("capability", "effective", "expected"),
+    [
+        (ReasoningCapability(), ReasoningRequest(), ()),
+        (
+            ReasoningCapability(
+                activation="toggle",
+                default=ReasoningRequest(mode="enabled"),
+            ),
+            ReasoningRequest(mode="enabled"),
+            ("enabled", "disabled"),
+        ),
+        (
+            ReasoningCapability(
+                activation="toggle",
+                supported_efforts=("low", "high"),
+                default_effort="low",
+                default=ReasoningRequest(mode="enabled", effort="low"),
+            ),
+            ReasoningRequest(mode="enabled", effort="low"),
+            ("disabled", "low", "high"),
+        ),
+        (
+            ReasoningCapability(
+                activation="always_on",
+                supported_efforts=("low", "high"),
+                default_effort="low",
+                default=ReasoningRequest(mode="enabled", effort="low"),
+            ),
+            ReasoningRequest(mode="enabled", effort="low"),
+            ("low", "high"),
+        ),
+        (
+            ReasoningCapability(
+                activation="always_on",
+                default=ReasoningRequest(mode="enabled"),
+            ),
+            ReasoningRequest(mode="enabled"),
+            (),
+        ),
+    ],
+)
+def test_thinking_choices_expose_only_distinct_user_configurable_effects(
+    capability: ReasoningCapability,
+    effective: ReasoningRequest,
+    expected: tuple[str, ...],
+) -> None:
+    state = ModelReasoningState(
+        model=AvailableModel(
+            key="test/model",
+            provider_id="test",
+            endpoint_id="model",
+            model_id="model",
+            reasoning=capability,
+        ),
+        capability=capability,
+        requested=ReasoningRequest(),
+        effective=effective,
+    )
+
+    arguments = tui_app_module._reasoning_arguments(state)
+
+    assert tuple(argument.value for argument in arguments) == expected
+    assert tuple(argument.display_label for argument in arguments) == expected
 
 
 @pytest.mark.asyncio
@@ -7015,18 +7080,18 @@ async def test_thinking_completion_and_modal_share_supported_choices(
         inline = (
             app.query_one(CommandPopup).query_one("#command-popup-content", Static).render().plain
         )
-        for value in ("default", "enabled", "disabled", "low", "high"):
+        for value in ("disabled", "low", "high"):
             assert value in inline
-        for value in ("minimal", "medium", "xhigh", "max"):
+        for value in ("default", "enabled", "minimal", "medium", "xhigh", "max"):
             assert value not in inline
 
         app.query_one(Composer).clear()
         app.action_thinking_settings()
         await pilot.pause()
         modal = {choice.value for choice in app.screen._choices}
-        for value in ("default", "enabled", "disabled", "low", "high"):
+        for value in ("disabled", "low", "high"):
             assert value in modal
-        for value in ("minimal", "medium", "xhigh", "max"):
+        for value in ("default", "enabled", "minimal", "medium", "xhigh", "max"):
             assert value not in modal
 
 
@@ -7091,7 +7156,7 @@ async def test_status_line_hides_thinking_level_when_reasoning_unsupported(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_status_line_shows_thinking_when_enabled_without_effort(tmp_path: Path) -> None:
+async def test_enabled_without_effort_shows_the_resolved_default_level(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_thinking_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
@@ -7100,12 +7165,12 @@ async def test_status_line_shows_thinking_when_enabled_without_effort(tmp_path: 
         # The endpoint default resolves to enabled + low, shown as "low".
         assert indicator._reasoning == "low"
 
-        # Switching to enabled without an effort shows the generic "thinking".
+        # Enabled is canonicalized to the endpoint's configured default effort.
         await pilot.press("slash", *"thinking", "enter", *"enabled", "enter")
         await pilot.pause()
-        assert indicator._reasoning == "thinking"
+        assert indicator._reasoning == "low"
         assert indicator._reasoning_peak is False
-        assert "thinking" in indicator.render().plain
+        assert "low" in indicator.render().plain
 
 
 @pytest.mark.asyncio
@@ -7140,6 +7205,7 @@ async def test_status_line_default_reflects_endpoint_default(tmp_path: Path) -> 
                 reasoning=ReasoningCapability(
                     activation="toggle",
                     supported_efforts=("low", "high"),
+                    default_effort="low",
                     default=ReasoningRequest(mode="disabled"),
                     output="summary",
                 ),
@@ -10186,6 +10252,7 @@ async def test_compaction_uses_shared_grouped_inline_menu_and_returns_typed_draf
                 "reasoning": ReasoningCapability(
                     activation="toggle",
                     supported_efforts=("low", "high"),
+                    default_effort="low",
                     default=ReasoningRequest(mode="enabled", effort="low"),
                     output="summary",
                 ),

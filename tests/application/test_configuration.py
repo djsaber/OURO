@@ -425,7 +425,8 @@ def test_provider_update_returns_template_merge_report_and_tracking_state(tmp_pa
     template_path = tmp_path / "config" / "provider-templates.json"
     root = json.loads(template_path.read_text(encoding="utf-8"))
     template = root["templates"]["openai"]
-    template["revision"] = 3
+    from_revision = template["revision"]
+    template["revision"] = from_revision + 1
     endpoint = next(item for item in template["endpoints"] if item["endpoint_id"] == "gpt-5.6")
     endpoint["context_window"] = 2_000_000
     template_path.write_text(json.dumps(root), encoding="utf-8")
@@ -435,12 +436,12 @@ def test_provider_update_returns_template_merge_report_and_tracking_state(tmp_pa
 
     assert updated.template_update is not None
     assert updated.template_update.template_id == "openai"
-    assert updated.template_update.from_revision == 1
-    assert updated.template_update.to_revision == 3
+    assert updated.template_update.from_revision == from_revision
+    assert updated.template_update.to_revision == from_revision + 1
     assert updated.template_update.updated_endpoints == ["gpt-5.6"]
     assert provider.template_id == "openai"
     assert provider.template_origin == "inline"
-    assert provider.template_revision == 3
+    assert provider.template_revision == from_revision + 1
     assert facade.endpoint("primary", "gpt-5.6").context_window == 2_000_000
 
 

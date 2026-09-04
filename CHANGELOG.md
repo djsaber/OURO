@@ -80,6 +80,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Reasoning-capable endpoints now resolve bare `enabled` intent to a typed `default_effort`
+  whenever effort controls exist, while the TUI `/thinking` menu and `Alt+T` cycle expose only
+  distinct effective settings instead of repeating endpoint-default and generic-enabled states.
 - Project documentation now separates current specifications, future plans, and dated research;
   overlapping implementation reports were merged into canonical domain documents, topic files use
   consistent dated names, and all internal links target the current code-based documentation set.
@@ -185,8 +188,6 @@ This project records user-visible and framework-contract changes in this file.
   immutable bytes, while explicit enable/select/reload/rollback actions accept the selected digest.
   Redundant capability/code-trust grants and their CLI/TUI states have been removed; package
   integrity, configuration, dependency, credential, and tool-permission boundaries remain enforced.
-
-
 - TUI reasoning blocks now show a live elapsed counter, retain each model call's completed thinking
   time after tool continuations, and append the effective Endpoint plus total duration after every
   Run. Session reload restores these facts from messages and lightweight Run history without

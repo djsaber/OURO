@@ -2568,7 +2568,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 options = _reasoning_arguments(self._reasoning_state)
                 catalog[index] = replace(
                     command,
-                    argument_hint="[" + "|".join(option.value for option in options) + "]",
+                    argument_hint=(
+                        "[" + "|".join(option.value for option in options) + "]"
+                        if options
+                        else None
+                    ),
                     argument_options=options,
                 )
             elif command.name == "/model" and argument_owner == command.name:
@@ -3706,7 +3710,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         values = _available_reasoning_values(state)
         if len(values) < 2:
             return
-        await self._set_reasoning(_next_cycle_value(values, _reasoning_value(state.requested)))
+        await self._set_reasoning(_next_cycle_value(values, _reasoning_value(state.effective)))
 
     @work(exclusive=True, group="navigation")
     async def _choose_reasoning(self) -> None:
@@ -3718,12 +3722,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
             self.notify(str(exc), severity="error", markup=False)
             return
-        current = _reasoning_value(state.requested)
+        current = _reasoning_value(state.effective)
         arguments = _reasoning_arguments(state)
+        if not arguments:
+            self.notify(
+                "This endpoint does not expose configurable thinking settings",
+                markup=False,
+            )
+            return
         choices = tuple(
             Choice(
                 value=argument.value,
-                label=argument.value,
+                label=argument.display_label,
                 marker=(
                     self._tui_theme.selected_choice_marker
                     if argument.value == current
@@ -4488,30 +4498,28 @@ def _reasoning_peak(state: ModelReasoningState) -> bool:
 def _available_reasoning_values(state: ModelReasoningState) -> tuple[str, ...]:
     capability = state.capability
     if capability.activation == "unsupported":
-        return ("default",)
-    activation = (
-        ("default", "enabled", "disabled")
-        if capability.activation == "toggle"
-        else ("default", "enabled")
-    )
-    return (*activation, *capability.supported_efforts)
+        return ()
+    if capability.supported_efforts:
+        disabled = ("disabled",) if capability.activation == "toggle" else ()
+        return (*disabled, *capability.supported_efforts)
+    if capability.activation == "toggle":
+        return ("enabled", "disabled")
+    return ()
 
 
 def _reasoning_arguments(state: ModelReasoningState) -> tuple[TuiCommandArgument, ...]:
     return tuple(
-        TuiCommandArgument(value, _reasoning_description(value, state))
+        TuiCommandArgument(value, _reasoning_description(value))
         for value in _available_reasoning_values(state)
     )
 
 
-def _reasoning_description(value: str, state: ModelReasoningState) -> str:
-    if value == "default":
-        return f"Use endpoint default (effective: {_reasoning_value(state.effective)})"
+def _reasoning_description(value: str) -> str:
     if value == "enabled":
-        return "Enable thinking without overriding the endpoint effort"
+        return "Enable model thinking"
     if value == "disabled":
         return "Disable thinking for future model turns"
-    return f"Enable thinking with {value} effort"
+    return f"Use {value} thinking effort"
 
 
 def _format_reasoning_state(state: ModelReasoningState) -> str:

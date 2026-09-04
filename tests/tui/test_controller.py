@@ -110,6 +110,7 @@ def _reasoning_application(tmp_path: Path) -> LocalApplication:
                 reasoning=ReasoningCapability(
                     activation="toggle",
                     supported_efforts=("low", "high"),
+                    default_effort="low",
                     default=ReasoningRequest(mode="enabled", effort="low"),
                     output="summary",
                 ),

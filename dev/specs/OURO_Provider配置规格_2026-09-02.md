@@ -83,13 +83,17 @@ Endpoint 的输出上限不能超过 context window。思考能力、原生编�
 1. `ReasoningRequest` 是本次调用的供应商无关意图：`mode` 为 `default`、`enabled` 或 `disabled`，可选
    `effort` 为 `minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`；
 2. `ReasoningCapability` 是 Endpoint 的真实能力：是否不支持、始终开启或可切换，精确支持哪些 effort，
-   Endpoint 默认意图，以及是否有可展示输出和需要续接的私有状态；
+   `enabled` 未指定等级时使用的 `default_effort`、Endpoint 默认意图，以及是否有可展示输出和需要续接的
+   私有状态；
 3. `ReasoningProfileConfig` 按解析后的 variant 保存静态、经过校验的厂商原生请求片段；
 4. `ReasoningResolution` 严格把一次意图解析为一个有效 variant，再由协议 adapter 编码。
 
 解析不近似等级、不猜测厂商参数，也不静默降级：不支持的开启/关闭/effort 在 adapter 构造、HTTP 请求之前
-转为 `ConfigError`。对于可关闭或原生默认值可能关闭思考的模型，`mode=enabled` 的 profile 必须包含能真实开启
-思考的原生参数；已声明为 `always_on` 的模型可使用空片段。`mode=default` 使用 Endpoint 的类型化默认意图。
+转为 `ConfigError`。声明一个 effort 时，该等级自然成为 `default_effort`；声明多个 effort 时必须配置
+`default_effort`，也可从带 effort 的 Endpoint 默认意图中无歧义推导。`mode=enabled` 未指定 effort 时解析为这个
+确定等级，不把强度委托给厂商默认。没有 effort 控制的 Endpoint 仍解析为独立的 `enabled` variant；对于可关闭或
+原生默认值可能关闭思考的模型，该 variant 必须包含能真实开启思考的原生参数，已声明为 `always_on` 的模型可使用
+空片段。`mode=default` 使用 Endpoint 的类型化默认意图。
 
 Capability 的输出和续接是两条独立轴：
 
@@ -115,7 +119,8 @@ Preset 包括：
 - `anthropic-adaptive-effort`。
 
 Preset 是显式配置，不代表 OURO 自动探测了自定义模型。模型仅支持部分 effort 或使用不同参数时，完整 JSON
-必须只列出实际支持的 effort，并为 `enabled`、可用 effort 以及可切换模型的 `disabled` 提供精确原生片段。
+必须只列出实际支持的 effort，声明明确的 `default_effort`，并为 `enabled`、可用 effort 以及可切换模型的
+`disabled` 提供精确原生片段。
 运行和压缩模型统一接受 `--thinking-mode` 与 `--thinking-effort`；Endpoint 不支持请求意图时立即失败。
 
 Host 通过 application `ConfigurationFacade` 查询和修改配置。Facade 返回类型化、不可变 DTO，并只公开凭据的

@@ -290,7 +290,10 @@ TUI 欢迎页可通过 `/workspace <path>` 为尚未创建的会话选择工作�
 `/thinking` 显示当前 Endpoint 的有效思考设置与可选值；
 `/thinking default|enabled|disabled|minimal|low|medium|high|xhigh|max` 设置当前会话（或下一新会话）的
 供应商中立思考意图。每个会话独立持久化该设置，共享同一 Endpoint 的会话不会相互影响；不受 Endpoint
-支持的模式或等级会在状态变更前被拒绝。切换模型时也会重新校验当前会话设置，不会静默降级或重置。
+支持的模式或等级会在状态变更前被拒绝。切换模型时也会重新校验当前会话设置，不会静默降级或重置。有多个
+effort 的 Endpoint 使用显式 `default_effort` 解析未带等级的 `enabled`，不依赖厂商默认。TUI 菜单只显示不同的
+有效配置：可切换且支持 effort 时显示 `disabled` 和各 effort，不支持 effort 时显示 `enabled`、`disabled`；
+`Alt+T` 按相同集合循环，不经过重复的 `default` 状态。
 
 ## 会话与运行控制
 
