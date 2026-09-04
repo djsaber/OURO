@@ -333,6 +333,15 @@ def test_streaming_tool_uses_lowlight_left_filled_window_without_execution_detai
     assert tool_style.color.triplet.hex == DEFAULT_TUI_THEME.text_faint
 
 
+def test_streaming_tool_name_is_active_before_arguments_arrive() -> None:
+    rendered = _tool_activity_text(
+        _tool("Write", status="streaming"),
+        frame=2,
+        theme=DEFAULT_TUI_THEME,
+    ).plain
+
+    assert rendered == f"{DEFAULT_TUI_THEME.spinner_frames[2]} Write"
+
 
 def test_streaming_tool_window_keeps_the_latest_fixed_width_tail() -> None:
     tool = _tool("Write", status="streaming").model_copy(

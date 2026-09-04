@@ -3104,6 +3104,54 @@ async def test_tui_runtime_event_staging_applies_one_bounded_prefix_per_frame(
 
 
 @pytest.mark.asyncio
+async def test_tui_runtime_event_staging_preserves_a_streamed_tool_frame(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    applied: list[tuple[EventRecord, ...]] = []
+
+    async def apply(events, *, allow_new_projection=False):
+        del allow_new_projection
+        applied.append(tuple(events))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        events = (
+            EventRecord(
+                session_id="ses_tool_frame",
+                run_id="run_tool_frame",
+                event_type="model_tool_call_delta",
+                sequence=1,
+                payload={"turn_id": "turn_1", "index": 0, "name_delta": "Write"},
+            ),
+            EventRecord(
+                session_id="ses_tool_frame",
+                run_id="run_tool_frame",
+                event_type="model_tool_call_delta",
+                sequence=2,
+                payload={"turn_id": "turn_1", "index": 0, "arguments_delta": "{}"},
+            ),
+            EventRecord(
+                session_id="ses_tool_frame",
+                run_id="run_tool_frame",
+                event_type="model_message_completed",
+                sequence=3,
+                payload={"tool_call_count": 1},
+            ),
+        )
+        monkeypatch.setattr(app, "_apply_runtime_events", apply)
+        app._pending_runtime_events.extend(events)
+
+        await app._flush_pending_runtime_events()
+
+        assert applied == [events[:2]]
+        assert app._pending_runtime_events == [events[2]]
+        assert app._runtime_events_frame_scheduled is not None
+        app._pending_runtime_events.clear()
+
+
+@pytest.mark.asyncio
 async def test_terminal_run_events_reuse_the_bounded_runtime_event_consumer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4892,7 +4940,11 @@ async def test_streaming_tool_row_mounts_after_its_name_and_updates_in_place_on_
                 ),
             )
         )
-        assert not conversation.query(".tool-row")
+        row = conversation.query_one(tui_widgets.ToolActivityRow)
+        assert row.tool.status == "streaming"
+        assert row.tool.argument_stream_tail is None
+        assert "Write" in str(row.render())
+        provisional_id = row.tool_call_id
 
         await app._apply_runtime_events(
             (
@@ -4909,11 +4961,10 @@ async def test_streaming_tool_row_mounts_after_its_name_and_updates_in_place_on_
                 ),
             )
         )
-        row = conversation.query_one(tui_widgets.ToolActivityRow)
+        assert conversation.query_one(tui_widgets.ToolActivityRow) is row
         assert row.tool.status == "streaming"
         assert row.tool.argument_stream_tail == '{"path":"out'
         assert f"Write {DEFAULT_TUI_THEME.inline_separator_mark}" in str(row.render())
-        provisional_id = row.tool_call_id
 
         await app._apply_runtime_events(
             (

@@ -153,6 +153,7 @@ _SUBAGENT_ACTIVITY_LABELS = {
 }
 _ACTIVE_TOOL_STATUSES = frozenset(
     {
+        "streaming",
         "planned",
         "ready",
         "resolving_input",
@@ -854,21 +855,22 @@ def _tool_activity_text(
 ) -> Text:
     """Render one tool state without coupling it to a mounted widget."""
 
-    if tool.argument_stream_tail is not None:
+    if tool.status == "streaming" or tool.argument_stream_tail is not None:
         text = Text(no_wrap=True, overflow="ellipsis")
         text.append(
             f"{theme.spinner_frames[frame % len(theme.spinner_frames)]} ",
             style=theme.accent,
         )
         text.append(tool.tool_name, style=theme.text_faint)
-        text.append(
-            theme.inline_separator,
-            style=theme.separator_tone,
-        )
-        text.append(
-            _tool_argument_stream_window(tool.argument_stream_tail),
-            style=theme.text_faint,
-        )
+        if tool.argument_stream_tail is not None:
+            text.append(
+                theme.inline_separator,
+                style=theme.separator_tone,
+            )
+            text.append(
+                _tool_argument_stream_window(tool.argument_stream_tail),
+                style=theme.text_faint,
+            )
         return text
 
     presentation = present_tool(tool, theme=theme)
@@ -2105,15 +2107,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
 
     async def sync_tools(self, tools: tuple[RuntimeToolCallActivity, ...]) -> None:
         await self._dismiss_welcome()
-        tools = tuple(
-            tool
-            for tool in tools
-            if tool.tool_name
-            and (
-                tool.status != "streaming"
-                or tool.argument_stream_tail is not None
-            )
-        )
+        tools = tuple(tool for tool in tools if tool.tool_name)
         historical_tool_ids = self._history.update_tools(
             tools,
             run_id=self._current_run_id,

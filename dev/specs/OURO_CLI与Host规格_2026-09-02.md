@@ -190,6 +190,10 @@ ready message 每次原子取走当前事件前缀：投影仍按 sequence 逐�
 `event_sink_failed`。该用例必须走 Textual 的 production `run_async` 路径，不能只用不会安装 eager task factory
 的 `run_test` 测试循环。
 
+若一个待应用前缀同时包含 `model_tool_call_delta` 和随后的非 delta 生命周期事件，TUI 必须在该相位边界切开
+前缀，并在下一原生刷新帧再处理后缀。工具名称一旦形成即可挂载活动行，不得以参数分片是否已经到达作为可见
+条件；同一帧内的参数分片仍合并为该帧的最终有界尾部，不逐分片触发布局或绘制。
+
 TUI 的实现与验收证据位于 `ouro/tui` 和 `tests/tui`。当前已接通 compaction 时间线、subagent 详情与导航、
 显式 steer 和基于 high-water/cursor 的重同步。TUI 尚未提供资源附件 composer 和独立的 MCP 运行期连接面板；
 这些是明确的界面增量，不能用占位状态伪装完成。MCP auto-start 显示 connecting 动画及

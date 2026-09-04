@@ -1602,7 +1602,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     ) -> None:
         if not self._pending_runtime_events:
             return
-        events = tuple(self._pending_runtime_events[:_RUNTIME_EVENT_APPLY_MAX])
+        events = _runtime_event_frame_prefix(self._pending_runtime_events)
         del self._pending_runtime_events[: len(events)]
         await self._apply_runtime_events(
             events,
@@ -4406,6 +4406,20 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 def _model_endpoint_name(route: str) -> str:
     _provider_id, separator, endpoint_id = route.partition("/")
     return endpoint_id if separator else route
+
+
+def _runtime_event_frame_prefix(events: Sequence[EventRecord]) -> tuple[EventRecord, ...]:
+    """Keep a streamed tool snapshot visible before its lifecycle advances."""
+
+    prefix = events[:_RUNTIME_EVENT_APPLY_MAX]
+    saw_tool_stream = False
+    for index, event in enumerate(prefix):
+        if event.event_type == "model_tool_call_delta":
+            saw_tool_stream = True
+        elif saw_tool_stream:
+            prefix = prefix[:index]
+            break
+    return tuple(prefix)
 
 
 def _event_record(event: RuntimeEventView) -> EventRecord:
