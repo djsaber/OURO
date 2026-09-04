@@ -137,7 +137,7 @@ Endpoint 集合、连接地址、凭据环境变量、Endpoint capability、官�
 当前目录包含以下经官方文档核验的配置：
 
 | 模板 | 默认 Endpoint | 其他预置 Endpoint |
-|---|---|---|
+| --- | --- | --- |
 | OpenAI | `gpt-5.6` | `gpt-5.6-terra`、`gpt-5.6-luna` |
 | Anthropic | `claude-sonnet-5` | `claude-opus-4-8`、`claude-haiku-4-5` |
 | Gemini | `gemini-3.5-flash` | `gemini-3.1-pro-preview`、`gemini-3.1-flash-lite` |
@@ -169,7 +169,7 @@ Provider 级模板值，以及每个模板 Endpoint 到配置 Endpoint 的 id �
 合并以保留用户意图为优先，规则如下：
 
 | 情况 | 更新结果 |
-|---|---|
+| --- | --- |
 | 模板 Endpoint 相对旧基线有变化，当前 Endpoint 与旧指纹一致 | 用新模板完整 Endpoint 更新 |
 | 当前模板 Endpoint 内容被用户修改 | 完整保留当前 Endpoint；不做易产生混合语义的字段级拼接 |
 | 最新模板新增 Endpoint，配置中无同 id Endpoint | 新增并纳入模板管理 |
