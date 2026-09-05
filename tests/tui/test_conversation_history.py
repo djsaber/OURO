@@ -111,16 +111,12 @@ plain value
 ```
 """
     console = Console(force_terminal=True, color_system="truecolor", width=60)
-    markdown_segments = list(
-        console.render(tui_markdown.assistant_markdown(source, theme))
-    )
+    markdown_segments = list(console.render(tui_markdown.assistant_markdown(source, theme)))
 
     heading = next(segment for segment in markdown_segments if segment.text == "Heading")
     inline = next(segment for segment in markdown_segments if segment.text == "inline")
     keyword = next(segment for segment in markdown_segments if segment.text == "def")
-    unknown = next(
-        segment for segment in markdown_segments if "plain value" in segment.text
-    )
+    unknown = next(segment for segment in markdown_segments if "plain value" in segment.text)
     assert heading.style is not None and heading.style.bold
     assert heading.style.color is not None
     assert heading.style.color.triplet.hex == theme.text_primary
@@ -141,9 +137,7 @@ plain value
             console.options.update_width(60),
         )
     )
-    user_message = next(
-        segment for segment in user_segments if "user message" in segment.text
-    )
+    user_message = next(segment for segment in user_segments if "user message" in segment.text)
     assert user_message.style is not None and user_message.style.bgcolor is not None
     assert user_message.style.bgcolor.triplet.hex == theme.panel
 
@@ -162,9 +156,7 @@ def test_assistant_markdown_failure_degrades_only_to_canonical_text(
     console = Console(width=40)
     rendered = "".join(
         segment.text
-        for segment in console.render(
-            tui_markdown.assistant_markdown(source, DEFAULT_TUI_THEME)
-        )
+        for segment in console.render(tui_markdown.assistant_markdown(source, DEFAULT_TUI_THEME))
     )
 
     assert source in rendered
@@ -421,8 +413,7 @@ async def test_cold_history_load_publishes_virtual_size_once_per_chunk(
 ) -> None:
     app = _HistoryApp()
     entries = tuple(
-        TranscriptEntry(kind="assistant", text=f"history entry {index}")
-        for index in range(120)
+        TranscriptEntry(kind="assistant", text=f"history entry {index}") for index in range(120)
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
@@ -565,13 +556,46 @@ async def test_theme_refresh_is_off_loop_and_coalesces_rapid_theme_changes(
         assert all(thread_id != event_loop_thread for thread_id in render_threads)
         assert maximum_active_renders == 1
         value_segment = next(
-            segment
-            for strip in app.history.lines
-            for segment in strip
-            if "value" in segment.text
+            segment for strip in app.history.lines for segment in strip if "value" in segment.text
         )
         assert value_segment.style is not None and value_segment.style.color is not None
         assert value_segment.style.color.triplet.hex == latest.syntax_name
+
+
+@pytest.mark.asyncio
+async def test_history_resize_keeps_old_buffer_until_latest_width_is_ready(monkeypatch):
+    app = _HistoryApp()
+    loop_thread = threading.get_ident()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await app.history.load((TranscriptEntry(kind="assistant", text="history " * 4096),))
+        await pilot.pause()
+        old_lines = tuple(app.history.lines)
+        entered = threading.Event()
+        release = threading.Event()
+        threads = []
+        render = conversation_history._render_entry_requests
+
+        def blocked_render(*args, **kwargs):
+            threads.append(threading.get_ident())
+            if len(threads) == 1:
+                entered.set()
+                assert release.wait(3)
+            return render(*args, **kwargs)
+
+        monkeypatch.setattr(conversation_history, "_render_entry_requests", blocked_render)
+        try:
+            await pilot.resize_terminal(80, 30)
+            assert await asyncio.to_thread(entered.wait, 2)
+            assert tuple(app.history.lines) == old_lines
+            await pilot.resize_terminal(60, 30)
+            assert tuple(app.history.lines) == old_lines
+        finally:
+            release.set()
+        await asyncio.wait_for(app.history.wait_for_theme_refresh(), 3)
+        assert threads and all(thread != loop_thread for thread in threads)
+        assert app.history._render_width == app.history.scrollable_content_region.width
+        assert app.history._render_width < 80
+        assert "history" in app.history.rendered_text
 
 
 @pytest.mark.asyncio
@@ -682,9 +706,7 @@ def test_compaction_and_run_summaries_share_visual_structure_and_failure_semanti
         DEFAULT_TUI_THEME,
     )
 
-    assert compaction.plain == (
-        "▣ Context compacted • 8 messages • 1.2K tokens • 57m 05.4s"
-    )
+    assert compaction.plain == ("▣ Context compacted • 8 messages • 1.2K tokens • 57m 05.4s")
     assert failed.plain == (
         "▣ deepseek-v4-flash • 5m 16.4s • provider returned an empty assistant message"
     )

@@ -216,7 +216,7 @@ class LLMSummaryCompactionStrategy:
         if self.configured_adapter_error:
             failures.append(self.configured_adapter_error)
 
-        routes = self._adapter_routes(request.session_id)
+        routes = await run_blocking(self._adapter_routes, request.session_id)
         for route in routes:
             try:
                 adapter = (
@@ -342,9 +342,7 @@ class LLMSummaryCompactionStrategy:
                         total_usage = _merge_usage(total_usage, output.usage)
                     consumed_frames = max(1, consumed_frames // 2)
                     chunk = [
-                        message
-                        for frame in remaining_frames[:consumed_frames]
-                        for message in frame
+                        message for frame in remaining_frames[:consumed_frames] for message in frame
                     ]
                     try:
                         result = await self._summarize_chunk(
@@ -436,9 +434,7 @@ class LLMSummaryCompactionStrategy:
         for frame in frames:
             serialized_frame = _serialize_messages(frame)
             separator = "\n" if serialized_frame and has_serialized_messages else ""
-            added_ascii, added_non_ascii = _text_character_counts(
-                f"{separator}{serialized_frame}"
-            )
+            added_ascii, added_non_ascii = _text_character_counts(f"{separator}{serialized_frame}")
             if (
                 fixed_tokens
                 + estimate_text_tokens_from_character_counts(
@@ -593,9 +589,7 @@ class LLMSummaryCompactionStrategy:
         raw_summary = "".join(text_parts)
         match = _SUMMARY_PATTERN.search(raw_summary)
         if match is None or not match.group(1).strip():
-            error = CompactionError(
-                "summary response did not contain a non-empty <summary> block"
-            )
+            error = CompactionError("summary response did not contain a non-empty <summary> block")
             raise _summary_output_error(
                 error,
                 adapter=adapter,
@@ -1013,9 +1007,12 @@ class ContextPreparationService:
     ) -> CompactionExecution:
         active_adapter = adapter or self.adapter
         budget = self._input_budget(active_adapter)
-        active = self.store.load_active_compaction(session.session_id)
-        materialized_messages = self._materialize_messages(messages, active_adapter)
-        _, initial_view = self._project_context(
+        active = await run_blocking(self.store.load_active_compaction, session.session_id)
+        materialized_messages = await run_blocking(
+            self._materialize_messages, messages, active_adapter
+        )
+        _, initial_view = await run_blocking(
+            self._project_context,
             messages=messages,
             active=active,
             tools=tools,
@@ -1035,7 +1032,8 @@ class ContextPreparationService:
             1,
             target_tokens - fixed_tokens - summary_output_tokens,
         )
-        plan = plan_compaction(
+        plan = await run_blocking(
+            plan_compaction,
             materialized_messages,
             active,
             tail_token_budget=tail_budget,
@@ -1123,7 +1121,7 @@ class ContextPreparationService:
                 summary=summary,
                 covered_message_ids=plan.covered_message_ids,
                 history_boundary_message_id=messages[-1].message_id,
-                source_digest=compaction_source_digest(source_prefix),
+                source_digest=await run_blocking(compaction_source_digest, source_prefix),
                 model_provider=str(artifact.metadata.get("model_provider") or "") or None,
                 model_endpoint_id=(str(artifact.metadata.get("model_endpoint_id") or "") or None),
                 model_id=str(artifact.metadata.get("model_id") or "") or None,
@@ -1134,7 +1132,8 @@ class ContextPreparationService:
                 usage=artifact.usage,
                 metadata=dict(artifact.metadata),
             )
-            _, final_view = self._project_context(
+            _, final_view = await run_blocking(
+                self._project_context,
                 messages=messages,
                 active=record,
                 tools=tools,
@@ -1157,8 +1156,7 @@ class ContextPreparationService:
                     ),
                 }
             )
-            self.store.append_compaction(record)
-            self.store.activate_compaction(session.session_id, record.compaction_id)
+            await run_blocking(self._commit_compaction, record)
         except Exception as exc:
             if isinstance(exc, CompactionStrategyError):
                 sequence = await self._record_model_outputs(
@@ -1338,6 +1336,11 @@ class ContextPreparationService:
             context_window_tokens=adapter.model.context_window,
             reserved_output_tokens=adapter.model.max_output_tokens,
         )
+
+    def _commit_compaction(self, record: CompactionRecord) -> None:
+        with self.store.session_mutation(record.session_id):
+            self.store.append_compaction(record)
+            self.store.activate_compaction(record.session_id, record.compaction_id)
 
     def _materialize_messages(
         self,

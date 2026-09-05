@@ -1,10 +1,16 @@
+import pytest
+
 from ouro.application.runtime_activity import (
     project_runtime_activity,
     queued_runtime_activity,
     reduce_runtime_activity,
     runtime_activity_changed,
 )
-from ouro.application.supervisor_models import RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS
+from ouro.application.supervisor_models import (
+    RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS,
+    RuntimeActivitySnapshot,
+    RuntimeToolCallActivity,
+)
 from ouro.core.context import ContextMetrics
 from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord, SessionRecord
@@ -215,9 +221,7 @@ def test_runtime_activity_promotes_bounded_streaming_tool_state_into_the_final_c
 
     streamed = activity.tool_calls[0]
     assert streamed.tool_name == "Write"
-    assert streamed.argument_stream_tail == (
-        "x" * RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS
-    )
+    assert streamed.argument_stream_tail == ("x" * RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS)
 
     for event in (
         _event(6, "model_message_completed", {"tool_call_count": 1}),
@@ -636,3 +640,46 @@ def test_queued_activity_can_share_the_latest_durable_event_boundary() -> None:
     activity = queued_runtime_activity("ses_1", sequence=12)
 
     assert activity.sequence == 12
+
+
+@pytest.mark.parametrize("field", RuntimeActivitySnapshot.model_fields)
+def test_activity_comparison_retains_every_semantic_field(field: str) -> None:
+    previous = queued_runtime_activity("ses_1")
+    # model_copy deliberately bypasses validation: the comparison must notice
+    # any distinct value even when a new model field is added in the future.
+    current = previous.model_copy(update={field: () if field == "tool_calls" else object()})
+    assert runtime_activity_changed(previous, current) == (
+        field not in {"sequence", "updated_at", "tool_calls"}
+    )
+
+
+@pytest.mark.parametrize("field", RuntimeToolCallActivity.model_fields)
+def test_activity_comparison_retains_tool_fields_except_stream_tail(field: str) -> None:
+    tool = RuntimeToolCallActivity(
+        tool_call_id="call_1", tool_name="Read", status="running", source_index=0
+    )
+    previous = queued_runtime_activity("ses_1").model_copy(update={"tool_calls": (tool,)})
+    current = previous.model_copy(
+        update={"tool_calls": (tool.model_copy(update={field: object()}),)}
+    )
+    assert runtime_activity_changed(previous, current) == (field != "argument_stream_tail")
+
+
+def test_activity_comparison_reuses_unchanged_tool_results_without_serializing(monkeypatch):
+    tool = RuntimeToolCallActivity(
+        tool_call_id="call_1",
+        tool_name="Read",
+        status="completed",
+        source_index=0,
+        result_data={"rows": [{"text": "evidence"}] * 1000},
+    )
+    previous = queued_runtime_activity("ses_1").model_copy(update={"tool_calls": (tool,)})
+
+    def unexpected_dump(*args, **kwargs):
+        pytest.fail("activity comparison serialized a snapshot")
+
+    monkeypatch.setattr(RuntimeActivitySnapshot, "model_dump", unexpected_dump)
+    monkeypatch.setattr(RuntimeToolCallActivity, "model_dump", unexpected_dump)
+    assert not runtime_activity_changed(previous, previous.model_copy(update={"sequence": 2}))
+    assert not runtime_activity_changed(previous, previous.model_copy(deep=True))
+    assert runtime_activity_changed(previous, previous.model_copy(update={"tool_calls": ()}))

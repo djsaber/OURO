@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from threading import get_ident
+from threading import Event, get_ident
 
 import pytest
 
@@ -20,7 +20,7 @@ async def test_run_execution_ownership_tracks_lock_and_signal_lifecycle(tmp_path
     store.save_run(run)
     ownership = RunExecutionOwnership(store)
 
-    lock = ownership.acquire(session.session_id, run.run_id)
+    lock = await ownership.acquire(session.session_id, run.run_id)
     signal = await ownership.activate_signal(session.session_id, run.run_id)
 
     assert lock is not None
@@ -37,7 +37,7 @@ async def test_run_execution_ownership_tracks_lock_and_signal_lifecycle(tmp_path
     )
     await asyncio.sleep(0)
     assert not settlement.done()
-    ownership.release(lock)
+    await ownership.release(run.run_id, lock)
     await asyncio.wait_for(settlement, timeout=1)
 
     aborted = run.model_copy(update={"status": "aborted", "abort_requested": True})
@@ -60,6 +60,38 @@ async def test_run_execution_ownership_tracks_lock_and_signal_lifecycle(tmp_path
     await ownership.release_signal(run.run_id, signal)
     assert ownership.signal_for(run.run_id) is None
     assert not ownership.is_locked(session.session_id)
+
+
+async def test_cancelled_acquisition_releases_lock_acquired_by_owned_thread(tmp_path, monkeypatch):
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Cancelled lock acquisition")
+    store.create_session(session)
+    ownership = RunExecutionOwnership(store)
+    entered, release = Event(), Event()
+    acquire = store.acquire_session_lock
+
+    def paused_acquire(*args):
+        lock = acquire(*args)
+        assert lock is not None
+        entered.set()
+        assert release.wait(5)
+        return lock
+
+    monkeypatch.setattr(store, "acquire_session_lock", paused_acquire)
+    pending = asyncio.create_task(ownership.acquire(session.session_id, "run_cancelled"))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        pending.cancel()
+        await asyncio.sleep(0)
+        pending.cancel()
+        assert not pending.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert not store.is_session_locked(session.session_id)
+    assert not ownership._release_events
 
 
 @pytest.mark.asyncio

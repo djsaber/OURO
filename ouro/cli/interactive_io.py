@@ -57,7 +57,7 @@ class AgentTreeSubscriptionPort(Protocol):
 
 
 class AgentInteractionHost(Protocol):
-    def subscribe_agent_tree(self, root_session_id: str) -> AgentTreeSubscriptionPort: ...
+    async def subscribe_agent_tree(self, root_session_id: str) -> AgentTreeSubscriptionPort: ...
 
     def list_agent_interactions(
         self,
@@ -173,7 +173,7 @@ class InteractionCoordinator:
         if self._agents is None or root_session_id is None:
             return await InteractiveInput(self._input_func, self._prompt_func).read(prompt)
 
-        subscription = self._subscription_for(root_session_id)
+        subscription = await self._subscription_for(root_session_id)
         terminal_input = InteractiveInput(self._input_func, self._prompt_func)
         input_task: asyncio.Task[str] | None = None
         notification_task: asyncio.Task[AgentTreeNotification] | None = None
@@ -325,7 +325,7 @@ class InteractionCoordinator:
 
         root_session_id = result.session.session_id
         root_run_id = result.run.run_id
-        subscription = self._subscription_for(root_session_id)
+        subscription = await self._subscription_for(root_session_id)
         while True:
             current = self._runtime.sessions.run_result(root_session_id, root_run_id)
             if current.run.status not in _PARENT_CONTINUATION_STATUSES:
@@ -353,14 +353,14 @@ class InteractionCoordinator:
 
     # -- Subagent interaction resolution -------------------------------------
 
-    def _subscription_for(self, root_session_id: str) -> AgentTreeSubscriptionPort:
+    async def _subscription_for(self, root_session_id: str) -> AgentTreeSubscriptionPort:
         """Return the session's shared subscription, (re)opening it if needed."""
 
         if self._subscription is not None and self._subscribed_root == root_session_id:
             return self._subscription
         if self._subscription is not None:
             self._subscription.close()
-        self._subscription = self._host.subscribe_agent_tree(root_session_id)
+        self._subscription = await self._host.subscribe_agent_tree(root_session_id)
         self._subscribed_root = root_session_id
         return self._subscription
 

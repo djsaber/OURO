@@ -168,7 +168,7 @@ async def test_waiting_child_follower_ignores_running_continuation_state() -> No
     subscription = Subscription()
 
     class AgentHost:
-        def subscribe_agent_tree(self, root_session_id: str) -> Subscription:
+        async def subscribe_agent_tree(self, root_session_id: str) -> Subscription:
             assert root_session_id == session.session_id
             return subscription
 
@@ -223,7 +223,7 @@ async def test_follower_resolves_pending_subagent_while_parent_still_waiting() -
         def __init__(self) -> None:
             self.approved: list[bool] = []
 
-        def subscribe_agent_tree(self, root_session_id: str) -> Subscription:
+        async def subscribe_agent_tree(self, root_session_id: str) -> Subscription:
             return Subscription()
 
         def list_agent_interactions(self, root_session_id: str) -> tuple[AgentInteractionView, ...]:
@@ -895,7 +895,7 @@ async def test_parallel_subagent_interactions_resolve_without_prompt_corruption(
             self.answered: list[str] = []
             self.approved: list[bool] = []
 
-        def subscribe_agent_tree(self, root_session_id: str) -> Subscription:
+        async def subscribe_agent_tree(self, root_session_id: str) -> Subscription:
             return Subscription()
 
         def list_agent_interactions(self, root_session_id: str) -> tuple[AgentInteractionView, ...]:

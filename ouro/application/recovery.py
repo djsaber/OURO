@@ -3,6 +3,7 @@ from __future__ import annotations
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.runs import RunLifecycle
 from ouro.core.base import utc_now
+from ouro.core.callbacks import run_blocking
 from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord, ToolCallStatus
@@ -30,7 +31,7 @@ class RunRecoveryService:
         self,
         snapshot: RuntimeSessionSnapshot,
     ) -> RuntimeSessionSnapshot:
-        sequence = self.store.latest_event_sequence(snapshot.session.session_id)
+        sequence = await run_blocking(self.store.latest_event_sequence, snapshot.session.session_id)
         emitted: list[EventRecord] = []
         changed = False
         messages = list(snapshot.messages)
@@ -60,7 +61,8 @@ class RunRecoveryService:
                         continue
                     call = calls_by_id.get(request.id)
                     result = self._recovery_result(request.id, request.name, call)
-                    result_message = self.runs.append_tool_result_message(
+                    result_message = await run_blocking(
+                        self.runs.append_tool_result_message,
                         session=snapshot.session,
                         run=run,
                         result=result,
@@ -93,12 +95,12 @@ class RunRecoveryService:
                         },
                     )
             if run_changed:
-                self._save_reconciled_run(run, batch, updated_calls)
-            self.runs.finish_run(run)
+                await run_blocking(self._save_reconciled_run, run, batch, updated_calls)
+            await run_blocking(self.runs.finish_run, run)
 
         if not changed:
             return snapshot
-        return self.store.load_runtime_session(snapshot.session.session_id)
+        return await run_blocking(self.store.load_runtime_session, snapshot.session.session_id)
 
     @staticmethod
     def _recovery_result(

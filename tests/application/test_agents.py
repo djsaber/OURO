@@ -1236,7 +1236,7 @@ async def test_active_child_message_uses_steer_without_new_run(tmp_path) -> None
     await asyncio.wait_for(provider.started.wait(), timeout=2)
     assert child.child_session_id is not None
     assert child.child_run_id is not None
-    tree_subscription = service.subscribe_agent_tree(root.session_id)
+    tree_subscription = await service.subscribe_agent_tree(root.session_id)
     assert tree_subscription.initial_snapshot.active_count == 1
     tree_subscription.close()
     assert store.load_run(child.child_session_id, child.child_run_id).status == "running"
@@ -1917,7 +1917,7 @@ async def test_async_child_user_input_is_streamed_and_routed_by_exact_identity(
     )
     store.create_session(root)
     store.save_run(parent)
-    subscription = service.subscribe_agent_tree(root.session_id)
+    subscription = await service.subscribe_agent_tree(root.session_id)
 
     child = await service.spawn_agent(
         SpawnAgentRequest(
@@ -2476,7 +2476,7 @@ async def test_primary_budget_check_does_not_scan_unrelated_delegations(tmp_path
 @pytest.mark.asyncio
 async def test_root_tree_subscription_adds_children_and_reconnects_from_store(tmp_path) -> None:
     service, supervisor, _, _ = await _services(tmp_path)
-    subscription = service.subscribe_agent_tree("ses_root")
+    subscription = await service.subscribe_agent_tree("ses_root")
 
     assert subscription.initial_snapshot.nodes == ()
     child = await service.spawn_agent(
@@ -2512,7 +2512,7 @@ async def test_root_tree_subscription_adds_children_and_reconnects_from_store(tm
     subscription.close()
     await service.wait_agents((child.delegation_id,))
     assert child.child_session_id is not None
-    child_stream = supervisor.subscribe(child.child_session_id, after_sequence=0)
+    child_stream = await supervisor.subscribe(child.child_session_id, after_sequence=0)
     async with asyncio.timeout(3):
         while True:
             child_notification = await child_stream.get()
@@ -2524,7 +2524,7 @@ async def test_root_tree_subscription_adds_children_and_reconnects_from_store(tm
                 assert child_notification.event.session_id == child.child_session_id
                 break
     child_stream.close()
-    reconnected = service.subscribe_agent_tree("ses_root")
+    reconnected = await service.subscribe_agent_tree("ses_root")
     assert reconnected.initial_snapshot == service.agent_tree_snapshot("ses_root")
     assert reconnected.initial_snapshot.terminal_count == 1
     initial_revision = reconnected.initial_snapshot.revision
@@ -2559,7 +2559,7 @@ async def test_root_tree_subscription_adds_children_and_reconnects_from_store(tm
 @pytest.mark.asyncio
 async def test_slow_root_tree_subscriber_gets_lag_diagnostic(tmp_path) -> None:
     service, supervisor, _, _ = await _services(tmp_path)
-    subscription = service.subscribe_agent_tree("ses_root", max_buffer=1)
+    subscription = await service.subscribe_agent_tree("ses_root", max_buffer=1)
 
     children = await asyncio.gather(
         *(

@@ -1065,6 +1065,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._visible_agent: AgentTreeNode | None = None
         self._observation_subscription: RuntimeSubscription | None = None
         self._agent_tree_subscription: AgentTreeSubscription | None = None
+        self._agent_tree_revision = 0
         self._agent_nodes: dict[str, AgentTreeNode] = {}
         self._agent_root_status = "idle"
         self._agent_switch_in_progress = False
@@ -1408,7 +1409,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         finally:
             subscription.close()
 
-    def _replace_agent_tree(self, root_session_id: str | None) -> tuple[AgentTreeNode, ...]:
+    async def _replace_agent_tree(self, root_session_id: str | None) -> tuple[AgentTreeNode, ...]:
+        self._agent_tree_revision += 1
+        revision = self._agent_tree_revision
         previous = self._agent_tree_subscription
         if previous is not None and previous.root_session_id == root_session_id:
             self._sync_subagent_navigation_panel(root_session_id=root_session_id)
@@ -1421,15 +1424,16 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if root_session_id is None:
             self._sync_subagent_navigation_panel(root_session_id=None)
             return ()
-        subscription = self._controller.subscribe_agent_tree(root_session_id)
+        subscription = await self._controller.subscribe_agent_tree(root_session_id)
         if subscription is None:
             self._sync_subagent_navigation_panel(root_session_id=root_session_id)
             return ()
+        if self._host_closing or revision != self._agent_tree_revision:
+            subscription.close()
+            return ()
         self._agent_tree_subscription = subscription
         snapshot = subscription.initial_snapshot
-        self._agent_nodes = {
-            node.delegation_id: node for node in snapshot.nodes
-        }
+        self._agent_nodes = {node.delegation_id: node for node in snapshot.nodes}
         if snapshot.root_activity is not None:
             self._agent_root_status = snapshot.root_activity.status
         self._sync_subagent_navigation_panel(root_session_id=root_session_id)
@@ -1470,7 +1474,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                         severity="warning",
                         markup=False,
                     )
-                    snapshot = self._controller.agent_tree_snapshot(subscription.root_session_id)
+                    snapshot = await self._controller.agent_tree_snapshot(
+                        subscription.root_session_id
+                    )
                     if snapshot is None:
                         continue
                     nodes = snapshot.nodes
@@ -1647,7 +1653,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             # boundary. Synthetic or foreign event projections do not own the
             # controller Session and therefore have no Agent tree to observe.
             if self._controller.session_id == projection.session_id:
-                self._replace_agent_tree(projection.session_id)
+                await self._replace_agent_tree(projection.session_id)
             composer = self.query_one(Composer)
             composer.disabled = False
             composer.focus()
@@ -1816,7 +1822,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
         ):
             self._replace_observation(
-                self._controller.subscribe_session(
+                await self._controller.subscribe_session(
                     projection.session_id,
                     after_sequence=projection.last_sequence,
                 )
@@ -2531,18 +2537,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         catalog = list(TUI_COMMANDS)
         argument_owner = self._active_builtin_argument_command()
         user_message_options = (
-            self._user_message_arguments()
-            if argument_owner in {"/fork", "/navigate"}
-            else ()
+            self._user_message_arguments() if argument_owner in {"/fork", "/navigate"} else ()
         )
         for index, command in enumerate(catalog):
             if command.name == "/workspace" and argument_owner == command.name:
                 catalog[index] = replace(
                     command,
                     argument_hint=(
-                        command.argument_hint
-                        if self._controller.session_id is None
-                        else None
+                        command.argument_hint if self._controller.session_id is None else None
                     ),
                     argument_options=self._workspace_arguments(),
                 )
@@ -2867,7 +2869,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify(str(exc), severity="error", markup=False)
             return
         self._projection = None
-        self._replace_agent_tree(None)
+        await self._replace_agent_tree(None)
         self._interaction = None
         self._active_title = "New session"
         self._active_workspace = self._controller.draft_workspace or self._system_status.workspace
@@ -3293,7 +3295,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         subscription: RuntimeSubscription | None = None
         try:
             loaded = await self._controller.load_session(session_id)
-            subscription = self._controller.subscribe_session(
+            subscription = await self._controller.subscribe_session(
                 session_id,
                 after_sequence=loaded.event_high_water,
             )
@@ -3321,7 +3323,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._prepare_loaded_session,
             loaded,
         )
-        agents = self._replace_agent_tree(session.agent_root_session_id)
+        agents = await self._replace_agent_tree(session.agent_root_session_id)
         read_only = session.session_kind == "subagent"
         agent = next(
             (
@@ -3735,9 +3737,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 value=argument.value,
                 label=argument.display_label,
                 marker=(
-                    self._tui_theme.selected_choice_marker
-                    if argument.value == current
-                    else ""
+                    self._tui_theme.selected_choice_marker if argument.value == current else ""
                 ),
                 trailing="current" if argument.value == current else "",
             )
@@ -4158,11 +4158,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 theme.theme_id,
                 theme.label,
                 accent=theme.accent,
-                marker=(
-                    self._tui_theme.selected_choice_marker
-                    if theme == self._tui_theme
-                    else ""
-                ),
+                marker=(self._tui_theme.selected_choice_marker if theme == self._tui_theme else ""),
                 loading=theme.theme_id == self._pending_tui_theme_id,
             )
             for theme in TUI_THEMES.values()
@@ -4582,11 +4578,7 @@ def _session_choices(
                 if item.health != "ok"
                 else None
             ),
-            marker=(
-                theme.selected_choice_marker
-                if item.session_id == selected_session_id
-                else ""
-            ),
+            marker=(theme.selected_choice_marker if item.session_id == selected_session_id else ""),
             group=(
                 "Index issues"
                 if item.catalog_error is not None

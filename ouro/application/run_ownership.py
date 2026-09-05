@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from ouro.core.callbacks import run_blocking
-from ouro.core.cancellation import AbortSignal
+from ouro.core.cancellation import AbortSignal, settle_owned_tasks
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
@@ -19,14 +19,47 @@ class RunExecutionOwnership:
         self._abort_signals: dict[str, AbortSignal] = {}
         self._abort_states: dict[str, tuple[SessionRecord, RunRecord]] = {}
         self._abort_pollers: dict[str, asyncio.Task[None]] = {}
+        self._release_events: dict[str, asyncio.Event] = {}
 
-    def acquire(self, session_id: str, run_id: str) -> SessionLock | None:
-        return self.store.acquire_session_lock(session_id, run_id)
-
-    @staticmethod
-    def release(lock: SessionLock | None) -> None:
+    async def acquire(self, session_id: str, run_id: str) -> SessionLock | None:
+        task = asyncio.create_task(
+            asyncio.to_thread(self.store.acquire_session_lock, session_id, run_id)
+        )
+        try:
+            lock = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await settle_owned_tasks(task)
+            if not task.cancelled() and task.exception() is None:
+                lock = task.result()
+                if lock is not None:
+                    await run_blocking(lock.release)
+            raise
         if lock is not None:
-            lock.release()
+            self._release_events[run_id] = asyncio.Event()
+        return lock
+
+    async def release(self, run_id: str, lock: SessionLock | None) -> None:
+        if lock is None:
+            return
+        released = self._release_events.get(run_id)
+        try:
+            await run_blocking(lock.release)
+        finally:
+            if self._release_events.get(run_id) is released:
+                self._release_events.pop(run_id, None)
+            if released is not None:
+                released.set()
+
+    async def wait_for_local_release(self, run_id: str) -> None:
+        """Hand off a parked Run after its local owner finishes releasing its lock.
+
+        A live interaction may reach the Host before the announcing owner has
+        returned. Unknown external owners still fail the normal lock acquisition.
+        """
+
+        released = self._release_events.get(run_id)
+        if released is not None:
+            await released.wait()
 
     async def wait_for_settlement(
         self,

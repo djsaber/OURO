@@ -40,6 +40,14 @@ _TERMINAL_ACTIVITY: dict[str, RuntimeActivity] = {
 _TERMINAL_TOOL_STATUSES = frozenset(
     {"rejected", "completed", "failed", "aborted", "unknown_outcome"}
 )
+_ACTIVITY_COMPARISON_FIELDS = tuple(
+    name
+    for name in RuntimeActivitySnapshot.model_fields
+    if name not in {"sequence", "updated_at", "tool_calls"}
+)
+_TOOL_COMPARISON_FIELDS = tuple(
+    name for name in RuntimeToolCallActivity.model_fields if name != "argument_stream_tail"
+)
 
 
 def queued_runtime_activity(
@@ -249,11 +257,7 @@ def reduce_runtime_activity(
             batch_id=_string_or_none(payload.get("batch_id")),
             # Preserve stream activity through preflight so the canonical
             # request promotes it instead of exposing a duplicate call.
-            tool_calls=tuple(
-                item
-                for item in current.tool_calls
-                if item.status == "streaming"
-            ),
+            tool_calls=tuple(item for item in current.tool_calls if item.status == "streaming"),
         )
     elif event_type == "tool_call_requested":
         updates["tool_calls"] = _upsert_tool_call(
@@ -403,15 +407,21 @@ def runtime_activity_changed(
     # Stream content is already delivered by the ordered event channel. Retain
     # its bounded tail for snapshot/resync consumers without publishing a
     # second high-frequency activity notification for every provider delta.
-    excluded = cast(
-        "Any",
-        {
-            "sequence": True,
-            "updated_at": True,
-            "tool_calls": {"__all__": {"argument_stream_tail"}},
-        },
+    # Reducers structurally share unchanged values. Compare those values
+    # directly so a clock/sequence update never serializes every tool result.
+    if any(
+        getattr(previous, name) != getattr(current, name) for name in _ACTIVITY_COMPARISON_FIELDS
+    ):
+        return True
+    if previous.tool_calls is current.tool_calls:
+        return False
+    if len(previous.tool_calls) != len(current.tool_calls):
+        return True
+    return any(
+        before is not after
+        and any(getattr(before, name) != getattr(after, name) for name in _TOOL_COMPARISON_FIELDS)
+        for before, after in zip(previous.tool_calls, current.tool_calls, strict=True)
     )
-    return previous.model_dump(exclude=excluded) != current.model_dump(exclude=excluded)
 
 
 def _selected_run(snapshot: SessionSnapshot, *, run_id: str | None) -> RunRecord | None:
@@ -552,11 +562,7 @@ def _update_tool_call_status(
         item.model_copy(
             update={
                 "status": status,
-                **(
-                    {"argument_stream_tail": None}
-                    if status in _TERMINAL_TOOL_STATUSES
-                    else {}
-                ),
+                **({"argument_stream_tail": None} if status in _TERMINAL_TOOL_STATUSES else {}),
             }
         )
         if item.tool_call_id == tool_call_id
@@ -575,11 +581,7 @@ def _mark_unsettled_tool_calls(
         else item.model_copy(
             update={
                 "status": status,
-                **(
-                    {"argument_stream_tail": None}
-                    if status in _TERMINAL_TOOL_STATUSES
-                    else {}
-                ),
+                **({"argument_stream_tail": None} if status in _TERMINAL_TOOL_STATUSES else {}),
             }
         )
         for item in calls
@@ -630,9 +632,7 @@ def _append_streaming_tool_call(
                 status="streaming",
                 source_index=index,
                 argument_stream_tail=(
-                    _append_argument_stream_tail(None, arguments_delta)
-                    if arguments_delta
-                    else None
+                    _append_argument_stream_tail(None, arguments_delta) if arguments_delta else None
                 ),
             )
         )

@@ -2008,10 +2008,14 @@ class TuiController:
         session = loaded.detail.session
         if session.session_kind == "primary":
             return loaded, session.archived
-        root = self._runtime().sessions.open(
-            session.agent_root_session_id,
-            recover=False,
-        ).session
+        root = (
+            self._runtime()
+            .sessions.open(
+                session.agent_root_session_id,
+                recover=False,
+            )
+            .session
+        )
         if root.session_kind != "primary":
             raise PersistenceError(
                 f"subagent session {session.session_id} references non-primary root "
@@ -2023,13 +2027,13 @@ class TuiController:
         """Attach a read-only Host observation without changing the control Session."""
 
         loaded = await asyncio.to_thread(self._read_session, session_id)
-        subscription = self.subscribe_session(
+        subscription = await self.subscribe_session(
             session_id,
             after_sequence=loaded.event_high_water,
         )
         return TuiSessionObservation(loaded=loaded, subscription=subscription)
 
-    def subscribe_session(
+    async def subscribe_session(
         self,
         session_id: str,
         *,
@@ -2038,27 +2042,27 @@ class TuiController:
         application = self._application
         if not self._started or application is None:
             raise RuntimeError("TUI controller is not started")
-        return application.supervisor.subscribe(
+        return await application.supervisor.subscribe(
             session_id,
             after_sequence=after_sequence,
             max_buffer=1000,
         )
 
-    def subscribe_agent_tree(self, root_session_id: str) -> AgentTreeSubscription | None:
+    async def subscribe_agent_tree(self, root_session_id: str) -> AgentTreeSubscription | None:
         application = self._application
         if not self._started or application is None:
             raise RuntimeError("TUI controller is not started")
         if application.agents is None:
             return None
-        return application.agents.subscribe_agent_tree(root_session_id)
+        return await application.agents.subscribe_agent_tree(root_session_id)
 
-    def agent_tree_snapshot(self, root_session_id: str) -> AgentTreeSnapshot | None:
+    async def agent_tree_snapshot(self, root_session_id: str) -> AgentTreeSnapshot | None:
         application = self._application
         if not self._started or application is None:
             raise RuntimeError("TUI controller is not started")
         if application.agents is None:
             return None
-        return application.agents.agent_tree_snapshot(root_session_id)
+        return await asyncio.to_thread(application.agents.agent_tree_snapshot, root_session_id)
 
     async def resolve_agent_navigation(
         self,

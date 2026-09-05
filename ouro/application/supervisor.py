@@ -91,6 +91,7 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
         max_buffer: int,
         include_activity: bool,
         initial_activity: RuntimeActivitySnapshot | None,
+        after_sequence: int = 0,
     ) -> None:
         self.session_id = session_id
         self.include_activity = include_activity
@@ -98,6 +99,7 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
         self._supervisor = supervisor
         self._queue: asyncio.Queue[RuntimeNotification | object] = asyncio.Queue(max_buffer)
         self._closed = False
+        self._event_sequence = after_sequence
 
     def __aiter__(self) -> RuntimeSubscription:
         return self
@@ -122,12 +124,44 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
     def _offer(self, notification: RuntimeNotification) -> None:
         if self._closed:
             return
+        if notification.event is not None:
+            if notification.event.sequence <= self._event_sequence:
+                return
+            self._event_sequence = notification.event.sequence
         try:
             self._queue.put_nowait(notification)
         except asyncio.QueueFull:
             with suppress(asyncio.QueueEmpty):
                 self._queue.get_nowait()
             self._offer_lagged()
+
+    def _prepend_replay(
+        self,
+        replay: tuple[RuntimeNotification, ...],
+        *,
+        after_sequence: int,
+        truncated: bool,
+    ) -> None:
+        """Merge replay and live arrivals before exposing this subscription."""
+
+        pending: list[RuntimeNotification] = []
+        while not self._queue.empty():
+            item = self._queue.get_nowait()
+            if isinstance(item, RuntimeNotification):
+                pending.append(item)
+        if truncated or any(item.kind == "diagnostic" for item in pending):
+            self._offer_lagged()
+            return
+        self._event_sequence = after_sequence
+        for notification in (*replay, *pending):
+            if (
+                notification.activity is not None
+                and notification.activity.sequence < self._event_sequence
+            ):
+                # Replay already crossed this activity's durable boundary.
+                # Do not move a consumer back to an older live snapshot.
+                continue
+            self._offer(notification)
 
     def _offer_lagged(self) -> None:
         if self._closed:
@@ -232,25 +266,27 @@ class RuntimeSupervisor:
         if not prompt.strip():
             raise ValueError("run prompt cannot be empty")
         if session_id is None:
-            created = self.runtime.sessions.create(
-                title=title or _title_from_prompt(prompt),
-                current_model=self.runtime.current_model().key,
+            created = await run_blocking(
+                lambda: self.runtime.sessions.create(
+                    title=title or _title_from_prompt(prompt),
+                    current_model=self.runtime.current_model().key,
+                )
             )
             session_id = created.session.session_id
         else:
             try:
-                self.store.load_session_record(session_id)
+                await run_blocking(self.store.load_session_record, session_id)
             except FileNotFoundError as exc:
                 raise SessionNotFoundError(f"session not found: {session_id}") from exc
             await self.runtime.reconcile_session(session_id)
         if session_id in self._jobs_by_session:
             raise SessionBusyError(f"session already has a supervised run: {session_id}")
-        if maybe_active_run(self.store.load_runs(session_id)) is not None:
+        if maybe_active_run(await run_blocking(self.store.load_runs, session_id)) is not None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
 
         handle = RunHandle(session_id=session_id)
         job = _RunJob(handle=handle, prompt=prompt, title=title)
-        self._enqueue_job(job)
+        await self._enqueue_job(job)
         return handle
 
     async def submit_prepared(
@@ -268,7 +304,7 @@ class RuntimeSupervisor:
         session_id = run.session_id
         if session_id in self._jobs_by_session:
             raise SessionBusyError(f"session already has a supervised run: {session_id}")
-        active = maybe_active_run(self.store.load_runs(session_id))
+        active = maybe_active_run(await run_blocking(self.store.load_runs, session_id))
         if active is None or active.run_id != run.run_id or active.status != "queued":
             raise SessionBusyError(
                 f"prepared run is not the Session's queued active run: {run.run_id}"
@@ -281,7 +317,7 @@ class RuntimeSupervisor:
             prepared_run=run,
             session_input=session_input,
         )
-        self._enqueue_job(job, run_id=run.run_id)
+        await self._enqueue_job(job, run_id=run.run_id)
         return handle
 
     async def resume_agent_wait(
@@ -303,7 +339,7 @@ class RuntimeSupervisor:
                 run_id=run_id,
                 expected_status="waiting_child",
             )
-            run = self.store.load_run(session_id, run_id)
+            run = await run_blocking(self.store.load_run, session_id, run_id)
             if run.status != "waiting_child":
                 raise ValueError(f"run is not waiting for a child: {run.status}")
             handle = RunHandle(session_id=session_id)
@@ -315,7 +351,7 @@ class RuntimeSupervisor:
                 agent_wait_result=result,
                 agent_wait_tool_call_id=tool_call_id,
             )
-            self._enqueue_job(job, run_id=run_id)
+            await self._enqueue_job(job, run_id=run_id)
             return handle
 
     async def route_host_input(
@@ -329,12 +365,12 @@ class RuntimeSupervisor:
         await self.start()
         receipt = await self.runtime.submit_host_input(session_input, session_id=session_id)
         if (
-            maybe_active_run(self.store.load_runs(session_id)) is not None
+            maybe_active_run(await run_blocking(self.store.load_runs, session_id)) is not None
             or session_id in self._jobs_by_session
         ):
             return receipt
         handle = RunHandle(session_id=session_id)
-        self._enqueue_job(
+        await self._enqueue_job(
             _RunJob(
                 handle=handle,
                 prompt="",
@@ -360,11 +396,11 @@ class RuntimeSupervisor:
             run_id=run_id,
             expected_status="waiting_approval",
         )
-        run = self.store.load_run(session_id, run_id)
+        run = await run_blocking(self.store.load_run, session_id, run_id)
         if run.status != "waiting_approval":
             raise ValueError(f"run is not waiting for approval: {run.status}")
         handle = RunHandle(session_id=session_id)
-        self._enqueue_job(
+        await self._enqueue_job(
             _RunJob(
                 handle=handle,
                 prompt="",
@@ -392,11 +428,11 @@ class RuntimeSupervisor:
             run_id=run_id,
             expected_status="waiting_user",
         )
-        run = self.store.load_run(session_id, run_id)
+        run = await run_blocking(self.store.load_run, session_id, run_id)
         if run.status != "waiting_user":
             raise ValueError(f"run is not waiting for user input: {run.status}")
         handle = RunHandle(session_id=session_id)
-        self._enqueue_job(
+        await self._enqueue_job(
             _RunJob(
                 handle=handle,
                 prompt="",
@@ -418,13 +454,20 @@ class RuntimeSupervisor:
         job = self._jobs_by_session.get(session_id)
         if job is None:
             return
-        run = self.store.load_run(session_id, run_id)
+        run = await run_blocking(self.store.load_run, session_id, run_id)
         if run.status != expected_status:
             raise SessionBusyError(f"session already has a supervised run: {session_id}")
         await job.done.wait()
 
-    def _enqueue_job(self, job: _RunJob, *, run_id: str | None = None) -> None:
+    async def _enqueue_job(self, job: _RunJob, *, run_id: str | None = None) -> None:
         session_id = job.handle.session_id
+        sequence = await run_blocking(self.store.latest_event_sequence, session_id)
+        # Queries yield to other submissions and shutdown. Commit process-local
+        # scheduling atomically only after checking the current ownership again.
+        if self._closed:
+            raise OuroError("runtime supervisor is closed")
+        if session_id in self._jobs_by_session:
+            raise SessionBusyError(f"session already has a supervised run: {session_id}")
         job.start_after = self._latest_job_start
         self._latest_job_start = job.provider_stream_started
         self._jobs_by_session[session_id] = job
@@ -438,14 +481,14 @@ class RuntimeSupervisor:
         )
         activity = queued_runtime_activity(
             session_id,
-            sequence=self.store.latest_event_sequence(session_id),
+            sequence=sequence,
         )
         self._publish_activity(
             activity if run_id is None else activity.model_copy(update={"run_id": run_id})
         )
         self._queue.put_nowait(job)
 
-    def subscribe(
+    async def subscribe(
         self,
         session_id: str,
         *,
@@ -457,40 +500,57 @@ class RuntimeSupervisor:
             raise OuroError("runtime supervisor is closed")
         if max_buffer <= 0:
             raise ValueError("max_buffer must be positive")
-        try:
-            self.store.load_session_record(session_id)
-        except FileNotFoundError as exc:
-            raise SessionNotFoundError(f"session not found: {session_id}") from exc
         activity = self._activities.get(session_id)
-        if activity is None:
-            active_job = self._jobs_by_session.get(session_id)
-            status_override = (
-                self._snapshots[active_job.handle.handle_id].status
-                if active_job is not None
-                else None
-            )
-            activity = self._load_activity(session_id, status_override=status_override)
-            self._activities[session_id] = activity
+        active_job = self._jobs_by_session.get(session_id)
+        status_override = (
+            self._snapshots[active_job.handle.handle_id].status if active_job is not None else None
+        )
         subscription = RuntimeSubscription(
             self,
             session_id,
             max_buffer=max_buffer,
             include_activity=include_activity,
             initial_activity=activity if include_activity else None,
-        )
-        self._subscriptions.setdefault(session_id, set()).add(subscription)
-        events, truncated = self.store.load_events_after(
-            session_id,
             after_sequence=after_sequence,
-            limit=max_buffer,
         )
-        if truncated:
-            subscription._offer_lagged()
-        else:
-            for event in events:
-                subscription._offer(
-                    RuntimeNotification(kind="event", event=project_runtime_event(event))
+        # Attach before the read yields: every event is covered by durable
+        # replay, the bounded live queue, or both. Neither producer is paused.
+        self._subscriptions.setdefault(session_id, set()).add(subscription)
+        try:
+
+            def read_replay() -> tuple[
+                RuntimeActivitySnapshot | None, tuple[RuntimeNotification, ...], bool
+            ]:
+                self.store.load_session_record(session_id)
+                initial = activity
+                if include_activity and initial is None:
+                    initial = self._load_activity(session_id, status_override=status_override)
+                events, truncated = self.store.load_events_after(
+                    session_id,
+                    after_sequence=after_sequence,
+                    limit=max_buffer,
                 )
+                replay = (
+                    tuple(
+                        RuntimeNotification(kind="event", event=project_runtime_event(event))
+                        for event in events
+                    )
+                    if not truncated
+                    else ()
+                )
+                return initial, replay, truncated
+
+            initial, replay, truncated = await run_blocking(read_replay)
+            if self._closed or subscription._closed:
+                raise OuroError("runtime supervisor is closed")
+            if include_activity:
+                subscription.initial_activity = initial
+            subscription._prepend_replay(replay, after_sequence=after_sequence, truncated=truncated)
+        except BaseException as exc:
+            subscription.close()
+            if isinstance(exc, FileNotFoundError):
+                raise SessionNotFoundError(f"session not found: {session_id}") from exc
+            raise
         return subscription
 
     def unsubscribe(self, subscription: RuntimeSubscription) -> None:
@@ -535,10 +595,6 @@ class RuntimeSupervisor:
 
     def activity(self, handle_or_session: RunHandle | str) -> RuntimeActivitySnapshot:
         session_id = self._activity_session_id(handle_or_session)
-        is_handle_lookup = isinstance(handle_or_session, RunHandle) or (
-            isinstance(handle_or_session, str)
-            and (handle_or_session in self._jobs_by_handle or handle_or_session in self._snapshots)
-        )
         requested_status = self.status(handle_or_session)
         cached = self._activities.get(session_id)
         if cached is not None and (
@@ -553,8 +609,6 @@ class RuntimeSupervisor:
             )
         except FileNotFoundError as exc:
             raise SessionNotFoundError(f"session not found: {session_id}") from exc
-        if not is_handle_lookup and requested_status.run_id == activity.run_id:
-            self._activities[session_id] = activity
         return activity
 
     async def wait(self, handle: RunHandle) -> RuntimeStatusSnapshot:
@@ -578,7 +632,7 @@ class RuntimeSupervisor:
             completed = self._snapshots.get(handle_or_session)
             if completed is not None:
                 return completed
-            durable = self.status(handle_or_session)
+            durable = await run_blocking(self.status, handle_or_session)
             if durable.run_id is None or durable.status not in {
                 "queued",
                 "running",
@@ -709,7 +763,7 @@ class RuntimeSupervisor:
                     ),
                 )
             else:
-                self._finish_interrupted_job(job)
+                await self._finish_interrupted_job(job)
         for subscriptions in tuple(self._subscriptions.values()):
             for subscription in tuple(subscriptions):
                 subscription.close()
@@ -809,7 +863,7 @@ class RuntimeSupervisor:
                             _on_provider_stream_start=job.provider_stream_started.set,
                         )
                 except asyncio.CancelledError:
-                    self._finish_interrupted_job(job)
+                    await self._finish_interrupted_job(job)
                     raise
                 except Exception as exc:  # noqa: BLE001 - task isolation boundary.
                     diagnostic = Diagnostic(
@@ -961,9 +1015,11 @@ class RuntimeSupervisor:
             return snapshot.session_id
         return handle_or_session
 
-    def _finish_interrupted_job(self, job: _RunJob) -> None:
+    async def _finish_interrupted_job(self, job: _RunJob) -> None:
         try:
-            active = maybe_active_run(self.store.load_runs(job.handle.session_id))
+            active = maybe_active_run(
+                await run_blocking(self.store.load_runs, job.handle.session_id)
+            )
         except Exception:  # noqa: BLE001 - shutdown must still release process state.
             active = None
         self._finish_job(

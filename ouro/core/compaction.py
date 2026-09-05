@@ -285,25 +285,24 @@ def plan_compaction(
         ),
         len(frames) - 1,
     )
-    retained_frames = list(frames[protected_index:])
+    retained_start = protected_index
     retained_tokens = _messages_tokens(
-        [message for frame in retained_frames for message in frame],
+        [message for frame in frames[retained_start:] for message in frame],
         estimator,
     )
-    candidate_frames = list(frames[:protected_index])
-    while candidate_frames:
-        frame = candidate_frames[-1]
+    while retained_start > 0:
+        frame = frames[retained_start - 1]
         frame_tokens = _messages_tokens(frame, estimator)
         if retained_tokens + frame_tokens > tail_token_budget:
             break
-        retained_frames.insert(0, candidate_frames.pop())
+        retained_start -= 1
         retained_tokens += frame_tokens
 
-    if force and protected_run_id is None and not candidate_frames and len(retained_frames) > 1:
-        candidate_frames.append(retained_frames.pop(0))
+    if force and protected_run_id is None and retained_start == 0 and len(frames) > 1:
+        retained_start = 1
 
-    messages_to_compact = [message for frame in candidate_frames for message in frame]
-    retained_messages = [message for frame in retained_frames for message in frame]
+    messages_to_compact = [message for frame in frames[:retained_start] for message in frame]
+    retained_messages = [message for frame in frames[retained_start:] for message in frame]
     return CompactionPlan(
         messages_to_compact=messages_to_compact,
         retained_messages=retained_messages,

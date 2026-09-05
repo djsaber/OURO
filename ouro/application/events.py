@@ -8,6 +8,7 @@ from typing import Any, Protocol, cast
 
 from ouro.application.event_models import validate_runtime_event_payload
 from ouro.application.observers import ObserverDispatcher
+from ouro.core.cancellation import settle_owned_tasks
 from ouro.core.context_providers import ContextProviderFailure
 from ouro.core.events import EventRecord
 from ouro.core.observers import (
@@ -284,9 +285,25 @@ class RuntimeEventRecorder:
 
         lock = self._session_event_locks.setdefault(event.session_id, asyncio.Lock())
         async with lock:
-            recorded = await self._append_ordered_event(event)
-            self._publish(recorded, notify_observers=notify_observers)
-            return recorded
+            # Keep the session lock through both persistence and publication,
+            # including when the owner is cancelled during a thread write.
+            task = asyncio.create_task(
+                self._persist_and_publish(event, notify_observers=notify_observers)
+            )
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                await settle_owned_tasks(task)
+                if not task.cancelled():
+                    task.exception()
+                raise
+
+    async def _persist_and_publish(
+        self, event: EventRecord, *, notify_observers: bool
+    ) -> EventRecord:
+        recorded = await self._append_ordered_event(event)
+        self._publish(recorded, notify_observers=notify_observers)
+        return recorded
 
     def _publish(self, event: EventRecord, *, notify_observers: bool) -> None:
         if self._closed:

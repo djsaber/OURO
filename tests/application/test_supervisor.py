@@ -303,7 +303,7 @@ async def test_activity_subscription_exposes_initial_and_live_fine_grained_state
     provider = ConcurrencyProvider()
     supervisor = RuntimeSupervisor(_runtime(tmp_path, provider), max_concurrency=1)
     handle = await supervisor.submit("hello")
-    subscription = supervisor.subscribe(handle.session_id, include_activity=True)
+    subscription = await supervisor.subscribe(handle.session_id, include_activity=True)
 
     assert subscription.initial_activity is not None
     assert subscription.initial_activity.activity == "queued"
@@ -338,15 +338,14 @@ async def test_activity_subscription_exposes_host_neutral_streaming_tool_state(t
     provider = BlockingToolStreamProvider()
     supervisor = RuntimeSupervisor(_runtime(tmp_path, provider), max_concurrency=1)
     handle = await supervisor.submit("inspect")
-    subscription = supervisor.subscribe(handle.session_id, include_activity=True)
+    subscription = await supervisor.subscribe(handle.session_id, include_activity=True)
 
     while True:
         notification = await asyncio.wait_for(subscription.get(), timeout=2)
         if notification.kind != "event" or notification.event is None:
             continue
-        if (
-            notification.event.event_type == "model_tool_call_delta"
-            and notification.event.data.get("arguments_delta")
+        if notification.event.event_type == "model_tool_call_delta" and notification.event.data.get(
+            "arguments_delta"
         ):
             break
 
@@ -401,7 +400,7 @@ async def test_slow_subscription_reports_lag_without_blocking_run(tmp_path) -> N
     runtime = _runtime(tmp_path, FauxProvider())
     session = runtime.sessions.create(title="Events").session
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
-    subscription = supervisor.subscribe(session.session_id, max_buffer=1)
+    subscription = await supervisor.subscribe(session.session_id, max_buffer=1)
 
     handle = await supervisor.submit("hello", session_id=session.session_id)
     terminal = await asyncio.wait_for(supervisor.wait(handle), timeout=2)
@@ -421,7 +420,7 @@ async def test_activity_initial_snapshot_remains_available_when_event_replay_lag
     handle = await supervisor.submit("hello")
     await supervisor.wait(handle)
 
-    subscription = supervisor.subscribe(
+    subscription = await supervisor.subscribe(
         handle.session_id,
         max_buffer=1,
         include_activity=True,
@@ -459,7 +458,7 @@ async def test_subscription_replay_is_bounded_and_never_loads_full_history(
 
     monkeypatch.setattr(runtime.store, "load_session", reject_full_history)
     supervisor = RuntimeSupervisor(runtime)
-    subscription = supervisor.subscribe(session.session_id, max_buffer=2)
+    subscription = await supervisor.subscribe(session.session_id, max_buffer=2)
 
     notification = await subscription.get()
     assert notification.kind == "diagnostic"
@@ -482,7 +481,7 @@ async def test_host_event_projection_is_typed_and_redacts_payload_secrets(tmp_pa
         )
     )
     supervisor = RuntimeSupervisor(runtime)
-    subscription = supervisor.subscribe(session.session_id)
+    subscription = await supervisor.subscribe(session.session_id)
 
     notification = await subscription.get()
     assert notification.event is not None
@@ -519,7 +518,7 @@ async def test_observation_high_water_hands_off_to_subscription_without_a_gap(
     )
     supervisor = RuntimeSupervisor(runtime)
 
-    subscription = supervisor.subscribe(
+    subscription = await supervisor.subscribe(
         session.session_id,
         after_sequence=snapshot.event_high_water,
     )
@@ -556,7 +555,7 @@ async def test_agent_relation_events_have_a_dedicated_category(tmp_path) -> None
         )
     )
     supervisor = RuntimeSupervisor(runtime)
-    subscription = supervisor.subscribe(session.session_id)
+    subscription = await supervisor.subscribe(session.session_id)
 
     notification = await subscription.get()
 
@@ -598,7 +597,7 @@ async def test_host_detach_does_not_abort_but_explicit_abort_does(tmp_path) -> N
     runtime = _runtime(tmp_path, provider)
     session = runtime.sessions.create(title="Detach").session
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
-    subscription = supervisor.subscribe(session.session_id)
+    subscription = await supervisor.subscribe(session.session_id)
     handle = await supervisor.submit("wait", session_id=session.session_id)
     await provider.started.wait()
 

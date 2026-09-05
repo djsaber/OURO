@@ -1217,6 +1217,10 @@ async def test_interactive_does_not_submit_empty_async_subagent_answer(
         if input_count == 1:
             return "test async subagent empty answer"
         if input_count == 2:
+            # An already-ready child uses the direct question reader; a child
+            # arriving later repurposes the primary prompt and prints its hint.
+            if _prompt.startswith("Select [1-"):
+                answer_prompted.set()
             assert answer_prompted.wait(timeout=5)
             return ""
         if input_count == 3:

@@ -605,10 +605,10 @@ class RuntimeService:
         session_ids = (
             (session_id,)
             if session_id is not None
-            else tuple(entry.session_id for entry in self.store.list_sessions())
+            else tuple(entry.session_id for entry in await run_blocking(self.store.list_sessions))
         )
         for candidate_id in session_ids:
-            for run in self.store.load_runs(candidate_id):
+            for run in await run_blocking(self.store.load_runs, candidate_id):
                 if not self._run_continuation_is_pending(run):
                     continue
                 try:
@@ -630,10 +630,15 @@ class RuntimeService:
     ) -> RuntimeSessionSnapshot:
         """Recover execution state for exactly one Session."""
 
-        self.reconcile_interrupted_session_controls(session_id)
-        snapshot = self.session_recovery.recover_runtime(session_id)
+        def recover() -> RuntimeSessionSnapshot:
+            self.reconcile_interrupted_session_controls(session_id)
+            return self.session_recovery.recover_runtime(session_id)
+
+        snapshot = await run_blocking(recover)
         settled = await self.reconcile_pending_run_continuations(session_id)
-        return self.store.load_runtime_session(session_id) if settled else snapshot
+        return (
+            await run_blocking(self.store.load_runtime_session, session_id) if settled else snapshot
+        )
 
     async def reconcile_session(self, session_id: str) -> tuple[Diagnostic, ...]:
         """Recover only the target Session and its bounded Agent aggregate."""
@@ -647,14 +652,14 @@ class RuntimeService:
     ) -> tuple[RuntimeSessionSnapshot, tuple[Diagnostic, ...]]:
         """Return the post-reconciliation target snapshot for execution."""
 
-        session = self.store.load_session_record(session_id)
+        session = await run_blocking(self.store.load_session_record, session_id)
         if self._agent_controls is None:
             return await self.reconcile_execution_session(session_id), ()
 
         diagnostics: list[Diagnostic] = []
         root_session_id = session.agent_root_session_id
         target_snapshot: RuntimeSessionSnapshot | None = None
-        for candidate_id in self._agent_controls.recovery_session_ids(session):
+        for candidate_id in await run_blocking(self._agent_controls.recovery_session_ids, session):
             try:
                 recovered = await self.reconcile_execution_session(candidate_id)
                 if candidate_id == session_id:
@@ -675,7 +680,7 @@ class RuntimeService:
         diagnostics.extend(await self._agent_controls.reconcile_session(session))
         if target_snapshot is None:
             raise FileNotFoundError(session_id)
-        return self.store.load_runtime_session(session_id), tuple(diagnostics)
+        return await run_blocking(self.store.load_runtime_session, session_id), tuple(diagnostics)
 
     @staticmethod
     def _execution_recovery_diagnostic(
@@ -852,6 +857,28 @@ class RuntimeService:
     ) -> QueuedUserInputView | None:
         """Cancel one direct user input if it has not crossed a durable boundary."""
 
+        result = await run_blocking(self._cancel_pending_user_input, session_id, queue_id)
+        if result is None:
+            return None
+        session, cancelled = result
+        self._release_queued_extension_snapshot(queue_id)
+        if cancelled is None:
+            return None
+        await self.event_recorder.publish(
+            session_id=session_id,
+            run_id=session.active_run_id,
+            event_type="queued_input_cancelled",
+            payload={
+                "queue_id": cancelled.queue_id,
+                "mode": cancelled.mode,
+                "source": cancelled.source,
+            },
+        )
+        return _queued_user_input_view(cancelled)
+
+    def _cancel_pending_user_input(
+        self, session_id: str, queue_id: str
+    ) -> tuple[SessionRecord, QueuedInput | None] | None:
         cancelled: QueuedInput | None = None
         with self.store.session_mutation(session_id):
             snapshot = self.store.load_runtime_session(session_id)
@@ -865,21 +892,7 @@ class RuntimeService:
                     session_id=session_id,
                     queue_id=queue_id,
                 )
-        self._release_queued_extension_snapshot(queue_id)
-        if cancelled is None:
-            return None
-        session = self.store.load_session_record(session_id)
-        await self.event_recorder.publish(
-            session_id=session_id,
-            run_id=session.active_run_id,
-            event_type="queued_input_cancelled",
-            payload={
-                "queue_id": cancelled.queue_id,
-                "mode": cancelled.mode,
-                "source": cancelled.source,
-            },
-        )
-        return _queued_user_input_view(cancelled)
+        return self.store.load_session_record(session_id), cancelled
 
     def current_model(self, session_id: str | None = None) -> AvailableModel:
         if session_id is None:
@@ -1425,8 +1438,7 @@ class RuntimeService:
                 trigger=attributed_source or "user",
             )
         )
-        run_lock = await run_blocking(
-            self.run_ownership.acquire,
+        run_lock = await self.run_ownership.acquire(
             session.session_id,
             run.run_id,
         )
@@ -1514,12 +1526,12 @@ class RuntimeService:
                     policy_updates,
                 )
                 locked_snapshot = locked_snapshot.model_copy(update={"session": session})
-            session, active_adapter = self._resolve_session_adapter(session)
+            session, active_adapter = await run_blocking(self._resolve_session_adapter, session)
             existing_messages = locked_snapshot.messages
             run = run.model_copy(update={"model": active_adapter.model.model_id})
             self._restore_run_tool_cap(run)
             if preapproved_new_run is not None:
-                run = self._bind_extension_snapshot(
+                run = await self._bind_extension_snapshot(
                     run,
                     self._extension_snapshots.get(run.run_id),
                 )
@@ -1528,7 +1540,7 @@ class RuntimeService:
             elif _prepared_run is not None and "extension_generations" in run.metadata:
                 await self._ensure_extension_snapshot(run)
             else:
-                run = self._attach_extension_snapshot(run)
+                run = await self._attach_extension_snapshot(run)
             if skill_invocation is not None and resolved_skill_activation is None:
                 resolved_skill_activation = self._resolve_skill_activation_for_run(
                     run.run_id,
@@ -1694,11 +1706,13 @@ class RuntimeService:
                 on_provider_stream_start=_on_provider_stream_start,
             )
         finally:
-            if abort_signal is not None:
-                await self.run_ownership.release_signal(run.run_id, abort_signal)
-            if result is None:
-                self._release_extension_snapshot(run.run_id)
-            self.run_ownership.release(run_lock)
+            try:
+                if abort_signal is not None:
+                    await self.run_ownership.release_signal(run.run_id, abort_signal)
+            finally:
+                if result is None:
+                    self._release_extension_snapshot(run.run_id)
+                await self.run_ownership.release(run.run_id, run_lock)
         assert result is not None
         return await self._finalize_run_boundary(
             result,
@@ -1828,7 +1842,7 @@ class RuntimeService:
     async def compact(self, *, session_id: str) -> CompactionCommandResult:
         """Manually compact a session through the same durable summary pipeline as auto mode."""
 
-        snapshot = self._load_runtime_snapshot(session_id, recover=True)
+        snapshot = await run_blocking(self._load_runtime_snapshot, session_id, recover=True)
         if maybe_active_run(snapshot.runs) is not None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
         run = RunRecord(
@@ -1837,26 +1851,29 @@ class RuntimeService:
             trigger="manual_compaction",
             status="running",
         )
-        run_lock = await run_blocking(
-            self.run_ownership.acquire,
+        run_lock = await self.run_ownership.acquire(
             session_id,
             run.run_id,
         )
         if run_lock is None:
             raise SessionBusyError(f"session is already locked: {session_id}")
         emitted: list[EventRecord] = []
-        sequence = self.store.latest_event_sequence(session_id)
-        abort_signal = await self.run_ownership.activate_signal(session_id, run.run_id)
+        abort_signal = None
         terminal_run = run
         try:
-            snapshot = self.store.load_runtime_session(session_id)
+            sequence = await run_blocking(self.store.latest_event_sequence, session_id)
+            abort_signal = await self.run_ownership.activate_signal(session_id, run.run_id)
+            snapshot = await run_blocking(self.store.load_runtime_session, session_id)
             if maybe_active_run(snapshot.runs) is not None:
                 raise SessionBusyError(f"session already has an active run: {session_id}")
-            active_session, active_adapter = self._resolve_session_adapter(snapshot.session)
+            active_session, active_adapter = await run_blocking(
+                self._resolve_session_adapter, snapshot.session
+            )
             run = run.model_copy(update={"model": active_adapter.model.model_id})
-            run = self._attach_extension_snapshot(run)
+            run = await self._attach_extension_snapshot(run)
             terminal_run = run
-            active_session, run = self.run_lifecycle.start(
+            active_session, run = await run_blocking(
+                self.run_lifecycle.start,
                 session=active_session,
                 run=run,
                 snapshot=snapshot,
@@ -1888,8 +1905,8 @@ class RuntimeService:
             except CompactionAbortedError:
                 cancelled = await self._finalize_requested_abort(
                     RunResult(
-                        session=self.store.load_session_record(session_id),
-                        run=self.store.load_run(session_id, run.run_id),
+                        session=await run_blocking(self.store.load_session_record, session_id),
+                        run=await run_blocking(self.store.load_run, session_id, run.run_id),
                         events=emitted,
                     )
                 )
@@ -1902,7 +1919,7 @@ class RuntimeService:
             except Exception as exc:
                 failed = await self.run_lifecycle.fail(
                     emitted,
-                    self.store.latest_event_sequence(session_id),
+                    await run_blocking(self.store.latest_event_sequence, session_id),
                     session=active_session,
                     run=run,
                     error=str(exc),
@@ -1932,20 +1949,25 @@ class RuntimeService:
                 skipped=execution.skipped,
             )
         finally:
-            await self.run_ownership.release_signal(run.run_id, abort_signal)
-            self.run_ownership.release(run_lock)
-            if terminal_run.status in ACTIVE_RUN_STATUSES:
-                self._finish_run_observers(terminal_run)
-            else:
-                await self._finalize_run_boundary(
-                    RunResult(
-                        session=self.store.load_session_record(session_id),
-                        run=terminal_run,
-                        events=emitted,
-                    ),
-                    drain_queued_inputs=False,
-                )
-            self._release_extension_snapshot(run.run_id)
+            try:
+                try:
+                    if abort_signal is not None:
+                        await self.run_ownership.release_signal(run.run_id, abort_signal)
+                finally:
+                    await self.run_ownership.release(run.run_id, run_lock)
+                if terminal_run.status in ACTIVE_RUN_STATUSES:
+                    self._finish_run_observers(terminal_run)
+                else:
+                    await self._finalize_run_boundary(
+                        RunResult(
+                            session=await run_blocking(self.store.load_session_record, session_id),
+                            run=terminal_run,
+                            events=emitted,
+                        ),
+                        drain_queued_inputs=False,
+                    )
+            finally:
+                self._release_extension_snapshot(run.run_id)
 
     async def abort_run(
         self,
@@ -2136,8 +2158,8 @@ class RuntimeService:
                 and message.run_id is not None
             ):
                 return RunResult(
-                    session=self.store.load_session_record(receipt.session_id),
-                    run=self.store.load_run(receipt.session_id, message.run_id),
+                    session=await run_blocking(self.store.load_session_record, receipt.session_id),
+                    run=await run_blocking(self.store.load_run, receipt.session_id, message.run_id),
                 )
         raise PersistenceError(
             f"accepted Host input is missing from queue and canonical history: {receipt.queue_id}"
@@ -2186,7 +2208,7 @@ class RuntimeService:
                     extension_snapshot = active_snapshot.fork()
                 controller_run_id = active_run.run_id
             else:
-                prospective = self._attach_extension_snapshot(prospective)
+                prospective = await self._attach_extension_snapshot(prospective)
             try:
                 if skill_invocation is not None:
                     resolved_skill_activation = self._resolve_skill_activation_for_run(
@@ -2235,7 +2257,8 @@ class RuntimeService:
                     extension_snapshot.close()
                 raise
         try:
-            session, queued_input, queue_size = self.queued_inputs.enqueue(
+            session, queued_input, queue_size = await run_blocking(
+                self.queued_inputs.enqueue,
                 snapshot=snapshot,
                 prompt=prompt,
                 skill_activation=resolved_skill_activation,
@@ -2340,7 +2363,7 @@ class RuntimeService:
         else:
             await self.event_recorder.emit(
                 emitted,
-                self.store.latest_event_sequence(session.session_id),
+                await run_blocking(self.store.latest_event_sequence, session.session_id),
                 session_id=session.session_id,
                 run_id=active_run.run_id,
                 event_type=event_type,
@@ -2367,7 +2390,8 @@ class RuntimeService:
             )
             for item in batch.inputs
         )
-        session, queued, queue_size, superseded = self.queued_inputs.enqueue_batch(
+        session, queued, queue_size, superseded = await run_blocking(
+            self.queued_inputs.enqueue_batch,
             snapshot=snapshot,
             inputs=requests,
             source="plugin",
@@ -2404,7 +2428,7 @@ class RuntimeService:
         else:
             await self.event_recorder.emit(
                 emitted,
-                self.store.latest_event_sequence(session.session_id),
+                await run_blocking(self.store.latest_event_sequence, session.session_id),
                 session_id=session.session_id,
                 run_id=active_run.run_id,
                 event_type="session_input_batch_queued",
@@ -3003,8 +3027,8 @@ class RuntimeService:
         resolved_approval_id = approval_id or run.pending_approval_id
         if resolved_approval_id is None:
             raise ValueError("run has no pending approval")
-        run_lock = await run_blocking(
-            self.run_ownership.acquire,
+        await self.run_ownership.wait_for_local_release(run.run_id)
+        run_lock = await self.run_ownership.acquire(
             session.session_id,
             run.run_id,
         )
@@ -3092,7 +3116,7 @@ class RuntimeService:
                         sequence=sequence,
                     )
         finally:
-            self.run_ownership.release(run_lock)
+            await self.run_ownership.release(run.run_id, run_lock)
         # Queue draining starts a new Run and therefore must occur outside the
         # completed interaction's non-reentrant Session run lock.
         return await self._finalize_run_boundary(result, drain_queued_inputs=True)
@@ -3119,8 +3143,8 @@ class RuntimeService:
         waiting_call = next((call for call in batch.calls if call.status == "waiting_user"), None)
         if waiting_call is None:
             raise ValueError("run has no tool call waiting for user input")
-        run_lock = await run_blocking(
-            self.run_ownership.acquire,
+        await self.run_ownership.wait_for_local_release(run.run_id)
+        run_lock = await self.run_ownership.acquire(
             session.session_id,
             run.run_id,
         )
@@ -3200,7 +3224,7 @@ class RuntimeService:
                 sequence=sequence,
             )
         finally:
-            self.run_ownership.release(run_lock)
+            await self.run_ownership.release(run.run_id, run_lock)
         # Keep the same post-lock Run boundary as normal runs and approval
         # recovery; a follow-up must acquire a fresh Session run lock.
         return await self._finalize_run_boundary(result, drain_queued_inputs=True)
@@ -3224,8 +3248,8 @@ class RuntimeService:
         run = find_run(snapshot.runs, run_id)
         if run.status != "waiting_child":
             raise ValueError(f"run is not waiting for a child: {run.status}")
-        run_lock = await run_blocking(
-            self.run_ownership.acquire,
+        await self.run_ownership.wait_for_local_release(run_id)
+        run_lock = await self.run_ownership.acquire(
             session_id,
             run_id,
         )
@@ -3311,7 +3335,7 @@ class RuntimeService:
                 sequence=sequence,
             )
         finally:
-            self.run_ownership.release(run_lock)
+            await self.run_ownership.release(run.run_id, run_lock)
         return await self._finalize_run_boundary(resumed, drain_queued_inputs=True)
 
     async def _continue_resolved_batch(
@@ -3761,8 +3785,9 @@ class RuntimeService:
         run_id: str,
         model_round: int,
         catalog: ExtensionCatalogLease | None = None,
+        session_record: SessionRecord | None = None,
     ) -> dict[str, object]:
-        controls = self.store.load_session_record(session_id).controls
+        controls = (session_record or self.store.load_session_record(session_id)).controls
         activations = [
             {
                 "activation_id": activation.activation_id,
@@ -3817,13 +3842,17 @@ class RuntimeService:
             eligible.add(controller_id)
         self._session_control_snapshots[run.run_id] = frozenset(eligible)
 
-    def _attach_extension_snapshot(self, run: RunRecord) -> RunRecord:
+    async def _attach_extension_snapshot(self, run: RunRecord) -> RunRecord:
         snapshot = (
             self._extension_catalog.snapshot() if self._extension_catalog is not None else None
         )
-        return self._bind_extension_snapshot(run, snapshot)
+        try:
+            return await self._bind_extension_snapshot(run, snapshot)
+        except BaseException:
+            self._release_extension_snapshot(run.run_id)
+            raise
 
-    def _bind_extension_snapshot(
+    async def _bind_extension_snapshot(
         self,
         run: RunRecord,
         snapshot: ExtensionCatalogLease | None,
@@ -3833,11 +3862,14 @@ class RuntimeService:
         update: dict[str, object] = {"metadata": metadata}
         if snapshot is not None:
             self._extension_snapshots[run.run_id] = snapshot
+        session = await run_blocking(self.store.load_session_record, run.session_id)
+        if snapshot is not None:
             metadata["session_control_snapshot"] = self._session_control_snapshot(
                 run.session_id,
                 run_id=run.run_id,
                 model_round=0,
                 catalog=snapshot,
+                session_record=session,
             )
             metadata["extension_catalog_id"] = snapshot.catalog_id
             metadata["extension_generations"] = [
@@ -3845,14 +3877,14 @@ class RuntimeService:
                 for generation in snapshot.generations
             ]
             if run.kind == "agent":
-                update["continuation"] = self._continuation_checkpoint(run, snapshot)
-        session = self.store.load_session_record(run.session_id)
+                update["continuation"] = self._continuation_checkpoint(run, snapshot, session)
         if (
             run.kind == "agent"
             and session.session_kind == "primary"
             and self._agent_definitions is not None
         ):
-            catalog = self._agent_definitions.catalog_snapshot(
+            catalog = await run_blocking(
+                self._agent_definitions.catalog_snapshot,
                 self._tools_for_run(run.run_id),
                 permission_overrides=self._permission_overrides,
                 plugin_permission_overrides=self._plugin_permission_overrides,
@@ -3886,17 +3918,20 @@ class RuntimeService:
                 list(first.extension_generations),
                 catalog_id=first.extension_catalog_id,
             )
-        return self._bind_extension_snapshot(run, snapshot)
+        return await self._bind_extension_snapshot(run, snapshot)
 
     def _continuation_checkpoint(
         self,
         run: RunRecord,
         snapshot: ExtensionCatalogLease,
+        session_record: SessionRecord | None = None,
     ) -> RunContinuationCheckpoint | None:
         generations = {generation.generation_id: generation for generation in snapshot.generations}
         activations = {
             activation.controller_id: activation
-            for activation in self.store.load_session_record(run.session_id).controls.activations
+            for activation in (
+                session_record or self.store.load_session_record(run.session_id)
+            ).controls.activations
             if activation.phase == "active"
         }
         controllers: list[RunContinuationControllerRef] = []

@@ -626,9 +626,7 @@ def _summary_line(
 ) -> Text:
     summary = Text()
     marker_style = f"bold {marker_tone}" if emphasized else marker_tone
-    title_style = (
-        f"bold {theme.text_secondary}" if emphasized else theme.text_secondary
-    )
+    title_style = f"bold {theme.text_secondary}" if emphasized else theme.text_secondary
     summary.append(f"{theme.brand_mark} ", style=marker_style)
     summary.append(title, style=title_style)
     for value, tone in details:
@@ -1056,9 +1054,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._hovered_tool_entry_index = None
         self._hovered_reasoning_entry_index = None
         materialized = list(entries)
-        if materialized and (
-            not self._size_known or self.scrollable_content_region.width <= 0
-        ):
+        if materialized and (not self._size_known or self.scrollable_content_region.width <= 0):
             # Reveal an empty/reused log before attaching entries. Layout can
             # establish the render width without synchronously rendering content
             # from Resize, which keeps both cold loads and cached restores on
@@ -1387,6 +1383,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             if not self._entries or self.lines:
                 return
             self._render_entries()
+            await self.wait_for_theme_refresh()
             if self.lines:
                 return
             if attempt < 3:
@@ -1427,9 +1424,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         for agent in agents:
             if agent.parent_tool_call_id is None:
                 continue
-            index = self._tool_entry_indexes.get(
-                (agent.parent_run_id, agent.parent_tool_call_id)
-            )
+            index = self._tool_entry_indexes.get((agent.parent_run_id, agent.parent_tool_call_id))
             if index is None:
                 continue
             entry = self._entries[index]
@@ -1447,13 +1442,18 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 self._render_entries()
 
     def refresh_theme(self) -> None:
+        self._schedule_buffer_render()
+
+    def _schedule_buffer_render(self) -> None:
+        """Coalesce theme and geometry changes through the same render owner."""
+
         self._theme_render_revision += 1
         if not self._entries or not self.is_mounted or self._theme_render_active:
             return
         self._theme_render_active = True
         self._theme_render_idle.clear()
         self.run_worker(
-            self._refresh_theme_async(),
+            self._refresh_buffer_async(),
             group="conversation-history-theme",
         )
 
@@ -1462,8 +1462,8 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
 
         await self._theme_render_idle.wait()
 
-    async def _refresh_theme_async(self) -> None:
-        """Render a complete themed buffer off-loop, then replace it atomically."""
+    async def _refresh_buffer_async(self) -> None:
+        """Render the current theme and width off-loop, then replace atomically."""
 
         try:
             while self._entries:
@@ -1585,8 +1585,10 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         size_was_known = self._size_known
         super().on_resize(event)
         width = self.scrollable_content_region.width
-        if self._entries and width > 0 and (
-            not self.lines or not size_was_known or width != self._render_width
+        if (
+            self._entries
+            and width > 0
+            and (not self.lines or not size_was_known or width != self._render_width)
         ):
             self._render_entries()
 
@@ -1612,6 +1614,9 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
     def _render_entries(self) -> None:
         width = self.scrollable_content_region.width
         if width <= 0 or not self._size_known:
+            return
+        if self._requires_background_render(tuple(self._entries)):
+            self._schedule_buffer_render()
             return
         self._reset_buffer(self._entries)
         self._write_entries(0, len(self._entries))

@@ -400,7 +400,10 @@ async def test_event_recorder_allocates_unique_sequences_across_concurrent_emitt
 
 
 @pytest.mark.asyncio
-async def test_event_recorder_fanout_preserves_same_session_persistence_order(tmp_path) -> None:
+@pytest.mark.parametrize("cancel_first", [False, True])
+async def test_event_recorder_fanout_preserves_same_session_persistence_order(
+    tmp_path, cancel_first
+) -> None:
     first_persisted = threading.Event()
     release_first = threading.Event()
 
@@ -431,6 +434,10 @@ async def test_event_recorder_fanout_preserves_same_session_persistence_order(tm
         )
     )
     assert await asyncio.to_thread(first_persisted.wait, 1)
+    if cancel_first:
+        first.cancel()
+        await asyncio.sleep(0)
+        first.cancel()
     second = asyncio.create_task(
         recorder.publish(
             session_id=session.session_id,
@@ -443,10 +450,14 @@ async def test_event_recorder_fanout_preserves_same_session_persistence_order(tm
     assert second.done() is False
 
     release_first.set()
-    recorded = await asyncio.gather(first, second)
+    recorded = await asyncio.gather(first, second, return_exceptions=True)
     await recorder.drain()
 
-    assert [event.sequence for event in recorded] == [1, 2]
+    if cancel_first:
+        assert isinstance(recorded[0], asyncio.CancelledError)
+        assert isinstance(recorded[1], EventRecord) and recorded[1].sequence == 2
+    else:
+        assert [event.sequence for event in recorded] == [1, 2]
     assert seen == [1, 2]
     await recorder.close()
 

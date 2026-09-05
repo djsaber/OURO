@@ -1562,9 +1562,7 @@ def _persist_direct_child_session(application: LocalApplication) -> tuple[str, s
             run_id=root_run_id,
             session_id=root.session_id,
             status="completed",
-            agent_catalog=AgentCatalogSnapshot(
-                entries=(AgentCatalogEntry(definition=definition),)
-            ),
+            agent_catalog=AgentCatalogSnapshot(entries=(AgentCatalogEntry(definition=definition),)),
         )
     )
     store.create_session(child)
@@ -2005,9 +2003,7 @@ async def test_welcome_usage_hover_selects_day_without_changing_color_and_previe
         await pilot.pause()
 
         hovered_chart = usage._chart.render()
-        hovered_colors = [
-            hovered_chart.get_style_at_offset(index).foreground for index in range(2)
-        ]
+        hovered_colors = [hovered_chart.get_style_at_offset(index).foreground for index in range(2)]
         assert hovered_chart.plain == "▣■ • 2026-09-01"
         assert hovered_colors == initial_colors
         assert usage._requests.render().plain == "1 request(s) • $0.0100"
@@ -3280,8 +3276,9 @@ async def test_runtime_event_handler_schedules_session_control_refresh_without_a
         applying = asyncio.create_task(app._apply_runtime_events((event,)))
         try:
             await asyncio.wait_for(entered.wait(), timeout=1)
-            await asyncio.sleep(0)
-            assert applying.done() is True
+            # Subscription initialization can await its replay read, while the
+            # deliberately blocked status refresh must remain independent.
+            await asyncio.wait_for(applying, timeout=1)
         finally:
             release.set()
         await applying
@@ -3407,9 +3404,7 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
             cursor_off_style = next(iter(cursor_off.crop(0, 1))).style
             cursor_on_style = next(iter(cursor_on.crop(0, 1))).style
             assert cursor_on_style != cursor_off_style
-            assert next(iter(cursor_on.crop(1, 2))).style == next(
-                iter(cursor_off.crop(1, 2))
-            ).style
+            assert next(iter(cursor_on.crop(1, 2))).style == next(iter(cursor_off.crop(1, 2))).style
         finally:
             provider.release.set()
         await _wait_for_worker_group(app, pilot, group="run")
@@ -3469,9 +3464,7 @@ async def test_queued_input_rows_use_single_line_tokenized_previews(tmp_path: Pa
         separator_style = source.get_style_at_offset(
             Console(), source.plain.index(DEFAULT_TUI_THEME.inline_separator_mark)
         )
-        message_style = source.get_style_at_offset(
-            Console(), source.plain.index("first line")
-        )
+        message_style = source.get_style_at_offset(Console(), source.plain.index("first line"))
         assert not label_style.bold
         assert separator_style.color is not None
         assert separator_style.color.triplet is not None
@@ -3852,10 +3845,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             segment = next(iter(rendered_placeholder.crop(offset, offset + len(shortcut))))
             assert segment.style is not None and not segment.style.bold
             assert segment.style.color is not None
-            assert (
-                segment.style.color.get_truecolor().hex
-                == TUI_THEMES["original"].accent_bright
-            )
+            assert segment.style.color.get_truecolor().hex == TUI_THEMES["original"].accent_bright
         assert any(
             entry.kind == "user" and entry.text == "first child task"
             for entry in app.query_one(ConversationHistory).entries
@@ -3934,14 +3924,8 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         assert app.query_one(ConversationView).scroll_y == held_root_scroll_y
         assert displayed_root_frames
         assert all(
-            (
-                "first child paragraph 29" in rendered
-                and scroll_y == held_child_scroll_y
-            )
-            or (
-                "Root history paragraph 79" in rendered
-                and scroll_y == held_root_scroll_y
-            )
+            ("first child paragraph 29" in rendered and scroll_y == held_child_scroll_y)
+            or ("Root history paragraph 79" in rendered and scroll_y == held_root_scroll_y)
             for rendered, scroll_y in displayed_root_frames
         )
         assert app._visible_read_only is False
@@ -3982,7 +3966,10 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             entry_index: int,
             **kwargs,
         ) -> None:
-            rendered_during_cached_switch.append(entry_index)
+            # Root previews remain live while the child snapshot is loading.
+            # This assertion measures reuse of the destination child history.
+            if history.entries and history.entries[0].text == "first child task":
+                rendered_during_cached_switch.append(entry_index)
             write_entry(history, *args, entry_index=entry_index, **kwargs)
 
         monkeypatch.setattr(
@@ -4017,14 +4004,8 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         rendered_during_cached_switch.clear()
         assert displayed_child_frames
         assert all(
-            (
-                "Root history paragraph 79" in rendered
-                and scroll_y == held_root_scroll_y
-            )
-            or (
-                "first child paragraph 29" in rendered
-                and scroll_y == held_child_scroll_y
-            )
+            ("Root history paragraph 79" in rendered and scroll_y == held_root_scroll_y)
+            or ("first child paragraph 29" in rendered and scroll_y == held_child_scroll_y)
             for rendered, scroll_y in displayed_child_frames
         )
         monkeypatch.setattr(app, "_display", original_display)
@@ -4824,9 +4805,7 @@ async def test_history_projection_does_not_block_the_event_loop(
         watchdog = threading.Timer(1, release.set)
         watchdog.start()
         event_loop_thread = threading.get_ident()
-        loading = asyncio.create_task(
-            app.query_one(ConversationView).load_messages((message,))
-        )
+        loading = asyncio.create_task(app.query_one(ConversationView).load_messages((message,)))
 
         try:
             projection_entered = await asyncio.to_thread(entered.wait, 2)
@@ -6814,8 +6793,7 @@ async def test_delete_session_menu_keeps_current_marker_separate_from_multi_sele
             == DEFAULT_TUI_THEME.unselected_choice_marker
         )
         assert (
-            choices[other.session_id].selection_marker
-            == DEFAULT_TUI_THEME.unselected_choice_marker
+            choices[other.session_id].selection_marker == DEFAULT_TUI_THEME.unselected_choice_marker
         )
 
         options = delete_screen.query_one("#choice-list", OptionList)
@@ -6831,8 +6809,7 @@ async def test_delete_session_menu_keeps_current_marker_separate_from_multi_sele
             == DEFAULT_TUI_THEME.unselected_choice_marker
         )
         assert (
-            choices[other.session_id].selection_marker
-            == DEFAULT_TUI_THEME.selected_choice_marker
+            choices[other.session_id].selection_marker == DEFAULT_TUI_THEME.selected_choice_marker
         )
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -8094,8 +8071,7 @@ async def test_setting_default_endpoint_also_switches_default_provider(tmp_path:
         assert choices["primary/primary-chat"].marker == ""
         assert choices["secondary/secondary-chat"].label == "secondary-chat"
         assert (
-            choices["secondary/secondary-chat"].marker
-            == DEFAULT_TUI_THEME.selected_choice_marker
+            choices["secondary/secondary-chat"].marker == DEFAULT_TUI_THEME.selected_choice_marker
         )
         assert all(choice.trailing == "" for choice in choices.values())
         catalog = ConfigurationFacade(tmp_path).provider_catalog()
@@ -11383,8 +11359,7 @@ async def test_approval_panel_selects_with_arrows_and_resumes_run(tmp_path: Path
         await pilot.click("#composer")
         await pilot.press("w", "r", "i", "t", "e", "enter")
         await _wait_until(
-            lambda: app._projection is not None
-            and app._projection.pending_interaction is not None,
+            lambda: app._projection is not None and app._projection.pending_interaction is not None,
             pilot,
             description="tool approval request",
         )
@@ -12086,9 +12061,7 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         await pilot.pause()
         assert app.tui_theme == sage
         assert app.screen.query_one("#choice-title", Static).render().plain == "ACTIONS"
-        theme_action = next(
-            choice for choice in app.screen._choices if choice.label == "Theme"
-        )
+        theme_action = next(choice for choice in app.screen._choices if choice.label == "Theme")
         assert theme_action.accent == sage.accent
         theme_prompt = app.screen.query_one(OptionList).get_option(theme_action.value).prompt
         assert theme_prompt.spans[0].style == sage.accent
@@ -12225,9 +12198,10 @@ async def test_theme_loading_ends_after_history_reaches_the_new_theme(
             await pilot.pause()
             assert app.tui_theme == TUI_THEMES["harbor"]
             assert app._theme_switch_active is True
-            assert next(
-                choice for choice in theme_screen._choices if choice.value == "harbor"
-            ).loading is True
+            assert (
+                next(choice for choice in theme_screen._choices if choice.value == "harbor").loading
+                is True
+            )
         finally:
             release.set()
             watchdog.cancel()
@@ -12496,9 +12470,7 @@ async def test_theme_preview_is_local_and_cleared_when_picker_is_cancelled(
         assert app.query_one(Composer).styles.border_left[1] == Color.parse(
             TUI_THEMES["iris"].accent
         )
-        theme_action = next(
-            choice for choice in app.screen._choices if choice.label == "Theme"
-        )
+        theme_action = next(choice for choice in app.screen._choices if choice.label == "Theme")
         assert theme_action.accent == TUI_THEMES["iris"].accent
         assert preferences.load() == TuiPreferences(
             theme="iris",

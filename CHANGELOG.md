@@ -4,6 +4,22 @@ This project records user-visible and framework-contract changes in this file.
 
 ## Unreleased
 
+### Changed
+
+- Session and Agent-tree subscriptions now initialize asynchronously: callers must await
+  `RuntimeSupervisor.subscribe` and `AgentService.subscribe_agent_tree`. Replay reads and tree
+  projections run outside the event loop; registration precedes replay and sequence deduplication
+  preserves concurrent live events. CLI and TUI hosts use the updated contract.
+- Supervisor, Agent lifecycle, queued input, recovery, and compaction persistence operations now
+  settle in worker threads. Compaction selects retained frames with a linear boundary scan;
+  activity comparisons reuse unchanged tool data instead of serializing whole snapshots.
+- History resize and initial layout reuse the coalesced background renderer, retaining the visible
+  buffer until the latest width and theme are ready. Cancellation during event persistence retains
+  ownership through publication, preserving durable/live order.
+- Immediate approval or question responses now wait for the announcing local Run to release its
+  execution lock. Lock acquisition and release are owned asynchronous operations, including cleanup
+  when acquisition is cancelled, so a promptly displayed interaction does not spuriously fail busy.
+
 ### Added
 
 - TUI `/workspace clear` now forgets recent workspace history without mutating the active

@@ -17,6 +17,7 @@ from ouro.application.agent_models import (
 from ouro.application.dto import Diagnostic
 from ouro.application.supervisor_models import RuntimeActivitySnapshot, RuntimeNotification
 from ouro.core.agents import DelegationRecord
+from ouro.core.callbacks import run_blocking
 from ouro.core.errors import SessionNotFoundError
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.state import RunRecord
@@ -48,7 +49,7 @@ class RuntimeSubscriptionPort(Protocol):
 class AgentTreeRuntime(Protocol):
     def activity(self, handle_or_session: str) -> RuntimeActivitySnapshot: ...
 
-    def subscribe(
+    async def subscribe(
         self,
         session_id: str,
         *,
@@ -336,7 +337,7 @@ class AgentTreeSubscription(AsyncIterator[AgentTreeNotification]):
         if max_buffer <= 0 or runtime_buffer <= 0:
             raise ValueError("Agent tree subscription buffers must be positive")
         self.root_session_id = root_session_id
-        self.initial_snapshot = projector.snapshot(root_session_id)
+        self.initial_snapshot: AgentTreeSnapshot
         self._projector = projector
         self._runtime = runtime
         self._runtime_buffer = runtime_buffer
@@ -345,8 +346,17 @@ class AgentTreeSubscription(AsyncIterator[AgentTreeNotification]):
         self._subscriptions: dict[str, RuntimeSubscriptionPort] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._closed = False
-        self._open_runtime_subscription(root_session_id)
-        self._sync_child_subscriptions()
+        self._refresh_lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        """Attach live streams before publishing the initial durable tree."""
+
+        async with self._refresh_lock:
+            await self._open_runtime_subscription(self.root_session_id)
+            await self._sync_child_subscriptions()
+            self.initial_snapshot = await run_blocking(
+                self._projector.snapshot, self.root_session_id
+            )
 
     def __aiter__(self) -> AgentTreeSubscription:
         return self
@@ -375,26 +385,32 @@ class AgentTreeSubscription(AsyncIterator[AgentTreeNotification]):
         if self._on_close is not None:
             self._on_close(self)
 
-    def _open_runtime_subscription(self, session_id: str) -> None:
+    async def _open_runtime_subscription(self, session_id: str) -> None:
         if session_id in self._subscriptions or self._closed:
             return
-        subscription = self._runtime.subscribe(
+        sequence = await run_blocking(self._projector.latest_sequence, session_id)
+        subscription = await self._runtime.subscribe(
             session_id,
-            after_sequence=self._projector.latest_sequence(session_id),
+            after_sequence=sequence,
             max_buffer=self._runtime_buffer,
             include_activity=True,
         )
+        if self._closed:
+            subscription.close()
+            return
         self._subscriptions[session_id] = subscription
         self._tasks[session_id] = asyncio.create_task(
             self._consume_runtime(session_id, subscription),
             name=f"ouro-agent-tree-{self.root_session_id}-{session_id}",
         )
 
-    def _sync_child_subscriptions(self) -> None:
-        expected = set(self._projector.live_session_ids(self.root_session_id))
+    async def _sync_child_subscriptions(self) -> None:
+        expected = set(await run_blocking(self._projector.live_session_ids, self.root_session_id))
         current_children = set(self._subscriptions).difference({self.root_session_id})
         for session_id in sorted(expected.difference(current_children)):
-            self._open_runtime_subscription(session_id)
+            await self._open_runtime_subscription(session_id)
+        if self._closed:
+            return
         for session_id in sorted(current_children.difference(expected)):
             subscription = self._subscriptions.pop(session_id)
             subscription.close()
@@ -420,13 +436,12 @@ class AgentTreeSubscription(AsyncIterator[AgentTreeNotification]):
                         or notification.event.event_type not in _RELATION_EVENT_TYPES
                     ):
                         continue
-                self._sync_child_subscriptions()
-                self._offer(
-                    AgentTreeNotification(
-                        kind="snapshot",
-                        snapshot=self._projector.snapshot(self.root_session_id),
-                    )
-                )
+                async with self._refresh_lock:
+                    if self._closed:
+                        return
+                    await self._sync_child_subscriptions()
+                    snapshot = await run_blocking(self._projector.snapshot, self.root_session_id)
+                    self._offer(AgentTreeNotification(kind="snapshot", snapshot=snapshot))
                 if session_id not in self._subscriptions:
                     return
         except (StopAsyncIteration, asyncio.CancelledError):

@@ -80,7 +80,7 @@ class RunScheduler(Protocol):
 
     def activity(self, handle_or_session: RunHandle | str) -> RuntimeActivitySnapshot: ...
 
-    def subscribe(
+    async def subscribe(
         self,
         session_id: str,
         *,
@@ -276,7 +276,7 @@ class AgentService:
             )
         assert request.action == "interrupt"
         assert request.delegation_id is not None
-        self._require_parent(request.delegation_id, session.session_id)
+        await run_blocking(self._require_parent, request.delegation_id, session.session_id)
         handle = await self.interrupt_agent(
             request.delegation_id,
             reason=request.reason or "Agent interrupted by parent",
@@ -297,7 +297,7 @@ class AgentService:
     ) -> None:
         """Arm a durable wait only after the parent batch has been persisted."""
 
-        durable = self.store.load_run(session.session_id, run.run_id)
+        durable = await run_blocking(self.store.load_run, session.session_id, run.run_id)
         call = next(
             (
                 item
@@ -441,7 +441,7 @@ class AgentService:
     async def spawn_agent(self, request: SpawnAgentRequest) -> AgentHandleView:
         if self._closed:
             raise RuntimeError("AgentService is closed")
-        parent = self.store.load_session_record(request.parent_session_id)
+        parent = await run_blocking(self.store.load_session_record, request.parent_session_id)
         root_id = parent.agent_root_session_id
         lock = self._spawn_locks.setdefault(root_id, asyncio.Lock())
         async with lock:
@@ -454,6 +454,16 @@ class AgentService:
         if self._closed:
             raise RuntimeError("AgentService is closed")
         await self.scheduler.start()
+        parent_session, parent_run, delegation = await run_blocking(self._prepare_spawn, request)
+        return await self._commit_spawn(
+            delegation, request=request, parent_session=parent_session, parent_run=parent_run
+        )
+
+    def _prepare_spawn(
+        self, request: SpawnAgentRequest
+    ) -> tuple[SessionRecord, RunRecord, DelegationRecord]:
+        """Validate and reserve the durable request in one owned worker operation."""
+
         parent_session = self.store.load_session_record(request.parent_session_id)
         parent_run = self.store.load_run(request.parent_session_id, request.parent_run_id)
         active_parent = (
@@ -506,12 +516,7 @@ class AgentService:
                 entry=entry,
                 allow_external_paths=policy.allow_external_paths,
             )
-            return await self._commit_spawn(
-                existing,
-                request=request,
-                parent_session=parent_session,
-                parent_run=parent_run,
-            )
+            return parent_session, parent_run, existing
         delegation = DelegationRecord(
             idempotency_key=request.request_id,
             root_session_id=root_id,
@@ -546,12 +551,7 @@ class AgentService:
             budget=budget,
         )
         delegation = self.store.create_delegation(delegation)
-        return await self._commit_spawn(
-            delegation,
-            request=request,
-            parent_session=parent_session,
-            parent_run=parent_run,
-        )
+        return parent_session, parent_run, delegation
 
     def _validate_spawn_retry(
         self,
@@ -585,15 +585,15 @@ class AgentService:
                 "SpawnAgent request_id is already bound to a different durable request"
             )
 
-    async def _commit_spawn(
+    def _prepare_spawn_child(
         self,
         relation: DelegationRecord,
         *,
         request: SpawnAgentRequest,
         parent_session: SessionRecord,
         parent_run: RunRecord,
-    ) -> AgentHandleView:
-        """Resume the durable Spawn protocol from its last committed phase."""
+    ) -> tuple[DelegationRecord, SessionRecord, RunRecord]:
+        """Materialize child identity, resources and queued Run before scheduling."""
 
         if relation.child_session_id is None or relation.current_child_run_id is None:
             relation = self.store.save_delegation(
@@ -630,19 +630,36 @@ class AgentService:
             child=child,
             parent_run=parent_run,
         )
+        return relation, child, run
+
+    async def _commit_spawn(
+        self,
+        relation: DelegationRecord,
+        *,
+        request: SpawnAgentRequest,
+        parent_session: SessionRecord,
+        parent_run: RunRecord,
+    ) -> AgentHandleView:
+        """Resume the durable Spawn protocol from its last committed phase."""
+
+        relation, child, run = await run_blocking(
+            self._prepare_spawn_child,
+            relation,
+            request=request,
+            parent_session=parent_session,
+            parent_run=parent_run,
+        )
         if relation.spawn_state == "submitted":
             if run.status not in ACTIVE_RUN_STATUSES and relation.result is None:
                 await self._finalize_result(relation.delegation_id)
-            return self._handle(self._load_by_id(relation.delegation_id))
-        if run.status != "queued":
-            latest = self._load_by_id(relation.delegation_id)
-            relation = self.store.save_delegation(
-                latest.model_copy(update={"spawn_state": "submitted", "error": None}),
-                expected_revision=latest.revision,
+            return await run_blocking(
+                lambda: self._handle(self._load_by_id(relation.delegation_id))
             )
+        if run.status != "queued":
+            relation = await self._record_spawn_submission(relation.delegation_id)
             if run.status not in ACTIVE_RUN_STATUSES and relation.result is None:
                 relation = await self._finalize_result(relation.delegation_id)
-            return self._handle(relation)
+            return await run_blocking(self._handle, relation)
 
         delegated_input = DelegatedTaskInput(
             prompt=request.task,
@@ -654,23 +671,13 @@ class AgentService:
         try:
             handle = await self.scheduler.submit_prepared(run, delegated_input)
         except Exception as exc:
-            latest = self._load_by_id(relation.delegation_id)
-            self.store.save_delegation(
-                latest.model_copy(
-                    update={
-                        "spawn_state": "failed",
-                        "error": f"child submission failed: {type(exc).__name__}",
-                    }
-                ),
-                expected_revision=latest.revision,
+            await self._record_spawn_submission(
+                relation.delegation_id,
+                error=f"child submission failed: {type(exc).__name__}",
             )
             raise
 
-        latest = self._load_by_id(relation.delegation_id)
-        relation = self.store.save_delegation(
-            latest.model_copy(update={"spawn_state": "submitted", "error": None}),
-            expected_revision=latest.revision,
-        )
+        relation = await self._record_spawn_submission(relation.delegation_id)
         self._run_handles[relation.delegation_id] = handle
         self._completion_event(relation.delegation_id).clear()
         await self.events.publish(
@@ -690,7 +697,27 @@ class AgentService:
             },
         )
         self._watch(relation.delegation_id, handle)
-        return self._handle(relation)
+        return await run_blocking(self._handle, relation)
+
+    async def _record_spawn_submission(
+        self, delegation_id: str, *, error: str | None = None
+    ) -> DelegationRecord:
+        # A fast child can settle while the submission write is in flight.
+        # Share its lifecycle lock so both CAS updates retain their fields.
+        lock = self._result_locks.setdefault(delegation_id, asyncio.Lock())
+        async with lock:
+            return await run_blocking(self._save_spawn_submission, delegation_id, error=error)
+
+    def _save_spawn_submission(
+        self, delegation_id: str, *, error: str | None = None
+    ) -> DelegationRecord:
+        latest = self._load_by_id(delegation_id)
+        return self.store.save_delegation(
+            latest.model_copy(
+                update={"spawn_state": "failed" if error else "submitted", "error": error}
+            ),
+            expected_revision=latest.revision,
+        )
 
     def _ensure_spawn_child(
         self,
@@ -805,12 +832,13 @@ class AgentService:
         if not ids:
             raise ValueError("at least one delegation id is required")
         for delegation_id in ids:
-            relation = self._load_by_id(delegation_id)
-            if self._is_terminal(relation):
+            if await run_blocking(self._delegation_is_terminal, delegation_id):
                 await self._finalize_result(delegation_id)
             else:
                 await self._completion_event(delegation_id).wait()
-        handles = tuple(self._handle(self._load_by_id(item)) for item in ids)
+        handles = await run_blocking(
+            lambda: tuple(self._handle(self._load_by_id(item)) for item in ids)
+        )
         return AgentWaitResultView(
             handles=handles,
             completed=all(self._terminal_status(item.status) for item in handles),
@@ -864,14 +892,14 @@ class AgentService:
     ) -> AgentHandleView:
         lock = self._result_locks.setdefault(delegation_id, asyncio.Lock())
         async with lock:
-            relation = self._load_by_id(delegation_id)
+            relation = await run_blocking(self._load_by_id, delegation_id)
             if relation.child_session_id is None:
                 raise ValueError("delegation has no child Session")
             handle = self._run_handles.get(delegation_id)
             child_session_id = relation.child_session_id
         await self.scheduler.abort(handle or child_session_id, reason=reason)
         await self._finalize_result(delegation_id)
-        return self._handle(self._load_by_id(delegation_id))
+        return await run_blocking(lambda: self._handle(self._load_by_id(delegation_id)))
 
     async def send_agent_message(
         self,
@@ -903,12 +931,12 @@ class AgentService:
     ) -> AgentHandleView:
         if not message.strip():
             raise ValueError("Agent message cannot be blank")
-        relation = self._load_by_id(delegation_id)
+        relation = await run_blocking(self._load_by_id, delegation_id)
         if parent_session_id is not None and relation.parent_session_id != parent_session_id:
             raise ValueError("delegation is not a direct child of this parent")
         if relation.child_session_id is None:
             raise ValueError("delegation has no child Session")
-        status = self._status(relation)
+        status = await run_blocking(self._status, relation)
         if status in ACTIVE_RUN_STATUSES:
             if mode != "steer":
                 raise SessionBusyError("active child messages must use steer mode")
@@ -921,12 +949,32 @@ class AgentService:
                 ),
                 session_id=relation.child_session_id,
             )
-            return self._handle(relation)
+            return await run_blocking(self._handle, relation)
         if mode != "follow_up":
             raise SessionBusyError("idle child messages must use follow_up mode")
         if relation.current_child_run_id is None:
             raise ValueError("delegation has no child Run to resume")
 
+        relation, run = await run_blocking(self._prepare_agent_follow_up, relation)
+        handle = await self.scheduler.submit_prepared(
+            run,
+            HostSessionInput(
+                prompt=message,
+                mode="follow_up",
+                host_source_id=f"ouro.subagents/{delegation_id}/messages/{request_id}",
+                semantic_tag="subagent-message",
+            ),
+        )
+        self._run_handles[delegation_id] = handle
+        self._completion_event(delegation_id).clear()
+        self._watch(delegation_id, handle)
+        return await run_blocking(self._handle, relation)
+
+    def _prepare_agent_follow_up(
+        self, relation: DelegationRecord
+    ) -> tuple[DelegationRecord, RunRecord]:
+        assert relation.child_session_id is not None
+        assert relation.current_child_run_id is not None
         child = self.store.load_session_record(relation.child_session_id)
         previous_run = self.store.load_run(
             relation.child_session_id,
@@ -937,7 +985,7 @@ class AgentService:
             status="queued",
             origin="host",
             parent_run_id=relation.parent_run_id,
-            initiator_id=f"ouro.subagents/{delegation_id}",
+            initiator_id=f"ouro.subagents/{relation.delegation_id}",
             trigger="subagent_follow_up",
             model=relation.definition.model or child.current_model,
             metadata={
@@ -979,19 +1027,7 @@ class AgentService:
             ),
             expected_revision=relation.revision,
         )
-        handle = await self.scheduler.submit_prepared(
-            run,
-            HostSessionInput(
-                prompt=message,
-                mode="follow_up",
-                host_source_id=f"ouro.subagents/{delegation_id}/messages/{request_id}",
-                semantic_tag="subagent-message",
-            ),
-        )
-        self._run_handles[delegation_id] = handle
-        self._completion_event(delegation_id).clear()
-        self._watch(delegation_id, handle)
-        return self._handle(relation)
+        return relation, run
 
     async def close_agent(self, delegation_id: str) -> AgentHandleView:
         lock = self._result_locks.setdefault(delegation_id, asyncio.Lock())
@@ -999,22 +1035,27 @@ class AgentService:
             return await self._close_agent_serialized(delegation_id)
 
     async def _close_agent_serialized(self, delegation_id: str) -> AgentHandleView:
+        updated, changed = await run_blocking(self._close_agent_state, delegation_id)
+        if changed:
+            await self.events.publish(
+                session_id=updated.root_session_id,
+                run_id=updated.parent_run_id,
+                event_type="agent_closed",
+                payload={"delegation_id": updated.delegation_id},
+            )
+        return await run_blocking(self._handle, updated)
+
+    def _close_agent_state(self, delegation_id: str) -> tuple[DelegationRecord, bool]:
         relation = self._load_by_id(delegation_id)
         if not self._is_terminal(relation):
             raise SessionBusyError("active child must be interrupted before close")
         if relation.control_state == "closed":
-            return self._handle(relation)
+            return relation, False
         updated = self.store.save_delegation(
             relation.model_copy(update={"control_state": "closed"}),
             expected_revision=relation.revision,
         )
-        await self.events.publish(
-            session_id=updated.root_session_id,
-            run_id=updated.parent_run_id,
-            event_type="agent_closed",
-            payload={"delegation_id": updated.delegation_id},
-        )
-        return self._handle(updated)
+        return updated, True
 
     def agent_tree_snapshot(self, root_session_id: str) -> AgentTreeSnapshot:
         return self._tree_projector.snapshot(root_session_id)
@@ -1080,7 +1121,7 @@ class AgentService:
             )
         return node
 
-    def subscribe_agent_tree(
+    async def subscribe_agent_tree(
         self,
         root_session_id: str,
         *,
@@ -1098,6 +1139,13 @@ class AgentService:
             on_close=self._tree_subscriptions.discard,
         )
         self._tree_subscriptions.add(subscription)
+        try:
+            await subscription.start()
+            if self._closed:
+                raise RuntimeError("AgentService is closed")
+        except BaseException:
+            subscription.close()
+            raise
         return subscription
 
     def list_agent_interactions(
@@ -1118,12 +1166,13 @@ class AgentService:
         reason: str = "User rejected",
         arguments_override: dict[str, object] | None = None,
     ) -> RunHandle:
-        relation = self._require_child_identity(
+        relation = await run_blocking(
+            self._require_child_identity,
             delegation_id,
             child_session_id=child_session_id,
             child_run_id=child_run_id,
         )
-        run = self.store.load_run(child_session_id, child_run_id)
+        run = await run_blocking(self.store.load_run, child_session_id, child_run_id)
         call = next(
             (
                 item
@@ -1159,12 +1208,13 @@ class AgentService:
         request_id: str,
         answer: JsonValue,
     ) -> RunHandle:
-        relation = self._require_child_identity(
+        relation = await run_blocking(
+            self._require_child_identity,
             delegation_id,
             child_session_id=child_session_id,
             child_run_id=child_run_id,
         )
-        run = self.store.load_run(child_session_id, child_run_id)
+        run = await run_blocking(self.store.load_run, child_session_id, child_run_id)
         batch = run.active_tool_batch
         call = next(
             (
@@ -1195,7 +1245,7 @@ class AgentService:
         diagnostics: list[Diagnostic] = []
         roots = sorted(
             session.agent_root_session_id
-            for session in self.store.list_sessions()
+            for session in await run_blocking(self.store.list_sessions)
             if session.session_kind == "primary"
         )
         for root_session_id in roots:
@@ -1249,23 +1299,25 @@ class AgentService:
         """Recover one Agent aggregate without consulting unrelated history."""
 
         await self.scheduler.start()
-        root_session = self.store.load_session_record(root_session_id)
+        root_session = await run_blocking(self.store.load_session_record, root_session_id)
         if root_session.session_kind != "primary":
             raise ValueError("Agent recovery root must be a primary Session")
         diagnostics = list(
-            self.recovery.reconcile_root(
+            await run_blocking(
+                self.recovery.reconcile_root,
                 root_session_id,
                 target_session_id=target_session_id,
             )
         )
         try:
-            relations = self.store.list_delegations(root_session_id)
+            relations = await run_blocking(self.store.list_delegations, root_session_id)
         except PersistenceError:
             return tuple(diagnostics)
         terminal_parents: dict[tuple[str, str], RunRecord] = {}
         for relation in relations:
             try:
-                parent_run = self.store.load_run(
+                parent_run = await run_blocking(
+                    self.store.load_run,
                     relation.parent_session_id,
                     relation.parent_run_id,
                 )
@@ -1276,13 +1328,14 @@ class AgentService:
         for parent_run in terminal_parents.values():
             await self.settle_terminal_run(parent_run)
 
-        relations = self.store.list_delegations(root_session_id)
+        relations = await run_blocking(self.store.list_delegations, root_session_id)
         for relation in relations:
-            if not self.recovery.relation_is_consistent(relation):
+            if not await run_blocking(self.recovery.relation_is_consistent, relation):
                 continue
             assert relation.child_session_id is not None
             assert relation.current_child_run_id is not None
-            child_run = self.store.load_run(
+            child_run = await run_blocking(
+                self.store.load_run,
                 relation.child_session_id,
                 relation.current_child_run_id,
             )
@@ -1294,19 +1347,21 @@ class AgentService:
             if relation.result is None and child_run.status not in ACTIVE_RUN_STATUSES:
                 diagnostics.append(self._missing_result_diagnostic(relation, child_run))
                 await self._finalize_result(relation.delegation_id)
-        relations = self.store.list_delegations(root_session_id)
+        relations = await run_blocking(self.store.list_delegations, root_session_id)
         pending_deliveries = [
             relation
             for relation in relations
             if relation.result is not None and relation.result.delivery.status == "pending"
         ]
         for relation in pending_deliveries:
-            if self.recovery.relation_is_consistent(relation):
+            if await run_blocking(self.recovery.relation_is_consistent, relation):
                 await self._deliver_result(relation)
         session = root_session
         if session.active_run_id is not None:
             try:
-                run = self.store.load_run(session.session_id, session.active_run_id)
+                run = await run_blocking(
+                    self.store.load_run, session.session_id, session.active_run_id
+                )
             except (FileNotFoundError, PersistenceError):
                 run = None
             if run is not None:
@@ -1314,7 +1369,9 @@ class AgentService:
                 if run.status == "waiting_child" and batch is not None:
                     for call in batch.calls:
                         if call.status == "waiting_child" and call.agent_wait is not None:
-                            wait_error = self._parent_wait_error(session, call.agent_wait)
+                            wait_error = await run_blocking(
+                                self._parent_wait_error, session, call.agent_wait
+                            )
                             if wait_error is not None:
                                 diagnostics.append(
                                     self._parent_wait_diagnostic(
