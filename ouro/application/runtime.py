@@ -50,6 +50,7 @@ from ouro.application.runs import (
 )
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_controls import SessionControlCoordinator
+from ouro.application.session_editing import continuable_run
 from ouro.application.session_recovery import SessionRecoveryService
 from ouro.application.sessions import SessionService
 from ouro.application.skill_activations import SkillActivationService, SkillInvocationRequest
@@ -100,6 +101,7 @@ from ouro.core.interactions import (
     SESSION_INTERACTION_MODES,
     SessionInteractionMode,
 )
+from ouro.core.message_frames import incomplete_suffix_start
 from ouro.core.message_roles import MessageRole
 from ouro.core.messages import (
     MessageRecord,
@@ -1718,6 +1720,125 @@ class RuntimeService:
             result,
             drain_queued_inputs=_drain_queued_inputs,
         )
+
+    async def continue_run(self, *, session_id: str, run_id: str | None = None) -> RunResult:
+        """Resume the latest interrupted Run without accepting a new input or Run."""
+
+        snapshot = await run_blocking(self.session_recovery.recover_runtime, session_id)
+        run = continuable_run(snapshot)
+        if run_id is not None and run.run_id != run_id:
+            raise SessionBusyError("The requested continuation is no longer the latest run")
+        lock = await self.run_ownership.acquire(session_id, run.run_id)
+        if lock is None:
+            raise SessionBusyError("The session already has an execution owner")
+        signal: AbortSignal | None = None
+        result: RunResult | None = None
+        emitted: list[EventRecord] = []
+        started = False
+        try:
+            snapshot = await run_blocking(self.store.load_runtime_session, session_id)
+            latest_run = continuable_run(snapshot)
+            if latest_run.run_id != run.run_id:
+                raise SessionBusyError(
+                    "The latest run changed before continuation acquired ownership"
+                )
+            run = latest_run
+            session, adapter = await run_blocking(self._resolve_session_adapter, snapshot.session)
+            self._restore_run_tool_cap(run)
+            await self._ensure_extension_snapshot(run)
+            if self._run_continuation_is_pending(run):
+                settlement = await self._settle_run_continuation(run)
+                if settlement.settled:
+                    await self._emit_continuation_resolution(settlement, emitted)
+                if self._run_continuation_is_pending(settlement.run):
+                    detail = (
+                        "; ".join(settlement.diagnostics)
+                        or "terminal policy settlement is still pending"
+                    )
+                    raise ValueError(f"Cannot continue until terminal state is settled: {detail}")
+                snapshot = await run_blocking(self.store.load_runtime_session, session_id)
+                run = continuable_run(snapshot)
+            # Preserve durable tool results, including results committed just
+            # before failure. Unknown outcomes become explicit protocol results.
+            snapshot = await self.run_recovery.reconcile(snapshot, run_ids=frozenset({run.run_id}))
+            run = continuable_run(snapshot)
+            boundary = incomplete_suffix_start(
+                [message for message in snapshot.messages if message.run_id == run.run_id]
+            )
+            if boundary is not None:
+                await run_blocking(
+                    self.store.truncate_messages,
+                    session_id,
+                    before_message_id=boundary.message_id,
+                    expected_last_message_id=snapshot.messages[-1].message_id,
+                )
+                snapshot = await run_blocking(self.store.load_runtime_session, session_id)
+            await run_blocking(self.run_lifecycle.finish_run, run)
+            previous_status = run.status
+            metadata = dict(run.metadata)
+            metadata.pop("pause", None)
+            metadata.pop("abort_reason", None)
+            run = run.model_copy(
+                update={
+                    "ended_at": None,
+                    "error": None,
+                    "abort_requested": False,
+                    "pending_approval_id": None,
+                    "active_tool_batch": None,
+                    "phase": "model_streaming",
+                    "continuation": None,
+                    "metadata": metadata,
+                }
+            )
+            session, run = await run_blocking(
+                self.run_lifecycle.start,
+                session=snapshot.session,
+                run=run,
+                snapshot=snapshot,
+                resume=True,
+            )
+            started = True
+            sequence = await self.event_recorder.emit(
+                emitted,
+                await run_blocking(self.store.latest_event_sequence, session_id),
+                session_id=session_id,
+                run_id=run.run_id,
+                event_type="run_status_changed",
+                payload={"from_status": previous_status, "to_status": "running", "resumed": True},
+            )
+            if self._agent_controls is not None:
+                await self._agent_controls.continue_children(run)
+            signal = await self.run_ownership.activate_signal(session_id, run.run_id)
+            result = await self._continue_model_loop(
+                session=session,
+                run=run,
+                messages=snapshot.messages,
+                sequence=sequence,
+                emitted=emitted,
+                abort_signal=signal,
+                adapter=adapter,
+            )
+        except Exception as exc:  # noqa: BLE001 - continuation owns its durable failure boundary.
+            if not started:
+                raise
+            result = await self.run_lifecycle.fail(
+                emitted,
+                await run_blocking(self.store.latest_event_sequence, session_id),
+                session=session,
+                run=run,
+                error=f"run continuation failed: {exc}",
+                final_text="",
+                tool_results=[],
+            )
+        finally:
+            try:
+                if signal is not None:
+                    await self.run_ownership.release_signal(run.run_id, signal)
+            finally:
+                if result is None:
+                    self._release_extension_snapshot(run.run_id)
+                await self.run_ownership.release(run.run_id, lock)
+        return await self._finalize_run_boundary(result, drain_queued_inputs=False)
 
     async def run_prepared(
         self,

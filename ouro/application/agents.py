@@ -29,6 +29,7 @@ from ouro.application.agent_tree import (
 )
 from ouro.application.dto import Diagnostic
 from ouro.application.events import ApplicationEventPublisher
+from ouro.application.session_recovery import SessionRecoveryService
 from ouro.application.supervisor_models import (
     HostInputReceipt,
     RunHandle,
@@ -57,7 +58,7 @@ from ouro.core.errors import DelegationRevisionConflictError, PersistenceError, 
 from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason
 from ouro.core.run_transitions import plan_run_transition
 from ouro.core.session_controls import DelegatedTaskInput, HostSessionInput
-from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
+from ouro.core.state import ACTIVE_RUN_STATUSES, RESUMABLE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tools import ToolInvocation, ToolResult
 from ouro.sessions import SessionStore
@@ -65,6 +66,8 @@ from ouro.sessions import SessionStore
 
 class RunScheduler(Protocol):
     async def start(self) -> SupervisorStartResult: ...
+
+    async def continue_run(self, *, session_id: str, run_id: str | None = None) -> RunHandle: ...
 
     async def submit_prepared(
         self,
@@ -347,6 +350,53 @@ class AgentService:
             await asyncio.gather(*self._watchers, return_exceptions=True)
             self._watchers.clear()
         self._result_locks.clear()
+
+    async def continue_children(self, run: RunRecord) -> None:
+        """Reopen interrupted child results and schedule their original Runs."""
+        session = await run_blocking(self.store.load_session_record, run.session_id)
+        relations = await run_blocking(
+            self.store.list_delegations,
+            session.agent_root_session_id,
+            parent_session_id=run.session_id,
+        )
+        for candidate in relations:
+            if candidate.parent_run_id != run.run_id or candidate.control_state == "closed":
+                continue
+            lock = self._result_locks.setdefault(candidate.delegation_id, asyncio.Lock())
+            async with lock:
+                relation = await run_blocking(self._load_by_id, candidate.delegation_id)
+                if relation.child_session_id is None or relation.current_child_run_id is None:
+                    continue
+                child = await run_blocking(
+                    self.store.load_run, relation.child_session_id, relation.current_child_run_id
+                )
+                if child.status in {"running", "queued"}:
+                    recovered = await run_blocking(
+                        SessionRecoveryService(self.store).recover_runtime,
+                        relation.child_session_id,
+                    )
+                    child = next(item for item in recovered.runs if item.run_id == child.run_id)
+                if child.status not in RESUMABLE_RUN_STATUSES:
+                    continue
+                updated = await run_blocking(
+                    self.store.save_delegation,
+                    relation.model_copy(update={"result": None}),
+                    expected_revision=relation.revision,
+                )
+                try:
+                    handle = await self.scheduler.continue_run(
+                        session_id=relation.child_session_id, run_id=child.run_id
+                    )
+                except BaseException:
+                    await run_blocking(
+                        self.store.save_delegation,
+                        updated.model_copy(update={"result": relation.result}),
+                        expected_revision=updated.revision,
+                    )
+                    raise
+                self._completion_event(relation.delegation_id).clear()
+                self._run_handles[relation.delegation_id] = handle
+                self._watch(relation.delegation_id, handle)
 
     async def settle_terminal_run(self, run: RunRecord) -> None:
         """Settle subagent results and bound children at a durable Run boundary."""
@@ -1485,15 +1535,23 @@ class AgentService:
         try:
             status = await self.scheduler.wait(handle)
             if self._terminal_status(status.status):
-                await self._finalize_result(delegation_id)
-                self._completion_event(delegation_id).set()
+                await self._finalize_result(delegation_id, expected_handle=handle)
+                if self._run_handles.get(delegation_id) == handle:
+                    self._completion_event(delegation_id).set()
         finally:
             if self._run_handles.get(delegation_id) == handle:
                 self._run_handles.pop(delegation_id, None)
 
-    async def _finalize_result(self, delegation_id: str) -> DelegationRecord:
+    async def _finalize_result(
+        self, delegation_id: str, *, expected_handle: RunHandle | None = None
+    ) -> DelegationRecord:
         lock = self._result_locks.setdefault(delegation_id, asyncio.Lock())
         async with lock:
+            if (
+                expected_handle is not None
+                and self._run_handles.get(delegation_id) != expected_handle
+            ):
+                return await run_blocking(self._load_by_id, delegation_id)
             relation = await self._finalize_result_serialized(delegation_id)
         return await self._deliver_result(relation)
 
@@ -2183,6 +2241,8 @@ class AgentService:
         return delegation_status(self.store, relation)
 
     def _is_terminal(self, relation: DelegationRecord) -> bool:
+        if relation.result is None and relation.delegation_id in self._run_handles:
+            return False
         return self._terminal_status(self._status(relation))
 
     def _child_terminal(self, relation: DelegationRecord) -> bool:

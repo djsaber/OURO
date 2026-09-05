@@ -161,7 +161,8 @@ def reduce_runtime_activity(
 ) -> RuntimeActivitySnapshot:
     if event.sequence <= current.sequence:
         return current
-    if current.status in _TERMINAL_ACTIVITY and event.event_type != "run_started":
+    resumed = event.event_type == "run_status_changed" and event.payload.get("resumed") is True
+    if current.status in _TERMINAL_ACTIVITY and event.event_type != "run_started" and not resumed:
         return current.model_copy(update={"sequence": event.sequence})
 
     payload = event.payload
@@ -176,7 +177,7 @@ def reduce_runtime_activity(
         updates["turn_id"] = turn_id
 
     event_type = event.event_type
-    if event_type == "run_started":
+    if event_type == "run_started" or resumed:
         updates.update(_run_reset("running", "preparing_model"))
         updates["run_phase"] = "model_streaming"
     elif event_type == "run_abort_requested":

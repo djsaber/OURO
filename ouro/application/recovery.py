@@ -5,12 +5,10 @@ from ouro.application.runs import RunLifecycle
 from ouro.core.base import utc_now
 from ouro.core.callbacks import run_blocking
 from ouro.core.events import EventRecord
-from ouro.core.state import RunRecord
+from ouro.core.state import RESUMABLE_RUN_STATUSES, RunRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord, ToolCallStatus
 from ouro.core.tools import ToolResult
 from ouro.sessions import RuntimeSessionSnapshot, SessionRepository
-
-_RECONCILABLE_RUN_STATUSES = {"recoverable", "failed", "aborted"}
 
 
 class RunRecoveryService:
@@ -30,6 +28,8 @@ class RunRecoveryService:
     async def reconcile(
         self,
         snapshot: RuntimeSessionSnapshot,
+        *,
+        run_ids: frozenset[str] | None = None,
     ) -> RuntimeSessionSnapshot:
         sequence = await run_blocking(self.store.latest_event_sequence, snapshot.session.session_id)
         emitted: list[EventRecord] = []
@@ -42,7 +42,9 @@ class RunRecoveryService:
         }
 
         for run in snapshot.runs:
-            if run.status not in _RECONCILABLE_RUN_STATUSES:
+            if run_ids is not None and run.run_id not in run_ids:
+                continue
+            if run.status not in RESUMABLE_RUN_STATUSES:
                 continue
             batch = run.active_tool_batch
             calls_by_id = (

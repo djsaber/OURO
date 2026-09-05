@@ -34,6 +34,9 @@ RunStatus = Literal[
 ACTIVE_RUN_STATUSES: frozenset[RunStatus] = frozenset(
     {"queued", "running", "waiting_user", "waiting_approval", "waiting_child"}
 )
+RESUMABLE_RUN_STATUSES: frozenset[RunStatus] = frozenset(
+    {"aborted", "failed", "paused", "recoverable"}
+)
 RunKind = Literal["agent", "compaction"]
 RunOrigin = Literal["user", "follow_up", "replay", "host", "plugin", "delegation"]
 

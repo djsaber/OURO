@@ -22,6 +22,7 @@ from ouro.core.agents import (
     DelegationRecord,
     ToolSelection,
 )
+from ouro.core.base import utc_now
 from ouro.core.context import estimate_message_tokens
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.messages import MessageRecord
@@ -813,6 +814,123 @@ async def test_spawn_runs_child_as_independent_session_with_frozen_tools(tmp_pat
     assert "CHILD READER INSTRUCTIONS" not in serialized_tree
     await service.close()
     await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["failed", "paused"])
+async def test_continue_reuses_interrupted_child_run_and_refreshes_its_result(
+    tmp_path, monkeypatch, status
+):
+    service, supervisor, store, provider = await _services(tmp_path)
+    successful_stream = provider.stream
+    attempts = 0
+
+    async def interrupted_stream(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            yield ProviderStreamEvent(type="text_delta", text="unfinished evidence")
+            raise RuntimeError("child connection interrupted")
+        async for event in successful_stream(**kwargs):
+            yield event
+
+    monkeypatch.setattr(provider, "stream", interrupted_stream)
+    try:
+        child = await service.spawn_agent(
+            SpawnAgentRequest(
+                request_id="host/continue-child",
+                parent_session_id="ses_root",
+                parent_run_id="run_parent",
+                agent_id="reader",
+                task="Inspect the repository.",
+                description="Inspect repository",
+            )
+        )
+        await service.wait_agents((child.delegation_id,))
+        before = store.load_runtime_session(child.child_session_id)
+        assert before.runs[0].status == "failed"
+        store.save_run(before.runs[0].model_copy(update={"status": status}))
+        parent = store.load_run("ses_root", "run_parent")
+        await service.continue_children(parent)
+        async with asyncio.timeout(10):
+            await service.wait_agents((child.delegation_id,))
+        after = store.load_runtime_session(child.child_session_id)
+        relation = store.load_delegation("ses_root", child.delegation_id)
+        assert len(after.runs) == 1
+        assert after.runs[0].run_id == before.runs[0].run_id
+        assert after.runs[0].status == "completed"
+        assert after.messages[0] == before.messages[0]
+        assert relation.result.terminal_status == "completed"
+        assert [m.text_content for m in after.messages if m.role == "user"] == [
+            "Inspect the repository."
+        ]
+        assert attempts == 2
+        await service.continue_children(parent)
+        assert attempts == 2
+    finally:
+        await service.close()
+        await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_root_continue_resumes_its_interrupted_child_without_new_runs(tmp_path, monkeypatch):
+    service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
+    root_input = MessageRecord.text(
+        session_id=root.session_id,
+        run_id=parent.run_id,
+        role="user",
+        text="parent task",
+        sequence=1,
+    )
+    store.append_message(root_input)
+    store.save_session(
+        root.model_copy(update={"message_count": 1, "last_message_id": root_input.message_id})
+    )
+    child_attempts = 0
+
+    async def stream(**kwargs):
+        nonlocal child_attempts
+        if kwargs["messages"][0].text_content == "child task":
+            child_attempts += 1
+            if child_attempts == 1:
+                yield ProviderStreamEvent(type="text_delta", text="incomplete")
+                raise RuntimeError("child disconnected")
+        yield ProviderStreamEvent(type="text_delta", text="done")
+        yield ProviderStreamEvent(type="done")
+
+    monkeypatch.setattr(provider, "stream", stream)
+    try:
+        child = await service.spawn_agent(
+            SpawnAgentRequest(
+                request_id="root/continue-child",
+                parent_session_id=root.session_id,
+                parent_run_id=parent.run_id,
+                agent_id="reader",
+                task="child task",
+                description="Continue child",
+            )
+        )
+        await service.wait_agents((child.delegation_id,))
+        store.save_run(parent.model_copy(update={"status": "failed", "ended_at": utc_now()}))
+        store.save_session(
+            store.load_session_record(root.session_id).model_copy(
+                update={"status": "failed", "active_run_id": None}
+            )
+        )
+        resumed = await supervisor.runtime.continue_run(session_id=root.session_id)
+        async with asyncio.timeout(10):
+            await service.wait_agents((child.delegation_id,))
+        assert resumed.run.status == "completed"
+        assert resumed.run.run_id == parent.run_id
+        assert len(store.load_runs(root.session_id)) == 1
+        child_runs = store.load_runs(child.child_session_id)
+        assert len(child_runs) == 1
+        assert child_runs[0].status == "completed"
+        assert child_runs[0].run_id == child.child_run_id
+        assert child_attempts == 2
+    finally:
+        await service.close()
+        await supervisor.shutdown()
 
 
 @pytest.mark.asyncio

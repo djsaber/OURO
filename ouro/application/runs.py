@@ -64,6 +64,7 @@ class RunLifecycle:
         session: SessionRecord,
         run: RunRecord,
         snapshot: RuntimeSessionSnapshot,
+        resume: bool = False,
     ) -> tuple[SessionRecord, RunRecord]:
         """Persist the shared session/run transition into an active run."""
 
@@ -84,6 +85,7 @@ class RunLifecycle:
                 latest_session,
                 current_run=current_run,
                 next_run=run.model_copy(update={"status": "running"}),
+                resume=resume,
             )
             # The Run is authoritative. If the second write fails, recovery can
             # safely reconstruct the Session projection from this record.
@@ -693,7 +695,9 @@ class RunLifecycle:
                     "ended_at": now,
                     "error": error,
                     "pending_approval_id": None,
-                    "active_tool_batch": None,
+                    # Failure must retain committed outcomes until recovery
+                    # publishes their canonical tool-result messages.
+                    "active_tool_batch": latest_run.active_tool_batch,
                     "metadata": dict(latest_run.metadata),
                 }
             )

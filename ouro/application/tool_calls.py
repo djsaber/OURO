@@ -67,6 +67,10 @@ _OBSERVER_TOOL_CONTENT_LIMIT = 32_768
 
 
 class AgentControlExecutor(Protocol):
+    async def continue_children(self, run: RunRecord) -> None:
+        """Schedule interrupted children of the original Run without new input."""
+        ...
+
     def recovery_session_ids(self, session: SessionRecord) -> tuple[str, ...]:
         """Return the bounded execution scope required by one Agent aggregate."""
 

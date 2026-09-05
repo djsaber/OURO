@@ -92,6 +92,8 @@ class TuiCommand:
 
 TUI_COMMANDS: tuple[TuiCommand, ...] = (
     TuiCommand("/new", "New session", "Start a clean conversation"),
+    TuiCommand("/continue", "Continue run", "Resume the interrupted run without a new message"),
+    TuiCommand("/undo", "Undo message", "Withdraw the latest user message and edit it again"),
     TuiCommand(
         "/workspace",
         "Workspace",

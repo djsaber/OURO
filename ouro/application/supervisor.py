@@ -19,6 +19,7 @@ from ouro.application.runtime_activity import (
     runtime_activity_changed,
     runtime_activity_for_status,
 )
+from ouro.application.session_editing import continuable_run
 from ouro.application.supervisor_models import (
     HostInputReceipt,
     RunHandle,
@@ -56,6 +57,7 @@ class _RunJob:
     prompt: str
     title: str | None
     prepared_run: RunRecord | None = None
+    continue_existing: bool = False
     session_input: HostSessionInput | DelegatedTaskInput | None = None
     host_input_receipt: HostInputReceipt | None = None
     agent_wait_resolution: AgentWaitResolution | None = None
@@ -287,6 +289,22 @@ class RuntimeSupervisor:
         handle = RunHandle(session_id=session_id)
         job = _RunJob(handle=handle, prompt=prompt, title=title)
         await self._enqueue_job(job)
+        return handle
+
+    async def continue_run(self, *, session_id: str, run_id: str | None = None) -> RunHandle:
+        """Schedule existing interrupted execution without creating a new Run."""
+        await self.start()
+        if session_id in self._jobs_by_session:
+            raise SessionBusyError(f"session already has a supervised run: {session_id}")
+        snapshot = await run_blocking(self.runtime.session_recovery.recover_runtime, session_id)
+        run = continuable_run(snapshot)
+        if run_id is not None and run.run_id != run_id:
+            raise SessionBusyError("The requested continuation is no longer the latest run")
+        handle = RunHandle(session_id=session_id)
+        await self._enqueue_job(
+            _RunJob(handle=handle, prompt="", title=None, continue_existing=True),
+            run_id=run.run_id,
+        )
         return handle
 
     async def submit_prepared(
@@ -844,6 +862,12 @@ class RuntimeSupervisor:
                             tool_call_id=job.agent_wait_tool_call_id,
                             resolution=job.agent_wait_resolution,
                             result=job.agent_wait_result,
+                        )
+                    elif job.continue_existing:
+                        job.provider_stream_started.set()
+                        job.result = await self.runtime.continue_run(
+                            session_id=job.handle.session_id,
+                            run_id=self._snapshots[job.handle.handle_id].run_id,
                         )
                     elif job.prepared_run is not None:
                         job.provider_stream_started.set()

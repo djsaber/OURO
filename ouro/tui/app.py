@@ -97,6 +97,7 @@ from ouro.tui.state import (
     RunPresentation,
     TuiSessionProjection,
     canonical_event_order,
+    describe_run_pause,
     project_agent_interaction,
     project_run_presentation,
     project_run_presentations,
@@ -1061,6 +1062,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._resume_session_id = resume_session_id
         self._projection: TuiSessionProjection | None = None
         self._activity_override: str | None = None
+        self._history_edit_in_progress = False
         self._visible_read_only = False
         self._visible_agent: AgentTreeNode | None = None
         self._observation_subscription: RuntimeSubscription | None = None
@@ -1629,6 +1631,17 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         *,
         allow_new_projection: bool = False,
     ) -> None:
+        projection = self._projection
+        if projection is not None and any(
+            event.session_id == projection.session_id
+            and event.sequence > projection.last_sequence
+            and event.event_type == "run_status_changed"
+            and event.payload.get("resumed") is True
+            for event in events
+        ):
+            # Canonical history may have lost an unfinished frame. Reload before
+            # displaying this attempt's deltas, outside the view mutation lock.
+            await self._reload_visible_observation()
         async with self._runtime_event_apply_lock:
             await self._apply_runtime_event_batch(
                 events,
@@ -2497,6 +2510,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.action_sessions()
         elif command.name == "/actions":
             self.action_actions()
+        elif command.name in {"/continue", "/undo"}:
+            if argument:
+                self.notify(f"{command.name} does not accept arguments", severity="warning")
+            else:
+                self._edit_session_history(command.name)
         elif command.name == "/fork":
             if argument:
                 self._fork_session(argument.casefold())
@@ -3371,7 +3389,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 elif not read_only and self._visible_read_only:
                     composer.restore_command_draft(self._controlled_composer_draft or "")
                     self._controlled_composer_draft = None
-                elif not read_only:
+                elif not read_only and visible_session_id != session.session_id:
                     self._restore_input_draft(session.session_id)
                 # The selected Session now owns the surface. Clear every interaction
                 # projected by the previous Session before yielding while its history
@@ -3491,6 +3509,49 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 ),
             ),
         )
+
+    @work(group="session-history")
+    async def _edit_session_history(self, command: str) -> None:
+        if (
+            self._visible_read_only
+            or self._has_active_run()
+            or self._activity_override is not None
+            or self._history_edit_in_progress
+        ):
+            self.notify("This operation requires an idle main session", severity="warning")
+            return
+        if self._controller.session_id is None:
+            self.notify("There is no session history to edit", severity="warning")
+            return
+        self._history_edit_in_progress = True
+        if command == "/undo":
+            self._activity_override = "undoing"
+            self.query_one(Composer).disabled = True
+        self.query_one(StatusLine).set_activity(
+            "preparing_model" if command == "/continue" else "undoing"
+        )
+        try:
+            if command == "/undo":
+                selected = await self._controller.undo()
+                await self._show_main_session()
+                self._edit_draft(user_message_text(selected))
+            else:
+                result = await self._controller.continue_session()
+                await self._apply_run_result(result)
+                await self._show_main_session()
+                if result.run.status == "paused":
+                    self.notify(describe_run_pause(result.run), severity="warning", markup=False)
+                elif result.run.status == "failed":
+                    self.notify(
+                        f"Continue failed: {result.run.error}", severity="warning", markup=False
+                    )
+        except Exception as exc:  # noqa: BLE001 - command failures are user-visible.
+            self.notify(str(exc), severity="warning", markup=False)
+        finally:
+            self._history_edit_in_progress = False
+            self._activity_override = None
+            self._restore_projection_activity(self._projection)
+            self._sync_interaction_focus(self._interaction)
 
     @work(exclusive=True, group="session-fork")
     async def _fork_session(
@@ -4460,6 +4521,9 @@ def _active_stream_tail(
     )
     start = 0
     for index, event in enumerate(ordered):
+        if event.event_type == "run_status_changed" and event.payload.get("resumed") is True:
+            start = index + 1
+            continue
         if event.event_type != "model_message_completed":
             continue
         if event.turn_id is not None and event.turn_id in covered_turns:

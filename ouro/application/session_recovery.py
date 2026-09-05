@@ -205,10 +205,20 @@ class SessionRecoveryService:
             (event for event in events if event.run_id == run.run_id),
             key=lambda event: (event.sequence, event.created_at, event.event_id),
         )
+        # A resumed Run shares its audit journal with older attempts. A crash
+        # before the next model request must not resurrect their withdrawn text.
+        resumed_at = max(
+            (
+                event.sequence
+                for event in run_events
+                if event.event_type == "run_status_changed" and event.payload.get("resumed") is True
+            ),
+            default=0,
+        )
         start_indexes = [
             index
             for index, event in enumerate(run_events)
-            if event.event_type == "model_request_started"
+            if event.event_type == "model_request_started" and event.sequence > resumed_at
         ]
         if not start_indexes:
             return None
@@ -325,12 +335,21 @@ def _reconcile_session_projection(
             f"session {session.session_id} has multiple active runs: {active_ids}"
         )
 
-    latest_run = runs[-1] if runs else None
     active_run = active_runs[0] if active_runs else None
-    if active_run is not None and active_run is not latest_run:
-        raise PersistenceError(
-            f"session {session.session_id} has a non-latest active run: {active_run.run_id}"
-        )
+    if active_run is not None and active_run is not runs[-1]:
+        later_runs = runs[runs.index(active_run) + 1 :]
+        retained_runs = {message.run_id for message in messages}
+        if active_run.kind != "agent" or any(
+            run.kind != "compaction" and run.run_id in retained_runs for run in later_runs
+        ):
+            raise PersistenceError(
+                f"session {session.session_id} has a non-latest active run: {active_run.run_id}"
+            )
+    # Creation order is not execution order after resuming a Run following
+    # manual compaction. Project the live owner or the most recent settlement.
+    latest_run = active_run or max(
+        runs, key=lambda run: run.ended_at or run.started_at, default=None
+    )
     if active_run is not None:
         expected_status, expected_active_run_id = session_state_for_run(active_run)
     else:

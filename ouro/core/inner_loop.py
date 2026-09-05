@@ -180,7 +180,9 @@ class InnerAgentLoop:
             tool_results=list(tool_results or []),
         )
 
-        for model_round in itertools.count(1):
+        # All resumptions share one Run's durable request sequence, including
+        # context/turn-policy identity and budget checks at the next boundary.
+        for model_round in itertools.count(run.model_round_count + 1):
             if aborted := self._aborted_result(state):
                 return aborted
             if reason := await self._budget_reason(state.run, model_round):

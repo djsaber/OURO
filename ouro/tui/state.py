@@ -73,11 +73,7 @@ def format_reasoning_label_parts(
     expanded: bool,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[str, str | None]:
-    state_mark = (
-        theme.expanded_disclosure_marker
-        if expanded
-        else theme.collapsed_disclosure_marker
-    )
+    state_mark = theme.expanded_disclosure_marker if expanded else theme.collapsed_disclosure_marker
     duration = format_duration(duration_seconds) if duration_seconds is not None else None
     return f"{state_mark} {label}", duration
 
@@ -97,6 +93,30 @@ class RunPresentation:
     duration_seconds: float | None
     error: str | None = None
     requests: tuple[ModelRequestPresentation, ...] = ()
+
+
+def describe_run_pause(run: RunRecord) -> str:
+    pause = run.metadata.get("pause")
+    reason = pause.get("reason") if isinstance(pause, dict) else None
+    descriptions = {
+        "context_blocked": (
+            "context preparation is blocked; check its diagnostics, "
+            "compact the session or change the model"
+        ),
+        "turn_policy_blocked": (
+            "the turn policy is blocked; resolve its reported failure before retrying"
+        ),
+        "model_rounds": "the model-round budget has been reached",
+        "input_tokens": "the input-token budget has been reached",
+        "output_tokens": "the output-token budget has been reached",
+        "elapsed_time": "the elapsed-time budget has been reached",
+    }
+    detail = (
+        descriptions.get(reason, "execution conditions are still blocked")
+        if isinstance(reason, str)
+        else "execution conditions are still blocked"
+    )
+    return f"Run remains paused: {detail}."
 
 
 def project_run_presentation(
@@ -291,7 +311,9 @@ class TuiSessionProjection:
         interaction_changed = False
         diagnostic = None
 
-        if event.event_type == "run_started" and event.run_id != self._run_id:
+        if (event.event_type == "run_started" and event.run_id != self._run_id) or (
+            event.event_type == "run_status_changed" and payload.get("resumed") is True
+        ):
             self._run_id = event.run_id
             self._assistant_text.replace("")
             self._reasoning_text.replace("")

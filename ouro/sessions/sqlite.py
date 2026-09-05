@@ -23,6 +23,7 @@ from ouro.core.errors import (
     ResourceNotFoundError,
 )
 from ouro.core.events import MODEL_STREAM_DELTA_EVENT_TYPES, EventRecord
+from ouro.core.message_frames import MessageTruncation, retain_compactions, validate_frame_boundary
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.resources import SessionResourceReference
@@ -500,6 +501,94 @@ class SQLiteSessionStore:
                     f"could not append message batch for {session_id}: {exc}"
                 ) from exc
 
+    def load_messages_tail(self, session_id: str, *, limit: int = 100) -> list[MessageRecord]:
+        if limit < 1:
+            raise ValueError("message tail limit must be positive")
+        with self._read_connection() as connection:
+            self._require_session(connection, session_id)
+            rows = connection.execute(
+                "SELECT payload FROM messages WHERE session_id = ? ORDER BY row_id DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        return [self._validate_model(MessageRecord, row[0], "message tail") for row in rows]
+
+    def truncate_messages(
+        self,
+        session_id: str,
+        *,
+        before_message_id: str,
+        expected_last_message_id: str,
+    ) -> MessageTruncation:
+        with self.session_mutation(session_id):
+            connection = self._transaction_connection()
+            session = self._load_session_record(connection, session_id)
+            head = connection.execute(
+                "SELECT message_id FROM messages WHERE session_id = ? ORDER BY row_id DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if head is None or head[0] != expected_last_message_id:
+                raise ValueError("session history changed; reload before truncating")
+            boundary = connection.execute(
+                "SELECT row_id, payload FROM messages WHERE session_id = ? AND message_id = ?",
+                (session_id, before_message_id),
+            ).fetchone()
+            if boundary is None:
+                raise ValueError(f"message boundary not found: {before_message_id}")
+            previous = connection.execute(
+                "SELECT payload FROM messages WHERE session_id = ? AND row_id < ? "
+                "ORDER BY row_id DESC LIMIT 1",
+                (session_id, boundary[0]),
+            ).fetchone()
+            first = self._validate_model(MessageRecord, boundary[1], "message boundary")
+            retained = (
+                self._validate_model(MessageRecord, previous[0], "retained message")
+                if previous is not None
+                else None
+            )
+            validate_frame_boundary(first, retained)
+            compactions = self.load_compactions(session_id)
+            active_id = session.active_compaction_id
+            if compactions:
+                removed_ids = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT message_id FROM messages WHERE session_id = ? AND row_id >= ?",
+                        (session_id, boundary[0]),
+                    )
+                }
+                retained_compactions = retain_compactions(compactions, removed_ids)
+                retained_ids = {item.compaction_id for item in retained_compactions}
+                connection.executemany(
+                    "DELETE FROM compactions WHERE session_id = ? AND compaction_id = ?",
+                    [
+                        (session_id, item.compaction_id)
+                        for item in compactions
+                        if item.compaction_id not in retained_ids
+                    ],
+                )
+                if active_id is not None and active_id not in retained_ids:
+                    active_id = (
+                        retained_compactions[-1].compaction_id if retained_compactions else None
+                    )
+            removed = connection.execute(
+                "DELETE FROM messages WHERE session_id = ? AND row_id >= ?",
+                (session_id, boundary[0]),
+            ).rowcount
+            connection.execute("DELETE FROM latest_contexts WHERE session_id = ?", (session_id,))
+            self.save_session(
+                session.model_copy(
+                    update={
+                        "message_count": max(0, session.message_count - removed),
+                        "last_message_id": retained.message_id if retained else None,
+                        "active_compaction_id": active_id,
+                        "updated_at": utc_now(),
+                    }
+                )
+            )
+            return MessageTruncation(
+                first_removed=first, last_retained=retained, removed_count=removed
+            )
+
     def append_event(self, event: EventRecord) -> None:
         with self.session_mutation(event.session_id):
             try:
@@ -924,9 +1013,7 @@ class SQLiteSessionStore:
 
     def read_catalog(self) -> SessionIndex:
         with self._read_connection() as connection:
-            rows = connection.execute(
-                "SELECT payload, session_id FROM session_catalog"
-            ).fetchall()
+            rows = connection.execute("SELECT payload, session_id FROM session_catalog").fetchall()
         entries: list[SessionIndexEntry] = []
         for payload, session_id in rows:
             try:

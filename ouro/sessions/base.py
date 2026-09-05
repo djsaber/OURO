@@ -10,6 +10,7 @@ from ouro.core.base import OuroModel
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.events import EventRecord
+from ouro.core.message_frames import MessageTruncation
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference
 from ouro.core.session_extensions import SessionExtensionStateRecord
@@ -106,6 +107,25 @@ class SessionRepository(Protocol):
     def append_message(self, message: MessageRecord) -> None: ...
 
     def append_messages(self, messages: list[MessageRecord]) -> None: ...
+
+    def load_messages_tail(self, session_id: str, *, limit: int = 100) -> list[MessageRecord]:
+        """Read at most limit canonical messages, newest first."""
+        ...
+
+    def truncate_messages(
+        self,
+        session_id: str,
+        *,
+        before_message_id: str,
+        expected_last_message_id: str,
+    ) -> MessageTruncation:
+        """Atomically remove a frame and its suffix, repairing derived context.
+
+        Reject unknown boundaries, split frames and stale history heads before
+        writing. Run records and events remain audit facts. Execution ownership
+        and application-specific restrictions belong to the caller.
+        """
+        ...
 
     def append_event(self, event: EventRecord) -> None: ...
 

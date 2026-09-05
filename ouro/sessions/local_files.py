@@ -6,9 +6,9 @@ import re
 import shutil
 import struct
 from collections.abc import Iterator, Sequence
-from contextlib import ExitStack, suppress
+from contextlib import ExitStack, closing, suppress
 from pathlib import Path
-from typing import TypeVar
+from typing import Self, TypeVar
 
 from pydantic import ValidationError
 
@@ -23,6 +23,7 @@ from ouro.core.errors import (
     ResourceNotFoundError,
 )
 from ouro.core.events import MODEL_STREAM_DELTA_EVENT_TYPES, EventRecord
+from ouro.core.message_frames import MessageTruncation, retain_compactions, validate_frame_boundary
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.resources import SessionResourceReference, SessionResourceReferences
@@ -36,6 +37,7 @@ from ouro.local_io import (
     replace_path_with_retry,
     write_json_atomic,
     write_model_atomic,
+    write_text_atomic,
 )
 from ouro.local_locks import is_lock_held
 from ouro.sessions.base import (
@@ -47,11 +49,18 @@ from ouro.sessions.index import SessionIndex
 from ouro.sessions.layout import DATA_LAYOUT_VERSION, DataLayoutManifest
 from ouro.sessions.local_index import LocalSessionIndex
 from ouro.sessions.locks import SessionMutationLock, SessionRunLock
+from ouro.sessions.message_journal import reverse_jsonl
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _JournalRecord = TypeVar("_JournalRecord", MessageRecord, EventRecord)
 _EVENT_SEQUENCE_INDEX_RECORD = struct.Struct(">QQ")
 _EVENT_SEQUENCE_INDEX_STRIDE = 256
+
+
+class _HistoryCutJournal(OuroModel):
+    offset: int
+    session: SessionRecord
+    compactions: list[CompactionRecord] | None = None
 
 
 class LocalSessionStore:
@@ -369,6 +378,113 @@ class LocalSessionStore:
         with self.session_mutation(session_id):
             session_dir = self._require_session_dir(session_id)
             self._append_jsonl_batch(session_dir / "messages.jsonl", messages)
+
+    def load_messages_tail(self, session_id: str, *, limit: int = 100) -> list[MessageRecord]:
+        if limit < 1:
+            raise ValueError("message tail limit must be positive")
+        with self.session_mutation(session_id):
+            path = self._require_session_dir(session_id) / "messages.jsonl"
+            messages: list[MessageRecord] = []
+            with closing(reverse_jsonl(path)) as lines:
+                for _, line in lines:
+                    messages.append(
+                        decode_versioned_record_json(
+                            MessageRecord, line, label=f"message in session {session_id}"
+                        )
+                    )
+                    if len(messages) == limit:
+                        break
+            return messages
+
+    def truncate_messages(
+        self,
+        session_id: str,
+        *,
+        before_message_id: str,
+        expected_last_message_id: str,
+    ) -> MessageTruncation:
+        with self.session_mutation(session_id):
+            directory = self._require_session_dir(session_id)
+            session = self.load_session_record(session_id)
+            removed_ids: set[str] = set()
+            first: MessageRecord | None = None
+            retained: MessageRecord | None = None
+            cut_offset = 0
+            with closing(reverse_jsonl(directory / "messages.jsonl")) as lines:
+                for offset, line in lines:
+                    message = decode_versioned_record_json(
+                        MessageRecord, line, label=f"message in session {session_id}"
+                    )
+                    if not removed_ids and message.message_id != expected_last_message_id:
+                        raise ValueError("session history changed; reload before truncating")
+                    if first is not None:
+                        retained = message
+                        break
+                    removed_ids.add(message.message_id)
+                    if message.message_id == before_message_id:
+                        first = message
+                        cut_offset = offset
+            if first is None:
+                raise ValueError(f"message boundary not found: {before_message_id}")
+            validate_frame_boundary(first, retained)
+            result = MessageTruncation(
+                first_removed=first, last_retained=retained, removed_count=len(removed_ids)
+            )
+            compactions = self._load_compactions(directory)
+            retained_compactions = retain_compactions(compactions, removed_ids)
+            active_id = session.active_compaction_id
+            if active_id is not None and not any(
+                item.compaction_id == active_id for item in retained_compactions
+            ):
+                active_id = retained_compactions[-1].compaction_id if retained_compactions else None
+            updated = session.model_copy(
+                update={
+                    "message_count": max(0, session.message_count - result.removed_count),
+                    "last_message_id": retained.message_id if retained else None,
+                    "active_compaction_id": active_id,
+                    "updated_at": utc_now(),
+                }
+            )
+            # The intent is durable before truncation. Every later store access
+            # finishes it under the mutation lock after a crash or failed write.
+            self._write_model_atomic(
+                directory / "history-cut.json",
+                _HistoryCutJournal(
+                    offset=cut_offset,
+                    session=updated,
+                    compactions=retained_compactions
+                    if len(retained_compactions) != len(compactions)
+                    else None,
+                ),
+            )
+            self._finish_history_cut(session_id)
+            return result
+
+    def _finish_history_cut(self, session_id: str) -> None:
+        directory = self._session_dir(session_id)
+        intent_path = directory / "history-cut.json"
+        if not intent_path.exists():
+            return
+        try:
+            intent = _HistoryCutJournal.model_validate_json(read_text_atomic(intent_path))
+            if intent.session.session_id != session_id or intent.offset < 0:
+                raise ValueError("invalid history cut identity or offset")
+            with (directory / "messages.jsonl").open("r+b") as stream:
+                if stream.seek(0, 2) < intent.offset:
+                    raise ValueError("history cut offset exceeds journal size")
+                stream.truncate(intent.offset)
+                stream.flush()
+                os.fsync(stream.fileno())
+            (directory / "context.json").unlink(missing_ok=True)
+            if intent.compactions is not None:
+                write_text_atomic(
+                    directory / "compactions.jsonl",
+                    "\n".join(item.model_dump_json() for item in intent.compactions),
+                )
+            self._write_model_atomic(directory / "session.json", intent.session)
+            intent_path.unlink()
+        except (OSError, ValueError) as exc:
+            raise PersistenceError(f"could not finish history cut for {session_id}: {exc}") from exc
 
     def append_event(self, event: EventRecord) -> None:
         with self.session_mutation(event.session_id):
@@ -904,10 +1020,7 @@ class LocalSessionStore:
             ) from exc
 
     def session_mutation(self, session_id: str) -> SessionMutationLock:
-        return SessionMutationLock(
-            self._mutation_lock_path(session_id),
-            session_id=session_id,
-        )
+        return _HistoryMutation(self, session_id)
 
     def is_session_locked(self, session_id: str) -> bool:
         try:
@@ -1529,6 +1642,21 @@ def _is_record_boundary(path: Path, offset: int, size: int) -> bool:
             return file.read(1) == b"\n"
     except OSError:
         return False
+
+
+class _HistoryMutation(SessionMutationLock):
+    def __init__(self, store: LocalSessionStore, session_id: str) -> None:
+        super().__init__(store._mutation_lock_path(session_id), session_id=session_id)
+        self._store = store
+
+    def __enter__(self) -> Self:
+        super().__enter__()
+        try:
+            self._store._finish_history_cut(self.session_id)
+        except BaseException:
+            self.release()
+            raise
+        return self
 
 
 def _read_last_nonempty_line(path: Path, *, chunk_size: int = 8192) -> str:

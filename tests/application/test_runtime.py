@@ -1802,6 +1802,13 @@ async def test_context_provider_message_persistence_failure_blocks_model_request
     assert not any(
         message.metadata.get("kind") == "context_provider" for message in snapshot.messages
     )
+    monkeypatch.setattr(store, "append_messages", append_messages)
+    resumed = await runtime.continue_run(session_id=result.session.session_id)
+    assert resumed.run.status == "completed"
+    assert resumed.run.run_id == result.run.run_id
+    assert "pause" not in resumed.run.metadata
+    assert len(store.load_runs(result.session.session_id)) == 1
+    await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -2005,6 +2012,21 @@ async def test_turn_policy_failure_pauses_instead_of_silently_completing(tmp_pat
     }
     failure = next(event for event in snapshot.events if event.event_type == "turn_policy_failed")
     assert failure.payload["message"] == "token=***"
+    turn_policies.replace_owner(
+        "policy",
+        (
+            TurnPolicyRegistration(
+                plugin_id="dev.ouro.workflow",
+                policy_id="completion",
+                handler=lambda _candidate: TurnPolicyDecision(),
+            ),
+        ),
+    )
+    resumed = await runtime.continue_run(session_id=result.session.session_id)
+    assert resumed.run.status == "completed"
+    assert resumed.run.run_id == result.run.run_id
+    assert len(store.load_runs(result.session.session_id)) == 1
+    await runtime.close()
 
 
 @pytest.mark.asyncio

@@ -634,6 +634,14 @@ class TuiController:
     def runtime_skill_names(self) -> tuple[str, ...]:
         return tuple(sorted(skill.name for skill in self._runtime().available_skills()))
 
+    async def continue_session(self) -> RunResult:
+        result = await self._runtime().continue_run(session_id=self._require_session())
+        await self._unarchive_current_session_after_update()
+        return result
+
+    async def undo(self) -> MessageRecord:
+        return await asyncio.to_thread(self._runtime().sessions.undo, self._require_session())
+
     async def abort(self) -> RunResult | None:
         if self._session_id is None:
             return None

@@ -6,6 +6,7 @@ from datetime import datetime
 from ouro.core.base import utc_now
 from ouro.core.state import (
     ACTIVE_RUN_STATUSES,
+    RESUMABLE_RUN_STATUSES,
     RunRecord,
     SessionRecord,
     SessionStatus,
@@ -42,6 +43,7 @@ def plan_run_transition(
     current_run: RunRecord | None,
     next_run: RunRecord,
     now: datetime | None = None,
+    resume: bool = False,
 ) -> RunSessionTransitionPlan:
     """Validate a Run state edge and derive the corresponding Session projection.
 
@@ -52,6 +54,12 @@ def plan_run_transition(
 
     if session.session_id != next_run.session_id:
         raise ValueError("Run transition Session identity does not match its Run")
+    if resume and (
+        current_run is None
+        or current_run.status not in RESUMABLE_RUN_STATUSES
+        or next_run.status != "running"
+    ):
+        raise ValueError("resume requires an existing interrupted Run transitioning to running")
     if current_run is None:
         if next_run.status not in _INITIAL_RUN_STATUSES:
             raise ValueError(f"new Run cannot start in {next_run.status} state")
@@ -60,7 +68,14 @@ def plan_run_transition(
             raise ValueError("current Run does not belong to the transition Session")
         if current_run.run_id != next_run.run_id:
             raise ValueError("Run transition cannot change Run identity")
-        if current_run.status not in ACTIVE_RUN_STATUSES and next_run.status != current_run.status:
+        resuming = (
+            resume and current_run.status in RESUMABLE_RUN_STATUSES and next_run.status == "running"
+        )
+        if (
+            current_run.status not in ACTIVE_RUN_STATUSES
+            and next_run.status != current_run.status
+            and not resuming
+        ):
             raise ValueError(
                 f"terminal Run cannot transition from {current_run.status} to {next_run.status}"
             )
