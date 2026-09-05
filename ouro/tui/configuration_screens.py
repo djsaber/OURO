@@ -35,6 +35,7 @@ from ouro.tui.controller import (
     TuiSkillInstallConfiguration,
     TuiToolExecutionConfiguration,
 )
+from ouro.tui.menu_labels import PERMISSION_LABELS, THINKING_LABELS
 from ouro.tui.model_menus import model_choices
 from ouro.tui.screens import Choice, ChoiceScreen, EditableChoiceScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
@@ -67,8 +68,8 @@ class ToolExecutionConfigurationScreen(EditableChoiceScreen):
         }
         self._workspace_only = config.workspace_only
         super().__init__(
-            title="TOOL EXECUTION & PATH ACCESS",
-            placeholder="Filter tool execution settings…",
+            title="TOOL LIMITS & FILE ACCESS",
+            placeholder="Search tool settings…",
             choices=self._tool_execution_choices(),
             on_save=self._save_field,
         )
@@ -98,7 +99,9 @@ class ToolExecutionConfigurationScreen(EditableChoiceScreen):
     def _draft(self) -> TuiToolExecutionConfiguration:
         return TuiToolExecutionConfiguration(
             mode=cast(ToolExecutionMode, self._values["tool-execution-mode"]),
-            max_concurrency=_positive_int(self._values["tool-max-concurrency"], "Max concurrency"),
+            max_concurrency=_positive_int(
+                self._values["tool-max-concurrency"], "Parallel tool limit"
+            ),
             workspace_only=self._workspace_only,
             max_output_chars=_positive_int(
                 self._values["tool-max-output"], "Max output characters"
@@ -124,13 +127,17 @@ class ToolExecutionConfigurationScreen(EditableChoiceScreen):
         return (
             Choice(
                 "tool-execution-mode",
-                "Execution mode",
-                trailing=self._values["tool-execution-mode"],
+                "Run tools",
+                trailing=(
+                    "One at a time"
+                    if self._values["tool-execution-mode"] == "sequential"
+                    else "In parallel"
+                ),
                 group="EXECUTION",
             ),
             Choice(
                 "tool-max-concurrency",
-                "Max concurrency",
+                "Parallel tool limit",
                 trailing=self._values["tool-max-concurrency"] or "Required",
                 group="EXECUTION",
                 edit_value=self._values["tool-max-concurrency"],
@@ -192,9 +199,7 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
             for definition in definitions
             if policy.allows_agent(definition.agent_id)
         }
-        self._allowed_model_keys = {
-            model.key for model in models if policy.allows_model(model.key)
-        }
+        self._allowed_model_keys = {model.key for model in models if policy.allows_model(model.key)}
         self._toggles = {
             "agent-policy-sync": "sync" in policy.allowed_execution_modes,
             "agent-policy-async": "async" in policy.allowed_execution_modes,
@@ -204,8 +209,8 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
             "agent-policy-external-paths": policy.allow_external_paths,
         }
         super().__init__(
-            title="SUBAGENT DISPATCH POLICY",
-            placeholder="Filter dispatch settings…",
+            title="SUBAGENT PERMISSIONS",
+            placeholder="Search subagent permissions…",
             choices=self._policy_choices(),
             on_save=self._save_field,
         )
@@ -330,9 +335,7 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
             replace(
                 choice,
                 marker=(
-                    theme.selected_choice_marker
-                    if choice.value in self._allowed_model_keys
-                    else ""
+                    theme.selected_choice_marker if choice.value in self._allowed_model_keys else ""
                 ),
             )
             for choice in model_choices(self._models, theme=theme)
@@ -349,37 +352,37 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
                 "agent-policy-agents",
                 "Allowed subagents",
                 trailing=f"{len(self._allowed_agent_ids)} of {len(self._definitions)}",
-                group="ALLOWLISTS",
+                group="ALLOWED",
             ),
             Choice(
                 "agent-policy-models",
                 "Allowed models",
                 trailing=f"{len(self._allowed_model_keys)} of {len(self._models)}",
-                group="ALLOWLISTS",
+                group="ALLOWED",
             ),
             Choice(
                 "agent-policy-sync",
-                "Synchronous dispatch",
+                "Wait for results",
                 trailing=state("agent-policy-sync"),
                 group="EXECUTION",
             ),
             Choice(
                 "agent-policy-async",
-                "Asynchronous dispatch",
+                "Run in background",
                 trailing=state("agent-policy-async"),
                 group="EXECUTION",
             ),
             Choice(
                 "agent-policy-depth",
-                "Maximum depth",
+                "Nesting limit",
                 trailing="1",
                 group="EXECUTION",
                 disabled=True,
             ),
             Choice(
                 "agent-policy-lifecycle",
-                "Lifecycle",
-                trailing="Bound",
+                "Task duration",
+                trailing="Until parent task ends",
                 group="EXECUTION",
                 disabled=True,
             ),
@@ -403,7 +406,7 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
             ),
             Choice(
                 "agent-policy-external-paths",
-                "External paths",
+                "Files outside workspace",
                 trailing=state("agent-policy-external-paths"),
                 group="CAPABILITIES",
             ),
@@ -436,7 +439,7 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
             else _RUNTIME_MODEL
         )
         self._model_labels = {
-            _RUNTIME_MODEL: "Inherit session model",
+            _RUNTIME_MODEL: "Use conversation model",
             **{model.key: model.display_name or model.model_id for model in models},
         }
         if configured_model not in self._model_labels:
@@ -535,7 +538,7 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
                 "agent_id": "Agent ID",
                 "name": "Name",
                 "description": "Description",
-                "system_prompt": "System prompt",
+                "system_prompt": "Instructions",
             }.get(field_name, field_name.replace("_", " ").title())
             message = str(error["msg"]).removeprefix("Value error, ")
             message = message.removeprefix(f"{field_name} ")
@@ -567,7 +570,7 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
                 group="IDENTITY",
                 disabled=self._existing is not None,
                 edit_value=self._values["agent-definition-id"],
-                edit_placeholder="Enter a stable lowercase ID",
+                edit_placeholder="Enter a unique lowercase ID",
             ),
             Choice(
                 "agent-definition-name",
@@ -587,7 +590,7 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
             ),
             Choice(
                 "agent-definition-prompt",
-                "System prompt",
+                "Instructions",
                 trailing=f"{len(self._values['agent-definition-prompt'])} characters",
                 group="INSTRUCTIONS",
                 edit_value=self._values["agent-definition-prompt"],
@@ -637,7 +640,7 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
         choices = [
             Choice(
                 _RUNTIME_MODEL,
-                "Inherit session model",
+                "Use conversation model",
                 marker=(theme.selected_choice_marker if selected == _RUNTIME_MODEL else ""),
                 group="SESSION",
             )
@@ -685,7 +688,7 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
             else _RUNTIME_MODEL
         )
         self._model_labels = {
-            _RUNTIME_MODEL: "Session runtime model",
+            _RUNTIME_MODEL: "Conversation model",
             **{model.key: model.display_name or model.key for model in models},
         }
         if configured_model not in self._model_labels:
@@ -710,7 +713,7 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
         self._auto_enabled = bool(policy["auto_enabled"])
         super().__init__(
             title="CONTEXT COMPACTION",
-            placeholder="Filter compaction settings…",
+            placeholder="Search compaction settings…",
             choices=self._compaction_choices(),
             on_save=self._save_field,
         )
@@ -781,7 +784,7 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
         choices = [
             Choice(
                 _RUNTIME_MODEL,
-                "Session runtime model",
+                "Conversation model",
                 marker=(theme.selected_choice_marker if selected == _RUNTIME_MODEL else ""),
                 group="SESSION",
             )
@@ -810,8 +813,8 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
         strategy = self._values["compaction-strategy"]
         fallback = self._values["compaction-fallback"]
         model = self._values["compaction-model"]
-        trigger = _ratio(self._values["compaction-trigger"], "Trigger ratio")
-        target = _ratio(self._values["compaction-target"], "Target ratio")
+        trigger = _ratio(self._values["compaction-trigger"], "Start at usage (0–1)")
+        target = _ratio(self._values["compaction-target"], "Reduce to usage (0–1)")
         if target >= trigger:
             raise ValueError("Target ratio must be lower than trigger ratio")
         if fallback == strategy:
@@ -881,15 +884,25 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
         return (
             Choice(
                 "compaction-strategy",
-                "Primary strategy",
-                trailing=self._values["compaction-strategy"],
+                "Compaction method",
+                trailing=(
+                    "Summarize older messages"
+                    if self._values["compaction-strategy"] == "builtin.llm_summary"
+                    else self._values["compaction-strategy"]
+                ),
                 group="STRATEGY",
                 disabled=True,
             ),
             Choice(
                 "compaction-fallback",
-                "Fallback strategy",
-                trailing="None" if fallback == _NO_FALLBACK else fallback,
+                "Backup method",
+                trailing=(
+                    "None"
+                    if fallback == _NO_FALLBACK
+                    else "Summarize older messages"
+                    if fallback == "builtin.llm_summary"
+                    else fallback
+                ),
                 group="STRATEGY",
                 disabled=True,
             ),
@@ -901,7 +914,7 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
             ),
             Choice(
                 "compaction-trigger",
-                "Trigger ratio",
+                "Start at usage (0–1)",
                 trailing=self._values["compaction-trigger"] or "Required",
                 group="THRESHOLDS",
                 edit_value=self._values["compaction-trigger"],
@@ -909,7 +922,7 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
             ),
             Choice(
                 "compaction-target",
-                "Target ratio",
+                "Reduce to usage (0–1)",
                 trailing=self._values["compaction-target"] or "Required",
                 group="THRESHOLDS",
                 edit_value=self._values["compaction-target"],
@@ -917,7 +930,7 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
             ),
             Choice(
                 "compaction-model",
-                "Model route",
+                "Compaction model",
                 trailing=self._model_labels[model_key],
                 group="MODEL",
             ),
@@ -955,7 +968,7 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
                     if uses_runtime_model
                     else "Unsupported"
                     if reasoning_disabled
-                    else self._values["compaction-reasoning"]
+                    else THINKING_LABELS[self._values["compaction-reasoning"]]
                 ),
                 group="MODEL",
                 disabled=reasoning_disabled,
@@ -1109,11 +1122,11 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 self._values["mcp-reconnect-attempts"], "Reconnect attempts"
             ),
             reconnect_backoff_seconds=_positive_float(
-                self._values["mcp-reconnect-backoff"], "Reconnect backoff"
+                self._values["mcp-reconnect-backoff"], "Retry delay"
             ),
             timeout_seconds=_positive_float(self._values["mcp-timeout"], "Timeout"),
             health_check_interval_seconds=_positive_float(
-                self._values["mcp-health-interval"], "Health interval"
+                self._values["mcp-health-interval"], "Connection check interval"
             ),
             permission_mode=cast(PermissionMode, self._values["mcp-permission"]),
             tool_effect_overrides=(
@@ -1152,8 +1165,10 @@ class MCPConfigurationScreen(EditableChoiceScreen):
             ),
             Choice(
                 "mcp-transport",
-                "Transport",
-                trailing=self._values["mcp-transport"],
+                "Connection type",
+                trailing={"stdio": "Local process", "sse": "Remote (SSE)", "http": "Remote (HTTP)"}[
+                    self._values["mcp-transport"]
+                ],
                 group="CONNECTION",
             ),
             Choice(
@@ -1239,7 +1254,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
             Choice(
                 "mcp-permission",
                 "Default tool permission",
-                trailing=self._values["mcp-permission"],
+                trailing=PERMISSION_LABELS[self._values["mcp-permission"]],
                 group="TOOLS",
             ),
             Choice(
@@ -1258,33 +1273,33 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 "mcp-enabled",
                 "Enabled",
                 trailing=_enabled_label(self._toggles["mcp-enabled"]),
-                group="RUNTIME",
+                group="CONNECTION SETTINGS",
             ),
             Choice(
                 "mcp-auto-start",
                 "Auto start",
                 trailing=_enabled_label(self._toggles["mcp-auto-start"]),
-                group="RUNTIME",
+                group="CONNECTION SETTINGS",
             ),
             Choice(
                 "mcp-auto-reconnect",
                 "Auto reconnect",
                 trailing=_enabled_label(self._toggles["mcp-auto-reconnect"]),
-                group="RUNTIME",
+                group="CONNECTION SETTINGS",
             ),
             Choice(
                 "mcp-reconnect-attempts",
                 "Reconnect attempts",
                 trailing=self._values["mcp-reconnect-attempts"],
-                group="RUNTIME",
+                group="CONNECTION SETTINGS",
                 edit_value=self._values["mcp-reconnect-attempts"],
                 edit_placeholder="Enter zero or a positive integer",
             ),
             Choice(
                 "mcp-reconnect-backoff",
-                "Reconnect backoff",
+                "Retry delay",
                 trailing=f"{self._values['mcp-reconnect-backoff']} seconds",
-                group="RUNTIME",
+                group="CONNECTION SETTINGS",
                 edit_value=self._values["mcp-reconnect-backoff"],
                 edit_placeholder="Enter seconds",
             ),
@@ -1292,15 +1307,15 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 "mcp-timeout",
                 "Timeout",
                 trailing=f"{self._values['mcp-timeout']} seconds",
-                group="RUNTIME",
+                group="CONNECTION SETTINGS",
                 edit_value=self._values["mcp-timeout"],
                 edit_placeholder="Enter seconds",
             ),
             Choice(
                 "mcp-health-interval",
-                "Health interval",
+                "Connection check interval",
                 trailing=f"{self._values['mcp-health-interval']} seconds",
-                group="RUNTIME",
+                group="CONNECTION SETTINGS",
                 edit_value=self._values["mcp-health-interval"],
                 edit_placeholder="Enter seconds",
             ),
@@ -1354,7 +1369,7 @@ class PluginInstallScreen(EditableChoiceScreen):
             ),
             Choice(
                 "plugin-ref",
-                "Git ref",
+                "Branch, tag or commit",
                 trailing=self._values["ref"] or "Default",
                 group="SOURCE",
                 edit_value=self._values["ref"],
@@ -1402,7 +1417,7 @@ class PluginConfigurationScreen(EditableChoiceScreen):
             ),
         }
         super().__init__(
-            title=theme_for(self).inline_separator.join(("PLUGIN CONFIGURATION", plugin.name)),
+            title=theme_for(self).inline_separator.join(("EDIT PLUGIN", plugin.name)),
             placeholder="Filter plugin configuration…",
             choices=self._configuration_choices(),
             on_save=self._save_field,
@@ -1419,7 +1434,7 @@ class PluginConfigurationScreen(EditableChoiceScreen):
         return self._configuration_choices()
 
     def _draft(self) -> tuple[dict[str, object], dict[str, str]]:
-        values = _json_object(self._values["plugin-config-values"], "Values")
+        values = _json_object(self._values["plugin-config-values"], "Settings (JSON)")
         credentials = _json_string_object(
             self._values["plugin-config-credentials"],
             "Credential references",
@@ -1447,9 +1462,9 @@ class PluginConfigurationScreen(EditableChoiceScreen):
         return (
             Choice(
                 "plugin-config-values",
-                "Values",
+                "Settings (JSON)",
                 trailing=self._values["plugin-config-values"],
-                group="CONFIGURATION",
+                group="SETTINGS",
                 edit_value=self._values["plugin-config-values"],
                 edit_placeholder="Enter a JSON object",
             ),
@@ -1457,7 +1472,7 @@ class PluginConfigurationScreen(EditableChoiceScreen):
                 "plugin-config-credentials",
                 "Credential references",
                 trailing=self._values["plugin-config-credentials"],
-                group="CONFIGURATION",
+                group="SETTINGS",
                 edit_value=self._values["plugin-config-credentials"],
                 edit_placeholder='Enter slot-to-env references, e.g. {"api":"env:API_KEY"}',
             ),
@@ -1524,7 +1539,7 @@ class SkillInstallScreen(EditableChoiceScreen):
         if not source:
             raise ValueError("Source is required")
         if selector is not None and install_all:
-            raise ValueError("Skill selector and Install all are mutually exclusive")
+            raise ValueError("Choose skill names or Install all, not both")
         return TuiSkillInstallConfiguration(
             source=source,
             scope=cast(SkillInstallScopeInput, self._values["skill-scope"]),
@@ -1556,8 +1571,8 @@ class SkillInstallScreen(EditableChoiceScreen):
             ),
             Choice(
                 "skill-selector",
-                "Skill selector",
-                trailing=self._values["skill-selector"] or "All discovered skills",
+                "Skill names",
+                trailing=self._values["skill-selector"] or "All available skills",
                 group="SELECTION",
                 edit_value=self._values["skill-selector"],
             ),
@@ -1569,7 +1584,7 @@ class SkillInstallScreen(EditableChoiceScreen):
             ),
             Choice(
                 "skill-ref",
-                "Git ref",
+                "Branch, tag or commit",
                 trailing=self._values["skill-ref"] or "Default",
                 group="VERSION",
                 edit_value=self._values["skill-ref"],

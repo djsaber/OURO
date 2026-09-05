@@ -42,18 +42,19 @@ class Choice:
     edit_placeholder: str = ""
     loading: bool = False
     description_accent: str | None = None
+    destructive: bool = False
 
 
 _HELP_SHORTCUTS = (
     ("Enter", "send / queue", "Shift+Enter", "new line"),
-    ("Ctrl+Enter / Ctrl+J", "guide active run", "↑ / ↓", "input history"),
+    ("Ctrl+Enter / Ctrl+J", "guide current task", "↑ / ↓", "input history"),
     ("Ctrl+N", "new session", "Ctrl+S", "sessions"),
-    ("Alt+T", "cycle model thinking", "Alt+A", "cycle session approval"),
-    ("Alt+← / Alt+→", "switch agent node", "Alt+↑ / Alt+↓", "main / latest agent"),
+    ("Alt+T", "cycle model thinking", "Alt+A", "cycle tool approval"),
+    ("Alt+← / Alt+→", "switch agent", "Alt+↑ / Alt+↓", "main / recent agent"),
     ("Alt+P", "plugins", "Ctrl+P", "actions"),
     ("Ctrl+H", "help", "Ctrl+↑", "conversation top"),
     ("Ctrl+↓", "conversation bottom", "Ctrl+←", "previous user message"),
-    ("Ctrl+→", "next user message", "Ctrl+C", "abort run"),
+    ("Ctrl+→", "next user message", "Ctrl+C", "stop task"),
     ("Ctrl+Q", "quit", "Esc", "close menu"),
 )
 
@@ -79,7 +80,7 @@ def help_choices(
             f"command:{command.name}",
             command.usage,
             trailing=command.description,
-            group="BUILT-IN SLASH COMMANDS",
+            group="COMMANDS",
         )
         for command in TUI_COMMANDS
     )
@@ -88,7 +89,7 @@ def help_choices(
             f"plugin-command:{command.name}",
             command.usage,
             trailing=command.title,
-            group="PLUGIN SLASH COMMANDS",
+            group="PLUGIN COMMANDS",
         )
         for command in plugin_commands
     )
@@ -185,7 +186,11 @@ def _choice_option(
     if choice.description:
         label.append(
             f"\n{choice.description}",
-            style=choice.description_accent or theme.text_choice,
+            style=(
+                theme.danger
+                if choice.destructive
+                else choice.description_accent or theme.text_choice
+            ),
         )
     return Option(label, id=choice.value, disabled=choice.disabled)
 
@@ -374,8 +379,8 @@ class ChoiceScreen(ModalScreen[str | None]):
     def on_resize(self, event: events.Resize) -> None:
         """Keep the scrollable menu body within a bounded share of the terminal."""
 
-        self.query_one("#choice-list", OptionList).styles.max_height = (
-            self._responsive_list_height(event.size.height)
+        self.query_one("#choice-list", OptionList).styles.max_height = self._responsive_list_height(
+            event.size.height
         )
 
     @classmethod
@@ -573,9 +578,8 @@ class ChoiceScreen(ModalScreen[str | None]):
     ) -> bool:
         """Update the visible page when it still owns a background operation."""
 
-        if (
-            not self._accepts_choice_updates()
-            or (expected_revision is not None and self._page_revision != expected_revision)
+        if not self._accepts_choice_updates() or (
+            expected_revision is not None and self._page_revision != expected_revision
         ):
             return False
         self._choices = choices
@@ -958,6 +962,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         return (
             not normalized_needle
             or normalized_needle in choice.label.casefold()
+            or normalized_needle in choice.value.casefold()
             or normalized_needle in choice.description.casefold()
             or normalized_needle in choice.group.casefold()
             or normalized_needle in choice.trailing.casefold()
@@ -1266,9 +1271,7 @@ class EditableChoiceScreen(ChoiceScreen):
         accent = theme.accent
         display_text = self._editor_display_text(self._edit_text)
         prompt = Text(no_wrap=True)
-        cursor_style = (
-            f"not bold reverse {accent}" if self._edit_cursor_visible else "not bold"
-        )
+        cursor_style = f"not bold reverse {accent}" if self._edit_cursor_visible else "not bold"
         if not display_text:
             prompt.append(" ", style=cursor_style)
             choice = next(
@@ -1351,7 +1354,7 @@ class MultiChoiceScreen(ChoiceScreen):
         ("↑/↓ move", "←/→ group", "Space toggle", "Enter confirm", "Esc back")
     )
     CONFIRM_HINT = DEFAULT_TUI_THEME.inline_separator.join(
-        ("↑/↓ move", "Enter select", "Esc back")
+        ("↑/↓ move", "Enter select", "Esc cancel")
     )
 
     BINDINGS = [
@@ -1374,6 +1377,7 @@ class MultiChoiceScreen(ChoiceScreen):
         selected_marker: str,
         unselected_marker: str = "",
         confirm_label: str = "Confirm",
+        destructive: bool = False,
     ) -> None:
         super().__init__(title=title, placeholder=placeholder, choices=choices)
         self._on_confirm = on_confirm
@@ -1381,6 +1385,7 @@ class MultiChoiceScreen(ChoiceScreen):
         self._selected_marker = selected_marker
         self._unselected_marker = unselected_marker
         self._confirm_label = confirm_label
+        self._destructive = destructive
         self._confirmation_values: tuple[str, ...] = ()
         self._catalog_choices: tuple[Choice, ...] = ()
         self._catalog_filter = ""
@@ -1446,7 +1451,13 @@ class MultiChoiceScreen(ChoiceScreen):
             Choice("__multi_cancel__", "Cancel"),
             Choice(
                 "__multi_confirm__",
-                f"{self._confirm_label} {len(selected)} selected",
+                f"{self._confirm_label} selected ({len(selected)})",
+                description=(
+                    "Permanently delete the selected items? This cannot be undone."
+                    if self._destructive
+                    else ""
+                ),
+                destructive=self._destructive,
             ),
         )
         self.query_one("#choice-title", Static).update(f"CONFIRM {self._title}")
@@ -1495,6 +1506,10 @@ class MultiChoiceScreen(ChoiceScreen):
 class ConfirmationScreen(ChoiceScreen):
     """Present a destructive confirmation with the shared menu chrome."""
 
+    DEFAULT_HINT = DEFAULT_TUI_THEME.inline_separator.join(
+        ("↑/↓ move", "Enter select", "Esc cancel")
+    )
+    BACK_HINT = DEFAULT_HINT
     CONFIRM_VALUE = "__confirmation_confirm__"
 
     def __init__(
@@ -1509,7 +1524,7 @@ class ConfirmationScreen(ChoiceScreen):
             placeholder="Choose an action…",
             choices=(
                 Choice("__confirmation_cancel__", "Cancel"),
-                Choice(self.CONFIRM_VALUE, confirm_label, description=message),
+                Choice(self.CONFIRM_VALUE, confirm_label, description=message, destructive=True),
             ),
             initial_value="__confirmation_cancel__",
         )
@@ -1526,12 +1541,8 @@ class ConfirmationScreen(ChoiceScreen):
 class HelpScreen(ChoiceScreen):
     """Expose root-level help through the same searchable menu as in-menu help."""
 
-    DEFAULT_HINT = DEFAULT_TUI_THEME.inline_separator.join(
-        ("↑/↓ move", "←/→ group", "Esc close")
-    )
-    BACK_HINT = DEFAULT_TUI_THEME.inline_separator.join(
-        ("↑/↓ move", "←/→ group", "Esc back")
-    )
+    DEFAULT_HINT = DEFAULT_TUI_THEME.inline_separator.join(("↑/↓ move", "←/→ group", "Esc close"))
+    BACK_HINT = DEFAULT_TUI_THEME.inline_separator.join(("↑/↓ move", "←/→ group", "Esc back"))
 
     def __init__(self, *, plugin_commands: tuple[TuiCommand, ...] = ()) -> None:
         super().__init__(

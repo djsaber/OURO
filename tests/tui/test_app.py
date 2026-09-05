@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 from rich.segment import Segment
+from rich.style import Style
 from rich.text import Text
 from textual import events
 from textual.color import Color
@@ -394,6 +395,43 @@ def test_choice_description_can_use_failure_semantics() -> None:
     )
     assert description_style.color is not None
     assert description_style.color.get_truecolor().hex == DEFAULT_TUI_THEME.failure
+
+
+def test_confirmation_uses_current_theme_danger_only_for_description() -> None:
+    screen = ConfirmationScreen(
+        title="DELETE SKILL", message="Delete example?", confirm_label="Delete"
+    )
+    for theme in (DEFAULT_TUI_THEME, replace(TUI_THEMES["harbor"], danger="#cc4455")):
+        cancel, confirm = ChoiceScreen._options(screen._choices, theme=theme)
+        assert isinstance(cancel.prompt, Text)
+        assert isinstance(confirm.prompt, Text)
+        assert cancel.prompt.get_style_at_offset(Console(), 0).color is None
+        assert confirm.prompt.get_style_at_offset(Console(), 0).color is None
+        assert confirm.prompt.get_style_at_offset(
+            Console(), confirm.prompt.plain.index("Delete example?")
+        ).color == Style(color=theme.danger).color
+
+
+async def test_welcome_providers_show_count_before_dimmed_names(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    async with app.run_test() as pilot:
+        welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
+        welcome.set_system_status(
+            TuiSystemStatus(
+                provider_ids=("anthropic-compatible", "deepseek", "glm", "openai", "other"),
+                model_count=13,
+            )
+        )
+        providers = welcome._system._providers.render()
+        assert providers.plain == "13 model(s) • anthropic-compatible, deepseek, glm, +2"
+        assert providers.get_style_at_offset(0).foreground == Color.parse(
+            DEFAULT_TUI_THEME.text_muted
+        )
+        assert providers.get_style_at_offset(
+            providers.plain.index("anthropic")
+        ).foreground == Color.parse(DEFAULT_TUI_THEME.text_faint)
+        welcome.set_system_status(TuiSystemStatus())
+        assert welcome._system._providers.render().plain == "0 model(s)"
 
 
 def test_choice_screen_projects_group_headers_as_disabled_options() -> None:
@@ -1773,7 +1811,7 @@ async def test_tui_hides_welcome_header_while_startup_is_still_in_progress(
                 child for child in app.query_one(WelcomePanel).children if child.display
             ]
             assert visible_input_children == [status_line]
-            assert f"v{__version__}" in _welcome_plain_text(app.query_one(WelcomePanel))
+            assert not app.query_one("#welcome-version", Static).display
         finally:
             release_startup.set()
 
@@ -2045,6 +2083,15 @@ async def test_welcome_layout_stays_centered_across_terminal_width_bounds(
         welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
         composer = app.query_one(Composer)
         assert app.query_one(SubagentNavigationPanel).display is False
+        version = app.query_one("#welcome-version", Static)
+        assert version.render().plain == f"v{__version__}"
+        assert version.display
+        assert version.region.bottom == app.screen.region.bottom
+        assert version.region.right == app.screen.region.right
+        assert version.styles.text_align == "right"
+        assert version.styles.color == Color.parse(app.tui_theme.text_faint)
+        assert not version.styles.text_style.bold
+        assert not version.styles.text_style.italic
 
         assert welcome.region.width == 116
         assert welcome.region.x == app.screen.region.width - welcome.region.right
@@ -2053,12 +2100,16 @@ async def test_welcome_layout_stays_centered_across_terminal_width_bounds(
         await pilot.resize_terminal(64, 24)
         await pilot.pause()
         assert welcome.region.width == 48
+        assert version.region.bottom == app.screen.region.bottom
+        assert version.region.right == app.screen.region.right
         assert welcome.region.x == app.screen.region.width - welcome.region.right
         assert composer.region.x == app.screen.region.width - composer.region.right
 
         await pilot.resize_terminal(40, 16)
         await pilot.pause()
         assert welcome.region.width == app.screen.region.width
+        assert version.region.bottom == app.screen.region.bottom
+        assert version.region.right == app.screen.region.right
         assert composer.region.x == app.screen.region.width - composer.region.right
         assert welcome._top.region.height == welcome._bottom.region.height
         assert composer.region.y == welcome._top.region.bottom
@@ -2549,7 +2600,7 @@ async def test_tui_changes_model_and_approval_while_the_session_is_running(tmp_p
             assert persisted.current_model == "blocking/blocking"
 
             app.action_approval_settings()
-            await _wait_for_screen(app, ChoiceScreen, title="SESSION APPROVAL")
+            await _wait_for_screen(app, ChoiceScreen, title="TOOL APPROVAL")
             await pilot.press("escape")
 
             await app._set_approval_mode("auto")
@@ -3355,6 +3406,7 @@ async def test_first_user_message_renders_when_leaving_welcome_page(tmp_path: Pa
             history = app.query_one(ConversationHistory)
             assert history.user_turns == ("first message",)
             assert "first message" in history.rendered_text
+            assert not app.query_one("#welcome-version", Static).display
         finally:
             provider.release.set()
         await _wait_for_worker_group(app, pilot, group="run")
@@ -6732,7 +6784,14 @@ async def test_delete_session_menu_force_deletes_catalog_error_and_quits_cleanly
         choice = next(item for item in app.screen._choices if item.value == session.session_id)
         assert choice.trailing == "index error"
 
-        await pilot.press("enter", "down", "enter")
+        await pilot.press("enter")
+        confirm = app.screen.query_one(OptionList).get_option("__multi_confirm__").prompt
+        assert isinstance(confirm, Text)
+        assert confirm.get_style_at_offset(Console(), 0).color is None
+        assert confirm.get_style_at_offset(
+            Console(), confirm.plain.index("Permanently delete")
+        ).color == Style(color=app.tui_theme.danger).color
+        await pilot.press("down", "enter")
         await _wait_until(
             lambda: not session_dir.exists(),
             pilot,
@@ -6878,16 +6937,16 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
             "Filter endpoint settings…"
         )
         assert [choice.group for choice in screen._choices] == [
-            "IDENTITY",
-            "IDENTITY",
+            "DETAILS",
+            "DETAILS",
             "LIMITS",
             "LIMITS",
             "CAPABILITIES",
             "CAPABILITIES",
             "CAPABILITIES",
             "CAPABILITIES",
-            "REASONING",
-            "REASONING",
+            "THINKING",
+            "THINKING",
             "REQUEST",
             "ACTIONS",
         ]
@@ -6936,13 +6995,13 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         options.highlighted = options.get_option_index("endpoint-reasoning-preset")
         options.focus()
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="REASONING PRESET")
+        await _wait_for_screen(app, ChoiceScreen, title="THINKING PRESET")
         preset_options = app.screen.query_one("#choice-list", OptionList)
         assert preset_options.get_option("anthropic-adaptive-effort").disabled is True
         incompatible = next(
             choice for choice in app.screen._choices if choice.value == "anthropic-adaptive-effort"
         )
-        assert incompatible.trailing == "Protocol incompatible"
+        assert incompatible.trailing == "Not supported by this provider"
         preset_options.highlighted = preset_options.get_option_index("thinking-toggle")
         preset_options.focus()
         await pilot.press("enter")
@@ -7107,7 +7166,10 @@ def test_thinking_choices_expose_only_distinct_user_configurable_effects(
     arguments = tui_app_module._reasoning_arguments(state)
 
     assert tuple(argument.value for argument in arguments) == expected
-    assert tuple(argument.display_label for argument in arguments) == expected
+    labels = {"enabled": "On", "disabled": "Off", "low": "Low", "high": "High"}
+    assert tuple(argument.display_label for argument in arguments) == tuple(
+        labels[value] for value in expected
+    )
 
 
 @pytest.mark.asyncio
@@ -7124,7 +7186,7 @@ async def test_thinking_completion_and_modal_share_supported_choices(
         inline = (
             app.query_one(CommandPopup).query_one("#command-popup-content", Static).render().plain
         )
-        for value in ("disabled", "low", "high"):
+        for value in ("Off", "Low", "High"):
             assert value in inline
         for value in ("default", "enabled", "minimal", "medium", "xhigh", "max"):
             assert value not in inline
@@ -7286,46 +7348,44 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         assert "/compact" not in action_values
         assert [choice.label for choice in action_choices] == [
             "Theme",
-            "Model thought display",
-            "Input draft memory",
-            "Queued input delivery",
-            "Compaction policy",
+            "Thinking display",
+            "Remember drafts",
+            "Queued messages",
+            "Context compaction",
             "New session",
             "Open session",
             "Rename session",
             "Archive session",
             "Delete session",
-            "List providers",
+            "Manage providers",
             "Add provider",
             "Edit provider",
-            "Remove provider",
-            "List endpoints",
+            "Delete provider",
+            "Manage endpoints",
             "Add endpoint",
             "Edit endpoint",
             "Set default endpoint",
-            "Remove endpoint",
-            "List plugins",
+            "Delete endpoint",
+            "Manage plugins",
             "Install plugin",
-            "Remove plugin",
+            "Delete plugin",
             "Tool permissions",
-            "Execution & path access",
-            "Dispatch policy",
-            "List subagents",
+            "Tool limits & file access",
+            "Subagent permissions",
+            "Manage subagents",
             "Create subagent",
             "Edit subagent",
             "Delete subagent",
-            "List MCP servers",
+            "Manage MCP servers",
             "Add MCP server",
             "Connect MCP server",
             "Disconnect MCP server",
             "Edit MCP server",
-            "Remove MCP server",
+            "Delete MCP server",
             "Skill sources",
-            "List skills",
+            "Manage skills",
             "Install skill",
-            "Validate skill",
-            "Update skill",
-            "Remove skill",
+            "Check skill",
             "Keyboard help",
         ]
         assert [choice.group for choice in action_choices] == [
@@ -7336,7 +7396,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             *("Tools",) * 2,
             *("Subagents",) * 5,
             *("MCP",) * 6,
-            *("Skills",) * 6,
+            *("Skills",) * 4,
             "Support",
         ]
         assert "Configuration" not in {choice.group for choice in action_choices}
@@ -7345,11 +7405,11 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         assert {choice.label: choice.trailing for choice in action_choices if choice.trailing} == {
             "New session": "Ctrl+N",
             "Open session": "Ctrl+S",
-            "List plugins": "Alt+P",
+            "Manage plugins": "Alt+P",
             "Keyboard help": "Ctrl+H",
         }
 
-        app.screen.query_one("#choice-filter", Input).value = "Compaction policy"
+        app.screen.query_one("#choice-filter", Input).value = "Context compaction"
         await pilot.pause()
         await pilot.press("enter", "enter")
         await pilot.pause(0.2)
@@ -7367,10 +7427,10 @@ async def test_queued_input_delivery_uses_shared_settings_menu_and_persists_mode
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Queued input delivery"
+        app.screen.query_one("#choice-filter", Input).value = "Queued messages"
         await pilot.pause()
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="QUEUED INPUT DELIVERY")
+        await _wait_for_screen(app, ChoiceScreen, title="QUEUED MESSAGES")
 
         screen = app.screen
         assert [choice.value for choice in screen._choices] == [
@@ -7378,8 +7438,8 @@ async def test_queued_input_delivery_uses_shared_settings_menu_and_persists_mode
             "all_at_once",
         ]
         assert [choice.trailing for choice in screen._choices] == [
-            "one unit per boundary",
-            "all eligible units per boundary",
+            "Process each message separately",
+            "Process waiting messages together",
         ]
         assert screen._choices[0].marker == DEFAULT_TUI_THEME.selected_choice_marker
         assert screen._choices[1].marker == ""
@@ -7486,13 +7546,13 @@ async def test_actions_opens_subagent_dispatch_policy(
         await pilot.press("ctrl+p")
         await pilot.pause()
 
-        app.screen.query_one("#choice-filter", Input).value = "Dispatch policy"
+        app.screen.query_one("#choice-filter", Input).value = "Subagent permissions"
         await pilot.pause()
         await pilot.press("enter")
         await _wait_for_screen(
             app,
             AgentDispatchPolicyScreen,
-            title="SUBAGENT DISPATCH POLICY",
+            title="SUBAGENT PERMISSIONS",
         )
         screen = app.screen
         assert isinstance(screen, AgentDispatchPolicyScreen)
@@ -7525,7 +7585,7 @@ async def test_actions_lists_the_unified_subagent_catalog(tmp_path: Path) -> Non
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        app.screen.query_one("#choice-filter", Input).value = "List subagents"
+        app.screen.query_one("#choice-filter", Input).value = "Manage subagents"
         await pilot.pause()
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="SUBAGENTS")
@@ -7719,7 +7779,7 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "List providers"
+        app.screen.query_one("#choice-filter", Input).value = "Manage providers"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
@@ -7776,6 +7836,7 @@ async def test_provider_submenu_updates_from_latest_preset_in_place(tmp_path: Pa
     template_path = tmp_path / "config" / "provider-templates.json"
     root = json.loads(template_path.read_text(encoding="utf-8"))
     template = root["templates"]["openai"]
+    initial_revision = template["revision"]
     template["revision"] = 3
     endpoint = next(item for item in template["endpoints"] if item["endpoint_id"] == "gpt-5.6")
     endpoint["context_window"] = 2_000_000
@@ -7786,7 +7847,7 @@ async def test_provider_submenu_updates_from_latest_preset_in_place(tmp_path: Pa
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "List providers"
+        app.screen.query_one("#choice-filter", Input).value = "Manage providers"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
@@ -7797,7 +7858,7 @@ async def test_provider_submenu_updates_from_latest_preset_in_place(tmp_path: Pa
 
         update = next(choice for choice in app.screen._choices if choice.value == "update-template")
         assert update.label == "Update from preset"
-        assert update.trailing == "openai r1"
+        assert update.trailing == f"openai r{initial_revision}"
         options = app.screen.query_one("#choice-list", OptionList)
         options.highlighted = options.get_option_index("update-template")
         options.focus()
@@ -7829,7 +7890,7 @@ async def test_provider_catalog_refreshes_before_returning_from_submenu(
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        app.screen.query_one("#choice-filter", Input).value = "List providers"
+        app.screen.query_one("#choice-filter", Input).value = "Manage providers"
         await pilot.pause()
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="PROVIDERS")
@@ -7877,7 +7938,7 @@ async def test_default_provider_submenu_keeps_toggle_visible_but_disabled(
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "List providers"
+        app.screen.query_one("#choice-filter", Input).value = "Manage providers"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
@@ -7896,10 +7957,10 @@ async def test_default_provider_submenu_keeps_toggle_visible_but_disabled(
 @pytest.mark.parametrize(
     ("action_label", "title"),
     (
-        ("List endpoints", "ENDPOINTS"),
+        ("Manage endpoints", "ENDPOINTS"),
         ("Edit endpoint", "EDIT ENDPOINT"),
         ("Set default endpoint", "SET DEFAULT ENDPOINT"),
-        ("Remove endpoint", "REMOVE ENDPOINT"),
+        ("Delete endpoint", "DELETE ENDPOINT"),
     ),
 )
 @pytest.mark.asyncio
@@ -7975,16 +8036,16 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
     ("action_label", "target_label", "confirm_title", "message"),
     (
         (
-            "Remove provider",
+            "Delete provider",
             "custom",
-            "CONFIRM REMOVE PROVIDER",
-            "Remove custom and all of its endpoints from configuration?",
+            "CONFIRM DELETE PROVIDER",
+            "Delete custom and all of its endpoints from your settings?",
         ),
         (
-            "Remove endpoint",
+            "Delete endpoint",
             "chat",
-            "CONFIRM REMOVE ENDPOINT",
-            "Remove custom/chat from configuration?",
+            "CONFIRM DELETE ENDPOINT",
+            "Delete custom/chat from your settings?",
         ),
     ),
 )
@@ -8020,11 +8081,27 @@ async def test_provider_deletions_use_shared_menu_confirmation(
 
         assert isinstance(app.screen, ConfirmationScreen)
         assert app.screen.query_one("#choice-title", Static).render().plain == confirm_title
-        assert [choice.label for choice in app.screen._choices] == ["Cancel", "Remove"]
+        assert [choice.label for choice in app.screen._choices] == ["Cancel", "Delete"]
         assert app.screen._choices[1].description == message
         options = app.screen.query_one(OptionList)
         assert options.highlighted == 0
         assert options.has_focus
+        confirm = options.get_option(ConfirmationScreen.CONFIRM_VALUE).prompt
+        assert isinstance(confirm, Text)
+        assert confirm.get_style_at_offset(Console(), 0).color is None
+        assert confirm.get_style_at_offset(Console(), confirm.plain.index(message)).color == Style(
+            color=app.tui_theme.danger
+        ).color
+
+        await pilot.press("down")
+        assert any(
+            "Delete" in segment.text
+            and segment.style is not None
+            and segment.style.color == Style(color=app.tui_theme.danger).color
+            for y in range(options.size.height)
+            for segment in options.render_line(y)
+        )
+        await pilot.press("up")
 
         await pilot.press("enter")
         await pilot.pause()
@@ -8098,7 +8175,9 @@ async def test_add_provider_flow_integrates_presets_and_compatible_profiles(
         await pilot.press("enter")
         await pilot.pause()
 
-        assert {"OURO presets", "Compatible"} == {choice.group for choice in app.screen._choices}
+        assert {"Ready to use", "Custom connection"} == {
+            choice.group for choice in app.screen._choices
+        }
         assert {"Google Gemini", "OpenAI-compatible", "Anthropic-compatible"} <= {
             choice.label for choice in app.screen._choices
         }
@@ -8336,7 +8415,7 @@ async def test_actions_persists_three_distinct_recent_choices_across_restart(
         await pilot.pause()
         for label, screen_type in (
             ("Theme", ChoiceScreen),
-            ("Compaction policy", CompactionConfigurationScreen),
+            ("Context compaction", CompactionConfigurationScreen),
             ("Add MCP server", MCPConfigurationScreen),
         ):
             await pilot.press("ctrl+p")
@@ -8360,7 +8439,7 @@ async def test_actions_persists_three_distinct_recent_choices_across_restart(
         await pilot.pause()
         assert [choice.label for choice in app.screen._choices[:3]] == [
             "Add MCP server",
-            "Compaction policy",
+            "Context compaction",
             "Theme",
         ]
         assert all(choice.group == "Recent" for choice in app.screen._choices[:3])
@@ -8372,7 +8451,7 @@ async def test_actions_persists_three_distinct_recent_choices_across_restart(
         await pilot.pause()
         assert [choice.label for choice in restarted.screen._choices[:3]] == [
             "Add MCP server",
-            "Compaction policy",
+            "Context compaction",
             "Theme",
         ]
         assert all(choice.group == "Recent" for choice in restarted.screen._choices[:3])
@@ -8388,7 +8467,7 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "List plugins"
+        app.screen.query_one("#choice-filter", Input).value = "Manage plugins"
         await pilot.pause()
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGINS")
@@ -8411,7 +8490,7 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         assert app.screen is plugin_screen
         assert [choice.label for choice in plugin_screen._choices] == [
             "Disable",
-            "Check integrity and readiness",
+            "Check plugin",
             "Restart",
         ]
         assert (
@@ -8657,7 +8736,7 @@ async def test_root_help_groups_runtime_plugin_commands(
         await _wait_for_screen(app, HelpScreen, title="KEYBOARD HELP")
 
         plugins = tuple(
-            choice for choice in app.screen._choices if choice.group == "PLUGIN SLASH COMMANDS"
+            choice for choice in app.screen._choices if choice.group == "PLUGIN COMMANDS"
         )
         assert [(choice.label, choice.trailing) for choice in plugins] == [
             ("/hello <name>", "Say hello")
@@ -8684,18 +8763,18 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         assert menu.query_one("#choice-hint", Static).render().plain == (HelpScreen.BACK_HINT)
         assert {choice.group for choice in menu._choices} == {
             "SHORTCUTS",
-            "BUILT-IN SLASH COMMANDS",
-            "PLUGIN SLASH COMMANDS",
+            "COMMANDS",
+            "PLUGIN COMMANDS",
         }
         shortcuts = {
             choice.label: choice.trailing for choice in menu._choices if choice.group == "SHORTCUTS"
         }
         assert shortcuts["Alt+T"] == "cycle model thinking"
-        assert shortcuts["Alt+A"] == "cycle session approval"
-        assert shortcuts["Alt+← / Alt+→"] == "switch agent node"
-        assert shortcuts["Alt+↑ / Alt+↓"] == "main / latest agent"
+        assert shortcuts["Alt+A"] == "cycle tool approval"
+        assert shortcuts["Alt+← / Alt+→"] == "switch agent"
+        assert shortcuts["Alt+↑ / Alt+↓"] == "main / recent agent"
         plugin_commands = tuple(
-            choice for choice in menu._choices if choice.group == "PLUGIN SLASH COMMANDS"
+            choice for choice in menu._choices if choice.group == "PLUGIN COMMANDS"
         )
         goal = next(choice for choice in plugin_commands if choice.label.startswith("/goal "))
         plan = next(choice for choice in plugin_commands if choice.label == "/plan [on|off|status]")
@@ -8753,7 +8832,7 @@ async def test_alt_menu_shortcuts_do_not_replace_transient_choice_children(
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         actions = app.screen
-        actions.query_one("#choice-filter", Input).value = "Compaction policy"
+        actions.query_one("#choice-filter", Input).value = "Context compaction"
         await pilot.pause()
         await pilot.press("enter")
         await _wait_for_screen(app, CompactionConfigurationScreen, title="CONTEXT COMPACTION")
@@ -8790,7 +8869,7 @@ async def test_mcp_actions_open_operation_specific_server_selection(tmp_path: Pa
         for action_label, chooser_title in (
             ("Connect MCP server", "CONNECT MCP SERVER"),
             ("Edit MCP server", "EDIT MCP SERVER"),
-            ("Remove MCP server", "REMOVE MCP SERVER"),
+            ("Delete MCP server", "DELETE MCP SERVER"),
         ):
             await pilot.press("ctrl+p")
             await pilot.pause()
@@ -9142,11 +9221,13 @@ async def test_tool_permissions_group_all_registered_sources(tmp_path: Path) -> 
         assert choices["AiGeneratedPluginTest"].group == "dev.ouro.generated"
         assert not any(choice.label == "Plugin default" for choice in choices.values())
         assert choices["UnavailableTest"].group == "Unavailable"
-        assert choices["BuiltinTest"].trailing == "default • approval"
-        assert choices["ContractControlledTest"].trailing == "contract • auto"
+        assert choices["BuiltinTest"].trailing == "Default • Ask for approval"
+        assert choices["ContractControlledTest"].trailing == (
+            "Plugin controlled • Allow automatically"
+        )
         assert choices["ContractControlledTest"].disabled is True
         assert choices["ThirdPartyPluginTest"].disabled is False
-        assert choices["UnavailableTest"].trailing == "deny • unavailable"
+        assert choices["UnavailableTest"].trailing == "Block • unavailable"
         assert all(choice.description == "" for choice in choices.values())
 
 
@@ -9175,9 +9256,9 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         assert app.screen is tool_screen
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
         current = next(choice for choice in app.screen._choices if choice.value == "default")
-        assert current.label == "default"
+        assert current.label == "Use default"
         assert current.marker == DEFAULT_TUI_THEME.selected_choice_marker
-        assert current.trailing == "approval"
+        assert current.trailing == "Ask for approval"
         assert all(choice.trailing != "current" for choice in app.screen._choices)
         app.screen.query_one("#choice-filter", Input).value = "auto"
         await pilot.pause()
@@ -9188,7 +9269,7 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         assert app.screen.query_one("#choice-title", Static).render().plain == ("TOOL PERMISSIONS")
         assert (
             next(choice for choice in app.screen._choices if choice.value == "BuiltinTest").trailing
-            == "auto"
+            == "Allow automatically"
         )
         assert not list(app.screen.query("Toast"))
         assert ConfigurationFacade(tmp_path).permission_config().tools["BuiltinTest"] == "auto"
@@ -9210,7 +9291,7 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         assert app.screen is tool_screen
         assert (
             next(choice for choice in app.screen._choices if choice.value == "BuiltinTest").trailing
-            == "default • approval"
+            == "Default • Ask for approval"
         )
         assert not list(app.screen.query("Toast"))
         assert "BuiltinTest" not in ConfigurationFacade(tmp_path).permission_config().tools
@@ -9293,7 +9374,7 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         action_screen = app.screen
 
-        action_screen.query_one("#choice-filter", Input).value = "List MCP servers"
+        action_screen.query_one("#choice-filter", Input).value = "Manage MCP servers"
         await pilot.pause()
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
@@ -9327,7 +9408,7 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
             == "Enable server"
         )
         start = next(choice for choice in app.screen._choices if choice.value == "start")
-        assert start.label == "Start runtime"
+        assert start.label == "Connect"
         assert start.disabled is True
         assert options.get_option("start").disabled is True
         assert all(
@@ -9400,7 +9481,7 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         action_screen = app.screen
-        action_screen.query_one("#choice-filter", Input).value = "List MCP servers"
+        action_screen.query_one("#choice-filter", Input).value = "Manage MCP servers"
         await pilot.pause()
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
@@ -9569,8 +9650,8 @@ async def test_action_list_and_help_pages_render_once_on_the_shared_surface(
         options = menu.query_one(OptionList)
 
         for action_label, title in (
-            ("List providers", "PROVIDERS"),
-            ("List skills", "SKILLS"),
+            ("Manage providers", "PROVIDERS"),
+            ("Manage skills", "SKILLS"),
             ("Keyboard help", "KEYBOARD HELP"),
         ):
             menu.query_one("#choice-filter", Input).value = action_label
@@ -9608,8 +9689,8 @@ async def test_action_list_and_help_pages_render_once_on_the_shared_surface(
 
         assert [choice.label for choice in menu._choices if choice.group == "Recent"] == [
             "Keyboard help",
-            "List skills",
-            "List providers",
+            "Manage skills",
+            "Manage providers",
         ]
         await pilot.press("escape")
 
@@ -9625,7 +9706,7 @@ async def test_configuration_editors_replace_visible_parent_at_every_depth(
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         action_screen = app.screen
-        action_screen.query_one("#choice-filter", Input).value = "Compaction policy"
+        action_screen.query_one("#choice-filter", Input).value = "Context compaction"
         await pilot.pause()
         await pilot.press("enter")
         await _wait_for_screen(app, CompactionConfigurationScreen, title="CONTEXT COMPACTION")
@@ -9674,13 +9755,13 @@ async def test_skill_actions_open_operation_specific_skill_selection(tmp_path: P
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Validate skill"
+        app.screen.query_one("#choice-filter", Input).value = "Check skill"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause(0.2)
 
         assert isinstance(app.screen, ChoiceScreen)
-        assert app.screen.query_one("#choice-title", Static).render().plain == "VALIDATE SKILL"
+        assert app.screen.query_one("#choice-title", Static).render().plain == "CHECK SKILL"
         assert [choice.value for choice in app.screen._choices] == ["demo"]
         assert app.screen._choices[0].description == ""
         assert app.screen._choices[0].trailing == "ouro • user • enabled"
@@ -9721,9 +9802,9 @@ async def test_skill_directory_sources_use_shared_menu_and_persist_toggles(tmp_p
             "ouro.workspace",
         ]
         assert [choice.group for choice in action_screen._choices] == [
-            "DISCOVERY",
-            *("USER DIRECTORIES",) * 5,
-            *("WORKSPACE DIRECTORIES",) * 5,
+            "FOLDERS",
+            *("USER FOLDERS",) * 5,
+            *("WORKSPACE FOLDERS",) * 5,
         ]
         assert [choice.label for choice in action_screen._choices[1:]] == [
             "agents • user",
@@ -9755,7 +9836,7 @@ async def test_skill_directory_sources_use_shared_menu_and_persist_toggles(tmp_p
             == "disabled"
         )
 
-        action_screen.query_one("#choice-filter", Input).value = "Skill directory discovery"
+        action_screen.query_one("#choice-filter", Input).value = "Find skills in folders"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
@@ -9786,7 +9867,7 @@ async def test_skill_menu_loads_live_plugin_skill_as_disabled_choice(tmp_path: P
 
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "List skills"
+        app.screen.query_one("#choice-filter", Input).value = "Manage skills"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
@@ -9812,12 +9893,13 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "List skills"
+        app.screen.query_one("#choice-filter", Input).value = "Manage skills"
         await pilot.pause()
         await pilot.press("enter", "enter")
         await pilot.pause()
 
         assert app.screen.query_one("#choice-title", Static).render().plain == "SKILL • demo"
+        assert {choice.value for choice in app.screen._choices} == {"disable", "validate"}
         assert app.screen._choices[0].label == "Disable"
 
         options = app.screen.query_one("#choice-list", OptionList)
@@ -9826,6 +9908,7 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
         await pilot.pause()
         assert app._controller.runtime_skill_names() == ()
         assert app.screen._choices[0].label == "Enable"
+        assert {choice.value for choice in app.screen._choices} == {"enable", "validate"}
 
         await pilot.press("escape")
         await pilot.pause()
@@ -9872,7 +9955,7 @@ async def test_mcp_configuration_screen_validates_json_and_returns_typed_draft(
             "PROCESS",
             "CREDENTIALS",
             "TOOLS",
-            "RUNTIME",
+            "CONNECTION SETTINGS",
             "ACTIONS",
         }
         options = screen.query_one("#choice-list", OptionList)
@@ -10088,7 +10171,7 @@ async def test_subagent_policy_uses_shared_grouped_inline_menu(tmp_path: Path) -
         assert not list(screen.query("Checkbox"))
         assert not list(screen.query("Select"))
         assert {choice.group for choice in screen._choices} == {
-            "ALLOWLISTS",
+            "ALLOWED",
             "EXECUTION",
             "CAPABILITIES",
             "ACTIONS",
@@ -10115,7 +10198,7 @@ async def test_subagent_policy_uses_shared_grouped_inline_menu(tmp_path: Path) -
         await _wait_for_screen(
             app,
             AgentDispatchPolicyScreen,
-            title="SUBAGENT DISPATCH POLICY",
+            title="SUBAGENT PERMISSIONS",
         )
 
         options = screen.query_one("#choice-list", OptionList)
@@ -10131,7 +10214,7 @@ async def test_subagent_policy_uses_shared_grouped_inline_menu(tmp_path: Path) -
         await _wait_for_screen(
             app,
             AgentDispatchPolicyScreen,
-            title="SUBAGENT DISPATCH POLICY",
+            title="SUBAGENT PERMISSIONS",
         )
 
         await screen._select_choice("agent-policy-write")
@@ -10180,7 +10263,7 @@ async def test_subagent_definition_editor_does_not_limit_selected_tool_count(
         model_choice = next(
             choice for choice in screen._choices if choice.value == "agent-definition-model"
         )
-        assert model_choice.trailing == "Inherit session model"
+        assert model_choice.trailing == "Use conversation model"
 
         options = screen.query_one("#choice-list", OptionList)
         options.highlighted = options.get_option_index("agent-definition-model")
@@ -12349,7 +12432,7 @@ async def test_action_menu_updates_thought_display_without_closing_picker(
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Model thought display"
+        app.screen.query_one("#choice-filter", Input).value = "Thinking display"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
@@ -12357,7 +12440,7 @@ async def test_action_menu_updates_thought_display_without_closing_picker(
         thought_screen = app.screen
         assert isinstance(thought_screen, ChoiceScreen)
         assert thought_screen.query_one("#choice-title", Static).render().plain == (
-            "MODEL THOUGHT DISPLAY"
+            "THINKING DISPLAY"
         )
         choices = {choice.value: choice for choice in thought_screen._choices}
         assert choices["collapse"].marker == DEFAULT_TUI_THEME.selected_choice_marker
@@ -12393,7 +12476,7 @@ async def test_action_menu_toggles_input_draft_memory_and_clears_disabled_state(
 
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Input draft memory"
+        app.screen.query_one("#choice-filter", Input).value = "Remember drafts"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
@@ -12401,13 +12484,13 @@ async def test_action_menu_toggles_input_draft_memory_and_clears_disabled_state(
         memory_screen = app.screen
         assert isinstance(memory_screen, ChoiceScreen)
         assert memory_screen.query_one("#choice-title", Static).render().plain == (
-            "INPUT DRAFT MEMORY"
+            "REMEMBER DRAFTS"
         )
         choices = {choice.value: choice for choice in memory_screen._choices}
         assert choices["enable"].marker == DEFAULT_TUI_THEME.selected_choice_marker
         assert choices["disable"].marker == ""
 
-        memory_screen.query_one("#choice-filter", Input).value = "Do not remember"
+        memory_screen.query_one("#choice-filter", Input).value = "Do not save drafts"
         await pilot.pause()
         await pilot.press("enter")
         await _wait_until(
@@ -12419,7 +12502,7 @@ async def test_action_menu_toggles_input_draft_memory_and_clears_disabled_state(
         assert preferences.load().input_draft_memory_enabled is False
         assert composer.text == "remember this draft"
 
-        memory_screen.query_one("#choice-filter", Input).value = "Remember input"
+        memory_screen.query_one("#choice-filter", Input).value = "Remember drafts"
         await pilot.pause()
         await pilot.press("enter")
         await _wait_until(

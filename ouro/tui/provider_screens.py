@@ -22,9 +22,9 @@ from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 _REASONING_PRESET_LABELS = {
     "none": "None",
     "openai-effort": "OpenAI effort",
-    "reasoning-content-effort": "Reasoning content effort",
-    "thinking-toggle": "Thinking object toggle",
-    "enable-thinking-toggle": "Enable thinking toggle",
+    "reasoning-content-effort": "Thinking level (reasoning_content)",
+    "thinking-toggle": "Thinking switch (thinking)",
+    "enable-thinking-toggle": "Thinking switch (enable_thinking)",
     "anthropic-adaptive-effort": "Anthropic adaptive effort",
 }
 
@@ -97,22 +97,16 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
         self._initial_tui_theme = theme
         self._profile = profile
         self._existing = existing
-        provider_options = _json_text(
-            existing.provider_options if existing is not None else {}
-        )
+        provider_options = _json_text(existing.provider_options if existing is not None else {})
         self._values = {
             "provider-api-key": "",
             "provider-api-key-env": _credential_environment(profile, existing),
             "provider-id": (
                 existing.provider_id if existing is not None else profile.default_provider_id
             ),
-            "provider-base-url": (
-                existing.base_url if existing is not None else profile.base_url
-            )
+            "provider-base-url": (existing.base_url if existing is not None else profile.base_url)
             or "",
-            "provider-api-path": (
-                existing.api_path if existing is not None else profile.api_path
-            )
+            "provider-api-path": (existing.api_path if existing is not None else profile.api_path)
             or "",
             "provider-timeout": str(existing.timeout if existing is not None else 60.0),
             "provider-options": provider_options,
@@ -315,9 +309,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         self._capabilities = {
             "endpoint-tools": existing.supports_tools if existing is not None else False,
             "endpoint-vision": existing.supports_vision if existing is not None else False,
-            "endpoint-streaming": (
-                existing.supports_streaming if existing is not None else True
-            ),
+            "endpoint-streaming": (existing.supports_streaming if existing is not None else True),
             "endpoint-structured-output": (
                 existing.supports_structured_output if existing is not None else False
             ),
@@ -345,8 +337,8 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
     async def _select_reasoning_preset(self) -> None:
         selected = await self.open_child(
             ChoiceScreen(
-                title="REASONING PRESET",
-                placeholder="Filter reasoning presets…",
+                title="THINKING PRESET",
+                placeholder="Search thinking presets…",
                 choices=self._reasoning_preset_choices(),
                 initial_value=self._reasoning_preset_name(),
             )
@@ -377,7 +369,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             choices.append(
                 Choice(
                     "custom-reasoning-config",
-                    "Custom configuration",
+                    "Custom settings",
                     trailing=_reasoning_summary(
                         self._values["endpoint-reasoning-config"], theme=theme
                     ),
@@ -402,7 +394,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                     name,
                     _REASONING_PRESET_LABELS[name],
                     trailing=(
-                        "Protocol incompatible"
+                        "Not supported by this provider"
                         if incompatible
                         else _reasoning_capability_summary(reasoning, theme=theme)
                     ),
@@ -501,15 +493,15 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                 "endpoint-id",
                 "Endpoint ID",
                 trailing=self._values["endpoint-id"] or "Required",
-                group="IDENTITY",
+                group="DETAILS",
                 disabled=self._existing is not None,
                 edit_value=self._values["endpoint-id"],
             ),
             Choice(
                 "endpoint-model-id",
-                "Provider model ID",
+                "Model ID",
                 trailing=self._values["endpoint-model-id"] or "Required",
-                group="IDENTITY",
+                group="DETAILS",
                 edit_value=self._values["endpoint-model-id"],
             ),
             Choice(
@@ -552,22 +544,20 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             ),
             Choice(
                 "endpoint-reasoning-preset",
-                "Reasoning preset",
+                "Thinking preset",
                 trailing=(
                     _REASONING_PRESET_LABELS.get(
                         self._reasoning_preset_name() or "",
                         "Custom",
                     )
                 ),
-                group="REASONING",
+                group="THINKING",
             ),
             Choice(
                 "endpoint-reasoning-config",
-                "Reasoning config",
-                trailing=_reasoning_summary(
-                    self._values["endpoint-reasoning-config"], theme=theme
-                ),
-                group="REASONING",
+                "Thinking settings (JSON)",
+                trailing=_reasoning_summary(self._values["endpoint-reasoning-config"], theme=theme),
+                group="THINKING",
                 edit_value=self._values["endpoint-reasoning-config"],
                 edit_placeholder="Enter a reasoning JSON object",
             ),
@@ -655,7 +645,7 @@ def _reasoning_text(value: EndpointReasoningConfig) -> str:
 
 
 def _reasoning_config(raw: str) -> EndpointReasoningConfig:
-    value = _json_object(raw, "Reasoning config")
+    value = _json_object(raw, "Thinking settings (JSON)")
     try:
         return EndpointReasoningConfig.model_validate(value)
     except ValueError as exc:
@@ -670,7 +660,7 @@ def _reasoning_summary(
     try:
         return _reasoning_capability_summary(_reasoning_config(raw), theme=theme)
     except ValueError:
-        return "Invalid config"
+        return "Invalid settings"
 
 
 def _reasoning_capability_summary(

@@ -43,9 +43,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
 
         async def refresh_plugins() -> tuple[Choice, ...] | None:
             try:
-                return _plugin_choices(
-                    self._controller.plugins(), theme=theme_for(self)
-                )
+                return _plugin_choices(self._controller.plugins(), theme=theme_for(self))
             except Exception as exc:  # noqa: BLE001
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
@@ -112,9 +110,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 if action != "remove" or plugin.plugin_class == "user"
             )
             plugin_catalog.clear()
-            plugin_catalog.update(
-                {plugin.plugin_id: plugin for plugin in refreshed_candidates}
-            )
+            plugin_catalog.update({plugin.plugin_id: plugin for plugin in refreshed_candidates})
             return _plugin_choices(refreshed_candidates, theme=theme_for(self))
 
         async def select_plugin(plugin_id: str) -> tuple[Choice, ...] | None:
@@ -140,9 +136,9 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             return None
 
         title = {
-            "toggle": "ENABLE OR DISABLE PLUGIN",
+            "toggle": "PLUGIN AVAILABILITY",
             "check": "CHECK PLUGIN",
-            "remove": "REMOVE PLUGIN",
+            "remove": "DELETE PLUGIN",
         }[action]
         choices = _plugin_choices(candidates, theme=theme_for(self))
         if menu is not None:
@@ -182,9 +178,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             if menu is None:
                 return False
             menu.pop_page(
-                choices=_plugin_choices(
-                    self._controller.plugins(), theme=theme_for(self)
-                ),
+                choices=_plugin_choices(self._controller.plugins(), theme=theme_for(self)),
                 initial_value=plugin_id,
             )
             return True
@@ -211,9 +205,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             if menu is not None:
                 refreshed = self._controller.plugin(plugin_id)
                 menu.update_parent_choices(
-                    _plugin_choices(
-                        self._controller.plugins(), theme=theme_for(self)
-                    ),
+                    _plugin_choices(self._controller.plugins(), theme=theme_for(self)),
                     initial_value=plugin_id,
                 )
                 return _plugin_action_choices(refreshed)
@@ -221,6 +213,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
 
         choices = _plugin_action_choices(plugin)
         if menu is not None:
+
             async def refresh_plugin_actions() -> tuple[Choice, ...] | None:
                 try:
                     return _plugin_action_choices(self._controller.plugin(plugin_id))
@@ -281,13 +274,9 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             self.notify(f"Plugin has no configuration schema: {plugin_id}", severity="warning")
             return
         draft = await (
-            menu.open_child(
-                PluginConfigurationScreen(plugin, theme=theme_for(self))
-            )
+            menu.open_child(PluginConfigurationScreen(plugin, theme=theme_for(self)))
             if menu is not None
-            else self.push_screen_wait(
-                PluginConfigurationScreen(plugin, theme=theme_for(self))
-            )
+            else self.push_screen_wait(PluginConfigurationScreen(plugin, theme=theme_for(self)))
         )
         if draft is None:
             return
@@ -393,9 +382,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
 
         if menu is not None:
             menu.push_page(
-                title=theme_for(self).inline_separator.join(
-                    ("PLUGIN VERSIONS", plugin.name)
-                ),
+                title=theme_for(self).inline_separator.join(("PLUGIN VERSIONS", plugin.name)),
                 placeholder="Filter versions…",
                 choices=choices,
                 on_select=select_install,
@@ -403,9 +390,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             return
         await self.push_screen_wait(
             ChoiceScreen(
-                title=theme_for(self).inline_separator.join(
-                    ("PLUGIN VERSIONS", plugin.name)
-                ),
+                title=theme_for(self).inline_separator.join(("PLUGIN VERSIONS", plugin.name)),
                 placeholder="Filter versions…",
                 choices=choices,
                 on_select=select_install,
@@ -423,20 +408,23 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         selected = await (
             menu.open_child(
                 ConfirmationScreen(
-                    title="REMOVE PLUGIN",
+                    title="DELETE PLUGIN",
                     message=(
-                        f"Remove the selected install of {plugin.name} ({plugin_id})? "
-                        "Plugin data is retained."
+                        f"Delete the current version of {plugin.name}? "
+                        "Your plugin data will be kept."
                     ),
-                    confirm_label="Remove",
+                    confirm_label="Delete",
                 )
             )
             if menu is not None
             else self.push_screen_wait(
                 ConfirmationScreen(
-                    title="REMOVE PLUGIN",
-                    message=f"Remove the selected install of {plugin.name} ({plugin_id})?",
-                    confirm_label="Remove",
+                    title="DELETE PLUGIN",
+                    message=(
+                        f"Delete the current version of {plugin.name}? "
+                        "Your plugin data will be kept."
+                    ),
+                    confirm_label="Delete",
                 )
             )
         )
@@ -452,9 +440,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         if menu is not None:
             if return_to_catalog:
                 menu.pop_page(
-                    choices=_plugin_choices(
-                        self._controller.plugins(), theme=theme_for(self)
-                    ),
+                    choices=_plugin_choices(self._controller.plugins(), theme=theme_for(self)),
                     initial_value=plugin_id,
                 )
             else:
@@ -499,27 +485,27 @@ def _plugin_action_choices(plugin: PluginDetail) -> tuple[Choice, ...]:
             "disable" if plugin.desired_enabled else "enable",
             "Disable" if plugin.desired_enabled else "Enable",
             trailing=plugin.status,
-            group="LIFECYCLE",
+            group="ACTIONS",
         ),
-        Choice("check", "Check integrity and readiness", group="LIFECYCLE"),
+        Choice("check", "Check plugin", group="ACTIONS"),
         Choice(
             "restart",
             "Restart",
-            group="LIFECYCLE",
+            group="ACTIONS",
             disabled=plugin.status not in {"active", "degraded", "failed"},
         ),
     ]
     if plugin.plugin_class == "user":
         if plugin.configuration_supported:
-            actions.append(Choice("configure", "Configuration", group="SECURITY & CONFIG"))
+            actions.append(Choice("configure", "Edit settings", group="SETTINGS"))
         if len(plugin.installs) > 1:
             actions.append(
                 Choice(
                     "select-install",
-                    "Select installed version",
+                    "Switch version",
                     trailing=f"{len(plugin.installs)} versions",
                     group="VERSIONS",
                 )
             )
-        actions.append(Choice("remove", "Remove selected install", group="DANGER ZONE"))
+        actions.append(Choice("remove", "Delete current version", group="DELETE"))
     return tuple(actions)

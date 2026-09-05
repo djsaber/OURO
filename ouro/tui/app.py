@@ -25,8 +25,9 @@ from textual.message import Message
 from textual.messages import Prune
 from textual.screen import Screen
 from textual.timer import Timer
-from textual.widgets import TextArea
+from textual.widgets import Static, TextArea
 
+from ouro import __version__
 from ouro.application.agent_models import AgentTreeNode
 from ouro.application.agent_tree import AgentTreeSubscription
 from ouro.application.dto import Diagnostic
@@ -76,6 +77,7 @@ from ouro.tui.conversation_history import (
     ToolNavigationRequested,
 )
 from ouro.tui.input_drafts import TuiInputDrafts, TuiInputDraftStore
+from ouro.tui.menu_labels import PERMISSION_LABELS, THINKING_LABELS
 from ouro.tui.plan_confirmation import project_plan_confirmation
 from ouro.tui.preferences import (
     MAX_RECENT_WORKSPACES,
@@ -224,13 +226,13 @@ _REASONING_REQUESTS: dict[str, ReasoningRequest] = {
 }
 _THOUGHT_DISPLAY_OPTIONS: dict[str, bool] = {"expand": True, "collapse": False}
 _THOUGHT_DISPLAY_LABELS = {
-    "expand": "Expand thoughts",
-    "collapse": "Collapse thoughts",
+    "expand": "Show thinking",
+    "collapse": "Hide thinking",
 }
 _INPUT_DRAFT_MEMORY_OPTIONS: dict[str, bool] = {"enable": True, "disable": False}
 _INPUT_DRAFT_MEMORY_LABELS = {
-    "enable": "Remember input drafts",
-    "disable": "Do not remember input drafts",
+    "enable": "Remember drafts",
+    "disable": "Do not save drafts",
 }
 _CLEAR_WORKSPACE_HISTORY_ARGUMENT = "clear"
 
@@ -461,11 +463,6 @@ _OURO_TUI_CSS = """
         overflow: hidden;
     }
 
-    .welcome-system-heading {
-        width: 100%;
-        height: 1;
-    }
-
     .welcome-title {
         width: auto;
         height: 1;
@@ -535,11 +532,14 @@ _OURO_TUI_CSS = """
     }
 
     .welcome-version {
-        width: 1fr;
+        dock: bottom;
+        layer: welcome-footer;
+        width: 100%;
         height: 1;
-        color: $ouro-text-primary;
-        text-style: bold;
-        text-align: left;
+        padding: 0 2;
+        color: $ouro-text-faint;
+        text-style: none;
+        text-align: right;
     }
 
     #input-region.welcome-page #command-popup {
@@ -998,7 +998,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         Binding(
             "ctrl+c",
             "abort",
-            "Abort",
+            "Stop task",
             show=False,
             key_display="Ctrl+C",
             priority=True,
@@ -1139,6 +1139,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
             self._input_surface = WelcomePanel()
             yield self._input_surface
+        version = Static(f"v{__version__}", id="welcome-version", classes="welcome-version")
+        version.display = False
+        yield version
 
     def get_driver_class(self) -> type[Driver]:
         driver_class = super().get_driver_class()
@@ -1578,6 +1581,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self.query_one(BrandHeader).display = not enabled
         self.query_one("#main", Vertical).set_class(enabled, "welcome-page")
         self.query_one(WelcomePanel).set_welcome_mode(enabled)
+        self.query_one("#welcome-version", Static).display = enabled
 
     def _set_welcome_system_status(self, status: TuiSystemStatus) -> None:
         self.query_one(WelcomePanel).set_system_status(status)
@@ -2859,7 +2863,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     @work(exclusive=True, group="compaction")
     async def _compact_session(self) -> None:
         if self._has_active_run():
-            self.notify("Abort the active run before compacting context", severity="warning")
+            self.notify(
+                "Stop the current task before compacting context", severity="warning"
+            )
             return
         if self._controller.session_id is None:
             return
@@ -2879,7 +2885,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     async def _new_session(self) -> None:
         if self._has_active_run():
-            self.notify("Abort the active run before starting a new session", severity="warning")
+            self.notify("Stop the current task before starting a new session", severity="warning")
             return
         try:
             model = await self._controller.new_session()
@@ -2923,7 +2929,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._visible_read_only:
             return
         if self._has_active_run():
-            self.notify("Abort the active run before switching sessions", severity="warning")
+            self.notify("Stop the current task before switching sessions", severity="warning")
             return
         self._request_menu_navigation(_MENU_SESSIONS)
 
@@ -3285,7 +3291,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         delete_screen = MultiChoiceScreen(
             title="DELETE SESSIONS",
-            placeholder="Filter archived or invalid sessions…",
+            placeholder="Search archived or unreadable sessions…",
             choices=_session_choices(
                 deletable,
                 selected_session_id=self._visible_session_id(),
@@ -3295,6 +3301,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             selected_marker=self._tui_theme.selected_choice_marker,
             unselected_marker=self._tui_theme.unselected_choice_marker,
             confirm_label="Delete",
+            destructive=True,
         )
         await menu.open_child(delete_screen)
 
@@ -3559,7 +3566,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         target: str,
     ) -> None:
         if self._has_active_run():
-            self.notify("Abort the active run before forking the session", severity="warning")
+            self.notify("Stop the current task before copying the conversation", severity="warning")
             return
         if self._controller.session_id is None:
             return
@@ -3721,7 +3728,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         choices = tuple(
             Choice(
                 value=mode,
-                label=mode,
+                label=PERMISSION_LABELS[mode],
                 marker=self._tui_theme.selected_choice_marker if mode == current else "",
                 trailing="current" if mode == current else "",
             )
@@ -3729,8 +3736,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
         selected = await self.push_screen_wait(
             ChoiceScreen(
-                title="SESSION APPROVAL",
-                placeholder="Filter approval modes…",
+                title="TOOL APPROVAL",
+                placeholder="Choose when to ask for approval…",
                 choices=choices,
             )
         )
@@ -3807,7 +3814,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title="MODEL THINKING",
-                placeholder="Filter thinking modes…",
+                placeholder="Choose a thinking level…",
                 choices=choices,
             )
         )
@@ -3974,12 +3981,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     ),
                     Choice(
                         _THOUGHT_DISPLAY_ACTION,
-                        "Model thought display",
+                        "Thinking display",
                         group="Settings",
                     ),
                     Choice(
                         _INPUT_DRAFT_MEMORY_ACTION,
-                        "Input draft memory",
+                        "Remember drafts",
                         group="Settings",
                     ),
                     self._command_action_choice("/new", "Session", "new_session"),
@@ -4151,8 +4158,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         if menu is not None:
             menu.push_page(
-                title="MODEL THOUGHT DISPLAY",
-                placeholder="Choose how thoughts are displayed…",
+                title="THINKING DISPLAY",
+                placeholder="Choose how thinking is displayed…",
                 choices=display_choices(self._preferences.reasoning_expanded),
                 initial_value=("expand" if self._preferences.reasoning_expanded else "collapse"),
                 on_select=select_display,
@@ -4160,8 +4167,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         await self.push_screen_wait(
             ChoiceScreen(
-                title="MODEL THOUGHT DISPLAY",
-                placeholder="Choose how thoughts are displayed…",
+                title="THINKING DISPLAY",
+                placeholder="Choose how thinking is displayed…",
                 choices=display_choices(self._preferences.reasoning_expanded),
                 initial_value=("expand" if self._preferences.reasoning_expanded else "collapse"),
                 on_select=select_display,
@@ -4196,8 +4203,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         initial_value = "enable" if enabled else "disable"
         if menu is not None:
             menu.push_page(
-                title="INPUT DRAFT MEMORY",
-                placeholder="Choose whether input drafts are remembered…",
+                title="REMEMBER DRAFTS",
+                placeholder="Choose whether to save drafts…",
                 choices=memory_choices(enabled),
                 initial_value=initial_value,
                 on_select=select_memory,
@@ -4205,8 +4212,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         await self.push_screen_wait(
             ChoiceScreen(
-                title="INPUT DRAFT MEMORY",
-                placeholder="Choose whether input drafts are remembered…",
+                title="REMEMBER DRAFTS",
+                placeholder="Choose whether to save drafts…",
                 choices=memory_choices(enabled),
                 initial_value=initial_value,
                 on_select=select_memory,
@@ -4583,17 +4590,19 @@ def _available_reasoning_values(state: ModelReasoningState) -> tuple[str, ...]:
 
 def _reasoning_arguments(state: ModelReasoningState) -> tuple[TuiCommandArgument, ...]:
     return tuple(
-        TuiCommandArgument(value, _reasoning_description(value))
+        TuiCommandArgument(value, _reasoning_description(value), label=THINKING_LABELS[value])
         for value in _available_reasoning_values(state)
     )
 
 
 def _reasoning_description(value: str) -> str:
+    if value == "default":
+        return "Use the model's default thinking level"
     if value == "enabled":
         return "Enable model thinking"
     if value == "disabled":
-        return "Disable thinking for future model turns"
-    return f"Use {value} thinking effort"
+        return "Turn off thinking for future replies"
+    return f"Use {THINKING_LABELS[value].lower()} thinking effort"
 
 
 def _format_reasoning_state(state: ModelReasoningState) -> str:

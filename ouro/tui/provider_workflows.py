@@ -40,10 +40,10 @@ class ProviderConfigurationWorkflows(App[int]):
         if not catalog.providers:
             return
         choices = tuple(
-            _provider_choice(provider, theme=theme_for(self))
-            for provider in catalog.providers
+            _provider_choice(provider, theme=theme_for(self)) for provider in catalog.providers
         )
         if menu is not None:
+
             async def refresh_providers() -> tuple[Choice, ...] | None:
                 try:
                     refreshed = await self._controller.provider_catalog()
@@ -101,7 +101,7 @@ class ProviderConfigurationWorkflows(App[int]):
                     f"preset:{template.template_id}",
                     template.display_name,
                     trailing=f"{template.endpoint_count} endpoints",
-                    group="OURO presets",
+                    group="Ready to use",
                 )
                 for template in templates
             ),
@@ -110,7 +110,7 @@ class ProviderConfigurationWorkflows(App[int]):
                     f"compatible:{profile.provider_type}",
                     profile.display_name,
                     trailing=profile.provider_type,
-                    group="Compatible",
+                    group="Custom connection",
                 )
                 for profile in COMPATIBLE_PROVIDER_PROFILES
             ),
@@ -369,9 +369,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 return None
 
             menu.push_page(
-                title=theme_for(self).inline_separator.join(
-                    ("PROVIDER", provider.provider_id)
-                ),
+                title=theme_for(self).inline_separator.join(("PROVIDER", provider.provider_id)),
                 placeholder="Choose an action…",
                 choices=choices,
                 on_select=select_action,
@@ -380,9 +378,7 @@ class ProviderConfigurationWorkflows(App[int]):
             return
         selected = await self.push_screen_wait(
             ChoiceScreen(
-                title=theme_for(self).inline_separator.join(
-                    ("PROVIDER", provider.provider_id)
-                ),
+                title=theme_for(self).inline_separator.join(("PROVIDER", provider.provider_id)),
                 placeholder="Choose an action…",
                 choices=choices,
             )
@@ -475,9 +471,9 @@ class ProviderConfigurationWorkflows(App[int]):
         menu: ChoiceScreen | None = None,
     ) -> None:
         screen = ConfirmationScreen(
-            title="REMOVE PROVIDER",
-            message=(f"Remove {provider_id} and all of its endpoints from configuration?"),
-            confirm_label="Remove",
+            title="DELETE PROVIDER",
+            message=(f"Delete {provider_id} and all of its endpoints from your settings?"),
+            confirm_label="Delete",
         )
         selected = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
@@ -489,7 +485,7 @@ class ProviderConfigurationWorkflows(App[int]):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        self.notify(f"Provider removed: {provider_id} (next request)")
+        self.notify(f"Provider deleted: {provider_id} (next request)")
 
     async def _choose_endpoint_action(
         self,
@@ -539,13 +535,10 @@ class ProviderConfigurationWorkflows(App[int]):
                     return None
 
                 menu.push_page(
-                    title=theme_for(self).inline_separator.join(
-                        ("ADD ENDPOINT", "PROVIDER")
-                    ),
+                    title=theme_for(self).inline_separator.join(("ADD ENDPOINT", "PROVIDER")),
                     placeholder="Choose a provider…",
                     choices=tuple(
-                        _provider_choice(provider, theme=theme_for(self))
-                        for provider in providers
+                        _provider_choice(provider, theme=theme_for(self)) for provider in providers
                     ),
                     on_select=select_provider,
                     on_refresh=refresh_provider_choices,
@@ -553,13 +546,10 @@ class ProviderConfigurationWorkflows(App[int]):
                 return
             provider_id = await self.push_screen_wait(
                 ChoiceScreen(
-                    title=theme_for(self).inline_separator.join(
-                        ("ADD ENDPOINT", "PROVIDER")
-                    ),
+                    title=theme_for(self).inline_separator.join(("ADD ENDPOINT", "PROVIDER")),
                     placeholder="Choose a provider…",
                     choices=tuple(
-                        _provider_choice(provider, theme=theme_for(self))
-                        for provider in providers
+                        _provider_choice(provider, theme=theme_for(self)) for provider in providers
                     ),
                 )
             )
@@ -599,6 +589,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 _endpoint_route_choice(item, candidate, theme=theme_for(self))
                 for item, candidate in routes.values()
             )
+
         if action == "use":
 
             async def set_default_route(route: str) -> tuple[Choice, ...] | None:
@@ -817,7 +808,7 @@ class ProviderConfigurationWorkflows(App[int]):
         choices = [Choice("edit", "Edit endpoint")]
         if not endpoint.default:
             choices.append(Choice("use", "Set as default endpoint"))
-        choices.append(Choice("remove", "Remove endpoint"))
+        choices.append(Choice("remove", "Delete endpoint"))
         if menu is not None:
 
             async def refresh_endpoint_actions() -> tuple[Choice, ...] | None:
@@ -852,7 +843,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 refreshed_choices = [Choice("edit", "Edit endpoint")]
                 if not endpoint.default:
                     refreshed_choices.append(Choice("use", "Set as default endpoint"))
-                refreshed_choices.append(Choice("remove", "Remove endpoint"))
+                refreshed_choices.append(Choice("remove", "Delete endpoint"))
                 return tuple(refreshed_choices)
 
             async def select_action(selected: str) -> tuple[Choice, ...] | None:
@@ -940,9 +931,9 @@ class ProviderConfigurationWorkflows(App[int]):
         menu: ChoiceScreen | None = None,
     ) -> None:
         screen = ConfirmationScreen(
-            title="REMOVE ENDPOINT",
-            message=f"Remove {provider_id}/{endpoint_id} from configuration?",
-            confirm_label="Remove",
+            title="DELETE ENDPOINT",
+            message=f"Delete {provider_id}/{endpoint_id} from your settings?",
+            confirm_label="Delete",
         )
         selected = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
@@ -954,7 +945,7 @@ class ProviderConfigurationWorkflows(App[int]):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        self.notify(f"Endpoint removed: {provider_id}/{endpoint_id} (next request)")
+        self.notify(f"Endpoint deleted: {provider_id}/{endpoint_id} (next request)")
 
 
 def _provider_choice(
@@ -1003,7 +994,7 @@ def _provider_management_choices(
             ),
             Choice("endpoints", "Manage endpoints", trailing=str(provider.endpoint_count)),
             Choice("add-endpoint", "Add endpoint"),
-            Choice("remove", "Remove provider"),
+            Choice("remove", "Delete provider"),
         )
     )
     return tuple(choices)
@@ -1018,13 +1009,11 @@ def _provider_template_update_notice(
     changes = (
         f"{len(update.added_endpoints)} added",
         f"{len(update.updated_endpoints)} updated",
-        f"{len(update.removed_endpoints)} removed",
+        f"{len(update.removed_endpoints)} deleted",
         f"{len(update.preserved_endpoints)} preserved",
         f"{len(update.conflicted_endpoints)} conflicts",
     )
-    return theme.inline_separator.join(
-        (f"Provider preset {mode}: {update.template_id}", *changes)
-    )
+    return theme.inline_separator.join((f"Provider preset {mode}: {update.template_id}", *changes))
 
 
 def _endpoint_choice(
@@ -1069,7 +1058,7 @@ def _provider_action_label(action: str) -> str:
     return {
         "edit": "EDIT",
         "toggle": "ENABLE OR DISABLE",
-        "remove": "REMOVE",
+        "remove": "DELETE",
     }[action]
 
 
@@ -1079,6 +1068,6 @@ def _endpoint_action_label(action: str) -> str:
         "add": "ADD ENDPOINT",
         "edit": "EDIT ENDPOINT",
         "use": "SET DEFAULT ENDPOINT",
-        "remove": "REMOVE ENDPOINT",
+        "remove": "DELETE ENDPOINT",
         "manage": "ENDPOINTS",
     }[action]

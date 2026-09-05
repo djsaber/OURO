@@ -34,6 +34,7 @@ from ouro.tui.controller import (
     TuiToolExecutionConfiguration,
     project_mcp_system_status,
 )
+from ouro.tui.menu_labels import PERMISSION_LABELS
 from ouro.tui.plugin_workflows import PluginManagementWorkflows
 from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
@@ -50,13 +51,13 @@ class SystemSettingAction:
 
 
 SYSTEM_SETTING_ACTIONS = (
-    SystemSettingAction("queued_inputs.delivery", "Queued input delivery", "Settings"),
-    SystemSettingAction("compaction.policy", "Compaction policy", "Settings"),
-    SystemSettingAction("providers.list", "List providers", "Providers"),
+    SystemSettingAction("queued_inputs.delivery", "Queued messages", "Settings"),
+    SystemSettingAction("compaction.policy", "Context compaction", "Settings"),
+    SystemSettingAction("providers.list", "Manage providers", "Providers"),
     SystemSettingAction("providers.add", "Add provider", "Providers"),
     SystemSettingAction("providers.edit", "Edit provider", "Providers"),
-    SystemSettingAction("providers.remove", "Remove provider", "Providers"),
-    SystemSettingAction("providers.endpoints.list", "List endpoints", "Providers"),
+    SystemSettingAction("providers.remove", "Delete provider", "Providers"),
+    SystemSettingAction("providers.endpoints.list", "Manage endpoints", "Providers"),
     SystemSettingAction("providers.endpoints.add", "Add endpoint", "Providers"),
     SystemSettingAction("providers.endpoints.edit", "Edit endpoint", "Providers"),
     SystemSettingAction(
@@ -64,29 +65,27 @@ SYSTEM_SETTING_ACTIONS = (
         "Set default endpoint",
         "Providers",
     ),
-    SystemSettingAction("providers.endpoints.remove", "Remove endpoint", "Providers"),
-    SystemSettingAction("plugins.list", "List plugins", "Plugins"),
+    SystemSettingAction("providers.endpoints.remove", "Delete endpoint", "Providers"),
+    SystemSettingAction("plugins.list", "Manage plugins", "Plugins"),
     SystemSettingAction("plugins.install", "Install plugin", "Plugins"),
-    SystemSettingAction("plugins.remove", "Remove plugin", "Plugins"),
+    SystemSettingAction("plugins.remove", "Delete plugin", "Plugins"),
     SystemSettingAction("tools.permissions", "Tool permissions", "Tools"),
-    SystemSettingAction("tools.execution", "Execution & path access", "Tools"),
-    SystemSettingAction("agents.policy", "Dispatch policy", "Subagents"),
-    SystemSettingAction("agents.list", "List subagents", "Subagents"),
+    SystemSettingAction("tools.execution", "Tool limits & file access", "Tools"),
+    SystemSettingAction("agents.policy", "Subagent permissions", "Subagents"),
+    SystemSettingAction("agents.list", "Manage subagents", "Subagents"),
     SystemSettingAction("agents.create", "Create subagent", "Subagents"),
     SystemSettingAction("agents.edit", "Edit subagent", "Subagents"),
     SystemSettingAction("agents.delete", "Delete subagent", "Subagents"),
-    SystemSettingAction("mcp.list", "List MCP servers", "MCP"),
+    SystemSettingAction("mcp.list", "Manage MCP servers", "MCP"),
     SystemSettingAction("mcp.add", "Add MCP server", "MCP"),
     SystemSettingAction("mcp.connect", "Connect MCP server", "MCP"),
     SystemSettingAction("mcp.disconnect", "Disconnect MCP server", "MCP"),
     SystemSettingAction("mcp.edit", "Edit MCP server", "MCP"),
-    SystemSettingAction("mcp.remove", "Remove MCP server", "MCP"),
+    SystemSettingAction("mcp.remove", "Delete MCP server", "MCP"),
     SystemSettingAction("skills.sources", "Skill sources", "Skills"),
-    SystemSettingAction("skills.list", "List skills", "Skills"),
+    SystemSettingAction("skills.list", "Manage skills", "Skills"),
     SystemSettingAction("skills.install", "Install skill", "Skills"),
-    SystemSettingAction("skills.validate", "Validate skill", "Skills"),
-    SystemSettingAction("skills.update", "Update skill", "Skills"),
-    SystemSettingAction("skills.remove", "Remove skill", "Skills"),
+    SystemSettingAction("skills.validate", "Check skill", "Skills"),
 )
 
 _QUEUED_INPUT_CONSUMPTION_LABELS: dict[QueuedInputConsumptionMode, str] = {
@@ -94,8 +93,8 @@ _QUEUED_INPUT_CONSUMPTION_LABELS: dict[QueuedInputConsumptionMode, str] = {
     "all_at_once": "All at once",
 }
 _QUEUED_INPUT_CONSUMPTION_DETAILS: dict[QueuedInputConsumptionMode, str] = {
-    "one_by_one": "one unit per boundary",
-    "all_at_once": "all eligible units per boundary",
+    "one_by_one": "Process each message separately",
+    "all_at_once": "Process waiting messages together",
 }
 
 _TOOL_PERMISSION_CHOICES: dict[str, PermissionMode | None] = {
@@ -218,13 +217,16 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
-            self.notify(f"Queued input delivery saved: {saved.consumption_mode} (next restart)")
+            self.notify(
+                f"Queued messages: {_QUEUED_INPUT_CONSUMPTION_LABELS[saved.consumption_mode]}"
+                " (restart to apply)"
+            )
             return choices(saved.consumption_mode)
 
         if menu is not None:
             menu.push_page(
-                title="QUEUED INPUT DELIVERY",
-                placeholder="Choose how queued inputs are delivered…",
+                title="QUEUED MESSAGES",
+                placeholder="Choose how to process waiting messages…",
                 choices=choices(config.consumption_mode),
                 initial_value=config.consumption_mode,
                 on_select=select_mode,
@@ -232,8 +234,8 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return
         await self.push_screen_wait(
             ChoiceScreen(
-                title="QUEUED INPUT DELIVERY",
-                placeholder="Choose how queued inputs are delivered…",
+                title="QUEUED MESSAGES",
+                placeholder="Choose how to process waiting messages…",
                 choices=choices(config.consumption_mode),
                 initial_value=config.consumption_mode,
                 on_select=select_mode,
@@ -269,9 +271,9 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         route = (
             f"{saved.model.provider_id}/{saved.model.endpoint_id}"
             if saved.model.has_dedicated_endpoint
-            else "session runtime model"
+            else "conversation model"
         )
-        self.notify(f"Compaction options saved: {route} (next restart)")
+        self.notify(f"Context compaction saved: {route} (restart to apply)")
 
     @work(exclusive=True, group="configuration")
     async def _choose_tools(self, *, menu: ChoiceScreen | None = None) -> None:
@@ -289,9 +291,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             screen.replace_page(
                 title="TOOL PERMISSIONS",
                 placeholder="Filter tools…",
-                choices=_tool_choices(
-                    tuple(tool_catalog.values()), theme=theme_for(self)
-                ),
+                choices=_tool_choices(tuple(tool_catalog.values()), theme=theme_for(self)),
                 initial_value=initial_value,
                 on_select=select_tool_or_permission,
                 on_cancel=cancel_submenu,
@@ -309,7 +309,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                     return None
                 if tool.permission_control == "tool":
                     self.notify(
-                        f"{tool.name} permission is fixed by its tool contract",
+                        f"{tool.name} permissions are controlled by its plugin",
                         severity="warning",
                     )
                     return None
@@ -317,7 +317,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 current = tool.permission_override or "default"
                 screen.replace_page(
                     title=f"TOOL PERMISSION{theme_for(self).inline_separator}{tool.name}",
-                    placeholder="Filter permission modes…",
+                    placeholder="Choose a permission…",
                     choices=_tool_permission_choices(
                         current,
                         default_permission=tool.inherited_permission,
@@ -438,9 +438,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             except Exception as exc:  # noqa: BLE001
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
-            return _agent_definition_choices(
-                refreshed.definitions, theme=theme_for(self)
-            )
+            return _agent_definition_choices(refreshed.definitions, theme=theme_for(self))
 
         async def select_definition(agent_id: str) -> tuple[Choice, ...] | None:
             try:
@@ -466,9 +464,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             screen.push_page(
                 title="SUBAGENTS",
                 placeholder="Filter subagents…",
-                choices=_agent_definition_choices(
-                    catalog.definitions, theme=theme_for(self)
-                ),
+                choices=_agent_definition_choices(catalog.definitions, theme=theme_for(self)),
                 on_select=select_definition,
                 on_refresh=refresh_definitions,
             )
@@ -476,9 +472,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         screen = ChoiceScreen(
             title="SUBAGENTS",
             placeholder="Filter subagents…",
-            choices=_agent_definition_choices(
-                catalog.definitions, theme=theme_for(self)
-            ),
+            choices=_agent_definition_choices(catalog.definitions, theme=theme_for(self)),
             on_select=select_definition,
             on_refresh=refresh_definitions,
         )
@@ -506,9 +500,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 )
             if saved is not None:
                 menu.pop_page(
-                    choices=_agent_definition_choices(
-                        saved.definitions, theme=theme_for(self)
-                    ),
+                    choices=_agent_definition_choices(saved.definitions, theme=theme_for(self)),
                     initial_value=definition.agent_id,
                 )
             return None
@@ -531,9 +523,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        screen = AgentDefinitionConfigurationScreen(
-            tools, models, theme=theme_for(self)
-        )
+        screen = AgentDefinitionConfigurationScreen(tools, models, theme=theme_for(self))
         draft = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
         )
@@ -560,9 +550,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        choices = _agent_definition_choices(
-            catalog.definitions, theme=theme_for(self)
-        )
+        choices = _agent_definition_choices(catalog.definitions, theme=theme_for(self))
 
         async def select_agent(agent_id: str) -> tuple[Choice, ...] | None:
             nonlocal catalog
@@ -584,9 +572,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             if menu is not None:
                 menu.pop_page()
                 return None
-            return _agent_definition_choices(
-                saved.definitions, theme=theme_for(self)
-            )
+            return _agent_definition_choices(saved.definitions, theme=theme_for(self))
 
         title = "EDIT SUBAGENT" if action == "edit" else "DELETE SUBAGENT"
         if menu is not None:
@@ -652,8 +638,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         screen = ConfirmationScreen(
             title="DELETE SUBAGENT",
             message=(
-                f"Delete {agent_id}? Existing Runs keep their frozen definition; "
-                "new Runs will no longer see it."
+                f"Delete {agent_id}? Current tasks can finish; new tasks cannot use this subagent."
             ),
             confirm_label="Delete",
         )
@@ -704,9 +689,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                         return None
                     servers.clear()
                     servers.update({config.server_id: config for config in refreshed})
-                    return _mcp_choices(
-                        refreshed, refreshed_runtime, theme=theme_for(self)
-                    )
+                    return _mcp_choices(refreshed, refreshed_runtime, theme=theme_for(self))
 
                 async def select_server(server_id: str) -> tuple[Choice, ...] | None:
                     if server_id not in servers:
@@ -759,13 +742,11 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             "disconnect": "DISCONNECT",
             "toggle": "ENABLE OR DISABLE",
             "edit": "EDIT",
-            "remove": "REMOVE",
+            "remove": "DELETE",
         }[action]
         if not configs:
             return
-        choices = _mcp_action_choices(
-            action, configs, runtime, theme=theme_for(self)
-        )
+        choices = _mcp_action_choices(action, configs, runtime, theme=theme_for(self))
         if action == "toggle":
             servers = {config.server_id: config for config in configs}
 
@@ -805,7 +786,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
 
             if menu is not None:
                 menu.push_page(
-                    title="ENABLE OR DISABLE MCP SERVER",
+                    title="MCP SERVER AVAILABILITY",
                     placeholder="Filter servers…",
                     choices=choices,
                     on_select=toggle_mcp,
@@ -813,7 +794,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             else:
                 await self.push_screen_wait(
                     ChoiceScreen(
-                        title="ENABLE OR DISABLE MCP SERVER",
+                        title="MCP SERVER AVAILABILITY",
                         placeholder="Filter servers…",
                         choices=choices,
                         on_select=toggle_mcp,
@@ -865,9 +846,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 except Exception as exc:  # noqa: BLE001
                     await self.query_one(ConversationView).add_notice(str(exc), error=True)
                     return
-                refreshed_by_id = {
-                    config.server_id: config for config in refreshed_configs
-                }
+                refreshed_by_id = {config.server_id: config for config in refreshed_configs}
                 for current_id in tuple(servers):
                     config = refreshed_by_id.get(current_id)
                     if config is None:
@@ -983,9 +962,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                     loading_action = None
                 try:
                     configs = await self._controller.mcp_configurations()
-                    runtime = {
-                        item.server_id: item for item in self._controller.mcp_servers()
-                    }
+                    runtime = {item.server_id: item for item in self._controller.mcp_servers()}
                     config = next(item for item in configs if item.server_id == server_id)
                     status = runtime.get(server_id)
                 except Exception as exc:  # noqa: BLE001
@@ -1014,9 +991,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                     ):
                         return None
                     configs = await self._controller.mcp_configurations()
-                    runtime = {
-                        item.server_id: item for item in self._controller.mcp_servers()
-                    }
+                    runtime = {item.server_id: item for item in self._controller.mcp_servers()}
                     config = next(item for item in configs if item.server_id == server_id)
                     status = runtime.get(server_id)
                     menu.update_parent_choices(
@@ -1147,12 +1122,9 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         menu: ChoiceScreen | None = None,
     ) -> None:
         screen = ConfirmationScreen(
-            title="REMOVE MCP SERVER",
-            message=(
-                f"Remove {server_id} from configuration? The current runtime is unchanged "
-                "until restart."
-            ),
-            confirm_label="Remove",
+            title="DELETE MCP SERVER",
+            message=(f"Delete {server_id}? Takes effect after restarting the app."),
+            confirm_label="Delete",
         )
         selected = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
@@ -1165,7 +1137,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         self._refresh_mcp_system_status()
-        self.notify(f"MCP configuration removed: {server_id} (next restart)")
+        self.notify(f"MCP server deleted: {server_id} (next restart)")
 
     async def _set_mcp_enabled(self, server_id: str, *, enabled: bool) -> bool:
         try:
@@ -1253,9 +1225,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return
         selected = selector
         if selected is None:
-            choices = tuple(
-                _skill_choice(skill, theme=theme_for(self)) for skill in catalog.skills
-            )
+            choices = tuple(_skill_choice(skill, theme=theme_for(self)) for skill in catalog.skills)
             if not choices:
                 return
             if menu is not None:
@@ -1270,8 +1240,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                     skills.clear()
                     skills.update({skill.name: skill for skill in refreshed.skills})
                     return tuple(
-                        _skill_choice(skill, theme=theme_for(self))
-                        for skill in refreshed.skills
+                        _skill_choice(skill, theme=theme_for(self)) for skill in refreshed.skills
                     )
 
                 async def select_skill(name: str) -> tuple[Choice, ...] | None:
@@ -1327,13 +1296,11 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return
         action_label = {
             "toggle": "ENABLE OR DISABLE",
-            "validate": "VALIDATE",
+            "validate": "CHECK",
             "update": "UPDATE",
-            "remove": "REMOVE",
+            "remove": "DELETE",
         }[action]
-        choices = tuple(
-            _skill_choice(skill, theme=theme_for(self)) for skill in candidates
-        )
+        choices = tuple(_skill_choice(skill, theme=theme_for(self)) for skill in candidates)
         if action == "toggle":
             skills = {skill.name: skill for skill in candidates}
 
@@ -1352,8 +1319,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 skills.clear()
                 skills.update({skill.name: skill for skill in refreshed.skills})
                 return tuple(
-                    _skill_choice(skill, theme=theme_for(self))
-                    for skill in skills.values()
+                    _skill_choice(skill, theme=theme_for(self)) for skill in skills.values()
                 )
 
             if menu is not None:
@@ -1390,8 +1356,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 skills.clear()
                 skills.update({skill.name: skill for skill in refreshed_candidates})
                 return tuple(
-                    _skill_choice(skill, theme=theme_for(self))
-                    for skill in refreshed_candidates
+                    _skill_choice(skill, theme=theme_for(self)) for skill in refreshed_candidates
                 )
 
             async def select_skill(name: str) -> tuple[Choice, ...] | None:
@@ -1496,8 +1461,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                     skill = refreshed
                     menu.update_parent_choices(
                         tuple(
-                            _skill_choice(item, theme=theme_for(self))
-                            for item in catalog.skills
+                            _skill_choice(item, theme=theme_for(self)) for item in catalog.skills
                         ),
                         initial_value=name,
                     )
@@ -1575,11 +1539,11 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         if result.valid:
-            self.notify(f"Skill validation passed: {name}")
+            self.notify(f"Skill check passed: {name}")
             return
         messages = "; ".join(item.message for item in result.diagnostics) or "invalid skill"
         await self.query_one(ConversationView).add_notice(
-            f"Skill validation failed: {name}{theme_for(self).inline_separator}{messages}",
+            f"Skill check failed: {name}{theme_for(self).inline_separator}{messages}",
             error=True,
         )
 
@@ -1598,9 +1562,9 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         menu: ChoiceScreen | None = None,
     ) -> None:
         screen = ConfirmationScreen(
-            title="REMOVE SKILL",
-            message=f"Remove the managed skill {name}?",
-            confirm_label="Remove",
+            title="DELETE SKILL",
+            message=f"Delete {name}? Takes effect after restarting the app.",
+            confirm_label="Delete",
         )
         selected = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
@@ -1612,7 +1576,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        self.notify(f"Skill removed: {name} (next restart)")
+        self.notify(f"Skill deleted: {name} (next restart)")
 
     def _refresh_mcp_system_status(self) -> None:
         runtime = self._controller.mcp_servers()
@@ -1667,9 +1631,7 @@ def _agent_definition_choices(
             definition.agent_id,
             definition.name,
             group="BUILT-IN" if definition.source == "builtin" else "USER",
-            trailing=theme.inline_separator.join(
-                (definition.agent_id, definition.compatibility)
-            ),
+            trailing=theme.inline_separator.join((definition.agent_id, definition.compatibility)),
             disabled=not definition.editable,
         )
         for definition in sorted(definitions, key=lambda item: item.name.casefold())
@@ -1685,9 +1647,11 @@ def _tool_permission_choices(
     return tuple(
         Choice(
             value,
-            value,
+            PERMISSION_LABELS[value],
             trailing=(
-                default_permission if value == "default" and default_permission is not None else ""
+                PERMISSION_LABELS[default_permission]
+                if value == "default" and default_permission is not None
+                else ""
             ),
             marker=theme.selected_choice_marker if value == current else "",
         )
@@ -1702,12 +1666,14 @@ def _tool_labels(
 ) -> str:
     permission: str
     if tool.permission_control == "tool":
-        permission = tool.effective_permission or "unavailable"
-        return theme.inline_separator.join(("contract", permission))
+        permission = PERMISSION_LABELS[tool.effective_permission or "unavailable"]
+        return theme.inline_separator.join(("Plugin controlled", permission))
     elif tool.permission_override is not None:
-        permission = tool.permission_override
+        permission = PERMISSION_LABELS[tool.permission_override]
     elif tool.effective_permission is not None:
-        permission = theme.inline_separator.join(("default", tool.effective_permission))
+        permission = theme.inline_separator.join(
+            ("Default", PERMISSION_LABELS[tool.effective_permission])
+        )
     else:
         permission = "unavailable"
     availability = "" if tool.available else f"{theme.inline_separator}unavailable"
@@ -1735,14 +1701,15 @@ def _mcp_action_available(
         return (
             config.enabled
             and status is not None
-            and status.status
-            not in {"connected", "starting", "reconnecting", "stopping"}
+            and status.status not in {"connected", "starting", "reconnecting", "stopping"}
         )
     if action == "disconnect":
-        return (
-            status is not None
-            and status.status in {"connected", "starting", "reconnecting", "stopping"}
-        )
+        return status is not None and status.status in {
+            "connected",
+            "starting",
+            "reconnecting",
+            "stopping",
+        }
     return True
 
 
@@ -1765,8 +1732,7 @@ def _mcp_action_choices(
                 and not _mcp_action_available(action, config, runtime)
             ),
             loading=(
-                config.server_id in loading
-                or _mcp_status_is_loading(runtime.get(config.server_id))
+                config.server_id in loading or _mcp_status_is_loading(runtime.get(config.server_id))
             ),
         )
         for config in sorted(
@@ -1819,7 +1785,7 @@ def _mcp_management_choices(
     }
 
     return (
-        Choice("edit", "Edit configuration"),
+        Choice("edit", "Edit server"),
         Choice(
             "toggle",
             "Disable server" if config.enabled else "Enable server",
@@ -1827,7 +1793,7 @@ def _mcp_management_choices(
         Choice("check", "Check connection"),
         Choice(
             "start",
-            "Start runtime",
+            "Connect",
             disabled=not can_start,
             loading=loading_action == "start",
         ),
@@ -1839,17 +1805,17 @@ def _mcp_management_choices(
         ),
         Choice(
             "restart",
-            "Restart runtime",
+            "Reconnect",
             disabled=not can_manage_connection,
             loading=loading_action == "restart",
         ),
         Choice(
             "stop",
-            "Stop runtime",
+            "Disconnect",
             disabled=not can_stop,
             loading=loading_action == "stop",
         ),
-        Choice("remove", "Remove configuration"),
+        Choice("remove", "Delete server"),
     )
 
 
@@ -1886,9 +1852,9 @@ def _skill_source_choices(
     choices = [
         Choice(
             "discovery",
-            "Skill directory discovery",
+            "Find skills in folders",
             trailing="enabled" if policy.enabled else "disabled",
-            group="DISCOVERY",
+            group="FOLDERS",
         )
     ]
     choices.extend(
@@ -1896,7 +1862,7 @@ def _skill_source_choices(
             source.source_id,
             theme.inline_separator.join((source.origin, source.scope)),
             trailing="enabled" if source.enabled else "disabled",
-            group=f"{source.scope.upper()} DIRECTORIES",
+            group=f"{source.scope.upper()} FOLDERS",
         )
         for source in policy.sources
     )
@@ -1904,16 +1870,13 @@ def _skill_source_choices(
 
 
 def _skill_management_choices(skill: SkillView) -> tuple[Choice, ...]:
-    actions = [
+    return (
         Choice(
             "disable" if skill.enabled else "enable",
             "Disable" if skill.enabled else "Enable",
         ),
-        Choice("validate", "Validate"),
-    ]
-    if skill.managed:
-        actions.extend((Choice("update", "Update"), Choice("remove", "Remove")))
-    return tuple(actions)
+        Choice("validate", "Check skill"),
+    )
 
 
 def _plugin_skill_owner(skill: SkillView) -> str | None:

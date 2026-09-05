@@ -92,18 +92,18 @@ class TuiCommand:
 
 TUI_COMMANDS: tuple[TuiCommand, ...] = (
     TuiCommand("/new", "New session", "Start a clean conversation"),
-    TuiCommand("/continue", "Continue run", "Resume the interrupted run without a new message"),
+    TuiCommand("/continue", "Continue task", "Resume an interrupted task"),
     TuiCommand("/undo", "Undo message", "Withdraw the latest user message and edit it again"),
     TuiCommand(
         "/workspace",
         "Workspace",
-        "Set a new-session workspace or clear recent workspace history",
+        "Choose a working folder or clear recent folders",
         "[clear|<path>]",
     ),
     TuiCommand(
         "/sessions",
         "Open session",
-        "Browse durable sessions",
+        "Browse saved conversations",
         aliases=("/resume",),
     ),
     TuiCommand(
@@ -114,8 +114,8 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
     ),
     TuiCommand(
         "/fork",
-        "Fork session",
-        "Create an independent branch of the current session",
+        "Copy conversation",
+        "Continue from a copy of this conversation",
         "[full|#N]",
         aliases=("/branch",),
     ),
@@ -127,64 +127,64 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
     ),
     TuiCommand(
         "/approval",
-        "Session approval",
-        "Set tool approval policy for this session",
+        "Tool approval",
+        "Choose when tools need your approval",
         "[inherit|auto|approval|deny|afk]",
         argument_options=tuple(
             TuiCommandArgument(value, description)
             for value, description in (
-                ("inherit", "Use the configured default approval policy"),
+                ("inherit", "Use the default approval setting"),
                 ("auto", "Run tools without approval prompts"),
-                ("approval", "Ask before protected tool calls"),
-                ("deny", "Deny protected tool calls"),
-                ("afk", "Use unattended approval behavior"),
+                ("approval", "Ask before tools that need permission"),
+                ("deny", "Block tools that need permission"),
+                ("afk", "Apply the away-mode approval settings"),
             )
         ),
     ),
     TuiCommand(
         "/thinking",
         "Model thinking",
-        "Set reasoning mode or effort for this session",
+        "Choose how much the model thinks",
         "[setting]",
         aliases=("/reasoning",),
     ),
     TuiCommand(
         "/thoughts",
-        "Thought display",
-        "Expand or collapse model thoughts in the conversation",
+        "Thinking display",
+        "Show or hide model thinking",
         "[expand|collapse]",
         argument_options=(
-            TuiCommandArgument("expand", "Show model thought content"),
-            TuiCommandArgument("collapse", "Hide model thought content"),
+            TuiCommandArgument("expand", "Show model thinking"),
+            TuiCommandArgument("collapse", "Hide model thinking"),
         ),
     ),
     TuiCommand(
         "/compact",
         "Compact context",
-        "Compact eligible older turns in the current session",
+        "Compress older conversation history to free up space",
     ),
     TuiCommand(
         "/skill",
         "Use skill",
-        "Run a follow-up with one explicitly selected skill",
+        "Send a task using a chosen skill",
         "<skill> [task]",
     ),
     TuiCommand(
         "/unqueue",
-        "Unqueue message",
-        "Return a queued message to the composer",
+        "Edit queued message",
+        "Move a waiting message back to the input box",
         "<queued-message>",
     ),
-    TuiCommand("/clear", "Clear view", "Clear the visible timeline only"),
+    TuiCommand("/clear", "Clear view", "Clear messages from view; keep saved history"),
     TuiCommand(
         "/navigate",
-        "Navigate dialogue",
+        "Jump to message",
         "Jump to the top, bottom, or a specific user message",
         "[target]",
     ),
-    TuiCommand("/abort", "Abort run", "Stop the active run"),
+    TuiCommand("/abort", "Stop task", "Stop the current task"),
     TuiCommand("/help", "Keyboard help", "Show shortcuts and commands"),
-    TuiCommand("/quit", "Quit OURO", "Close the TUI", aliases=("/exit",)),
+    TuiCommand("/quit", "Quit OURO", "Close the app", aliases=("/exit",)),
 )
 
 

@@ -26,7 +26,6 @@ from textual.style import Style
 from textual.timer import Timer
 from textual.widgets import Label, Static, TextArea
 
-from ouro import __version__
 from ouro.application.agent_models import AgentTreeNode
 from ouro.application.queued_inputs import (
     QueuedInputMode,
@@ -901,21 +900,13 @@ def _tool_activity_text(
         status_label = _subagent_task_status(subagent)
         text.append(
             f"  {status_label}",
-            style=(
-                theme.failure
-                if status_label == "failed"
-                else theme.text_metadata
-            ),
+            style=(theme.failure if status_label == "failed" else theme.text_metadata),
         )
     elif is_spawn_agent:
         status_label = _spawn_agent_preview_status(tool)
         text.append(
             f"  {status_label}",
-            style=(
-                theme.failure
-                if status_label == "failed"
-                else theme.text_metadata
-            ),
+            style=(theme.failure if status_label == "failed" else theme.text_metadata),
         )
     elapsed = _tool_elapsed_seconds(tool)
     elapsed_label = format_duration(elapsed) if elapsed is not None else None
@@ -966,11 +957,7 @@ def _tool_argument_stream_window(value: str) -> str:
 
 
 def _tool_is_clickable(tool: RuntimeToolCallActivity, *, run_id: str | None) -> bool:
-    return (
-        run_id is not None
-        and tool.tool_name == "SpawnAgent"
-        and tool.status != "streaming"
-    )
+    return run_id is not None and tool.tool_name == "SpawnAgent" and tool.status != "streaming"
 
 
 def _subagent_identity(agent: AgentTreeNode, *, theme: TuiTheme) -> str:
@@ -1122,15 +1109,10 @@ class _WelcomeSystemBlock(Vertical):
         self._plugins = Static(classes="welcome-value")
         self._mcp_label = Static("MCP", id="welcome-mcp-label", classes="welcome-label")
         self._mcp = Static(classes="welcome-value")
-        self._version = Static(f"v{__version__}", classes="welcome-version")
         self._render_values()
 
     def compose(self) -> ComposeResult:
-        yield Horizontal(
-            Static("SYSTEM", classes="welcome-title welcome-label"),
-            self._version,
-            classes="welcome-system-heading",
-        )
+        yield Static("SYSTEM", classes="welcome-title welcome-label")
         for label, value in (
             ("Workspace", self._workspace),
             ("Providers", self._providers),
@@ -1196,14 +1178,13 @@ class _WelcomeSystemBlock(Vertical):
         self._render_mcp_label()
         self._workspace.update(Text(status.workspace or "not set", style=theme.text_primary))
 
-        providers = Text(
-            _compact_names(status.provider_ids) or "none configured",
-            style=theme.text_primary,
-        )
-        providers.append(
-            f"{theme.section_separator}{status.model_count} model(s)",
-            style=theme.text_muted,
-        )
+        providers = Text()
+        providers.append(f"{status.model_count} model(s)", style=theme.text_muted)
+        if status.provider_ids:
+            providers.append(
+                f"{theme.section_separator}{_compact_names(status.provider_ids)}",
+                style=theme.text_faint,
+            )
         self._providers.update(providers)
 
         skills = Text(f"{status.skill_count} available", style=theme.text_muted)
@@ -1366,9 +1347,7 @@ class _WelcomeUsageBlock(Vertical):
             selected.output_tokens if selected is not None else status.usage_output_tokens
         )
         cache_read_tokens = (
-            selected.cache_read_tokens
-            if selected is not None
-            else status.usage_cache_read_tokens
+            selected.cache_read_tokens if selected is not None else status.usage_cache_read_tokens
         )
         tokens = Text(f"{format_compact_count(input_tokens)} in", style=theme.text_faint)
         for value in (
@@ -1475,9 +1454,7 @@ class WelcomePanel(Vertical):
         if size is None:
             return
         welcome_mode = self.has_class("welcome-page")
-        self.styles.max_width = (
-            min(WELCOME_MAX_WIDTH, size.width) if welcome_mode else "100%"
-        )
+        self.styles.max_width = min(WELCOME_MAX_WIDTH, size.width) if welcome_mode else "100%"
         available_height = (
             max(1, (size.height - _WELCOME_CENTER_HEIGHT) // 2)
             if welcome_mode
@@ -2603,11 +2580,7 @@ class AskUserPanel(Static):
             if question.multi_select:
                 marker = "[x]" if checked else "[ ]"
             else:
-                marker = (
-                    theme.selected_choice_marker
-                    if active
-                    else theme.unselected_choice_marker
-                )
+                marker = theme.selected_choice_marker if active else theme.unselected_choice_marker
             content.append("› " if active else "  ", style=theme.accent if active else "")
             content.append(
                 f"{index + 1}. {marker} {option.label}",
@@ -2622,13 +2595,10 @@ class AskUserPanel(Static):
         content.append("› " if other_active else "  ", style=theme.accent if other_active else "")
         content.append(
             f"{other_index + 1}. Other…",
-            style=(
-                f"bold {theme.accent_bright}" if other_active else f"bold {theme.text_primary}"
-            ),
+            style=(f"bold {theme.accent_bright}" if other_active else f"bold {theme.text_primary}"),
         )
         hint = (
-            "\n\n"
-            + theme.inline_separator.join(("↑/↓ move", "Space toggle", "Enter continue"))
+            "\n\n" + theme.inline_separator.join(("↑/↓ move", "Space toggle", "Enter continue"))
             if question.multi_select
             else "\n\n" + theme.inline_separator.join(("↑/↓ move", "Enter choose"))
         )
@@ -3007,8 +2977,7 @@ class CommandPopup(VerticalScroll):
             row.append(
                 argument.display_label.ljust(value_width),
                 style=(
-                    argument.accent
-                    or (theme.accent_bright if selected else theme.text_primary)
+                    argument.accent or (theme.accent_bright if selected else theme.text_primary)
                 ),
             )
             if argument.description:
