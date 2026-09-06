@@ -4,8 +4,8 @@ import pytest
 from pydantic import ValidationError
 
 from ouro.application.queued_inputs import QUEUED_INPUTS_KEY, QueuedInputQueue
-from ouro.core.messages import SkillActivationContent
-from ouro.core.session_controls import SessionInputRequest
+from ouro.core.messages import MessageRecord, SkillActivationContent
+from ouro.core.session_controls import HostSessionInput, SessionInputRequest
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 
@@ -438,3 +438,64 @@ def test_queued_input_queue_merges_concurrent_stale_snapshot_enqueues(tmp_path) 
     reloaded = store.load_session(session.session_id)
     prompts = [item["prompt"] for item in reloaded.session.metadata[QUEUED_INPUTS_KEY]]
     assert sorted(prompts) == sorted(f"prompt-{index}" for index in range(20))
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+def test_host_receipt_is_atomic_across_pending_and_consumed_input(tmp_path, backend):
+    def repository():
+        return (
+            LocalSessionStore(tmp_path)
+            if backend == "files"
+            else SQLiteSessionStore(tmp_path / "sessions.db")
+        )
+
+    first, second = repository(), repository()
+    first.initialize()
+    second.initialize()
+    session = SessionRecord()
+    first.create_session(session)
+    queues = [QueuedInputQueue(first), QueuedInputQueue(second)]
+    request = HostSessionInput(prompt="result", host_source_id="test/result", queue_id="delivery")
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        accepted = list(
+            executor.map(
+                lambda i: queues[i % 2].accept_host(session.session_id, request),
+                range(12),
+            )
+        )
+    assert sum(item is not None for _, item, _ in accepted) == 1
+    assert len(queues[0].eligible_session(first.load_session_record(session.session_id))) == 1
+    with pytest.raises(ValueError, match="already bound"):
+        queues[1].accept_host(session.session_id, request.model_copy(update={"prompt": "changed"}))
+    message = MessageRecord.text(
+        session_id=session.session_id,
+        run_id="run_result",
+        role=request.role,
+        scaffold=request.scaffold,
+        semantic_tag=request.semantic_tag,
+        text=request.prompt,
+    ).model_copy(
+        update={
+            "metadata": {
+                "queued_input_id": request.queue_id,
+                "queued_input_mode": request.mode,
+                "host_source_id": request.host_source_id,
+            }
+        }
+    )
+    with first.session_mutation(session.session_id):
+        first.append_message(message)
+        queues[0].acknowledge(first.load_runtime_session(session.session_id), request.queue_id)
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        retried = list(
+            executor.map(
+                lambda i: queues[i % 2].accept_host(session.session_id, request),
+                range(12),
+            )
+        )
+    assert all(
+        receipt.message_id == message.message_id and item is None for receipt, item, _ in retried
+    )
+    assert queues[0].eligible_session(first.load_session_record(session.session_id)) == []
+    with pytest.raises(ValueError, match="already bound"):
+        queues[1].accept_host(session.session_id, request.model_copy(update={"mode": "steer"}))

@@ -7,7 +7,76 @@ import pytest
 
 from ouro.application.run_ownership import RunExecutionOwnership
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import LocalSessionStore
+from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("status", ["waiting_approval", "waiting_user", "waiting_child"])
+async def test_parked_run_handoff_waits_for_another_host_to_release(tmp_path, backend, status):
+    def store():
+        return (
+            LocalSessionStore(tmp_path)
+            if backend == "files"
+            else SQLiteSessionStore(tmp_path / "sessions.sqlite3")
+        )
+
+    first_store, second_store = store(), store()
+    first_store.initialize()
+    second_store.initialize()
+    session = SessionRecord()
+    run = RunRecord(session_id=session.session_id, status=status)
+    first_store.create_session(session)
+    first_store.save_run(run)
+    first, second = RunExecutionOwnership(first_store), RunExecutionOwnership(second_store)
+    lock = await first.acquire(session.session_id, run.run_id)
+    pending = asyncio.create_task(
+        second.acquire_parked(
+            session.session_id,
+            run.run_id,
+            expected_status=status,
+        )
+    )
+    try:
+        await asyncio.sleep(0.05)
+        assert not pending.done()
+    finally:
+        await first.release(run.run_id, lock)
+    acquired = await asyncio.wait_for(pending, 2)
+    assert acquired is not None
+    await second.release(run.run_id, acquired)
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "resumed", "cancelled"])
+async def test_parked_handoff_never_steals_an_existing_owner(tmp_path, outcome):
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord()
+    run = RunRecord(session_id=session.session_id, status="waiting_approval")
+    store.create_session(session)
+    store.save_run(run)
+    first, second = RunExecutionOwnership(store), RunExecutionOwnership(store)
+    lock = await first.acquire(session.session_id, run.run_id)
+    pending = asyncio.create_task(
+        second.acquire_parked(
+            session.session_id,
+            run.run_id,
+            expected_status="waiting_approval",
+            timeout=0.1,
+        )
+    )
+    try:
+        await asyncio.sleep(0.01)
+        if outcome == "resumed":
+            store.save_run(run.model_copy(update={"status": "running"}))
+        if outcome == "cancelled":
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+        else:
+            assert await asyncio.wait_for(pending, 1) is None
+        assert store.is_session_locked(session.session_id)
+    finally:
+        await first.release(run.run_id, lock)
 
 
 @pytest.mark.asyncio
@@ -91,7 +160,6 @@ async def test_cancelled_acquisition_releases_lock_acquired_by_owned_thread(tmp_
     with pytest.raises(asyncio.CancelledError):
         await pending
     assert not store.is_session_locked(session.session_id)
-    assert not ownership._release_events
 
 
 @pytest.mark.asyncio

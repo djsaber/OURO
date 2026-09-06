@@ -6,11 +6,12 @@ from typing import Literal
 from pydantic import Field, ValidationError, field_validator, model_validator
 
 from ouro.application.dto import ApplicationDTO
+from ouro.application.supervisor_models import HostInputReceipt
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import SkillActivationContent
-from ouro.core.session_controls import SessionInputMode, SessionInputRequest
+from ouro.core.session_controls import HostSessionInput, SessionInputMode, SessionInputRequest
 from ouro.core.state import SessionRecord
 from ouro.sessions import RuntimeSessionSnapshot, SessionRepository
 
@@ -157,6 +158,87 @@ class QueuedInputQueue:
 
     def __init__(self, store: SessionRepository) -> None:
         self.store = store
+
+    def accept_host(
+        self,
+        session_id: str,
+        request: HostSessionInput,
+    ) -> tuple[HostInputReceipt, QueuedInput | None, SessionRecord]:
+        """Atomically accept an input or return its pending/consumed receipt.
+
+        A retry after canonical consumption must not reinsert the same input.
+        Only newly accepted items are returned for event publication.
+        """
+        queue_id = request.queue_id or new_id("queued")
+        with self.store.session_mutation(session_id):
+            session = self.store.load_session_record(session_id)
+            existing = self.find_session(session, queue_id)
+            if existing is not None:
+                if (
+                    existing.host_source_id != request.host_source_id
+                    or existing.prompt != request.prompt
+                    or existing.mode != request.mode
+                    or existing.resource_refs != request.resource_refs
+                    or existing.role != request.role
+                    or existing.scaffold != request.scaffold
+                    or existing.semantic_tag != request.semantic_tag
+                ):
+                    raise ValueError("Host input queue id is already bound to another input")
+                return (
+                    HostInputReceipt(
+                        session_id=session_id,
+                        queue_id=queue_id,
+                        accepted_at=existing.queued_at,
+                    ),
+                    None,
+                    session,
+                )
+            message = self.store.find_queued_input_message(session_id, queue_id)
+            if message is not None:
+                if (
+                    message.metadata.get("host_source_id") != request.host_source_id
+                    or message.text_content != request.prompt
+                    or tuple(message.resource_refs) != request.resource_refs
+                    or message.metadata.get("queued_input_mode") != request.mode
+                    or message.role != request.role
+                    or message.scaffold != request.scaffold
+                    or message.semantic_tag != request.semantic_tag
+                ):
+                    raise ValueError("Host input queue id is already bound to another input")
+                return (
+                    HostInputReceipt(
+                        session_id=session_id,
+                        queue_id=queue_id,
+                        accepted_at=message.created_at,
+                        message_id=message.message_id,
+                        run_id=message.run_id,
+                    ),
+                    None,
+                    session,
+                )
+            session, item, _ = self.enqueue(
+                snapshot=RuntimeSessionSnapshot(session=session),
+                prompt=request.prompt,
+                mode=request.mode,
+                title=request.title,
+                resource_refs=request.resource_refs,
+                queue_id=queue_id,
+                source="host",
+                role=request.role,
+                scaffold=request.scaffold,
+                semantic_tag=request.semantic_tag,
+                host_source_id=request.host_source_id,
+                caused_by_run_id=session.active_run_id,
+            )
+            return (
+                HostInputReceipt(
+                    session_id=session_id,
+                    queue_id=queue_id,
+                    accepted_at=item.queued_at,
+                ),
+                item,
+                session,
+            )
 
     def enqueue(
         self,

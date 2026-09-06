@@ -258,6 +258,7 @@ class DelegationResult(OuroModel):
     child_run_id: str
     terminal_status: Literal["completed", "failed", "aborted", "paused", "recoverable"]
     result_message_id: str | None = None
+    error: str | None = None
     resource_refs: tuple[str, ...] = ()
     usage: dict[str, int | float] = Field(default_factory=dict)
     result_ready_at: datetime = Field(default_factory=utc_now)

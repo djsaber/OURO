@@ -6,7 +6,7 @@ from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal, settle_owned_tasks
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
-from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
+from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, RunStatus, SessionRecord
 from ouro.core.tools import ToolResult
 from ouro.sessions import SessionLock, SessionStore
 
@@ -19,7 +19,6 @@ class RunExecutionOwnership:
         self._abort_signals: dict[str, AbortSignal] = {}
         self._abort_states: dict[str, tuple[SessionRecord, RunRecord]] = {}
         self._abort_pollers: dict[str, asyncio.Task[None]] = {}
-        self._release_events: dict[str, asyncio.Event] = {}
 
     async def acquire(self, session_id: str, run_id: str) -> SessionLock | None:
         task = asyncio.create_task(
@@ -34,32 +33,39 @@ class RunExecutionOwnership:
                 if lock is not None:
                     await run_blocking(lock.release)
             raise
-        if lock is not None:
-            self._release_events[run_id] = asyncio.Event()
         return lock
 
     async def release(self, run_id: str, lock: SessionLock | None) -> None:
+        del run_id
         if lock is None:
             return
-        released = self._release_events.get(run_id)
-        try:
-            await run_blocking(lock.release)
-        finally:
-            if self._release_events.get(run_id) is released:
-                self._release_events.pop(run_id, None)
-            if released is not None:
-                released.set()
+        await run_blocking(lock.release)
 
-    async def wait_for_local_release(self, run_id: str) -> None:
-        """Hand off a parked Run after its local owner finishes releasing its lock.
+    async def acquire_parked(
+        self,
+        session_id: str,
+        run_id: str,
+        *,
+        expected_status: RunStatus,
+        timeout: float = 5.0,
+    ) -> SessionLock | None:
+        """Acquire a parked Run after its announcing owner releases the lock.
 
-        A live interaction may reach the Host before the announcing owner has
-        returned. Unknown external owners still fail the normal lock acquisition.
+        The durable interaction can be visible before that owner returns, in any
+        Host. Wait only while this same Run remains parked, with a bounded delay;
+        the caller must revalidate the exact interaction under the acquired lock.
         """
 
-        released = self._release_events.get(run_id)
-        if released is not None:
-            await released.wait()
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            lock = await self.acquire(session_id, run_id)
+            if lock is not None:
+                return lock
+            run = await run_blocking(self.store.load_run, session_id, run_id)
+            remaining = deadline - asyncio.get_running_loop().time()
+            if run.status != expected_status or remaining <= 0:
+                return None
+            await asyncio.sleep(min(0.05, remaining))
 
     async def wait_for_settlement(
         self,

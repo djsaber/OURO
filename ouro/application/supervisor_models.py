@@ -72,6 +72,8 @@ class HostInputReceipt(ApplicationDTO):
     session_id: str
     queue_id: str
     accepted_at: datetime = Field(default_factory=utc_now)
+    message_id: str | None = None
+    run_id: str | None = None
 
 
 class RuntimeStatusSnapshot(ApplicationDTO):

@@ -1924,63 +1924,78 @@ class RuntimeService:
         adapter: RuntimeAdapter,
         on_provider_stream_start: Callable[[], None] | None = None,
     ) -> RunResult:
-        tool_calls = self._tool_calls_for_run(run.run_id)
-        tools = tool_calls.registry
-        context_providers = self._context_providers_for_run(run.run_id)
-        compaction = self._compaction_for_run(run.run_id)
-        loop = InnerAgentLoop(
-            adapter=adapter,
-            tool_definitions=tools.definitions,
-            run_budget=self._run_budget_for_run(run),
-            ports=InnerLoopPorts(
-                context=InnerLoopContext(
-                    prepare=partial(
-                        self.context_preparation.prepare,
-                        context_providers=context_providers,
-                        strategies=compaction,
-                        skill_instructions=self._instructions_for_run(run),
+        try:
+            tool_calls = self._tool_calls_for_run(run.run_id)
+            tools = tool_calls.registry
+            context_providers = self._context_providers_for_run(run.run_id)
+            compaction = self._compaction_for_run(run.run_id)
+            loop = InnerAgentLoop(
+                adapter=adapter,
+                tool_definitions=tools.definitions,
+                run_budget=self._run_budget_for_run(run),
+                ports=InnerLoopPorts(
+                    context=InnerLoopContext(
+                        prepare=partial(
+                            self.context_preparation.prepare,
+                            context_providers=context_providers,
+                            strategies=compaction,
+                            skill_instructions=self._instructions_for_run(run),
+                        ),
+                        record_completion=self.context_preparation.record_provider_completion,
+                        resolve_model_request=self._resolve_model_request,
                     ),
-                    record_completion=self.context_preparation.record_provider_completion,
-                    resolve_model_request=self._resolve_model_request,
+                    runs=InnerLoopRunBoundaries(
+                        record_usage=self.run_lifecycle.record_usage,
+                        aborted_result=self.run_ownership.aborted_result,
+                        save_waiting_state=self.run_lifecycle.save_waiting_state,
+                        complete=self.run_lifecycle.complete,
+                        fail=self.run_lifecycle.fail,
+                        pause=self.run_lifecycle.pause,
+                    ),
+                    turns=InnerLoopTurnBoundaries(
+                        consume_inputs=self._consume_turn_boundary_inputs,
+                        evaluate_completion=partial(
+                            self._evaluate_turn_completion,
+                            policies=self._turn_policies_for_run(run.run_id),
+                        ),
+                        begin_model_round=(
+                            self._begin_model_round if self._extension_catalog is not None else None
+                        ),
+                        commit_model_request=self._commit_model_request,
+                        shared_budget_reason=(
+                            self._shared_budget_reason if self._agent_controls is not None else None
+                        ),
+                        notify_provider_stream_start=on_provider_stream_start,
+                    ),
+                    emit=self.event_recorder.emit,
+                    handle_tool_batch=tool_calls.handle_batch,
+                    refresh_session=self.store.load_session_record,
                 ),
-                runs=InnerLoopRunBoundaries(
-                    record_usage=self.run_lifecycle.record_usage,
-                    aborted_result=self.run_ownership.aborted_result,
-                    save_waiting_state=self.run_lifecycle.save_waiting_state,
-                    complete=self.run_lifecycle.complete,
-                    fail=self.run_lifecycle.fail,
-                    pause=self.run_lifecycle.pause,
+            )
+        except Exception as exc:  # noqa: BLE001 - settle model-loop initialization failures.
+            result = await self.run_lifecycle.fail(
+                emitted,
+                await run_blocking(self.store.latest_event_sequence, session.session_id),
+                session=session,
+                run=run,
+                error=(
+                    f"model loop initialization failed: {type(exc).__name__}: "
+                    f"{redact_text(str(exc))}"
                 ),
-                turns=InnerLoopTurnBoundaries(
-                    consume_inputs=self._consume_turn_boundary_inputs,
-                    evaluate_completion=partial(
-                        self._evaluate_turn_completion,
-                        policies=self._turn_policies_for_run(run.run_id),
-                    ),
-                    begin_model_round=(
-                        self._begin_model_round if self._extension_catalog is not None else None
-                    ),
-                    commit_model_request=self._commit_model_request,
-                    shared_budget_reason=(
-                        self._shared_budget_reason if self._agent_controls is not None else None
-                    ),
-                    notify_provider_stream_start=on_provider_stream_start,
-                ),
-                emit=self.event_recorder.emit,
-                handle_tool_batch=tool_calls.handle_batch,
-                refresh_session=self.store.load_session_record,
-            ),
-        )
-        result = await loop.run(
-            session=session,
-            run=run,
-            messages=messages,
-            sequence=sequence,
-            emitted=emitted,
-            final_parts=final_parts,
-            tool_results=tool_results,
-            abort_signal=abort_signal,
-        )
+                final_text="".join(final_parts or []),
+                tool_results=tool_results or [],
+            )
+        else:
+            result = await loop.run(
+                session=session,
+                run=run,
+                messages=messages,
+                sequence=sequence,
+                emitted=emitted,
+                final_parts=final_parts,
+                tool_results=tool_results,
+                abort_signal=abort_signal,
+            )
         return await self._finalize_requested_abort(result)
 
     def _resolve_model_request(
@@ -2285,26 +2300,37 @@ class RuntimeService:
     ) -> HostInputReceipt:
         """Durably accept an OURO-owned scaffold input without awaiting execution."""
 
-        snapshot = await self._load_submission_snapshot(session_id)
+        session = await run_blocking(self.store.load_session_record, session_id)
         self._validate_model_resource_refs(
-            snapshot.session,
+            session,
             session_input.resource_refs,
             message_role=session_input.role,
         )
-        _, queued_input, _ = await self._queue_input(
-            snapshot=snapshot,
-            active_run=maybe_active_run(snapshot.runs),
-            prompt=session_input.prompt,
-            title=session_input.title,
-            mode=session_input.mode,
-            resource_refs=session_input.resource_refs,
-            attribution=session_input,
+        receipt, item, session = await run_blocking(
+            self.queued_inputs.accept_host,
+            session_id,
+            session_input,
         )
-        return HostInputReceipt(
-            session_id=session_id,
-            queue_id=queued_input.queue_id,
-            accepted_at=queued_input.queued_at,
-        )
+        if item is not None:
+            await self.event_recorder.publish(
+                session_id=session_id,
+                run_id=session.active_run_id,
+                event_type="steering_input_queued"
+                if item.mode == "steer"
+                else "follow_up_input_queued",
+                payload={
+                    "queue_id": item.queue_id,
+                    "mode": item.mode,
+                    "queue_size": len(self.queued_inputs.eligible_session(session)),
+                    "resource_refs": list(item.resource_refs),
+                    "source": item.source,
+                    "role": item.role,
+                    "scaffold": item.scaffold,
+                    "semantic_tag": item.semantic_tag,
+                    "host_source_id": item.host_source_id,
+                },
+            )
+        return receipt
 
     async def consume_host_input(self, receipt: HostInputReceipt) -> RunResult:
         """Consume a previously accepted Host input through the ordinary Run path."""
@@ -3201,10 +3227,10 @@ class RuntimeService:
         resolved_approval_id = approval_id or run.pending_approval_id
         if resolved_approval_id is None:
             raise ValueError("run has no pending approval")
-        await self.run_ownership.wait_for_local_release(run.run_id)
-        run_lock = await self.run_ownership.acquire(
+        run_lock = await self.run_ownership.acquire_parked(
             session.session_id,
             run.run_id,
+            expected_status="waiting_approval",
         )
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run.run_id}")
@@ -3317,10 +3343,10 @@ class RuntimeService:
         waiting_call = next((call for call in batch.calls if call.status == "waiting_user"), None)
         if waiting_call is None:
             raise ValueError("run has no tool call waiting for user input")
-        await self.run_ownership.wait_for_local_release(run.run_id)
-        run_lock = await self.run_ownership.acquire(
+        run_lock = await self.run_ownership.acquire_parked(
             session.session_id,
             run.run_id,
+            expected_status="waiting_user",
         )
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run.run_id}")
@@ -3422,10 +3448,10 @@ class RuntimeService:
         run = find_run(snapshot.runs, run_id)
         if run.status != "waiting_child":
             raise ValueError(f"run is not waiting for a child: {run.status}")
-        await self.run_ownership.wait_for_local_release(run_id)
-        run_lock = await self.run_ownership.acquire(
+        run_lock = await self.run_ownership.acquire_parked(
             session_id,
             run_id,
+            expected_status="waiting_child",
         )
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run_id}")

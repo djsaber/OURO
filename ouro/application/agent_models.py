@@ -190,6 +190,7 @@ class AgentReadView(ApplicationDTO):
     final_text: str = ""
     result_message_id: str | None = None
     terminal_status: RunStatus | None = None
+    error: str | None = None
 
 
 __all__ = [

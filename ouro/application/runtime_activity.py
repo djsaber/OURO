@@ -394,9 +394,13 @@ def reduce_runtime_activity(
         }[event_type]
         updates.update(status=terminal_status, activity=terminal_status, compaction_id=None)
         if event_type == "run_aborted":
-            updates["tool_calls"] = _mark_unsettled_tool_calls(current.tool_calls, "aborted")
+            updates["tool_calls"] = _mark_unsettled_tool_calls(
+                current.tool_calls, "aborted", ended_at=event.created_at
+            )
         elif event_type == "run_failed":
-            updates["tool_calls"] = _mark_unsettled_tool_calls(current.tool_calls, "failed")
+            updates["tool_calls"] = _mark_unsettled_tool_calls(
+                current.tool_calls, "failed", ended_at=event.created_at
+            )
 
     return current.model_copy(update=updates)
 
@@ -479,6 +483,15 @@ def overlay_run_activity(
         updates["activity"] = run.status
     elif run.status in _TERMINAL_ACTIVITY:
         updates["activity"] = _TERMINAL_ACTIVITY[run.status]
+        if run.status in {"failed", "aborted", "recoverable"}:
+            # Retained batches are recovery checkpoints, not still-running work.
+            # Preserve committed outcomes while settling the visible remainder.
+            status: RuntimeToolCallStatus = (
+                "unknown_outcome" if run.status == "recoverable" else run.status
+            )
+            updates["tool_calls"] = _mark_unsettled_tool_calls(
+                updates["tool_calls"], status, ended_at=run.ended_at
+            )
     elif run.phase == "tool_preflight":
         updates["activity"] = "preparing_tools"
     elif run.phase == "human_interaction":
@@ -590,6 +603,8 @@ def _update_tool_call_status(
 def _mark_unsettled_tool_calls(
     calls: tuple[RuntimeToolCallActivity, ...],
     status: RuntimeToolCallStatus,
+    *,
+    ended_at: datetime | None = None,
 ) -> tuple[RuntimeToolCallActivity, ...]:
     return tuple(
         item
@@ -597,6 +612,7 @@ def _mark_unsettled_tool_calls(
         else item.model_copy(
             update={
                 "status": status,
+                **({"ended_at": ended_at} if ended_at is not None else {}),
                 **({"argument_stream_tail": None} if status in _TERMINAL_TOOL_STATUSES else {}),
             }
         )

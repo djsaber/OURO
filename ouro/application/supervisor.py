@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -34,14 +35,15 @@ from ouro.application.supervisor_models import (
 from ouro.core.agents import AgentWaitResolution
 from ouro.core.base import utc_now
 from ouro.core.callbacks import run_blocking
-from ouro.core.errors import OuroError, SessionBusyError, SessionNotFoundError
+from ouro.core.errors import OuroError, PersistenceError, SessionBusyError, SessionNotFoundError
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
 from ouro.core.session_controls import DelegatedTaskInput, HostSessionInput
-from ouro.core.state import RunRecord
+from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, RunStatus
 from ouro.core.tools import ToolResult
 
 _CLOSED: Final = object()
+_LOGGER = logging.getLogger(__name__)
 
 
 class RuntimeManagedResource(Protocol):
@@ -77,6 +79,7 @@ class _RunJob:
     start_after: asyncio.Event | None = None
     provider_stream_started: asyncio.Event = field(default_factory=asyncio.Event)
     run_identified: asyncio.Event = field(default_factory=asyncio.Event)
+    execution_started: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
@@ -234,6 +237,8 @@ class RuntimeSupervisor:
         self._event_streams: dict[str, SessionEventStream] = {}
         self._event_stream_tasks: set[asyncio.Task[None]] = set()
         self._parked_session_locks: dict[str, asyncio.Lock] = {}
+        self._pending_host_inputs: dict[str, HostInputReceipt] = {}
+        self._host_dispatch_tasks: set[asyncio.Task[None]] = set()
         self._latest_job_start = asyncio.Event()
         self._latest_job_start.set()
         self._lifecycle_lock = asyncio.Lock()
@@ -402,21 +407,72 @@ class RuntimeSupervisor:
 
         await self.start()
         receipt = await self.runtime.submit_host_input(session_input, session_id=session_id)
-        if (
-            maybe_active_run(await run_blocking(self.store.load_runs, session_id)) is not None
-            or session_id in self._jobs_by_session
-        ):
+        if receipt.message_id is not None:
             return receipt
-        handle = RunHandle(session_id=session_id)
-        await self._enqueue_job(
-            _RunJob(
-                handle=handle,
-                prompt="",
-                title=None,
-                host_input_receipt=receipt,
-            )
-        )
+        self._pending_host_inputs[session_id] = receipt
+        await self._dispatch_host_input(session_id)
         return receipt
+
+    async def _dispatch_host_input(self, session_id: str) -> None:
+        lock = self._parked_session_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            receipt = self._pending_host_inputs.get(session_id)
+            if receipt is None or self._closed:
+                return
+            if session_id in self._jobs_by_session:
+                # A job may have passed its last queue drain. Its completion
+                # must reconsider this receipt after releasing the local slot.
+                return
+            status = await run_blocking(self.status, session_id)
+            if status.status == "running" and not await run_blocking(
+                self.runtime.run_ownership.is_locked, session_id
+            ):
+                await self.runtime.reconcile_execution_session(session_id)
+                status = await run_blocking(self.status, session_id)
+            if status.status not in ACTIVE_RUN_STATUSES:
+                session = await run_blocking(self.store.load_session_record, session_id)
+                if self.runtime.queued_inputs.find_session(session, receipt.queue_id) is not None:
+                    await self._enqueue_job(
+                        _RunJob(
+                            handle=RunHandle(session_id=session_id),
+                            prompt="",
+                            title=None,
+                            host_input_receipt=receipt,
+                        )
+                    )
+            if self._pending_host_inputs.get(session_id) is receipt:
+                self._pending_host_inputs.pop(session_id, None)
+
+    async def _dispatch_after_job(self, session_id: str) -> None:
+        for attempt, delay in enumerate((0, 0.1, 0.5, 2.0)):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                await self._dispatch_host_input(session_id)
+                return
+            except Exception as exc:
+                if isinstance(exc, (OSError, PersistenceError, SessionBusyError)) and attempt < 3:
+                    continue
+                await self.runtime.event_recorder.publish(
+                    session_id=session_id,
+                    event_type="diagnostic",
+                    run_id=None,
+                    payload={
+                        "code": "host_input_dispatch_failed",
+                        "severity": "error",
+                        "component": "runtime.supervisor",
+                        "error_type": type(exc).__name__,
+                        "recoverable": True,
+                    },
+                )
+                return
+
+    def _host_dispatch_finished(self, task: asyncio.Task[None]) -> None:
+        self._host_dispatch_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            _LOGGER.error(
+                "Host input dispatch reporting failed: %s", type(task.exception()).__name__
+            )
 
     async def resolve_tool_approval(
         self,
@@ -518,13 +574,11 @@ class RuntimeSupervisor:
             run_id=run_id,
             status="queued",
         )
-        activity = queued_runtime_activity(
-            session_id,
-            sequence=sequence,
-        )
-        self._publish_activity(
-            activity if run_id is None else activity.model_copy(update={"run_id": run_id})
-        )
+        if run_id is None or job.prepared_run is not None:
+            activity = queued_runtime_activity(session_id, sequence=sequence)
+            self._publish_activity(
+                activity if run_id is None else activity.model_copy(update={"run_id": run_id})
+            )
         self._queue.put_nowait(job)
 
     async def subscribe(
@@ -540,6 +594,9 @@ class RuntimeSupervisor:
         if max_buffer <= 0:
             raise ValueError("max_buffer must be positive")
         activity = self._activities.get(session_id)
+        if session_id not in self._event_streams and activity is not None and activity.run_id:
+            # An unobserved Session may have advanced in another process.
+            activity = None
         active_job = self._jobs_by_session.get(session_id)
         status_override = (
             self._snapshots[active_job.handle.handle_id].status if active_job is not None else None
@@ -614,7 +671,9 @@ class RuntimeSupervisor:
             if include_activity:
                 subscription.initial_activity = initial
             if initial is not None:
-                self._activities.setdefault(session_id, initial)
+                current = self._activities.get(session_id)
+                if current is None or current.sequence <= initial.sequence:
+                    self._activities[session_id] = initial
             subscription._prepend_replay(replay, after_sequence=after_sequence, truncated=truncated)
         except BaseException as exc:
             subscription.close()
@@ -650,18 +709,16 @@ class RuntimeSupervisor:
             return completed
         active = self._jobs_by_session.get(handle_or_session)
         if active is not None:
-            return self._snapshots[active.handle.handle_id]
+            pending = self._snapshots[active.handle.handle_id]
+            if pending.run_id is None:
+                return pending
         try:
-            session = self.store.load_session_record(handle_or_session)
-            runs = self.store.load_runs(handle_or_session)
+            with self.store.session_mutation(handle_or_session):
+                session = self.store.load_session_record(handle_or_session)
+                run_id = session.active_run_id or session.last_run_id
+                run = self.store.load_run(handle_or_session, run_id) if run_id is not None else None
         except FileNotFoundError as exc:
             raise SessionNotFoundError(f"session not found: {handle_or_session}") from exc
-        run = maybe_active_run(runs)
-        if run is None and session.last_run_id is not None:
-            run = next(
-                (item for item in runs if item.run_id == session.last_run_id),
-                None,
-            )
         return RuntimeStatusSnapshot(
             session_id=handle_or_session,
             run_id=run.run_id if run is not None else None,
@@ -670,17 +727,23 @@ class RuntimeSupervisor:
 
     def activity(self, handle_or_session: RunHandle | str) -> RuntimeActivitySnapshot:
         session_id = self._activity_session_id(handle_or_session)
-        requested_status = self.status(handle_or_session)
+        requested_status = (
+            self.status(handle_or_session)
+            if isinstance(handle_or_session, RunHandle) or handle_or_session in self._snapshots
+            else None
+        )
         cached = self._activities.get(session_id)
-        if cached is not None and (
-            requested_status.run_id is None or cached.run_id == requested_status.run_id
+        if (
+            cached is not None
+            and (session_id in self._event_streams or cached.run_id is None)
+            and (requested_status is None or cached.run_id == requested_status.run_id)
         ):
             return cached
         try:
             activity = self._load_activity(
                 session_id,
-                run_id=requested_status.run_id,
-                status_override=requested_status.status,
+                run_id=requested_status.run_id if requested_status else None,
+                status_override=requested_status.status if requested_status else None,
             )
         except FileNotFoundError as exc:
             raise SessionNotFoundError(f"session not found: {session_id}") from exc
@@ -692,6 +755,61 @@ class RuntimeSupervisor:
             raise KeyError(f"unknown run handle: {handle.handle_id}")
         await done.wait()
         return self.status(handle)
+
+    async def wait_run(
+        self, session_id: str, run_id: str, *, until: frozenset[RunStatus] = frozenset()
+    ) -> RunRecord:
+        """Wait for a durable Run, including execution owned by another Host.
+
+        Job receipts stop at approval/parking boundaries. A Run wait spans those
+        boundaries and uses the shared journal follower, without polling Run
+        history or reloading checkpoints for each streamed token.
+        """
+
+        def boundary() -> tuple[RunRecord, int]:
+            with self.store.session_mutation(session_id):
+                run = self.store.load_run(session_id, run_id)
+                return run, self.store.latest_event_sequence(session_id)
+
+        job = self._jobs_by_session.get(session_id)
+        if (
+            job is not None
+            and job.continue_existing
+            and self._snapshots[job.handle.handle_id].run_id == run_id
+        ):
+            # A scheduled continuation reuses a terminal Run. Observe its
+            # accepted attempt before interpreting the previous terminal state.
+            await job.execution_started.wait()
+        run, sequence = await run_blocking(boundary)
+        if run.status not in ACTIVE_RUN_STATUSES or run.status in until:
+            return run
+        subscription = await self.subscribe(session_id, after_sequence=sequence)
+        try:
+            async for notification in subscription:
+                diagnostic = notification.diagnostic
+                if diagnostic is not None and diagnostic.code != "runtime_subscription_lagged":
+                    raise OuroError(diagnostic.message)
+                event = notification.event
+                if diagnostic is None and (
+                    event is None
+                    or event.run_id != run_id
+                    or event.event_type
+                    not in {
+                        "run_completed",
+                        "run_failed",
+                        "run_aborted",
+                        "run_paused",
+                        "run_status_changed",
+                        "run_started",
+                    }
+                ):
+                    continue
+                run = await run_blocking(self.store.load_run, session_id, run_id)
+                if run.status not in ACTIVE_RUN_STATUSES or run.status in until:
+                    return run
+            raise OuroError("Run observation closed before completion")
+        finally:
+            subscription.close()
 
     def release_handle(self, handle: RunHandle) -> None:
         """Release a producer's completed receipt; durable Session history remains available."""
@@ -748,26 +866,24 @@ class RuntimeSupervisor:
                     run_id=snapshot.run_id,
                     reason=reason,
                 )
-            self._finish_job(
-                job,
-                RuntimeStatusSnapshot(
-                    handle=job.handle,
-                    session_id=job.handle.session_id,
-                    run_id=snapshot.run_id,
-                    status="aborted",
-                    diagnostics=(
-                        Diagnostic(
-                            code="queued_run_aborted",
-                            severity="info",
-                            component="runtime.supervisor",
-                            message=reason,
-                            session_id=job.handle.session_id,
-                            recoverable=False,
-                        ),
+            aborted = RuntimeStatusSnapshot(
+                handle=job.handle,
+                session_id=job.handle.session_id,
+                run_id=snapshot.run_id,
+                status="aborted",
+                diagnostics=(
+                    Diagnostic(
+                        code="queued_run_aborted",
+                        severity="info",
+                        component="runtime.supervisor",
+                        message=reason,
+                        session_id=job.handle.session_id,
+                        recoverable=False,
                     ),
                 ),
             )
-            return self.status(job.handle)
+            self._finish_job(job, aborted)
+            return aborted
         if snapshot.status in {
             "running",
             "cancelling",
@@ -780,7 +896,10 @@ class RuntimeSupervisor:
                 # the first durable Run event. Wait for that identity instead of
                 # guessing the active Run from a snapshot that may still be empty.
                 await job.run_identified.wait()
-                snapshot = self._snapshots[job.handle.handle_id]
+                identified = self._snapshots.get(job.handle.handle_id)
+                if identified is None:
+                    return await run_blocking(self.status, job.handle.session_id)
+                snapshot = identified
                 if job.done.is_set() or snapshot.run_id is None:
                     return snapshot
             result = await self.runtime.abort_run(
@@ -794,8 +913,10 @@ class RuntimeSupervisor:
                 run_id=result.run.run_id,
                 status=result.run.status,
             )
-            self._snapshots[job.handle.handle_id] = updated
-        return self.status(job.handle)
+            if not job.done.is_set():
+                self._snapshots[job.handle.handle_id] = updated
+            return updated
+        return snapshot
 
     async def shutdown(self, policy: ShutdownPolicy | None = None) -> None:
         async with self._lifecycle_lock:
@@ -806,6 +927,10 @@ class RuntimeSupervisor:
             return
         policy = policy or ShutdownPolicy()
         self._closed = True
+        for task in tuple(self._host_dispatch_tasks):
+            task.cancel()
+        await asyncio.gather(*self._host_dispatch_tasks, return_exceptions=True)
+        self._pending_host_inputs.clear()
         jobs = list(self._jobs_by_session.values())
         if policy.mode == "abort":
             # Stop queued jobs before awaiting active abort settlement. Otherwise
@@ -886,17 +1011,18 @@ class RuntimeSupervisor:
                     update={"status": "running", "updated_at": utc_now()}
                 )
                 current_activity = self._activities.get(job.handle.session_id)
-                if current_activity is None:
+                if current_activity is None and queued_snapshot.run_id is None:
                     current_activity = queued_runtime_activity(job.handle.session_id)
-                self._publish_activity(
-                    current_activity.model_copy(
-                        update={
-                            "status": "running",
-                            "activity": "preparing_model",
-                            "updated_at": utc_now(),
-                        }
+                if current_activity is not None and current_activity.run_id is None:
+                    self._publish_activity(
+                        current_activity.model_copy(
+                            update={
+                                "status": "running",
+                                "activity": "preparing_model",
+                                "updated_at": utc_now(),
+                            }
+                        )
                     )
-                )
                 try:
                     if job.interaction_kind == "approval":
                         job.provider_stream_started.set()
@@ -974,6 +1100,7 @@ class RuntimeSupervisor:
                         RuntimeStatusSnapshot(
                             handle=job.handle,
                             session_id=job.handle.session_id,
+                            run_id=self._snapshots[job.handle.handle_id].run_id,
                             status="failed",
                             diagnostics=(diagnostic,),
                         ),
@@ -1005,6 +1132,10 @@ class RuntimeSupervisor:
                 }
             )
             job.run_identified.set()
+            if event.event_type == "run_started" or (
+                event.event_type == "run_status_changed" and event.payload.get("resumed") is True
+            ):
+                job.execution_started.set()
         subscriptions = tuple(self._subscriptions.get(event.session_id, ()))
         stream = self._event_streams.get(event.session_id)
         if stream is not None:
@@ -1055,21 +1186,26 @@ class RuntimeSupervisor:
         run_id: str | None = None,
         status_override: SupervisorRunStatus | None = None,
     ) -> RuntimeActivitySnapshot:
-        session = self.store.load_session_record(session_id)
-        selected_run_id = run_id or session.active_run_id or session.last_run_id
-        run = (
-            self.store.load_run(session_id, selected_run_id)
-            if selected_run_id is not None
-            else None
-        )
-        return project_runtime_activity_state(
-            session,
-            run,
-            sequence=self.store.latest_event_sequence(session_id),
-            status_override=status_override,
-            context_status=self.runtime.sessions.context_status(session_id),
-            effective_context_metrics=self.runtime.sessions.effective_context_metrics(session_id),
-        )
+        # The Run and cursor must describe one read boundary. Reading a newer
+        # cursor after an older Run would permanently hide its terminal event.
+        with self.store.session_mutation(session_id):
+            session = self.store.load_session_record(session_id)
+            selected_run_id = run_id or session.active_run_id or session.last_run_id
+            run = (
+                self.store.load_run(session_id, selected_run_id)
+                if selected_run_id is not None
+                else None
+            )
+            return project_runtime_activity_state(
+                session,
+                run,
+                sequence=self.store.latest_event_sequence(session_id),
+                status_override=status_override if run is None else None,
+                context_status=self.runtime.sessions.context_status(session_id),
+                effective_context_metrics=self.runtime.sessions.effective_context_metrics(
+                    session_id
+                ),
+            )
 
     def _resolve_job(self, handle_or_session: RunHandle | str) -> _RunJob:
         if isinstance(handle_or_session, RunHandle):
@@ -1085,16 +1221,20 @@ class RuntimeSupervisor:
     def _finish_job(self, job: _RunJob, snapshot: RuntimeStatusSnapshot) -> None:
         job.provider_stream_started.set()
         job.run_identified.set()
+        job.execution_started.set()
         self._snapshots[job.handle.handle_id] = snapshot
         current_activity = self._activities.get(job.handle.session_id)
-        if current_activity is None:
+        # A job is one process's execution attempt. Once a Run is identified,
+        # only its ordered events may advance the shared Session projection:
+        # another Host may already have resumed or finished this same Run.
+        if current_activity is None and snapshot.run_id is None:
             current_activity = RuntimeActivitySnapshot(
                 session_id=job.handle.session_id,
                 run_id=snapshot.run_id,
                 status=snapshot.status,
                 activity=runtime_activity_for_status(snapshot.status),
             )
-        elif current_activity.status != snapshot.status:
+        elif current_activity is not None and current_activity.run_id is None:
             current_activity = current_activity.model_copy(
                 update={
                     "run_id": snapshot.run_id or current_activity.run_id,
@@ -1103,12 +1243,24 @@ class RuntimeSupervisor:
                     "updated_at": utc_now(),
                 }
             )
-        self._publish_activity(current_activity)
+        if current_activity is not None:
+            self._publish_activity(current_activity)
         if self._jobs_by_session.get(job.handle.session_id) is job:
             self._jobs_by_session.pop(job.handle.session_id, None)
         if self._jobs_by_handle.get(job.handle.handle_id) is job:
             self._jobs_by_handle.pop(job.handle.handle_id, None)
         job.done.set()
+        if job.host_input_receipt is not None:
+            # Host producers receive the durable input receipt, never this
+            # private execution handle; do not retain it for process lifetime.
+            self.release_handle(job.handle)
+        if not self._closed and job.handle.session_id in self._pending_host_inputs:
+            task = asyncio.create_task(
+                self._dispatch_after_job(job.handle.session_id),
+                name=f"ouro-host-input-{job.handle.session_id}",
+            )
+            self._host_dispatch_tasks.add(task)
+            task.add_done_callback(self._host_dispatch_finished)
 
     def _publish_activity(self, activity: RuntimeActivitySnapshot) -> None:
         previous = self._activities.get(activity.session_id)

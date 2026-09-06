@@ -300,6 +300,10 @@ def test_session_store_loads_runs_without_reading_journals(session_store: Sessio
     else:
         connection = sqlite3.connect(session_store.database)
         try:
+            # Deliberate on-disk corruption must bypass derived JSON indexes;
+            # ordinary indexed writes reject malformed payloads before commit.
+            connection.execute("DROP INDEX messages_session_run")
+            connection.execute("DROP INDEX messages_session_queued_input")
             connection.execute(
                 "UPDATE messages SET payload = '{not json' WHERE session_id = ?",
                 (session.session_id,),

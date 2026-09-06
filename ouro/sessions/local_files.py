@@ -5,9 +5,11 @@ import os
 import re
 import shutil
 import struct
+from collections import OrderedDict
 from collections.abc import Iterator, Sequence
 from contextlib import ExitStack, closing, suppress
 from pathlib import Path
+from threading import Lock
 from typing import Self, TypeVar
 
 from pydantic import ValidationError
@@ -49,6 +51,7 @@ from ouro.sessions.index import SessionIndex
 from ouro.sessions.layout import DATA_LAYOUT_VERSION, DataLayoutManifest
 from ouro.sessions.local_index import LocalSessionIndex
 from ouro.sessions.locks import SessionMutationLock, SessionRunLock
+from ouro.sessions.message_index import MessageJournalQueries
 from ouro.sessions.message_journal import reverse_jsonl
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
@@ -74,6 +77,9 @@ class LocalSessionStore:
         self._event_sequence_cache: dict[str, tuple[int, int]] = {}
         self._event_sequence_index_cache: dict[str, tuple[int, int] | None] = {}
         self._event_run_offset_cache: dict[tuple[str, str], int] = {}
+        self._message_queries = MessageJournalQueries()
+        self._delegation_paths: OrderedDict[str, Path] = OrderedDict()
+        self._delegation_path_lock = Lock()
         self._layout_path = self.root / "layout.json"
         self._catalog = LocalSessionIndex(
             self.sessions_dir,
@@ -130,12 +136,23 @@ class LocalSessionStore:
 
     def load_delegation_by_id(self, delegation_id: str) -> DelegationRecord:
         validated = _validated_record_id(delegation_id, kind="delegation")
+        with self._delegation_path_lock:
+            cached = self._delegation_paths.get(validated)
+            if cached is not None:
+                self._delegation_paths.move_to_end(validated)
+        if cached is not None:
+            return self._load_delegation_path(cached)
         paths = list(self.sessions_dir.glob(f"*/delegations/{validated}.json"))
         if not paths:
             raise FileNotFoundError(delegation_id)
         if len(paths) != 1:
             raise PersistenceError(f"delegation identity is not globally unique: {delegation_id}")
-        return self._load_delegation_path(paths[0])
+        relation = self._load_delegation_path(paths[0])
+        with self._delegation_path_lock:
+            self._delegation_paths[validated] = paths[0]
+            if len(self._delegation_paths) > 256:
+                self._delegation_paths.popitem(last=False)
+        return relation
 
     def save_delegation(
         self,
@@ -787,20 +804,20 @@ class LocalSessionStore:
     def load_message(self, session_id: str, message_id: str) -> MessageRecord:
         with self.session_mutation(session_id):
             path = self._require_session_dir(session_id) / "messages.jsonl"
-            try:
-                for line in self._iter_jsonl(path):
-                    message = decode_versioned_record_json(
-                        MessageRecord,
-                        line,
-                        label=f"message in session {session_id}",
-                    )
-                    if message.message_id == message_id:
-                        return message
-            except (OSError, ValidationError, ValueError) as exc:
-                raise PersistenceError(
-                    f"could not load message {message_id} from session {session_id}: {exc}"
-                ) from exc
+            message = self._message_queries.message(path, message_id)
+            if message is not None:
+                return message
         raise PersistenceError(f"message not found in session {session_id}: {message_id}")
+
+    def load_run_messages(self, session_id: str, run_id: str) -> list[MessageRecord]:
+        with self.session_mutation(session_id):
+            path = self._require_session_dir(session_id) / "messages.jsonl"
+            return self._message_queries.run(path, run_id)
+
+    def find_queued_input_message(self, session_id: str, queue_id: str) -> MessageRecord | None:
+        with self.session_mutation(session_id):
+            path = self._require_session_dir(session_id) / "messages.jsonl"
+            return self._message_queries.queued(path, queue_id)
 
     def load_events_page(
         self,

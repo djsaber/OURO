@@ -173,10 +173,9 @@ def builtin_command_tool(shell: CommandShell) -> Tool:
             },
             permission_mode="approval",
             effect="state_changing",
-            metadata={
-                "shell_kind": shell.kind,
-                "shell_executable": shell.executable,
-            },
+            # The executable path is a local binding captured by the handler,
+            # not part of the portable tool contract used by delegated Runs.
+            metadata={"shell_kind": shell.kind},
         ),
         handler=execute,
     )
@@ -227,11 +226,10 @@ async def _execute_command(
 
 
 def _shell_description(shell: CommandShell) -> str:
-    executable = Path(shell.executable).name
     if shell.kind in ("powershell", "windows_powershell"):
         edition = "PowerShell 7+" if shell.kind == "powershell" else "Windows PowerShell"
         return (
-            f"Use this tool to run a non-interactive {edition} command with {executable} when "
+            f"Use this tool to run a non-interactive {edition} command when "
             "you need shell-only operations such as tests, builds, version control, or system "
             "inspection. Prefer dedicated Read, Write, Edit, Glob, and Grep tools for simple "
             "file work. Do not call interactive programs or rely on state from an earlier "
@@ -246,7 +244,7 @@ def _shell_description(shell: CommandShell) -> str:
         )
     if shell.kind == "bash":
         return (
-            f"Use this tool to run a non-interactive Bash command with {executable} when you "
+            "Use this tool to run a non-interactive Bash command when you "
             "need shell-only operations such as tests, builds, version control, or system "
             "inspection. Prefer dedicated Read, Write, Edit, Glob, and Grep tools for simple "
             "file work. Do not call interactive programs or rely on state from an earlier "
@@ -260,7 +258,7 @@ def _shell_description(shell: CommandShell) -> str:
         )
     if shell.kind == "sh":
         return (
-            f"Use this tool to run a non-interactive POSIX sh command with {executable} when "
+            "Use this tool to run a non-interactive POSIX sh command when "
             "you need shell-only operations such as tests, builds, version control, or system "
             "inspection. Prefer dedicated file and search tools for simple file work. Do not "
             "call interactive programs or rely on state from an earlier call. Use portable sh "
@@ -272,7 +270,7 @@ def _shell_description(shell: CommandShell) -> str:
             "call starts a fresh shell."
         )
     return (
-        f"Use this tool to run a non-interactive Windows cmd.exe command with {executable} "
+        "Use this tool to run a non-interactive Windows cmd.exe command "
         "when you need shell-only operations such as tests, builds, version control, or system "
         "inspection. Prefer dedicated file and search tools for simple file work. Do not call "
         "interactive programs or rely on state from an earlier call. Use cmd syntax only, "

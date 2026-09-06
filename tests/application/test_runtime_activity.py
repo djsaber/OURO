@@ -1,6 +1,7 @@
 import pytest
 
 from ouro.application.runtime_activity import (
+    overlay_run_activity,
     project_runtime_activity,
     queued_runtime_activity,
     reduce_runtime_activity,
@@ -17,6 +18,46 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.sessions.base import SessionSnapshot
+
+
+@pytest.mark.parametrize("status", ["failed", "aborted", "recoverable"])
+def test_terminal_run_snapshot_cannot_reactivate_retained_tool_calls(status):
+    requested = _event(
+        1, "tool_call_requested", {"tool_call_id": "shell", "tool_name": "PowerShell"}
+    )
+    terminal = _event(2, "run_failed", {"error": "contract unavailable"})
+    current = reduce_runtime_activity(queued_runtime_activity("ses_1"), requested)
+    current = reduce_runtime_activity(current, terminal)
+    run = RunRecord(
+        session_id="ses_1",
+        run_id="run_1",
+        status=status,
+        ended_at=terminal.created_at,
+        active_tool_batch=ToolCallBatchRecord(
+            turn_id="turn_1",
+            assistant_message_id="msg_1",
+            calls=[
+                ToolBatchCall(
+                    request=ToolCallRequest(id="shell", name="PowerShell"), status="ready"
+                ),
+                ToolBatchCall(request=ToolCallRequest(id="done", name="Read"), status="completed"),
+            ],
+        ),
+    )
+    for activity in [current, queued_runtime_activity("ses_1")]:
+        restored = overlay_run_activity(activity, run)
+        expected = (
+            "failed"
+            if status == "failed"
+            else "aborted"
+            if status == "aborted"
+            else "unknown_outcome"
+        )
+        calls = {call.tool_call_id: call for call in restored.tool_calls}
+        assert calls["shell"].status == expected
+        assert calls["shell"].ended_at == run.ended_at
+        assert calls["done"].status == "completed"
+    assert run.active_tool_batch.calls[0].status == "ready"
 
 
 def _event(

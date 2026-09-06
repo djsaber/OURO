@@ -168,6 +168,14 @@ class SessionRepository(Protocol):
 
     def load_message(self, session_id: str, message_id: str) -> MessageRecord: ...
 
+    def load_run_messages(self, session_id: str, run_id: str) -> list[MessageRecord]:
+        """Read only one Run's canonical messages, in journal order."""
+        ...
+
+    def find_queued_input_message(self, session_id: str, queue_id: str) -> MessageRecord | None:
+        """Find the canonical receipt of an already consumed queued input."""
+        ...
+
     def load_events_page(
         self,
         session_id: str,

@@ -2554,6 +2554,35 @@ async def test_root_model_round_budget_uses_durable_run_counters(tmp_path) -> No
 
 
 @pytest.mark.asyncio
+async def test_unlimited_shared_budget_does_not_scan_child_usage(tmp_path, monkeypatch) -> None:
+    service, supervisor, store, _ = await _services(tmp_path)
+    parent = store.load_run("ses_root", "run_parent")
+    parent = parent.model_copy(
+        update={
+            "metadata": {
+                "run_budget": {
+                    "max_model_rounds": None,
+                    "max_input_tokens": None,
+                    "max_output_tokens": None,
+                    "max_elapsed_seconds": None,
+                }
+            }
+        }
+    )
+    store.save_run(parent)
+
+    def unexpected_scan(*args, **kwargs):
+        raise AssertionError("unlimited budgets must not enumerate child history")
+
+    monkeypatch.setattr(store, "list_delegations", unexpected_scan)
+    try:
+        assert service.budget_reason(parent, 1) is None
+    finally:
+        await service.close()
+        await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_primary_budget_check_does_not_scan_unrelated_delegations(tmp_path) -> None:
     service, supervisor, store, _ = await _services(tmp_path)
     unrelated = SessionRecord(session_id="ses_corrupt_history")

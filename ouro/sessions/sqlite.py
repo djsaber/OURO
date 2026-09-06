@@ -89,6 +89,11 @@ class SQLiteSessionStore:
                     );
                     CREATE INDEX IF NOT EXISTS messages_session_order
                         ON messages(session_id, row_id);
+                    CREATE INDEX IF NOT EXISTS messages_session_run
+                        ON messages(session_id, json_extract(payload, '$.run_id'), row_id);
+                    CREATE INDEX IF NOT EXISTS messages_session_queued_input
+                        ON messages(
+                            session_id, json_extract(payload, '$.metadata.queued_input_id'));
                     CREATE TABLE IF NOT EXISTS events (
                         row_id INTEGER PRIMARY KEY AUTOINCREMENT,
                         session_id TEXT NOT NULL,
@@ -850,6 +855,29 @@ class SQLiteSessionStore:
         if row is None:
             raise PersistenceError(f"message not found in session {session_id}: {message_id}")
         return self._validate_model(MessageRecord, row[0], f"message {message_id}")
+
+    def load_run_messages(self, session_id: str, run_id: str) -> list[MessageRecord]:
+        with self._read_connection() as connection:
+            self._require_session(connection, session_id)
+            return self._load_models(
+                connection,
+                "SELECT payload FROM messages WHERE session_id = ? "
+                "AND json_extract(payload, '$.run_id') = ? ORDER BY row_id",
+                (session_id, run_id),
+                MessageRecord,
+            )
+
+    def find_queued_input_message(self, session_id: str, queue_id: str) -> MessageRecord | None:
+        with self._read_connection() as connection:
+            self._require_session(connection, session_id)
+            row = connection.execute(
+                "SELECT payload FROM messages WHERE session_id = ? "
+                "AND json_extract(payload, '$.metadata.queued_input_id') = ? LIMIT 1",
+                (session_id, queue_id),
+            ).fetchone()
+        return (
+            self._validate_model(MessageRecord, row[0], f"queued input {queue_id}") if row else None
+        )
 
     def load_events_page(
         self,

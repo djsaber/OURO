@@ -10,7 +10,7 @@ from ouro.application.supervisor import RuntimeSupervisor
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.events import EventRecord
 from ouro.core.provider import ModelMetadata
-from ouro.core.state import SessionRecord
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
@@ -83,6 +83,105 @@ async def test_subscription_follows_other_runtime_and_later_events(stores):
         assert (await events(subscription, 1))[0].sequence == fourth.sequence
     finally:
         subscription.close()
+        await supervisor.shutdown()
+
+
+async def test_on_demand_status_and_new_observer_ignore_an_unfollowed_stale_cache(
+    stores, monkeypatch
+):
+    writer, reader = stores
+    session = SessionRecord(title="External continuation")
+    run = RunRecord(session_id=session.session_id, status="waiting_approval")
+    session = session.model_copy(update={"active_run_id": run.run_id, "last_run_id": run.run_id})
+    writer.create_session(session)
+    writer.save_run(run)
+    supervisor = supervisor_for(reader)
+    supervisor._activities[session.session_id] = supervisor._load_activity(session.session_id)
+    writer.save_run(run.model_copy(update={"status": "completed"}))
+    writer.save_session(session.model_copy(update={"active_run_id": None, "status": "idle"}))
+
+    def no_history_scan(*args, **kwargs):
+        raise AssertionError("status queries must read the referenced Run, not all Runs")
+
+    monkeypatch.setattr(reader, "load_runs", no_history_scan)
+    try:
+        assert supervisor.status(session.session_id).status == "completed"
+        assert supervisor.activity(session.session_id).status == "completed"
+        subscription = await supervisor.subscribe(session.session_id, include_activity=True)
+        assert subscription.initial_activity.status == "completed"
+        assert supervisor.activity(session.session_id).status == "completed"
+    finally:
+        await supervisor.shutdown()
+
+
+async def test_activity_snapshot_cannot_pair_old_run_state_with_a_new_event_cursor(
+    stores, monkeypatch
+):
+    writer, reader = stores
+    session = SessionRecord(title="Atomic activity boundary")
+    run = RunRecord(session_id=session.session_id, status="running")
+    session = session.model_copy(update={"active_run_id": run.run_id, "last_run_id": run.run_id})
+    writer.create_session(session)
+    writer.save_run(run)
+    first = writer.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            event_type="run_started",
+        )
+    )
+    captured, release, writing = threading.Event(), threading.Event(), threading.Event()
+    read = reader.load_run
+
+    def delayed_run(*args, **kwargs):
+        result = read(*args, **kwargs)
+        if not captured.is_set():
+            captured.set()
+            assert release.wait(3)
+        return result
+
+    def complete():
+        writing.set()
+        with writer.session_mutation(session.session_id):
+            writer.save_run(run.model_copy(update={"status": "completed"}))
+            return writer.append_ordered_event(
+                EventRecord(
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    event_type="run_completed",
+                )
+            )
+
+    monkeypatch.setattr(reader, "load_run", delayed_run)
+    supervisor = supervisor_for(reader)
+    opening = asyncio.create_task(supervisor.subscribe(session.session_id, include_activity=True))
+    completion = None
+    try:
+        assert await asyncio.to_thread(captured.wait, 3)
+        completion = asyncio.create_task(asyncio.to_thread(complete))
+        assert await asyncio.to_thread(writing.wait, 3)
+        await asyncio.sleep(0.05)
+        release.set()
+        subscription = await opening
+        terminal = await completion
+        initial = subscription.initial_activity
+        assert initial.status == "running" and initial.sequence == first.sequence
+        async with asyncio.timeout(3):
+            while supervisor.activity(session.session_id).status != "completed":
+                await asyncio.sleep(0.01)
+        assert supervisor.activity(session.session_id).sequence == terminal.sequence
+
+        def no_query(*args, **kwargs):
+            raise AssertionError("an active subscriber must reuse its maintained projection")
+
+        monkeypatch.setattr(reader, "load_run", no_query)
+        for _ in range(100):
+            assert supervisor.activity(session.session_id).status == "completed"
+    finally:
+        release.set()
+        await opening
+        if completion is not None:
+            await completion
         await supervisor.shutdown()
 
 

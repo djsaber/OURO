@@ -19,6 +19,7 @@ from ouro.core.provider import (
     ProviderStreamEvent,
     ToolCallDelta,
 )
+from ouro.core.session_controls import HostSessionInput
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.mcp import MCPConfigStore, MCPRuntimeResource, MCPServerConfig
 from ouro.providers import FauxProvider
@@ -718,3 +719,194 @@ async def test_abort_shutdown_persists_abort_for_running_and_queued_jobs(tmp_pat
     durable = runtime.store.load_session(running.session_id)
     assert durable.runs[0].status == "aborted"
     assert provider.closed is True
+
+
+@pytest.mark.parametrize("transient_failure", [False, True])
+async def test_host_input_accepted_after_final_drain_gets_scheduled(
+    tmp_path,
+    monkeypatch,
+    transient_failure,
+):
+    runtime = _runtime(tmp_path, FauxProvider())
+    supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
+    finished, release = asyncio.Event(), asyncio.Event()
+    original = runtime.run
+
+    async def delayed(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        if not finished.is_set():
+            finished.set()
+            await release.wait()
+        return result
+
+    monkeypatch.setattr(runtime, "run", delayed)
+    enqueue = supervisor._enqueue_job
+    failed = False
+
+    async def dispatch(job, **kwargs):
+        nonlocal failed
+        if transient_failure and job.host_input_receipt is not None and not failed:
+            failed = True
+            raise PersistenceError("temporary dispatch failure")
+        return await enqueue(job, **kwargs)
+
+    monkeypatch.setattr(supervisor, "_enqueue_job", dispatch)
+    try:
+        first = await supervisor.submit("First")
+        await asyncio.wait_for(finished.wait(), 5)
+        receipt = await supervisor.route_host_input(
+            HostSessionInput(
+                prompt="Durable follow-up", host_source_id="test/input", queue_id="stable"
+            ),
+            session_id=first.session_id,
+        )
+        release.set()
+        await supervisor.wait(first)
+        async with asyncio.timeout(5):
+            while True:
+                message = runtime.store.find_queued_input_message(
+                    first.session_id, receipt.queue_id
+                )
+                runs = runtime.store.load_runs(first.session_id)
+                if message is not None and len(runs) == 2 and runs[-1].status == "completed":
+                    break
+                await asyncio.sleep(0.01)
+        replay = await supervisor.route_host_input(
+            HostSessionInput(
+                prompt="Durable follow-up", host_source_id="test/input", queue_id="stable"
+            ),
+            session_id=first.session_id,
+        )
+        assert replay.message_id == message.message_id
+        assert replay.run_id == message.run_id
+        assert (
+            runtime.queued_inputs.eligible_session(
+                runtime.store.load_session_record(first.session_id)
+            )
+            == []
+        )
+        assert len(runtime.store.load_runs(first.session_id)) == 2
+    finally:
+        release.set()
+        await supervisor.shutdown()
+
+
+async def test_wait_run_shares_stream_and_reloads_only_run_transitions(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path, FauxProvider())
+    supervisor = RuntimeSupervisor(runtime)
+    session = SessionRecord(
+        session_id="ses_observed", active_run_id="run_observed", last_run_id="run_observed"
+    )
+    runtime.store.create_session(session)
+    run = RunRecord(session_id=session.session_id, run_id="run_observed", status="running")
+    runtime.store.save_run(run)
+    subscription = await supervisor.subscribe(session.session_id)
+    waiter = asyncio.create_task(supervisor.wait_run(session.session_id, run.run_id))
+    try:
+        async with asyncio.timeout(5):
+            while len(supervisor._subscriptions[session.session_id]) != 2:
+                await asyncio.sleep(0.01)
+        # Both attachments must finish replay before counting checkpoint reads.
+        await asyncio.sleep(0.05)
+        calls = []
+        original = runtime.store.load_run
+
+        def read(*args, **kwargs):
+            calls.append(args)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(runtime.store, "load_run", read)
+        for _ in range(400):
+            await runtime.event_recorder.publish(
+                session_id=session.session_id,
+                run_id=run.run_id,
+                event_type="model_text_delta",
+                payload={"text": "token"},
+            )
+            await asyncio.sleep(0)
+        assert len(calls) <= 1  # A bounded-buffer gap may trigger one canonical recheck.
+        assert len(supervisor._event_streams) == 1
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert not subscription.closed
+        assert len(supervisor._subscriptions[session.session_id]) == 1
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        subscription.close()
+        await supervisor.shutdown()
+
+
+async def test_host_input_private_job_can_be_aborted_without_retaining_receipt(tmp_path):
+    provider = BlockingProvider()
+    runtime = _runtime(tmp_path, provider)
+    supervisor = RuntimeSupervisor(runtime)
+    session = runtime.sessions.create(current_model=runtime.current_model().key).session
+    try:
+        await supervisor.route_host_input(
+            HostSessionInput(prompt="Host work", host_source_id="test/host"),
+            session_id=session.session_id,
+        )
+        await asyncio.wait_for(provider.started.wait(), 5)
+        assert (await supervisor.abort(session.session_id)).status == "aborted"
+        async with asyncio.timeout(5):
+            while session.session_id in supervisor._jobs_by_session:
+                await asyncio.sleep(0.01)
+        assert supervisor._completion_events == {}
+        assert supervisor._snapshots == {}
+    finally:
+        await supervisor.shutdown()
+
+
+@pytest.mark.parametrize("overflow", [False, True])
+async def test_wait_run_rechecks_exact_run_across_snapshot_subscribe_gap(
+    tmp_path, monkeypatch, overflow
+):
+    runtime = _runtime(tmp_path, FauxProvider())
+    supervisor = RuntimeSupervisor(runtime)
+    session = SessionRecord(session_id="ses_gap", active_run_id="run_gap", last_run_id="run_gap")
+    runtime.store.create_session(session)
+    run = RunRecord(session_id=session.session_id, run_id="run_gap", status="running")
+    runtime.store.save_run(run)
+    other = LocalSessionStore(tmp_path)
+    original = supervisor.subscribe
+
+    async def cross_boundary(*args, **kwargs):
+        def finish():
+            for _ in range(300 if overflow else 0):
+                other.append_ordered_event(
+                    EventRecord(
+                        session_id=session.session_id,
+                        run_id=run.run_id,
+                        event_type="model_text_delta",
+                        payload={"text": "delta"},
+                    )
+                )
+            other.save_run(run.model_copy(update={"status": "completed"}))
+            other.append_ordered_event(
+                EventRecord(
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    event_type="run_completed",
+                )
+            )
+            later = RunRecord(session_id=session.session_id, status="queued")
+            other.save_run(later)
+            other.save_session(
+                session.model_copy(
+                    update={"active_run_id": later.run_id, "last_run_id": later.run_id}
+                )
+            )
+
+        await asyncio.to_thread(finish)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(supervisor, "subscribe", cross_boundary)
+    try:
+        result = await asyncio.wait_for(supervisor.wait_run(session.session_id, run.run_id), 5)
+        assert result.run_id == run.run_id
+        assert result.status == "completed"
+        assert supervisor._subscriptions == {}
+    finally:
+        await supervisor.shutdown()
