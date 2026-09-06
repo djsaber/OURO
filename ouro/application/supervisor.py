@@ -20,6 +20,7 @@ from ouro.application.runtime_activity import (
     runtime_activity_for_status,
 )
 from ouro.application.session_editing import continuable_run
+from ouro.application.session_event_stream import SessionEventStream
 from ouro.application.supervisor_models import (
     HostInputReceipt,
     RunHandle,
@@ -117,6 +118,10 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
     async def get(self) -> RuntimeNotification:
         return await self.__anext__()
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
     def close(self) -> None:
         if self._closed:
             return
@@ -152,6 +157,15 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
             item = self._queue.get_nowait()
             if isinstance(item, RuntimeNotification):
                 pending.append(item)
+        for item in pending:
+            if (
+                item.diagnostic is not None
+                and item.diagnostic.code != "runtime_subscription_lagged"
+            ):
+                # A failed live reader cannot be repaired by replay merging.
+                # Preserve its cause instead of asking hosts to reload in a loop.
+                self._offer(item)
+                return
         if truncated or any(item.kind == "diagnostic" for item in pending):
             self._offer_lagged()
             return
@@ -217,6 +231,8 @@ class RuntimeSupervisor:
         self._snapshots: dict[str, RuntimeStatusSnapshot] = {}
         self._activities: dict[str, RuntimeActivitySnapshot] = {}
         self._subscriptions: dict[str, set[RuntimeSubscription]] = {}
+        self._event_streams: dict[str, SessionEventStream] = {}
+        self._event_stream_tasks: set[asyncio.Task[None]] = set()
         self._parked_session_locks: dict[str, asyncio.Lock] = {}
         self._latest_job_start = asyncio.Event()
         self._latest_job_start.set()
@@ -540,13 +556,42 @@ class RuntimeSupervisor:
         # replay, the bounded live queue, or both. Neither producer is paused.
         self._subscriptions.setdefault(session_id, set()).add(subscription)
         try:
+            if session_id not in self._event_streams:
+                boundary = await run_blocking(self.store.latest_event_sequence, session_id)
+                if self._closed or subscription.closed:
+                    raise OuroError("runtime supervisor is closed")
+                # Another subscriber may have started the shared stream while
+                # this read yielded. In either case it must exist BEFORE this
+                # subscriber's replay read, so a faster attach cannot skip a
+                # slower attach's snapshot/live boundary.
+                if session_id not in self._event_streams:
+                    stream = SessionEventStream(
+                        self.store,
+                        session_id,
+                        after_sequence=boundary,
+                        publish=self._publish_observed_event,
+                        report=self._report_observation_error,
+                        is_running=lambda: (
+                            session_id in self._jobs_by_session
+                            or (
+                                (current := self._activities.get(session_id)) is not None
+                                and current.status in {"queued", "running"}
+                            )
+                        ),
+                    )
+                    self._event_streams[session_id] = stream
+                    task = asyncio.create_task(
+                        stream.follow(), name=f"ouro-session-events-{session_id}"
+                    )
+                    self._event_stream_tasks.add(task)
+                    task.add_done_callback(self._event_stream_tasks.discard)
 
             def read_replay() -> tuple[
                 RuntimeActivitySnapshot | None, tuple[RuntimeNotification, ...], bool
             ]:
                 self.store.load_session_record(session_id)
                 initial = activity
-                if include_activity and initial is None:
+                if initial is None:
                     initial = self._load_activity(session_id, status_override=status_override)
                 events, truncated = self.store.load_events_after(
                     session_id,
@@ -568,6 +613,8 @@ class RuntimeSupervisor:
                 raise OuroError("runtime supervisor is closed")
             if include_activity:
                 subscription.initial_activity = initial
+            if initial is not None:
+                self._activities.setdefault(session_id, initial)
             subscription._prepend_replay(replay, after_sequence=after_sequence, truncated=truncated)
         except BaseException as exc:
             subscription.close()
@@ -583,6 +630,11 @@ class RuntimeSupervisor:
         subscriptions.discard(subscription)
         if not subscriptions:
             self._subscriptions.pop(subscription.session_id, None)
+            stream = self._event_streams.pop(subscription.session_id, None)
+            if stream is not None:
+                stream.close()
+            if subscription.session_id not in self._jobs_by_session:
+                self._activities.pop(subscription.session_id, None)
 
     def status(self, handle_or_session: RunHandle | str) -> RuntimeStatusSnapshot:
         if isinstance(handle_or_session, RunHandle):
@@ -803,6 +855,7 @@ class RuntimeSupervisor:
         for subscriptions in tuple(self._subscriptions.values()):
             for subscription in tuple(subscriptions):
                 subscription.close()
+        await asyncio.gather(*self._event_stream_tasks)
         self._workers.clear()
         close_results = await asyncio.gather(
             self.runtime.close(),
@@ -953,6 +1006,10 @@ class RuntimeSupervisor:
             )
             job.run_identified.set()
         subscriptions = tuple(self._subscriptions.get(event.session_id, ()))
+        stream = self._event_streams.get(event.session_id)
+        if stream is not None:
+            stream.offer(event)
+            return
         notification = RuntimeNotification(kind="event", event=project_runtime_event(event))
         for subscription in subscriptions:
             subscription._offer(notification)
@@ -973,6 +1030,23 @@ class RuntimeSupervisor:
             for subscription in subscriptions:
                 if subscription.include_activity:
                     subscription._offer(activity_notification)
+
+    def _publish_observed_event(self, event: EventRecord) -> None:
+        notification = RuntimeNotification(kind="event", event=project_runtime_event(event))
+        for subscription in tuple(self._subscriptions.get(event.session_id, ())):
+            subscription._offer(notification)
+        previous = self._activities.get(event.session_id)
+        if previous is not None:
+            self._publish_activity(reduce_runtime_activity(previous, event))
+
+    def _report_observation_error(self, diagnostic: Diagnostic) -> None:
+        assert diagnostic.session_id is not None
+        stream = self._event_streams.pop(diagnostic.session_id, None)
+        if stream is not None:
+            stream.close()
+        notification = RuntimeNotification(kind="diagnostic", diagnostic=diagnostic)
+        for subscription in tuple(self._subscriptions.get(diagnostic.session_id, ())):
+            subscription._offer(notification)
 
     def _load_activity(
         self,

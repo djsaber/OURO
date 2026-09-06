@@ -4058,9 +4058,10 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             description="reopened first child view",
         )
         assert app.query_one(ConversationView).scroll_y == held_child_scroll_y
-        assert rendered_during_cached_switch == [
-            len(app.query_one(ConversationHistory).entries) - 1
-        ]
+        # Live observation already rendered and cached the completed child's
+        # summary, so reopening needs no additional history rendering.
+        assert app.query_one(ConversationHistory).entries[-1].kind == "run"
+        assert rendered_during_cached_switch == []
         rendered_during_cached_switch.clear()
         assert displayed_child_frames
         assert all(
@@ -10763,9 +10764,9 @@ async def test_workspace_command_selects_paths_only_before_session_and_keeps_cle
         composer.load_text("create the session")
         await pilot.press("enter")
         await _wait_until(
-            lambda: app._controller.session_id is not None,
+            lambda: app._projection is not None and app._projection.activity.status == "completed",
             pilot,
-            description="workspace session creation",
+            description="workspace session ready for commands",
         )
         session_id = app._controller.session_id
         assert session_id is not None

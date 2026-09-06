@@ -1699,6 +1699,13 @@ async def test_new_primary_session_cannot_be_claimed_by_concurrent_child_events(
         )
         await controller._receive_event(root_event)
 
+        assert controller.session_id is None
+        assert published == []
+        controller._bind_created_session(
+            application.runtime.store.load_session_record(root.session_id)
+        )
+        await controller._receive_event(root_event)
+
         assert controller.session_id == root.session_id
         assert published == [root_event]
     finally:

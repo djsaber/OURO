@@ -136,7 +136,9 @@ def project_run_presentation(
         for message in messages
         if message.run_id == run.run_id and (response := message.model_response) is not None
     )
-    model = requests[-1].model if requests else run.model or "unknown model"
+    model = run.model_endpoint_id or (
+        requests[-1].model if requests else run.model or "unknown model"
+    )
     duration = (
         max(0.0, (run.ended_at - run.started_at).total_seconds())
         if run.ended_at is not None

@@ -162,6 +162,52 @@ def test_latest_event_sequence_reads_only_ordered_journal_tail(monkeypatch, tmp_
     assert reopened.latest_event_sequence(session.session_id) == 2
 
 
+@pytest.mark.parametrize(
+    "text", ["4,16 @@ patch " * 1000, "中文🙂\u2028\u2029" * 12000], ids=["patch", "unicode"]
+)
+def test_peer_reads_complete_large_event_tail_and_can_append_after_it(tmp_path, text) -> None:
+    writer = LocalSessionStore(tmp_path)
+    writer.initialize()
+    session = SessionRecord(title="Large event tail")
+    writer.create_session(session)
+    first = writer.append_ordered_event(
+        EventRecord(session_id=session.session_id, event_type="run_started")
+    )
+    peer = LocalSessionStore(tmp_path)
+    assert peer.latest_event_sequence(session.session_id) == first.sequence
+    large = writer.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            event_type="model_text_delta",
+            payload={"text": text},
+        )
+    )
+
+    assert len(large.model_dump_json().encode("utf-8")) > 8192
+    assert writer.latest_event_sequence(session.session_id) == large.sequence
+    assert peer.latest_event_sequence(session.session_id) == large.sequence
+    events, truncated = peer.load_events_after(session.session_id, after_sequence=first.sequence)
+    assert events == [large]
+    assert not truncated
+    final = peer.append_ordered_event(
+        EventRecord(session_id=session.session_id, event_type="run_completed")
+    )
+    assert final.sequence == large.sequence + 1
+    assert writer.latest_event_sequence(session.session_id) == final.sequence
+
+
+def test_event_tail_reader_reports_a_truncated_record_instead_of_skipping_it(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Invalid tail")
+    store.create_session(session)
+    store.append_ordered_event(EventRecord(session_id=session.session_id, event_type="run_started"))
+    with (store.sessions_dir / session.session_id / "events.jsonl").open("ab") as journal:
+        journal.write(b'{"sequence":')
+    with pytest.raises(PersistenceError, match="could not read event sequence"):
+        LocalSessionStore(tmp_path).latest_event_sequence(session.session_id)
+
+
 def test_observation_seeks_to_active_run_without_decoding_prior_run_events(
     monkeypatch,
     tmp_path,

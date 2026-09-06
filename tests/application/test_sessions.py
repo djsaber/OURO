@@ -99,6 +99,31 @@ def test_session_run_result_projects_terminal_text_without_exposing_store(tmp_pa
 
 
 @pytest.mark.parametrize("backend", ("files", "sqlite"))
+def test_run_record_reads_exact_identity_without_loading_history(tmp_path, backend, monkeypatch):
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "ouro.db")
+    )
+    store.initialize()
+    sessions = SessionService(store)
+    session = sessions.create(title="Exact Run").session
+    first = RunRecord(session_id=session.session_id, status="completed", model="first")
+    second = RunRecord(session_id=session.session_id, status="running", model="second")
+    store.save_run(first)
+    store.save_run(second)
+
+    def reject_history(*args, **kwargs):
+        raise AssertionError("One Run read must not load Session history")
+
+    for method in ("load_session", "load_runtime_session", "load_runs", "load_events_page"):
+        monkeypatch.setattr(store, method, reject_history)
+    assert sessions.run_record(session.session_id, first.run_id) == first
+    with pytest.raises(PersistenceError, match="Run not found"):
+        sessions.run_record(session.session_id, "run_missing")
+
+
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
 def test_observation_snapshot_has_atomic_high_water_and_only_active_run_events(
     tmp_path,
     backend: str,

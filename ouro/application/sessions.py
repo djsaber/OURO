@@ -153,6 +153,14 @@ class SessionService:
         )
         return RunResult(session=snapshot.session, run=run, final_text=final_text)
 
+    def run_record(self, session_id: str, run_id: str) -> RunRecord:
+        """Read exact durable Run facts without loading message or event history."""
+
+        try:
+            return self._store.load_run(session_id, run_id)
+        except FileNotFoundError as exc:
+            raise PersistenceError(f"Run not found: {run_id} in Session {session_id}") from exc
+
     def run_history(self, session_id: str) -> tuple[RunRecord, ...]:
         """Read lightweight durable Run facts without replaying the event journal."""
 

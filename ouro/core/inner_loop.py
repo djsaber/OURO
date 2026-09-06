@@ -212,9 +212,7 @@ class InnerAgentLoop:
                         run=state.run,
                         model_round=model_round,
                     )
-                    state.run = state.run.model_copy(
-                        update={"model": self.adapter.model.model_id}
-                    )
+                    state.run = state.run.model_copy(update={"model": self.adapter.model.model_id})
                 context = await self._build_context(
                     state,
                     model_round,
@@ -235,6 +233,12 @@ class InnerAgentLoop:
             except Exception as exc:  # noqa: BLE001 - context preparation is a runtime boundary.
                 return await self._fail(state, f"context preparation failed: {exc}")
             round_state.model_started_at = utc_now()
+            state.run = state.run.model_copy(
+                update={
+                    "model": self.adapter.model.model_id,
+                    "model_endpoint_id": self.adapter.model.endpoint_id,
+                }
+            )
             if self.ports.turns.commit_model_request is not None:
                 state.run = await run_blocking(
                     self.ports.turns.commit_model_request,

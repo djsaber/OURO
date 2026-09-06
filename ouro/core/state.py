@@ -233,6 +233,7 @@ class RunRecord(VersionedOuroModel):
     started_at: datetime = Field(default_factory=utc_now)
     ended_at: datetime | None = None
     model: str | None = None
+    model_endpoint_id: str | None = None
     pending_approval_id: str | None = None
     active_tool_batch: ToolCallBatchRecord | None = None
     abort_requested: bool = False

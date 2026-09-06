@@ -26,6 +26,7 @@ from textual.messages import Prune
 from textual.screen import Screen
 from textual.timer import Timer
 from textual.widgets import Static, TextArea
+from textual.worker import Worker
 
 from ouro import __version__
 from ouro.application.agent_models import AgentTreeNode
@@ -1352,7 +1353,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._host_closing:
             return
         subscription = self._observation_subscription
-        if subscription is not None and subscription.session_id == event.session_id:
+        if (
+            subscription is not None
+            and not subscription.closed
+            and subscription.session_id == event.session_id
+        ):
             return
         if not self._queue_runtime_event(event):
             self._signal_runtime_event_buffer_lag(event.session_id)
@@ -1393,12 +1398,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
 
     def _replace_observation(self, subscription: RuntimeSubscription) -> None:
+        if self._host_closing:
+            subscription.close()
+            return
         previous = self._observation_subscription
         if previous is not None and previous is not subscription:
             previous.close()
         self._observation_subscription = subscription
-        self.run_worker(
-            self._consume_observation(subscription),
+
+        async def consume() -> None:
+            await self._consume_observation(subscription)
+
+        _worker: Worker[None] = self.run_worker(
+            consume,
             name=f"observe-{subscription.session_id}",
             group="session-observation",
             exclusive=True,
@@ -1407,7 +1419,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _consume_observation(self, subscription: RuntimeSubscription) -> None:
         try:
             async for notification in subscription:
-                if self._host_closing:
+                if self._host_closing or self._observation_subscription is not subscription:
                     return
                 if notification.kind == "event" and notification.event is not None:
                     if not self._queue_runtime_event(_event_record(notification.event)):
@@ -1531,10 +1543,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._runtime_event_buffer_lagged.discard(message.session_id)
         if message.session_id != self._visible_session_id() or self._host_closing:
             return
-        self.notify(
-            "Live view fell behind; reloading durable session history…",
-            severity="warning",
-        )
+        if message.diagnostic.code == "runtime_subscription_read_failed":
+            self.notify(message.diagnostic.message, severity="error", markup=False)
+            return
+        self.notify("Live view fell behind; reloading durable session history…", severity="warning")
         await self._reload_visible_observation()
 
     def _post_runtime_events_ready(self) -> None:
@@ -1807,6 +1819,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await append_stream("assistant", update.assistant_delta)
             if update.diagnostic:
                 diagnostics.append(update.diagnostic)
+            if event.event_type in {"run_completed", "run_aborted", "run_failed", "run_paused"}:
+                await flush_stream()
+                await flush_tools()
+                await self._append_run_summary(event, model=projection.model)
 
         await flush_stream()
         await flush_tools()
@@ -1854,6 +1870,23 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     after_sequence=projection.last_sequence,
                 )
             )
+
+    async def _append_run_summary(self, event: EventRecord, *, model: str | None) -> None:
+        if event.run_id is None:
+            return
+        try:
+            run = await self._controller.run_record(event.session_id, event.run_id)
+        except OuroError as exc:
+            self.notify(f"Cannot load run summary: {exc}", severity="error", markup=False)
+            return
+        if not self._surface_available() or run.kind != "agent":
+            return
+        # Every Host uses the same durable end time and request endpoint.
+        # Older records can still use this Run's observed request label.
+        presentation = project_run_presentation(run)
+        if run.model_endpoint_id is None and model is not None:
+            presentation = replace(presentation, model=model)
+        await self.query_one(ConversationView).add_run_summary(presentation)
 
     async def on_composer_submitted(self, message: Composer.Submitted) -> None:
         if self._visible_read_only:
@@ -1932,11 +1965,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             conversation = self.query_one(ConversationView)
             await conversation.append_assistant(result.final_text)
             await conversation.finish_assistant()
-        if result.run.kind == "agent":
-            presentation = project_run_presentation(result.run)
-            if self._projection.model is not None:
-                presentation = replace(presentation, model=self._projection.model)
-            await self.query_one(ConversationView).add_run_summary(presentation)
         self._active_title = result.session.title
         self._active_workspace = result.session.workspace or self._system_status.workspace
         self.query_one(BrandHeader).set_context(
@@ -3360,7 +3388,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 loaded,
                 subscription=subscription,
             )
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             if subscription is not None:
                 subscription.close()
             if previous_projection is None:

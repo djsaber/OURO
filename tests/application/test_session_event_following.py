@@ -1,0 +1,385 @@
+from __future__ import annotations
+
+import asyncio
+import threading
+
+import pytest
+
+from ouro.application.runtime import RuntimeService
+from ouro.application.supervisor import RuntimeSupervisor
+from ouro.core.adapter import RuntimeAdapter
+from ouro.core.events import EventRecord
+from ouro.core.provider import ModelMetadata
+from ouro.core.state import SessionRecord
+from ouro.providers import FauxProvider
+from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.tools import ToolRegistry
+
+
+@pytest.fixture(params=["files", "sqlite"])
+def stores(tmp_path, request):
+    def build():
+        store = (
+            LocalSessionStore(tmp_path)
+            if request.param == "files"
+            else SQLiteSessionStore(tmp_path / "sessions.sqlite3")
+        )
+        store.initialize()
+        return store
+
+    return build(), build()
+
+
+def supervisor_for(store):
+    return RuntimeSupervisor(
+        RuntimeService(
+            store=store,
+            tools=ToolRegistry(),
+            adapter=RuntimeAdapter(
+                FauxProvider(), ModelMetadata(model_id="faux", provider_id="faux")
+            ),
+        )
+    )
+
+
+def append(store, session_id, text):
+    return store.append_ordered_event(
+        EventRecord(
+            session_id=session_id,
+            run_id="run_live",
+            event_type="model_text_delta",
+            payload={"text": text},
+        )
+    )
+
+
+async def events(subscription, count):
+    received = []
+    async with asyncio.timeout(2):
+        while len(received) < count:
+            notification = await subscription.get()
+            assert notification.kind != "diagnostic", notification
+            if notification.event is not None:
+                received.append(notification.event)
+    return received
+
+
+async def test_subscription_follows_other_runtime_and_later_events(stores):
+    writer, reader = stores
+    session = SessionRecord(title="Shared session")
+    writer.create_session(session)
+    session_id = session.session_id
+    first = append(writer, session_id, "before")
+    supervisor = supervisor_for(reader)
+    subscription = await supervisor.subscribe(session_id, after_sequence=first.sequence)
+    try:
+        second = append(writer, session_id, "during")
+        third = append(writer, session_id, "after")
+        received = await events(subscription, 2)
+        assert [event.sequence for event in received] == [second.sequence, third.sequence]
+        assert [event.text for event in received] == ["during", "after"]
+        # Observation remains alive when the first producer stops writing.
+        fourth = append(writer, session_id, "later")
+        assert (await events(subscription, 1))[0].sequence == fourth.sequence
+    finally:
+        subscription.close()
+        await supervisor.shutdown()
+
+
+async def test_external_activity_tracks_terminal_state_and_the_next_run(stores):
+    writer, reader = stores
+    session = SessionRecord(title="Repeated runs")
+    writer.create_session(session)
+    supervisor = supervisor_for(reader)
+    subscription = await supervisor.subscribe(session.session_id, include_activity=True)
+    try:
+        for run_id in ("run_first", "run_second"):
+            for event_type, payload, activity in (
+                ("run_started", {}, "preparing_model"),
+                ("model_text_delta", {"text": run_id}, "streaming_text"),
+                ("run_completed", {}, "completed"),
+            ):
+                written = writer.append_ordered_event(
+                    EventRecord(
+                        session_id=session.session_id,
+                        run_id=run_id,
+                        event_type=event_type,
+                        payload=payload,
+                    )
+                )
+                async with asyncio.timeout(2):
+                    while True:
+                        notification = await subscription.get()
+                        assert notification.kind != "diagnostic"
+                        if notification.activity is not None:
+                            assert notification.activity.run_id == run_id
+                            assert notification.activity.sequence == written.sequence
+                            assert notification.activity.activity == activity
+                            break
+    finally:
+        subscription.close()
+        await supervisor.shutdown()
+
+
+async def test_local_push_cannot_skip_a_prior_external_event(stores):
+    writer, reader = stores
+    session = SessionRecord(title="Interleaved writers")
+    writer.create_session(session)
+    supervisor = supervisor_for(reader)
+    subscription = await supervisor.subscribe(session.session_id)
+    try:
+        external = append(writer, session.session_id, "external")
+        local = append(reader, session.session_id, "local")
+        await supervisor._on_event(local)
+        await supervisor._on_event(local)
+        received = await events(subscription, 2)
+        assert [event.sequence for event in received] == [external.sequence, local.sequence]
+    finally:
+        subscription.close()
+        await supervisor.shutdown()
+
+
+async def test_external_append_during_snapshot_handoff_is_not_lost(stores, monkeypatch):
+    writer, reader = stores
+    session = SessionRecord(title="Snapshot handoff")
+    writer.create_session(session)
+    first = append(writer, session.session_id, "snapshot")
+    captured, release = threading.Event(), threading.Event()
+    read = reader.load_events_after
+
+    def capture_replay(*args, **kwargs):
+        page = read(*args, **kwargs)
+        if not captured.is_set():
+            captured.set()
+            assert release.wait(3)
+        return page
+
+    monkeypatch.setattr(reader, "load_events_after", capture_replay)
+    supervisor = supervisor_for(reader)
+    opening = asyncio.create_task(supervisor.subscribe(session.session_id))
+    try:
+        assert await asyncio.to_thread(captured.wait, 3)
+        second = append(writer, session.session_id, "during replay")
+        release.set()
+        subscription = await opening
+        assert [event.sequence for event in await events(subscription, 2)] == [
+            first.sequence,
+            second.sequence,
+        ]
+    finally:
+        release.set()
+        await opening
+        await supervisor.shutdown()
+
+
+async def test_durable_sequence_gaps_do_not_stall_following(stores):
+    writer, reader = stores
+    session = SessionRecord(title="Imported sequence")
+    writer.create_session(session)
+    supervisor = supervisor_for(reader)
+    subscription = await supervisor.subscribe(session.session_id)
+    try:
+        writer.append_event(
+            EventRecord(
+                session_id=session.session_id,
+                event_type="model_text_delta",
+                sequence=10,
+                payload={"text": "imported"},
+            )
+        )
+        next_event = append(writer, session.session_id, "next")
+        assert [event.sequence for event in await events(subscription, 2)] == [
+            10,
+            next_event.sequence,
+        ]
+    finally:
+        subscription.close()
+        await supervisor.shutdown()
+
+
+async def test_concurrent_attach_cannot_advance_past_a_slower_subscribers_replay(
+    stores, monkeypatch
+):
+    writer, reader = stores
+    session = SessionRecord(title="Concurrent attachment")
+    writer.create_session(session)
+    first_event = append(writer, session.session_id, "before")
+    captured, release = threading.Event(), threading.Event()
+    read = reader.load_events_after
+
+    def delayed_first_replay(*args, **kwargs):
+        page = read(*args, **kwargs)
+        if kwargs["limit"] == 100 and not captured.is_set():
+            captured.set()
+            assert release.wait(3)
+        return page
+
+    monkeypatch.setattr(reader, "load_events_after", delayed_first_replay)
+    supervisor = supervisor_for(reader)
+    opening = asyncio.create_task(supervisor.subscribe(session.session_id, max_buffer=100))
+    try:
+        assert await asyncio.to_thread(captured.wait, 3)
+        second_event = append(writer, session.session_id, "between observers")
+        second = await supervisor.subscribe(session.session_id)
+        release.set()
+        first = await opening
+        for subscription in (first, second):
+            assert [event.sequence for event in await events(subscription, 2)] == [
+                first_event.sequence,
+                second_event.sequence,
+            ]
+    finally:
+        release.set()
+        await opening
+        await supervisor.shutdown()
+
+
+async def test_observers_share_bounded_off_loop_reads_and_release_them_on_detach(
+    stores, monkeypatch
+):
+    writer, reader = stores
+    session = SessionRecord(title="Shared follower")
+    writer.create_session(session)
+    calls = []
+    read = reader.load_events_after
+    loop_thread = threading.get_ident()
+
+    def tracked_read(*args, **kwargs):
+        calls.append((threading.get_ident(), kwargs["limit"]))
+        return read(*args, **kwargs)
+
+    def reject_full_history(*args, **kwargs):
+        raise AssertionError("Live observation must only read incremental pages")
+
+    monkeypatch.setattr(reader, "load_events_after", tracked_read)
+    monkeypatch.setattr(reader, "load_session", reject_full_history)
+    supervisor = supervisor_for(reader)
+    first = await supervisor.subscribe(session.session_id, max_buffer=1000)
+    second = await supervisor.subscribe(session.session_id, max_buffer=1000)
+    try:
+        assert len(supervisor._event_stream_tasks) == 1
+
+        def write_page():
+            return [append(writer, session.session_id, str(index)).sequence for index in range(300)]
+
+        sequences = await asyncio.to_thread(write_page)
+        assert [event.sequence for event in await events(first, 300)] == sequences
+        assert [event.sequence for event in await events(second, 300)] == sequences
+        first.close()
+        last = append(writer, session.session_id, "still observed")
+        assert (await events(second, 1))[0].sequence == last.sequence
+        assert all(thread_id != loop_thread and limit <= 1000 for thread_id, limit in calls)
+        assert any(limit == 256 for _, limit in calls)
+        second.close()
+        await asyncio.gather(*supervisor._event_stream_tasks)
+        count = len(calls)
+        append(writer, session.session_id, "unobserved")
+        await asyncio.sleep(0.2)
+        assert len(calls) == count
+        assert not supervisor._event_streams
+    finally:
+        first.close()
+        second.close()
+        await supervisor.shutdown()
+    assert not supervisor._event_stream_tasks
+
+
+async def test_local_events_still_arrive_immediately_without_per_event_reads(stores, monkeypatch):
+    writer, reader = stores
+    session = SessionRecord(title="Local fast path")
+    writer.create_session(session)
+    supervisor = supervisor_for(reader)
+    subscription = await supervisor.subscribe(session.session_id)
+    try:
+
+        def reject_read(*args, **kwargs):
+            raise AssertionError("Local contiguous pushes must not wait for disk reads")
+
+        # Do not yield to the follower: immediate delivery must work by itself.
+        monkeypatch.setattr(reader, "load_events_after", reject_read)
+        local = append(reader, session.session_id, "immediate")
+        await supervisor._on_event(local)
+        await supervisor._on_event(local)
+        notification = subscription._queue.get_nowait()
+        assert notification.event.sequence == local.sequence
+        assert subscription._queue.empty()
+    finally:
+        subscription.close()
+        await supervisor.shutdown()
+
+
+async def test_follower_storage_failure_is_reported_and_stops_reading(stores, monkeypatch):
+    writer, reader = stores
+    session = SessionRecord(title="Read failure")
+    writer.create_session(session)
+    supervisor = supervisor_for(reader)
+    subscription = await supervisor.subscribe(session.session_id)
+    calls = []
+
+    def fail_read(*args, **kwargs):
+        calls.append(True)
+        raise OSError("private storage details")
+
+    monkeypatch.setattr(reader, "load_events_after", fail_read)
+    try:
+        async with asyncio.timeout(2):
+            notification = await subscription.get()
+        assert notification.diagnostic.code == "runtime_subscription_read_failed"
+        assert notification.diagnostic.session_id == session.session_id
+        assert "OSError" in notification.diagnostic.message
+        assert "private storage details" not in notification.model_dump_json()
+        await asyncio.gather(*supervisor._event_stream_tasks)
+        assert calls == [True]
+    finally:
+        subscription.close()
+        await supervisor.shutdown()
+
+
+async def test_follow_failure_during_attach_is_not_relabelled_as_buffer_lag(stores, monkeypatch):
+    writer, reader = stores
+    session = SessionRecord(title="Failed live handoff")
+    writer.create_session(session)
+    read = reader.load_events_after
+
+    def fail_follower(*args, **kwargs):
+        if kwargs["limit"] == 256:
+            raise OSError("Read unavailable")
+        return read(*args, **kwargs)
+
+    monkeypatch.setattr(reader, "load_events_after", fail_follower)
+    supervisor = supervisor_for(reader)
+    subscription = await supervisor.subscribe(session.session_id, max_buffer=100)
+    try:
+        async with asyncio.timeout(2):
+            notification = await subscription.get()
+        assert notification.diagnostic.code == "runtime_subscription_read_failed"
+    finally:
+        subscription.close()
+        await supervisor.shutdown()
+
+
+async def test_reattach_restarts_failed_following_with_another_observer_still_open(
+    stores, monkeypatch
+):
+    writer, reader = stores
+    session = SessionRecord(title="Retry shared observation")
+    writer.create_session(session)
+    supervisor = supervisor_for(reader)
+    read = reader.load_events_after
+    existing = await supervisor.subscribe(session.session_id)
+
+    def fail_read(*args, **kwargs):
+        raise OSError("Unavailable")
+
+    try:
+        monkeypatch.setattr(reader, "load_events_after", fail_read)
+        async with asyncio.timeout(2):
+            notification = await existing.get()
+        assert notification.diagnostic.code == "runtime_subscription_read_failed"
+        monkeypatch.setattr(reader, "load_events_after", read)
+        retried = await supervisor.subscribe(session.session_id)
+        written = append(writer, session.session_id, "recovered")
+        assert (await events(retried, 1))[0].sequence == written.sequence
+        assert (await events(existing, 1))[0].sequence == written.sequence
+    finally:
+        await supervisor.shutdown()

@@ -1257,6 +1257,7 @@ class RuntimeService:
         ) = None,
         _prepared_run: RunRecord | None = None,
         _on_provider_stream_start: Callable[[], None] | None = None,
+        on_session_created: Callable[[SessionRecord], None] | None = None,
     ) -> RunResult:
         if approval_mode is not None and approval_mode not in SESSION_APPROVAL_MODES:
             raise ValueError(f"invalid session approval mode: {approval_mode}")
@@ -1381,6 +1382,8 @@ class RuntimeService:
                     workspace=workspace,
                 )
             snapshot = RuntimeSessionSnapshot(session=session)
+            if on_session_created is not None:
+                on_session_created(session)
         else:
             session_locked = await run_blocking(
                 self.run_ownership.is_locked,
@@ -3945,7 +3948,13 @@ class RuntimeService:
             latest = self.store.load_run(run.session_id, run.run_id)
             if latest.abort_requested or latest.status not in ACTIVE_RUN_STATUSES:
                 return latest
-            updated = latest.model_copy(update={"model_round_count": latest.model_round_count + 1})
+            updated = latest.model_copy(
+                update={
+                    "model_round_count": latest.model_round_count + 1,
+                    "model": run.model,
+                    "model_endpoint_id": run.model_endpoint_id,
+                }
+            )
             self.store.save_run(updated)
             return updated
 

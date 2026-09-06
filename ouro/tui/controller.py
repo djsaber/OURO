@@ -85,7 +85,7 @@ from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import ReasoningRequest, resolve_reasoning
 from ouro.core.results import RunResult
-from ouro.core.state import RunRecord
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode, ToolEffect, ToolSource
 from ouro.deployment import SessionBackend, TaskBackend
@@ -621,6 +621,7 @@ class TuiController:
                 approval_mode=self._approval_mode if is_new_session else None,
                 interaction_mode=self._interaction_mode if is_new_session else None,
                 workspace=self._draft_workspace if is_new_session else None,
+                on_session_created=self._bind_created_session,
             )
             self._session_id = result.session.session_id
             self._initial_model = None
@@ -629,6 +630,9 @@ class TuiController:
         finally:
             if is_new_session:
                 self._creating_session = False
+
+    def _bind_created_session(self, session: SessionRecord) -> None:
+        self._session_id = session.session_id
 
     def skill_invocation_options(self) -> tuple[TuiSkillInvocationOption, ...]:
         """Project currently invocable Runtime skills for the inline command menu."""
@@ -1004,6 +1008,9 @@ class TuiController:
     async def message(self, session_id: str, message_id: str) -> MessageRecord:
         runtime = self._runtime()
         return await asyncio.to_thread(runtime.sessions.message, session_id, message_id)
+
+    async def run_record(self, session_id: str, run_id: str) -> RunRecord:
+        return await asyncio.to_thread(self._runtime().sessions.run_record, session_id, run_id)
 
     async def models(self) -> tuple[AvailableModel, ...]:
         runtime = self._runtime()
@@ -2261,14 +2268,6 @@ class TuiController:
     async def _receive_event(self, event: EventRecord) -> None:
         """Cross one persisted Runtime event into Textual's message pump."""
 
-        if self._creating_session and self._session_id is None:
-            root_session_id = await asyncio.to_thread(
-                self._event_root_session_id,
-                event.session_id,
-            )
-            if root_session_id != event.session_id:
-                return
-            self._session_id = event.session_id
         controlled_session_id = self._session_id
         if controlled_session_id is None:
             return

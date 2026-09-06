@@ -243,6 +243,7 @@ async def test_active_session_model_switch_applies_to_the_next_model_request(tmp
     assert [event.payload["model"] for event in requests] == ["alpha-model", "beta-model"]
     assert result.final_text == "beta-response"
     assert result.run.model == "beta-model"
+    assert result.run.model_endpoint_id == "fast"
 
 
 @pytest.mark.asyncio

@@ -1494,7 +1494,10 @@ class LocalSessionStore:
             self._event_sequence_cache[session_id] = (0, 0)
             return 0
         try:
-            line = _read_last_nonempty_line(path)
+            # A trailing LF only ends a record; its beginning may be many
+            # blocks earlier. Reuse the complete-record reader used by messages.
+            with closing(reverse_jsonl(path, block_size=8192)) as records:
+                _, line = next(records, (0, b""))
             raw = json.loads(line)
             if not isinstance(raw, dict):
                 raise ValueError("event record must be a JSON object")
@@ -1657,23 +1660,3 @@ class _HistoryMutation(SessionMutationLock):
             self.release()
             raise
         return self
-
-
-def _read_last_nonempty_line(path: Path, *, chunk_size: int = 8192) -> str:
-    """Read the ordered journal tail without materializing the complete file."""
-
-    with path.open("rb") as file:
-        position = file.seek(0, os.SEEK_END)
-        buffer = b""
-        while position > 0:
-            read_size = min(chunk_size, position)
-            position -= read_size
-            file.seek(position)
-            buffer = file.read(read_size) + buffer
-            lines = buffer.split(b"\n")
-            if position > 0 and len(lines) <= 1:
-                continue
-            for raw in reversed(lines):
-                if raw.strip():
-                    return raw.decode("utf-8")
-        return ""
