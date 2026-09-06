@@ -35,8 +35,8 @@ from ouro.tui.controller import (
     project_mcp_system_status,
 )
 from ouro.tui.menu_labels import PERMISSION_LABELS
-from ouro.tui.plugin_workflows import PluginManagementWorkflows
 from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
+from ouro.tui.task_workflows import TaskManagementWorkflows
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 from ouro.tui.widgets import ConversationView
 
@@ -51,6 +51,10 @@ class SystemSettingAction:
 
 
 SYSTEM_SETTING_ACTIONS = (
+    SystemSettingAction("tasks.list", "Task list", "Task"),
+    SystemSettingAction("tasks.create", "Create task", "Task"),
+    SystemSettingAction("tasks.delete", "Delete task", "Task"),
+    SystemSettingAction("tasks.refresh", "Update status", "Task"),
     SystemSettingAction("queued_inputs.delivery", "Queued messages", "Settings"),
     SystemSettingAction("compaction.policy", "Context compaction", "Settings"),
     SystemSettingAction("providers.list", "Manage providers", "Providers"),
@@ -115,7 +119,7 @@ _TOOL_SOURCE_GROUPS = {
 _TOOL_SOURCE_ORDER = {source: index for index, source in enumerate(_TOOL_SOURCE_GROUPS)}
 
 
-class ConfigurationWorkflowsApp(PluginManagementWorkflows):
+class ConfigurationWorkflowsApp(TaskManagementWorkflows):
     """Own the keyboard-first TUI workflows for durable configuration."""
 
     _controller: TuiController
@@ -128,7 +132,20 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         *,
         menu: ChoiceScreen | None = None,
     ) -> None:
-        if action_id == "tools.permissions":
+        if action_id == "tasks.list":
+            await self._choose_tasks(menu=menu)
+        elif action_id == "tasks.create":
+            await self._edit_task(None, menu=menu)
+        elif action_id == "tasks.delete":
+            await self._choose_tasks(menu=menu, delete=True)
+        elif action_id == "tasks.refresh":
+            await self._sync_task_status()
+            self.notify(
+                self._system_status.task_error or "Task status updated",
+                severity="error" if self._system_status.task_error else "information",
+                markup=False,
+            )
+        elif action_id == "tools.permissions":
             self._choose_tools(menu=menu)
         elif action_id == "tools.execution":
             await self._configure_tool_execution(menu=menu)

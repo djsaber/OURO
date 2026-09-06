@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ouro.tui.menu_labels import APPROVAL_DESCRIPTIONS, MODEL_THINKING_LABEL, TOOL_APPROVAL_LABEL
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
 
 
@@ -127,23 +128,17 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
     ),
     TuiCommand(
         "/approval",
-        "Tool approval",
+        TOOL_APPROVAL_LABEL,
         "Choose when tools need your approval",
         "[inherit|auto|approval|deny|afk]",
         argument_options=tuple(
             TuiCommandArgument(value, description)
-            for value, description in (
-                ("inherit", "Use the default approval setting"),
-                ("auto", "Run tools without approval prompts"),
-                ("approval", "Ask before tools that need permission"),
-                ("deny", "Block tools that need permission"),
-                ("afk", "Apply the away-mode approval settings"),
-            )
+            for value, description in APPROVAL_DESCRIPTIONS.items()
         ),
     ),
     TuiCommand(
         "/thinking",
-        "Model thinking",
+        MODEL_THINKING_LABEL,
         "Choose how much the model thinks",
         "[setting]",
         aliases=("/reasoning",),

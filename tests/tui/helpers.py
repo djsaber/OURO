@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from ouro.application.models import AvailableModel, close_runtime_adapters
@@ -14,6 +15,23 @@ from ouro.local_application import LocalApplication
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
+
+
+@asynccontextmanager
+async def run_ready_app(app, **options):
+    """Start a test Host before interacting with its surface.
+
+    Textual's mount/idle boundary does not await application startup I/O. Only
+    wait for that worker; live session observers deliberately remain running.
+    Tests of startup itself should continue to use App.run_test directly.
+    """
+
+    async with app.run_test(**options) as pilot:
+        for worker in tuple(app.workers):
+            if worker.name == "tui-start":
+                await worker.wait()
+        await pilot.pause()
+        yield pilot
 
 
 class StaticRouteCatalog:

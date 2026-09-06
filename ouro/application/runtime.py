@@ -47,6 +47,7 @@ from ouro.application.runs import (
     find_run,
     maybe_active_run,
     request_run_abort_state,
+    reserve_run,
 )
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_controls import SessionControlCoordinator
@@ -943,6 +944,7 @@ class RuntimeService:
         *,
         title: str,
         _session_id: str | None = None,
+        namespace: str = "default",
         initial_model: str | None = None,
         reasoning_request: ReasoningRequest | None = None,
         approval_mode: SessionApprovalMode = "inherit",
@@ -964,6 +966,7 @@ class RuntimeService:
         self._model_reasoning_state(selected_model, selected_reasoning)
         created = self.sessions.create(
             session_id=_session_id,
+            namespace=namespace,
             title=title,
             current_model=selected_model.key,
             reasoning_request=selected_reasoning,
@@ -976,6 +979,53 @@ class RuntimeService:
             ),
         )
         return self.store.load_session_record(created.session.session_id)
+
+    def prepare_run(
+        self,
+        run: RunRecord,
+        *,
+        model: str,
+        reasoning: ReasoningRequest,
+        workspace: str,
+        approval_mode: SessionApprovalMode,
+        interaction_mode: SessionInteractionMode,
+        title: str | None = None,
+    ) -> RunRecord:
+        """Atomically bind execution settings and reserve a queued application input."""
+
+        selected = self.resolve_model(model)
+        self._model_reasoning_state(selected, reasoning)
+        if approval_mode not in SESSION_APPROVAL_MODES:
+            raise ValueError(f"Invalid approval mode: {approval_mode}")
+        if interaction_mode not in SESSION_INTERACTION_MODES:
+            raise ValueError(f"Invalid interaction mode: {interaction_mode}")
+        if title is not None and (not title.strip() or len(title) > 160):
+            raise ValueError("Title must contain 1–160 characters")
+
+        def configure(session: SessionRecord) -> SessionRecord:
+            resolved_workspace = str(Path(workspace).expanduser().resolve())
+            return session.model_copy(
+                update={
+                    "current_model": selected.key,
+                    "reasoning_request": reasoning,
+                    "workspace": resolved_workspace,
+                    "workspace_trusted": session.workspace_trusted
+                    and session.workspace == resolved_workspace,
+                    "approval_mode": approval_mode,
+                    "interaction_mode": interaction_mode,
+                    **(
+                        {"title": title.strip(), "title_source": "user", "title_locked": True}
+                        if title is not None
+                        else {}
+                    ),
+                }
+            )
+
+        return reserve_run(
+            self.store,
+            run.model_copy(update={"model": selected.key}),
+            configure_session=configure,
+        )
 
     def switch_session_model(
         self,

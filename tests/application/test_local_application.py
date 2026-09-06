@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
+from ouro.automation.local_files import LocalTaskRepository
+from ouro.automation.models import TaskConfiguration, TaskSchedule
+from ouro.automation.sqlite import SQLiteTaskRepository
 from ouro.core.errors import ConfigError
 from ouro.core.state import SessionRecord
-from ouro.deployment import resolve_session_backend
+from ouro.deployment import resolve_session_backend, resolve_task_backend
 from ouro.local_application import (
     LocalApplication,
     build_local_services,
@@ -12,6 +18,60 @@ from ouro.local_application import (
 )
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.local_index import LocalSessionIndex
+
+
+@pytest.mark.parametrize("task_backend", ["files", "sqlite"])
+@pytest.mark.parametrize("session_backend", ["files", "sqlite"])
+async def test_task_sessions_use_the_composed_session_backend(
+    tmp_path, task_backend, session_backend
+):
+    application = LocalApplication.build(
+        tmp_path, task_backend=task_backend, session_backend=session_backend
+    )
+    async with application:
+        tasks = application.tasks
+        assert tasks is not None
+        assert type(tasks.repository) is (
+            LocalTaskRepository if task_backend == "files" else SQLiteTaskRepository
+        )
+        assert tasks.runtime is application.runtime
+        now = datetime.now(UTC)
+        task = await tasks.create(
+            TaskConfiguration(
+                description="Run this scheduled instruction",
+                workspace=str(tmp_path),
+                model=application.runtime.current_model().key,
+                schedule=TaskSchedule(
+                    frequency="custom", unit="minutes", starts_at=now + timedelta(milliseconds=100)
+                ),
+            )
+        )
+        async with asyncio.timeout(10):
+            while (await tasks.counts()).completed_executions != 1:
+                await asyncio.sleep(0.01)
+        task = await tasks.get(task.task_id)
+        session = application.runtime.store.load_session(task.session_id)
+        assert session.session.namespace == "task"
+        assert session.session.session_id == task.session_id
+        assert session.runs[0].status == "completed"
+        assert (tmp_path / "sessions.sqlite3").exists() == (session_backend == "sqlite")
+        if session_backend == "files":
+            assert (tmp_path / "sessions" / task.session_id / "session.json").is_file()
+        assert (tmp_path / "tasks.sqlite3").exists() == (task_backend == "sqlite")
+        assert (tmp_path / "tasks" / "layout.json").exists() == (task_backend == "files")
+
+
+def test_task_backend_defaults_and_override_are_independent(monkeypatch):
+    monkeypatch.delenv("OURO_TASK_BACKEND", raising=False)
+    monkeypatch.setenv("OURO_SESSION_BACKEND", "sqlite")
+    assert resolve_task_backend() == "files"
+    monkeypatch.setenv("OURO_TASK_BACKEND", "sqlite")
+    assert resolve_task_backend() == "sqlite"
+    assert resolve_task_backend("files") == "files"
+    assert resolve_session_backend() == "sqlite"
+    monkeypatch.setenv("OURO_TASK_BACKEND", "remote")
+    with pytest.raises(ConfigError, match="OURO_TASK_BACKEND"):
+        resolve_task_backend()
 
 
 async def test_local_application_composes_and_closes_sqlite_runtime(tmp_path) -> None:

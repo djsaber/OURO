@@ -146,6 +146,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             home=args.home,
             system_prompt=args.system_prompt,
             session_backend=args.session_backend,
+            task_backend=args.task_backend,
             approval_mode="auto" if args.interactive_afk else args.interactive_approval_mode,
             interaction_mode="unattended" if args.interactive_afk else "interactive",
             resume_session_id=args.resume_session_id,
@@ -160,6 +161,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 approval_mode="auto" if afk else approval_mode,
                 interaction_mode="unattended" if afk else "interactive",
                 session_backend=args.interactive_session_backend or args.session_backend,
+                task_backend=args.interactive_task_backend or args.task_backend,
             )
         )
     if args.command == "run":
@@ -208,6 +210,7 @@ def _run_command(args: argparse.Namespace) -> int:
             interaction_mode="unattended" if args.afk else None,
             resource_refs=args.resource_ids,
             session_backend=_selected_session_backend(args, scoped="run_session_backend"),
+            task_backend=args.run_task_backend or args.task_backend,
         )
     )
 

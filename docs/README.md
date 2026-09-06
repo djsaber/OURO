@@ -28,13 +28,16 @@
 ## 规范与规划
 
 - [现行/未来规格](../dev/specs/README.md)：Core、Session、Provider、Tool/HITL、Context、Skills、MCP、
-  Plugin、Resource/Supervisor、Subagent、CLI、TUI 与性能。
+  Plugin、Resource/Supervisor、自动任务、Subagent、CLI、TUI 与性能。
+- [自动任务规格](../dev/specs/OURO_自动任务规格_2026-09-06.md)：配置、计划、状态机、统计、会话运行与 TUI 验收契约。
 - [当前规划](../dev/plans/README.md)：Desktop Host、高级智能体能力和性能治理。
 
 规格保留领域模型、状态机、不变量、失败/恢复语义、权限边界、数据布局和验收条件；规划完成后，最终行为迁入
 规格，已完成 checklist 不长期保留。
 
 ## 设计
+
+- [自动任务](OURO_自动任务_2026-09-06.md)：执行计划、应用分层、统一运行链路、恢复语义及 TUI 管理。
 
 | 设计 | 范围 |
 |---|---|

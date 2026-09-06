@@ -29,6 +29,7 @@ from ouro.application.agent_tree import (
 )
 from ouro.application.dto import Diagnostic
 from ouro.application.events import ApplicationEventPublisher
+from ouro.application.runs import reserve_run
 from ouro.application.session_recovery import SessionRecoveryService
 from ouro.application.supervisor_models import (
     HostInputReceipt,
@@ -782,6 +783,7 @@ class AgentService:
             child = SessionRecord(
                 session_id=relation.child_session_id,
                 session_kind="subagent",
+                namespace=parent_session.namespace,
                 root_session_id=relation.root_session_id,
                 parent_session_id=relation.parent_session_id,
                 delegation_id=relation.delegation_id,
@@ -844,16 +846,7 @@ class AgentService:
                     "run_budget": relation.budget.model_dump(mode="json"),
                 },
             )
-            with self.store.session_mutation(child.session_id):
-                latest_child = self.store.load_session_record(child.session_id)
-                transition = plan_run_transition(
-                    latest_child,
-                    current_run=None,
-                    next_run=run,
-                )
-                self.store.save_run(transition.run)
-                self.store.save_session(transition.session)
-                run = transition.run
+            run = reserve_run(self.store, run)
         if not self.recovery.relation_is_consistent(relation):
             raise PersistenceError(
                 f"reserved child Run does not match Delegation {relation.delegation_id}"

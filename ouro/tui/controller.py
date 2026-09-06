@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, cast, get_args
 
@@ -64,7 +64,10 @@ from ouro.application.session_models import (
 )
 from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.supervisor import RuntimeSubscription
+from ouro.application.supervisor_models import RunHandle
+from ouro.application.tasks import TaskService
 from ouro.application.usage_models import UsageSummary, UsageTotals
+from ouro.automation.models import TaskConfiguration, TaskCounts, TaskExecution, TaskRecord
 from ouro.config import EndpointReasoningConfig, ProviderType, QueuedInputConsumptionMode
 from ouro.core.agents import ExecutionMode, ToolSelection
 from ouro.core.approvals import (
@@ -85,7 +88,7 @@ from ouro.core.results import RunResult
 from ouro.core.state import RunRecord
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode, ToolEffect, ToolSource
-from ouro.deployment import SessionBackend
+from ouro.deployment import SessionBackend, TaskBackend
 from ouro.local_application import LocalApplication
 from ouro.mcp import MCPServerConfig
 from ouro.skills import SkillMetadata
@@ -152,6 +155,8 @@ class TuiSystemStatus:
     usage_estimated_cost: float = 0.0
     usage_priced_request_count: int = 0
     usage_daily: tuple[TuiDailyUsage, ...] = ()
+    task_counts: TaskCounts = field(default_factory=TaskCounts)
+    task_error: str | None = None
 
 
 def project_usage_system_status(
@@ -462,6 +467,7 @@ class TuiController:
         home: str | Path | None = None,
         system_prompt: str | None = None,
         session_backend: SessionBackend | None = None,
+        task_backend: TaskBackend | None = None,
         approval_mode: SessionApprovalMode = "inherit",
         interaction_mode: SessionInteractionMode = "interactive",
         application: LocalApplication | None = None,
@@ -473,6 +479,7 @@ class TuiController:
         self._home = home
         self._system_prompt = system_prompt
         self._session_backend = session_backend
+        self._task_backend = task_backend
         self._default_approval_mode = approval_mode
         self._default_interaction_mode = interaction_mode
         self._approval_mode = approval_mode
@@ -509,6 +516,7 @@ class TuiController:
                 self._home,
                 system_prompt=self._system_prompt,
                 session_backend=self._session_backend,
+                task_backend=self._task_backend,
             )
         startup_configs = self._application.mcp.startup_configs
         if startup_configs:
@@ -539,14 +547,18 @@ class TuiController:
             sessions=(),
             startup_report=self._application.startup_report,
             mcp_servers=mcp_servers,
-            system_status=self._project_system_status(models, usage, mcp_servers),
+            system_status=await self._with_task_status(
+                self._project_system_status(models, usage, mcp_servers),
+            ),
         )
 
     async def system_status(self) -> TuiSystemStatus:
         """Project current process-owned resources for a newly opened Host view."""
 
         models, usage = await asyncio.gather(self.models(), self.usage_summary())
-        return self._project_system_status(models, usage, self.mcp_servers())
+        return await self._with_task_status(
+            self._project_system_status(models, usage, self.mcp_servers()),
+        )
 
     def _project_system_status(
         self,
@@ -645,7 +657,15 @@ class TuiController:
     async def abort(self) -> RunResult | None:
         if self._session_id is None:
             return None
-        return await self._runtime().abort_run(session_id=self._session_id)
+        assert self._application is not None
+        snapshot = await self._application.supervisor.abort(self._session_id)
+        if snapshot.run_id is None:
+            return None
+        return await asyncio.to_thread(
+            self._runtime().sessions.run_result,
+            snapshot.session_id,
+            snapshot.run_id,
+        )
 
     async def resolve_approval(
         self,
@@ -670,13 +690,15 @@ class TuiController:
                 reason=reason,
             )
             return None
-        return await self._runtime().approve_tool(
+        assert self._application is not None
+        handle = await self._application.supervisor.resolve_tool_approval(
             session_id=self._require_session(),
             run_id=interaction.run_id,
             approval_id=interaction.request_id,
             approved=approved,
             reason=reason,
         )
+        return await self._supervised_result(handle)
 
     async def answer(
         self,
@@ -697,11 +719,28 @@ class TuiController:
                 answer=answer,
             )
             return None
-        return await self._runtime().answer_user(
+        assert self._application is not None
+        handle = await self._application.supervisor.resolve_tool_input(
             session_id=self._require_session(),
             run_id=interaction.run_id,
             answer=answer,
         )
+        return await self._supervised_result(handle)
+
+    async def _supervised_result(self, handle: RunHandle) -> RunResult:
+        assert self._application is not None
+        supervisor = self._application.supervisor
+        snapshot = await supervisor.wait(handle)
+        try:
+            if snapshot.run_id is None:
+                raise PersistenceError("Supervised interaction failed before a Run was identified")
+            return await asyncio.to_thread(
+                self._runtime().sessions.run_result,
+                snapshot.session_id,
+                snapshot.run_id,
+            )
+        finally:
+            supervisor.release_handle(handle)
 
     async def agent_interactions(self) -> tuple[AgentInteractionView, ...]:
         session_id = self._session_id
@@ -797,6 +836,66 @@ class TuiController:
                 if entry.session_kind != "subagent"
             )
         )
+
+    def _tasks(self) -> TaskService:
+        if self._application is None or self._application.tasks is None:
+            raise RuntimeError("Task management is unavailable")
+        return self._application.tasks
+
+    async def tasks(self, *, offset: int = 0) -> tuple[TaskRecord, ...]:
+        return await self._tasks().list(limit=100, offset=offset)
+
+    async def task_counts(self) -> TaskCounts:
+        if self._application is None or self._application.tasks is None:
+            return TaskCounts()
+        return await self._application.tasks.counts()
+
+    async def task_status(self) -> tuple[TaskCounts, str | None]:
+        try:
+            counts = await self.task_counts()
+        except (PersistenceError, ValueError) as exc:
+            return TaskCounts(), str(exc)
+        scheduler = self._application.task_scheduler if self._application else None
+        error = scheduler.diagnostics[0].message if scheduler and scheduler.diagnostics else None
+        return counts, error
+
+    async def _with_task_status(self, status: TuiSystemStatus) -> TuiSystemStatus:
+        counts, error = await self.task_status()
+        return replace(status, task_counts=counts, task_error=error)
+
+    async def task(self, task_id: str) -> TaskRecord:
+        return await self._tasks().get(task_id)
+
+    async def save_task(
+        self,
+        configuration: TaskConfiguration,
+        *,
+        existing: TaskRecord | None = None,
+    ) -> TaskRecord:
+        if existing is None:
+            return await self._tasks().create(configuration)
+        return await self._tasks().update(
+            existing.task_id, configuration, expected_revision=existing.revision
+        )
+
+    async def set_task_enabled(self, task: TaskRecord, enabled: bool) -> TaskRecord:
+        return await self._tasks().set_enabled(
+            task.task_id, enabled, expected_revision=task.revision
+        )
+
+    async def delete_task(self, task: TaskRecord) -> None:
+        await self._tasks().delete(task.task_id, expected_revision=task.revision)
+
+    async def task_executions(self, task_id: str) -> tuple[TaskExecution, ...]:
+        return await self._tasks().executions(task_id)
+
+    async def interrupt_task(self, task: TaskRecord) -> None:
+        if task.active_execution_id is None:
+            return
+        if task.session_id is None or self._application is None:
+            raise RuntimeError("Task has no execution session")
+        await self._application.supervisor.abort(task.session_id, reason="Task interrupted by user")
+        self._tasks().changed.set()
 
     async def set_session_archived(self, session_id: str, *, archived: bool) -> None:
         sessions = self._runtime().sessions
@@ -909,6 +1008,10 @@ class TuiController:
     async def models(self) -> tuple[AvailableModel, ...]:
         runtime = self._runtime()
         return await asyncio.to_thread(lambda: tuple(runtime.available_models()))
+
+    async def default_model(self) -> AvailableModel:
+        """Resolve the deployment default independently of the open Session or draft."""
+        return await asyncio.to_thread(self._runtime().current_model)
 
     async def provider_catalog(self) -> ProviderCatalogView:
         configuration = self._require_configuration()

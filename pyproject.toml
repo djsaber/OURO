@@ -15,6 +15,8 @@ dependencies = [
     "pyyaml>=6.0.2",
     "rich>=15,<16",
     "textual>=8.2,<9",
+    "tzdata>=2025.2",
+    "tzlocal>=5.4.4",
     "wcmatch>=11.0",
 ]
 

@@ -99,7 +99,7 @@ def project_runtime_activity(
     for event in sorted(snapshot.events, key=lambda item: (item.sequence, item.event_id)):
         if event.run_id == run.run_id:
             activity = reduce_runtime_activity(activity, event)
-    activity = _overlay_run(activity, run)
+    activity = overlay_run_activity(activity, run)
     if status_override is not None and status_override != activity.status:
         activity = activity.model_copy(
             update={
@@ -144,7 +144,7 @@ def project_runtime_activity_state(
         sequence=sequence,
         updated_at=run.ended_at or run.started_at,
     )
-    activity = _overlay_run(activity, run)
+    activity = overlay_run_activity(activity, run)
     if status_override is not None and status_override != activity.status:
         activity = activity.model_copy(
             update={
@@ -438,10 +438,25 @@ def _selected_run(snapshot: SessionSnapshot, *, run_id: str | None) -> RunRecord
     return snapshot.runs[-1] if snapshot.runs else None
 
 
-def _overlay_run(
+def overlay_run_activity(
     current: RuntimeActivitySnapshot,
     run: RunRecord,
 ) -> RuntimeActivitySnapshot:
+    """Reconcile replayed activity with the canonical Run at the same read boundary."""
+
+    if current.session_id != run.session_id:
+        raise ValueError("Run and activity belong to different Sessions")
+    if current.run_id != run.run_id:
+        current = RuntimeActivitySnapshot(
+            session_id=run.session_id,
+            run_id=run.run_id,
+            status=run.status,
+            activity=runtime_activity_for_status(run.status),
+            sequence=current.sequence,
+            context_status=current.context_status,
+            effective_context_metrics=current.effective_context_metrics,
+            updated_at=run.ended_at or run.started_at,
+        )
     batch = run.active_tool_batch
     updates: dict[str, Any] = {
         "run_id": run.run_id,

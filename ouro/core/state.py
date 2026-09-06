@@ -157,6 +157,7 @@ class RunContinuationCheckpoint(OuroModel):
 
 class SessionRecord(VersionedOuroModel):
     session_id: str = Field(default_factory=lambda: new_id("ses"))
+    namespace: str = Field(default="default", min_length=1, max_length=128)
     root_session_id: str | None = None
     parent_session_id: str | None = None
     session_kind: Literal["primary", "subagent"] = "primary"

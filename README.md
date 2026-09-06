@@ -9,6 +9,8 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 - 基于 `provider/endpoint` 的模型配置、主流厂商模板、连接检查和会话级模型选择，以及共享安全重试契约的 OpenAI-compatible / Anthropic-compatible 适配。
 - 多轮模型/工具循环，支持顺序或并行工具批次、审批、结构化用户输入请求、协作式中止，以及 run 级 follow-up / turn 级 steer 排队输入。
 - 会话级 AFK 预设：自动批准可批准的工具，并以 provenance-bearing 无人值守 resolution 处理工具提问，不伪造用户回答。
+- [自动任务](docs/OURO_自动任务_2026-09-06.md)：持久化执行计划、工作空间与模型配置，启动后静默调度，
+  支持新建/复用会话、审批挂起、状态查询，以及 TUI Task 管理和 USER/TASK 会话域切换。
 - 后端中立的会话、消息、事件、运行记录和压缩记录；本地文件与 SQLite 实现共享同一契约，支持显式恢复、
   原子验证迁移、搜索、分支、回放、归档、置顶、回收站删除和长历史 cursor 分页。
 - 内容寻址的本地资源导入、去重、校验、分支引用复制、导出、可达性清理，以及文本/图片请求内模型投影。
@@ -98,6 +100,11 @@ uv run ouro agent tree <session_id> --home ./.ouro-dev
 Session 后端默认是 `files`，也可通过 `OURO_SESSION_BACKEND=sqlite` 设置当前 Host 的默认值；命令行
 `--session-backend files|sqlite` 优先于环境变量。交互、run、session、resource 和审批命令使用同一选择结果。
 切换后端不会隐式迁移数据，文件和 SQLite 是两个独立数据集；迁移必须通过显式、可验证、可回滚的导入流程完成。
+
+自动任务配置与执行记录也支持 `files`（默认）和 `sqlite`，通过 `--task-backend files|sqlite` 或
+`OURO_TASK_BACKEND` 选择，命令行优先。文件数据位于 `<home>/tasks/`，SQLite 数据位于 `<home>/tasks.sqlite3`；
+切换时不混读或自动迁移，已有 SQLite 任务可选择 `sqlite` 继续使用。任务会话始终走上述统一 Session 后端，
+不会因任务记录使用 SQLite 而切换会话存储。配置与恢复边界见[自动任务规格](dev/specs/OURO_自动任务规格_2026-09-06.md)。
 
 ## 插件
 

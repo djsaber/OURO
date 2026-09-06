@@ -56,6 +56,7 @@ class _RunJob:
     handle: RunHandle
     prompt: str
     title: str | None
+    background: bool = False
     prepared_run: RunRecord | None = None
     continue_existing: bool = False
     session_input: HostSessionInput | DelegatedTaskInput | None = None
@@ -311,6 +312,8 @@ class RuntimeSupervisor:
         self,
         run: RunRecord,
         session_input: HostSessionInput | DelegatedTaskInput,
+        *,
+        background: bool = False,
     ) -> RunHandle:
         """Schedule one already persisted queued Run without changing its identity."""
 
@@ -334,6 +337,7 @@ class RuntimeSupervisor:
             title=session_input.title,
             prepared_run=run,
             session_input=session_input,
+            background=background,
         )
         await self._enqueue_job(job, run_id=run.run_id)
         return handle
@@ -486,8 +490,9 @@ class RuntimeSupervisor:
             raise OuroError("runtime supervisor is closed")
         if session_id in self._jobs_by_session:
             raise SessionBusyError(f"session already has a supervised run: {session_id}")
-        job.start_after = self._latest_job_start
-        self._latest_job_start = job.provider_stream_started
+        if not job.background:
+            job.start_after = self._latest_job_start
+            self._latest_job_start = job.provider_stream_started
         self._jobs_by_session[session_id] = job
         self._jobs_by_handle[job.handle.handle_id] = job
         self._completion_events[job.handle.handle_id] = job.done
@@ -635,6 +640,19 @@ class RuntimeSupervisor:
             raise KeyError(f"unknown run handle: {handle.handle_id}")
         await done.wait()
         return self.status(handle)
+
+    def release_handle(self, handle: RunHandle) -> None:
+        """Release a producer's completed receipt; durable Session history remains available."""
+
+        if handle.handle_id in self._jobs_by_handle:
+            raise SessionBusyError("Cannot release a running handle")
+        self._snapshots.pop(handle.handle_id, None)
+        self._completion_events.pop(handle.handle_id, None)
+        if (
+            handle.session_id not in self._subscriptions
+            and handle.session_id not in self._jobs_by_session
+        ):
+            self._activities.pop(handle.session_id, None)
 
     async def abort(
         self,

@@ -1107,6 +1107,7 @@ class _WelcomeSystemBlock(Vertical):
         self._providers = Static(classes="welcome-value")
         self._skills = Static(classes="welcome-value")
         self._plugins = Static(classes="welcome-value")
+        self._tasks = Static(id="welcome-task-counts", classes="welcome-value")
         self._mcp_label = Static("MCP", id="welcome-mcp-label", classes="welcome-label")
         self._mcp = Static(classes="welcome-value")
         self._render_values()
@@ -1118,6 +1119,7 @@ class _WelcomeSystemBlock(Vertical):
             ("Providers", self._providers),
             ("Skills", self._skills),
             ("Plugins", self._plugins),
+            ("Task", self._tasks),
             ("MCP", self._mcp),
         ):
             yield Horizontal(
@@ -1175,7 +1177,30 @@ class _WelcomeSystemBlock(Vertical):
     def _render_values(self) -> None:
         status = self._status
         theme = theme_for(self)
+        counts = status.task_counts
+        tasks = Text(
+            f"{counts.completed_executions}/"
+            f"{counts.completed_executions + counts.failed_executions} completed",
+            style=theme.text_muted,
+        )
+        for label, count, color in (
+            ("waiting", counts.waiting, theme.text_lowlight),
+            ("running", counts.running, theme.accent),
+            ("approval", counts.awaiting_approval, theme.warning),
+        ):
+            if not count:
+                continue
+            tasks.append(theme.inline_separator, style=theme.text_faint)
+            tasks.append(f"{count} {label}", style=color)
+        self._tasks.update(tasks)
         self._render_mcp_label()
+        if status.task_error:
+            self._tasks.update(
+                Text(
+                    theme.inline_separator.join(("Unavailable", status.task_error)),
+                    style=theme.text_muted,
+                )
+            )
         self._workspace.update(Text(status.workspace or "not set", style=theme.text_primary))
 
         providers = Text()

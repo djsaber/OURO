@@ -10,6 +10,7 @@ APPLICATION_DIR = PROJECT_ROOT / "ouro" / "application"
 SDK_DIR = PROJECT_ROOT / "ouro" / "sdk"
 ALLOWED_CORE_PREFIX = "ouro.core"
 LOWER_LAYER_DIRS = (
+    "automation",
     "billing",
     "config",
     "mcp",
@@ -25,6 +26,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
     "__init__": frozenset(),
     "application": frozenset(
         {
+            "automation",
             "billing",
             "config",
             "core",
@@ -38,6 +40,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
         }
     ),
     "billing": frozenset({"core", "local_io", "local_locks"}),
+    "automation": frozenset({"core", "local_io", "local_locks"}),
     "builtin_plugins": frozenset({"core", "plugins", "sdk", "sessions"}),
     "cli": frozenset(
         {
@@ -59,6 +62,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
     "deployment": frozenset({"core"}),
     "local_application": frozenset(
         {
+            "automation",
             "application",
             "billing",
             "builtin_plugins",
@@ -87,6 +91,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
     "tools": frozenset({"core"}),
     "tui": frozenset(
         {
+            "automation",
             "application",
             "builtin_plugins",
             "config",

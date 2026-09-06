@@ -38,6 +38,7 @@ def test_default_command_starts_tui_with_host_options(monkeypatch, tmp_path) -> 
         "home": str(tmp_path),
         "system_prompt": None,
         "session_backend": None,
+        "task_backend": None,
         "approval_mode": "auto",
         "interaction_mode": "unattended",
         "resume_session_id": "ses_saved",
@@ -74,6 +75,7 @@ def test_interactive_command_forwards_command_scoped_options(monkeypatch, tmp_pa
         "approval_mode": "approval",
         "interaction_mode": "interactive",
         "session_backend": "sqlite",
+        "task_backend": None,
     }
 
 

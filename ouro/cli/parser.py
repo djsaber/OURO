@@ -14,7 +14,7 @@ from ouro.config.reasoning import (
 )
 from ouro.config.skills import SKILL_DISCOVERY_SOURCE_IDS
 from ouro.core.approvals import SESSION_APPROVAL_MODES
-from ouro.deployment import SESSION_BACKENDS
+from ouro.deployment import SESSION_BACKENDS, TASK_BACKENDS
 
 
 class OuroArgumentParser(argparse.ArgumentParser):
@@ -36,6 +36,16 @@ def _add_session_backend_arg(
         dest=dest,
         default=None,
         help="Session storage backend (default: OURO_SESSION_BACKEND or files)",
+    )
+
+
+def _add_task_backend_arg(parser: argparse.ArgumentParser, *, dest: str) -> None:
+    parser.add_argument(
+        "--task-backend",
+        choices=TASK_BACKENDS,
+        dest=dest,
+        default=None,
+        help="Task record storage backend (default: OURO_TASK_BACKEND or files)",
     )
 
 
@@ -68,6 +78,7 @@ Use 'ouro COMMAND --help' to inspect a workflow and its examples.""",
     )
     parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME for the TUI")
     _add_session_backend_arg(parser, dest="session_backend")
+    _add_task_backend_arg(parser, dest="task_backend")
     parser.add_argument("--system-prompt", help="Override the default system prompt")
     parser.add_argument("--session", dest="resume_session_id", help="Resume a durable Session")
     interactive_policy = parser.add_mutually_exclusive_group()
@@ -122,6 +133,7 @@ def _add_interactive_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Override OURO_HOME",
     )
     _add_session_backend_arg(interactive, dest="interactive_session_backend")
+    _add_task_backend_arg(interactive, dest="interactive_task_backend")
     interactive.add_argument(
         "--system-prompt",
         dest="interactive_system_prompt",
@@ -517,6 +529,7 @@ them exactly; unsupported requests fail before an HTTP request is sent.""",
     mode.add_argument("--json", dest="json_mode", action="store_true", help="Print JSON result")
     run_parser.add_argument("--home", dest="run_home", metavar="HOME", help="Override OURO_HOME")
     _add_session_backend_arg(run_parser, dest="run_session_backend")
+    _add_task_backend_arg(run_parser, dest="run_task_backend")
     run_parser.add_argument("--session", dest="session_id", help="Continue an existing session")
     run_parser.add_argument(
         "--resource",

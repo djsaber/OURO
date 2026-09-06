@@ -85,6 +85,7 @@ class SessionService:
         self,
         *,
         session_id: str | None = None,
+        namespace: str = "default",
         title: str = "New session",
         title_source: SessionTitleSource = "fallback",
         workspace: str | None = None,
@@ -96,6 +97,7 @@ class SessionService:
         normalized_title = _normalize_title(title)
         session = SessionRecord(
             session_id=session_id or new_id("ses"),
+            namespace=namespace,
             title=normalized_title,
             title_source=title_source,
             title_locked=title_source == "user",
@@ -794,6 +796,7 @@ class SessionService:
         branch = SessionRecord(
             root_session_id=source.root_session_id or source.session_id,
             parent_session_id=source.session_id,
+            namespace=source.namespace,
             forked_from_message_id=(source_message.message_id if source_message else None),
             forked_from_run_id=(source_message.run_id if source_message else None),
             title=source.title,
@@ -1015,6 +1018,8 @@ def _filter_entries(
 
 
 def _matches_query(entry: SessionIndexEntry, query: SessionCatalogQuery) -> bool:
+    if query.namespace is not None and entry.namespace != query.namespace:
+        return False
     if query.statuses and entry.status not in query.statuses:
         return False
     if query.archived is not None and entry.archived is not query.archived:

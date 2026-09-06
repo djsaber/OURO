@@ -14,6 +14,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.color import Color
 from textual.containers import Vertical
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import Input, OptionList, Static
@@ -43,12 +44,14 @@ class Choice:
     loading: bool = False
     description_accent: str | None = None
     destructive: bool = False
+    edit_lines: int = 1
 
 
 _HELP_SHORTCUTS = (
     ("Enter", "send / queue", "Shift+Enter", "new line"),
     ("Ctrl+Enter / Ctrl+J", "guide current task", "↑ / ↓", "input history"),
     ("Ctrl+N", "new session", "Ctrl+S", "sessions"),
+    ("Ctrl+T", "tasks", "Tab", "user / task sessions"),
     ("Alt+T", "cycle model thinking", "Alt+A", "cycle tool approval"),
     ("Alt+← / Alt+→", "switch agent", "Alt+↑ / Alt+↓", "main / recent agent"),
     ("Alt+P", "plugins", "Ctrl+P", "actions"),
@@ -105,7 +108,7 @@ MultiChoiceConfirmationHandler = Callable[
 ]
 ChoiceEditHandler = Callable[[str, str], Awaitable[tuple[Choice, ...] | None]]
 ScreenResult = TypeVar("ScreenResult")
-MenuDestination = Literal["actions", "plugins", "sessions"]
+MenuDestination = Literal["actions", "plugins", "sessions", "tasks"]
 
 
 @dataclass(frozen=True)
@@ -243,6 +246,11 @@ def grouped_choice_options(
 
 
 class ChoiceScreen(ModalScreen[str | None]):
+    class TabRequested(Message):
+        def __init__(self, menu: ChoiceScreen) -> None:
+            super().__init__()
+            self.menu = menu
+
     MIN_LIST_HEIGHT = 5
     MAX_LIST_HEIGHT = 20
     # Fixed title, filter, and hint rows surrounding the scrollable list.
@@ -255,6 +263,7 @@ class ChoiceScreen(ModalScreen[str | None]):
     )
 
     BINDINGS = [
+        Binding("tab", "switch_session_domain", "Session domain", show=False, priority=True),
         Binding("up", "previous_choice", "Previous", show=False, priority=True),
         Binding("down", "next_choice", "Next", show=False, priority=True),
         Binding("left", "previous_group", "Previous group", show=False, priority=True),
@@ -647,8 +656,10 @@ class ChoiceScreen(ModalScreen[str | None]):
         worker = self.app.run_worker(wait_for_child(), group="choice-child")
         try:
             return await worker.wait()
-        except WorkerCancelled:
-            return None
+        except WorkerCancelled as exc:
+            # Shutdown is cancellation, not a user's empty selection. Callers
+            # must not resume editing a parent whose widgets were unmounted.
+            raise asyncio.CancelledError from exc
 
     def show_child(self, screen: ModalScreen[ScreenResult]) -> None:
         """Show a child whose result is intentionally ignored."""
@@ -778,15 +789,25 @@ class ChoiceScreen(ModalScreen[str | None]):
             options.highlighted = self._highlight_index(options)
         options.focus()
 
-    async def on_option_list_option_selected(
+    def on_option_list_option_selected(
         self,
         event: OptionList.OptionSelected,
     ) -> None:
         if event.option.id is None:
             return
-        await self._select_choice(str(event.option.id))
+        event.stop()
+        # Navigation may dismiss this Screen before its destination finishes
+        # loading. Keep that work application-owned and the message pump free
+        # for close/prune while a selection waits for a child dialog.
+        self.app.run_worker(
+            self._select_choice(str(event.option.id)),
+            group=f"choice-selection-{id(self)}",
+            exclusive=True,
+        )
 
     async def _select_choice(self, selected: str) -> None:
+        if not self._accepts_choice_updates():
+            return
         if self._on_select is None:
             self.dismiss(selected)
             return
@@ -796,14 +817,19 @@ class ChoiceScreen(ModalScreen[str | None]):
         if (
             choices is None
             and self._page_revision == page_revision
-            and self.is_mounted
+            and self._accepts_choice_updates()
             # Navigation roots dispatch the destination asynchronously. Redrawing
             # them here would briefly render the old page before that page arrives.
             and self._navigation_id is None
             and self._on_refresh is not None
         ):
             choices = await self._on_refresh()
-        if choices is None or choices is self._choices:
+        if (
+            choices is None
+            or choices is self._choices
+            or self._page_revision != page_revision
+            or not self._accepts_choice_updates()
+        ):
             return
         self._choices = choices
         self._refresh_options(
@@ -905,12 +931,17 @@ class ChoiceScreen(ModalScreen[str | None]):
         )
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "switch_session_domain":
+            return self.navigation_id == "sessions"
         if action in {"previous_group", "next_group"}:
             return any(choice.group for choice in self._choices)
         return super().check_action(action, parameters)
 
     def action_accept_choice(self) -> None:
         self.query_one("#choice-list", OptionList).action_select()
+
+    def action_switch_session_domain(self) -> None:
+        self.post_message(self.TabRequested(self))
 
     @staticmethod
     def _options(
@@ -1087,7 +1118,7 @@ class EditableChoiceScreen(ChoiceScreen):
             return
         event.stop()
         event.prevent_default()
-        self._insert_text(" ".join(event.text.splitlines()))
+        self._insert_paste(event.text)
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
         if event.button != 3 or self._editing_value is None:
@@ -1103,6 +1134,10 @@ class EditableChoiceScreen(ChoiceScreen):
         except ClipboardReadError as exc:
             self.notify(str(exc), severity="warning", markup=False)
             return
+        if self._editing_value is not None:
+            self._insert_paste(value)
+
+    def _insert_paste(self, value: str) -> None:
         self._insert_text(" ".join(value.splitlines()))
 
     def action_previous_choice(self) -> None:
@@ -1285,11 +1320,7 @@ class EditableChoiceScreen(ChoiceScreen):
                 )
             options.replace_option_prompt_at_index(option_index, prompt)
             return
-        editor_width = max(
-            1,
-            options.scrollable_content_region.width
-            - options.get_component_styles("option-list--option").padding.width,
-        )
+        editor_width = self._editor_width()
         view_start, view_end = self._editor_view_bounds(display_text, editor_width)
         if view_start:
             prompt.append("…", style=f"not bold {theme.text_choice}")
@@ -1308,6 +1339,14 @@ class EditableChoiceScreen(ChoiceScreen):
         if view_end < len(display_text):
             prompt.append("…", style=f"not bold {theme.text_choice}")
         options.replace_option_prompt_at_index(option_index, prompt)
+
+    def _editor_width(self) -> int:
+        options = self.query_one("#choice-list", OptionList)
+        return max(
+            1,
+            options.scrollable_content_region.width
+            - options.get_component_styles("option-list--option").padding.width,
+        )
 
     def _editor_view_bounds(self, display_text: str, width: int) -> tuple[int, int]:
         """Return a stable single-line window that always contains the edit cursor."""

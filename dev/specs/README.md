@@ -29,6 +29,7 @@
 | [MCP 客户端](OURO_MCP客户端规格_2026-09-02.md) | transport、握手、工具发现/调用、重连、诊断与关闭 | `ouro/mcp`、`ouro/tools/registry.py` |
 | [插件系统](OURO_插件系统规格_2026-09-02.md) | 包、安装、Catalog/generation、13 类 contribution、策略与恢复 | `ouro/plugins`、`ouro/sdk/plugins/v1.py` |
 | [资源与运行监督](OURO_资源与运行监督规格_2026-09-02.md) | 内容寻址资源、引用可达性、RuntimeSupervisor 调度与订阅 | `ouro/resources`、`ouro/application/resources.py`、`ouro/application/supervisor.py` |
+| [自动任务](OURO_自动任务规格_2026-09-06.md) | 计划与时区、原子领取、任务/执行状态、后台会话、恢复与 TUI 管理 | `ouro/automation`、`ouro/application/tasks.py`、`ouro/application/task_execution.py`、`ouro/tui/task_workflows.py` |
 | [子智能体](OURO_子智能体规格_2026-09-02.md) | AgentDefinition、Delegation、控制工具、HITL、权限、交付与恢复 | `ouro/core/agents.py`、`ouro/application/agents.py`、`ouro/sessions` |
 | [会话观察](OURO_会话观察规格_2026-09-02.md) | Host-neutral snapshot/live 衔接、父子关系与只读 child 导航 | `ouro/application`、`ouro/sessions`、`ouro/tui` |
 | [CLI 与 Host](OURO_CLI与Host规格_2026-09-02.md) | 命令面、输出模式、退出码和 Host/Application 边界 | `ouro/cli`、`ouro/local_application.py` |

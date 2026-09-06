@@ -35,6 +35,7 @@ SessionSort = Literal["updated_desc", "created_desc", "title"]
 
 
 class SessionCatalogQuery(ApplicationDTO):
+    namespace: str | None = None
     text: str | None = None
     statuses: frozenset[SessionCatalogStatus] = Field(default_factory=frozenset)
     archived: bool | None = None
@@ -52,6 +53,7 @@ class SessionCatalogQuery(ApplicationDTO):
 
 class SessionCatalogEntry(ApplicationDTO):
     session_id: str
+    namespace: str = "default"
     session_kind: Literal["primary", "subagent"] | None = None
     root_session_id: str
     parent_session_id: str | None = None
@@ -93,6 +95,7 @@ class SessionCatalogEntry(ApplicationDTO):
 
 class SessionView(ApplicationDTO):
     session_id: str
+    namespace: str = "default"
     session_kind: Literal["primary", "subagent"] = "primary"
     root_session_id: str
     parent_session_id: str | None = None
@@ -125,6 +128,7 @@ class SessionView(ApplicationDTO):
     def from_record(cls, session: SessionRecord) -> SessionView:
         return cls(
             session_id=session.session_id,
+            namespace=session.namespace,
             session_kind=session.session_kind,
             root_session_id=session.root_session_id or session.session_id,
             parent_session_id=session.parent_session_id,

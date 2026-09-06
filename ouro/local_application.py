@@ -22,7 +22,12 @@ from ouro.application.runtime_configuration import (
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.sessions import SessionService
 from ouro.application.supervisor import RuntimeSupervisor
+from ouro.application.task_execution import TaskExecutionCoordinator
+from ouro.application.task_scheduler import TaskScheduler
+from ouro.application.tasks import TaskService
 from ouro.application.usage import UsageService
+from ouro.automation.local_files import LocalTaskRepository
+from ouro.automation.sqlite import SQLiteTaskRepository
 from ouro.billing import LocalUsageLedger
 from ouro.builtin_plugins import LOCAL_BUILTIN_PLUGINS
 from ouro.builtin_plugins.migrations import migrate_builtin_plugin_state
@@ -39,7 +44,12 @@ from ouro.core.observers import ObserverRegistry
 from ouro.core.prompt_policies import PromptPolicyRegistry
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistry
-from ouro.deployment import SessionBackend, resolve_session_backend
+from ouro.deployment import (
+    SessionBackend,
+    TaskBackend,
+    resolve_session_backend,
+    resolve_task_backend,
+)
 from ouro.mcp import MCPRuntimeResource, MCPServerConfig, MCPServerRecord
 from ouro.plugins.contributions import ContributionCoordinator
 from ouro.plugins.registry import PluginCommandRegistry
@@ -93,6 +103,8 @@ class LocalApplication:
         supervisor: RuntimeSupervisor | None = None,
         agent_definitions: AgentDefinitionService | None = None,
         agents: AgentService | None = None,
+        tasks: TaskService | None = None,
+        task_scheduler: TaskScheduler | None = None,
     ) -> None:
         self.runtime = runtime
         self.mcp = mcp
@@ -101,6 +113,8 @@ class LocalApplication:
         self.supervisor = supervisor or RuntimeSupervisor(runtime)
         self.agent_definitions = agent_definitions
         self.agents = agents
+        self.tasks = tasks
+        self.task_scheduler = task_scheduler
         self._startup_report = ApplicationStartupReport()
         self._runtime_startup_diagnostics: tuple[Diagnostic, ...] = ()
         self._agent_startup_diagnostics: tuple[Diagnostic, ...] = ()
@@ -120,7 +134,9 @@ class LocalApplication:
         system_prompt: str | None = None,
         event_sink: RuntimeEventSink | None = None,
         session_backend: SessionBackend | None = None,
+        task_backend: TaskBackend | None = None,
     ) -> LocalApplication:
+        task_backend = resolve_task_backend(task_backend)
         runtime = build_local_runtime(
             home,
             provider_options=provider_options,
@@ -128,7 +144,7 @@ class LocalApplication:
             event_sink=event_sink,
             session_backend=session_backend,
         )
-        return cls.from_runtime(runtime)
+        return cls.from_runtime(runtime, task_backend=task_backend)
 
     @classmethod
     def from_runtime(
@@ -136,7 +152,9 @@ class LocalApplication:
         runtime: RuntimeService,
         *,
         home: str | Path | None = None,
+        task_backend: TaskBackend | None = None,
     ) -> LocalApplication:
+        task_backend = resolve_task_backend(task_backend)
         configured_home = runtime.environment.home
         if configured_home is None and home is not None:
             configured_home = resolve_local_home(home)
@@ -173,6 +191,13 @@ class LocalApplication:
             agent_definitions=agent_definitions,
             agent_controls=agents,
         )
+        task_repository = (
+            LocalTaskRepository(configured_home)
+            if task_backend == "files"
+            else SQLiteTaskRepository(configured_home)
+        )
+        tasks = TaskService(task_repository, runtime)
+        task_scheduler = TaskScheduler(tasks, TaskExecutionCoordinator(tasks, supervisor))
         return cls(
             runtime,
             build_local_mcp_runtime(runtime, home=home),
@@ -181,6 +206,8 @@ class LocalApplication:
             supervisor=supervisor,
             agent_definitions=agent_definitions,
             agents=agents,
+            tasks=tasks,
+            task_scheduler=task_scheduler,
         )
 
     async def __aenter__(self) -> LocalApplication:
@@ -221,7 +248,12 @@ class LocalApplication:
             self._runtime_startup_diagnostics = supervisor_start.diagnostics
             if self.agents is not None:
                 self._agent_startup_diagnostics = await self.agents.start()
+            if self.task_scheduler is not None:
+                await self.task_scheduler.start()
         except BaseException:
+            if self.task_scheduler is not None:
+                with suppress(Exception):
+                    await self.task_scheduler.stop()
             with suppress(Exception):
                 await self.mcp.close()
             if self.plugin_runtime is not None:
@@ -229,6 +261,9 @@ class LocalApplication:
                     await self.plugin_runtime.close()
             with suppress(Exception):
                 await self.supervisor.shutdown()
+            if self.task_scheduler is not None:
+                with suppress(Exception):
+                    await self.task_scheduler.close()
             self._closed = True
             raise
         self._startup_report = self._collect_startup_report()
@@ -238,6 +273,8 @@ class LocalApplication:
         diagnostics = list(self.plugins.startup_diagnostics() if self.plugins is not None else ())
         diagnostics.extend(self._runtime_startup_diagnostics)
         diagnostics.extend(self._agent_startup_diagnostics)
+        if self.task_scheduler is not None:
+            diagnostics.extend(self.task_scheduler.diagnostics)
         return ApplicationStartupReport(diagnostics=tuple(diagnostics))
 
     def mcp_runtime_servers(self) -> tuple[MCPRuntimeServerView, ...]:
@@ -286,6 +323,11 @@ class LocalApplication:
             return
         self._closed = True
         errors: list[Exception] = []
+        if self.task_scheduler is not None:
+            try:
+                await self.task_scheduler.stop()
+            except Exception as exc:
+                errors.append(exc)
         if self.agents is not None:
             try:
                 await self.agents.close()
@@ -298,6 +340,11 @@ class LocalApplication:
             await self.supervisor.shutdown()
         except Exception as exc:  # noqa: BLE001 - close every owned resource.
             errors.append(exc)
+        if self.task_scheduler is not None:
+            try:
+                await self.task_scheduler.close()
+            except Exception as exc:
+                errors.append(exc)
         if self.plugin_runtime is not None:
             try:
                 await self.plugin_runtime.close()

@@ -165,6 +165,7 @@ from ouro.tui.widgets import (
     _brand_header_content,
     _tool_activities_from_messages,
 )
+from tests.tui.helpers import run_ready_app
 
 
 async def _wait_for_screen(
@@ -407,14 +408,17 @@ def test_confirmation_uses_current_theme_danger_only_for_description() -> None:
         assert isinstance(confirm.prompt, Text)
         assert cancel.prompt.get_style_at_offset(Console(), 0).color is None
         assert confirm.prompt.get_style_at_offset(Console(), 0).color is None
-        assert confirm.prompt.get_style_at_offset(
-            Console(), confirm.prompt.plain.index("Delete example?")
-        ).color == Style(color=theme.danger).color
+        assert (
+            confirm.prompt.get_style_at_offset(
+                Console(), confirm.prompt.plain.index("Delete example?")
+            ).color
+            == Style(color=theme.danger).color
+        )
 
 
 async def test_welcome_providers_show_count_before_dimmed_names(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
-    async with app.run_test() as pilot:
+    async with run_ready_app(app) as pilot:
         welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
         welcome.set_system_status(
             TuiSystemStatus(
@@ -501,7 +505,7 @@ async def test_editable_choice_filter_owns_text_input_outside_inline_edit(tmp_pa
     async def save_value(_choice_id: str, _value: str) -> tuple[Choice, ...]:
         return ()
 
-    async with app.run_test(size=(80, 24)) as pilot:
+    async with run_ready_app(app, size=(80, 24)) as pilot:
         await pilot.pause()
         screen = EditableChoiceScreen(
             title="EDITABLE ITEMS",
@@ -561,7 +565,7 @@ async def test_grouped_choice_filter_hides_empty_groups_and_selects_first_choice
     app = OuroTuiApp(application=_application(tmp_path))
     results: list[str | None] = []
 
-    async with app.run_test(size=(80, 24)) as pilot:
+    async with run_ready_app(app, size=(80, 24)) as pilot:
         await pilot.pause()
         app.push_screen(
             ChoiceScreen(
@@ -617,7 +621,7 @@ async def test_refreshing_choice_screen_can_retain_focus_position_across_groups(
             Choice("second", "Second", group="Archived"),
         )
 
-    async with app.run_test(size=(80, 24)) as pilot:
+    async with run_ready_app(app, size=(80, 24)) as pilot:
         await pilot.pause()
         app.push_screen(
             ChoiceScreen(
@@ -653,7 +657,7 @@ async def test_retained_focus_clears_when_refresh_filter_has_no_choices(
     async def archive_selected(_selected: str) -> tuple[Choice, ...]:
         return (Choice("only", "Only", group="Archived"),)
 
-    async with app.run_test(size=(80, 24)) as pilot:
+    async with run_ready_app(app, size=(80, 24)) as pilot:
         await pilot.pause()
         app.push_screen(
             ChoiceScreen(
@@ -691,7 +695,7 @@ async def test_choice_page_refreshes_in_place_after_a_child_operation(
         label = "After"
         return None
 
-    async with app.run_test(size=(80, 24)) as pilot:
+    async with run_ready_app(app, size=(80, 24)) as pilot:
         await pilot.pause()
         app.push_screen(
             ChoiceScreen(
@@ -722,7 +726,7 @@ async def test_choice_page_refreshes_parent_before_in_place_back_navigation(
     async def refresh_parent() -> tuple[Choice, ...]:
         return (Choice("item", label),)
 
-    async with app.run_test(size=(80, 24)) as pilot:
+    async with run_ready_app(app, size=(80, 24)) as pilot:
         await pilot.pause()
         screen = ChoiceScreen(
             title="ITEMS",
@@ -1831,7 +1835,7 @@ async def test_streaming_assistant_renders_completed_source_lines_once(
     monkeypatch.setattr(AssistantTailLines, "_render_source_line", counting_render)
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(80, 24)) as pilot:
+    async with run_ready_app(app, size=(80, 24)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.append_assistant("first")
@@ -1876,7 +1880,7 @@ async def test_first_assistant_chunk_is_applied_before_the_turn_is_mounted(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(80, 24)) as pilot:
+    async with run_ready_app(app, size=(80, 24)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         original_mount = conversation._transcript.mount
@@ -1903,7 +1907,7 @@ async def test_long_live_markdown_closes_without_blocking_the_ui_event_loop(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 24)) as pilot:
+    async with run_ready_app(app, size=(100, 24)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.append_assistant("```python\n")
@@ -1946,7 +1950,7 @@ async def test_streaming_tail_skips_layout_when_visual_height_is_unchanged(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 24)) as pilot:
+    async with run_ready_app(app, size=(100, 24)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.append_assistant("prefix")
@@ -1974,7 +1978,7 @@ async def test_welcome_refreshes_live_system_status_each_time_it_opens(tmp_path:
     application = _application(tmp_path)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         live_skill = SkillMetadata(
             name="live-skill",
@@ -2025,7 +2029,7 @@ async def test_welcome_usage_hover_selects_day_without_changing_color_and_previe
         ),
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
         usage = welcome._usage
         usage.set_system_status(status)
@@ -2062,7 +2066,7 @@ def test_welcome_usage_cache_hit_rate_is_zero_without_input_tokens() -> None:
 async def test_welcome_tips_point_to_keyboard_help_instead_of_sessions(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
         tips = "\n".join(
             getattr(widget.render(), "plain", "") for widget in welcome._tips.query(Static)
@@ -2079,7 +2083,7 @@ async def test_welcome_layout_stays_centered_across_terminal_width_bounds(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(200, 32)) as pilot:
+    async with run_ready_app(app, size=(200, 32)) as pilot:
         welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
         composer = app.query_one(Composer)
         assert app.query_one(SubagentNavigationPanel).display is False
@@ -2130,7 +2134,7 @@ async def test_session_input_surface_reserves_one_row_above_connected_menus(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         composer = app.query_one(Composer)
         panel = app.query_one(SubagentNavigationPanel)
@@ -2182,7 +2186,7 @@ def test_plugin_skill_choice_is_visible_but_not_selectable() -> None:
 async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         status_line = app.query_one(StatusLine)
         context_status = SessionContextStatus(
@@ -2260,7 +2264,7 @@ async def test_status_line_shows_model_retry_attempts_after_the_first_attempt(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         first_attempt = RuntimeActivitySnapshot(
             session_id="ses_retry",
@@ -2292,7 +2296,7 @@ async def test_repeated_runtime_activity_skips_unchanged_presentations(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         session_id = "session_hot_path"
         activity = RuntimeActivitySnapshot(
@@ -2345,7 +2349,7 @@ async def test_session_animations_only_layout_when_geometry_changes(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         indicator = app.query_one(ActivityIndicator)
@@ -2418,7 +2422,7 @@ async def test_context_detail_only_layouts_when_its_cell_width_changes(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         status_line = app.query_one(StatusLine)
         status_line.set_context_metrics(None)
@@ -2459,7 +2463,7 @@ async def test_status_line_updates_while_a_model_retry_is_waiting(tmp_path: Path
     provider = RetryThenBlockProvider()
     app = OuroTuiApp(application=_blocking_application(tmp_path, provider))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press(*"retry", "enter")
         try:
@@ -2490,7 +2494,7 @@ async def test_status_line_shows_only_the_model_endpoint_name(tmp_path: Path) ->
         resume_session_id=session.session_id,
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         indicator = app.query_one(StatusLine).query_one(ActivityIndicator)
 
@@ -2510,7 +2514,7 @@ async def test_status_line_projects_arbitrary_session_control_label_first(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         status_line = app.query_one(StatusLine)
         indicator = status_line.query_one(ActivityIndicator)
@@ -2535,7 +2539,7 @@ async def test_model_switch_keeps_context_usage_and_updates_model_capacity(
         resume_session_id=result.session.session_id,
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await _wait_for_active_session(app, pilot, result.session.session_id)
         await _wait_until(
             lambda: (
@@ -2581,7 +2585,7 @@ async def test_tui_changes_model_and_approval_while_the_session_is_running(tmp_p
     application = _blocking_application(tmp_path, provider)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"stream", "enter")
@@ -2639,7 +2643,7 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
     application.mcp = MCPRuntimeResource(manager)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         welcome = await _wait_for_welcome_render(app, pilot, contains="connecting")
         mcp_label = welcome.query_one("#welcome-mcp-label", Static)
         connecting_label = mcp_label.render().plain
@@ -2694,7 +2698,7 @@ async def test_stream_updates_follow_only_while_conversation_is_at_bottom(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 24)) as pilot:
+    async with run_ready_app(app, size=(100, 24)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         for index in range(40):
@@ -2730,7 +2734,7 @@ async def test_short_conversation_starts_at_top_while_following_latest_message(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.add_user("First question")
@@ -2748,7 +2752,7 @@ async def test_short_conversation_starts_at_top_while_following_latest_message(
 async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         app.query_one(ConversationView).set_reasoning_expanded(True)
         session_id = "ses_reasoning_markup"
@@ -2835,7 +2839,7 @@ async def test_reasoning_stream_renders_each_completed_line_once(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         app.query_one(ConversationView).set_reasoning_expanded(True)
         session_id = "ses_reasoning_bounded_work"
@@ -2874,7 +2878,7 @@ async def test_reasoning_stream_renders_each_completed_line_once(
 async def test_reasoning_stream_lines_match_whole_block_rendering(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         app.query_one(ConversationView).set_reasoning_expanded(True)
         session_id = "ses_reasoning_parity"
@@ -2916,7 +2920,7 @@ async def test_fork_command_uses_inline_targets_for_full_and_user_boundary(
     application = _application(tmp_path)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 34), notifications=True) as pilot:
+    async with run_ready_app(app, size=(100, 34), notifications=True) as pilot:
         await pilot.pause()
         await pilot.press("f", "o", "r", "k", "enter")
         await _wait_until(
@@ -2975,7 +2979,11 @@ async def test_fork_command_uses_inline_targets_for_full_and_user_boundary(
         assert boundary_branch.session.parent_session_id == full_session_id
         assert boundary_branch.session.forked_from_message_id is None
         assert boundary_branch.messages == []
-        assert app.query_one(Composer).text == "fork"
+        await _wait_until(
+            lambda: app.query_one(Composer).text == "fork",
+            pilot,
+            description="forked user input restored",
+        )
         assert app.query_one(Composer).has_focus is True
         assert not isinstance(app.screen, ChoiceScreen)
         assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
@@ -2989,7 +2997,7 @@ async def test_fork_command_refuses_active_tui_session(
     application = _application(tmp_path)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("f", "o", "r", "k", "enter")
         await _wait_until(
@@ -3024,7 +3032,7 @@ async def test_first_markdown_chunk_renders_while_provider_is_still_running(
     provider = BlockingStreamProvider()
     app = OuroTuiApp(application=_blocking_application(tmp_path, provider))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("s", "t", "r", "e", "a", "m", "enter")
@@ -3061,7 +3069,7 @@ async def test_visible_subscription_owns_events_without_global_sink_duplicates(
     session = application.runtime.sessions.create(title="Observed once").session
     app = OuroTuiApp(application=application, resume_session_id=session.session_id)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await _wait_until(
             lambda: app._visible_session_id() == session.session_id,
             pilot,
@@ -3094,7 +3102,7 @@ async def test_tui_runtime_event_staging_buffer_is_bounded(
     monkeypatch.setattr("ouro.tui.app._RUNTIME_EVENT_BUFFER_MAX", 2)
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         events = tuple(
             EventRecord(
@@ -3127,7 +3135,7 @@ async def test_tui_runtime_event_staging_applies_one_bounded_prefix_per_frame(
         del allow_new_projection
         applied.append(tuple(events))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         events = tuple(
             EventRecord(
@@ -3162,7 +3170,7 @@ async def test_tui_runtime_event_staging_preserves_a_streamed_tool_frame(
         del allow_new_projection
         applied.append(tuple(events))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         events = (
             EventRecord(
@@ -3223,7 +3231,7 @@ async def test_terminal_run_events_reuse_the_bounded_runtime_event_consumer(
     ]
     prefixes: list[tuple[int, ...]] = []
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         app._projection = TuiSessionProjection(session.session_id)
         apply_events = app._apply_runtime_events
@@ -3274,7 +3282,7 @@ async def test_terminal_run_events_skip_live_and_pending_event_prefixes(
     ]
     prefixes: list[tuple[int, ...]] = []
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         projection = TuiSessionProjection(session.session_id)
         projection.apply(events[0])
@@ -3322,7 +3330,7 @@ async def test_runtime_event_handler_schedules_session_control_refresh_without_a
         payload={"tool_call_id": "call_control_refresh"},
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         applying = asyncio.create_task(app._apply_runtime_events((event,)))
         try:
@@ -3365,7 +3373,7 @@ async def test_session_control_refresh_coalesces_requests_and_discards_stale_ses
 
     monkeypatch.setattr(app._controller, "session_control_statuses", delayed_statuses)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         app._schedule_session_controls_refresh()
         await asyncio.wait_for(entered.wait(), timeout=1)
@@ -3387,7 +3395,7 @@ async def test_first_user_message_renders_when_leaving_welcome_page(tmp_path: Pa
     provider = BlockingStreamProvider()
     app = OuroTuiApp(application=_blocking_application(tmp_path, provider))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await _wait_until(
             lambda: app.query_one(ConversationView).showing_welcome,
             pilot,
@@ -3420,7 +3428,7 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
     provider = BlockingStreamProvider()
     app = OuroTuiApp(application=_blocking_application(tmp_path, provider))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         composer = app.query_one(Composer)
         assert composer.placeholder == "Ask anything..."
@@ -3497,7 +3505,7 @@ async def test_queued_input_rows_use_single_line_tokenized_previews(tmp_path: Pa
         ),
     )
 
-    async with app.run_test(size=(48, 24)) as pilot:
+    async with run_ready_app(app, size=(48, 24)) as pilot:
         await pilot.pause()
         panel = app.query_one(QueuedInputPanel)
         panel.set_inputs(inputs)
@@ -3542,7 +3550,7 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
     application = _blocking_application(tmp_path, provider)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 36)) as pilot:
+    async with run_ready_app(app, size=(100, 36)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"first", "enter")
@@ -3609,7 +3617,7 @@ async def test_unqueue_command_selects_message_and_returns_it_to_composer(
     application = _blocking_application(tmp_path, provider)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 36)) as pilot:
+    async with run_ready_app(app, size=(100, 36)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"first", "enter")
@@ -3679,7 +3687,7 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(tmp_path: P
     application = _queued_subagent_approval_application(tmp_path, provider)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 38)) as pilot:
+    async with run_ready_app(app, size=(100, 38)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"start child", "enter")
@@ -3757,7 +3765,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
     application = _multi_child_streaming_application(tmp_path, provider)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 38)) as pilot:
+    async with run_ready_app(app, size=(100, 38)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"start two children", "enter")
@@ -4121,7 +4129,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             lambda: (
                 app._visible_session_id() == second.session_id
                 and app._projection is not None
-                and app._projection.activity.status == "idle"
+                and app._projection.activity.status == "completed"
             ),
             pilot,
             description="reloaded completed second child",
@@ -4143,7 +4151,7 @@ async def test_sync_child_view_restore_preserves_live_tool_and_reasoning_clocks(
     application = _sync_child_view_application(tmp_path, provider)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 38)) as pilot:
+    async with run_ready_app(app, size=(100, 38)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"start child", "enter")
@@ -4239,7 +4247,7 @@ async def test_guide_shortcuts_steer_the_active_run_at_the_next_model_turn(
     application = _blocking_application(tmp_path, provider)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 36)) as pilot:
+    async with run_ready_app(app, size=(100, 36)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"first", "enter")
@@ -4300,7 +4308,7 @@ async def test_resumed_session_restores_its_durable_user_input_queue(
         resume_session_id=waiting.session.session_id,
     )
 
-    async with app.run_test(size=(100, 36)) as pilot:
+    async with run_ready_app(app, size=(100, 36)) as pilot:
         await _wait_until(
             lambda: app._interaction is not None and app.query_one(QueuedInputPanel).display,
             pilot,
@@ -4332,7 +4340,7 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
         reasoning_content=reasoning_text,
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         conversation.set_reasoning_expanded(True)
@@ -4381,10 +4389,11 @@ async def test_thought_display_command_applies_to_history_and_live_output_and_pe
     preferences = TuiPreferencesStore(tmp_path)
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages((message,))
+        await pilot.pause()
         history = conversation.query_one(ConversationHistory)
         assert "+ Thought" in history.rendered_text
         assert "Historical private thought" not in history.rendered_text
@@ -4437,7 +4446,7 @@ async def test_thought_display_command_applies_to_history_and_live_output_and_pe
         )
 
     restarted = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
-    async with restarted.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(restarted, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = restarted.query_one(ConversationView)
         await conversation.load_messages((message,))
@@ -4483,7 +4492,7 @@ async def test_history_restores_each_model_call_timing_with_one_run_summary(
         for index in (0, 1)
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         presentation = project_run_presentation(run, messages)
@@ -4525,7 +4534,7 @@ async def test_history_loads_failed_run_summary_with_failure_semantics(tmp_path:
     )
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(
@@ -4558,7 +4567,7 @@ async def test_reloaded_history_renders_identically_to_streamed_output(
     fragments = answer.split("\n\n")
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 40)) as pilot:
+    async with run_ready_app(app, size=(100, 40)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.add_user("Question")
@@ -4610,7 +4619,7 @@ async def test_history_batch_mount_preserves_dialogue_order(tmp_path: Path) -> N
         )
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(messages)
@@ -4680,7 +4689,7 @@ async def test_history_restores_compaction_boundaries_in_chronological_order(
         ),
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(messages, compactions)
@@ -4721,7 +4730,7 @@ async def test_compaction_completion_updates_context_and_transcript_without_next
         estimated_utilization_ratio=250 / 900,
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         session_id = "ses_live_compaction"
         app._projection = TuiSessionProjection(session_id)
@@ -4771,7 +4780,7 @@ async def test_live_host_event_updates_context_without_reloading(tmp_path: Path)
         estimated_utilization_ratio=250 / 900,
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         session_id = "ses_live_context"
         app._projection = TuiSessionProjection(session_id)
@@ -4811,7 +4820,7 @@ async def test_persisted_history_uses_a_bounded_widget_tree(tmp_path: Path) -> N
         for index in range(400)
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(messages)
@@ -4836,7 +4845,7 @@ async def test_history_projection_does_not_block_the_event_loop(
         content=[TextContent(text="Projected in a worker" * 4_096)],
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         entered = threading.Event()
         release = threading.Event()
@@ -4876,7 +4885,7 @@ async def test_history_projection_does_not_block_the_event_loop(
 async def test_completed_live_turns_keep_the_widget_tree_bounded(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         for index in range(100):
@@ -4906,7 +4915,7 @@ async def test_completed_tool_batch_archives_in_source_order(tmp_path: Path) -> 
         source_index=1,
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.sync_tools((first, second))
@@ -4940,7 +4949,7 @@ async def test_streaming_tool_row_mounts_after_its_name_and_updates_in_place_on_
     run_id = "run_streaming_tool"
     app._projection = TuiSessionProjection(session_id)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await app._apply_runtime_events(
@@ -5064,7 +5073,7 @@ async def test_tool_batch_mounts_publishes_history_and_unmounts_once(
         for index in range(4)
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.add_user("Run one tool batch")
@@ -5165,7 +5174,7 @@ async def test_runtime_event_prefix_mounts_one_complete_tool_batch(
         ),
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         mounted_batches: list[tuple[str, ...]] = []
@@ -5233,7 +5242,7 @@ async def test_history_load_renders_tool_calls_between_messages(tmp_path: Path) 
         ),
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(messages)
@@ -5284,7 +5293,7 @@ async def test_history_load_keeps_the_active_tool_batch_in_live_rows(tmp_path: P
         started_at=datetime.now(UTC) - timedelta(seconds=2),
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(
@@ -5366,7 +5375,7 @@ async def test_history_load_projects_scaffold_visibility_from_message_record(
         ),
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(messages)
@@ -5410,7 +5419,7 @@ async def test_child_history_presents_only_its_own_delegated_user_inputs(
         }
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
 
@@ -5460,7 +5469,7 @@ async def test_plugin_message_event_renders_non_scaffold_user_input(
     async def queued_user_inputs(_session_id: str):
         return ()
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         monkeypatch.setattr(app._controller, "message", message)
         monkeypatch.setattr(app._controller, "queued_user_inputs", queued_user_inputs)
@@ -5509,7 +5518,7 @@ async def test_history_load_marks_failed_tool_calls(tmp_path: Path) -> None:
         ),
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(messages)
@@ -5549,7 +5558,7 @@ async def test_navigate_to_top_scrolls_to_first_message(tmp_path: Path) -> None:
     """Selecting Top jumps the conversation to the first message."""
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(80, 12)) as pilot:
+    async with run_ready_app(app, size=(80, 12)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(_scrollable_messages())
@@ -5566,7 +5575,7 @@ async def test_navigate_to_bottom_scrolls_to_latest(tmp_path: Path) -> None:
     """Selecting Bottom re-anchors the conversation to the latest message."""
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(80, 12)) as pilot:
+    async with run_ready_app(app, size=(80, 12)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(_scrollable_messages())
@@ -5587,7 +5596,7 @@ async def test_conversation_shortcuts_navigate_while_composer_is_focused(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(80, 12)) as pilot:
+    async with run_ready_app(app, size=(80, 12)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(_scrollable_messages())
@@ -5613,7 +5622,7 @@ async def test_conversation_shortcuts_navigate_adjacent_user_messages(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(80, 12)) as pilot:
+    async with run_ready_app(app, size=(80, 12)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(_scrollable_messages())
@@ -5651,7 +5660,7 @@ async def test_navigate_to_user_message_scrolls_to_target(tmp_path: Path) -> Non
     """Picking the first user message scrolls it to the top of the viewport."""
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(80, 12)) as pilot:
+    async with run_ready_app(app, size=(80, 12)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(_scrollable_messages())
@@ -5671,7 +5680,7 @@ async def test_navigate_options_list_user_messages(tmp_path: Path) -> None:
     """The /navigate argument options include top, bottom, and every user message."""
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(80, 12)) as pilot:
+    async with run_ready_app(app, size=(80, 12)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(_scrollable_messages())
@@ -5688,7 +5697,7 @@ async def test_navigate_options_list_user_messages(tmp_path: Path) -> None:
 async def test_run_result_replays_events_when_live_sink_is_delayed(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path, "Recovered response"))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         app._controller._publish_event = lambda _event: None
         await pilot.click("#composer")
@@ -5776,7 +5785,7 @@ def test_active_stream_tail_waits_for_canonical_message_commit() -> None:
 async def test_composer_uses_shift_enter_for_newline(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("a", "shift+enter", "b")
@@ -5798,7 +5807,7 @@ async def test_session_picker_hides_route_identity_and_truncates_long_titles(
     )
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+s")
         await pilot.pause()
@@ -5846,10 +5855,10 @@ async def test_session_picker_marks_the_session_open_on_the_conversation_page(
         resume_session_id=current.session_id,
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await _wait_for_active_session(app, pilot, current.session_id)
         await pilot.press("ctrl+s")
-        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
 
         choices = {choice.value: choice for choice in app.screen._choices}
         assert choices[current.session_id].marker == DEFAULT_TUI_THEME.selected_choice_marker
@@ -5871,7 +5880,7 @@ async def test_session_picker_reads_only_the_catalog_projection(
     )
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
 
         def unexpected_canonical_read(*_args: object) -> None:
@@ -5889,7 +5898,7 @@ async def test_session_picker_reads_only_the_catalog_projection(
                 unexpected_canonical_read,
             )
             await pilot.press("ctrl+s")
-            await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+            await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
 
         assert {choice.value for choice in app.screen._choices} == {
             session.session_id for session in sessions
@@ -5920,10 +5929,10 @@ async def test_session_picker_opens_canonical_session_when_catalog_entry_is_inva
     index_path.write_text(json.dumps(payload), encoding="utf-8")
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+s")
-        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         choice = next(item for item in app.screen._choices if item.value == session.session_id)
 
         assert choice.accent == DEFAULT_TUI_THEME.failure
@@ -5955,10 +5964,10 @@ async def test_session_picker_closes_modal_before_rendering_selected_history(
     )
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+s")
-        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         session_menu = app.screen
 
         await asyncio.wait_for(pilot.press("enter"), timeout=2)
@@ -5977,14 +5986,14 @@ async def test_session_picker_hides_child_and_agent_tree_keeps_it_navigable(
     root_session_id, child_session_id = _persist_direct_child_session(application)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await _wait_until(
             lambda: app._controller._started,
             pilot,
             description="TUI startup with persisted Agent tree",
         )
         await pilot.press("ctrl+s")
-        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         assert [choice.value for choice in app.screen._choices] == [root_session_id]
         await pilot.press("enter")
         await _wait_until(
@@ -6073,7 +6082,7 @@ async def test_fork_projects_animated_activity_until_the_branch_is_created(
         resume_session_id=session.session_id,
     )
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await _wait_for_active_session(app, pilot, session.session_id)
         original_branch = app._controller.branch_session
         branch_started = asyncio.Event()
@@ -6098,7 +6107,7 @@ async def test_fork_projects_animated_activity_until_the_branch_is_created(
         assert indicator._frame != frame
 
         await pilot.press("ctrl+s")
-        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         assert indicator._activity == "forking"
         assert "Forking session" in indicator.render().plain
         menu_frame = indicator._frame
@@ -6137,7 +6146,7 @@ async def test_agent_node_navigation_finishes_current_load_before_latest_target(
         resume_session_id=root_session_id,
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await _wait_until(
             lambda: app._visible_session_id() == root_session_id,
             pilot,
@@ -6206,7 +6215,7 @@ async def test_startup_resume_preserves_canonical_child_read_only_state(
         resume_session_id=child_session_id,
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await _wait_until(
             lambda: app._visible_session_id() == child_session_id,
             pilot,
@@ -6239,10 +6248,10 @@ async def test_session_picker_restores_history_after_returning_to_welcome(
     )
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+s")
-        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         await pilot.press("enter")
         await _wait_for_active_session(app, pilot, session.session_id)
         assert app.query_one(ConversationHistory).user_turns == ("Persisted user message",)
@@ -6254,7 +6263,7 @@ async def test_session_picker_restores_history_after_returning_to_welcome(
             description="new-session welcome page",
         )
         await pilot.press("ctrl+s")
-        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         await pilot.press("enter")
         await _wait_for_active_session(app, pilot, session.session_id)
 
@@ -6291,7 +6300,7 @@ async def test_input_drafts_restore_per_surface_across_tui_restarts(tmp_path: Pa
     draft_store.save(seeded)
 
     app = OuroTuiApp(application=application)
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         composer = app.query_one(Composer)
         assert composer.text == "welcome seed"
@@ -6331,7 +6340,7 @@ async def test_input_drafts_restore_per_surface_across_tui_restarts(tmp_path: Pa
         assert composer.text == "welcome edited"
 
     restarted = OuroTuiApp(application=_application(tmp_path))
-    async with restarted.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(restarted, size=(100, 32)) as pilot:
         await pilot.pause()
         composer = restarted.query_one(Composer)
         assert composer.text == "welcome edited"
@@ -6361,7 +6370,7 @@ async def test_input_drafts_restore_per_surface_across_tui_restarts(tmp_path: Pa
         application=_application(tmp_path),
         resume_session_id=first.session_id,
     )
-    async with resumed.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(resumed, size=(100, 32)) as pilot:
         await _wait_for_active_session(resumed, pilot, first.session_id)
         assert resumed.query_one(Composer).text == ""
         await resumed._new_session()
@@ -6383,7 +6392,7 @@ async def test_input_draft_persistence_debounces_to_the_latest_revision(
     app = OuroTuiApp(application=_application(tmp_path))
     saved: list[TuiInputDrafts] = []
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         if app._input_draft_save_task is not None:
             await app._input_draft_save_task
@@ -6411,7 +6420,7 @@ async def test_tui_close_waits_for_pending_input_draft_save(
     app = OuroTuiApp(application=_application(tmp_path))
     saved: list[TuiInputDrafts] = []
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         if app._input_draft_save_task is not None:
             await app._input_draft_save_task
@@ -6439,7 +6448,7 @@ async def test_input_draft_save_failure_allows_a_later_revision_to_retry(
             raise PersistenceError("draft storage unavailable")
         saved.append(drafts)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         if app._input_draft_save_task is not None:
             await app._input_draft_save_task
@@ -6473,7 +6482,7 @@ async def test_session_load_projects_loading_activity_until_history_is_ready(
     session = application.runtime.sessions.create(title="Long session").session
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         load_started = asyncio.Event()
         release_load = asyncio.Event()
@@ -6507,7 +6516,7 @@ async def test_session_picker_contains_load_failure_in_choice_dialog(
     session = application.runtime.sessions.create(title="Damaged session").session
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
 
         async def fail_load(_session_id: str) -> None:
@@ -6515,7 +6524,7 @@ async def test_session_picker_contains_load_failure_in_choice_dialog(
 
         monkeypatch.setattr(app._controller, "load_session", fail_load)
         await pilot.press("ctrl+s")
-        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         session_menu = app.screen
 
         await pilot.press("enter")
@@ -6553,7 +6562,7 @@ async def test_startup_resume_failure_opens_choice_dialog_and_keeps_tui_running(
         raise PersistenceError("session payload is incompatible")
 
     monkeypatch.setattr(app._controller, "load_session", fail_load)
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
 
         assert isinstance(app.screen, ChoiceScreen)
@@ -6596,10 +6605,10 @@ async def test_session_picker_and_archive_menu_project_and_toggle_archived_group
         resume_session_id=active.session_id,
     )
 
-    async with app.run_test(size=(100, 34), notifications=True) as pilot:
+    async with run_ready_app(app, size=(100, 34), notifications=True) as pilot:
         await _wait_for_active_session(app, pilot, active.session_id)
         await pilot.press("ctrl+s")
-        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         groups = {choice.value: choice.group for choice in app.screen._choices}
         assert groups[active.session_id] == "Today"
         assert groups[archived.session_id] == "Archived"
@@ -6667,7 +6676,7 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         resume_session_id=active.session_id,
     )
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await _wait_for_active_session(app, pilot, active.session_id)
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -6772,7 +6781,7 @@ async def test_delete_session_menu_force_deletes_catalog_error_and_quits_cleanly
     session_dir = application.runtime.store.sessions_dir / session.session_id
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -6788,9 +6797,10 @@ async def test_delete_session_menu_force_deletes_catalog_error_and_quits_cleanly
         confirm = app.screen.query_one(OptionList).get_option("__multi_confirm__").prompt
         assert isinstance(confirm, Text)
         assert confirm.get_style_at_offset(Console(), 0).color is None
-        assert confirm.get_style_at_offset(
-            Console(), confirm.plain.index("Permanently delete")
-        ).color == Style(color=app.tui_theme.danger).color
+        assert (
+            confirm.get_style_at_offset(Console(), confirm.plain.index("Permanently delete")).color
+            == Style(color=app.tui_theme.danger).color
+        )
         await pilot.press("down", "enter")
         await _wait_until(
             lambda: not session_dir.exists(),
@@ -6834,7 +6844,7 @@ async def test_delete_session_menu_keeps_current_marker_separate_from_multi_sele
         resume_session_id=current.session_id,
     )
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await _wait_for_active_session(app, pilot, current.session_id)
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -6884,7 +6894,7 @@ async def test_switching_sessions_clears_the_previous_approval_panel(tmp_path: P
     ).session
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         stale = PendingInteraction(
             kind="approval",
@@ -6923,7 +6933,7 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
     app = OuroTuiApp(application=_application(tmp_path))
     results: list[TuiEndpointConfiguration | None] = []
 
-    async with app.run_test(size=(80, 24)) as pilot:
+    async with run_ready_app(app, size=(80, 24)) as pilot:
         await pilot.pause()
         screen = EndpointConfigurationScreen(provider)
         app.push_screen(screen, callback=results.append)
@@ -7064,7 +7074,7 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
 async def test_session_settings_can_be_completed_with_keyboard_only(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_thinking_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press("slash", *"approval", "enter", *"afk", "enter")
         await pilot.pause()
@@ -7083,7 +7093,7 @@ async def test_session_setting_shortcuts_cycle_and_wrap_available_values(
 ) -> None:
     app = OuroTuiApp(application=_thinking_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
 
         for expected in (
@@ -7178,7 +7188,7 @@ async def test_thinking_completion_and_modal_share_supported_choices(
 ) -> None:
     app = OuroTuiApp(application=_thinking_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press("slash", *"thinking", "space")
         await pilot.pause()
@@ -7205,7 +7215,7 @@ async def test_thinking_completion_and_modal_share_supported_choices(
 async def test_thinking_modal_remains_available_during_an_active_run(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_thinking_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press(*"start", "enter")
         await _wait_until(
@@ -7230,7 +7240,7 @@ async def test_thinking_modal_remains_available_during_an_active_run(tmp_path: P
 async def test_status_line_shows_thinking_level_and_highlights_peak_effort(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_thinking_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         indicator = app.query_one(ActivityIndicator)
 
@@ -7253,7 +7263,7 @@ async def test_status_line_shows_thinking_level_and_highlights_peak_effort(tmp_p
 async def test_status_line_hides_thinking_level_when_reasoning_unsupported(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         indicator = app.query_one(ActivityIndicator)
         # The default faux endpoint declares no reasoning capability, so no
@@ -7265,7 +7275,7 @@ async def test_status_line_hides_thinking_level_when_reasoning_unsupported(tmp_p
 async def test_enabled_without_effort_shows_the_resolved_default_level(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_thinking_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         indicator = app.query_one(ActivityIndicator)
         # The endpoint default resolves to enabled + low, shown as "low".
@@ -7283,7 +7293,7 @@ async def test_enabled_without_effort_shows_the_resolved_default_level(tmp_path:
 async def test_status_line_hides_thinking_when_disabled(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_thinking_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         indicator = app.query_one(ActivityIndicator)
         active_separator_count = indicator.render().plain.count(" • ")
@@ -7323,7 +7333,7 @@ async def test_status_line_default_reflects_endpoint_default(tmp_path: Path) -> 
     )
     app = OuroTuiApp(application=LocalApplication.from_runtime(runtime))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         indicator = app.query_one(ActivityIndicator)
         # The default intent resolves to the endpoint's disabled default, so the
@@ -7337,7 +7347,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
 
         await pilot.press("ctrl+p")
@@ -7357,6 +7367,10 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Rename session",
             "Archive session",
             "Delete session",
+            "Task list",
+            "Create task",
+            "Delete task",
+            "Update status",
             "Manage providers",
             "Add provider",
             "Edit provider",
@@ -7391,6 +7405,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         assert [choice.group for choice in action_choices] == [
             *("Settings",) * 5,
             *("Session",) * 5,
+            *("Task",) * 4,
             *("Providers",) * 9,
             *("Plugins",) * 3,
             *("Tools",) * 2,
@@ -7405,6 +7420,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         assert {choice.label: choice.trailing for choice in action_choices if choice.trailing} == {
             "New session": "Ctrl+N",
             "Open session": "Ctrl+S",
+            "Task list": "Ctrl+T",
             "Manage plugins": "Alt+P",
             "Keyboard help": "Ctrl+H",
         }
@@ -7423,7 +7439,7 @@ async def test_queued_input_delivery_uses_shared_settings_menu_and_persists_mode
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34), notifications=True) as pilot:
+    async with run_ready_app(app, size=(100, 34), notifications=True) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -7476,7 +7492,7 @@ async def test_shared_menu_applies_responsive_height_before_mount_layout(
 
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(48, 18)) as pilot:
+    async with run_ready_app(app, size=(48, 18)) as pilot:
         await pilot.pause()
         screen = MountObservedChoiceScreen(
             title="ITEMS",
@@ -7497,7 +7513,7 @@ async def test_shared_menu_applies_responsive_height_before_mount_layout(
 async def test_shared_menu_height_tracks_terminal_with_bounded_layout(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 60)) as pilot:
+    async with run_ready_app(app, size=(100, 60)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -7541,7 +7557,7 @@ async def test_actions_opens_subagent_dispatch_policy(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -7581,7 +7597,7 @@ async def test_actions_lists_the_unified_subagent_catalog(tmp_path: Path) -> Non
     )
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -7622,7 +7638,7 @@ async def test_subagent_edit_and_delete_menus_show_disabled_builtin_group(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -7650,7 +7666,7 @@ async def test_subagent_crud_saves_without_success_notifications(tmp_path: Path)
     application = _application(tmp_path)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -7744,7 +7760,7 @@ async def test_actions_opens_provider_scoped_endpoint_configuration(tmp_path: Pa
     )
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -7775,7 +7791,7 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
     )
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -7843,7 +7859,7 @@ async def test_provider_submenu_updates_from_latest_preset_in_place(tmp_path: Pa
     template_path.write_text(json.dumps(root), encoding="utf-8")
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -7886,7 +7902,7 @@ async def test_provider_catalog_refreshes_before_returning_from_submenu(
     )
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -7934,7 +7950,7 @@ async def test_default_provider_submenu_keeps_toggle_visible_but_disabled(
     configuration.use_provider("primary")
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -7985,7 +8001,7 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
     configuration.use_provider("primary")
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -8066,7 +8082,7 @@ async def test_provider_deletions_use_shared_menu_confirmation(
     configuration.save_endpoint("custom", "chat", model="custom-model")
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -8089,9 +8105,10 @@ async def test_provider_deletions_use_shared_menu_confirmation(
         confirm = options.get_option(ConfirmationScreen.CONFIRM_VALUE).prompt
         assert isinstance(confirm, Text)
         assert confirm.get_style_at_offset(Console(), 0).color is None
-        assert confirm.get_style_at_offset(Console(), confirm.plain.index(message)).color == Style(
-            color=app.tui_theme.danger
-        ).color
+        assert (
+            confirm.get_style_at_offset(Console(), confirm.plain.index(message)).color
+            == Style(color=app.tui_theme.danger).color
+        )
 
         await pilot.press("down")
         assert any(
@@ -8126,7 +8143,7 @@ async def test_setting_default_endpoint_also_switches_default_provider(tmp_path:
     configuration.use_provider("primary")
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34), notifications=True) as pilot:
+    async with run_ready_app(app, size=(100, 34), notifications=True) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -8166,7 +8183,7 @@ async def test_add_provider_flow_integrates_presets_and_compatible_profiles(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -8235,7 +8252,7 @@ async def test_provider_configuration_uses_shared_grouped_inline_menu(
     app = OuroTuiApp(application=_application(tmp_path))
     results: list[TuiProviderConfiguration | None] = []
 
-    async with app.run_test(size=(80, 24)) as pilot:
+    async with run_ready_app(app, size=(80, 24)) as pilot:
         await pilot.pause()
         screen = ProviderConfigurationScreen(profile)
         app.push_screen(screen, callback=results.append)
@@ -8375,7 +8392,7 @@ async def test_provider_configuration_preserves_existing_enabled_state(
     app = OuroTuiApp(application=_application(tmp_path))
     results: list[TuiProviderConfiguration | None] = []
 
-    async with app.run_test(size=(80, 24)) as pilot:
+    async with run_ready_app(app, size=(80, 24)) as pilot:
         await pilot.pause()
         app.push_screen(
             ProviderConfigurationScreen(
@@ -8411,7 +8428,7 @@ async def test_actions_persists_three_distinct_recent_choices_across_restart(
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         for label, screen_type in (
             ("Theme", ChoiceScreen),
@@ -8445,7 +8462,7 @@ async def test_actions_persists_three_distinct_recent_choices_across_restart(
         assert all(choice.group == "Recent" for choice in app.screen._choices[:3])
 
     restarted = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
-    async with restarted.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(restarted, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -8463,7 +8480,7 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34), notifications=True) as pilot:
+    async with run_ready_app(app, size=(100, 34), notifications=True) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -8545,7 +8562,7 @@ async def test_plugin_install_failure_uses_error_toast_without_changing_conversa
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34), notifications=True) as pilot:
+    async with run_ready_app(app, size=(100, 34), notifications=True) as pilot:
         await pilot.pause()
         history = app.query_one(ConversationHistory)
         entries_before = history.entries
@@ -8581,7 +8598,7 @@ async def test_alt_navigation_shortcuts_preempt_all_focused_text_inputs(
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         composer = app.query_one("#composer", TextArea)
         composer.text = "draft"
@@ -8622,7 +8639,7 @@ async def test_alt_menu_shortcuts_are_idempotent_and_do_not_stack_screens(
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("alt+p")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGINS")
@@ -8643,7 +8660,7 @@ async def test_plugin_shortcut_navigates_beneath_actions_without_stacking(
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -8672,14 +8689,14 @@ async def test_actions_and_session_shortcuts_switch_on_the_active_menu_surface(
     application.runtime.sessions.create(session_id="ses_shortcut", title="Shortcut session")
     app = OuroTuiApp(home=tmp_path, application=application)
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         menu = app.screen
 
         for key, title, page_depth in (
-            ("ctrl+s", "SESSIONS", 1),
+            ("ctrl+s", "SESSION • USER", 1),
             ("ctrl+p", "ACTIONS", 0),
             ("ctrl+p", "ACTIONS", 0),
         ):
@@ -8698,7 +8715,7 @@ async def test_question_mark_remains_composer_input_after_help_shortcut_migratio
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         composer = app.query_one("#composer", TextArea)
         composer.focus()
@@ -8716,7 +8733,7 @@ async def test_root_help_groups_runtime_plugin_commands(
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         monkeypatch.setattr(
             app._controller,
@@ -8749,7 +8766,7 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -8808,7 +8825,7 @@ async def test_navigation_menu_routes_ctrl_c_to_abort_without_closing(
     monkeypatch.setattr(app, "_has_active_run", lambda: True)
     monkeypatch.setattr(app, "_abort_run", abort)
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -8827,7 +8844,7 @@ async def test_alt_menu_shortcuts_do_not_replace_transient_choice_children(
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 42)) as pilot:
+    async with run_ready_app(app, size=(100, 42)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -8864,7 +8881,7 @@ async def test_mcp_actions_open_operation_specific_server_selection(tmp_path: Pa
     )
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         for action_label, chooser_title in (
             ("Connect MCP server", "CONNECT MCP SERVER"),
@@ -8918,7 +8935,7 @@ async def test_mcp_connection_menus_show_all_servers_and_disable_unavailable_act
             ),
         )
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         monkeypatch.setattr(app._controller, "mcp_servers", runtime_servers)
         await pilot.press("ctrl+p")
@@ -8982,7 +8999,7 @@ async def test_mcp_connect_runs_in_background_and_contains_failures(
         runtime_status = "failed"
         raise RuntimeError("controlled MCP connection failure")
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         monkeypatch.setattr(app._controller, "mcp_servers", runtime_servers)
         monkeypatch.setattr(app._controller, "start_mcp_server", failing_start)
@@ -9061,7 +9078,7 @@ async def test_mcp_disconnect_runs_in_background_and_refreshes_status(
         runtime_status = "stopped"
         return runtime_servers()[0]
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         monkeypatch.setattr(app._controller, "mcp_servers", runtime_servers)
         monkeypatch.setattr(app._controller, "stop_mcp_server", controlled_stop)
@@ -9142,7 +9159,7 @@ async def test_mcp_disconnect_then_connect_survives_closed_action_menus(
         start_finished.set()
         return runtime_servers()[0]
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         monkeypatch.setattr(app._controller, "mcp_servers", runtime_servers)
         monkeypatch.setattr(app._controller, "stop_mcp_server", controlled_stop)
@@ -9193,7 +9210,7 @@ async def test_tool_permissions_group_all_registered_sources(tmp_path: Path) -> 
     ConfigurationFacade(tmp_path).set_tool_permission("UnavailableTest", "deny")
     app = OuroTuiApp(home=tmp_path, application=_application_with_tool_sources(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -9235,7 +9252,7 @@ async def test_tool_permissions_group_all_registered_sources(tmp_path: Path) -> 
 async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path: Path) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application_with_tool_sources(tmp_path))
 
-    async with app.run_test(size=(100, 34), notifications=True) as pilot:
+    async with run_ready_app(app, size=(100, 34), notifications=True) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -9368,7 +9385,7 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
     )
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -9476,7 +9493,7 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
     application.mcp = MCPRuntimeResource(manager)
     app = OuroTuiApp(home=tmp_path, application=application)
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -9565,7 +9582,7 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
 async def test_configuration_editor_restores_retained_action_menu(tmp_path: Path) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -9597,11 +9614,11 @@ async def test_action_choice_submenus_reuse_the_action_screen_without_flash(
     )
     app = OuroTuiApp(home=tmp_path, application=application)
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         for action_label, title in (
             ("Theme", "THEME"),
-            ("Open session", "SESSIONS"),
+            ("Open session", "SESSION • USER"),
             ("Archive session", "ARCHIVE SESSIONS"),
             ("Keyboard help", "KEYBOARD HELP"),
         ):
@@ -9642,7 +9659,7 @@ async def test_action_list_and_help_pages_render_once_on_the_shared_surface(
     )
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -9701,7 +9718,7 @@ async def test_configuration_editors_replace_visible_parent_at_every_depth(
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 42)) as pilot:
+    async with run_ready_app(app, size=(100, 42)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -9751,7 +9768,7 @@ async def test_skill_actions_open_operation_specific_skill_selection(tmp_path: P
     )
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -9777,7 +9794,7 @@ async def test_skill_directory_sources_use_shared_menu_and_persist_toggles(tmp_p
     )
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -9858,7 +9875,7 @@ async def test_skill_menu_loads_live_plugin_skill_as_disabled_choice(tmp_path: P
     _write_skill_plugin(source)
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         installed = await app._controller.install_plugin(
             TuiPluginInstallConfiguration(source=str(source))
@@ -9889,7 +9906,7 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
     )
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -9940,7 +9957,7 @@ async def test_mcp_configuration_screen_validates_json_and_returns_typed_draft(
     app = OuroTuiApp(application=_application(tmp_path))
     results = []
 
-    async with app.run_test(size=(100, 40)) as pilot:
+    async with run_ready_app(app, size=(100, 40)) as pilot:
         await pilot.pause()
         screen = MCPConfigurationScreen()
         app.push_screen(screen, callback=results.append)
@@ -10015,7 +10032,7 @@ async def test_tool_execution_uses_shared_grouped_inline_menu(tmp_path: Path) ->
     app = OuroTuiApp(application=_application(tmp_path))
     results = []
 
-    async with app.run_test(size=(80, 24)) as pilot:
+    async with run_ready_app(app, size=(80, 24)) as pilot:
         await pilot.pause()
         current = await app._controller.tool_execution_configuration()
         screen = ToolExecutionConfigurationScreen(current)
@@ -10088,7 +10105,7 @@ async def test_shared_inline_editor_keeps_cursor_in_horizontal_viewport(
     async def save_value(_field_id: str, _value: str) -> tuple[Choice, ...]:
         return ()
 
-    async with app.run_test(size=(64, 24)) as pilot:
+    async with run_ready_app(app, size=(64, 24)) as pilot:
         await pilot.pause()
         screen = EditableChoiceScreen(
             title="INLINE EDIT",
@@ -10153,7 +10170,7 @@ async def test_subagent_policy_uses_shared_grouped_inline_menu(tmp_path: Path) -
     app = OuroTuiApp(application=_application(tmp_path))
     results = []
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         current = await app._controller.agent_runtime_configuration()
         catalog = await app._controller.agent_definition_catalog()
@@ -10247,7 +10264,7 @@ async def test_subagent_definition_editor_does_not_limit_selected_tool_count(
         for index in range(40)
     )
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         models = await app._controller.models()
         screen = AgentDefinitionConfigurationScreen(tools, models)
@@ -10321,7 +10338,7 @@ async def test_skill_install_uses_shared_grouped_inline_menu(tmp_path: Path) -> 
     app = OuroTuiApp(application=_application(tmp_path))
     results = []
 
-    async with app.run_test(size=(80, 24)) as pilot:
+    async with run_ready_app(app, size=(80, 24)) as pilot:
         await pilot.pause()
         screen = SkillInstallScreen()
         app.push_screen(screen, callback=results.append)
@@ -10365,7 +10382,7 @@ async def test_compaction_uses_shared_grouped_inline_menu_and_returns_typed_draf
     app = OuroTuiApp(application=_application(tmp_path))
     results = []
 
-    async with app.run_test(size=(100, 42)) as pilot:
+    async with run_ready_app(app, size=(100, 42)) as pilot:
         await pilot.pause()
         runtime_models = await app._controller.models()
         unsupported_model = runtime_models[0]
@@ -10470,7 +10487,7 @@ async def test_plugin_commands_complete_and_execute_through_controller_boundary(
             execution=PluginCommandExecutionView(command_id="dev.ouro.demo:hello", output="hello")
         )
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         monkeypatch.setattr(
             app._controller,
@@ -10522,7 +10539,7 @@ async def test_slash_popup_loads_active_runtime_plugin_commands(tmp_path: Path) 
     ]
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press("slash")
         await pilot.pause()
@@ -10544,7 +10561,7 @@ async def test_abort_and_quit_commands_have_independent_lifecycles(
         nonlocal aborted
         aborted = True
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         monkeypatch.setattr(app._controller, "abort", fake_abort)
         app._projection = TuiSessionProjection("session_1")
@@ -10572,7 +10589,7 @@ async def test_abort_and_quit_commands_have_independent_lifecycles(
 async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("slash")
@@ -10630,7 +10647,7 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
 async def test_command_and_approval_menus_fit_resized_terminal(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         composer = app.query_one(Composer)
         composer.load_text("start session")
@@ -10689,7 +10706,7 @@ async def test_workspace_command_selects_paths_only_before_session_and_keeps_cle
     application = _application(tmp_path)
     app = OuroTuiApp(home=tmp_path, application=application)
 
-    async with app.run_test(size=(110, 34)) as pilot:
+    async with run_ready_app(app, size=(110, 34)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("slash", *"workspace", "enter")
@@ -10778,7 +10795,7 @@ async def test_workspace_history_records_startup_directory_and_keeps_twenty(
     preferences.save(TuiPreferences(recent_workspaces=previous))
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         stored = preferences.load().recent_workspaces
         assert stored == (str(tmp_path.resolve()), *previous[:19])
@@ -10794,7 +10811,7 @@ async def test_workspace_clear_argument_forgets_saved_history_without_changing_w
     preferences.save(TuiPreferences(recent_workspaces=(str(historical.resolve()),)))
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32), notifications=True) as pilot:
+    async with run_ready_app(app, size=(100, 32), notifications=True) as pilot:
         await pilot.pause()
         active_workspace = app._active_workspace
         composer = app.query_one(Composer)
@@ -10818,7 +10835,7 @@ async def test_slash_prefix_filters_new_command_text_and_restores_existing_draft
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         composer = app.query_one(Composer)
         popup = app.query_one(CommandPopup)
@@ -10868,7 +10885,7 @@ async def test_slash_prefix_filters_new_command_text_and_restores_existing_draft
 async def test_command_popup_hides_when_no_commands_match(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press("slash", *"not-a-command")
         await pilot.pause()
@@ -10884,7 +10901,7 @@ async def test_command_popup_hides_when_no_commands_match(tmp_path: Path) -> Non
 async def test_actions_command_opens_action_menu(tmp_path: Path, command: str) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press("slash", *command, "enter")
         await pilot.pause()
@@ -10897,7 +10914,7 @@ async def test_actions_command_opens_action_menu(tmp_path: Path, command: str) -
 async def test_model_command_selects_from_inline_argument_menu(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32), notifications=True) as pilot:
+    async with run_ready_app(app, size=(100, 32), notifications=True) as pilot:
         await pilot.pause()
         await pilot.press("slash", *"model", "enter")
         await pilot.pause()
@@ -10924,7 +10941,7 @@ async def test_model_command_refreshes_endpoints_configured_after_tui_start(
 ) -> None:
     app = OuroTuiApp(application=LocalApplication.build(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await app._controller.add_provider(
             TuiProviderConfiguration(
@@ -10981,7 +10998,7 @@ async def test_model_command_shows_endpoint_and_provider_without_changing_route_
     async def models() -> tuple[AvailableModel, ...]:
         return app._models
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         app._models = (
             AvailableModel(
@@ -11034,7 +11051,7 @@ Review the requested code carefully.
     application = _application(tmp_path, skills=(skill,))
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press("slash", *"skill", "enter")
         await pilot.pause()
@@ -11086,7 +11103,7 @@ Create the requested image.
     skill = SkillLoader(skill_root.parent).load_metadata()[0]
     app = OuroTuiApp(application=_application(tmp_path, skills=(skill,)))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press("slash", *"skill", "enter")
         await pilot.pause()
@@ -11114,7 +11131,7 @@ async def test_command_selection_executes_complete_argument(
             execution=PluginCommandExecutionView(command_id="dev.ouro.plan:plan")
         )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         monkeypatch.setattr(
             app._controller,
@@ -11169,7 +11186,7 @@ async def test_parameterized_command_opens_argument_menu_and_executes_selection(
             execution=PluginCommandExecutionView(command_id="dev.ouro.goal:goal")
         )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         monkeypatch.setattr(
             app._controller,
@@ -11259,7 +11276,7 @@ async def test_deleting_command_argument_updates_suggestion_in_same_edit(
     app = OuroTuiApp(application=_application(tmp_path))
     hint = "--token-budget N <objective>"
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         monkeypatch.setattr(
             app,
@@ -11340,7 +11357,7 @@ async def test_plan_command_without_dialogue_keeps_welcome_and_updates_status_li
     assert enabled.status == "active"
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press("slash", "p", "l", "a", "n", "space", "o", "n", "enter")
         await _wait_for_worker_group(app, pilot, group="plugin-command")
@@ -11377,7 +11394,7 @@ async def test_plan_status_keeps_its_conversation_notice(tmp_path: Path) -> None
     assert (await application.plugins.enable("dev.ouro.plan")).status == "active"
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press("slash", *"plan status", "enter")
         await _wait_for_worker_group(app, pilot, group="plugin-command")
@@ -11406,7 +11423,7 @@ async def test_loaded_session_projects_active_harness_into_status_line(tmp_path:
     )
     app = OuroTuiApp(application=application, resume_session_id=session.session_id)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await _wait_for_active_session(app, pilot, session.session_id)
 
         indicator = app.query_one(ActivityIndicator)
@@ -11437,7 +11454,7 @@ async def test_approval_panel_selects_with_arrows_and_resumes_run(tmp_path: Path
         approval_mode="approval",
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("w", "r", "i", "t", "e", "enter")
@@ -11504,7 +11521,7 @@ async def test_approval_panel_keeps_selected_action_visible_in_short_terminal(
         approval_mode="approval",
     )
 
-    async with app.run_test(size=(40, 12)) as pilot:
+    async with run_ready_app(app, size=(40, 12)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"write", "enter")
@@ -11537,7 +11554,7 @@ async def test_parallel_approvals_advance_one_at_a_time_without_stalling(tmp_pat
         approval_mode="approval",
     )
 
-    async with app.run_test(size=(100, 36)) as pilot:
+    async with run_ready_app(app, size=(100, 36)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("r", "u", "n", "enter")
@@ -11594,7 +11611,7 @@ async def test_approval_panel_denies_selected_tool(tmp_path: Path) -> None:
         approval_mode="approval",
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("w", "r", "i", "t", "e", "enter")
@@ -11625,7 +11642,7 @@ async def test_builtin_ask_user_renders_form_and_submits_structured_answer(
     application = _question_application(tmp_path)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 38)) as pilot:
+    async with run_ready_app(app, size=(100, 38)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("a", "s", "k", "enter")
@@ -11680,7 +11697,7 @@ async def test_ask_user_other_accepts_freeform_even_when_answer_starts_with_slas
     application = _question_application(tmp_path)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 38)) as pilot:
+    async with run_ready_app(app, size=(100, 38)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("a", "s", "k", "enter")
@@ -11722,7 +11739,7 @@ async def test_plugin_question_uses_common_form_and_returns_scalar_answer(
     application = _question_application(tmp_path, tool_name="PluginQuestion")
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 38)) as pilot:
+    async with run_ready_app(app, size=(100, 38)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("a", "s", "k", "enter")
@@ -11763,7 +11780,7 @@ async def test_plan_mode_write_approval_keeps_focus_on_approval_panel(tmp_path: 
     assert (await application.plugins.enable("dev.ouro.plan")).status == "active"
     app = OuroTuiApp(application=application, approval_mode="approval")
 
-    async with app.run_test(size=(100, 42)) as pilot:
+    async with run_ready_app(app, size=(100, 42)) as pilot:
         await pilot.pause()
         await pilot.press("slash", *"plan", "space", "o", "n", "enter")
         await pilot.pause()
@@ -11803,7 +11820,7 @@ async def test_plan_confirmation_arrows_page_document_without_moving_options(
         plan_digest="digest",
     )
 
-    async with app.run_test(size=(60, 24)) as pilot:
+    async with run_ready_app(app, size=(60, 24)) as pilot:
         await pilot.pause()
         panel = app.query_one(PlanConfirmationPanel)
         panel.show_request(request)
@@ -11844,7 +11861,7 @@ async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedbac
     assert (await application.plugins.enable("dev.ouro.plan")).status == "active"
     app = OuroTuiApp(application=application, approval_mode="auto")
 
-    async with app.run_test(size=(100, 42)) as pilot:
+    async with run_ready_app(app, size=(100, 42)) as pilot:
         await pilot.pause()
         await pilot.press("slash", *"plan", "space", "o", "n", "enter")
         await pilot.pause()
@@ -11928,7 +11945,7 @@ async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_opti
     assert (await application.plugins.enable("dev.ouro.plan")).status == "active"
     app = OuroTuiApp(application=application, approval_mode="auto")
 
-    async with app.run_test(size=(100, 42)) as pilot:
+    async with run_ready_app(app, size=(100, 42)) as pilot:
         await pilot.pause()
         await pilot.press("slash", *"plan", "space", "o", "n", "enter")
         await pilot.pause()
@@ -11984,7 +12001,7 @@ async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_opti
 async def test_noop_abort_does_not_notify_when_ready_status_is_visible(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32), notifications=True) as pilot:
+    async with run_ready_app(app, size=(100, 32), notifications=True) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+c")
         await pilot.pause()
@@ -12000,7 +12017,7 @@ async def test_preference_writes_do_not_block_the_event_loop(
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         entered = threading.Event()
         release = threading.Event()
@@ -12040,7 +12057,7 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32), notifications=True) as pilot:
+    async with run_ready_app(app, size=(100, 32), notifications=True) as pilot:
         await pilot.pause()
         status_line = app.query_one(StatusLine)
         status_line.set_context(
@@ -12164,7 +12181,7 @@ async def test_theme_switch_stays_interactive_coalesces_and_outlives_picker(
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -12247,7 +12264,7 @@ async def test_theme_loading_ends_after_history_reaches_the_new_theme(
         content=[TextContent(text="```python\nvalue = 1\n```\n")],
     )
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await app.query_one(ConversationView).load_messages((message,))
         await pilot.press("ctrl+p")
@@ -12304,7 +12321,7 @@ async def test_theme_persistence_failure_keeps_current_theme_and_clears_loading(
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32), notifications=True) as pilot:
+    async with run_ready_app(app, size=(100, 32), notifications=True) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -12364,7 +12381,7 @@ async def test_host_injected_theme_controls_css_rich_glyphs_and_static_spinner(
     assert markdown_code_color is not None
     assert markdown_code_color.triplet.hex == theme.accent
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         header = app.query_one(BrandHeader).render()
         assert header.plain.startswith(f" {theme.brand_mark} OURO ")
@@ -12396,7 +12413,7 @@ async def test_theme_switch_refreshes_styled_composer_placeholder(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         composer = app.query_one(Composer)
         getattr(composer, placeholder_setter)()
@@ -12428,7 +12445,7 @@ async def test_action_menu_updates_thought_display_without_closing_picker(
     preferences = TuiPreferencesStore(tmp_path)
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32), notifications=True) as pilot:
+    async with run_ready_app(app, size=(100, 32), notifications=True) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -12469,7 +12486,7 @@ async def test_action_menu_toggles_input_draft_memory_and_clears_disabled_state(
     drafts.save(TuiInputDrafts().remember(None, "remember this draft"))
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         composer = app.query_one(Composer)
         assert composer.text == "remember this draft"
@@ -12524,7 +12541,7 @@ async def test_theme_preview_is_local_and_cleared_when_picker_is_cancelled(
     preferences.save(TuiPreferences(theme="iris"))
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p", "enter")
         await pilot.pause()

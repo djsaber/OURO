@@ -28,7 +28,7 @@ from ouro.core.interactions import SessionInteractionMode
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.core.session_controls import AttributedSessionInput, AttributedSessionInputBatch
-from ouro.deployment import SessionBackend
+from ouro.deployment import SessionBackend, TaskBackend
 from ouro.local_application import LocalApplication
 
 _CYAN = "\x1b[36m"
@@ -43,6 +43,7 @@ async def run_interactive(
     approval_mode: SessionApprovalMode = "inherit",
     interaction_mode: SessionInteractionMode = "interactive",
     session_backend: SessionBackend | None = None,
+    task_backend: TaskBackend | None = None,
     runtime: RuntimeService | None = None,
     plugins: PluginService | None = None,
     input_func: InputFunc = input,
@@ -63,7 +64,9 @@ async def run_interactive(
                 system_prompt=system_prompt,
                 session_backend=session_backend,
             )
-            owned_application = LocalApplication.from_runtime(runtime, home=home)
+            owned_application = LocalApplication.from_runtime(
+                runtime, home=home, task_backend=task_backend
+            )
             runtime.add_event_sink(_primary_session_event_sink(runtime, output))
             await output.start_mcp_connection(owned_application.mcp.startup_configs)
             await owned_application.start()

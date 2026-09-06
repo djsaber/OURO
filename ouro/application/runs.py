@@ -38,6 +38,45 @@ from ouro.core.tools import ToolCallRequest, ToolResult
 from ouro.sessions import RuntimeSessionSnapshot, SessionStore
 
 
+def reserve_run(
+    store: SessionStore,
+    run: RunRecord,
+    *,
+    configure_session: Callable[[SessionRecord], SessionRecord] | None = None,
+) -> RunRecord:
+    """Reserve an identified queued Run through the shared Run/Session transition.
+
+    Producers persist their intent before this boundary. The execution lock
+    prevents a Host in another process from racing configuration and reservation.
+    """
+
+    if run.status != "queued":
+        raise ValueError("A reserved Run must be queued")
+    lock = store.acquire_session_lock(run.session_id, run.run_id)
+    if lock is None:
+        raise SessionBusyError(f"Session is executing: {run.session_id}")
+    try:
+        with store.session_mutation(run.session_id):
+            session = store.load_session_record(run.session_id)
+            if session.active_run_id is not None:
+                raise SessionBusyError(f"Session has an active Run: {session.active_run_id}")
+            try:
+                store.load_run(run.session_id, run.run_id)
+            except FileNotFoundError:
+                pass
+            else:
+                raise SessionBusyError(f"Run identity is already reserved: {run.run_id}")
+            if configure_session is not None:
+                session = configure_session(session)
+            transition = plan_run_transition(session, current_run=None, next_run=run)
+            store.save_run(transition.run)
+            store.save_session(transition.session)
+    finally:
+        lock.release()
+    store.refresh_catalog(run.session_id)
+    return transition.run
+
+
 class RunLifecycle:
     """Apply and persist run/session state transitions at durable boundaries."""
 

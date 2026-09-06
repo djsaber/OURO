@@ -15,7 +15,7 @@ from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import OuroError
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.results import RunResult
-from ouro.deployment import SessionBackend
+from ouro.deployment import SessionBackend, TaskBackend
 from ouro.local_application import (
     LocalApplication,
     build_local_mcp_runtime,
@@ -67,6 +67,7 @@ async def run_print(
     interaction_mode: SessionInteractionMode | None = None,
     resource_refs: list[str] | None = None,
     session_backend: SessionBackend | None = None,
+    task_backend: TaskBackend | None = None,
 ) -> int:
     try:
         runtime = build_default_runtime(
@@ -75,7 +76,9 @@ async def run_print(
             system_prompt=system_prompt,
             session_backend=session_backend,
         )
-        async with LocalApplication.from_runtime(runtime, home=home) as application:
+        async with LocalApplication.from_runtime(
+            runtime, home=home, task_backend=task_backend
+        ) as application:
             _print_startup_diagnostics(application.startup_report)
             result = await runtime.run(
                 prompt,
@@ -112,6 +115,7 @@ async def run_json(
     interaction_mode: SessionInteractionMode | None = None,
     resource_refs: list[str] | None = None,
     session_backend: SessionBackend | None = None,
+    task_backend: TaskBackend | None = None,
 ) -> int:
     startup_report = ApplicationStartupReport()
     try:
@@ -121,7 +125,9 @@ async def run_json(
             system_prompt=system_prompt,
             session_backend=session_backend,
         )
-        async with LocalApplication.from_runtime(runtime, home=home) as application:
+        async with LocalApplication.from_runtime(
+            runtime, home=home, task_backend=task_backend
+        ) as application:
             startup_report = application.startup_report
             result = await runtime.run(
                 prompt,

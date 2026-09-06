@@ -34,6 +34,7 @@ from ouro.application.dto import Diagnostic
 from ouro.application.event_models import RuntimeEventView
 from ouro.application.models import AvailableModel, ModelReasoningState
 from ouro.application.queued_inputs import QueuedInputMode, QueuedUserInputView
+from ouro.application.runtime_activity import overlay_run_activity
 from ouro.application.session_models import SessionCatalogEntry
 from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.supervisor import RuntimeSubscription
@@ -45,7 +46,7 @@ from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import REASONING_EFFORTS, ReasoningRequest
 from ouro.core.results import RunResult
-from ouro.deployment import SessionBackend
+from ouro.deployment import SessionBackend, TaskBackend
 from ouro.local_application import LocalApplication
 from ouro.tui.clipboard import ClipboardWriteError, write_system_clipboard
 from ouro.tui.commands import (
@@ -77,7 +78,13 @@ from ouro.tui.conversation_history import (
     ToolNavigationRequested,
 )
 from ouro.tui.input_drafts import TuiInputDrafts, TuiInputDraftStore
-from ouro.tui.menu_labels import PERMISSION_LABELS, THINKING_LABELS
+from ouro.tui.menu_labels import MODEL_THINKING_LABEL, THINKING_LABELS, TOOL_APPROVAL_LABEL
+from ouro.tui.model_menus import (
+    REASONING_REQUESTS,
+    approval_choices,
+    reasoning_choices,
+    reasoning_values,
+)
 from ouro.tui.plan_confirmation import project_plan_confirmation
 from ouro.tui.preferences import (
     MAX_RECENT_WORKSPACES,
@@ -197,12 +204,14 @@ _RECENT_ACTION_PREFIX = "__ouro_recent_action__:"
 _MENU_ACTIONS: MenuDestination = "actions"
 _MENU_PLUGINS: MenuDestination = "plugins"
 _MENU_SESSIONS: MenuDestination = "sessions"
+_MENU_TASKS: MenuDestination = "tasks"
 _ACTION_GROUP_RANK = {
     group: rank
     for rank, group in enumerate(
         (
             "Settings",
             "Session",
+            "Task",
             "Providers",
             "Plugins",
             "Tools",
@@ -212,17 +221,6 @@ _ACTION_GROUP_RANK = {
             "Support",
         )
     )
-}
-_REASONING_REQUESTS: dict[str, ReasoningRequest] = {
-    "default": ReasoningRequest(),
-    "enabled": ReasoningRequest(mode="enabled"),
-    "disabled": ReasoningRequest(mode="disabled"),
-    "minimal": ReasoningRequest(mode="enabled", effort="minimal"),
-    "low": ReasoningRequest(mode="enabled", effort="low"),
-    "medium": ReasoningRequest(mode="enabled", effort="medium"),
-    "high": ReasoningRequest(mode="enabled", effort="high"),
-    "xhigh": ReasoningRequest(mode="enabled", effort="xhigh"),
-    "max": ReasoningRequest(mode="enabled", effort="max"),
 }
 _THOUGHT_DISPLAY_OPTIONS: dict[str, bool] = {"expand": True, "collapse": False}
 _THOUGHT_DISPLAY_LABELS = {
@@ -909,6 +907,7 @@ _OURO_TUI_CSS = """
 
 
 class OuroTuiApp(ConfigurationWorkflowsApp):
+    _session_namespace = "default"
     TITLE = "OURO"
     SUB_TITLE = "Agent"
     ENABLE_COMMAND_PALETTE = False
@@ -929,6 +928,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             "Sessions",
             show=False,
             key_display="Ctrl+S",
+            priority=True,
+        ),
+        Binding(
+            "ctrl+t",
+            "tasks",
+            "Tasks",
+            show=False,
+            key_display="Ctrl+T",
             priority=True,
         ),
         Binding(
@@ -1013,6 +1020,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         home: str | Path | None = None,
         system_prompt: str | None = None,
         session_backend: SessionBackend | None = None,
+        task_backend: TaskBackend | None = None,
         approval_mode: SessionApprovalMode = "inherit",
         interaction_mode: SessionInteractionMode = "interactive",
         resume_session_id: str | None = None,
@@ -1054,6 +1062,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             home=home,
             system_prompt=system_prompt,
             session_backend=session_backend,
+            task_backend=task_backend,
             approval_mode=approval_mode,
             interaction_mode=interaction_mode,
             application=application,
@@ -1230,6 +1239,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         self._apply_bootstrap(bootstrap)
         self._apply_system_status(bootstrap)
+        self.set_interval(2.0, self._sync_task_status)
         if bootstrap.system_status.workspace is not None:
             await self._remember_workspace(bootstrap.system_status.workspace)
         await self._refresh_reasoning_indicator()
@@ -2863,9 +2873,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     @work(exclusive=True, group="compaction")
     async def _compact_session(self) -> None:
         if self._has_active_run():
-            self.notify(
-                "Stop the current task before compacting context", severity="warning"
-            )
+            self.notify("Stop the current task before compacting context", severity="warning")
             return
         if self._controller.session_id is None:
             return
@@ -3116,6 +3124,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             index = int(target[1:]) - 1
             conversation.scroll_to_user_turn(index)
 
+    async def on_choice_screen_tab_requested(self, message: ChoiceScreen.TabRequested) -> None:
+        message.stop()
+        self._session_namespace = "task" if self._session_namespace == "default" else "default"
+        await self._choose_session(menu=message.menu, switch=True)
+
+    async def _sync_task_status(self) -> None:
+        if not self._surface_available():
+            return
+        counts, error = await self._controller.task_status()
+        if counts != self._system_status.task_counts or error != self._system_status.task_error:
+            self._system_status = replace(self._system_status, task_counts=counts, task_error=error)
+            self.query_one(ConversationView).set_system_status(self._system_status)
+
     async def _choose_session(
         self,
         *,
@@ -3124,12 +3145,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     ) -> None:
         if not await self._refresh_sessions():
             return
-        if not self._sessions:
-            return
         choices = _session_choices(
-            self._sessions,
+            tuple(item for item in self._sessions if item.namespace == self._session_namespace),
             selected_session_id=self._visible_session_id(),
             theme=self._tui_theme,
+        )
+        domain = "TASK" if self._session_namespace == "task" else "USER"
+        title = self._tui_theme.section_separator.join(("SESSION", domain))
+        hint = self._tui_theme.inline_separator.join(
+            ("Tab USER/TASK", "↑/↓ move", "Enter select", "Esc back")
         )
         session_menu: ChoiceScreen
 
@@ -3147,21 +3171,29 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         if menu is not None:
             session_menu = menu
-            navigate = menu.switch_page if switch else menu.push_page
+            navigate = (
+                menu.replace_page
+                if menu.navigation_id == _MENU_SESSIONS
+                else menu.switch_page
+                if switch
+                else menu.push_page
+            )
             navigate(
                 navigation_id=_MENU_SESSIONS,
-                title="SESSIONS",
+                title=title,
                 placeholder="Filter sessions…",
                 choices=choices,
                 on_select=select_session,
+                interaction_hint=hint,
             )
             return
         session_menu = ChoiceScreen(
             navigation_id=_MENU_SESSIONS,
-            title="SESSIONS",
+            title=title,
             placeholder="Filter sessions…",
             choices=choices,
             on_select=select_session,
+            interaction_hint=hint,
         )
         self.push_screen(session_menu)
 
@@ -3628,6 +3660,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             ordered_events,
             event_high_water=loaded.event_high_water,
         )
+        if loaded.detail.recent_run is not None:
+            projection.activity = overlay_run_activity(
+                projection.activity, loaded.detail.recent_run
+            )
         projection.activity = projection.activity.model_copy(
             update={
                 "context_status": loaded.context_status,
@@ -3725,18 +3761,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
             self.notify(str(exc), severity="error", markup=False)
             return
-        choices = tuple(
-            Choice(
-                value=mode,
-                label=PERMISSION_LABELS[mode],
-                marker=self._tui_theme.selected_choice_marker if mode == current else "",
-                trailing="current" if mode == current else "",
-            )
-            for mode in TUI_APPROVAL_PRESETS
-        )
+        choices = approval_choices(TUI_APPROVAL_PRESETS, selected=current, theme=self._tui_theme)
         selected = await self.push_screen_wait(
             ChoiceScreen(
-                title="TOOL APPROVAL",
+                title=TOOL_APPROVAL_LABEL.upper(),
                 placeholder="Choose when to ask for approval…",
                 choices=choices,
             )
@@ -3792,28 +3820,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
             self.notify(str(exc), severity="error", markup=False)
             return
-        current = _reasoning_value(state.effective)
-        arguments = _reasoning_arguments(state)
-        if not arguments:
+        choices = reasoning_choices(
+            state.capability, selected=_reasoning_value(state.effective), theme=self._tui_theme
+        )
+        if not choices:
             self.notify(
                 "This endpoint does not expose configurable thinking settings",
                 markup=False,
             )
             return
-        choices = tuple(
-            Choice(
-                value=argument.value,
-                label=argument.display_label,
-                marker=(
-                    self._tui_theme.selected_choice_marker if argument.value == current else ""
-                ),
-                trailing="current" if argument.value == current else "",
-            )
-            for argument in arguments
-        )
         selected = await self.push_screen_wait(
             ChoiceScreen(
-                title="MODEL THINKING",
+                title=MODEL_THINKING_LABEL.upper(),
                 placeholder="Choose a thinking level…",
                 choices=choices,
             )
@@ -3822,7 +3840,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._set_reasoning(selected)
 
     async def _set_reasoning(self, value: str) -> None:
-        request = _REASONING_REQUESTS.get(value)
+        request = REASONING_REQUESTS.get(value)
         if request is None:
             return
         try:
@@ -3841,6 +3859,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._visible_read_only:
             return
         self._request_menu_navigation(_MENU_PLUGINS)
+
+    def action_tasks(self) -> None:
+        if self._visible_read_only:
+            return
+        self._request_menu_navigation(_MENU_TASKS)
 
     def _request_menu_navigation(self, destination: MenuDestination) -> None:
         """Route global menu shortcuts through the current menu surface."""
@@ -3868,6 +3891,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     menu=active_menu,
                     switch=active_menu is not None,
                 )
+            elif destination == _MENU_TASKS:
+                await self._choose_tasks(menu=active_menu, switch=active_menu is not None)
 
         self.run_worker(navigate(), exclusive=True, group="navigation")
 
@@ -3964,6 +3989,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 trailing=(
                     self._shortcut_for_action("plugins")
                     if action.action_id == "plugins.list"
+                    else self._shortcut_for_action("tasks")
+                    if action.action_id == "tasks.list"
                     else ""
                 ),
                 group=action.group,
@@ -4577,15 +4604,7 @@ def _reasoning_peak(state: ModelReasoningState) -> bool:
 
 
 def _available_reasoning_values(state: ModelReasoningState) -> tuple[str, ...]:
-    capability = state.capability
-    if capability.activation == "unsupported":
-        return ()
-    if capability.supported_efforts:
-        disabled = ("disabled",) if capability.activation == "toggle" else ()
-        return (*disabled, *capability.supported_efforts)
-    if capability.activation == "toggle":
-        return ("enabled", "disabled")
-    return ()
+    return reasoning_values(state.capability)
 
 
 def _reasoning_arguments(state: ModelReasoningState) -> tuple[TuiCommandArgument, ...]:

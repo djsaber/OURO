@@ -98,6 +98,7 @@ async def _runtime_command(args: argparse.Namespace) -> tuple[dict[str, Any], st
     application = LocalApplication.build(
         args.home,
         session_backend=args.command_session_backend,
+        task_backend=args.task_backend,
     )
     async with application:
         agents = application.agents
