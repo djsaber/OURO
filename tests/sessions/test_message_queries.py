@@ -11,6 +11,59 @@ from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("separate_reader", [False, True])
+@pytest.mark.parametrize("append_more", [False, True])
+def test_message_queries_detect_equal_size_replacement_with_identical_suffix(
+    tmp_path, backend, separate_reader, append_more
+):
+    def store():
+        return (
+            LocalSessionStore(tmp_path)
+            if backend == "files"
+            else SQLiteSessionStore(tmp_path / "sessions.db")
+        )
+
+    writer = store()
+    writer.initialize()
+    reader = store() if separate_reader else writer
+    session = SessionRecord()
+    writer.create_session(session)
+    retained = MessageRecord.text(session_id=session.session_id, role="user", text="retained")
+    original = MessageRecord.text(
+        session_id=session.session_id, role="user", text="question", run_id="run_old"
+    ).model_copy(update={"metadata": {"queued_input_id": "queue_old", "padding": "same" * 100}})
+    replacement = original.model_copy(
+        update={
+            "message_id": original.message_id[:-3] + "new",
+            "run_id": "run_new",
+            "metadata": {"queued_input_id": "queue_new", "padding": "same" * 100},
+        }
+    )
+    assert len(original.model_dump_json()) == len(replacement.model_dump_json())
+    writer.append_messages([retained, original])
+    assert reader.load_message(session.session_id, original.message_id) == original
+    writer.truncate_messages(
+        session.session_id,
+        before_message_id=original.message_id,
+        expected_last_message_id=original.message_id,
+    )
+    writer.append_message(replacement)
+    if append_more:
+        writer.append_message(
+            MessageRecord.text(session_id=session.session_id, role="assistant", text="reply")
+        )
+
+    assert reader.load_message(session.session_id, replacement.message_id) == replacement
+    assert reader.load_message(session.session_id, retained.message_id) == retained
+    assert reader.load_run_messages(session.session_id, "run_old") == []
+    assert reader.load_run_messages(session.session_id, "run_new") == [replacement]
+    assert reader.find_queued_input_message(session.session_id, "queue_old") is None
+    assert reader.find_queued_input_message(session.session_id, "queue_new") == replacement
+    with pytest.raises(PersistenceError, match="message not found"):
+        reader.load_message(session.session_id, original.message_id)
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
 def test_message_queries_follow_other_writer_and_history_truncation(tmp_path, backend):
     def store():
         return (

@@ -7,16 +7,22 @@ from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.events import EventRecord
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.local_application import LocalApplication
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore
+from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from ouro.tui.app import OuroTuiApp, _active_stream_tail
 from ouro.tui.widgets import Composer, ConversationView
+from tests.tui.helpers import run_ready_app
 
 
-def application_at(tmp_path, provider=None):
-    store = LocalSessionStore(tmp_path)
+def application_at(tmp_path, provider=None, *, backend="files"):
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.db")
+    )
     store.initialize()
     runtime = RuntimeService(
         store=store,
@@ -24,7 +30,9 @@ def application_at(tmp_path, provider=None):
             provider or FauxProvider(), ModelMetadata(model_id="faux", provider_id="faux")
         ),
         tools=ToolRegistry(),
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(
+            tmp_path, store.sessions_dir if backend == "files" else None
+        ),
     )
     return LocalApplication.from_runtime(runtime)
 
@@ -73,6 +81,75 @@ async def test_undo_returns_latest_user_message_to_composer_and_edit_stays_in_se
             "first question",
             "edited question",
         ]
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_abort_undo_and_resubmit_equal_length_input_completes_in_tui(tmp_path, backend):
+    class InterruptedProvider(FauxProvider):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+
+        async def stream(self, **kwargs):
+            if not self.started.is_set():
+                self.started.set()
+                await asyncio.Event().wait()
+            async for event in super().stream(**kwargs):
+                yield event
+
+    provider = InterruptedProvider()
+    application = application_at(tmp_path, provider, backend=backend)
+    app = OuroTuiApp(application=application)
+    async with run_ready_app(app, size=(100, 32)) as pilot:
+        await command(app, pilot, "first question")
+        await asyncio.wait_for(provider.started.wait(), 5)
+        await command(app, pilot, "/abort")
+        async with asyncio.timeout(10):
+            workers = tuple(w for w in app.workers if w.group in {"abort", "run"})
+            if workers:
+                await app.workers.wait_for_complete(workers)
+        assert app._projection.activity.status == "aborted"
+        session_id = app._controller.session_id
+        await command(app, pilot, "/undo")
+        assert app.query_one(Composer).text == "first question"
+        assert app.query_one(ConversationView).user_turn_summaries() == ()
+        await command(app, pilot, "other question")
+        async with asyncio.timeout(10):
+            workers = tuple(w for w in app.workers if w.group == "run")
+            if workers:
+                await app.workers.wait_for_complete(workers)
+        await pilot.pause()
+        assert app._controller.session_id == session_id
+        assert app._projection.activity.status == "completed"
+        assert app.query_one(ConversationView).user_turn_summaries() == ("other question",)
+        assert not app.query_one(Composer).disabled
+
+
+@pytest.mark.parametrize("live", [False, True])
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_open_session_reconciles_interrupted_run_but_preserves_live_owner(
+    tmp_path, live, backend
+):
+    application = application_at(tmp_path, backend=backend)
+    store = application.runtime.store
+    run_id = "run_interrupted"
+    session = SessionRecord(status="running", active_run_id=run_id, last_run_id=run_id)
+    store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, run_id=run_id, status="running"))
+    lock = store.acquire_session_lock(session.session_id, run_id) if live else None
+    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
+    try:
+        async with run_ready_app(app, size=(100, 32)):
+            expected = "running" if live else "recoverable"
+            assert store.load_run(session.session_id, run_id).status == expected
+            assert app._projection.activity.status == expected
+            assert app._projection.activity.activity == (
+                "preparing_model" if live else "recoverable"
+            )
+            assert not app.query_one(Composer).disabled
+    finally:
+        if lock is not None:
+            lock.release()
 
 
 async def test_continue_completed_and_empty_commands_show_warning_without_new_run(

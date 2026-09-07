@@ -2114,6 +2114,18 @@ class TuiController:
             self._read_session_selection,
             session_id,
         )
+        if (
+            loaded.detail.session.session_kind == "primary"
+            and loaded.detail.recent_run is not None
+            and loaded.detail.recent_run.status in {"queued", "running"}
+        ):
+            # Selecting the control Session is an explicit recovery boundary;
+            # read-only observation remains separate. Recovery honors live owners.
+            assert self._application is not None
+            await self._application.supervisor.recover_session(session_id)
+            loaded, control_archived = await asyncio.to_thread(
+                self._read_session_selection, session_id
+            )
         self._session_id = loaded.detail.session.agent_root_session_id
         self._session_archived = control_archived
         self._initial_model = None

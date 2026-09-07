@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from threading import Lock
 
@@ -15,7 +16,8 @@ from ouro.core.persistence import decode_versioned_record_json
 class _JournalIndex:
     identity: tuple[int, int] | None = None
     size: int = 0
-    tail: bytes = b""
+    tail_offset: int = 0
+    tail_digest: bytes = b""
     messages: dict[str, int] = field(default_factory=dict)
     queued: dict[str, int] = field(default_factory=dict)
     runs: dict[str, list[int]] = field(default_factory=dict)
@@ -26,17 +28,20 @@ class _JournalIndex:
         with path.open("rb") as stream:
             stat = path.stat()
             identity = stat.st_dev, stat.st_ino
-            stream.seek(max(0, self.size - len(self.tail)))
+            stream.seek(self.tail_offset)
             if (
                 identity != self.identity
                 or stat.st_size < self.size
-                or stream.read(len(self.tail)) != self.tail
+                or (self.size and sha256(stream.readline()).digest() != self.tail_digest)
             ):
                 self.size = 0
+                self.tail_offset = 0
+                self.tail_digest = b""
                 self.messages.clear()
                 self.queued.clear()
                 self.runs.clear()
             stream.seek(self.size)
+            last_line = None
             while line := stream.readline():
                 offset = self.size
                 self.size += len(line)
@@ -48,9 +53,11 @@ class _JournalIndex:
                 run_id = record.get("run_id")
                 if isinstance(run_id, str):
                     self.runs.setdefault(run_id, []).append(offset)
+                self.tail_offset = offset
+                last_line = line
             self.identity = identity
-            stream.seek(max(0, self.size - 256))
-            self.tail = stream.read()
+            if last_line is not None:
+                self.tail_digest = sha256(last_line).digest()
 
 
 class MessageJournalQueries:
@@ -58,8 +65,9 @@ class MessageJournalQueries:
 
     Callers hold the Session mutation lock. First access indexes that journal;
     subsequent reads inspect only its appended suffix and the requested records.
-    A tail witness detects truncate-and-append even when the file grew again.
-    Cached data contains offsets, never message bodies, and requires no writes.
+    A digest of the last indexed record detects suffix replacement even when
+    size and trailing fields are unchanged. Normal appends still index only new
+    records. Cached data contains offsets and one digest, never message bodies.
     """
 
     def __init__(self) -> None:

@@ -433,6 +433,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Fixed
 
+- Message journal indexes validate the complete last indexed record, so undo followed by an
+  equal-size replacement cannot hide the new message or return it under a withdrawn identity.
+  Opening a primary Session in the TUI recovers interrupted execution through the existing
+  supervisor boundary while preserving live owners and read-only observation.
 - Anthropic Messages-compatible usage now normalizes uncached input, cache reads, and cache
   creation into the same total-input invariant used by OpenAI-compatible providers, keeping cache
   fields as breakdowns so ledgers, budgets, Goal accounting, and cache-hit rates stay comparable.
