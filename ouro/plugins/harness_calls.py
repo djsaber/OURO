@@ -9,7 +9,12 @@ from ouro.core.callbacks import invoke_callback, invoke_owned_callback
 from ouro.core.cancellation import AbortSignal
 from ouro.core.harness_calls import HarnessCallSnapshot, HarnessInvocation, HarnessStateChange
 from ouro.core.session_extensions import SessionExtensionStateRecord
-from ouro.sdk.plugins.state import JsonValue, PluginSessionControl, PluginSessionState
+from ouro.sdk.plugins.state import (
+    JsonValue,
+    PluginRunControl,
+    PluginSessionControl,
+    PluginSessionState,
+)
 
 
 class PluginStateView:
@@ -46,9 +51,23 @@ class PluginStateView:
                 controller_id=item.controller_local_id,
                 activation_id=item.activation_id,
                 data=item.data,
+                usage_scope=item.usage_scope,
             )
             for item in self._invocation.controls()
         )
+
+    def run_controls(self) -> tuple[PluginRunControl, ...]:
+        return tuple(
+            PluginRunControl(
+                controller_id=item.controller_local_id,
+                activation_id=item.activation_id,
+                usage_scope=item.usage_scope,
+            )
+            for item in self._invocation.run_controls()
+        )
+
+    def usage_tokens(self) -> dict[str, int] | None:
+        return self._invocation.usage_tokens()
 
     def replace(
         self,

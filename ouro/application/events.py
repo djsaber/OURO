@@ -9,6 +9,7 @@ from typing import Any, Protocol, cast
 from ouro.application.event_models import validate_runtime_event_payload
 from ouro.application.harness import capture_harness
 from ouro.application.observers import ObserverDispatcher
+from ouro.application.usage import UsageService
 from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import settle_owned_tasks
 from ouro.core.context_providers import ContextProviderFailure
@@ -85,12 +86,14 @@ class RuntimeEventRecorder:
         observer_queue_size: int = 256,
         sink_timeout_seconds: float = 1.0,
         observer_dispatcher: ObserverDispatcher | None = None,
+        usage_service: UsageService | None = None,
     ) -> None:
         if observer_queue_size <= 0:
             raise ValueError("observer_queue_size must be positive")
         if sink_timeout_seconds <= 0:
             raise ValueError("sink_timeout_seconds must be positive")
         self.store = store
+        self.usage_service = usage_service
         self.observers = observers
         self._observer_queue_size = observer_queue_size
         self._sink_timeout_seconds = sink_timeout_seconds
@@ -152,7 +155,7 @@ class RuntimeEventRecorder:
                     capture_harness,
                     self.store,
                     observation.session_id,
-                    run_id=observation.run_id,
+                    usage_service=self.usage_service,
                 ),
             )
         except BaseException:

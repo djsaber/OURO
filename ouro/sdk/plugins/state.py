@@ -21,6 +21,16 @@ class PluginSessionControl:
     controller_id: str
     activation_id: str
     data: dict[str, JsonValue] = field(default_factory=dict)
+    usage_scope: str | None = None
+
+
+@dataclass(frozen=True)
+class PluginRunControl:
+    """This plugin's controller binding captured by the current Run's model request."""
+
+    controller_id: str
+    activation_id: str
+    usage_scope: str | None = None
 
 
 class PluginSessionStateView(Protocol):
@@ -32,6 +42,12 @@ class PluginSessionStateView(Protocol):
     def read(self) -> PluginSessionState | None: ...
 
     def controls(self) -> tuple[PluginSessionControl, ...]: ...
+
+    def run_controls(self) -> tuple[PluginRunControl, ...]: ...
+
+    def usage_tokens(self) -> dict[str, int] | None:
+        """Native totals by this owner's business scope; None means unavailable."""
+        ...
 
     def replace(
         self,

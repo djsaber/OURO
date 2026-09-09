@@ -95,7 +95,7 @@ class RunLifecycle:
         self.store = store
         self.events = events
         self.usage_service = usage_service
-        self.session_controls = SessionControlCoordinator(store)
+        self.session_controls = SessionControlCoordinator(store, usage_service=usage_service)
         self._validate_resource_refs = validate_resource_refs
         self._message_cache: dict[
             tuple[str, str],
@@ -386,7 +386,7 @@ class RunLifecycle:
             latest = self.store.load_run(run.session_id, run.run_id)
             if self.usage_service is not None:
                 entry = self.usage_service.record_provider_usage(
-                    run=latest,
+                    run=run,
                     usage=usage,
                     model=model,
                     request_id=request_id,
@@ -481,7 +481,7 @@ class RunLifecycle:
             steps: tuple[SessionCommitStep, ...] = ()
             if changes:
                 draft = accept_state_changes(
-                    harness or capture_harness(self.store, session.session_id, run_id=run.run_id),
+                    harness or capture_harness(self.store, session.session_id, run=run),
                     changes,
                 )
                 steps = (SessionCommitStep(harness=draft.state),)

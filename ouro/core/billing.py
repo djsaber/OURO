@@ -4,12 +4,14 @@ from collections.abc import Iterable
 from datetime import datetime
 from typing import Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, TypeAdapter, field_validator, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
 
 UsagePurpose = Literal["agent", "compaction"]
 UsageLedgerEventType = Literal["record", "replace", "reset"]
+
+_HARNESS_SCOPES = TypeAdapter(dict[str, tuple[str, ...]])
 
 
 class ProviderUsageEntry(VersionedOuroModel):
@@ -79,6 +81,11 @@ class ProviderUsageEntry(VersionedOuroModel):
         """Return primary input plus output tokens without double-counting cache detail."""
 
         return self.input_tokens + self.output_tokens
+
+    @property
+    def harness_scopes(self) -> dict[str, tuple[str, ...]]:
+        """Native request attribution; older, unassociated entries contribute to no scope."""
+        return _HARNESS_SCOPES.validate_python(self.metadata.get("harness_scopes", {}))
 
 
 class UsageFilter(OuroModel):

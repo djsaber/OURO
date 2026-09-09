@@ -422,9 +422,19 @@ class WorkerPluginInstance:
                             "controller_id": item.controller_id,
                             "activation_id": item.activation_id,
                             "data": item.data,
+                            "usage_scope": item.usage_scope,
                         }
                         for item in state_view.controls()
                     ],
+                    "run_controls": [
+                        {
+                            "controller_id": item.controller_id,
+                            "activation_id": item.activation_id,
+                            "usage_scope": item.usage_scope,
+                        }
+                        for item in state_view.run_controls()
+                    ],
+                    "usage_tokens": state_view.usage_tokens(),
                     "value": (
                         {
                             "state_schema_version": value.state_schema_version,
@@ -592,6 +602,7 @@ class WorkerPluginInstance:
                 output=str(result.get("output", "")),
                 data=_object_value(result.get("data", {})),
                 owner_state_revision=(owner_revision if isinstance(owner_revision, int) else None),
+                usage_scope=result.get("usage_scope"),
             )
 
         return handler
@@ -1372,6 +1383,7 @@ def _validate_worker_result(method: str, result: dict[str, Any]) -> None:
     if method == "session_controller.call":
         _require_optional_type(result, "output", str, method)
         _require_optional_type(result, "data", dict, method)
+        _require_optional_type(result, "usage_scope", str, method, allow_none=True)
         _require_optional_type(
             result,
             "owner_state_revision",

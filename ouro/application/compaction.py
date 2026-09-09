@@ -10,6 +10,7 @@ from typing import Protocol, cast
 
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.harness import capture_harness
+from ouro.application.usage import UsageService
 from ouro.config.compaction import CompactionConfig, CompactionModelConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id, utc_now
@@ -644,6 +645,7 @@ class ContextPreparationService:
         system_prompt: str,
         append_context_message: ContextMessageAppender,
         project_model_messages: ModelMessageProjector | None = None,
+        usage_service: UsageService | None = None,
     ) -> None:
         self.store = store
         self.adapter = adapter
@@ -655,6 +657,7 @@ class ContextPreparationService:
         self.system_prompt = system_prompt
         self.append_context_message = append_context_message
         self.project_model_messages = project_model_messages
+        self.usage_service = usage_service
 
     async def prepare(
         self,
@@ -678,7 +681,11 @@ class ContextPreparationService:
         provider_result = await active_context_providers.evaluate(
             ContextProviderCall(
                 harness=await run_blocking(
-                    capture_harness, self.store, session.session_id, run_id=run.run_id
+                    capture_harness,
+                    self.store,
+                    session.session_id,
+                    run=run,
+                    usage_service=self.usage_service,
                 )
                 if active_context_providers.registered()
                 else None,
@@ -1091,7 +1098,11 @@ class ContextPreparationService:
 
         request = CompactionRequest(
             harness=await run_blocking(
-                capture_harness, self.store, session.session_id, run_id=run.run_id
+                capture_harness,
+                self.store,
+                session.session_id,
+                run=run,
+                usage_service=self.usage_service,
             ),
             session_id=session.session_id,
             run_id=run.run_id,

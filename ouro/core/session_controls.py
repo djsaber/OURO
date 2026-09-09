@@ -247,6 +247,22 @@ class AttributedSessionControlTransition(SessionControlTransitionRequest):
     execution_contract_hash: str
 
 
+class RunControlBinding(OuroModel):
+    """Control identity captured for a model request, independent of later Harness edits."""
+
+    controller_id: str
+    activation_id: str
+    usage_scope: str | None = None
+
+    @property
+    def owner_id(self) -> str:
+        return self.controller_id.rsplit("/session_controllers/", 1)[0]
+
+    @property
+    def controller_local_id(self) -> str:
+        return self.controller_id.rsplit("/session_controllers/", 1)[1]
+
+
 class SessionControlActivation(OuroModel):
     """Durable Host-owned activation of one plugin Session controller."""
 
@@ -262,6 +278,7 @@ class SessionControlActivation(OuroModel):
     revision: int = Field(default=1, ge=1)
     phase: SessionControlPhase = "active"
     owner_state_revision: int | None = Field(default=None, ge=0)
+    usage_scope: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     error: str | None = None
@@ -317,6 +334,7 @@ __all__ = [
     "AttributedSessionControlTransition",
     "DelegatedTaskInput",
     "HostSessionInput",
+    "RunControlBinding",
     "SessionControlAccess",
     "SessionControlActivation",
     "SessionControlClaim",

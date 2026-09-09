@@ -125,3 +125,53 @@ def test_local_usage_ledger_does_not_expose_mutable_cache_aliases(tmp_path) -> N
     assert LocalUsageLedger(tmp_path).get(source.entry_id).metadata == {
         "token_source": "provider_response"
     }
+
+
+def test_scope_totals_follow_effective_entries_across_writers_and_corrections(tmp_path):
+    ledger = LocalUsageLedger(tmp_path)
+    ledger.initialize()
+    first = _entry(0).model_copy(
+        update={"metadata": {"harness_scopes": {"owner-a": ["goal", "goal"], "owner-b": ["goal"]}}}
+    )
+    ledger.record(first)
+    ledger.record(first)
+    ledger.record(_entry(1))  # Historical entries without attribution remain unassociated.
+    assert ledger.session_scope_tokens("ses_a") == {"owner-a": {"goal": 3}, "owner-b": {"goal": 3}}
+    assert ledger.session_scope_tokens("another-session") == {}
+
+    other = LocalUsageLedger(tmp_path)
+    assert other.session_scope_tokens("ses_a") == ledger.session_scope_tokens("ses_a")
+    corrected = first.model_copy(update={"revision": 2, "input_tokens": 8})
+    other.replace(corrected, note="provider correction")
+    assert ledger.session_scope_tokens("ses_a") == {
+        "owner-a": {"goal": 10},
+        "owner-b": {"goal": 10},
+    }
+    returned = ledger.session_scope_tokens("ses_a")
+    returned["owner-a"]["goal"] = 0
+    assert ledger.session_scope_tokens("ses_a")["owner-a"]["goal"] == 10
+
+    other.reset(UsageFilter(run_ids=frozenset({first.run_id})), note="explicit billing reset")
+    assert ledger.session_scope_tokens("ses_a") == {}
+    assert LocalUsageLedger(tmp_path).session_scope_tokens("ses_a") == {}
+    assert len(ledger.list_entries()) == 1
+
+
+def test_scope_reads_and_local_appends_do_not_replay_the_journal(tmp_path, monkeypatch):
+    ledger = LocalUsageLedger(tmp_path)
+    ledger.initialize()
+    ledger.record(_entry(0))
+    apply = LocalUsageLedger._apply_event
+    applied = []
+
+    def observe(entries, event, totals):
+        applied.append(event.event_type)
+        return apply(entries, event, totals)
+
+    monkeypatch.setattr(LocalUsageLedger, "_apply_event", staticmethod(observe))
+    for index in range(1, 21):
+        ledger.record(
+            _entry(index).model_copy(update={"metadata": {"harness_scopes": {"owner": ["goal"]}}})
+        )
+        assert ledger.session_scope_tokens("ses_a")["owner"]["goal"] > 0
+    assert applied == ["record"] * 20

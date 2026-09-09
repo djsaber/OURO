@@ -172,6 +172,7 @@ class LocalApplication:
             tool_policies=runtime.tool_policies,
             skills=runtime.skills,
             session_store=runtime.store,
+            usage_service=runtime.usage,
         )
         agent_config = AgentDefinitionsConfigManager(configured_home)
         configured_agents = agent_config.snapshot()
@@ -377,6 +378,7 @@ async def open_local_plugins(
         turn_policies=TurnPolicyRegistry(),
         tool_policies=ToolPolicyRegistry(),
         session_store=session_services._store,
+        usage_service=build_local_usage_service(root),
     )
     await runtime.start()
     try:
@@ -409,6 +411,7 @@ async def open_local_agent_definitions(
         turn_policies=TurnPolicyRegistry(),
         tool_policies=ToolPolicyRegistry(),
         session_store=session_services._store,
+        usage_service=build_local_usage_service(root),
     )
     mcp = MCPRuntimeResource.from_config(root, tools)
     try:
@@ -556,6 +559,7 @@ def build_local_plugin_service(
         store,
         session_store=session_store,
         builtin_plugins=LOCAL_BUILTIN_PLUGINS,
+        usage_service=build_local_usage_service(store.home),
     )
 
 
@@ -597,6 +601,7 @@ def _build_local_plugin_runtime(
     tool_policies: ToolPolicyRegistry,
     skills: tuple[SkillMetadata, ...] = (),
     session_store: SessionStore | None,
+    usage_service: UsageService | None,
 ) -> tuple[PluginRuntimeResource, PluginService]:
     store = PluginPackageStore(home)
     store.initialize()
@@ -627,6 +632,7 @@ def _build_local_plugin_runtime(
         runtime=runtime,
         session_store=session_store,
         builtin_plugins=LOCAL_BUILTIN_PLUGINS,
+        usage_service=usage_service,
     )
     return runtime, service
 

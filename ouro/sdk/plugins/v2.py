@@ -5,7 +5,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Protocol
 
-from .state import JsonValue, PluginSessionControl, PluginSessionState, PluginSessionStateView
+from .state import (
+    JsonValue,
+    PluginRunControl,
+    PluginSessionControl,
+    PluginSessionState,
+    PluginSessionStateView,
+)
 
 PermissionMode = Literal["auto", "approval", "deny"]
 ToolPermissionControl = Literal["host", "tool"]
@@ -627,6 +633,7 @@ class SessionControllerOutput:
     output: str = ""
     data: Mapping[str, object] = field(default_factory=dict)
     owner_state_revision: int | None = None
+    usage_scope: str | None = None
 
 
 SessionControllerHandler = Callable[
@@ -799,6 +806,7 @@ __all__ = [
     "PluginTaskGroup",
     "PluginSessionState",
     "PluginSessionControl",
+    "PluginRunControl",
     "PluginSessionStateView",
     "PromptAttachmentMetadata",
     "PromptInputSource",

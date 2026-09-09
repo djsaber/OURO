@@ -247,6 +247,7 @@ async def test_runtime_durable_boundaries_do_not_block_the_event_loop(
 
     original_save_run = store.save_run
     original_save_context = store.save_latest_context
+    original_commit = store.commit_session
 
     def delay(label: str) -> None:
         if label in observations:
@@ -266,8 +267,14 @@ async def test_runtime_durable_boundaries_do_not_block_the_event_loop(
         delay("context_snapshot")
         original_save_context(record)
 
+    def commit(request):
+        if any(run.active_tool_batch is not None for run in request.runs):
+            delay("tool_checkpoint")
+        return original_commit(request)
+
     monkeypatch.setattr(store, "save_run", save_run)
     monkeypatch.setattr(store, "save_latest_context", save_context)
+    monkeypatch.setattr(store, "commit_session", commit)
     ticker_task = asyncio.create_task(ticker())
     try:
         result = await runtime.run("Use the probe")
@@ -1775,14 +1782,17 @@ async def test_context_provider_message_persistence_failure_blocks_model_request
             ),
         ),
     )
-    append_messages = store.append_messages
+    commit_session = store.commit_session
 
-    def fail_scaffold(messages: list[MessageRecord]) -> None:
-        if any(message.metadata.get("kind") == "context_provider" for message in messages):
+    def fail_scaffold(request):
+        if any(
+            step.message is not None and step.message.metadata.get("kind") == "context_provider"
+            for step in request.steps
+        ):
             raise PersistenceError("simulated scaffold persistence failure")
-        append_messages(messages)
+        return commit_session(request)
 
-    monkeypatch.setattr(store, "append_messages", fail_scaffold)
+    monkeypatch.setattr(store, "commit_session", fail_scaffold)
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -1802,7 +1812,7 @@ async def test_context_provider_message_persistence_failure_blocks_model_request
     assert not any(
         message.metadata.get("kind") == "context_provider" for message in snapshot.messages
     )
-    monkeypatch.setattr(store, "append_messages", append_messages)
+    monkeypatch.setattr(store, "commit_session", commit_session)
     resumed = await runtime.continue_run(session_id=result.session.session_id)
     assert resumed.run.status == "completed"
     assert resumed.run.run_id == result.run.run_id
@@ -2687,10 +2697,19 @@ async def test_stream_deltas_do_not_rewrite_session_or_run_snapshots(
         ProviderStreamEvent(type="text_delta", text=f"t{index}") for index in range(30)
     )
     stream_events.append(ProviderStreamEvent(type="done"))
+    stream_write_counts = []
+
+    class ObservedProvider(FauxProvider):
+        async def stream(self, **kwargs):
+            async for event in super().stream(**kwargs):
+                if event.type in {"reasoning_delta", "text_delta"}:
+                    stream_write_counts.append((session_writes, run_writes, commits))
+                yield event
+
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
-            FauxProvider(stream_events),
+            ObservedProvider(stream_events),
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
         tools=_tools(),
@@ -2698,9 +2717,11 @@ async def test_stream_deltas_do_not_rewrite_session_or_run_snapshots(
     original_save_session = store.save_session
     original_save_run = store.save_run
     original_load_session = store.load_session
+    original_commit = store.commit_session
     session_writes = 0
     run_writes = 0
     aggregate_loads = 0
+    commits = 0
 
     def count_session_write(session) -> None:
         nonlocal session_writes
@@ -2717,17 +2738,22 @@ async def test_stream_deltas_do_not_rewrite_session_or_run_snapshots(
         aggregate_loads += 1
         return original_load_session(session_id)
 
+    def count_commit(request):
+        nonlocal commits
+        commits += 1
+        return original_commit(request)
+
     monkeypatch.setattr(store, "save_session", count_session_write)
     monkeypatch.setattr(store, "save_run", count_run_write)
     monkeypatch.setattr(store, "load_session", count_aggregate_load)
+    monkeypatch.setattr(store, "commit_session", count_commit)
 
     result = await runtime.run("burst")
 
     assert result.run.status == "completed"
     assert result.final_text == "".join(f"t{index}" for index in range(30))
-    assert session_writes == 4
-    # Run creation, one durable model-round boundary, and terminal commit.
-    assert run_writes == 3
+    assert len(stream_write_counts) == 60
+    assert len(set(stream_write_counts)) == 1
     assert aggregate_loads <= 10
 
 

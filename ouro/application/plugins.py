@@ -20,6 +20,7 @@ from ouro.application.plugin_models import (
     PluginValidationView,
 )
 from ouro.application.session_controls import SessionControlCoordinator
+from ouro.application.usage import UsageService
 from ouro.core.redaction import redact_text
 from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.plugins.builtin import BuiltinPluginDefinition, BuiltinPluginRegistry
@@ -77,6 +78,7 @@ class PluginService:
         runtime: PluginRuntimeResource | None = None,
         session_store: SessionStore | None = None,
         builtin_plugins: BuiltinPluginRegistry | None = None,
+        usage_service: UsageService | None = None,
     ) -> None:
         self.store = store
         self.builtin_plugins = builtin_plugins or BuiltinPluginRegistry()
@@ -89,8 +91,11 @@ class PluginService:
         )
         self.runtime = runtime
         self.session_store = session_store
+        self.usage_service = usage_service
         self.session_controls = (
-            SessionControlCoordinator(session_store) if session_store is not None else None
+            SessionControlCoordinator(session_store, usage_service=usage_service)
+            if session_store is not None
+            else None
         )
 
     def validate(
@@ -325,6 +330,7 @@ class PluginService:
                 argument=argument,
                 session_id=session_id,
                 workspace=workspace,
+                usage_service=self.usage_service,
             )
         finally:
             snapshot.close()

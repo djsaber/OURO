@@ -702,7 +702,11 @@ class ToolCallCoordinator:
                 assert checkpoint_run.active_tool_batch is not None
                 checkpoint_batch = checkpoint_run.active_tool_batch
                 resume_harness = await run_blocking(
-                    capture_harness, self.runs.store, session.session_id, run_id=run.run_id
+                    capture_harness,
+                    self.runs.store,
+                    session.session_id,
+                    run=run,
+                    usage_service=self.runs.usage_service,
                 )
                 resumed_harness[outcome.invocation.tool_call_id] = resume_harness
                 sequence = await self.events.emit(
@@ -735,7 +739,11 @@ class ToolCallCoordinator:
 
         execution_context = ToolExecutionContext(
             harness=await run_blocking(
-                capture_harness, self.runs.store, session.session_id, run_id=run.run_id
+                capture_harness,
+                self.runs.store,
+                session.session_id,
+                run=run,
+                usage_service=self.runs.usage_service,
             ),
             signal=abort_signal,
             workspace=session.workspace or self.default_workspace,
@@ -1501,7 +1509,11 @@ class ToolCallCoordinator:
         policy = await self.tool_policies.evaluate(
             ToolPolicyCall(
                 harness=await run_blocking(
-                    capture_harness, self.runs.store, session.session_id, run_id=run.run_id
+                    capture_harness,
+                    self.runs.store,
+                    session.session_id,
+                    run=run,
+                    usage_service=self.runs.usage_service,
                 )
                 if self.tool_policies.registered()
                 else None,

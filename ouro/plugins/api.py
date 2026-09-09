@@ -889,6 +889,7 @@ def _adapt_session_controller(
             output=raw.output,
             data=dict(raw.data),
             owner_state_revision=raw.owner_state_revision,
+            usage_scope=raw.usage_scope,
         )
 
     return PluginSessionController(

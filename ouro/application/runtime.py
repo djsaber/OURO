@@ -90,6 +90,8 @@ from ouro.core.errors import (
     SessionBusyError,
 )
 from ouro.core.events import EventRecord
+from ouro.core.harness import HarnessState
+from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.inner_loop import (
     InnerAgentLoop,
     InnerLoopContext,
@@ -224,7 +226,7 @@ class RuntimeService:
         self.usage = usage_service
         self.sessions = SessionService(store, resources=resources)
         self.session_recovery = SessionRecoveryService(store)
-        self.session_controls = SessionControlCoordinator(store)
+        self.session_controls = SessionControlCoordinator(store, usage_service=usage_service)
         self.queued_inputs = QueuedInputQueue(store)
         self.queued_input_config = queued_input_config or QueuedInputConfig()
         self.adapter = adapter
@@ -252,6 +254,7 @@ class RuntimeService:
             store=store,
             observers=self.observers,
             event_sink=event_sink,
+            usage_service=usage_service,
         )
         self.run_lifecycle = RunLifecycle(
             store=store,
@@ -307,6 +310,7 @@ class RuntimeService:
                 self.additional_system_prompt,
             ),
             append_context_message=self.run_lifecycle.append_input_message,
+            usage_service=usage_service,
             project_model_messages=(
                 resources.project_model_messages if resources is not None else None
             ),
@@ -1344,6 +1348,14 @@ class RuntimeService:
                     await self._evaluate_prompt_policies(
                         session=candidate_session,
                         run=preapproved_new_run,
+                        harness=HarnessCallSnapshot(
+                            session_id=candidate_session.session_id,
+                            harness_version=candidate_session.harness_version,
+                            history_epoch=candidate_session.history_epoch,
+                            run_id=preapproved_new_run.run_id,
+                            state=HarnessState(),
+                            usage_tokens={} if self.usage is not None else None,
+                        ),
                         inputs=[
                             QueuedInput(
                                 queue_id=new_id("queued"),
@@ -1959,9 +1971,7 @@ class RuntimeService:
                             self._evaluate_turn_completion,
                             policies=self._turn_policies_for_run(run.run_id),
                         ),
-                        begin_model_round=(
-                            self._begin_model_round if self._extension_catalog is not None else None
-                        ),
+                        begin_model_round=self._begin_model_round,
                         commit_model_request=self._commit_model_request,
                         shared_budget_reason=(
                             self._shared_budget_reason if self._agent_controls is not None else None
@@ -2796,7 +2806,11 @@ class RuntimeService:
         evaluation = await policies.evaluate(
             TurnCompletionCandidate(
                 harness=await run_blocking(
-                    capture_harness, self.store, session.session_id, run_id=run.run_id
+                    capture_harness,
+                    self.store,
+                    session.session_id,
+                    run=run,
+                    usage_service=self.usage,
                 )
                 if policies.registered()
                 else None,
@@ -3102,6 +3116,7 @@ class RuntimeService:
         session: SessionRecord,
         run: RunRecord,
         inputs: list[QueuedInput],
+        harness: HarnessCallSnapshot | None = None,
         catalog_snapshot: ExtensionCatalogLease | None = None,
         controller_run_id: str | None = None,
     ) -> None:
@@ -3121,9 +3136,14 @@ class RuntimeService:
             for generation in (snapshot.generations if snapshot is not None else ())
             if generation.execution_contract_hash is not None
         }
-        harness = await run_blocking(
-            capture_harness, self.store, session.session_id, run_id=run.run_id
-        )
+        if harness is None:
+            harness = await run_blocking(
+                capture_harness,
+                self.store,
+                session.session_id,
+                run=run,
+                usage_service=self.usage,
+            )
         for item in inputs:
             if item.source != "user":
                 continue
@@ -3377,7 +3397,11 @@ class RuntimeService:
                 raise ValueError("run has no tool call waiting for user input")
             await self._ensure_extension_snapshot(run)
             answer_harness = await run_blocking(
-                capture_harness, self.store, session.session_id, run_id=run.run_id
+                capture_harness,
+                self.store,
+                session.session_id,
+                run=run,
+                usage_service=self.usage,
             )
             batch = await self._tool_calls_for_run(run.run_id).resolve_user_answer(
                 batch,
@@ -3838,6 +3862,7 @@ class RuntimeService:
             queue=self.queued_inputs,
             session_controls=self.session_controls,
             session_controllers=self._session_controllers_for_run(run.run_id),
+            usage_service=self.usage,
         ).settle(
             session_id=run.session_id,
             run_id=run.run_id,
@@ -4027,6 +4052,7 @@ class RuntimeService:
                 "revision": activation.revision,
                 "generation_id": activation.generation_id,
                 "execution_contract_hash": activation.execution_contract_hash,
+                "usage_scope": activation.usage_scope,
             }
             for activation in controls.activations
             if activation.phase == "active"

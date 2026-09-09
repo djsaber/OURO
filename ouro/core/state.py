@@ -13,6 +13,7 @@ from ouro.core.interactions import SessionInteractionMode
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.session_controls import (
+    RunControlBinding,
     SessionControlState,
     SessionControlTransitionRequest,
     SessionInputMode,
@@ -255,3 +256,10 @@ class RunRecord(VersionedOuroModel):
     continuation: RunContinuationCheckpoint | None = None
     agent_catalog: AgentCatalogSnapshot | None = None
     metadata: Metadata = MetadataField
+
+    @property
+    def control_bindings(self) -> tuple[RunControlBinding, ...]:
+        return tuple(
+            RunControlBinding.model_validate(item)
+            for item in self.metadata.get("session_control_snapshot", {}).get("activations", ())
+        )

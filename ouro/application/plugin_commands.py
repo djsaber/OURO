@@ -7,6 +7,7 @@ from ouro.application.plugin_models import PluginCommandExecutionView
 from ouro.application.queued_inputs import QueuedInput, QueuedInputQueue
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.application.supervisor_models import HostInputReceipt
+from ouro.application.usage import UsageService
 from ouro.core.base import new_id, utc_now
 from ouro.core.callbacks import run_blocking
 from ouro.core.events import EventRecord
@@ -25,10 +26,11 @@ async def execute_plugin_command(
     argument: str,
     session_id: str | None,
     workspace: str | None,
+    usage_service: UsageService | None = None,
 ) -> PluginCommandExecutionView:
     """Accept one command's owner state, nested controllers and queued inputs together."""
     before, draft = (
-        await run_blocking(capture_session_harness, store, session_id)
+        await run_blocking(capture_session_harness, store, session_id, usage_service=usage_service)
         if store is not None and session_id is not None
         else (None, None)
     )

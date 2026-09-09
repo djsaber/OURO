@@ -111,6 +111,19 @@ async def execute(store, session, activate):
         )
 
 
+async def test_controller_declares_native_usage_scope_in_the_accepted_control(store):
+    def activate_scope(call):
+        return sdk.SessionControllerOutput(usage_scope="goal-identity")
+
+    session = SessionRecord()
+    store.create_session(session)
+    await execute(store, session, activate_scope)
+    control = store.load_harness(session.session_id).state.controls.activations[0]
+    assert control.plugin_id == OWNER
+    assert control.usage_scope == "goal-identity"
+    assert store.load_session_record(session.session_id).controls.activations[0] == control
+
+
 def activate(call):
     assert call.session_state.read().payload == {"command": True}
     call.session_state.replace(state_schema_version=1, payload={"command": True, "mode": True})

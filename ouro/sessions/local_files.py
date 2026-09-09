@@ -863,7 +863,7 @@ class LocalSessionStore:
     def list_sessions(self) -> list[SessionRecord]:
         return [
             self.load_session_record(path.parent.name)
-            for path in sorted(self.sessions_dir.glob("*/session.json"))
+            for path in sorted(self.sessions_dir.glob("[!.]*/session.json"))
         ]
 
     def load_resource_references(self, session_id: str) -> list[SessionResourceReference]:
@@ -1076,7 +1076,7 @@ class LocalSessionStore:
             )
 
     def _migrate_layout_v6_to_v7(self) -> None:
-        for path in sorted(self.sessions_dir.glob("*/session.json")):
+        for path in sorted(self.sessions_dir.glob("[!.]*/session.json")):
             session_id = path.parent.name
             lock = self.acquire_session_lock(session_id, "harness_migration")
             if lock is None:
@@ -1113,7 +1113,7 @@ class LocalSessionStore:
         The migration is intentionally idempotent. The layout manifest is advanced
         only after every existing Session has a valid collection.
         """
-        for session_path in sorted(self.sessions_dir.glob("*/session.json")):
+        for session_path in sorted(self.sessions_dir.glob("[!.]*/session.json")):
             session_dir = session_path.parent
             extension_path = session_dir / "extensions" / "index.json"
             if extension_path.exists():

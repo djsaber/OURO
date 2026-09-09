@@ -183,7 +183,9 @@ def prepare_session_commit(
         versions=tuple(versions),
         runs=request.runs,
         compactions=compactions,
-        invalidate_context=bool(messages) or state_changed or truncation is not None,
+        # The latest context records the last prepared request. Appending its response
+        # does not invalidate that fact; changing Harness or cutting history does.
+        invalidate_context=state_changed or truncation is not None,
     )
 
 

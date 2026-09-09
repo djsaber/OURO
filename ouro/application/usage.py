@@ -90,6 +90,13 @@ class UsageService:
                     f"provider usage request conflicts with ledger entry: {entry_id}"
                 )
             return existing
+        scopes: dict[str, set[str]] = {}
+        for binding in run.control_bindings:
+            if binding.usage_scope is not None:
+                scopes.setdefault(binding.owner_id, set()).add(binding.usage_scope)
+        metadata: dict[str, object] = {"token_source": "provider_response"}
+        if scopes:
+            metadata["harness_scopes"] = {owner: sorted(values) for owner, values in scopes.items()}
         entry = ProviderUsageEntry(
             entry_id=entry_id,
             occurred_at=self._clock(),
@@ -106,9 +113,13 @@ class UsageService:
             cache_read_tokens=usage.cache_read_tokens,
             cache_write_tokens=usage.cache_write_tokens,
             estimated_cost=usage.estimated_cost,
-            metadata={"token_source": "provider_response"},
+            metadata=metadata,
         )
         return self.ledger.record(entry)
+
+    def session_scope_tokens(self, session_id: str) -> dict[str, dict[str, int]]:
+        """Project the native ledger without scanning a Session's Run or message history."""
+        return self.ledger.session_scope_tokens(session_id)
 
     def list_entries(
         self,

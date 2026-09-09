@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from ouro.application.harness import capture_session_harness
 from ouro.application.queued_inputs import QueuedInput, QueuedInputQueue
 from ouro.application.session_controls import SessionControlCoordinator
+from ouro.application.usage import UsageService
 from ouro.core.base import utc_now
 from ouro.core.callbacks import run_blocking
 from ouro.core.continuations import (
@@ -62,8 +63,10 @@ class RunContinuationService:
         queue: QueuedInputQueue,
         session_controls: SessionControlCoordinator | None = None,
         session_controllers: PluginSessionControllerRegistry | None = None,
+        usage_service: UsageService | None = None,
     ) -> None:
         self.store = store
+        self.usage_service = usage_service
         self.registry = registry
         self.queue = queue
         self.session_controls = session_controls or SessionControlCoordinator(store)
@@ -126,7 +129,11 @@ class RunContinuationService:
         if checkpoint.settlement_plan is not None:
             return await self._settle_plan(run, checkpoint.settlement_plan)
         before, draft = await run_blocking(
-            capture_session_harness, self.store, session_id, run_id=run_id
+            capture_session_harness,
+            self.store,
+            session_id,
+            run=run,
+            usage_service=self.usage_service,
         )
         recovered_final_text = final_text
         if not recovered_final_text:

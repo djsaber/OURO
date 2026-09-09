@@ -9,7 +9,11 @@ from pydantic import Field, model_validator
 from ouro.core.base import OuroModel
 from ouro.core.cancellation import AbortSignal
 from ouro.core.harness import HarnessState
-from ouro.core.session_controls import SessionControlActivation, SessionControlState
+from ouro.core.session_controls import (
+    RunControlBinding,
+    SessionControlActivation,
+    SessionControlState,
+)
 from ouro.core.session_extensions import SessionExtensionStateRecord
 
 
@@ -22,6 +26,9 @@ class HarnessCallSnapshot(OuroModel):
     last_message_id: str | None = None
     run_id: str | None = None
     state: HarnessState
+    run_controls: tuple[RunControlBinding, ...] = ()
+    # None means the application has no native usage ledger; an empty map means zero usage.
+    usage_tokens: dict[str, dict[str, int]] | None = None
 
     @model_validator(mode="after")
     def validate_session(self) -> Self:
@@ -82,6 +89,16 @@ class HarnessInvocation:
             if item.plugin_id == owner_id and item.phase == "active"
         )
         self._writable = writable
+        self._run_controls = tuple(
+            item.model_copy(deep=True)
+            for item in snapshot.run_controls
+            if item.owner_id == owner_id
+        )
+        self._usage_tokens = (
+            dict(snapshot.usage_tokens.get(owner_id, {}))
+            if snapshot.usage_tokens is not None
+            else None
+        )
         self._signal = signal
         self._closed = False
         # Synchronous callbacks and saved views may run in different threads.
@@ -104,6 +121,16 @@ class HarnessInvocation:
             if value.session_id != self._session_id or value.owner_id != self._owner_id:
                 raise ValueError("Harness invocation cannot write another Session or owner")
             self._value = value.model_copy(deep=True)
+
+    def run_controls(self) -> tuple[RunControlBinding, ...]:
+        with self._lock:
+            self._require_open()
+            return tuple(item.model_copy(deep=True) for item in self._run_controls)
+
+    def usage_tokens(self) -> dict[str, int] | None:
+        with self._lock:
+            self._require_open()
+            return dict(self._usage_tokens) if self._usage_tokens is not None else None
 
     def delete(self) -> None:
         with self._lock:

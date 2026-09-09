@@ -9,7 +9,11 @@ from pydantic import ValidationError
 from ouro.core.callbacks import CallbackOutcomeUnknown, invoke_callback
 from ouro.core.harness import HarnessState
 from ouro.core.harness_calls import HarnessCallSnapshot
-from ouro.core.session_controls import SessionControlActivation, SessionControlState
+from ouro.core.session_controls import (
+    RunControlBinding,
+    SessionControlActivation,
+    SessionControlState,
+)
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.plugins.harness_calls import PluginStateView, invoke_plugin_callback
 from ouro.sdk.plugins import v2 as sdk
@@ -82,6 +86,39 @@ def test_controller_projection_is_owner_scoped_detached_and_call_bound(snapshot)
     assert view.finish() is None
     with pytest.raises(RuntimeError, match="closed"):
         view.controls()
+
+
+def test_run_binding_and_usage_views_are_native_owner_scoped_and_call_bound(snapshot):
+    snapshot = snapshot.model_copy(
+        update={
+            "run_controls": tuple(
+                RunControlBinding(
+                    controller_id=f"{owner}/session_controllers/mode",
+                    activation_id="old",
+                    usage_scope="goal",
+                )
+                for owner in ("example.plugin", "other.plugin")
+            ),
+            "usage_tokens": {"example.plugin": {"goal": 15}, "other.plugin": {"goal": 99}},
+        }
+    )
+    view = PluginStateView(snapshot, "example.plugin", writable=True)
+    assert view.controls() == ()
+    assert view.run_controls() == (sdk.PluginRunControl("mode", "old", "goal"),)
+    assert view.usage_tokens() == {"goal": 15}
+    view.usage_tokens()["goal"] = 0
+    view.replace(state_schema_version=1, payload={"business": "changed"})
+    assert view.usage_tokens() == {"goal": 15}
+    assert view.finish().state.payload == {"business": "changed"}
+    for read in (view.usage_tokens, view.run_controls):
+        with pytest.raises(RuntimeError, match="closed"):
+            read()
+
+
+def test_missing_usage_service_is_distinct_from_zero_usage(snapshot):
+    assert PluginStateView(snapshot, "example.plugin", writable=False).usage_tokens() is None
+    known_empty = snapshot.model_copy(update={"usage_tokens": {}})
+    assert PluginStateView(known_empty, "example.plugin", writable=False).usage_tokens() == {}
 
 
 @pytest.mark.asyncio

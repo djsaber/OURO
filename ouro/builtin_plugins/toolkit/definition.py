@@ -51,6 +51,7 @@ TOOLKIT_PLUGIN = BuiltinPluginDefinition(
                         "description": TODOLIST_DESCRIPTION,
                         "permission_mode": "auto",
                         "effect": "state_changing",
+                        "batch_behavior": "exclusive",
                     },
                 ],
             },

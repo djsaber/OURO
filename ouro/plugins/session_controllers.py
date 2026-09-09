@@ -35,6 +35,7 @@ class PluginSessionControllerOutput(OuroModel):
     output: str = ""
     data: dict[str, object] = Field(default_factory=dict)
     owner_state_revision: int | None = Field(default=None, ge=0)
+    usage_scope: str | None = None
 
 
 PluginSessionControllerHandler = Callable[

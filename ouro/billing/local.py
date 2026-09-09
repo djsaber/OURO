@@ -21,6 +21,7 @@ class LocalUsageLedger:
         self._cache_size = -1
         self._cached_events: list[UsageLedgerEvent] = []
         self._cached_entries: dict[str, ProviderUsageEntry] = {}
+        self._cached_scope_tokens: dict[str, dict[str, dict[str, int]]] = {}
 
     def initialize(self) -> None:
         try:
@@ -54,6 +55,14 @@ class LocalUsageLedger:
     def list_entries(self) -> list[ProviderUsageEntry]:
         with self._mutation():
             return [entry.model_copy(deep=True) for entry in self._read_entries().values()]
+
+    def session_scope_tokens(self, session_id: str) -> dict[str, dict[str, int]]:
+        with self._mutation():
+            self._read_state()
+            return {
+                owner: dict(scopes)
+                for owner, scopes in self._cached_scope_tokens.get(session_id, {}).items()
+            }
 
     def replace(self, entry: ProviderUsageEntry, *, note: str) -> ProviderUsageEntry:
         with self._mutation():
@@ -101,6 +110,8 @@ class LocalUsageLedger:
         self,
     ) -> tuple[list[UsageLedgerEvent], dict[str, ProviderUsageEntry]]:
         if not self.journal_path.exists():
+            self._cache_size = -1
+            self._cached_scope_tokens = {}
             return [], {}
         try:
             current_size = self.journal_path.stat().st_size
@@ -120,10 +131,14 @@ class LocalUsageLedger:
                         label=f"usage ledger event at line {line_number}",
                     )
                 )
-            entries = self._effective_entries(events)
+            entries: dict[str, ProviderUsageEntry] = {}
+            scope_tokens: dict[str, dict[str, dict[str, int]]] = {}
+            for event in events:
+                self._apply_event(entries, event, scope_tokens)
             self._cache_size = current_size
             self._cached_events = events
             self._cached_entries = entries
+            self._cached_scope_tokens = scope_tokens
             return events, entries
         except OSError as exc:
             raise PersistenceError(f"could not read usage ledger: {exc}") from exc
@@ -138,31 +153,24 @@ class LocalUsageLedger:
             size = self.journal_path.stat().st_size
             if self._cache_size >= 0:
                 cached_event = event.model_copy(deep=True)
-                self._apply_event(self._cached_entries, cached_event)
+                self._apply_event(self._cached_entries, cached_event, self._cached_scope_tokens)
                 self._cached_events.append(cached_event)
                 self._cache_size = size
         except (OSError, TypeError, ValueError) as exc:
             raise PersistenceError(f"could not append usage ledger event: {exc}") from exc
 
     @staticmethod
-    def _effective_entries(
-        events: list[UsageLedgerEvent],
-    ) -> dict[str, ProviderUsageEntry]:
-        entries: dict[str, ProviderUsageEntry] = {}
-        for event in events:
-            LocalUsageLedger._apply_event(entries, event)
-        return entries
-
-    @staticmethod
     def _apply_event(
         entries: dict[str, ProviderUsageEntry],
         event: UsageLedgerEvent,
+        scope_tokens: dict[str, dict[str, dict[str, int]]],
     ) -> None:
         if event.event_type == "record":
             assert event.entry is not None
             if event.entry.entry_id in entries:
                 raise PersistenceError(f"duplicate usage entry in ledger: {event.entry.entry_id}")
             entries[event.entry.entry_id] = event.entry
+            _adjust_scope_tokens(scope_tokens, event.entry, 1)
             return
         if event.event_type == "replace":
             assert event.entry is not None
@@ -174,10 +182,31 @@ class LocalUsageLedger:
             if event.entry.revision != current.revision + 1:
                 raise PersistenceError(f"non-sequential usage revision for {event.entry.entry_id}")
             entries[event.entry.entry_id] = event.entry
+            _adjust_scope_tokens(scope_tokens, current, -1)
+            _adjust_scope_tokens(scope_tokens, event.entry, 1)
             return
         assert event.usage_filter is not None
         removed_ids = [
             entry_id for entry_id, entry in entries.items() if event.usage_filter.matches(entry)
         ]
         for entry_id in removed_ids:
-            entries.pop(entry_id)
+            _adjust_scope_tokens(scope_tokens, entries.pop(entry_id), -1)
+
+
+def _adjust_scope_tokens(
+    totals: dict[str, dict[str, dict[str, int]]], entry: ProviderUsageEntry, sign: int
+) -> None:
+    """Maintain a disposable projection of the same effective entries, not another ledger."""
+    for owner, scopes in entry.harness_scopes.items():
+        session_totals = totals.setdefault(entry.session_id, {})
+        owner_totals = session_totals.setdefault(owner, {})
+        for scope in set(scopes):
+            value = owner_totals.get(scope, 0) + sign * entry.total_tokens
+            if value:
+                owner_totals[scope] = value
+            else:
+                owner_totals.pop(scope, None)
+        if not owner_totals:
+            session_totals.pop(owner, None)
+        if not session_totals:
+            totals.pop(entry.session_id, None)

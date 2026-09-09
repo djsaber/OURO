@@ -4,6 +4,8 @@ from datetime import timedelta
 
 import pytest
 
+from ouro.core.context import ContextBuilder
+from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
 from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessState
@@ -44,6 +46,68 @@ def state(session_id: str, value: object) -> HarnessState:
 
 def message(session_id: str, text: str) -> MessageRecord:
     return MessageRecord.text(session_id=session_id, role="assistant", text=text)
+
+
+@pytest.mark.parametrize("change", ["harness", "undo"])
+def test_response_append_preserves_request_context_until_business_state_or_history_changes(
+    store, change
+):
+    session = SessionRecord()
+    store.create_session(session)
+    view = ContextBuilder().build(
+        messages=[], tools=[], context_window_tokens=10_000, reserved_output_tokens=1_000
+    )
+    context = ContextSnapshotRecord(
+        session_id=session.session_id,
+        run_id="run",
+        turn_id="turn",
+        model_round=1,
+        provider_id="test",
+        model_id="test",
+        metrics=view.metrics,
+        context_digest=context_view_digest(view),
+    )
+    store.save_latest_context(context)
+    appended = store.commit_session(
+        SessionCommit(
+            before=session,
+            steps=(SessionCommitStep(message=message(session.session_id, "response")),),
+        )
+    )
+    assert store.load_latest_context(session.session_id) == context
+    request = (
+        SessionCommit(
+            before=appended.session,
+            steps=(SessionCommitStep(harness=state(session.session_id, "changed")),),
+        )
+        if change == "harness"
+        else SessionCommit(
+            before=appended.session, before_message_id=appended.messages[0].message_id
+        )
+    )
+    store.commit_session(request)
+    assert store.load_latest_context(session.session_id) is None
+
+
+def test_file_session_enumeration_excludes_unpublished_creation(tmp_path, monkeypatch):
+    import ouro.sessions.local_files as files
+
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    publish = files.replace_path_with_retry
+    observed = []
+
+    def inspect(source, destination):
+        if source.name.endswith(".staging") and source.parent == store.sessions_dir:
+            assert (source / "session.json").exists()
+            observed.append(store.list_sessions())
+        return publish(source, destination)
+
+    monkeypatch.setattr(files, "replace_path_with_retry", inspect)
+    session = SessionRecord()
+    store.create_session(session)
+    assert observed == [[]]
+    assert store.list_sessions() == [store.load_session_record(session.session_id)]
 
 
 def test_ordered_message_boundaries_restore_the_exact_before_state(store):

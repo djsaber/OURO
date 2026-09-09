@@ -6,6 +6,7 @@ from pydantic import JsonValue
 
 from ouro.application.harness import capture_session_harness
 from ouro.application.queued_inputs import QueuedInputQueue
+from ouro.application.usage import UsageService
 from ouro.core.base import new_id, utc_now
 from ouro.core.callbacks import run_blocking
 from ouro.core.errors import OuroError, PersistenceError
@@ -55,8 +56,9 @@ class SessionControlStaleRevisionError(SessionControlError):
 class SessionControlCoordinator:
     """Stage controller callbacks and settle their state, claims and owned work together."""
 
-    def __init__(self, store: SessionStore) -> None:
+    def __init__(self, store: SessionStore, *, usage_service: UsageService | None = None) -> None:
         self.store = store
+        self.usage_service = usage_service
 
     async def apply(
         self,
@@ -67,7 +69,9 @@ class SessionControlCoordinator:
         workspace: str | None = None,
         resolving_tool_call_id: str | None = None,
     ) -> SessionControlTransitionResult:
-        before, draft = await run_blocking(capture_session_harness, self.store, session_id)
+        before, draft = await run_blocking(
+            capture_session_harness, self.store, session_id, usage_service=self.usage_service
+        )
         operation_id = new_id("op")
         await run_blocking(
             self.store.append_ordered_event,
@@ -235,7 +239,9 @@ class SessionControlCoordinator:
                     harness=draft,
                 )
                 draft = self._accept_output(draft, output)
-                activation = activation.model_copy(update={"data": dict(output.data)})
+                activation = activation.model_copy(
+                    update={"data": dict(output.data), "usage_scope": output.usage_scope}
+                )
             else:
                 activation = None
         except PluginSessionControllerError as exc:
