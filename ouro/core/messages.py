@@ -53,6 +53,7 @@ ContentBlock = Annotated[
     Field(discriminator="type"),
 ]
 
+
 class ToolResultReference(OuroModel):
     tool_call_id: str
     tool_name: str
@@ -175,7 +176,9 @@ class ModelMessage(OuroModel):
 
 
 class MessageRecord(VersionedOuroModel):
+    schema_version: Literal[2] = 2
     message_id: str = Field(default_factory=lambda: new_id("msg"))
+    before_harness_version: str | None = None
     session_id: str
     run_id: str | None = None
     turn_id: str | None = None

@@ -25,10 +25,17 @@ from ouro.core.errors import (
     ResourceNotFoundError,
 )
 from ouro.core.events import MODEL_STREAM_DELTA_EVENT_TYPES, EventRecord
-from ouro.core.message_frames import MessageTruncation, retain_compactions, validate_frame_boundary
+from ouro.core.harness import HarnessState, HarnessVersion
+from ouro.core.message_frames import MessageTruncation
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.resources import SessionResourceReference, SessionResourceReferences
+from ouro.core.session_commits import (
+    SessionCommit,
+    SessionCommitConflict,
+    SessionCommitResult,
+    SessionCommitStep,
+)
 from ouro.core.session_extensions import (
     SessionExtensionStateCollection,
     SessionExtensionStateRecord,
@@ -39,13 +46,18 @@ from ouro.local_io import (
     replace_path_with_retry,
     write_json_atomic,
     write_model_atomic,
-    write_text_atomic,
 )
 from ouro.local_locks import is_lock_held
 from ouro.sessions.base import (
     RuntimeSessionSnapshot,
     SessionObservationState,
     SessionSnapshot,
+)
+from ouro.sessions.file_commits import FileSessionCommits
+from ouro.sessions.harness_migration import (
+    finish_legacy_history_cut,
+    migrate_file_records,
+    migrate_session_record,
 )
 from ouro.sessions.index import SessionIndex
 from ouro.sessions.layout import DATA_LAYOUT_VERSION, DataLayoutManifest
@@ -60,12 +72,6 @@ _EVENT_SEQUENCE_INDEX_RECORD = struct.Struct(">QQ")
 _EVENT_SEQUENCE_INDEX_STRIDE = 256
 
 
-class _HistoryCutJournal(OuroModel):
-    offset: int
-    session: SessionRecord
-    compactions: list[CompactionRecord] | None = None
-
-
 class LocalSessionStore:
     def __init__(self, root: str | Path | None = None) -> None:
         root_value = root if root is not None else os.environ.get("OURO_HOME")
@@ -78,6 +84,7 @@ class LocalSessionStore:
         self._event_sequence_index_cache: dict[str, tuple[int, int] | None] = {}
         self._event_run_offset_cache: dict[tuple[str, str], int] = {}
         self._message_queries = MessageJournalQueries()
+        self._commits = FileSessionCommits(self._session_dir, self._message_queries)
         self._delegation_paths: OrderedDict[str, Path] = OrderedDict()
         self._delegation_path_lock = Lock()
         self._layout_path = self.root / "layout.json"
@@ -141,13 +148,13 @@ class LocalSessionStore:
             if cached is not None:
                 self._delegation_paths.move_to_end(validated)
         if cached is not None:
-            return self._load_delegation_path(cached)
+            return self.load_delegation(cached.parent.parent.name, validated)
         paths = list(self.sessions_dir.glob(f"*/delegations/{validated}.json"))
         if not paths:
             raise FileNotFoundError(delegation_id)
         if len(paths) != 1:
             raise PersistenceError(f"delegation identity is not globally unique: {delegation_id}")
-        relation = self._load_delegation_path(paths[0])
+        relation = self.load_delegation(paths[0].parent.parent.name, validated)
         with self._delegation_path_lock:
             self._delegation_paths[validated] = paths[0]
             if len(self._delegation_paths) > 256:
@@ -201,8 +208,7 @@ class LocalSessionStore:
         child_session_id: str,
     ) -> DelegationRecord | None:
         _validated_record_id(child_session_id, kind="session")
-        root_dir = self._require_session_dir(root_session_id)
-        for record in self._load_delegations_from_dir(root_dir / "delegations"):
+        for record in self.list_delegations(root_session_id):
             if record.child_session_id == child_session_id:
                 return record
         return None
@@ -212,8 +218,7 @@ class LocalSessionStore:
         root_session_id: str,
         idempotency_key: str,
     ) -> DelegationRecord | None:
-        root_dir = self._require_session_dir(root_session_id)
-        for record in self._load_delegations_from_dir(root_dir / "delegations"):
+        for record in self.list_delegations(root_session_id):
             if record.idempotency_key == idempotency_key:
                 return record
         return None
@@ -252,8 +257,22 @@ class LocalSessionStore:
             (staging_dir / "runs").mkdir(parents=True)
             (staging_dir / "event-index" / "runs").mkdir(parents=True)
             (staging_dir / "resources").mkdir(parents=True)
-            (staging_dir / "extensions").mkdir(parents=True)
-            self._write_model_atomic(staging_dir / "session.json", session)
+            (staging_dir / "harness").mkdir(parents=True)
+            initial = HarnessVersion(
+                session_id=session.session_id,
+                version_id=session.harness_version,
+                state=HarnessState(controls=session.controls, states=tuple(extension_states or ())),
+            )
+            self._write_model_atomic(
+                staging_dir / "harness" / f"{initial.version_id}.json", initial
+            )
+            session = session.model_copy(
+                update={
+                    "message_count": len(messages),
+                    "last_message_id": messages[-1].message_id if messages else None,
+                }
+            )
+            self._commits.save_session_record(staging_dir, session)
             for name in ("messages.jsonl", "events.jsonl", "compactions.jsonl"):
                 (staging_dir / name).touch()
             for message in messages:
@@ -288,12 +307,6 @@ class LocalSessionStore:
                 raise PersistenceError(
                     f"extension state does not belong to session {session.session_id}"
                 )
-            self._write_model_atomic(
-                staging_dir / "extensions" / "index.json",
-                SessionExtensionStateCollection(
-                    states=sorted(states, key=lambda item: item.owner_id)
-                ),
-            )
             replace_path_with_retry(staging_dir, session_dir)
             self._event_sequence_cache[session.session_id] = (0, 0)
             self._event_sequence_index_cache[session.session_id] = None
@@ -306,8 +319,21 @@ class LocalSessionStore:
 
     def save_session(self, session: SessionRecord) -> None:
         with self.session_mutation(session.session_id):
-            session_dir = self._require_session_dir(session.session_id)
-            self._write_model_atomic(session_dir / "session.json", session)
+            current = self.load_session_record(session.session_id)
+            if session.history_epoch != current.history_epoch:
+                raise SessionCommitConflict("Session history changed; stale Session write rejected")
+            state = self.load_harness(session.session_id).state
+            steps: tuple[SessionCommitStep, ...] = ()
+            if (
+                session.harness_version == current.harness_version
+                and session.controls != current.controls
+            ):
+                steps = (
+                    SessionCommitStep(
+                        harness=state.model_copy(update={"controls": session.controls})
+                    ),
+                )
+            self.commit_session(SessionCommit(before=current, after=session, steps=steps))
 
     def trash_session_tree(
         self,
@@ -389,12 +415,17 @@ class LocalSessionStore:
     def append_messages(self, messages: list[MessageRecord]) -> None:
         if not messages:
             return
-        session_id = messages[0].session_id
-        if any(message.session_id != session_id for message in messages):
-            raise PersistenceError("message batch must belong to one session")
-        with self.session_mutation(session_id):
-            session_dir = self._require_session_dir(session_id)
-            self._append_jsonl_batch(session_dir / "messages.jsonl", messages)
+        with self.session_mutation(messages[0].session_id):
+            current = self.load_session_record(messages[0].session_id)
+            result = self.commit_session(
+                SessionCommit(
+                    before=current,
+                    steps=tuple(SessionCommitStep(message=item) for item in messages),
+                )
+            )
+            for supplied, stored in zip(messages, result.messages, strict=True):
+                supplied.sequence = stored.sequence
+                supplied.before_harness_version = stored.before_harness_version
 
     def load_messages_tail(self, session_id: str, *, limit: int = 100) -> list[MessageRecord]:
         if limit < 1:
@@ -414,94 +445,40 @@ class LocalSessionStore:
             return messages
 
     def truncate_messages(
-        self,
-        session_id: str,
-        *,
-        before_message_id: str,
-        expected_last_message_id: str,
+        self, session_id: str, *, before_message_id: str, expected_last_message_id: str
     ) -> MessageTruncation:
         with self.session_mutation(session_id):
-            directory = self._require_session_dir(session_id)
-            session = self.load_session_record(session_id)
-            removed_ids: set[str] = set()
-            first: MessageRecord | None = None
-            retained: MessageRecord | None = None
-            cut_offset = 0
-            with closing(reverse_jsonl(directory / "messages.jsonl")) as lines:
-                for offset, line in lines:
-                    message = decode_versioned_record_json(
-                        MessageRecord, line, label=f"message in session {session_id}"
-                    )
-                    if not removed_ids and message.message_id != expected_last_message_id:
-                        raise ValueError("session history changed; reload before truncating")
-                    if first is not None:
-                        retained = message
-                        break
-                    removed_ids.add(message.message_id)
-                    if message.message_id == before_message_id:
-                        first = message
-                        cut_offset = offset
-            if first is None:
-                raise ValueError(f"message boundary not found: {before_message_id}")
-            validate_frame_boundary(first, retained)
-            result = MessageTruncation(
-                first_removed=first, last_retained=retained, removed_count=len(removed_ids)
-            )
-            compactions = self._load_compactions(directory)
-            retained_compactions = retain_compactions(compactions, removed_ids)
-            active_id = session.active_compaction_id
-            if active_id is not None and not any(
-                item.compaction_id == active_id for item in retained_compactions
-            ):
-                active_id = retained_compactions[-1].compaction_id if retained_compactions else None
-            updated = session.model_copy(
-                update={
-                    "message_count": max(0, session.message_count - result.removed_count),
-                    "last_message_id": retained.message_id if retained else None,
-                    "active_compaction_id": active_id,
-                    "updated_at": utc_now(),
-                }
-            )
-            # The intent is durable before truncation. Every later store access
-            # finishes it under the mutation lock after a crash or failed write.
-            self._write_model_atomic(
-                directory / "history-cut.json",
-                _HistoryCutJournal(
-                    offset=cut_offset,
-                    session=updated,
-                    compactions=retained_compactions
-                    if len(retained_compactions) != len(compactions)
-                    else None,
-                ),
-            )
-            self._finish_history_cut(session_id)
-            return result
-
-    def _finish_history_cut(self, session_id: str) -> None:
-        directory = self._session_dir(session_id)
-        intent_path = directory / "history-cut.json"
-        if not intent_path.exists():
-            return
-        try:
-            intent = _HistoryCutJournal.model_validate_json(read_text_atomic(intent_path))
-            if intent.session.session_id != session_id or intent.offset < 0:
-                raise ValueError("invalid history cut identity or offset")
-            with (directory / "messages.jsonl").open("r+b") as stream:
-                if stream.seek(0, 2) < intent.offset:
-                    raise ValueError("history cut offset exceeds journal size")
-                stream.truncate(intent.offset)
-                stream.flush()
-                os.fsync(stream.fileno())
-            (directory / "context.json").unlink(missing_ok=True)
-            if intent.compactions is not None:
-                write_text_atomic(
-                    directory / "compactions.jsonl",
-                    "\n".join(item.model_dump_json() for item in intent.compactions),
+            current = self.load_session_record(session_id)
+            if current.last_message_id != expected_last_message_id:
+                raise SessionCommitConflict("session history changed; reload before truncating")
+            result = self.commit_session(
+                SessionCommit(
+                    before=current,
+                    before_message_id=before_message_id,
                 )
-            self._write_model_atomic(directory / "session.json", intent.session)
-            intent_path.unlink()
-        except (OSError, ValueError) as exc:
-            raise PersistenceError(f"could not finish history cut for {session_id}: {exc}") from exc
+            )
+            assert result.truncation is not None
+            return result.truncation
+
+    def load_harness(self, session_id: str, version_id: str | None = None) -> HarnessVersion:
+        with self.session_mutation(session_id):
+            if version_id is None:
+                version_id = self.load_session_record(session_id).harness_version
+            return self._commits.load_harness(session_id, version_id)
+
+    def load_commit(self, session_id: str, operation_id: str) -> SessionCommitResult | None:
+        with self.session_mutation(session_id):
+            self._require_session_dir(session_id)
+            return self._commits.load_result(session_id, operation_id)
+
+    def commit_session(self, request: SessionCommit) -> SessionCommitResult:
+        with self.session_mutation(request.before.session_id):
+            try:
+                return self._commits.commit(request)
+            except OSError as exc:
+                raise PersistenceError(
+                    f"could not commit Session {request.before.session_id}: {exc}"
+                ) from exc
 
     def append_event(self, event: EventRecord) -> None:
         with self.session_mutation(event.session_id):
@@ -770,19 +747,7 @@ class LocalSessionStore:
 
     def load_session_record(self, session_id: str) -> SessionRecord:
         with self.session_mutation(session_id):
-            path = self._session_dir(session_id) / "session.json"
-            try:
-                return decode_versioned_record_json(
-                    SessionRecord,
-                    read_text_atomic(path),
-                    label=f"session record {session_id}",
-                )
-            except FileNotFoundError:
-                raise
-            except (OSError, ValidationError, ValueError) as exc:
-                raise PersistenceError(
-                    f"could not load session record {session_id}: {exc}"
-                ) from exc
+            return self._commits.load_session(session_id)
 
     def load_messages_page(
         self,
@@ -896,23 +861,16 @@ class LocalSessionStore:
                 ) from exc
 
     def list_sessions(self) -> list[SessionRecord]:
-        records: list[SessionRecord] = []
-        for session_json in sorted(self.sessions_dir.glob("*/session.json")):
-            try:
-                records.append(
-                    decode_versioned_record_json(
-                        SessionRecord,
-                        read_text_atomic(session_json),
-                        label=f"session record {session_json}",
-                    )
-                )
-            except (OSError, ValidationError, ValueError) as exc:
-                raise PersistenceError(
-                    f"could not load session record {session_json}: {exc}"
-                ) from exc
-        return records
+        return [
+            self.load_session_record(path.parent.name)
+            for path in sorted(self.sessions_dir.glob("*/session.json"))
+        ]
 
     def load_resource_references(self, session_id: str) -> list[SessionResourceReference]:
+        with self.session_mutation(session_id):
+            return self._load_resource_references(session_id)
+
+    def _load_resource_references(self, session_id: str) -> list[SessionResourceReference]:
         path = self._resource_reference_path(session_id)
         try:
             return SessionResourceReferences.model_validate_json(read_text_atomic(path)).resources
@@ -955,9 +913,7 @@ class LocalSessionStore:
     def is_resource_referenced(self, resource_id: str) -> bool:
         for path in self.sessions_dir.glob("*/resources/index.json"):
             try:
-                references = SessionResourceReferences.model_validate_json(
-                    read_text_atomic(path)
-                ).resources
+                references = self.load_resource_references(path.parent.parent.name)
             except (OSError, ValidationError, ValueError) as exc:
                 raise PersistenceError(
                     f"could not load session resource references {path}: {exc}"
@@ -966,47 +922,46 @@ class LocalSessionStore:
                 return True
         return False
 
-    def load_session_extension_states(
-        self,
-        session_id: str,
-    ) -> list[SessionExtensionStateRecord]:
-        path = self._extension_state_path(session_id)
-        if not path.exists():
-            return []
-        collection = decode_versioned_record_json(
-            SessionExtensionStateCollection,
-            read_text_atomic(path),
-            label=f"extension state collection for session {session_id}",
-        )
-        if any(state.session_id != session_id for state in collection.states):
-            raise PersistenceError(
-                f"extension state collection contains a foreign Session: {session_id}"
-            )
-        return sorted(collection.states, key=lambda item: item.owner_id)
+    def load_session_extension_states(self, session_id: str) -> list[SessionExtensionStateRecord]:
+        return list(self.load_harness(session_id).state.states)
 
     def save_session_extension_state(self, state: SessionExtensionStateRecord) -> None:
         with self.session_mutation(state.session_id):
-            states = {
-                item.owner_id: item for item in self.load_session_extension_states(state.session_id)
-            }
+            current = self.load_session_record(state.session_id)
+            harness = self.load_harness(state.session_id).state
+            states = {item.owner_id: item for item in harness.states}
             states[state.owner_id] = state
-            self._write_model_atomic(
-                self._extension_state_path(state.session_id),
-                SessionExtensionStateCollection(
-                    states=[states[owner_id] for owner_id in sorted(states)]
-                ),
+            self.commit_session(
+                SessionCommit(
+                    before=current,
+                    steps=(
+                        SessionCommitStep(
+                            harness=HarnessState(
+                                controls=harness.controls, states=tuple(states.values())
+                            )
+                        ),
+                    ),
+                )
             )
 
     def delete_session_extension_state(self, session_id: str, owner_id: str) -> None:
         with self.session_mutation(session_id):
-            states = [
-                state
-                for state in self.load_session_extension_states(session_id)
-                if state.owner_id != owner_id
-            ]
-            self._write_model_atomic(
-                self._extension_state_path(session_id),
-                SessionExtensionStateCollection(states=states),
+            current = self.load_session_record(session_id)
+            harness = self.load_harness(session_id).state
+            self.commit_session(
+                SessionCommit(
+                    before=current,
+                    steps=(
+                        SessionCommitStep(
+                            harness=HarnessState(
+                                controls=harness.controls,
+                                states=tuple(
+                                    item for item in harness.states if item.owner_id != owner_id
+                                ),
+                            )
+                        ),
+                    ),
+                )
             )
 
     def scan_catalog(self) -> SessionIndex:
@@ -1037,7 +992,7 @@ class LocalSessionStore:
             ) from exc
 
     def session_mutation(self, session_id: str) -> SessionMutationLock:
-        return _HistoryMutation(self, session_id)
+        return _SessionMutation(self, session_id)
 
     def is_session_locked(self, session_id: str) -> bool:
         try:
@@ -1093,14 +1048,17 @@ class LocalSessionStore:
                 f"could not load data layout manifest {self._layout_path}: {exc}"
             ) from exc
         current_version = manifest.data_layout_version
-        if current_version == 3 and DATA_LAYOUT_VERSION == 6:
+        if current_version == 3:
             current_version = 4
-        if current_version == 4 and DATA_LAYOUT_VERSION == 6:
+        if current_version == 4:
             self._migrate_layout_v4_to_v5()
             current_version = 5
-        if current_version == 5 and DATA_LAYOUT_VERSION == 6:
+        if current_version == 5:
             self._migrate_layout_v5_to_v6()
             current_version = 6
+        if current_version == 6:
+            self._migrate_layout_v6_to_v7()
+            current_version = 7
         if current_version == DATA_LAYOUT_VERSION:
             if manifest.data_layout_version != DATA_LAYOUT_VERSION:
                 migrated = manifest.model_copy(
@@ -1116,6 +1074,38 @@ class LocalSessionStore:
                 "OURO data layout migration required: "
                 f"found {manifest.data_layout_version}, expected {DATA_LAYOUT_VERSION}"
             )
+
+    def _migrate_layout_v6_to_v7(self) -> None:
+        for path in sorted(self.sessions_dir.glob("*/session.json")):
+            session_id = path.parent.name
+            lock = self.acquire_session_lock(session_id, "harness_migration")
+            if lock is None:
+                raise MigrationRequiredError("stop active Sessions before migrating Harness state")
+            try:
+                with self.session_mutation(session_id):
+                    finish_legacy_history_cut(path.parent)
+                    extension_path = path.parent / "extensions" / "index.json"
+                    states = []
+                    if extension_path.exists():
+                        states = decode_versioned_record_json(
+                            SessionExtensionStateCollection,
+                            read_text_atomic(extension_path),
+                            label="legacy extension states",
+                        ).states
+                    session, baseline = migrate_session_record(read_text_atomic(path), states)
+                    if session.session_id != session_id:
+                        raise PersistenceError(
+                            "legacy Session identity does not match its directory"
+                        )
+                    if baseline is not None:
+                        self._commits.save_version(baseline)
+                    else:
+                        self._commits.load_harness(session_id, session.harness_version)
+                    migrate_file_records(path.parent)
+                    self._commits.save_session_record(path.parent, session)
+                    extension_path.unlink(missing_ok=True)
+            finally:
+                lock.release()
 
     def _migrate_layout_v4_to_v5(self) -> None:
         """Create canonical per-Session extension state collections.
@@ -1664,7 +1654,7 @@ def _is_record_boundary(path: Path, offset: int, size: int) -> bool:
         return False
 
 
-class _HistoryMutation(SessionMutationLock):
+class _SessionMutation(SessionMutationLock):
     def __init__(self, store: LocalSessionStore, session_id: str) -> None:
         super().__init__(store._mutation_lock_path(session_id), session_id=session_id)
         self._store = store
@@ -1672,7 +1662,10 @@ class _HistoryMutation(SessionMutationLock):
     def __enter__(self) -> Self:
         super().__enter__()
         try:
-            self._store._finish_history_cut(self.session_id)
+            self._store._commits.finish(self.session_id)
+        except OSError as exc:
+            self.release()
+            raise PersistenceError(f"could not recover Session {self.session_id}: {exc}") from exc
         except BaseException:
             self.release()
             raise

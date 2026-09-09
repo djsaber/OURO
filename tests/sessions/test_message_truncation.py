@@ -41,7 +41,7 @@ def history(store):
 def test_cut_validates_head_and_boundary_before_mutating(store):
     session, messages = history(store)
     for boundary, head in [(messages[2].message_id, "stale"), ("unknown", messages[-1].message_id)]:
-        with pytest.raises(ValueError):
+        with pytest.raises(PersistenceError):
             store.truncate_messages(
                 session.session_id, before_message_id=boundary, expected_last_message_id=head
             )
@@ -59,7 +59,7 @@ def test_cut_validates_head_and_boundary_before_mutating(store):
     assert store.load_messages_tail(session.session_id, limit=1) == [messages[2]]
 
 
-def test_cut_cannot_split_tool_frame_but_may_leave_existing_incomplete_frame(store):
+def test_cut_preserves_the_exact_prefix_even_inside_a_tool_exchange(store):
     session = SessionRecord(message_count=4)
     store.create_session(session)
     calls = [ToolCallRequest(id=f"call_{index}", name="Read", arguments={}) for index in range(2)]
@@ -86,18 +86,12 @@ def test_cut_cannot_split_tool_frame_but_may_leave_existing_incomplete_frame(sto
     ]
     user = MessageRecord.text(session_id=session.session_id, role="user", text="next", sequence=4)
     store.append_messages([assistant, *results, user])
-    with pytest.raises(ValueError, match="inside a message frame"):
-        store.truncate_messages(
-            session.session_id,
-            before_message_id=results[1].message_id,
-            expected_last_message_id=user.message_id,
-        )
     store.truncate_messages(
         session.session_id,
-        before_message_id=user.message_id,
+        before_message_id=results[1].message_id,
         expected_last_message_id=user.message_id,
     )
-    assert len(store.load_messages_tail(session.session_id)) == 3
+    assert store.load_messages_tail(session.session_id) == [results[0], assistant]
 
     broken = SessionRecord()
     store.create_session(broken)
@@ -207,18 +201,17 @@ def test_cut_preserves_valid_compaction_chain_and_allows_new_compaction(store):
 
 
 def test_local_cut_recovers_after_failure_between_truncation_and_projection(tmp_path, monkeypatch):
+    from ouro.sessions.file_commits import FileSessionCommits
+
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session, messages = history(store)
-    write = store._write_model_atomic
 
-    def fail_session_write(path, model):
-        if path.name == "session.json":
-            raise OSError("injected projection failure")
-        return write(path, model)
+    def fail_session_write(directory, model):
+        raise OSError("injected projection failure")
 
     with monkeypatch.context() as patch:
-        patch.setattr(store, "_write_model_atomic", fail_session_write)
+        patch.setattr(FileSessionCommits, "save_session_record", staticmethod(fail_session_write))
         with pytest.raises(PersistenceError, match="injected"):
             store.truncate_messages(
                 session.session_id,
@@ -230,19 +223,24 @@ def test_local_cut_recovers_after_failure_between_truncation_and_projection(tmp_
     assert restored.messages == messages[:2]
     assert restored.session.last_message_id == messages[1].message_id
     assert restored.session.message_count == 2
-    assert not (store.sessions_dir / session.session_id / "history-cut.json").exists()
+    assert not (store.sessions_dir / session.session_id / "commit.json").exists()
 
 
 def test_sqlite_cut_rolls_back_if_projection_fails(tmp_path, monkeypatch):
+    from ouro.sessions.sqlite_commits import SQLiteSessionCommits
+
     store = SQLiteSessionStore(tmp_path / "rollback.sqlite")
     store.initialize()
     session, messages = history(store)
 
-    def fail_save(session):
+    commit = SQLiteSessionCommits.commit
+
+    def fail_save(commits, request):
+        commit(commits, request)
         raise RuntimeError("injected failure")
 
     with monkeypatch.context() as patch:
-        patch.setattr(store, "save_session", fail_save)
+        patch.setattr(SQLiteSessionCommits, "commit", fail_save)
         with pytest.raises(RuntimeError, match="injected"):
             store.truncate_messages(
                 session.session_id,
@@ -253,7 +251,7 @@ def test_sqlite_cut_rolls_back_if_projection_fails(tmp_path, monkeypatch):
 
 
 def test_local_cut_reads_only_suffix_and_never_rewrites_prefix(tmp_path, monkeypatch):
-    import ouro.sessions.local_files as module
+    import ouro.sessions.file_commits as module
 
     store = LocalSessionStore(tmp_path)
     store.initialize()

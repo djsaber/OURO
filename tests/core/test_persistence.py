@@ -21,7 +21,8 @@ def test_versioned_record_model_rejects_unknown_schema_version() -> None:
         ({"session_id": "ses_missing"}, "missing"),
         ({"schema_version": "1", "session_id": "ses_string"}, "'1'"),
         ({"schema_version": 0, "session_id": "ses_old"}, "0"),
-        ({"schema_version": 2, "session_id": "ses_future"}, "2"),
+        ({"schema_version": 1, "session_id": "ses_legacy"}, "1"),
+        ({"schema_version": 3, "session_id": "ses_future"}, "3"),
     ],
 )
 def test_versioned_decoder_requires_explicit_current_version(
@@ -30,7 +31,7 @@ def test_versioned_decoder_requires_explicit_current_version(
 ) -> None:
     with pytest.raises(
         MigrationRequiredError,
-        match=rf"found {found}, expected 1",
+        match=rf"found {found}, expected 2",
     ):
         decode_versioned_record_json(
             SessionRecord,
@@ -53,4 +54,4 @@ def test_versioned_decoder_returns_current_typed_record() -> None:
     )
 
     assert session.session_id == "ses_current"
-    assert session.schema_version == 1
+    assert session.schema_version == 2

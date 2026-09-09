@@ -1,5 +1,4 @@
 import json
-import shutil
 from pathlib import Path
 
 import pytest
@@ -1297,7 +1296,7 @@ def test_store_rejects_incompatible_data_layout_without_modifying_manifest(tmp_p
     )
     before = layout_path.read_bytes()
 
-    with pytest.raises(MigrationRequiredError, match="found 999, expected 6"):
+    with pytest.raises(MigrationRequiredError, match="found 999, expected 7"):
         LocalSessionStore(tmp_path).initialize()
 
     assert layout_path.read_bytes() == before
@@ -1311,7 +1310,7 @@ def test_store_rejects_data_from_before_typed_tool_messages(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(MigrationRequiredError, match="found 2, expected 6"):
+    with pytest.raises(MigrationRequiredError, match="found 2, expected 7"):
         LocalSessionStore(tmp_path).initialize()
 
 
@@ -1325,7 +1324,9 @@ def test_store_migrates_extension_state_layout(
     session = SessionRecord(title="Existing Session")
     store.create_session(session)
     extension_dir = store.sessions_dir / session.session_id / "extensions"
-    shutil.rmtree(extension_dir)
+    raw = session.model_dump(mode="json", exclude={"harness_version", "history_epoch"})
+    raw["schema_version"] = 1
+    (extension_dir.parent / "session.json").write_text(json.dumps(raw), encoding="utf-8")
     (tmp_path / "layout.json").write_text(
         json.dumps(
             {
@@ -1343,9 +1344,10 @@ def test_store_migrates_extension_state_layout(
     assert migrated.load_session_extension_states(session.session_id) == []
     assert (
         json.loads((tmp_path / "layout.json").read_text(encoding="utf-8"))["data_layout_version"]
-        == 6
+        == 7
     )
-    assert (extension_dir / "index.json").is_file()
+    assert not (extension_dir / "index.json").exists()
+    assert migrated.load_harness(session.session_id).version_id == "harness_baseline"
 
 
 def test_store_migrates_v5_by_discarding_transcript_catalog(tmp_path) -> None:

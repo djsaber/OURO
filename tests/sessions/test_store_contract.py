@@ -214,7 +214,7 @@ def test_session_store_rejects_record_without_explicit_schema_version(
         finally:
             connection.close()
 
-    with pytest.raises(MigrationRequiredError, match="found missing, expected 1"):
+    with pytest.raises(MigrationRequiredError, match="found missing, expected 2"):
         session_store.load_session_record(session.session_id)
 
 
@@ -444,6 +444,7 @@ def test_session_store_trashes_complete_tree_without_loading_domain_records(
     )
     session_store.save_session_extension_state(state)
 
+    version_id = session_store.load_session_record(child.session_id).harness_version
     trash_id = session_store.trash_session_tree(
         root.session_id,
         (root.session_id, child.session_id),
@@ -457,12 +458,12 @@ def test_session_store_trashes_complete_tree_without_loading_domain_records(
             / trash_id
             / "sessions"
             / child.session_id
-            / "extensions"
-            / "index.json"
+            / "harness"
+            / f"{version_id}.json"
         )
         assert (
             state.model_dump(mode="json")
-            in json.loads(extension_path.read_text(encoding="utf-8"))["states"]
+            in json.loads(extension_path.read_text(encoding="utf-8"))["state"]["states"]
         )
     else:
         with closing(sqlite3.connect(session_store.database)) as connection:
@@ -472,7 +473,11 @@ def test_session_store_trashes_complete_tree_without_loading_domain_records(
                     (trash_id,),
                 ).fetchone()[0]
             )
-        assert payload["records"]["session_extension_states"]
+        versions = payload["records"]["harness_versions"]
+        records = [dict(zip(versions["columns"], row, strict=True)) for row in versions["rows"]]
+        persisted = next(row for row in records if row["version_id"] == version_id)
+        assert state.model_dump(mode="json") in json.loads(persisted["payload"])["state"]["states"]
+        assert payload["records"]["session_commits"]["rows"]
 
 
 def test_session_store_catalog_and_trash(session_store: SessionStore) -> None:

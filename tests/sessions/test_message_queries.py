@@ -128,7 +128,11 @@ def test_repeated_local_queries_only_index_appended_records(tmp_path, monkeypatc
     def count(value, *args, **kwargs):
         # Point reads validate the selected message through the same json
         # module; count bytes containing any retained *other* record.
-        if history[-1].message_id.encode() not in value:
+        if (
+            isinstance(value, bytes)
+            and b'"message_id":' in value
+            and history[-1].message_id.encode() not in value
+        ):
             indexed.append(value)
         return original(value, *args, **kwargs)
 

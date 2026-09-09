@@ -8,7 +8,7 @@ from ouro.core.messages import MessageRecord
 
 
 class MessageTruncation(OuroModel):
-    """A canonical suffix removed immediately before a message frame."""
+    """A canonical suffix removed immediately before one selected message."""
 
     first_removed: MessageRecord
     last_retained: MessageRecord | None

@@ -156,7 +156,12 @@ class RunContinuationCheckpoint(OuroModel):
 
 
 class SessionRecord(VersionedOuroModel):
+    schema_version: Literal[2] = 2
     session_id: str = Field(default_factory=lambda: new_id("ses"))
+    harness_version: str = Field(
+        default_factory=lambda: new_id("harness"), pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+    )
+    history_epoch: int = Field(default=0, ge=0)
     namespace: str = Field(default="default", min_length=1, max_length=128)
     root_session_id: str | None = None
     parent_session_id: str | None = None
@@ -221,6 +226,8 @@ class SessionRecord(VersionedOuroModel):
 
 
 class RunRecord(VersionedOuroModel):
+    schema_version: Literal[2] = 2
+    history_epoch: int = Field(default=0, ge=0)
     run_id: str = Field(default_factory=lambda: new_id("run"))
     session_id: str
     kind: RunKind = "agent"

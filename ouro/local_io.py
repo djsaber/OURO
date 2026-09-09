@@ -15,25 +15,27 @@ _WINDOWS_TRANSIENT_SHARING_ERRORS = frozenset({5, 32})
 
 
 def write_model_atomic(path: Path, model: OuroModel) -> None:
-    write_text_atomic(path, model.model_dump_json(indent=2))
+    write_text_atomic(path, model.model_dump_json(indent=2) + "\n")
 
 
 def write_json_atomic(path: Path, value: object) -> None:
-    write_text_atomic(path, json.dumps(value, ensure_ascii=False, indent=2, default=str))
+    write_text_atomic(path, json.dumps(value, ensure_ascii=False, indent=2, default=str) + "\n")
 
 
 def write_text_atomic(path: Path, text: str) -> None:
+    """Replace UTF-8 content exactly, including journal line boundaries."""
+
     temp_path: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with NamedTemporaryFile(
             "w",
             encoding="utf-8",
+            newline="",
             dir=path.parent,
             delete=False,
         ) as tmp:
             tmp.write(text)
-            tmp.write("\n")
             tmp.flush()
             os.fsync(tmp.fileno())
             temp_path = Path(tmp.name)

@@ -5,7 +5,7 @@ import re
 import sqlite3
 import threading
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
@@ -23,10 +23,17 @@ from ouro.core.errors import (
     ResourceNotFoundError,
 )
 from ouro.core.events import MODEL_STREAM_DELTA_EVENT_TYPES, EventRecord
-from ouro.core.message_frames import MessageTruncation, retain_compactions, validate_frame_boundary
+from ouro.core.harness import HarnessState, HarnessVersion
+from ouro.core.message_frames import MessageTruncation
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.resources import SessionResourceReference
+from ouro.core.session_commits import (
+    SessionCommit,
+    SessionCommitConflict,
+    SessionCommitResult,
+    SessionCommitStep,
+)
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.local_locks import is_lock_held
@@ -41,11 +48,17 @@ from ouro.sessions.catalog import (
     catalog_entry_from_session,
     sort_catalog_entries,
 )
+from ouro.sessions.harness_migration import (
+    migrate_message_record,
+    migrate_run_record,
+    migrate_session_record,
+)
 from ouro.sessions.index import SessionIndex, SessionIndexEntry, invalid_session_index_entry
 from ouro.sessions.locks import SessionRunLock
+from ouro.sessions.sqlite_commits import SQLiteSessionCommits
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
-SQLITE_SCHEMA_VERSION = 4
+SQLITE_SCHEMA_VERSION = 5
 
 
 class SQLiteSessionStore:
@@ -60,6 +73,7 @@ class SQLiteSessionStore:
         self.database.parent.mkdir(parents=True, exist_ok=True)
         self._locks_dir.mkdir(parents=True, exist_ok=True)
         connection: sqlite3.Connection | None = None
+        migration_locks = ExitStack()
         try:
             connection = self._connect()
             connection.execute("PRAGMA journal_mode = WAL")
@@ -138,11 +152,18 @@ class SQLiteSessionStore:
                     );
                     CREATE INDEX IF NOT EXISTS resource_reference_identity
                         ON resource_references(resource_id);
-                    CREATE TABLE IF NOT EXISTS session_extension_states (
+                    CREATE TABLE IF NOT EXISTS harness_versions (
                         session_id TEXT NOT NULL,
-                        owner_id TEXT NOT NULL,
+                        version_id TEXT NOT NULL,
                         payload TEXT NOT NULL,
-                        PRIMARY KEY(session_id, owner_id),
+                        PRIMARY KEY(session_id, version_id),
+                        FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+                    );
+                    CREATE TABLE IF NOT EXISTS session_commits (
+                        session_id TEXT NOT NULL,
+                        operation_id TEXT NOT NULL,
+                        payload TEXT NOT NULL,
+                        PRIMARY KEY(session_id, operation_id),
                         FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
                     );
                     CREATE TABLE IF NOT EXISTS trashed_sessions (
@@ -185,7 +206,9 @@ class SQLiteSessionStore:
                     "INSERT INTO metadata(key, value) VALUES('sqlite_schema_version', ?)",
                     (str(SQLITE_SCHEMA_VERSION),),
                 )
-            elif int(existing[0]) in {1, 2, 3}:
+            elif int(existing[0]) in {1, 2, 3, 4}:
+                connection.execute("BEGIN IMMEDIATE")
+                self._migrate_harness(connection, migration_locks)
                 connection.execute(
                     "UPDATE metadata SET value = ? WHERE key = 'sqlite_schema_version'",
                     (str(SQLITE_SCHEMA_VERSION),),
@@ -212,6 +235,66 @@ class SQLiteSessionStore:
         finally:
             if connection is not None:
                 connection.close()
+            migration_locks.close()
+
+    def _migrate_harness(self, connection: sqlite3.Connection, locks: ExitStack) -> None:
+        commits = SQLiteSessionCommits(connection)
+        has_legacy_states = (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'session_extension_states'"
+            ).fetchone()
+            is not None
+        )
+        for session_id, payload in connection.execute(
+            "SELECT session_id, payload FROM sessions"
+        ).fetchall():
+            lock = self.acquire_session_lock(session_id, "harness_migration")
+            if lock is None:
+                raise MigrationRequiredError("stop active Sessions before migrating Harness state")
+            # Ownership is retained until the entire migration transaction ends.
+            locks.callback(lock.release)
+            states = []
+            if has_legacy_states:
+                states = self._load_models(
+                    connection,
+                    "SELECT payload FROM session_extension_states "
+                    "WHERE session_id = ? ORDER BY owner_id",
+                    (session_id,),
+                    SessionExtensionStateRecord,
+                )
+            session, baseline = migrate_session_record(payload, states)
+            if session.session_id != session_id:
+                raise PersistenceError("legacy Session has a foreign identity")
+            if baseline is not None:
+                commits.save_version(baseline)
+            else:
+                commits.load_harness(session_id, session.harness_version)
+            for row_id, message_payload in connection.execute(
+                "SELECT row_id, payload FROM messages WHERE session_id = ?", (session_id,)
+            ).fetchall():
+                message = migrate_message_record(message_payload)
+                if message.session_id != session_id:
+                    raise PersistenceError("legacy message belongs to another Session")
+                connection.execute(
+                    "UPDATE messages SET payload = ? WHERE row_id = ?",
+                    (message.model_dump_json(), row_id),
+                )
+            for run_id, run_payload in connection.execute(
+                "SELECT run_id, payload FROM runs WHERE session_id = ?", (session_id,)
+            ).fetchall():
+                run = migrate_run_record(run_payload)
+                if run.session_id != session_id:
+                    raise PersistenceError("legacy Run belongs to another Session")
+                connection.execute(
+                    "UPDATE runs SET payload = ? WHERE session_id = ? AND run_id = ?",
+                    (run.model_dump_json(), session_id, run_id),
+                )
+            connection.execute(
+                "UPDATE sessions SET payload = ? WHERE session_id = ?",
+                (session.model_dump_json(exclude={"controls"}), session_id),
+            )
+        connection.execute("DROP TABLE IF EXISTS session_extension_states")
 
     def create_session(self, session: SessionRecord) -> None:
         self.create_session_snapshot(session, [])
@@ -378,7 +461,24 @@ class SQLiteSessionStore:
             try:
                 connection.execute(
                     "INSERT INTO sessions(session_id, payload) VALUES(?, ?)",
-                    (session.session_id, session.model_dump_json()),
+                    (
+                        session.session_id,
+                        session.model_copy(
+                            update={
+                                "message_count": len(messages),
+                                "last_message_id": messages[-1].message_id if messages else None,
+                            }
+                        ).model_dump_json(exclude={"controls"}),
+                    ),
+                )
+                SQLiteSessionCommits(connection).save_version(
+                    HarnessVersion(
+                        session_id=session.session_id,
+                        version_id=session.harness_version,
+                        state=HarnessState(
+                            controls=session.controls, states=tuple(extension_states or ())
+                        ),
+                    )
                 )
                 for message in messages:
                     if message.session_id != session.session_id:
@@ -417,18 +517,26 @@ class SQLiteSessionStore:
                             f"extension state {state.owner_id} does not belong to "
                             f"{session.session_id}"
                         )
-                    self._insert_session_extension_state(connection, state)
             except sqlite3.IntegrityError as exc:
                 raise PersistenceError(f"session already exists: {session.session_id}") from exc
 
     def save_session(self, session: SessionRecord) -> None:
         with self.session_mutation(session.session_id):
-            cursor = self._transaction_connection().execute(
-                "UPDATE sessions SET payload = ? WHERE session_id = ?",
-                (session.model_dump_json(), session.session_id),
-            )
-            if cursor.rowcount == 0:
-                raise FileNotFoundError(session.session_id)
+            current = self.load_session_record(session.session_id)
+            if session.history_epoch != current.history_epoch:
+                raise SessionCommitConflict("Session history changed; stale Session write rejected")
+            state = self.load_harness(session.session_id).state
+            steps: tuple[SessionCommitStep, ...] = ()
+            if (
+                session.harness_version == current.harness_version
+                and session.controls != current.controls
+            ):
+                steps = (
+                    SessionCommitStep(
+                        harness=state.model_copy(update={"controls": session.controls})
+                    ),
+                )
+            self.commit_session(SessionCommit(before=current, after=session, steps=steps))
 
     def trash_session_tree(
         self,
@@ -468,7 +576,8 @@ class SQLiteSessionStore:
                             "compactions",
                             "latest_contexts",
                             "resource_references",
-                            "session_extension_states",
+                            "harness_versions",
+                            "session_commits",
                             "delegations",
                         )
                     },
@@ -493,18 +602,17 @@ class SQLiteSessionStore:
     def append_messages(self, messages: list[MessageRecord]) -> None:
         if not messages:
             return
-        session_id = messages[0].session_id
-        if any(message.session_id != session_id for message in messages):
-            raise PersistenceError("message batch must belong to one session")
-        with self.session_mutation(session_id):
-            try:
-                connection = self._transaction_connection()
-                for message in messages:
-                    self._insert_message(connection, message)
-            except sqlite3.IntegrityError as exc:
-                raise PersistenceError(
-                    f"could not append message batch for {session_id}: {exc}"
-                ) from exc
+        with self.session_mutation(messages[0].session_id):
+            current = self.load_session_record(messages[0].session_id)
+            result = self.commit_session(
+                SessionCommit(
+                    before=current,
+                    steps=tuple(SessionCommitStep(message=item) for item in messages),
+                )
+            )
+            for supplied, stored in zip(messages, result.messages, strict=True):
+                supplied.sequence = stored.sequence
+                supplied.before_harness_version = stored.before_harness_version
 
     def load_messages_tail(self, session_id: str, *, limit: int = 100) -> list[MessageRecord]:
         if limit < 1:
@@ -518,81 +626,38 @@ class SQLiteSessionStore:
         return [self._validate_model(MessageRecord, row[0], "message tail") for row in rows]
 
     def truncate_messages(
-        self,
-        session_id: str,
-        *,
-        before_message_id: str,
-        expected_last_message_id: str,
+        self, session_id: str, *, before_message_id: str, expected_last_message_id: str
     ) -> MessageTruncation:
         with self.session_mutation(session_id):
-            connection = self._transaction_connection()
-            session = self._load_session_record(connection, session_id)
-            head = connection.execute(
-                "SELECT message_id FROM messages WHERE session_id = ? ORDER BY row_id DESC LIMIT 1",
-                (session_id,),
-            ).fetchone()
-            if head is None or head[0] != expected_last_message_id:
-                raise ValueError("session history changed; reload before truncating")
-            boundary = connection.execute(
-                "SELECT row_id, payload FROM messages WHERE session_id = ? AND message_id = ?",
-                (session_id, before_message_id),
-            ).fetchone()
-            if boundary is None:
-                raise ValueError(f"message boundary not found: {before_message_id}")
-            previous = connection.execute(
-                "SELECT payload FROM messages WHERE session_id = ? AND row_id < ? "
-                "ORDER BY row_id DESC LIMIT 1",
-                (session_id, boundary[0]),
-            ).fetchone()
-            first = self._validate_model(MessageRecord, boundary[1], "message boundary")
-            retained = (
-                self._validate_model(MessageRecord, previous[0], "retained message")
-                if previous is not None
-                else None
+            current = self.load_session_record(session_id)
+            if current.last_message_id != expected_last_message_id:
+                raise SessionCommitConflict("session history changed; reload before truncating")
+            result = self.commit_session(
+                SessionCommit(before=current, before_message_id=before_message_id)
             )
-            validate_frame_boundary(first, retained)
-            compactions = self.load_compactions(session_id)
-            active_id = session.active_compaction_id
-            if compactions:
-                removed_ids = {
-                    row[0]
-                    for row in connection.execute(
-                        "SELECT message_id FROM messages WHERE session_id = ? AND row_id >= ?",
-                        (session_id, boundary[0]),
-                    )
-                }
-                retained_compactions = retain_compactions(compactions, removed_ids)
-                retained_ids = {item.compaction_id for item in retained_compactions}
-                connection.executemany(
-                    "DELETE FROM compactions WHERE session_id = ? AND compaction_id = ?",
-                    [
-                        (session_id, item.compaction_id)
-                        for item in compactions
-                        if item.compaction_id not in retained_ids
-                    ],
-                )
-                if active_id is not None and active_id not in retained_ids:
-                    active_id = (
-                        retained_compactions[-1].compaction_id if retained_compactions else None
-                    )
-            removed = connection.execute(
-                "DELETE FROM messages WHERE session_id = ? AND row_id >= ?",
-                (session_id, boundary[0]),
-            ).rowcount
-            connection.execute("DELETE FROM latest_contexts WHERE session_id = ?", (session_id,))
-            self.save_session(
-                session.model_copy(
-                    update={
-                        "message_count": max(0, session.message_count - removed),
-                        "last_message_id": retained.message_id if retained else None,
-                        "active_compaction_id": active_id,
-                        "updated_at": utc_now(),
-                    }
-                )
-            )
-            return MessageTruncation(
-                first_removed=first, last_retained=retained, removed_count=removed
-            )
+            assert result.truncation is not None
+            return result.truncation
+
+    def load_harness(self, session_id: str, version_id: str | None = None) -> HarnessVersion:
+        with self._read_connection() as connection:
+            commits = SQLiteSessionCommits(connection)
+            if version_id is None:
+                version_id = commits.load_session(session_id).harness_version
+            return commits.load_harness(session_id, version_id)
+
+    def load_commit(self, session_id: str, operation_id: str) -> SessionCommitResult | None:
+        with self._read_connection() as connection:
+            self._require_session(connection, session_id)
+            return SQLiteSessionCommits(connection).load_result(session_id, operation_id)
+
+    def commit_session(self, request: SessionCommit) -> SessionCommitResult:
+        with self.session_mutation(request.before.session_id):
+            try:
+                return SQLiteSessionCommits(self._transaction_connection()).commit(request)
+            except sqlite3.IntegrityError as exc:
+                raise SessionCommitConflict(
+                    f"Session commit violates record identity: {exc}"
+                ) from exc
 
     def append_event(self, event: EventRecord) -> None:
         with self.session_mutation(event.session_id):
@@ -707,12 +772,10 @@ class SQLiteSessionStore:
                     (session_id,),
                     CompactionRecord,
                 ),
-                extension_states=self._load_models(
-                    connection,
-                    "SELECT payload FROM session_extension_states "
-                    "WHERE session_id = ? ORDER BY owner_id",
-                    (session_id,),
-                    SessionExtensionStateRecord,
+                extension_states=list(
+                    SQLiteSessionCommits(connection)
+                    .load_harness(session_id, session.harness_version)
+                    .state.states
                 ),
             )
 
@@ -936,12 +999,12 @@ class SQLiteSessionStore:
 
     def list_sessions(self) -> list[SessionRecord]:
         with self._read_connection() as connection:
-            return self._load_models(
-                connection,
-                "SELECT payload FROM sessions ORDER BY session_id",
-                (),
-                SessionRecord,
-            )
+            return [
+                self._load_session_record(connection, row[0])
+                for row in connection.execute(
+                    "SELECT session_id FROM sessions ORDER BY session_id"
+                ).fetchall()
+            ]
 
     def load_resource_references(self, session_id: str) -> list[SessionResourceReference]:
         with self._read_connection() as connection:
@@ -987,33 +1050,46 @@ class SQLiteSessionStore:
                 is not None
             )
 
-    def load_session_extension_states(
-        self,
-        session_id: str,
-    ) -> list[SessionExtensionStateRecord]:
-        with self._read_connection() as connection:
-            self._require_session(connection, session_id)
-            return self._load_models(
-                connection,
-                "SELECT payload FROM session_extension_states "
-                "WHERE session_id = ? ORDER BY owner_id",
-                (session_id,),
-                SessionExtensionStateRecord,
-            )
+    def load_session_extension_states(self, session_id: str) -> list[SessionExtensionStateRecord]:
+        return list(self.load_harness(session_id).state.states)
 
     def save_session_extension_state(self, state: SessionExtensionStateRecord) -> None:
         with self.session_mutation(state.session_id):
-            connection = self._transaction_connection()
-            self._require_session(connection, state.session_id)
-            self._insert_session_extension_state(connection, state)
+            current = self.load_session_record(state.session_id)
+            harness = self.load_harness(state.session_id).state
+            states = {item.owner_id: item for item in harness.states}
+            states[state.owner_id] = state
+            self.commit_session(
+                SessionCommit(
+                    before=current,
+                    steps=(
+                        SessionCommitStep(
+                            harness=HarnessState(
+                                controls=harness.controls, states=tuple(states.values())
+                            )
+                        ),
+                    ),
+                )
+            )
 
     def delete_session_extension_state(self, session_id: str, owner_id: str) -> None:
         with self.session_mutation(session_id):
-            connection = self._transaction_connection()
-            self._require_session(connection, session_id)
-            connection.execute(
-                "DELETE FROM session_extension_states WHERE session_id = ? AND owner_id = ?",
-                (session_id, owner_id),
+            current = self.load_session_record(session_id)
+            harness = self.load_harness(session_id).state
+            self.commit_session(
+                SessionCommit(
+                    before=current,
+                    steps=(
+                        SessionCommitStep(
+                            harness=HarnessState(
+                                controls=harness.controls,
+                                states=tuple(
+                                    item for item in harness.states if item.owner_id != owner_id
+                                ),
+                            )
+                        ),
+                    ),
+                )
             )
 
     def refresh_catalog(
@@ -1310,18 +1386,6 @@ class SQLiteSessionStore:
         )
 
     @staticmethod
-    def _insert_session_extension_state(
-        connection: sqlite3.Connection,
-        state: SessionExtensionStateRecord,
-    ) -> None:
-        connection.execute(
-            "INSERT INTO session_extension_states(session_id, owner_id, payload) "
-            "VALUES(?, ?, ?) "
-            "ON CONFLICT(session_id, owner_id) DO UPDATE SET payload = excluded.payload",
-            (state.session_id, state.owner_id, state.model_dump_json()),
-        )
-
-    @staticmethod
     def _require_session(connection: sqlite3.Connection, session_id: str) -> None:
         if (
             connection.execute(
@@ -1333,17 +1397,9 @@ class SQLiteSessionStore:
             raise FileNotFoundError(session_id)
 
     def _load_session_record(
-        self,
-        connection: sqlite3.Connection,
-        session_id: str,
+        self, connection: sqlite3.Connection, session_id: str
     ) -> SessionRecord:
-        row = connection.execute(
-            "SELECT payload FROM sessions WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        if row is None:
-            raise FileNotFoundError(session_id)
-        return self._validate_model(SessionRecord, row[0], f"session {session_id}")
+        return SQLiteSessionCommits(connection).load_session(session_id)
 
     def _load_models(
         self,

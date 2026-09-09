@@ -1,7 +1,7 @@
 # OURO 会话撤销、Harness 状态与插件交互实施计划
 
 > 文档类型：本次改进实施计划
-> 状态：待实施；所有里程碑尚未完成
+> 状态：实施中；M1 底层契约已验证，M2–M6 尚未完成
 > 计划基线：2026-09-08
 > 范围：仅本次状态、插件交互与撤销改进，不包含其他路线图项目
 
@@ -54,17 +54,23 @@ M1 原生状态与提交底座
 前置：阅读现有 SessionRepository、history-cut 恢复、SQLite transaction、消息帧与索引实现，确认
 Session/Run/消息写入及查询入口清单。记录本次更改会替换的直接写路径。
 
-- [ ] 演进 owner 状态和 controls 为一个 canonical Harness 聚合；定义不可变版本、当前引用、消息锚点、
+- [x] 演进 owner 状态和 controls 为一个 canonical Harness 聚合；定义不可变版本、当前引用、消息锚点、
   history_epoch、有限的提交数据和明确错误语义。类型按职责放置，不创建第二份 Session 状态机。
-- [ ] 规定操作中多消息/多状态变化的逻辑顺序，并用工具结果、输入批次和无消息命令样例验证锚点。
-- [ ] 在 SessionRepository 定义短提交和一致读取端口；SQLite 实现事务，File 收敛 history-cut 恢复机制。
-- [ ] 把消息/状态/挂起或队列意图/结果纳入可恢复决定；提交事件使用既有日志并按操作身份去重。
-- [ ] 所有目标 Session canonical 读取路径接入未完成决定恢复；Catalog 查询保持既有只读投影边界。
-- [ ] 建立新旧格式 fixtures、版本升级与迁移基线规则；有活跃 owner 时拒绝并发迁移。保留消息索引与尾部裁剪。
-- [ ] 注入快照写入、决定持久化、消息更新、状态切换、事件 append 和完成标记各故障点。
+- [x] 规定操作中多消息/多状态变化的逻辑顺序，并用工具结果、输入批次和无消息命令样例验证锚点。
+- [x] 在 SessionRepository 定义短提交和一致读取端口；SQLite 实现事务，File 收敛 history-cut 恢复机制。
+- [x] 把消息/状态/挂起或队列意图/结果纳入可恢复决定；提交事件使用既有日志并按操作身份去重。
+- [x] 所有目标 Session canonical 读取路径接入未完成决定恢复；Catalog 查询保持既有只读投影边界。
+- [x] 建立新旧格式 fixtures、版本升级与迁移基线规则；有活跃 owner 时拒绝并发迁移。保留消息索引与尾部裁剪。
+- [x] 注入快照写入、决定持久化、消息更新、状态切换、事件 append 和完成标记各故障点。
 
 退出条件：两后端通过 HS/AN/CM 的底层契约测试；状态与消息不存在可观察的半提交；恢复不调用插件。
 AC-01、AC-06、AC-07 的底层部分和 AC-15 基线测试通过。此阶段不开放新的 /undo。
+
+M1 验证入口：`tests/sessions/test_harness_commits.py`、`test_harness_migration.py`、
+`test_message_truncation.py`、`test_message_queries.py`、`test_store_contract.py` 和
+`tests/core/test_persistence.py`。Windows 上存储回归与记录版本测试共 171 项通过，随后补充的两项 SQLite
+迁移锁测试通过；`mypy ouro` 通过。调用方的原子结算、SDK 写权限及完整生命周期仍由 M2–M5 接入，
+不能据此宣称应用撤销已完成。M1 没有移除应用层原有撤销保护。
 
 ## 5. M2：插件调用范围与 Todo 纵向链路
 

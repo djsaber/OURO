@@ -34,7 +34,7 @@ def test_atomic_write_retries_transient_windows_replace_conflicts(
 
     local_io.write_text_atomic(target, "after")
 
-    assert target.read_text("utf-8") == "after\n"
+    assert target.read_text("utf-8") == "after"
     assert attempts == 3
     assert delays == [0.01, 0.02]
 
@@ -57,3 +57,10 @@ def test_atomic_write_does_not_retry_non_transient_replace_errors(
 
     assert delays == []
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("payload", ["", '{"message": "你好"}\n', "first\nsecond\n"])
+def test_atomic_text_write_preserves_exact_utf8_bytes(tmp_path, payload):
+    target = tmp_path / "messages.jsonl"
+    local_io.write_text_atomic(target, payload)
+    assert target.read_bytes() == payload.encode("utf-8")

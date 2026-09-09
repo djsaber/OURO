@@ -10,9 +10,11 @@ from ouro.core.base import OuroModel
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.events import EventRecord
+from ouro.core.harness import HarnessVersion
 from ouro.core.message_frames import MessageTruncation
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference
+from ouro.core.session_commits import SessionCommit, SessionCommitResult
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions.index import SessionIndex
@@ -62,6 +64,12 @@ class SessionRepository(Protocol):
     deliberately excluded. Implementations must provide real mutation and
     ordered-event guarantees; silently degrading either guarantee is unsafe.
     """
+
+    def load_harness(self, session_id: str, version_id: str | None = None) -> HarnessVersion: ...
+
+    def commit_session(self, request: SessionCommit) -> SessionCommitResult: ...
+
+    def load_commit(self, session_id: str, operation_id: str) -> SessionCommitResult | None: ...
 
     def create_session(self, session: SessionRecord) -> None: ...
 
@@ -119,9 +127,9 @@ class SessionRepository(Protocol):
         before_message_id: str,
         expected_last_message_id: str,
     ) -> MessageTruncation:
-        """Atomically remove a frame and its suffix, repairing derived context.
+        """Atomically remove a message and its suffix, restoring its before-state.
 
-        Reject unknown boundaries, split frames and stale history heads before
+        Reject unknown/unrecorded boundaries and stale history heads before
         writing. Run records and events remain audit facts. Execution ownership
         and application-specific restrictions belong to the caller.
         """
