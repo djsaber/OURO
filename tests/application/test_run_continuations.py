@@ -7,6 +7,7 @@ from dataclasses import replace
 
 import pytest
 
+from ouro.application.harness import capture_harness
 from ouro.application.plugin_models import PluginCommandView
 from ouro.application.queued_inputs import QueuedInputQueue
 from ouro.application.run_continuations import RunContinuationService
@@ -811,6 +812,7 @@ async def test_staged_settlement_replay_does_not_reevaluate_or_release_new_activ
         execution_contract_hash=controller_ref.execution_contract_hash,
         contract_hash=controller_ref.contract_hash,
         action="complete",
+        harness=capture_harness(store, session.session_id),
         session_control_transitions=[
             SessionControlTransitionRequest(
                 action="release",
@@ -886,6 +888,7 @@ async def test_runtime_startup_reconciliation_replays_pending_settlement_without
         execution_contract_hash=controller_ref.execution_contract_hash,
         contract_hash=controller_ref.contract_hash,
         action="continue",
+        harness=capture_harness(store, session.session_id),
         prompt="Resume the durable boundary work.",
         role="user",
         semantic_tag="goal-continue",

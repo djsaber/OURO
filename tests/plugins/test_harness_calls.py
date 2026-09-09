@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from ouro.core.callbacks import CallbackOutcomeUnknown, invoke_callback
 from ouro.core.harness import HarnessState
 from ouro.core.harness_calls import HarnessCallSnapshot
+from ouro.core.session_controls import SessionControlActivation, SessionControlState
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.plugins.harness_calls import PluginStateView, invoke_plugin_callback
 from ouro.sdk.plugins import v2 as sdk
@@ -52,6 +53,35 @@ def test_sdk_state_view_binds_identity_and_validates_payload_at_the_boundary(sna
     assert proposal.history_epoch == 1
     assert proposal.state.payload == {"items": ["after"]}
     assert snapshot.state.states[1].payload == "private"
+
+
+def test_controller_projection_is_owner_scoped_detached_and_call_bound(snapshot):
+    controls = SessionControlState(
+        activations=[
+            SessionControlActivation(
+                controller_id=f"{owner}/session_controllers/mode",
+                controller_local_id="mode",
+                plugin_id=owner,
+                plugin_class="user",
+                release_id="release",
+                generation_id="generation",
+                execution_contract_hash="c" * 64,
+                data={"values": ["original"]},
+            )
+            for owner in ("example.plugin", "other.plugin")
+        ]
+    )
+    snapshot = snapshot.model_copy(
+        update={"state": snapshot.state.model_copy(update={"controls": controls})}
+    )
+    view = PluginStateView(snapshot, "example.plugin", writable=False)
+    projected = view.controls()
+    assert len(projected) == 1 and projected[0].controller_id == "mode"
+    projected[0].data["values"].append("local")
+    assert view.controls()[0].data == {"values": ["original"]}
+    assert view.finish() is None
+    with pytest.raises(RuntimeError, match="closed"):
+        view.controls()
 
 
 @pytest.mark.asyncio

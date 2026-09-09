@@ -8,6 +8,7 @@ from ouro.application.events import RuntimeEventSink
 from ouro.application.plugins import PluginService
 from ouro.application.queued_inputs import QueuedInputMode
 from ouro.application.runtime import RuntimeService
+from ouro.application.supervisor_models import HostInputReceipt
 from ouro.cli.interactive_attachments import InteractiveAttachmentDraft
 from ouro.cli.interactive_commands import handle_command
 from ouro.cli.interactive_input import InputFunc, PromptFunc, write_terminal_prompt
@@ -244,7 +245,15 @@ async def _run_interactive_session(
                 if command_result.should_exit:
                     await _stop_plugin_run(runtime, plugin_run_task, session_id)
                     return 0
-                if command_result.session_inputs or command_result.session_input_batches:
+                if command_result.accepted_inputs:
+                    if plugin_run_task is None:
+                        plugin_run_task = asyncio.create_task(
+                            _consume_command_inputs(runtime, command_result.accepted_inputs),
+                            name=f"ouro-plugin-input-{session_id}",
+                        )
+                    else:
+                        await _consume_command_inputs(runtime, command_result.accepted_inputs)
+                elif command_result.session_inputs or command_result.session_input_batches:
                     if session_id is None:
                         first = (
                             command_result.session_inputs[0]
@@ -340,6 +349,17 @@ async def _report_runtime_error(
     await runtime.drain_events()
     await output.reset()
     output_func(f"Error: {error}")
+
+
+async def _consume_command_inputs(
+    runtime: RuntimeService,
+    receipts: tuple[HostInputReceipt, ...],
+) -> RunResult:
+    result: RunResult | None = None
+    for receipt in receipts:
+        result = await runtime.consume_host_input(receipt)
+    assert result is not None
+    return result
 
 
 async def _submit_plugin_inputs(

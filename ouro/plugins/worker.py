@@ -417,6 +417,14 @@ class WorkerPluginInstance:
                 **params,
                 "session_state": {
                     "writable": state_view.writable,
+                    "controls": [
+                        {
+                            "controller_id": item.controller_id,
+                            "activation_id": item.activation_id,
+                            "data": item.data,
+                        }
+                        for item in state_view.controls()
+                    ],
                     "value": (
                         {
                             "state_schema_version": value.state_schema_version,

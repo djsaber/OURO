@@ -32,6 +32,7 @@ from ouro.core.reasoning import (
 if TYPE_CHECKING:
     from ouro.application.models import ModelReasoningState
     from ouro.application.plugins import PluginService
+    from ouro.application.supervisor_models import HostInputReceipt
     from ouro.core.session_controls import AttributedSessionInput, AttributedSessionInputBatch
 
 _APPROVAL_MODE_CHOICES = "|".join(SESSION_APPROVAL_MODES)
@@ -48,6 +49,7 @@ class CommandResult:
     interaction_mode: SessionInteractionMode | None = None
     initial_model: str | None = None
     reasoning_request: ReasoningRequest | None = None
+    accepted_inputs: tuple[HostInputReceipt, ...] = ()
     session_inputs: tuple[AttributedSessionInput, ...] = ()
     session_input_batches: tuple[AttributedSessionInputBatch, ...] = ()
     skill_invocation: SkillInvocationRequest | None = None
@@ -359,6 +361,7 @@ async def _plugin_command(
     return CommandResult(
         session_id=target_session_id,
         output=executed.output,
+        accepted_inputs=executed.accepted_inputs,
         session_inputs=tuple(executed.session_inputs),
         session_input_batches=tuple(executed.session_input_batches),
     )
@@ -627,9 +630,7 @@ def _available_skills(runtime: RuntimeService, session_id: str | None) -> Comman
         state = "enabled" if skill.enabled else "disabled"
         invocation = "user-invocable" if skill.user_invocable else "not-user-invocable"
         source_id = "plugin" if skill.source == "plugin" else f"{skill.origin}.{skill.source}"
-        lines.append(
-            f"- {skill.name} [{source_id}] [{state}] [{invocation}] {skill.description}"
-        )
+        lines.append(f"- {skill.name} [{source_id}] [{state}] [{invocation}] {skill.description}")
         hint = f" {skill.argument_hint}" if skill.argument_hint else ""
         lines.append(f"  /skill {skill.name}{hint}")
     return CommandResult(session_id=session_id, output="\n".join(lines))

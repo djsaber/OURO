@@ -78,10 +78,12 @@ class PluginSessionController:
         activation_id: str,
         payload: JsonValue = None,
         workspace: str | None = None,
+        harness: HarnessCallSnapshot | None = None,
     ) -> PluginSessionControllerOutput:
         return await self._invoke(
             self.activate_handler,
             PluginSessionControllerCall(
+                harness=harness,
                 session_id=session_id,
                 session_kind=session_kind,
                 activation_id=activation_id,
@@ -101,10 +103,12 @@ class PluginSessionController:
         payload: JsonValue = None,
         reason: str | None = None,
         workspace: str | None = None,
+        harness: HarnessCallSnapshot | None = None,
     ) -> PluginSessionControllerOutput:
         return await self._invoke(
             self.deactivate_handler,
             PluginSessionControllerCall(
+                harness=harness,
                 session_id=session_id,
                 session_kind=session_kind,
                 activation_id=activation_id,

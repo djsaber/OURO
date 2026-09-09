@@ -365,28 +365,38 @@ class QueuedInputQueue:
         )
         with self.store.session_mutation(snapshot.session.session_id):
             latest = self.store.load_session_record(snapshot.session.session_id)
-            metadata = dict(latest.metadata)
-            queue = self._raw_queue(metadata)
-            superseded: list[QueuedInput] = []
-            retained: list[object] = []
-            for raw_item in queue:
-                existing = self._parse_item(raw_item)
-                if (
-                    coalesce_key is not None
-                    and existing is not None
-                    and existing.source == source
-                    and existing.plugin_id == plugin_id
-                    and existing.contribution_id == contribution_id
-                    and existing.coalesce_key == coalesce_key
-                ):
-                    superseded.append(existing)
-                else:
-                    retained.append(raw_item)
-            retained.extend(item.model_dump(mode="python") for item in queued_items)
-            metadata[QUEUED_INPUTS_KEY] = retained
-            session = latest.model_copy(update={"metadata": metadata, "updated_at": utc_now()})
+            session, superseded = self.stage_batch(latest, queued_items)
             self.store.save_session(session)
-        return session, queued_items, len(retained), tuple(superseded)
+        return session, queued_items, len(self._raw_queue(session.metadata)), superseded
+
+    def stage_batch(
+        self,
+        session: SessionRecord,
+        queued_items: tuple[QueuedInput, ...],
+    ) -> tuple[SessionRecord, tuple[QueuedInput, ...]]:
+        """Append a prepared unit to the caller's Session draft, without saving it."""
+        first = queued_items[0]
+        metadata = dict(session.metadata)
+        superseded: list[QueuedInput] = []
+        retained: list[object] = []
+        for raw_item in self._raw_queue(metadata):
+            existing = self._parse_item(raw_item)
+            if (
+                first.coalesce_key is not None
+                and existing is not None
+                and existing.source == first.source
+                and existing.plugin_id == first.plugin_id
+                and existing.contribution_id == first.contribution_id
+                and existing.coalesce_key == first.coalesce_key
+            ):
+                superseded.append(existing)
+            else:
+                retained.append(raw_item)
+        retained.extend(item.model_dump(mode="python") for item in queued_items)
+        metadata[QUEUED_INPUTS_KEY] = retained
+        return session.model_copy(update={"metadata": metadata, "updated_at": utc_now()}), tuple(
+            superseded
+        )
 
     def eligible(
         self,
@@ -550,23 +560,44 @@ class QueuedInputQueue:
         controller_id: str,
         activation_id: str,
     ) -> tuple[str, ...]:
-        cancelled: list[str] = []
         with self.store.session_mutation(session_id):
             latest = self.store.load_session_record(session_id)
-            metadata = dict(latest.metadata)
-            retained: list[object] = []
-            for raw_item in self._raw_queue(metadata):
-                item = self._parse_item(raw_item)
-                if item is not None and (
-                    item.session_control_controller_id == controller_id
-                    and item.session_control_activation_id == activation_id
-                ):
-                    cancelled.append(item.queue_id)
-                else:
-                    retained.append(raw_item)
+            updated, cancelled = self.without_session_control(
+                latest,
+                controller_id=controller_id,
+                activation_id=activation_id,
+            )
             if cancelled:
-                self._save_queue(latest, metadata, retained)
-        return tuple(cancelled)
+                self.store.save_session(updated)
+        return cancelled
+
+    def without_session_control(
+        self,
+        session: SessionRecord,
+        *,
+        controller_id: str,
+        activation_id: str,
+    ) -> tuple[SessionRecord, tuple[str, ...]]:
+        """Prepare a queue removal for the caller's Session commit."""
+        cancelled: list[str] = []
+        metadata = dict(session.metadata)
+        retained: list[object] = []
+        for raw_item in self._raw_queue(metadata):
+            item = self._parse_item(raw_item)
+            if item is not None and (
+                item.session_control_controller_id == controller_id
+                and item.session_control_activation_id == activation_id
+            ):
+                cancelled.append(item.queue_id)
+            else:
+                retained.append(raw_item)
+        if not cancelled:
+            return session, ()
+        if retained:
+            metadata[QUEUED_INPUTS_KEY] = retained
+        else:
+            metadata.pop(QUEUED_INPUTS_KEY, None)
+        return session.model_copy(update={"metadata": metadata}), tuple(cancelled)
 
     def _remove_invalid(self, session_id: str) -> None:
         with self.store.session_mutation(session_id):

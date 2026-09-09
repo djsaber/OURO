@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import datetime, timedelta
 from time import monotonic
 from typing import Literal, Protocol, cast
@@ -29,6 +30,7 @@ from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal
 from ouro.core.errors import SessionBusyError
 from ouro.core.events import EventRecord
+from ouro.core.harness_calls import HarnessCallSnapshot, HarnessStateChange, accept_state_changes
 from ouro.core.interactions import AnswerResolution, UnattendedResolution
 from ouro.core.messages import ModelResponseRecord, ProviderContinuationArtifact
 from ouro.core.observers import (
@@ -375,6 +377,7 @@ class ToolCallCoordinator:
         checkpoint_batch = batch
         checkpoint_lock = asyncio.Lock()
         unattended_resolutions: dict[str, UnattendedResolution] = {}
+        resumed_harness: dict[str, HarnessCallSnapshot] = {}
         execution_started_at: dict[str, tuple[datetime, float]] = {}
 
         async def recheck_before_execute(
@@ -480,9 +483,13 @@ class ToolCallCoordinator:
 
         async def checkpoint_outcome(outcome: ToolExecutionOutcome) -> None:
             nonlocal checkpoint_batch, sequence
-            outcome = await self._apply_control_transitions(
+            call_harness = resumed_harness.pop(
+                outcome.invocation.tool_call_id, execution_context.harness
+            )
+            outcome = await self._stage_control_transitions(
                 outcome,
                 session=session,
+                harness=call_harness,
             )
             outcome = await self._apply_agent_control(
                 outcome,
@@ -539,16 +546,19 @@ class ToolCallCoordinator:
                 )
                 try:
                     suspension = tool_batch_suspension(checkpoint_batch)
-                    await run_blocking(
+                    _, checkpoint_run = await run_blocking(
                         self.runs.save_batch_state,
                         session=session,
                         run=run,
                         batch=checkpoint_batch,
+                        harness=call_harness if outcome.status == "waiting_user" else None,
                         status=suspension.status if suspension is not None else "running",
                         phase=(
                             suspension.run_phase if suspension is not None else "tool_execution"
                         ),
                     )
+                    assert checkpoint_run.active_tool_batch is not None
+                    checkpoint_batch = checkpoint_run.active_tool_batch
                 except SessionBusyError:
                     if not abort_signal.is_aborted():
                         raise
@@ -680,14 +690,21 @@ class ToolCallCoordinator:
                 checkpoint_batch = checkpoint_batch.model_copy(
                     update={"calls": calls, "updated_at": utc_now()}
                 )
-                await run_blocking(
+                _, checkpoint_run = await run_blocking(
                     self.runs.save_batch_state,
                     session=session,
                     run=run,
                     batch=checkpoint_batch,
                     status="running",
                     phase="human_interaction",
+                    harness=execution_context.harness,
                 )
+                assert checkpoint_run.active_tool_batch is not None
+                checkpoint_batch = checkpoint_run.active_tool_batch
+                resume_harness = await run_blocking(
+                    capture_harness, self.runs.store, session.session_id, run_id=run.run_id
+                )
+                resumed_harness[outcome.invocation.tool_call_id] = resume_harness
                 sequence = await self.events.emit(
                     emitted,
                     sequence,
@@ -711,7 +728,7 @@ class ToolCallCoordinator:
                 resolution=resolution,
                 request=request,
                 abort_signal=abort_signal,
-                context=execution_context,
+                context=replace(execution_context, harness=resume_harness),
             )
             unattended_resolutions[outcome.invocation.tool_call_id] = resolution
             return resolved
@@ -957,11 +974,12 @@ class ToolCallCoordinator:
             result=settled,
         )
 
-    async def _apply_control_transitions(
+    async def _stage_control_transitions(
         self,
         outcome: ToolExecutionOutcome,
         *,
         session: SessionRecord,
+        harness: HarnessCallSnapshot | None,
     ) -> ToolExecutionOutcome:
         result = outcome.result
         if result is None or not result.session_control_transitions:
@@ -969,6 +987,7 @@ class ToolCallCoordinator:
         invocation = outcome.invocation
         if (
             self.session_controls is None
+            or harness is None
             or invocation.plugin_id is None
             or invocation.generation_id is None
             or invocation.execution_contract_hash is None
@@ -984,12 +1003,16 @@ class ToolCallCoordinator:
                             ),
                             "structured": {"error_type": "SessionControlContractError"},
                             "session_control_transitions": [],
+                            "harness_change": None,
                         }
                     )
                 }
             )
         outputs: list[str] = []
         applied: list[dict[str, object]] = []
+        draft = accept_state_changes(
+            harness, [result.harness_change] if result.harness_change else []
+        )
         try:
             for transition in result.session_control_transitions:
                 attributed = AttributedSessionControlTransition(
@@ -998,12 +1021,12 @@ class ToolCallCoordinator:
                     generation_id=invocation.generation_id,
                     execution_contract_hash=invocation.execution_contract_hash,
                 )
-                settled = await self.session_controls.apply(
+                draft, settled = await self.session_controls.stage(
                     attributed,
-                    session_id=session.session_id,
+                    session=session,
+                    draft=draft,
                     controllers=self.session_controllers,
                     workspace=session.workspace or self.default_workspace,
-                    resolving_tool_call_id=invocation.tool_call_id,
                 )
                 if settled.output:
                     outputs.append(settled.output)
@@ -1021,10 +1044,22 @@ class ToolCallCoordinator:
                                 "error_message": str(exc),
                             },
                             "session_control_transitions": [],
+                            "harness_change": None,
                         }
                     )
                 }
             )
+        change = HarnessStateChange(
+            session_id=draft.session_id,
+            harness_version=draft.harness_version,
+            history_epoch=draft.history_epoch,
+            last_message_id=draft.last_message_id,
+            owner_id=invocation.plugin_id,
+            state=next(
+                (item for item in draft.state.states if item.owner_id == invocation.plugin_id), None
+            ),
+            controls=draft.state.controls,
+        )
         content_parts = [result.content] if result.content else []
         content_parts.extend(outputs)
         return outcome.model_copy(
@@ -1037,6 +1072,7 @@ class ToolCallCoordinator:
                             "session_controls": applied,
                         },
                         "session_control_transitions": [],
+                        "harness_change": change,
                     }
                 )
             }
@@ -1049,6 +1085,7 @@ class ToolCallCoordinator:
         session: SessionRecord,
         tool_call_id: str,
         answer: JsonValue,
+        harness: HarnessCallSnapshot,
         workspace: str | None = None,
     ) -> ToolCallBatchRecord:
         answer = _JSON_VALUE_ADAPTER.validate_python(answer)
@@ -1066,26 +1103,23 @@ class ToolCallCoordinator:
             if definition.resumable:
                 assert call.input_request is not None
                 resume_started = (utc_now(), monotonic())
+                execution_context = ToolExecutionContext(
+                    harness=harness,
+                    workspace=workspace or self.default_workspace,
+                    artifact_root=self.artifact_root,
+                    workspace_only=self.execution_config.workspace_only,
+                    max_output_chars=self.execution_config.max_output_chars,
+                )
                 outcome = await self.executor.resume(
                     call.invocation,
                     resolution=resolution,
                     request=call.input_request,
-                    context=ToolExecutionContext(
-                        harness=await run_blocking(
-                            capture_harness,
-                            self.runs.store,
-                            session.session_id,
-                            run_id=call.invocation.run_id,
-                        ),
-                        workspace=workspace or self.default_workspace,
-                        artifact_root=self.artifact_root,
-                        workspace_only=self.execution_config.workspace_only,
-                        max_output_chars=self.execution_config.max_output_chars,
-                    ),
+                    context=execution_context,
                 )
-                outcome = await self._apply_control_transitions(
+                outcome = await self._stage_control_transitions(
                     outcome,
                     session=session,
+                    harness=execution_context.harness,
                 )
                 if outcome.result is not None:
                     outcome = outcome.model_copy(

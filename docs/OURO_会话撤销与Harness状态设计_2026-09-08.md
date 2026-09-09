@@ -143,6 +143,9 @@ PluginContext 保留实例级配置、文件、日志、凭证和资源。会话
 可写调用支持替换或删除 owner 的完整 JSON 值；同一次调用可以读到自己的修改。普通会话写入不能自行选择
 另一个 session_id/owner。SDK 不暴露任意路径修改语言，也不增加全局可写 KV。
 
+同一视图只读提供当前 owner 已激活的控制关系，供插件判断自己的模式和业务归属；不要求 owner JSON 再保存
+一份 activation 或模式开关。返回数据与 canonical 状态隔离，视图关闭后不能继续读取。
+
 | contribution | 状态契约 |
 |---|---|
 | Observer | 读取已提交事实；不能修改 Harness 或依赖观察顺序驱动业务 |
@@ -169,6 +172,10 @@ flowchart LR
 
 Command 调用 Controller 时共享同一逻辑操作的暂存视图；禁止嵌套回调先行 commit。控制关系、owner 状态、
 与之对应的消息或挂起/队列意图以及结算结果，必须具备同一个可恢复的提交决定。
+
+replace 在同一草稿内依次接受旧 Controller 的 deactivate 与新 Controller 的 activate，后者看到前者已接受的
+状态和控制移除；完成之前 canonical 状态保持原样。Continuation 的 durable settlement plan 保存已完成的
+策略与嵌套 Controller 决策，恢复只提交这份决定，不重新执行回调。
 
 插件回调期间不持有数据库事务或文件 mutation 锁。短提交检查 history_epoch、基准状态版本、调用有效性、
 消息头/队列前置条件及控制 claim；只读调用可以并发，现有排他工具规则继续生效。

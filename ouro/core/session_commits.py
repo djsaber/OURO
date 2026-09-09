@@ -4,7 +4,7 @@ import hashlib
 import json
 from typing import Self
 
-from pydantic import Field, model_validator
+from pydantic import Field, JsonValue, model_validator
 
 from ouro.core.base import OuroModel, VersionedOuroModel, new_id, utc_now
 from ouro.core.compaction import CompactionRecord
@@ -48,6 +48,7 @@ class SessionCommit(OuroModel):
     steps: tuple[SessionCommitStep, ...] = ()
     runs: tuple[RunRecord, ...] = ()
     events: tuple[EventRecord, ...] = ()
+    output: dict[str, JsonValue] = Field(default_factory=dict)
     before_message_id: str | None = None
 
     @model_validator(mode="after")
@@ -81,6 +82,7 @@ class SessionCommitResult(VersionedOuroModel):
     session: SessionRecord
     messages: tuple[MessageRecord, ...] = ()
     events: tuple[EventRecord, ...] = ()
+    output: dict[str, JsonValue] = Field(default_factory=dict)
     truncation: MessageTruncation | None = None
 
 
@@ -175,6 +177,7 @@ def prepare_session_commit(
             session=session,
             messages=tuple(messages),
             events=events,
+            output=request.output,
             truncation=truncation,
         ),
         versions=tuple(versions),

@@ -3376,13 +3376,29 @@ class RuntimeService:
             if waiting_call is None:
                 raise ValueError("run has no tool call waiting for user input")
             await self._ensure_extension_snapshot(run)
+            answer_harness = await run_blocking(
+                capture_harness, self.store, session.session_id, run_id=run.run_id
+            )
             batch = await self._tool_calls_for_run(run.run_id).resolve_user_answer(
                 batch,
                 session=session,
                 tool_call_id=waiting_call.request.id,
                 answer=answer,
+                harness=answer_harness,
                 workspace=session.workspace,
             )
+            suspension = tool_batch_suspension(batch)
+            session, run = await run_blocking(
+                self.run_lifecycle.save_batch_state,
+                session=session,
+                run=run,
+                batch=batch,
+                harness=answer_harness,
+                status=suspension.status if suspension is not None else "running",
+                phase=suspension.run_phase if suspension is not None else "tool_execution",
+            )
+            assert run.active_tool_batch is not None
+            batch = run.active_tool_batch
             resolved_call = next(
                 call for call in batch.calls if call.request.id == waiting_call.request.id
             )

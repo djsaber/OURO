@@ -130,7 +130,7 @@ async def test_session_control_persistence_phases_run_outside_the_event_loop(
     )
 
     assert acquired.changed is True
-    assert len(reader_threads) >= 2
+    assert reader_threads
     assert event_loop_thread not in reader_threads
 
 
@@ -220,7 +220,7 @@ async def test_session_control_claims_arbitrate_unknown_plugins_without_business
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
-async def test_failed_controller_activation_rolls_back_host_state(tmp_path, backend) -> None:
+async def test_failed_controller_activation_never_publishes_host_state(tmp_path, backend) -> None:
     store = _store(tmp_path, backend)
     session = SessionRecord()
     store.create_session(session)
@@ -245,7 +245,7 @@ async def test_failed_controller_activation_rolls_back_host_state(tmp_path, back
 
     controls = store.load_runtime_session(session.session_id).session.controls
     assert controls.activations == []
-    assert controls.revision == 2
+    assert controls.revision == 0
 
 
 @pytest.mark.asyncio
@@ -367,10 +367,10 @@ async def test_replace_is_an_explicit_same_plugin_handoff(tmp_path, backend) -> 
     assert replaced.activation is not None
     assert replaced.activation.controller_local_id == "alternate"
     assert replaced.released_activation_ids == [acquired.activation.activation_id]
-    assert "/session_controllers/alternate:" in events[1]
-    assert events[1].startswith("activate:")
-    assert "/session_controllers/primary:" in events[2]
-    assert events[2].startswith("deactivate:")
+    assert "/session_controllers/primary:" in events[1]
+    assert events[1].startswith("deactivate:")
+    assert "/session_controllers/alternate:" in events[2]
+    assert events[2].startswith("activate:")
     controls = store.load_session_record(session.session_id).controls
     assert [item.controller_local_id for item in controls.activations] == ["alternate"]
 
@@ -434,7 +434,7 @@ async def test_replace_can_rotate_the_same_controller_activation(tmp_path, backe
     assert replaced.activation is not None
     assert replaced.activation.activation_id != acquired.activation.activation_id
     assert replaced.released_activation_ids == [acquired.activation.activation_id]
-    assert [call.action for call in calls] == ["activate", "activate", "deactivate"]
+    assert [call.action for call in calls] == ["activate", "deactivate", "activate"]
     assert calls[1].payload == {"operation": "rotate"}
     controls = store.load_session_record(session.session_id).controls
     assert [item.activation_id for item in controls.activations] == [
@@ -506,7 +506,9 @@ def test_interrupted_lifecycle_reconciliation_fails_closed(tmp_path, backend) ->
         update={
             "revision": 1,
             "activations": [
-                SessionControlCoordinator._new_activation(activating),
+                SessionControlCoordinator._new_activation(activating).model_copy(
+                    update={"phase": "activating"}
+                ),
                 SessionControlCoordinator._new_activation(deactivating).model_copy(
                     update={"phase": "deactivating"}
                 ),

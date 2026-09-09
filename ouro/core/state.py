@@ -129,6 +129,8 @@ class RunContinuationSettlementPlan(OuroModel):
     reason: str | None = None
     state_revision: int | None = Field(default=None, ge=0)
     session_control_transitions: list[SessionControlTransitionRequest] = Field(default_factory=list)
+    harness: HarnessCallSnapshot | None = None
+    released_activation_ids: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def validate_action_payload(self) -> Self:

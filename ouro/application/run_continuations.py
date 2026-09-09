@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 
-from ouro.application.queued_inputs import QueuedInputQueue
-from ouro.application.runs import maybe_active_run
+from ouro.application.harness import capture_session_harness
+from ouro.application.queued_inputs import QueuedInput, QueuedInputQueue
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.core.base import utc_now
 from ouro.core.callbacks import run_blocking
@@ -13,14 +14,13 @@ from ouro.core.continuations import (
     ContinuationPolicyRegistration,
     RunContinuationRegistry,
 )
-from ouro.core.message_semantics import SemanticTag
+from ouro.core.harness_calls import accept_state_changes
 from ouro.core.messages import MessageRecord
 from ouro.core.redaction import redact_text
+from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     SessionControlTransitionRequest,
-    SessionInputMode,
-    SessionInputRole,
 )
 from ouro.core.state import (
     RunContinuationCheckpoint,
@@ -28,6 +28,7 @@ from ouro.core.state import (
     RunContinuationSettlementPlan,
     RunOutcome,
     RunRecord,
+    SessionRecord,
 )
 from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sessions import SessionStore
@@ -75,6 +76,42 @@ class RunContinuationService:
         run_id: str,
         final_text: str = "",
     ) -> RunContinuationSettlement:
+        try:
+            return await self._settle(session_id=session_id, run_id=run_id, final_text=final_text)
+        except asyncio.CancelledError:
+            accepted = await run_blocking(self._accepted_settlement, session_id, run_id)
+            if accepted is None:
+                raise
+            return accepted
+
+    def _accepted_settlement(
+        self, session_id: str, run_id: str
+    ) -> RunContinuationSettlement | None:
+        with self.store.session_mutation(session_id):
+            run = self.store.load_run(session_id, run_id)
+            checkpoint = run.continuation
+            if checkpoint is None or checkpoint.state != "resolved":
+                return None
+            committed = self.store.load_commit(session_id, checkpoint.decision_id)
+            if committed is None:
+                return None
+            result = committed.output.get("continuation")
+            assert isinstance(result, dict)
+            diagnostic = result.get("diagnostic")
+            return RunContinuationSettlement(
+                run=run,
+                settled=True,
+                queued=result.get("queued") is True,
+                diagnostics=(diagnostic,) if isinstance(diagnostic, str) else (),
+            )
+
+    async def _settle(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        final_text: str = "",
+    ) -> RunContinuationSettlement:
         run = await run_blocking(self.store.load_run, session_id, run_id)
         checkpoint = run.continuation
         if (
@@ -86,11 +123,17 @@ class RunContinuationService:
         ):
             return RunContinuationSettlement(run=run)
 
+        if checkpoint.settlement_plan is not None:
+            return await self._settle_plan(run, checkpoint.settlement_plan)
+        before, draft = await run_blocking(
+            capture_session_harness, self.store, session_id, run_id=run_id
+        )
         recovered_final_text = final_text
         if not recovered_final_text:
-            snapshot = await run_blocking(self.store.load_runtime_session, session_id)
-            recovered_final_text = _last_assistant_text(snapshot.messages, run.run_id)
+            messages = await run_blocking(self.store.load_run_messages, session_id, run_id)
+            recovered_final_text = _last_assistant_text(messages, run.run_id)
         outcome = RunOutcome(
+            harness=draft,
             session_id=run.session_id,
             run_id=run.run_id,
             status=run.status,
@@ -108,9 +151,6 @@ class RunContinuationService:
             )
             for controller in checkpoint.controllers
         }
-        if checkpoint.settlement_plan is not None:
-            return await self._settle_plan(run, checkpoint.settlement_plan)
-
         evaluation = await self.registry.evaluate(
             outcome,
             controller_ids=controller_ids,
@@ -188,7 +228,31 @@ class RunContinuationService:
         attributed = evaluation.decisions[0]
         try:
             plan = self._plan_for_decision(run, checkpoint, attributed)
-        except (TypeError, ValueError) as exc:
+            draft = accept_state_changes(
+                draft,
+                [attributed.decision.harness_change] if attributed.decision.harness_change else [],
+            )
+            released = []
+            for transition in plan.session_control_transitions:
+                if self.session_controllers is None or attributed.generation_id is None:
+                    raise ValueError("continuation controller execution contract is unavailable")
+                draft, result = await self.session_controls.stage(
+                    AttributedSessionControlTransition(
+                        **transition.model_dump(mode="python"),
+                        plugin_id=plan.plugin_id,
+                        generation_id=attributed.generation_id,
+                        execution_contract_hash=plan.execution_contract_hash,
+                    ),
+                    session=before,
+                    draft=draft,
+                    controllers=self.session_controllers,
+                    workspace=before.workspace,
+                )
+                released.extend(result.released_activation_ids)
+            plan = plan.model_copy(
+                update={"harness": draft, "released_activation_ids": tuple(released)}
+            )
+        except Exception as exc:  # noqa: BLE001 - discard an invalid extension decision
             failure = self._failure(
                 run,
                 attributed.plugin_id,
@@ -204,7 +268,7 @@ class RunContinuationService:
                 diagnostic="continuation policy returned an invalid terminal decision",
             )
 
-        staged = await run_blocking(self._stage_plan, run, plan)
+        staged = await run_blocking(self._stage_plan, run, plan, before=before)
         staged_checkpoint = staged.continuation
         if staged_checkpoint is None or staged_checkpoint.state == "resolved":
             return RunContinuationSettlement(run=staged)
@@ -321,6 +385,8 @@ class RunContinuationService:
         self,
         run: RunRecord,
         plan: RunContinuationSettlementPlan,
+        *,
+        before: SessionRecord,
     ) -> RunRecord:
         with self.store.session_mutation(run.session_id):
             latest = self.store.load_run(run.session_id, run.run_id)
@@ -332,7 +398,7 @@ class RunContinuationService:
             staged = latest.model_copy(
                 update={"continuation": checkpoint.model_copy(update={"settlement_plan": plan})}
             )
-            self.store.save_run(staged)
+            self.store.commit_session(SessionCommit(before=before, runs=(staged,)))
             return staged
 
     async def _settle_plan(
@@ -340,119 +406,115 @@ class RunContinuationService:
         run: RunRecord,
         plan: RunContinuationSettlementPlan,
     ) -> RunContinuationSettlement:
-        checkpoint = run.continuation
-        assert checkpoint is not None
-        controller_ref = self._controller_ref_for_plan(checkpoint, plan)
-        controller_id = f"{plan.plugin_id}/continuation_policies/{plan.policy_id}"
+        return await run_blocking(self._commit_plan, run, plan)
 
-        if plan.session_control_transitions:
-            registration = self._current_registration(plan)
+    def _commit_plan(
+        self, run: RunRecord, plan: RunContinuationSettlementPlan
+    ) -> RunContinuationSettlement:
+        """Materialize a prepared decision without invoking any extension callback."""
+        with self.store.session_mutation(run.session_id):
+            before = self.store.load_session_record(run.session_id)
+            latest = self.store.load_run(run.session_id, run.run_id)
+            checkpoint = latest.continuation
+            if checkpoint is None or checkpoint.state == "resolved":
+                return RunContinuationSettlement(run=latest)
+            draft = plan.harness
+            # Older plans lack a proven state boundary. They may be paused, never replayed.
+            if draft is None:
+                resolved = self._resolve_locked(
+                    latest, action="pause", reason="continuation_state_unavailable"
+                )
+                return RunContinuationSettlement(run=resolved, settled=True)
             if (
-                registration is None
-                or registration.generation_id is None
-                or self.session_controllers is None
+                before.history_epoch != draft.history_epoch
+                or before.harness_version != draft.harness_version
+                or before.last_message_id != draft.last_message_id
             ):
-                failure = self._failure(
-                    run,
-                    plan.plugin_id,
-                    plan.policy_id,
-                    "ContinuationPolicyUnavailable",
-                    "staged continuation control transition owner is unavailable",
+                resolved = self._resolve_locked(
+                    latest, action="pause", reason="continuation_state_changed"
                 )
-                return await run_blocking(
-                    self._settle_failures,
-                    run,
-                    failures=(failure,),
-                    reason="continuation_policy_failed",
-                    diagnostic="staged continuation owner was unavailable during replay",
-                )
-            try:
-                session = await run_blocking(
-                    self.store.load_session_record,
-                    run.session_id,
-                )
-                for transition in plan.session_control_transitions:
-                    await self.session_controls.apply(
-                        AttributedSessionControlTransition(
-                            **transition.model_dump(mode="python"),
-                            plugin_id=plan.plugin_id,
-                            generation_id=registration.generation_id,
-                            execution_contract_hash=plan.execution_contract_hash,
-                        ),
-                        session_id=run.session_id,
-                        controllers=self.session_controllers,
-                        workspace=session.workspace,
-                    )
-            except Exception as exc:  # noqa: BLE001 - durable extension boundary
-                failure = self._failure(
-                    run,
-                    plan.plugin_id,
-                    plan.policy_id,
-                    type(exc).__name__,
-                    redact_text(str(exc)),
-                )
-                return await run_blocking(
-                    self._settle_failures,
-                    run,
-                    failures=(failure,),
-                    reason="continuation_control_transition_failed",
-                    diagnostic="staged Session control transition failed",
-                )
+                return RunContinuationSettlement(run=resolved, settled=True)
 
-        if plan.action != "continue":
-            resolved = await run_blocking(
-                self._resolve,
-                run,
-                action=plan.action,
+            controller_ref = self._controller_ref_for_plan(checkpoint, plan)
+            controller_id = f"{plan.plugin_id}/continuation_policies/{plan.policy_id}"
+            after = before
+            action, reason = plan.action, plan.reason
+            diagnostic = None
+            queued = False
+            if action == "continue":
+                registration = self._current_registration(plan)
+                if registration is None or registration.generation_id is None:
+                    action, reason = "pause", "continuation_execution_contract_missing"
+                    diagnostic = "continuation policy had no current execution contract"
+                elif controller_ref.activation_id is not None and not any(
+                    item.activation_id == controller_ref.activation_id
+                    and item.controller_id == controller_ref.active_when_controller_id
+                    and item.phase == "active"
+                    for item in before.controls.activations
+                ):
+                    action, reason = "pause", "session_control_released"
+                    diagnostic = "Session controller was released before continuation enqueue"
+                elif before.active_run_id is not None and before.active_run_id != run.run_id:
+                    action, reason = "pause", "superseded_by_active_run"
+                    diagnostic = "a newer run superseded automatic continuation"
+                elif self.queue.eligible_session(before):
+                    action, reason = "pause", "superseded_by_queued_input"
+                    diagnostic = "queued session input took precedence over automatic continuation"
+                else:
+                    assert plan.prompt is not None
+                    item = QueuedInput(
+                        queue_id=checkpoint.queue_id,
+                        queued_at=utc_now(),
+                        prompt=plan.prompt,
+                        mode=plan.mode,
+                        title=plan.title,
+                        role=plan.role,
+                        scaffold=plan.scaffold,
+                        semantic_tag=plan.semantic_tag,
+                        coalesce_key=plan.coalesce_key,
+                        batch_id=checkpoint.decision_id,
+                        batch_index=0,
+                        batch_size=1,
+                        source="plugin",
+                        plugin_id=plan.plugin_id,
+                        contribution_id=plan.policy_id,
+                        generation_id=registration.generation_id,
+                        execution_contract_hash=plan.execution_contract_hash,
+                        caused_by_run_id=run.run_id,
+                        continuation_decision_id=checkpoint.decision_id,
+                        session_control_controller_id=controller_ref.active_when_controller_id,
+                        session_control_activation_id=controller_ref.activation_id,
+                    )
+                    after, _ = self.queue.stage_batch(before, (item,))
+                    queued = True
+            resolved = _resolved_run(
+                latest,
+                action=action,
                 controller_id=controller_id,
-                reason=plan.reason,
+                reason=reason,
                 state_revision=plan.state_revision,
             )
-            return RunContinuationSettlement(run=resolved, settled=True)
-
-        registration = self._current_registration(plan)
-        if registration is None:
-            failure = self._failure(
-                run,
-                plan.plugin_id,
-                plan.policy_id,
-                "ContinuationPolicyUnavailable",
-                "staged continuation policy execution contract is unavailable",
+            self.session_controls.commit(
+                SessionCommit(
+                    operation_id=checkpoint.decision_id,
+                    before=before,
+                    after=after,
+                    steps=(SessionCommitStep(harness=draft.state),)
+                    if action == plan.action
+                    else (),
+                    runs=(resolved,),
+                    output={"continuation": {"queued": queued, "diagnostic": diagnostic}},
+                ),
+                released_activation_ids=plan.released_activation_ids
+                if action == plan.action
+                else (),
             )
-            return await run_blocking(
-                self._settle_failures,
-                run,
-                failures=(failure,),
-                reason="continuation_policy_failed",
-                diagnostic="staged continuation policy was unavailable during replay",
+            return RunContinuationSettlement(
+                run=resolved,
+                settled=True,
+                queued=queued,
+                diagnostics=(diagnostic,) if diagnostic else (),
             )
-        assert plan.prompt is not None
-        queued, resolved, diagnostic = await run_blocking(
-            self._enqueue_continuation,
-            run=run,
-            checkpoint=checkpoint,
-            plugin_id=plan.plugin_id,
-            policy_id=plan.policy_id,
-            generation_id=registration.generation_id,
-            execution_contract_hash=registration.execution_contract_hash,
-            prompt=plan.prompt,
-            mode=plan.mode,
-            title=plan.title,
-            role=plan.role,
-            scaffold=plan.scaffold,
-            semantic_tag=plan.semantic_tag,
-            coalesce_key=plan.coalesce_key,
-            reason=plan.reason,
-            state_revision=plan.state_revision,
-            session_control_controller_id=controller_ref.active_when_controller_id,
-            session_control_activation_id=controller_ref.activation_id,
-        )
-        return RunContinuationSettlement(
-            run=resolved,
-            settled=True,
-            queued=queued,
-            diagnostics=((diagnostic,) if diagnostic is not None else ()),
-        )
 
     def _current_registration(
         self,
@@ -495,37 +557,67 @@ class RunContinuationService:
         reason: str,
         diagnostic: str,
     ) -> RunContinuationSettlement:
-        checkpoint = run.continuation
-        assert checkpoint is not None
-        failed_ids = {(failure.plugin_id, failure.policy_id) for failure in failures}
-        diagnostics = [diagnostic]
-        released: set[str] = set()
-        for controller in checkpoint.controllers:
-            if (
-                (controller.plugin_id, controller.policy_id) not in failed_ids
-                or controller.activation_id is None
-                or controller.activation_id in released
-                or not self._controller_is_current(run.session_id, controller)
-            ):
-                continue
-            result = self.session_controls.force_release(
-                session_id=run.session_id,
-                activation_id=controller.activation_id,
-                reason=reason,
-            )
-            released.add(controller.activation_id)
-            if result.changed:
-                diagnostics.append(
-                    "fail-closed released exact activation "
-                    f"{controller.activation_id}; owner-private cleanup was not confirmed"
+        with self.store.session_mutation(run.session_id):
+            before, snapshot = capture_session_harness(self.store, run.session_id)
+            latest = self.store.load_run(run.session_id, run.run_id)
+            checkpoint = latest.continuation
+            assert checkpoint is not None
+            if checkpoint.state == "resolved":
+                return RunContinuationSettlement(run=latest)
+            failed_ids = {(failure.plugin_id, failure.policy_id) for failure in failures}
+            current = {
+                (item.controller_id, item.activation_id)
+                for item in before.controls.activations
+                if item.phase == "active"
+            }
+            released = {
+                controller.activation_id
+                for controller in checkpoint.controllers
+                if (controller.plugin_id, controller.policy_id) in failed_ids
+                and (controller.active_when_controller_id, controller.activation_id) in current
+                and controller.activation_id is not None
+                and latest.history_epoch == before.history_epoch
+            }
+            controls = (
+                before.controls.model_copy(
+                    update={
+                        "revision": before.controls.revision + 1,
+                        "activations": [
+                            item
+                            for item in before.controls.activations
+                            if item.activation_id not in released
+                        ],
+                    }
                 )
-        resolved = self._resolve(run, action="pause", reason=reason)
-        return RunContinuationSettlement(
-            run=resolved,
-            settled=True,
-            failures=failures,
-            diagnostics=tuple(diagnostics),
-        )
+                if released
+                else before.controls
+            )
+            resolved = _resolved_run(latest, action="pause", reason=reason)
+            self.session_controls.commit(
+                SessionCommit(
+                    operation_id=checkpoint.decision_id,
+                    before=before,
+                    steps=(
+                        SessionCommitStep(
+                            harness=snapshot.state.model_copy(update={"controls": controls})
+                        ),
+                    ),
+                    runs=(resolved,),
+                    output={"continuation": {"queued": False, "diagnostic": diagnostic}},
+                ),
+                released_activation_ids=tuple(sorted(released)),
+            )
+            diagnostics = [
+                diagnostic,
+                *(
+                    "fail-closed released exact activation "
+                    f"{activation_id}; owner-private cleanup was not confirmed"
+                    for activation_id in sorted(released)
+                ),
+            ]
+            return RunContinuationSettlement(
+                run=resolved, settled=True, failures=failures, diagnostics=tuple(diagnostics)
+            )
 
     @staticmethod
     def _failure(
@@ -544,167 +636,21 @@ class RunContinuationService:
             message=message,
         )
 
-    def _enqueue_continuation(
-        self,
-        *,
-        run: RunRecord,
-        checkpoint: RunContinuationCheckpoint,
-        plugin_id: str,
-        policy_id: str,
-        generation_id: str | None,
-        execution_contract_hash: str | None,
-        prompt: str,
-        mode: SessionInputMode,
-        title: str | None,
-        role: SessionInputRole,
-        scaffold: bool,
-        semantic_tag: SemanticTag | None,
-        coalesce_key: str | None,
-        reason: str | None,
-        state_revision: int | None,
-        session_control_controller_id: str | None,
-        session_control_activation_id: str | None,
-    ) -> tuple[bool, RunRecord, str | None]:
-        if generation_id is None or execution_contract_hash is None:
-            resolved = self._resolve(
-                run,
-                action="pause",
-                reason="continuation_execution_contract_missing",
-            )
-            return False, resolved, "continuation policy had no execution contract attribution"
-
-        with self.store.session_mutation(run.session_id):
-            snapshot = self.store.load_runtime_session(run.session_id)
-            latest = next(item for item in snapshot.runs if item.run_id == run.run_id)
-            latest_checkpoint = latest.continuation
-            if latest_checkpoint is None or latest_checkpoint.state == "resolved":
-                return False, latest, None
-
-            if session_control_activation_id is not None and not any(
-                activation.activation_id == session_control_activation_id
-                and activation.controller_id == session_control_controller_id
-                and activation.phase == "active"
-                for activation in snapshot.session.controls.activations
-            ):
-                return (
-                    False,
-                    self._resolve_locked(
-                        latest,
-                        action="pause",
-                        controller_id=f"{plugin_id}/continuation_policies/{policy_id}",
-                        reason="session_control_released",
-                        state_revision=state_revision,
-                    ),
-                    "Session controller was released before continuation enqueue",
-                )
-
-            if _input_is_durable(snapshot.messages, checkpoint.queue_id):
-                return (
-                    False,
-                    self._resolve_locked(
-                        latest,
-                        action="continue",
-                        controller_id=f"{plugin_id}/continuation_policies/{policy_id}",
-                        reason=reason or "continuation_input_already_durable",
-                        state_revision=state_revision,
-                    ),
-                    None,
-                )
-
-            queued = self.queue.eligible(snapshot)
-            if any(item.queue_id == checkpoint.queue_id for item in queued):
-                return (
-                    False,
-                    self._resolve_locked(
-                        latest,
-                        action="continue",
-                        controller_id=f"{plugin_id}/continuation_policies/{policy_id}",
-                        reason=reason or "continuation_input_already_queued",
-                        state_revision=state_revision,
-                    ),
-                    None,
-                )
-
-            active = maybe_active_run(snapshot.runs)
-            if active is not None and active.run_id != latest.run_id:
-                return (
-                    False,
-                    self._resolve_locked(
-                        latest,
-                        action="pause",
-                        controller_id=f"{plugin_id}/continuation_policies/{policy_id}",
-                        reason="superseded_by_active_run",
-                        state_revision=state_revision,
-                    ),
-                    "a newer run superseded automatic continuation",
-                )
-            if queued:
-                return (
-                    False,
-                    self._resolve_locked(
-                        latest,
-                        action="pause",
-                        controller_id=f"{plugin_id}/continuation_policies/{policy_id}",
-                        reason="superseded_by_queued_input",
-                        state_revision=state_revision,
-                    ),
-                    "queued session input took precedence over automatic continuation",
-                )
-
-            self.queue.enqueue(
-                snapshot=snapshot,
-                queue_id=checkpoint.queue_id,
-                prompt=prompt,
-                mode=mode,
-                title=title,
-                role=role,
-                scaffold=scaffold,
-                semantic_tag=semantic_tag,
-                coalesce_key=coalesce_key,
-                source="plugin",
-                plugin_id=plugin_id,
-                contribution_id=policy_id,
-                generation_id=generation_id,
-                execution_contract_hash=execution_contract_hash,
-                caused_by_run_id=run.run_id,
-                continuation_decision_id=checkpoint.decision_id,
-                session_control_controller_id=session_control_controller_id,
-                session_control_activation_id=session_control_activation_id,
-            )
-            resolved = self._resolve_locked(
-                latest,
-                action="continue",
-                controller_id=f"{plugin_id}/continuation_policies/{policy_id}",
-                reason=reason,
-                state_revision=state_revision,
-            )
-            return True, resolved, None
-
-    def _controller_is_current(
-        self,
-        session_id: str,
-        controller: RunContinuationControllerRef,
-    ) -> bool:
-        if controller.activation_id is None:
-            return True
-        session = self.store.load_session_record(session_id)
-        return any(
-            activation.activation_id == controller.activation_id
-            and activation.controller_id == controller.active_when_controller_id
-            and activation.phase == "active"
-            for activation in session.controls.activations
-        )
-
     def _current_bound_controllers(
         self,
         session_id: str,
         checkpoint: RunContinuationCheckpoint,
     ) -> tuple[RunContinuationControllerRef, ...]:
+        session = self.store.load_session_record(session_id)
+        current = {
+            (item.controller_id, item.activation_id)
+            for item in session.controls.activations
+            if item.phase == "active"
+        }
         return tuple(
             controller
             for controller in checkpoint.controllers
-            if controller.activation_id is not None
-            and self._controller_is_current(session_id, controller)
+            if (controller.active_when_controller_id, controller.activation_id) in current
         )
 
     def _resolve(
@@ -738,21 +684,49 @@ class RunContinuationService:
         reason: str | None = None,
         state_revision: int | None = None,
     ) -> RunRecord:
-        checkpoint = run.continuation
-        assert checkpoint is not None
-        resolved_checkpoint = checkpoint.model_copy(
-            update={
-                "state": "resolved",
-                "action": action,
-                "selected_controller_id": controller_id,
-                "reason": reason,
-                "state_revision": state_revision,
-                "resolved_at": utc_now(),
-            }
+        resolved = _resolved_run(
+            run,
+            action=action,
+            controller_id=controller_id,
+            reason=reason,
+            state_revision=state_revision,
         )
-        resolved = run.model_copy(update={"continuation": resolved_checkpoint})
-        self.store.save_run(resolved)
+        assert run.continuation is not None
+        self.store.commit_session(
+            SessionCommit(
+                operation_id=run.continuation.decision_id,
+                before=self.store.load_session_record(run.session_id),
+                runs=(resolved,),
+                output={"continuation": {"queued": False, "diagnostic": None}},
+            )
+        )
         return resolved
+
+
+def _resolved_run(
+    run: RunRecord,
+    *,
+    action: str,
+    controller_id: str | None = None,
+    reason: str | None = None,
+    state_revision: int | None = None,
+) -> RunRecord:
+    checkpoint = run.continuation
+    assert checkpoint is not None
+    return run.model_copy(
+        update={
+            "continuation": checkpoint.model_copy(
+                update={
+                    "state": "resolved",
+                    "action": action,
+                    "selected_controller_id": controller_id,
+                    "reason": reason,
+                    "state_revision": state_revision,
+                    "resolved_at": utc_now(),
+                }
+            )
+        }
+    )
 
 
 def _last_assistant_text(messages: list[MessageRecord], run_id: str) -> str:
@@ -760,13 +734,6 @@ def _last_assistant_text(messages: list[MessageRecord], run_id: str) -> str:
         if message.run_id == run_id and message.role == "assistant":
             return message.text_content
     return ""
-
-
-def _input_is_durable(messages: list[MessageRecord], queue_id: str) -> bool:
-    return any(
-        message.metadata.get("queued_input_id") == queue_id
-        for message in messages
-    )
 
 
 __all__ = ["RunContinuationService", "RunContinuationSettlement"]

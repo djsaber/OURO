@@ -1,7 +1,7 @@
 # OURO 会话撤销、Harness 状态与插件交互实施计划
 
 > 文档类型：本次改进实施计划
-> 状态：实施中；M1–M2 阶段契约已验证，M3–M6 尚未完成
+> 状态：实施中；M1–M2 已验证，M3 核心结算链路已接入，Goal 与迁移仍待完成，M4–M6 未完成
 > 计划基线：2026-09-08
 > 范围：仅本次状态、插件交互与撤销改进，不包含其他路线图项目
 
@@ -99,11 +99,11 @@ Plan/Goal 已调整为调用内状态接口，其命令/Controller/Continuation 
 
 依赖 M2；这是从“新增状态 API”转为“规范框架管线”的主要工作。
 
-- [ ] 重构 SessionControlCoordinator 的 acquire/release/replace：嵌套 callback 共享提案，claim 提交时校验，
+- [x] 重构 SessionControlCoordinator 的 acquire/release/replace：嵌套 callback 共享提案，claim 提交时校验，
   controller 业务关系与 owner 状态共同生效；准备/失败过程进入操作记录，移除半完成业务状态发布路径。
-- [ ] Tool/Command 输出接入应用提交边界；外部效果的事实归属与 canonical Harness 结算分别表达。
-- [ ] 把 ToolInputRequest、审批和等待阶段的状态/恢复身份一并提交；恢复使用新调用范围并检查原等待记录。
-- [ ] Continuation 使用现有 durable settlement plan，纳入状态提案和稳定去重；多策略失败/冲突无部分保存。
+- [x] Tool/Command 输出接入应用提交边界；外部效果的事实归属与 canonical Harness 结算分别表达。
+- [x] 把 ToolInputRequest、审批和等待阶段的状态/恢复身份一并提交；恢复使用新调用范围并检查原等待记录。
+- [x] Continuation 使用现有 durable settlement plan，纳入状态提案和稳定去重；多策略失败/冲突无部分保存。
 - [ ] Plan 迁移模式与业务值，去除旧 pending 执行许可混存；审批记录保留原生所有权，计划文件不回滚。
 - [ ] Goal 从原生 Run 控制快照取得执行绑定；稳定目标身份关联原生 usage，Context 不保存、计费不随快照回退。
 - [ ] 编写已知 Todo/Plan/Goal schema 的一次性迁移，处理可验证 usage 基线；不确定历史明确拒绝或保留边界。
@@ -111,6 +111,14 @@ Plan/Goal 已调整为调用内状态接口，其命令/Controller/Continuation 
 
 退出条件：激活、replace、等待、取消、异常终结、完成、续跑均不产生模式/数据错位；schema 迁移可重入。
 AC-04、AC-09 的交互部分、AC-14，以及 AC-03 的 Plan/Goal 部分通过。
+
+M3 当前证据：`test_harness_commands.py`、`test_harness_controls.py`、`test_harness_continuations.py` 与
+`test_harness_tools.py` 覆盖两后端的嵌套草稿、失败/冲突丢弃、提交前故障、提交后响应丢失/取消，以及互动和
+AFK 等待阶段；不修改 owner 数据的等待请求也使用原生版本前置条件。Plan schema 2 只保存计划路径，模式读取
+原生控制关系，审批数据留在原生请求；实际“写计划→等待→重启→接受”及 /plan、/control 流程通过。
+集中回归 293 项通过、2 项 File 专属故障点跳过；另两项旧测试要求至少读取两次，已改为检验存储读取离开事件循环，
+定向运行两后端通过。检查范围含 SDK、插件装配、架构、原生提交和迁移；Ruff/mypy 通过。
+Goal 原生 usage 关联、已有 owner 版本的完整迁移及旧执行字段清理未完成；本阶段不开放新的 /undo。
 
 ## 7. M4：精确撤销、排队输入与执行有效性
 

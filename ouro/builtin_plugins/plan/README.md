@@ -65,7 +65,7 @@ While Plan mode is active:
 - approval cannot override the Plan tool policy;
 - shell, MCP, plugin, or other indirect write paths cannot be used to modify the Plan.
 
-The policy evaluates the active state revision and canonical target path. Planning restrictions do
+The policy reads the active controller and canonical target path. Planning restrictions do
 not replace workspace policy, tool permissions, or normal execution safety checks.
 
 ### Review and Resumption
@@ -79,17 +79,18 @@ request with `accept`, `revise`, or `reject`:
 - rejection keeps Plan mode active;
 - unattended resolution releases Plan mode under the configured AFK policy.
 
-Recovery reuses the same checkpoint. A changed or missing Plan file invalidates the pending review,
-and repeated resume delivery returns the previously stored output rather than applying the decision
-twice.
+OURO owns the durable interaction checkpoint and committed tool result. Each resume receives a new
+call-scoped state view. A changed or missing Plan file invalidates the review; repeated delivery is
+handled by the native interaction and message identities.
 
 ## State and Boundaries
 
-- Plan state is canonical Session extension state in the `dev.ouro.plan` namespace.
-- Phases are `inactive`, `active`, and `awaiting_approval`.
-- State records the Plan path, revision, activation identity, pending tool call, Plan digest,
-  options, and last resume output.
-- State uses a versioned envelope, atomic updates, and `branch_policy="reset"`.
+- Plan business state belongs to the `dev.ouro.plan` owner in the native Harness aggregate.
+- The owner payload contains the Plan path (schema 2), with `branch_policy="reset"`.
+- Mode activation comes from the native controller projection. Pending review data, digest,
+  options and resume identity belong to the native tool interaction.
+- Controller transitions, owner state and the corresponding tool result or command effects share
+  one durable decision; callbacks only stage changes.
 - The Plan Markdown file is a Host-owned artifact; plugin private data does not contain canonical
   Session state.
 - Each Run uses its frozen Catalog execution contract. A tool invocation already in progress keeps

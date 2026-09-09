@@ -1,13 +1,23 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
+from typing import Any, cast
 
+from pydantic import JsonValue
+
+from ouro.application.harness import capture_session_harness
 from ouro.application.queued_inputs import QueuedInputQueue
-from ouro.core.base import utc_now
+from ouro.core.base import new_id, utc_now
 from ouro.core.callbacks import run_blocking
-from ouro.core.errors import OuroError
+from ouro.core.errors import OuroError, PersistenceError
+from ouro.core.events import EventRecord
+from ouro.core.harness_calls import HarnessCallSnapshot, accept_state_changes
 from ouro.core.run_transitions import plan_run_transition
+from ouro.core.session_commits import (
+    SessionCommit,
+    SessionCommitConflict,
+    SessionCommitResult,
+    SessionCommitStep,
+)
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     SessionControlActivation,
@@ -15,6 +25,7 @@ from ouro.core.session_controls import (
     SessionControlState,
     SessionControlTransitionResult,
 )
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolResult
 from ouro.plugins.session_controllers import (
     PluginSessionController,
@@ -41,147 +52,11 @@ class SessionControlStaleRevisionError(SessionControlError):
     pass
 
 
-type _SessionKind = Literal["primary", "subagent"]
-
-
-@dataclass(frozen=True)
-class _AcquirePreparation:
-    session_kind: _SessionKind
-    activation: SessionControlActivation
-    controller: PluginSessionController
-
-
-@dataclass(frozen=True)
-class _ReleasePreparation:
-    session_kind: _SessionKind
-    activation: SessionControlActivation
-    controller: PluginSessionController
-
-
-@dataclass(frozen=True)
-class _ReplacePreparation:
-    session_kind: _SessionKind
-    activation: SessionControlActivation
-    controller: PluginSessionController
-    targets: tuple[SessionControlActivation, ...]
-    target_controllers: tuple[tuple[SessionControlActivation, PluginSessionController], ...]
-
-
 class SessionControlCoordinator:
-    """Host-owned persistence and claim arbitration for plugin Session controllers."""
+    """Stage controller callbacks and settle their state, claims and owned work together."""
 
     def __init__(self, store: SessionStore) -> None:
         self.store = store
-
-    def force_release(
-        self,
-        *,
-        session_id: str,
-        activation_id: str,
-        reason: str = "host_force_release",
-    ) -> SessionControlTransitionResult:
-        """Revoke a Host activation even when its owner callback is unavailable."""
-
-        with self.store.session_mutation(session_id):
-            session = self.store.load_session_record(session_id)
-            activation = next(
-                (
-                    item
-                    for item in session.controls.activations
-                    if item.activation_id == activation_id
-                ),
-                None,
-            )
-            if activation is None:
-                return SessionControlTransitionResult(
-                    action="release",
-                    changed=False,
-                    session_revision=session.controls.revision,
-                    output="Session controller is already inactive.",
-                    data={"forced": True, "reason": reason},
-                )
-            controls = _replace_control_state(
-                session.controls,
-                [
-                    item
-                    for item in session.controls.activations
-                    if item.activation_id != activation_id
-                ],
-            )
-            self._save_controls(session, controls)
-        cancelled_run_id = self._cancel_owned_pending_interaction(
-            session_id=session_id,
-            controller_id=activation.controller_id,
-            activation_id=activation.activation_id,
-        )
-        cancelled_queue_ids = QueuedInputQueue(self.store).cancel_for_session_control(
-            session_id=session_id,
-            controller_id=activation.controller_id,
-            activation_id=activation.activation_id,
-        )
-        data = {
-            "forced": True,
-            "reason": reason,
-            "controller_id": activation.controller_id,
-        }
-        if cancelled_run_id is not None:
-            data["cancelled_run_id"] = cancelled_run_id
-        if cancelled_queue_ids:
-            data["cancelled_queue_ids"] = list(cancelled_queue_ids)
-        return SessionControlTransitionResult(
-            action="release",
-            changed=True,
-            session_revision=controls.revision,
-            released_activation_ids=[activation_id],
-            output=(
-                "Session controller Host gate was force-released; "
-                "owner-private cleanup was not confirmed."
-            ),
-            data=data,
-        )
-
-    def reconcile_interrupted(self, session_id: str) -> bool:
-        """Fail closed after a process stopped inside a lifecycle transition."""
-
-        deactivating: list[SessionControlActivation] = []
-        with self.store.session_mutation(session_id):
-            session = self.store.load_session_record(session_id)
-            if not any(
-                item.phase in {"activating", "deactivating"}
-                for item in session.controls.activations
-            ):
-                return False
-            values: list[SessionControlActivation] = []
-            for activation in session.controls.activations:
-                if activation.phase == "activating":
-                    values.append(
-                        activation.model_copy(
-                            update={
-                                "phase": "failed",
-                                "revision": activation.revision + 1,
-                                "updated_at": utc_now(),
-                                "error": "activation interrupted before commit",
-                            }
-                        )
-                    )
-                elif activation.phase == "deactivating":
-                    deactivating.append(activation)
-                else:
-                    values.append(activation)
-            controls = _replace_control_state(session.controls, values)
-            self._save_controls(session, controls)
-        for activation in deactivating:
-            self._cancel_owned_pending_interaction(
-                session_id=session_id,
-                controller_id=activation.controller_id,
-                activation_id=activation.activation_id,
-            )
-            QueuedInputQueue(self.store).cancel_for_session_control(
-                session_id=session_id,
-                controller_id=activation.controller_id,
-                activation_id=activation.activation_id,
-            )
-        return True
 
     async def apply(
         self,
@@ -192,554 +67,364 @@ class SessionControlCoordinator:
         workspace: str | None = None,
         resolving_tool_call_id: str | None = None,
     ) -> SessionControlTransitionResult:
-        if transition.action == "acquire":
-            return await self._acquire(
+        before, draft = await run_blocking(capture_session_harness, self.store, session_id)
+        operation_id = new_id("op")
+        await run_blocking(
+            self.store.append_ordered_event,
+            self._event(
+                session_id,
+                operation_id,
+                transition.action,
+                "started",
+            ),
+        )
+        try:
+            draft, result = await self.stage(
                 transition,
-                session_id=session_id,
+                session=before,
+                draft=draft,
                 controllers=controllers,
                 workspace=workspace,
             )
-        if transition.action == "release":
-            return await self._release(
-                transition,
-                session_id=session_id,
-                controllers=controllers,
-                workspace=workspace,
+            request = SessionCommit(
+                operation_id=operation_id,
+                before=before,
+                steps=(SessionCommitStep(harness=draft.state),),
+                events=(self._event(session_id, operation_id, transition.action, "applied"),),
+                output={"session_control": result.model_dump(mode="json")},
+            )
+            committed = await run_blocking(
+                self.commit,
+                request,
+                released_activation_ids=tuple(result.released_activation_ids),
                 resolving_tool_call_id=resolving_tool_call_id,
             )
-        return await self._replace(
-            transition,
-            session_id=session_id,
-            controllers=controllers,
-            workspace=workspace,
-            resolving_tool_call_id=resolving_tool_call_id,
-        )
+            return self.with_cancellations(result, committed)
+        except BaseException as exc:
+            # An undecided operation has no published business state to compensate.
+            # A durable decision is recovered before reporting a failure after commit.
+            recovered = await run_blocking(self.store.load_commit, session_id, operation_id)
+            if recovered is not None:
+                return self.with_cancellations(result, recovered)
+            await run_blocking(
+                self.store.append_ordered_event,
+                self._event(
+                    session_id, operation_id, transition.action, "failed", type(exc).__name__
+                ),
+            )
+            raise
 
-    async def _acquire(
+    async def stage(
         self,
         transition: AttributedSessionControlTransition,
         *,
-        session_id: str,
+        session: SessionRecord,
+        draft: HarnessCallSnapshot,
         controllers: PluginSessionControllerRegistry,
-        workspace: str | None,
-    ) -> SessionControlTransitionResult:
-        prepared = await run_blocking(
-            self._prepare_acquire,
-            transition,
-            session_id=session_id,
-            controllers=controllers,
-        )
-        if isinstance(prepared, SessionControlTransitionResult):
-            return prepared
-
+        workspace: str | None = None,
+    ) -> tuple[HarnessCallSnapshot, SessionControlTransitionResult]:
+        """Evaluate one transition in the parent's draft, without canonical writes."""
+        controls = draft.state.controls
+        self._check_session_revision(controls, transition.expected_session_revision)
+        targets: list[SessionControlActivation] = []
+        controller: PluginSessionController | None = None
+        if transition.action == "release":
+            target = _select_release_activation(controls, transition)
+            if target is None:
+                return draft, SessionControlTransitionResult(
+                    action="release",
+                    changed=False,
+                    session_revision=controls.revision,
+                    output="Session controller is already inactive.",
+                )
+            targets = [target]
+        else:
+            canonical_id = f"{transition.plugin_id}/session_controllers/{transition.controller_id}"
+            controller = self._controller_for_transition(controllers, canonical_id, transition)
+            if transition.action == "acquire":
+                existing = next(
+                    (
+                        item
+                        for item in controls.activations
+                        if item.controller_id == canonical_id and item.phase != "failed"
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    self._validate_activation_controller(existing, controller)
+                    return draft, SessionControlTransitionResult(
+                        action="acquire",
+                        changed=False,
+                        session_revision=controls.revision,
+                        activation=existing,
+                        output=f"Session controller is already active: {canonical_id}",
+                        data=dict(existing.data),
+                    )
+            else:
+                selected = set(transition.replace_activation_ids)
+                targets = [item for item in controls.activations if item.activation_id in selected]
+                if {item.activation_id for item in targets} != selected:
+                    raise SessionControlConflictError("replace target activation is unavailable")
+                if any(item.phase != "active" for item in targets):
+                    raise SessionControlConflictError("replace targets must all be active")
+            conflicts = _claim_conflicts(
+                controller.claims,
+                controls.activations,
+                ignored_activation_ids={item.activation_id for item in targets},
+            )
+            if conflicts:
+                details = ", ".join(f"{domain} held by {owner}" for domain, owner in conflicts)
+                raise SessionControlConflictError(f"session control claim conflict: {details}")
+        if any(item.plugin_id != transition.plugin_id for item in targets):
+            raise SessionControlConflictError(
+                f"a plugin cannot {transition.action} another plugin's Session controller"
+            )
+        if transition.expected_activation_revision is not None and (
+            len(targets) != 1 or targets[0].revision != transition.expected_activation_revision
+        ):
+            raise SessionControlStaleRevisionError("session controller activation revision changed")
+        target_controllers = []
+        for target in targets:
+            try:
+                target_controller = controllers.get(target.controller_id)
+            except KeyError as exc:
+                raise SessionControlContractError(
+                    f"session controller is unavailable: {target.controller_id}"
+                ) from exc
+            self._validate_activation_controller(target, target_controller)
+            target_controllers.append((target, target_controller))
+        output = PluginSessionControllerOutput()
         try:
-            output = await prepared.controller.activate(
-                session_id=session_id,
-                session_kind=prepared.session_kind,
-                activation_id=prepared.activation.activation_id,
-                payload=transition.payload,
-                workspace=workspace,
-            )
+            for target, target_controller in target_controllers:
+                output = await target_controller.deactivate(
+                    session_id=session.session_id,
+                    session_kind=session.session_kind,
+                    activation_id=target.activation_id,
+                    payload=transition.payload,
+                    reason=transition.reason or ("replaced" if controller else None),
+                    workspace=workspace,
+                    harness=draft,
+                )
+                draft = self._accept_output(draft, output)
+                # The next lifecycle callback observes the accepted removal in the
+                # shared draft, while canonical readers still see the old aggregate.
+                remaining = [
+                    item
+                    for item in draft.state.controls.activations
+                    if item.activation_id != target.activation_id
+                ]
+                draft = draft.model_copy(
+                    update={
+                        "state": draft.state.model_copy(
+                            update={
+                                "controls": draft.state.controls.model_copy(
+                                    update={"activations": remaining}
+                                )
+                            }
+                        )
+                    }
+                )
+            if controller is not None:
+                activation = self._new_activation(controller)
+                output = await controller.activate(
+                    session_id=session.session_id,
+                    session_kind=session.session_kind,
+                    activation_id=activation.activation_id,
+                    payload=transition.payload,
+                    workspace=workspace,
+                    harness=draft,
+                )
+                draft = self._accept_output(draft, output)
+                activation = activation.model_copy(update={"data": dict(output.data)})
+            else:
+                activation = None
         except PluginSessionControllerError as exc:
-            await run_blocking(
-                self._rollback_activation,
-                session_id,
-                prepared.activation.activation_id,
-            )
             raise SessionControlError(str(exc)) from exc
-
-        active, session_revision = await run_blocking(
-            self._commit_acquire,
-            session_id,
-            prepared.activation.activation_id,
-            output,
+        removed_ids = {item.activation_id for item in targets}
+        retained = [item for item in controls.activations if item.activation_id not in removed_ids]
+        if activation is not None:
+            retained.append(activation)
+        controls = _replace_control_state(controls, retained)
+        draft = draft.model_copy(
+            update={"state": draft.state.model_copy(update={"controls": controls})}
         )
-        return SessionControlTransitionResult(
-            action="acquire",
+        return draft, SessionControlTransitionResult(
+            action=transition.action,
             changed=True,
-            session_revision=session_revision,
-            activation=active,
+            session_revision=controls.revision,
+            activation=activation,
+            released_activation_ids=sorted(removed_ids),
             output=output.output,
             data=dict(output.data),
         )
 
-    def _prepare_acquire(
+    @staticmethod
+    def _accept_output(
+        draft: HarnessCallSnapshot, output: PluginSessionControllerOutput
+    ) -> HarnessCallSnapshot:
+        return accept_state_changes(draft, [output.harness_change] if output.harness_change else [])
+
+    def commit(
         self,
-        transition: AttributedSessionControlTransition,
+        request: SessionCommit,
         *,
-        session_id: str,
-        controllers: PluginSessionControllerRegistry,
-    ) -> _AcquirePreparation | SessionControlTransitionResult:
-        assert transition.controller_id is not None
-        canonical_id = f"{transition.plugin_id}/session_controllers/{transition.controller_id}"
-        controller = self._controller_for_transition(
-            controllers,
-            canonical_id,
-            transition,
-        )
-        with self.store.session_mutation(session_id):
-            session = self.store.load_session_record(session_id)
-            self._check_session_revision(session.controls, transition.expected_session_revision)
-            existing = next(
-                (
-                    activation
-                    for activation in session.controls.activations
-                    if activation.controller_id == canonical_id and activation.phase != "failed"
-                ),
-                None,
+        released_activation_ids: tuple[str, ...] = (),
+        resolving_tool_call_id: str | None = None,
+    ) -> SessionCommitResult:
+        """Include released controllers' pending work in the same durable decision."""
+        with self.store.session_mutation(request.before.session_id):
+            after = (request.after or request.before).model_copy(
+                update={"updated_at": utc_now(), "last_activity_at": utc_now()},
             )
-            if existing is not None:
-                if existing.phase == "deactivating":
-                    raise SessionControlConflictError(
-                        f"session controller is being released: {canonical_id}"
-                    )
-                if existing.execution_contract_hash != transition.execution_contract_hash:
-                    raise SessionControlConflictError(
-                        "session controller is already active under another execution contract: "
-                        f"{canonical_id}"
-                    )
-                return SessionControlTransitionResult(
-                    action="acquire",
-                    changed=False,
-                    session_revision=session.controls.revision,
-                    activation=existing,
-                    output=f"Session controller is already active: {canonical_id}",
-                    data=dict(existing.data),
-                )
-            conflicts = _claim_conflicts(controller.claims, session.controls.activations)
-            if conflicts:
-                details = ", ".join(f"{domain} held by {owner}" for domain, owner in conflicts)
-                raise SessionControlConflictError(
-                    f"session control claim conflict for {canonical_id}: {details}"
-                )
-            activation = self._new_activation(controller)
-            preparing = _replace_control_state(
-                session.controls,
-                [*session.controls.activations, activation],
-            )
-            self._save_controls(session, preparing)
-        return _AcquirePreparation(
-            session_kind=session.session_kind,
-            activation=activation,
-            controller=controller,
-        )
-
-    def _commit_acquire(
-        self,
-        session_id: str,
-        activation_id: str,
-        output: PluginSessionControllerOutput,
-    ) -> tuple[SessionControlActivation, int]:
-        with self.store.session_mutation(session_id):
-            session = self.store.load_session_record(session_id)
-            current = _require_activation(session.controls, activation_id)
-            if current.phase != "activating":
-                raise SessionControlConflictError(
-                    f"session controller activation changed before commit: {activation_id}"
-                )
-            active = current.model_copy(
-                update={
-                    "phase": "active",
-                    "revision": current.revision + 1,
-                    "owner_state_revision": output.owner_state_revision,
-                    "updated_at": utc_now(),
-                    "data": dict(output.data),
-                }
-            )
-            controls = _replace_activation(session.controls, active)
-            self._save_controls(session, controls)
-        return active, controls.revision
-
-    async def _release(
-        self,
-        transition: AttributedSessionControlTransition,
-        *,
-        session_id: str,
-        controllers: PluginSessionControllerRegistry,
-        workspace: str | None,
-        resolving_tool_call_id: str | None,
-    ) -> SessionControlTransitionResult:
-        prepared = await run_blocking(
-            self._prepare_release,
-            transition,
-            session_id=session_id,
-            controllers=controllers,
-        )
-        if isinstance(prepared, SessionControlTransitionResult):
-            return prepared
-
-        cleanup_error: PluginSessionControllerError | None = None
-        output = PluginSessionControllerOutput()
-        try:
-            output = await prepared.controller.deactivate(
-                session_id=session_id,
-                session_kind=prepared.session_kind,
-                activation_id=prepared.activation.activation_id,
-                payload=transition.payload,
-                reason=transition.reason,
-                workspace=workspace,
-            )
-        except PluginSessionControllerError as exc:
-            cleanup_error = exc
-
-        session_revision, cancelled_run_id, cancelled_queue_ids = await run_blocking(
-            self._commit_release,
-            session_id=session_id,
-            activation=prepared.activation,
-            resolving_tool_call_id=resolving_tool_call_id,
-        )
-        if cleanup_error is not None:
-            raise SessionControlError(
-                f"Session controller was released, but owner cleanup failed: {cleanup_error}"
-            ) from cleanup_error
-        data = dict(output.data)
-        if cancelled_run_id is not None:
-            data["cancelled_run_id"] = cancelled_run_id
-        if cancelled_queue_ids:
-            data["cancelled_queue_ids"] = list(cancelled_queue_ids)
-        return SessionControlTransitionResult(
-            action="release",
-            changed=True,
-            session_revision=session_revision,
-            released_activation_ids=[prepared.activation.activation_id],
-            output=output.output,
-            data=data,
-        )
-
-    def _prepare_release(
-        self,
-        transition: AttributedSessionControlTransition,
-        *,
-        session_id: str,
-        controllers: PluginSessionControllerRegistry,
-    ) -> _ReleasePreparation | SessionControlTransitionResult:
-        with self.store.session_mutation(session_id):
-            session = self.store.load_session_record(session_id)
-            self._check_session_revision(session.controls, transition.expected_session_revision)
-            activation = _select_release_activation(session.controls, transition)
-            if activation is None:
-                return SessionControlTransitionResult(
-                    action="release",
-                    changed=False,
-                    session_revision=session.controls.revision,
-                    output="Session controller is already inactive.",
-                )
-            if activation.plugin_id != transition.plugin_id:
-                raise SessionControlConflictError(
-                    "a plugin cannot release another plugin's Session controller: "
-                    f"{activation.controller_id}"
-                )
-            if activation.phase == "activating":
-                raise SessionControlConflictError(
-                    "Session controller activation is still in progress: "
-                    f"{activation.controller_id}"
-                )
-            if activation.phase == "deactivating":
-                return SessionControlTransitionResult(
-                    action="release",
-                    changed=False,
-                    session_revision=session.controls.revision,
-                    activation=activation,
-                    output="Session controller is already being released.",
-                )
-            if transition.expected_activation_revision is not None and (
-                activation.revision != transition.expected_activation_revision
-            ):
-                raise SessionControlStaleRevisionError(
-                    "session controller activation revision changed: "
-                    f"expected {transition.expected_activation_revision}, "
-                    f"found {activation.revision}"
-                )
-            try:
-                controller = controllers.get(activation.controller_id)
-            except KeyError as exc:
-                raise SessionControlContractError(
-                    f"session controller is unavailable: {activation.controller_id}"
-                ) from exc
-            self._validate_activation_controller(activation, controller)
-            deactivating = activation.model_copy(
-                update={
-                    "phase": "deactivating",
-                    "revision": activation.revision + 1,
-                    "updated_at": utc_now(),
-                }
-            )
-            controls = _replace_activation(session.controls, deactivating)
-            self._save_controls(session, controls)
-        return _ReleasePreparation(
-            session_kind=session.session_kind,
-            activation=activation,
-            controller=controller,
-        )
-
-    def _commit_release(
-        self,
-        *,
-        session_id: str,
-        activation: SessionControlActivation,
-        resolving_tool_call_id: str | None,
-    ) -> tuple[int, str | None, tuple[str, ...]]:
-        with self.store.session_mutation(session_id):
-            session = self.store.load_session_record(session_id)
-            current = next(
-                (
-                    item
-                    for item in session.controls.activations
-                    if item.activation_id == activation.activation_id
-                ),
-                None,
-            )
-            if current is not None:
-                controls = _replace_control_state(
-                    session.controls,
-                    [
-                        item
-                        for item in session.controls.activations
-                        if item.activation_id != activation.activation_id
-                    ],
-                )
-                self._save_controls(session, controls)
-            else:
-                controls = session.controls
-        cancelled_run_id = self._cancel_owned_pending_interaction(
-            session_id=session_id,
-            controller_id=activation.controller_id,
-            activation_id=activation.activation_id,
-            exclude_tool_call_id=resolving_tool_call_id,
-        )
-        cancelled_queue_ids = QueuedInputQueue(self.store).cancel_for_session_control(
-            session_id=session_id,
-            controller_id=activation.controller_id,
-            activation_id=activation.activation_id,
-        )
-        return controls.revision, cancelled_run_id, tuple(cancelled_queue_ids)
-
-    async def _replace(
-        self,
-        transition: AttributedSessionControlTransition,
-        *,
-        session_id: str,
-        controllers: PluginSessionControllerRegistry,
-        workspace: str | None,
-        resolving_tool_call_id: str | None,
-    ) -> SessionControlTransitionResult:
-        prepared = await run_blocking(
-            self._prepare_replace,
-            transition,
-            session_id=session_id,
-            controllers=controllers,
-        )
-
-        try:
-            output = await prepared.controller.activate(
-                session_id=session_id,
-                session_kind=prepared.session_kind,
-                activation_id=prepared.activation.activation_id,
-                payload=transition.payload,
-                workspace=workspace,
-            )
-        except PluginSessionControllerError as exc:
-            await run_blocking(
-                self._rollback_replacement,
-                session_id,
-                prepared.activation.activation_id,
-                prepared.targets,
-            )
-            raise SessionControlError(str(exc)) from exc
-
-        cleanup_errors: list[str] = []
-        for target, target_controller in prepared.target_controllers:
-            try:
-                await target_controller.deactivate(
-                    session_id=session_id,
-                    session_kind=prepared.session_kind,
-                    activation_id=target.activation_id,
-                    reason=transition.reason or "replaced",
-                    workspace=workspace,
-                )
-            except PluginSessionControllerError as exc:
-                cleanup_errors.append(f"{target.controller_id}: {exc}")
-
-        active, session_revision, cancelled_run_ids, cancelled_queue_ids = await run_blocking(
-            self._commit_replace,
-            session_id=session_id,
-            activation=prepared.activation,
-            targets=prepared.targets,
-            output=output,
-            resolving_tool_call_id=resolving_tool_call_id,
-        )
-        data = dict(output.data)
-        if cleanup_errors:
-            data["cleanup_errors"] = cleanup_errors
-        if cancelled_run_ids:
-            data["cancelled_run_ids"] = list(cancelled_run_ids)
-        if cancelled_queue_ids:
-            data["cancelled_queue_ids"] = list(cancelled_queue_ids)
-        return SessionControlTransitionResult(
-            action="replace",
-            changed=True,
-            session_revision=session_revision,
-            activation=active,
-            released_activation_ids=sorted(transition.replace_activation_ids),
-            output=output.output,
-            data=data,
-        )
-
-    def _prepare_replace(
-        self,
-        transition: AttributedSessionControlTransition,
-        *,
-        session_id: str,
-        controllers: PluginSessionControllerRegistry,
-    ) -> _ReplacePreparation:
-        assert transition.controller_id is not None
-        canonical_id = f"{transition.plugin_id}/session_controllers/{transition.controller_id}"
-        controller = self._controller_for_transition(
-            controllers,
-            canonical_id,
-            transition,
-        )
-        replaced_ids = set(transition.replace_activation_ids)
-        with self.store.session_mutation(session_id):
-            session = self.store.load_session_record(session_id)
-            self._check_session_revision(session.controls, transition.expected_session_revision)
-            targets = [
-                activation
-                for activation in session.controls.activations
-                if activation.activation_id in replaced_ids
-            ]
-            if len(targets) != len(replaced_ids):
-                found = {activation.activation_id for activation in targets}
-                missing = ", ".join(sorted(replaced_ids - found))
-                raise SessionControlConflictError(
-                    f"replace target activation is unavailable: {missing}"
-                )
-            if any(target.plugin_id != transition.plugin_id for target in targets):
-                raise SessionControlConflictError(
-                    "a plugin cannot replace another plugin's Session controller"
-                )
-            if any(target.phase != "active" for target in targets):
-                raise SessionControlConflictError("replace targets must all be in the active phase")
-            if transition.expected_activation_revision is not None:
-                if len(targets) != 1:
-                    raise SessionControlStaleRevisionError(
-                        "expected_activation_revision requires exactly one replace target"
-                    )
-                if targets[0].revision != transition.expected_activation_revision:
-                    raise SessionControlStaleRevisionError(
-                        "session controller activation revision changed: "
-                        f"expected {transition.expected_activation_revision}, "
-                        f"found {targets[0].revision}"
-                    )
-            target_controllers: list[tuple[SessionControlActivation, PluginSessionController]] = []
-            for target in targets:
-                try:
-                    target_controller = controllers.get(target.controller_id)
-                except KeyError as exc:
-                    raise SessionControlContractError(
-                        f"replace target controller is unavailable: {target.controller_id}"
-                    ) from exc
-                self._validate_activation_controller(target, target_controller)
-                target_controllers.append((target, target_controller))
-            conflicts = _claim_conflicts(
-                controller.claims,
-                session.controls.activations,
-                ignored_activation_ids=replaced_ids,
-            )
-            if conflicts:
-                details = ", ".join(f"{domain} held by {owner}" for domain, owner in conflicts)
-                raise SessionControlConflictError(
-                    f"session control claim conflict for {canonical_id}: {details}"
-                )
-            activation = self._new_activation(controller)
-            staged_targets = {
-                target.activation_id: target.model_copy(
-                    update={
-                        "phase": "deactivating",
-                        "revision": target.revision + 1,
-                        "updated_at": utc_now(),
-                    }
-                )
-                for target in targets
-            }
-            staged = _replace_control_state(
-                session.controls,
-                [
-                    staged_targets.get(item.activation_id, item)
-                    for item in session.controls.activations
-                ]
-                + [activation],
-            )
-            self._save_controls(session, staged)
-        return _ReplacePreparation(
-            session_kind=session.session_kind,
-            activation=activation,
-            controller=controller,
-            targets=tuple(targets),
-            target_controllers=tuple(target_controllers),
-        )
-
-    def _commit_replace(
-        self,
-        *,
-        session_id: str,
-        activation: SessionControlActivation,
-        targets: tuple[SessionControlActivation, ...],
-        output: PluginSessionControllerOutput,
-        resolving_tool_call_id: str | None,
-    ) -> tuple[SessionControlActivation, int, tuple[str, ...], tuple[str, ...]]:
-        replaced_ids = {target.activation_id for target in targets}
-        with self.store.session_mutation(session_id):
-            session = self.store.load_session_record(session_id)
-            current = _require_activation(session.controls, activation.activation_id)
-            if current.phase != "activating":
-                raise SessionControlConflictError(
-                    f"replacement activation changed before commit: {activation.activation_id}"
-                )
-            active = current.model_copy(
-                update={
-                    "phase": "active",
-                    "revision": current.revision + 1,
-                    "owner_state_revision": output.owner_state_revision,
-                    "updated_at": utc_now(),
-                    "data": dict(output.data),
-                }
-            )
-            values = [
-                item
-                for item in session.controls.activations
-                if item.activation_id not in replaced_ids
-                and item.activation_id != activation.activation_id
-            ]
-            controls = _replace_control_state(session.controls, [*values, active])
-            self._save_controls(session, controls)
-        cancelled_run_ids = {
-            run_id
-            for target in targets
-            if (
-                run_id := self._cancel_owned_pending_interaction(
-                    session_id=session_id,
-                    controller_id=target.controller_id,
-                    activation_id=target.activation_id,
+            runs = list(request.runs)
+            cancellations = {}
+            for activation in request.before.controls.activations:
+                if activation.activation_id not in released_activation_ids:
+                    continue
+                after, cancelled_run = self._cancel_pending(
+                    after,
+                    activation,
                     exclude_tool_call_id=resolving_tool_call_id,
                 )
+                if cancelled_run is not None:
+                    runs = [run for run in runs if run.run_id != cancelled_run.run_id]
+                    runs.append(cancelled_run)
+                after, queue_ids = QueuedInputQueue(self.store).without_session_control(
+                    after,
+                    controller_id=activation.controller_id,
+                    activation_id=activation.activation_id,
+                )
+                cancellations[activation.activation_id] = {
+                    "run_id": cancelled_run.run_id if cancelled_run else None,
+                    "queue_ids": list(queue_ids),
+                }
+            output = dict(request.output)
+            if cancellations:
+                output["control_cancellations"] = cast(JsonValue, cancellations)
+            prepared = request.model_copy(
+                update={"after": after, "runs": tuple(runs), "output": output}
             )
-            is not None
-        }
-        cancelled_queue_ids = [
-            queue_id
-            for target in targets
-            for queue_id in QueuedInputQueue(self.store).cancel_for_session_control(
-                session_id=session_id,
-                controller_id=target.controller_id,
-                activation_id=target.activation_id,
-            )
+            try:
+                committed = self.store.commit_session(prepared)
+            except SessionCommitConflict:
+                raise
+            except PersistenceError:
+                recovered = self.store.load_commit(request.before.session_id, request.operation_id)
+                if recovered is None:
+                    raise
+                committed = recovered
+        self.store.refresh_catalog(request.before.session_id)
+        return committed
+
+    @staticmethod
+    def with_cancellations(
+        result: SessionControlTransitionResult,
+        committed: SessionCommitResult,
+    ) -> SessionControlTransitionResult:
+        cancellations = cast(
+            dict[str, dict[str, Any]], committed.output.get("control_cancellations", {})
+        )
+        data = dict(result.data)
+        queue_ids = []
+        for activation_id in result.released_activation_ids:
+            cancellation = cancellations.get(activation_id)
+            if cancellation is None:
+                continue
+            if cancellation.get("run_id") is not None:
+                data["cancelled_run_id"] = cancellation["run_id"]
+            queue_ids.extend(cancellation.get("queue_ids", []))
+        if queue_ids:
+            data["cancelled_queue_ids"] = queue_ids
+        return result.model_copy(update={"data": data})
+
+    def force_release(
+        self,
+        *,
+        session_id: str,
+        activation_id: str,
+        reason: str = "host_force_release",
+    ) -> SessionControlTransitionResult:
+        before, draft = capture_session_harness(self.store, session_id)
+        retained = [
+            item for item in before.controls.activations if item.activation_id != activation_id
         ]
-        return (
-            active,
-            controls.revision,
-            tuple(sorted(cancelled_run_ids)),
-            tuple(sorted(cancelled_queue_ids)),
+        changed = len(retained) != len(before.controls.activations)
+        controls = _replace_control_state(before.controls, retained) if changed else before.controls
+        result = SessionControlTransitionResult(
+            action="release",
+            changed=changed,
+            session_revision=controls.revision,
+            released_activation_ids=[activation_id] if changed else [],
+            output=(
+                "Session controller Host gate was force-released; "
+                "owner-private cleanup was not confirmed."
+            )
+            if changed
+            else "Session controller is already inactive.",
+            data={"forced": True, "reason": reason},
+        )
+        if changed:
+            committed = self.commit(
+                SessionCommit(
+                    before=before,
+                    output={"session_control": result.model_dump(mode="json")},
+                    steps=(
+                        SessionCommitStep(
+                            harness=draft.state.model_copy(update={"controls": controls})
+                        ),
+                    ),
+                ),
+                released_activation_ids=(activation_id,),
+            )
+            return self.with_cancellations(result, committed)
+        return result
+
+    def reconcile_interrupted(self, session_id: str) -> bool:
+        """Normalize legacy transition phases; new operations never publish those phases."""
+        before, draft = capture_session_harness(self.store, session_id)
+        controls = before.controls
+        if not any(item.phase in {"activating", "deactivating"} for item in controls.activations):
+            return False
+        removed = tuple(
+            item.activation_id for item in controls.activations if item.phase == "deactivating"
+        )
+        retained = [
+            item.model_copy(
+                update={"phase": "failed", "error": "activation interrupted before commit"}
+            )
+            if item.phase == "activating"
+            else item
+            for item in controls.activations
+            if item.activation_id not in removed
+        ]
+        self.commit(
+            SessionCommit(
+                before=before,
+                steps=(
+                    SessionCommitStep(
+                        harness=draft.state.model_copy(
+                            update={"controls": _replace_control_state(controls, retained)},
+                        )
+                    ),
+                ),
+            ),
+            released_activation_ids=removed,
+        )
+        return True
+
+    @staticmethod
+    def _event(
+        session_id: str, operation_id: str, action: str, phase: str, error: str | None = None
+    ) -> EventRecord:
+        return EventRecord(
+            session_id=session_id,
+            event_type="session_control_transition",
+            payload={
+                "operation_id": operation_id,
+                "action": action,
+                "phase": phase,
+                "error_type": error,
+            },
         )
 
     @staticmethod
@@ -809,147 +494,90 @@ class SessionControlCoordinator:
             generation_id=controller.generation_id,
             execution_contract_hash=controller.execution_contract_hash,
             claims=list(controller.claims),
-            phase="activating",
         )
 
-    def _rollback_activation(self, session_id: str, activation_id: str) -> None:
-        with self.store.session_mutation(session_id):
-            session = self.store.load_session_record(session_id)
-            if not any(
-                item.activation_id == activation_id for item in session.controls.activations
-            ):
-                return
-            controls = _replace_control_state(
-                session.controls,
-                [
-                    item
-                    for item in session.controls.activations
-                    if item.activation_id != activation_id
-                ],
-            )
-            self._save_controls(session, controls)
-
-    def _rollback_replacement(
+    def _cancel_pending(
         self,
-        session_id: str,
-        activation_id: str,
-        targets: tuple[SessionControlActivation, ...],
-    ) -> None:
-        originals = {item.activation_id: item for item in targets}
-        with self.store.session_mutation(session_id):
-            session = self.store.load_session_record(session_id)
-            values: list[SessionControlActivation] = []
-            for item in session.controls.activations:
-                if item.activation_id == activation_id:
-                    continue
-                values.append(originals.get(item.activation_id, item))
-            controls = _replace_control_state(session.controls, values)
-            self._save_controls(session, controls)
-
-    def _save_controls(self, session, controls: SessionControlState) -> None:
-        now = utc_now()
-        self.store.save_session(
-            session.model_copy(
-                update={
-                    "controls": controls,
-                    "updated_at": now,
-                    "last_activity_at": now,
-                }
-            )
-        )
-
-    def _cancel_owned_pending_interaction(
-        self,
+        session: SessionRecord,
+        activation: SessionControlActivation,
         *,
-        session_id: str,
-        controller_id: str,
-        activation_id: str,
-        exclude_tool_call_id: str | None = None,
-    ) -> str | None:
-        """Abort a waiting Run whose pending interaction belongs to this controller."""
-
-        cancelled_run_id: str | None = None
-        with self.store.session_mutation(session_id):
-            session = self.store.load_session_record(session_id)
-            if session.active_run_id is None:
-                return None
-            run = self.store.load_run(session_id, session.active_run_id)
-            batch = run.active_tool_batch
-            if run.status != "waiting_user" or batch is None:
-                return None
-            owned = [
-                call
-                for call in batch.calls
-                if call.status == "waiting_user"
-                and call.request.id != exclude_tool_call_id
-                and call.invocation is not None
-                and call.invocation.interaction_controller_id == controller_id
-            ]
-            if not owned:
-                return None
-            owned_ids = {call.request.id for call in owned}
-            calls = [
-                call.model_copy(
-                    update={
-                        "status": "aborted",
-                        "result": ToolResult(
-                            tool_call_id=call.request.id,
-                            tool_name=call.request.name,
-                            is_error=True,
-                            content="Session controller was released while awaiting input.",
-                            structured={
-                                "error_type": "SessionControlReleased",
-                                "controller_id": controller_id,
-                                "activation_id": activation_id,
-                            },
-                            ended_at=utc_now(),
-                        ),
-                    }
-                )
-                if call.request.id in owned_ids
-                else call
-                for call in batch.calls
-            ]
-            batch_metadata = dict(batch.metadata)
-            batch_metadata["session_control_cancellation"] = {
-                "controller_id": controller_id,
-                "activation_id": activation_id,
-            }
-            aborted_batch = batch.model_copy(
-                update={
-                    "phase": "aborted",
-                    "calls": calls,
-                    "updated_at": utc_now(),
-                    "metadata": batch_metadata,
-                }
-            )
-            run_metadata = dict(run.metadata)
-            run_metadata["session_control_cancellation"] = {
-                "controller_id": controller_id,
-                "activation_id": activation_id,
-            }
-            now = utc_now()
-            aborted_run = run.model_copy(
+        exclude_tool_call_id: str | None,
+    ) -> tuple[SessionRecord, RunRecord | None]:
+        if session.active_run_id is None:
+            return session, None
+        run = self.store.load_run(session.session_id, session.active_run_id)
+        batch = run.active_tool_batch
+        if run.status != "waiting_user" or batch is None:
+            return session, None
+        owned = [
+            call
+            for call in batch.calls
+            if call.status == "waiting_user"
+            and call.request.id != exclude_tool_call_id
+            and call.invocation is not None
+            and call.invocation.interaction_controller_id == activation.controller_id
+        ]
+        if not owned:
+            return session, None
+        owned_ids = {call.request.id for call in owned}
+        calls = [
+            call.model_copy(
                 update={
                     "status": "aborted",
-                    "ended_at": now,
-                    "error": "session_control_released",
-                    "pending_approval_id": None,
-                    "active_tool_batch": aborted_batch,
-                    "metadata": run_metadata,
+                    "result": ToolResult(
+                        tool_call_id=call.request.id,
+                        tool_name=call.request.name,
+                        is_error=True,
+                        content="Session controller was released while awaiting input.",
+                        structured={
+                            "error_type": "SessionControlReleased",
+                            "controller_id": activation.controller_id,
+                            "activation_id": activation.activation_id,
+                        },
+                        ended_at=utc_now(),
+                    ),
                 }
             )
-            transition = plan_run_transition(
-                session,
-                current_run=run,
-                next_run=aborted_run,
-                now=now,
-            )
-            self.store.save_run(transition.run)
-            self.store.save_session(transition.session)
-            cancelled_run_id = transition.run.run_id
-        self.store.refresh_catalog(session_id)
-        return cancelled_run_id
+            if call.request.id in owned_ids
+            else call
+            for call in batch.calls
+        ]
+        batch_metadata = dict(batch.metadata)
+        batch_metadata["session_control_cancellation"] = {
+            "controller_id": activation.controller_id,
+            "activation_id": activation.activation_id,
+        }
+        aborted_batch = batch.model_copy(
+            update={
+                "phase": "aborted",
+                "calls": calls,
+                "updated_at": utc_now(),
+                "metadata": batch_metadata,
+            }
+        )
+        run_metadata = dict(run.metadata)
+        run_metadata["session_control_cancellation"] = {
+            "controller_id": activation.controller_id,
+            "activation_id": activation.activation_id,
+        }
+        now = utc_now()
+        aborted_run = run.model_copy(
+            update={
+                "status": "aborted",
+                "ended_at": now,
+                "error": "session_control_released",
+                "pending_approval_id": None,
+                "active_tool_batch": aborted_batch,
+                "metadata": run_metadata,
+            }
+        )
+        transition = plan_run_transition(
+            session,
+            current_run=run,
+            next_run=aborted_run,
+            now=now,
+        )
+        return transition.session, transition.run
 
 
 def _claim_conflicts(
@@ -980,37 +608,6 @@ def _replace_control_state(
         revision=controls.revision + 1,
         activations=activations,
     )
-
-
-def _replace_activation(
-    controls: SessionControlState,
-    activation: SessionControlActivation,
-) -> SessionControlState:
-    found = False
-    values: list[SessionControlActivation] = []
-    for current in controls.activations:
-        if current.activation_id == activation.activation_id:
-            values.append(activation)
-            found = True
-        else:
-            values.append(current)
-    if not found:
-        raise SessionControlConflictError(
-            f"session controller activation disappeared: {activation.activation_id}"
-        )
-    return _replace_control_state(controls, values)
-
-
-def _require_activation(
-    controls: SessionControlState,
-    activation_id: str,
-) -> SessionControlActivation:
-    try:
-        return next(item for item in controls.activations if item.activation_id == activation_id)
-    except StopIteration as exc:
-        raise SessionControlConflictError(
-            f"session controller activation disappeared: {activation_id}"
-        ) from exc
 
 
 def _select_release_activation(

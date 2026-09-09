@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from ouro.builtin_plugins.plan.state import STATE_SCHEMA_VERSION as PLAN_STATE_SCHEMA_VERSION
 from ouro.builtin_plugins.plan.state import SessionPlanState
 from ouro.builtin_plugins.toolkit.todos import TodoItem
 from ouro.core.errors import MigrationRequiredError, PersistenceError
@@ -95,7 +96,7 @@ def _load_legacy_record(
             if raw.get("schema_version") != 1:
                 raise ValueError("unsupported Plan state schema")
             payload = cast(JsonValue, SessionPlanState.from_json(raw.get("state")).to_json())
-            state_schema_version = 1
+            state_schema_version = PLAN_STATE_SCHEMA_VERSION
             projection_tags = ("plan-context",)
         else:
             if raw.get("schema_version") != 1 or not isinstance(raw.get("todos"), list):

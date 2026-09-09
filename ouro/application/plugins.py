@@ -4,6 +4,7 @@ import builtins
 from pathlib import Path
 
 from ouro.application.dto import Diagnostic
+from ouro.application.plugin_commands import execute_plugin_command
 from ouro.application.plugin_models import (
     CompatibilityItemView,
     CompatibilityReportView,
@@ -317,43 +318,16 @@ class PluginService:
         runtime = self._require_runtime()
         snapshot = await self._command_catalog(runtime, session_id=session_id)
         try:
-            result = await snapshot.commands.execute(
-                command_id,
-                argument,
+            return await execute_plugin_command(
+                catalog=snapshot,
+                store=self.session_store,
+                command_id=command_id,
+                argument=argument,
                 session_id=session_id,
                 workspace=workspace,
             )
-            control_results = []
-            if result.attributed_control_transitions:
-                if session_id is None or self.session_controls is None:
-                    raise ValueError(
-                        "plugin command Session control transitions require a target Session"
-                    )
-                for transition in result.attributed_control_transitions:
-                    control_results.append(
-                        await self.session_controls.apply(
-                            transition,
-                            session_id=session_id,
-                            controllers=snapshot.session_controllers,
-                            workspace=workspace,
-                        )
-                    )
         finally:
             snapshot.close()
-        output_parts = [result.output] if result.output else []
-        output_parts.extend(item.output for item in control_results if item.output)
-        data = dict(result.data)
-        if control_results:
-            data["session_controls"] = [item.model_dump(mode="json") for item in control_results]
-        return PluginCommandExecutionView(
-            command_id=result.command_id,
-            output="\n".join(output_parts),
-            data=data,
-            command_output=result.output,
-            command_data=dict(result.data),
-            session_inputs=list(result.attributed_session_inputs),
-            session_input_batches=list(result.attributed_session_input_batches),
-        )
 
     async def _command_catalog(
         self,

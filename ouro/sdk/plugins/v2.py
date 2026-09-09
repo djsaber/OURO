@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Protocol
 
-from .state import JsonValue, PluginSessionState, PluginSessionStateView
+from .state import JsonValue, PluginSessionControl, PluginSessionState, PluginSessionStateView
 
 PermissionMode = Literal["auto", "approval", "deny"]
 ToolPermissionControl = Literal["host", "tool"]
@@ -798,6 +798,7 @@ __all__ = [
     "PluginProvenanceSummary",
     "PluginTaskGroup",
     "PluginSessionState",
+    "PluginSessionControl",
     "PluginSessionStateView",
     "PromptAttachmentMetadata",
     "PromptInputSource",

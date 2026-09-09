@@ -1,103 +1,55 @@
-"""Session-scoped state and private persistence for the builtin Plan plugin."""
+"""Plan business data; mode and pending interaction ownership belong to OURO."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import cast
 
 from ouro.sdk.plugins.v2 import JsonValue, PluginSessionStateView
 
-from .interaction import PlanOption
-
-_STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
-
-PlanPhase = Literal["inactive", "active", "awaiting_approval"]
 
 
 @dataclass(frozen=True)
 class SessionPlanState:
-    phase: PlanPhase = "inactive"
     plan_path: str | None = None
-    revision: int = 0
-    activation_tool_call_id: str | None = None
-    approval_tool_call_id: str | None = None
-    approval_digest: str | None = None
-    options: tuple[PlanOption, ...] = ()
-    last_resume_tool_call_id: str | None = None
-    last_resume_output: dict[str, object] | None = None
-    host_activation_id: str | None = None
 
     @classmethod
     def from_json(cls, raw: object) -> SessionPlanState:
         if not isinstance(raw, dict):
             raise ValueError("plan mode Session state must be an object")
-        phase = raw.get("phase", "inactive")
-        if phase not in {"inactive", "active", "awaiting_approval"}:
-            raise ValueError(f"invalid plan mode phase: {phase}")
         plan_path = raw.get("plan_path")
         if plan_path is not None and not isinstance(plan_path, str):
             raise ValueError("plan mode plan_path must be a string")
-        revision = raw.get("revision", 0)
-        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
-            raise ValueError("plan mode revision must be a non-negative integer")
-        options_raw = raw.get("options", [])
-        if not isinstance(options_raw, list):
-            raise ValueError("plan mode options must be a list")
-        options: list[PlanOption] = []
-        for item in options_raw:
-            options.append(PlanOption.from_json(item))
-        last_output = raw.get("last_resume_output")
-        if last_output is not None and not isinstance(last_output, dict):
-            raise ValueError("plan mode last resume output must be an object")
-        return cls(
-            phase=phase,
-            plan_path=plan_path,
-            revision=revision,
-            activation_tool_call_id=_optional_string(raw.get("activation_tool_call_id")),
-            approval_tool_call_id=_optional_string(raw.get("approval_tool_call_id")),
-            approval_digest=_optional_string(raw.get("approval_digest")),
-            options=tuple(options),
-            last_resume_tool_call_id=_optional_string(raw.get("last_resume_tool_call_id")),
-            last_resume_output=dict(last_output) if last_output is not None else None,
-            host_activation_id=_optional_string(raw.get("host_activation_id")),
-        )
+        return cls(plan_path=plan_path)
 
     def to_json(self) -> dict[str, object]:
-        return {
-            "phase": self.phase,
-            "plan_path": self.plan_path,
-            "revision": self.revision,
-            "activation_tool_call_id": self.activation_tool_call_id,
-            "approval_tool_call_id": self.approval_tool_call_id,
-            "approval_digest": self.approval_digest,
-            "options": [option.to_json() for option in self.options],
-            "last_resume_tool_call_id": self.last_resume_tool_call_id,
-            "last_resume_output": self.last_resume_output,
-            "host_activation_id": self.host_activation_id,
-        }
+        return {"plan_path": self.plan_path}
 
 
 class PlanStateRepository:
-    """Persist each Session independently so Generation overlap cannot clobber peers."""
-
     def __init__(self, state: PluginSessionStateView | None) -> None:
         if state is None:
             raise RuntimeError("Session state requires an active plugin invocation")
         self._state = state
 
+    @property
+    def active(self) -> bool:
+        return any(item.controller_id == "mode" for item in self._state.controls())
+
     def load(self) -> SessionPlanState:
         persisted = self._state.read()
         if persisted is None:
             return SessionPlanState()
-        if persisted.state_schema_version != _STATE_SCHEMA_VERSION:
+        if persisted.state_schema_version != STATE_SCHEMA_VERSION:
             raise ValueError("unsupported plan mode state schema")
         return SessionPlanState.from_json(persisted.payload)
 
     def save(self, state: SessionPlanState) -> None:
         self._state.replace(
-            state_schema_version=_STATE_SCHEMA_VERSION,
+            state_schema_version=STATE_SCHEMA_VERSION,
             payload=cast(JsonValue, state.to_json()),
             branch_policy="reset",
             projection_semantic_tags=("plan-context",),
@@ -108,7 +60,3 @@ def validate_session_id(session_id: str) -> str:
     if _SESSION_ID.fullmatch(session_id) is None:
         raise ValueError("Session id cannot be used as a plan mode data path")
     return session_id
-
-
-def _optional_string(value: object) -> str | None:
-    return value if isinstance(value, str) else None

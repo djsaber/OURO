@@ -1879,7 +1879,10 @@ class TuiController:
             self._session_id = created.session_id
             self._initial_model = None
         results: list[RunResult] = []
-        if execution.session_input_batches:
+        if execution.accepted_inputs:
+            for receipt in execution.accepted_inputs:
+                results.append(await runtime.consume_host_input(receipt))
+        elif execution.session_input_batches:
             assert self._session_id is not None
             for batch in execution.session_input_batches:
                 results.append(

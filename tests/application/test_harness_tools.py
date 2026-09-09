@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import PersistenceError
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
+from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolInvocation
 from ouro.plugins.api import adapt_sdk_contributions
@@ -170,6 +172,107 @@ async def test_failed_callback_discards_staged_state(store, failure):
     result = await app.run("try")
     assert result.tool_results[0].is_error
     assert not store.load_harness(result.session.session_id).state.states
+
+
+@pytest.mark.parametrize("interaction_mode", ["interactive", "unattended"])
+async def test_waiting_state_commits_with_request_and_resume_gets_a_fresh_view(
+    store, interaction_mode
+):
+    def request(call):
+        call.session_state.replace(state_schema_version=1, payload={"stage": "waiting"})
+        return sdk.ToolInputRequest(data={"question": "Accept?"})
+
+    def resume(call):
+        assert call.session_state.read().payload == {"stage": "waiting"}
+        call.session_state.replace(state_schema_version=1, payload={"stage": "accepted"})
+        return sdk.ToolOutput(content="accepted")
+
+    tool = adapt_sdk_contributions(
+        sdk.ContributionSet(
+            tools=[
+                sdk.ToolContribution(
+                    id="wait",
+                    exposed_name="Wait",
+                    description="wait with state",
+                    permission_mode="auto",
+                    effect="state_changing",
+                    batch_behavior="exclusive",
+                    handler=request,
+                    resume_handler=resume,
+                    supports_unattended=True,
+                )
+            ]
+        ),
+        owner_id="example.wait",
+    ).tools[0]
+    app = runtime(store, tool, {})
+    session = SessionRecord(interaction_mode=interaction_mode)
+    store.create_session(session)
+    pending = await app.run("confirm", session_id=session.session_id)
+    session_id = pending.session.session_id
+    if interaction_mode == "interactive":
+        assert pending.run.status == "waiting_user"
+        snapshot = store.load_session(session_id)
+        state = store.load_harness(session_id).state
+        assert state.states[0].payload == {"stage": "waiting"}
+        run = store.load_run(session_id, pending.run.run_id)
+        assert run.active_tool_batch.calls[0].input_request.harness_change is None
+        assert all(message.role != "tool_result" for message in snapshot.messages)
+        result = await app.answer_user(session_id=session_id, run_id=run.run_id, answer="yes")
+    else:
+        result = pending
+    assert result.run.status == "completed"
+    assert store.load_harness(session_id).state.states[0].payload == {"stage": "accepted"}
+    message = next(item for item in store.load_session(session_id).messages if item.tool_result)
+    before = store.load_harness(session_id, message.before_harness_version)
+    assert before.state.states[0].payload == {"stage": "waiting"}
+
+
+async def test_waiting_request_without_state_changes_still_checks_its_captured_version(store):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def request(call):
+        assert call.session_state.read() is None
+        entered.set()
+        await release.wait()
+        return sdk.ToolInputRequest(data={"question": "based on the old mode"})
+
+    tool = adapt_sdk_contributions(
+        sdk.ContributionSet(
+            tools=[
+                sdk.ToolContribution(
+                    id="wait",
+                    exposed_name="Wait",
+                    description="wait",
+                    handler=request,
+                    effect="state_changing",
+                    permission_mode="auto",
+                    batch_behavior="exclusive",
+                )
+            ]
+        ),
+        owner_id="example.wait",
+    ).tools[0]
+    app = runtime(store, tool, {})
+    session = SessionRecord()
+    store.create_session(session)
+    task = asyncio.create_task(app.run("wait", session_id=session.session_id))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        store.save_session_extension_state(
+            SessionExtensionStateRecord(
+                session_id=session.session_id,
+                owner_id="example.wait",
+                state_schema_version=1,
+                payload="changed concurrently",
+            )
+        )
+    finally:
+        release.set()
+    result = await task
+    assert result.run.status == "failed"
+    assert store.load_session_record(session.session_id).status != "waiting_user"
+    assert store.load_harness(session.session_id).state.states[0].payload == "changed concurrently"
 
 
 @pytest.mark.parametrize("failure_point", ["response", "file_application"])

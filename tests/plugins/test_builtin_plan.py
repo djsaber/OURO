@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from ouro.application.harness import capture_harness
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.session_controls import SessionControlCoordinator
 from ouro.builtin_plugins.plan import PLAN_PLUGIN
 from ouro.cli.interactive import run_interactive
 from ouro.cli.interactive_commands import handle_command
@@ -19,6 +22,7 @@ from ouro.core.provider import (
     ProviderCheckResult,
     ProviderStreamEvent,
 )
+from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.core.state import SessionRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.local_application import LocalApplication
@@ -266,13 +270,6 @@ async def _enable_plan_mode(application: LocalApplication) -> None:
     assert (await application.plugins.enable(PLUGIN_ID)).status == "active"
 
 
-def _plan_state(store: LocalSessionStore, session_id: str) -> dict[str, object]:
-    records = store.load_session_extension_states(session_id)
-    state = next(record for record in records if record.owner_id == PLUGIN_ID)
-    assert isinstance(state.payload, dict)
-    return state.payload
-
-
 @pytest.mark.asyncio
 async def test_plan_cli_first_command_creates_and_binds_a_session(tmp_path) -> None:
     home = tmp_path / "home"
@@ -323,6 +320,13 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
     waiting = await first_runtime.run("Design the implementation", approval_mode="auto")
 
     assert waiting.run.status == "waiting_user"
+    plan_state = next(
+        item
+        for item in first_store.load_session_extension_states(waiting.session.session_id)
+        if item.owner_id == PLUGIN_ID
+    )
+    assert plan_state.state_schema_version == 2
+    assert set(plan_state.payload) == {"plan_path"}
     assert first_provider.plan_path is not None
     expected_plan_directory = (
         home / "artifacts" / PLUGIN_ID / "sessions" / waiting.session.session_id / "plans"
@@ -351,9 +355,7 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
     assert waiting_call.input_request is not None
     assert waiting_call.input_request.data["type"] == "plan_confirmation"
     assert waiting_call.input_request.data["plan"].startswith("# Proposed plan")
-    requested = next(
-        event for event in waiting.events if event.event_type == "ask_user_requested"
-    )
+    requested = next(event for event in waiting.events if event.event_type == "ask_user_requested")
     assert requested.payload["canonical_tool_id"] == f"{PLUGIN_ID}/tools/exit"
     assert requested.payload["plugin_id"] == PLUGIN_ID
     assert requested.payload["plugin_class"] == "builtin"
@@ -398,7 +400,7 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
         and message.sequence > exit_result.sequence
         for message in completed_snapshot.messages
     )
-    assert _plan_state(second_store, completed.session.session_id)["phase"] == "inactive"
+    assert not second_store.load_session_record(completed.session.session_id).controls.activations
     await second_application.close()
 
 
@@ -438,7 +440,7 @@ async def test_plan_mode_exit_uses_unattended_resolution_in_afk_mode(tmp_path) -
         event for event in event_snapshot.events if event.event_type == "ask_user_resolved"
     )
     assert resolved_event.payload["resolution"]["kind"] == "unattended"
-    assert _plan_state(store, completed.session.session_id)["phase"] == "inactive"
+    assert not store.load_session_record(completed.session.session_id).controls.activations
     await application.close()
 
 
@@ -482,7 +484,7 @@ async def test_interactive_cli_collects_builtin_plan_approval_as_structured_answ
         if message.tool_result is not None and message.tool_result.tool_call_id == "call_exit"
     )
     assert "Selected option: Direct implementation" in exit_result.text_content
-    assert _plan_state(store, session.session_id)["phase"] == "inactive"
+    assert not store.load_session_record(session.session_id).controls.activations
     await application.close()
 
 
@@ -678,7 +680,7 @@ async def test_plan_off_releases_controller_without_creating_run_or_deleting_art
     assert plan_path.read_text(encoding="utf-8") == "# Draft plan\n"
     assert "Plan mode deactivated" in deactivated.output
     assert replayed.data["session_controls"][0]["changed"] is False
-    assert _plan_state(store, session.session_id)["phase"] == "inactive"
+    assert not store.load_session_record(session.session_id).controls.activations
 
     result = await runtime.run(
         "Implement the parser change",
@@ -753,7 +755,6 @@ async def test_disabling_plugin_revokes_its_session_controller_gate(tmp_path) ->
 
     assert disabled.status == "disabled"
     assert store.load_session_record(session.session_id).controls.activations == []
-    assert _plan_state(store, session.session_id)["phase"] == "inactive"
     await application.close()
 
 
@@ -881,6 +882,23 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     session_id = "ses_plan_contract"
     run_id = "run_plan_contract"
     store.create_session(SessionRecord(session_id=session_id))
+    coordinator = SessionControlCoordinator(store)
+
+    async def control(action):
+        return await coordinator.apply(
+            AttributedSessionControlTransition(
+                action=action,
+                controller_id="mode",
+                plugin_id=PLUGIN_ID,
+                generation_id=controller.generation_id,
+                execution_contract_hash=controller.execution_contract_hash,
+            ),
+            session_id=session_id,
+            controllers=catalog.session_controllers,
+            workspace=str(workspace),
+        )
+
+    context = replace(context, harness=capture_harness(store, session_id))
     enter_invocation = ToolInvocation(
         tool_call_id="call_enter",
         session_id=session_id,
@@ -895,13 +913,8 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     assert isinstance(replayed_enter, ToolResult)
     assert replayed_enter.is_error is False
     assert replayed_enter.session_control_transitions == entered.session_control_transitions
-    activated = await controller.activate(
-        session_id=session_id,
-        session_kind="primary",
-        activation_id="activation_plan_1",
-        payload={"activation_tool_call_id": "call_enter"},
-        workspace=str(workspace),
-    )
+    activated = await control("acquire")
+    context = replace(context, harness=capture_harness(store, session_id))
     plan_path = Path(str(activated.data["plan_path"]))
     missing_exit = ToolInvocation(
         tool_call_id="call_missing",
@@ -998,24 +1011,13 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     assert accepted.is_error is False
     assert replayed_acceptance.content == accepted.content
     assert accepted.session_control_transitions[0].action == "release"
-    await controller.deactivate(
-        session_id=session_id,
-        session_kind="primary",
-        activation_id="activation_plan_1",
-        reason="test_accepted",
-        workspace=str(workspace),
-    )
+    await control("release")
+    context = replace(context, harness=capture_harness(store, session_id))
 
     next_enter = enter_invocation.model_copy(update={"tool_call_id": "call_enter_2"})
     next_activation = await enter.execute(next_enter, context=context)
     assert isinstance(next_activation, ToolResult)
-    activated_again = await controller.activate(
-        session_id=session_id,
-        session_kind="primary",
-        activation_id="activation_plan_2",
-        payload={"activation_tool_call_id": "call_enter_2"},
-        workspace=str(workspace),
-    )
+    activated_again = await control("acquire")
     assert activated_again.data["plan_path"] != str(plan_path)
     catalog.close()
     await application.close()

@@ -4,6 +4,8 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from ouro.application.events import RuntimeEventRecorder
+from ouro.application.harness import capture_harness
+from ouro.application.session_controls import SessionControlCoordinator
 from ouro.application.usage import UsageService
 from ouro.core.base import utc_now
 from ouro.core.billing import UsagePurpose
@@ -93,6 +95,7 @@ class RunLifecycle:
         self.store = store
         self.events = events
         self.usage_service = usage_service
+        self.session_controls = SessionControlCoordinator(store)
         self._validate_resource_refs = validate_resource_refs
         self._message_cache: dict[
             tuple[str, str],
@@ -460,11 +463,46 @@ class RunLifecycle:
         batch: ToolCallBatchRecord | None,
         status: RunStatus,
         phase: RunPhase,
+        harness: HarnessCallSnapshot | None = None,
     ) -> tuple[SessionRecord, RunRecord]:
         with self.store.session_mutation(session.session_id):
             latest_session = self.store.load_session_record(session.session_id)
             latest_run = self.store.load_run(session.session_id, run.run_id)
             self._require_active(latest_run)
+            if latest_run.history_epoch != latest_session.history_epoch:
+                raise SessionCommitConflict("Run belongs to withdrawn Session history")
+            changes = [
+                call.input_request.harness_change
+                for call in (batch.calls if batch is not None else [])
+                if call.status in {"waiting_user", "resolving_input"}
+                and call.input_request is not None
+                and call.input_request.harness_change is not None
+            ]
+            steps: tuple[SessionCommitStep, ...] = ()
+            if changes:
+                draft = accept_state_changes(
+                    harness or capture_harness(self.store, session.session_id, run_id=run.run_id),
+                    changes,
+                )
+                steps = (SessionCommitStep(harness=draft.state),)
+                assert batch is not None
+                batch = batch.model_copy(
+                    update={
+                        "calls": [
+                            call.model_copy(
+                                update={
+                                    "input_request": call.input_request.model_copy(
+                                        update={"harness_change": None},
+                                    )
+                                }
+                            )
+                            if call.status in {"waiting_user", "resolving_input"}
+                            and call.input_request is not None
+                            else call
+                            for call in batch.calls
+                        ]
+                    }
+                )
             pending = batch.pending_approvals if batch is not None else []
             updated_run = latest_run.model_copy(
                 update={
@@ -479,10 +517,24 @@ class RunLifecycle:
                 current_run=latest_run,
                 next_run=updated_run,
             )
-            self.store.save_run(transition.run)
-            self.store.save_session(transition.session)
+            committed = self.store.commit_session(
+                SessionCommit(
+                    before=latest_session.model_copy(
+                        update={
+                            "harness_version": harness.harness_version,
+                            "history_epoch": harness.history_epoch,
+                            "last_message_id": harness.last_message_id,
+                        }
+                    )
+                    if harness is not None
+                    else latest_session,
+                    after=transition.session,
+                    steps=steps,
+                    runs=(transition.run,),
+                )
+            )
             updated_run = transition.run
-            updated_session = transition.session
+            updated_session = committed.session
         if status in {"waiting_approval", "waiting_user", "waiting_child"}:
             self.store.refresh_catalog(updated_session.session_id)
         return updated_session, updated_run
@@ -916,6 +968,7 @@ class RunLifecycle:
                 else None
             )
             owners: set[str] = set()
+            control_message: MessageRecord | None = None
             steps = []
             for message in messages:
                 change = (state_changes or {}).get(message.message_id)
@@ -926,6 +979,12 @@ class RunLifecycle:
                             "tool batch has competing owner state proposals"
                         )
                     owners.add(change.owner_id)
+                    if change.controls is not None:
+                        if control_message is not None:
+                            raise SessionCommitConflict(
+                                "tool batch has competing control proposals"
+                            )
+                        control_message = message
                     draft = accept_state_changes(draft, [change])
                 steps.append(
                     SessionCommitStep(
@@ -940,9 +999,22 @@ class RunLifecycle:
                     "last_run_id": run.run_id,
                 }
             )
-            committed = self.store.commit_session(
-                SessionCommit(before=current, after=after, steps=tuple(steps))
-            )
+            request = SessionCommit(before=current, after=after, steps=tuple(steps))
+            if control_message is not None:
+                assert draft is not None and control_message.tool_result is not None
+                active_ids = {item.activation_id for item in draft.state.controls.activations}
+                released = tuple(
+                    item.activation_id
+                    for item in current.controls.activations
+                    if item.activation_id not in active_ids
+                )
+                committed = self.session_controls.commit(
+                    request,
+                    released_activation_ids=released,
+                    resolving_tool_call_id=control_message.tool_result.tool_call_id,
+                )
+            else:
+                committed = self.store.commit_session(request)
             for message, canonical in zip(messages, committed.messages, strict=True):
                 message.sequence = canonical.sequence
                 message.before_harness_version = canonical.before_harness_version

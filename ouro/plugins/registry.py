@@ -176,11 +176,13 @@ class PluginCommandRegistry:
         *,
         session_id: str | None = None,
         workspace: str | None = None,
+        harness: HarnessCallSnapshot | None = None,
     ) -> PluginCommandResult:
         command = self.get(command_id)
         if command.requires_session and session_id is None:
             raise PluginCommandError(f"plugin command requires a target Session: {command_id}")
         request = PluginCommandRequest(
+            harness=harness,
             command_id=command_id,
             argument=argument,
             session_id=session_id,

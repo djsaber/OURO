@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import Field
 
+from ouro.application.supervisor_models import HostInputReceipt
 from ouro.core.base import OuroModel
 from ouro.core.session_controls import AttributedSessionInput, AttributedSessionInputBatch
 from ouro.plugins.manifest import PluginRuntimeKind, PluginStatus
@@ -109,6 +110,7 @@ class PluginCommandExecutionView(OuroModel):
     data: dict[str, object] = Field(default_factory=dict)
     command_output: str | None = None
     command_data: dict[str, object] | None = None
+    accepted_inputs: tuple[HostInputReceipt, ...] = ()
     session_inputs: list[AttributedSessionInput] = Field(default_factory=list)
     session_input_batches: list[AttributedSessionInputBatch] = Field(default_factory=list)
 

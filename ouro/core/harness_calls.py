@@ -9,6 +9,7 @@ from pydantic import Field, model_validator
 from ouro.core.base import OuroModel
 from ouro.core.cancellation import AbortSignal
 from ouro.core.harness import HarnessState
+from ouro.core.session_controls import SessionControlActivation, SessionControlState
 from ouro.core.session_extensions import SessionExtensionStateRecord
 
 
@@ -38,6 +39,8 @@ class HarnessStateChange(OuroModel):
     last_message_id: str | None = None
     owner_id: str
     state: SessionExtensionStateRecord | None
+    # Only application control settlement supplies this field; SDK views stage owner state.
+    controls: SessionControlState | None = None
 
     @model_validator(mode="after")
     def validate_owner(self) -> Self:
@@ -73,6 +76,11 @@ class HarnessInvocation:
             None,
         )
         self._value = self._before
+        self._controls = tuple(
+            item.model_copy(deep=True)
+            for item in snapshot.state.controls.activations
+            if item.plugin_id == owner_id and item.phase == "active"
+        )
         self._writable = writable
         self._signal = signal
         self._closed = False
@@ -84,6 +92,11 @@ class HarnessInvocation:
         with self._lock:
             self._require_open()
             return self._value.model_copy(deep=True) if self._value is not None else None
+
+    def controls(self) -> tuple[SessionControlActivation, ...]:
+        with self._lock:
+            self._require_open()
+            return tuple(item.model_copy(deep=True) for item in self._controls)
 
     def replace(self, value: SessionExtensionStateRecord) -> None:
         with self._lock:
@@ -145,6 +158,8 @@ def accept_state_changes(
         return snapshot
     states = {item.owner_id: item for item in snapshot.state.states}
     owners: set[str] = set()
+    controls = snapshot.state.controls
+    control_changed = False
     for change in changes:
         if (
             change.session_id != snapshot.session_id
@@ -156,6 +171,11 @@ def accept_state_changes(
         if change.owner_id in owners:
             raise ValueError("conflicting Harness proposals for the same owner")
         owners.add(change.owner_id)
+        if change.controls is not None:
+            if control_changed:
+                raise ValueError("conflicting Harness control proposals")
+            controls = change.controls
+            control_changed = True
         if change.state is None:
             states.pop(change.owner_id, None)
         else:
@@ -163,7 +183,7 @@ def accept_state_changes(
     return snapshot.model_copy(
         update={
             "state": HarnessState(
-                controls=snapshot.state.controls.model_copy(deep=True),
+                controls=controls.model_copy(deep=True),
                 states=tuple(item.model_copy(deep=True) for item in states.values()),
             )
         },

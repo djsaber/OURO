@@ -55,6 +55,8 @@ def test_legacy_builtin_state_migrates_and_orphans_move_to_trash(tmp_path) -> No
     plan = repository.load_session_extension_states(plan_session.session_id)[0]
     todo = repository.load_session_extension_states(todo_session.session_id)[0]
     assert plan.projection_semantic_tags == ("plan-context",)
+    assert plan.state_schema_version == 2
+    assert plan.payload == {"plan_path": None}
     assert todo.payload == {"todos": [{"title": "verify", "status": "pending"}]}
 
 
@@ -72,9 +74,7 @@ def test_legacy_migration_refuses_to_overwrite_conflicting_canonical_state(tmp_p
             payload={"phase": "active", "canonical": True},
         )
     )
-    path = (
-        home / "plugins" / "data" / "dev.ouro.plan" / "sessions" / f"{session.session_id}.json"
-    )
+    path = home / "plugins" / "data" / "dev.ouro.plan" / "sessions" / f"{session.session_id}.json"
     path.parent.mkdir(parents=True)
     path.write_text(
         json.dumps(
