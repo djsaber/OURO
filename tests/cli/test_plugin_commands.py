@@ -17,7 +17,7 @@ def test_plugin_cli_full_lifecycle_without_model_provider(tmp_path, capsys) -> N
         "name": "CLI plugin",
         "version": "1.0.0",
         "namespace": "cli_plugin",
-        "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
+        "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^3.0.0"},
         "runtime": {"kind": "python-inprocess", "entrypoint": "cli_plugin:create_plugin"},
         "contributes": {"commands": [{"id": "hello", "description": "Say hello."}]},
         "permissions": [],
@@ -37,7 +37,7 @@ def test_plugin_cli_full_lifecycle_without_model_provider(tmp_path, capsys) -> N
         encoding="utf-8",
     )
     (source / "cli_plugin.py").write_text(
-        """from ouro.sdk.plugins.v1 import CommandContribution, ContributionSet
+        """from ouro.sdk.plugins.v2 import CommandContribution, ContributionSet
 class Plugin:
     async def prepare(self):
         async def hello(call): return 'hello ' + call.argument

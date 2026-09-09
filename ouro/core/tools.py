@@ -11,6 +11,7 @@ from pydantic import Field, JsonValue, model_validator
 from ouro.core.agents import AgentControlRequest, AgentWaitRequest
 from ouro.core.approvals import ApprovalRecord, PermissionMode, ToolPermissionControl
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id, utc_now
+from ouro.core.harness_calls import HarnessStateChange
 from ouro.core.session_controls import SessionControlTransitionRequest
 
 ToolExecutionPreference = Literal["inherit", "sequential"]
@@ -111,6 +112,7 @@ class ToolInvocation(OuroModel):
 
 
 class ToolResult(OuroModel):
+    harness_change: HarnessStateChange | None = None
     tool_call_id: str
     tool_name: str
     is_error: bool = False
@@ -141,6 +143,7 @@ class ToolResult(OuroModel):
 class ToolInputRequest(OuroModel):
     """Opaque JSON data that a tool asks its host to present to the user."""
 
+    harness_change: HarnessStateChange | None = None
     data: JsonValue
 
 

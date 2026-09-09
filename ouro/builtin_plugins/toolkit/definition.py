@@ -24,7 +24,7 @@ TOOLKIT_PLUGIN = BuiltinPluginDefinition(
                 "Session-scoped TodoList."
             ),
             "namespace": "toolkit",
-            "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
+            "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^3.0.0"},
             "runtime": {
                 "kind": "python-inprocess",
                 "entrypoint": "toolkit_plugin:create_plugin",

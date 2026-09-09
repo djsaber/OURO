@@ -11,6 +11,7 @@ from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
 from ouro.core.errors import OuroError
 from ouro.core.extensions import PluginSource
+from ouro.core.harness_calls import HarnessCallSnapshot, HarnessStateChange
 from ouro.core.redaction import redact_text
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
@@ -25,6 +26,7 @@ _COMMAND_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")
 
 
 class PluginCommandRequest(OuroModel):
+    harness: HarnessCallSnapshot | None = None
     command_id: str
     argument: str = ""
     session_id: str | None = None
@@ -32,6 +34,7 @@ class PluginCommandRequest(OuroModel):
 
 
 class PluginCommandResult(OuroModel):
+    harness_change: HarnessStateChange | None = None
     command_id: str
     output: str = ""
     data: dict[str, Any] = Field(default_factory=dict)

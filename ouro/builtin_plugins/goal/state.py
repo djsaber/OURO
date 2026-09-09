@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, cast
 
-from ouro.sdk.plugins.v1 import JsonValue, PluginSessionStateStore
+from ouro.sdk.plugins.v2 import JsonValue, PluginSessionStateView
 
 _STATE_SCHEMA_VERSION = 3
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
@@ -159,20 +159,21 @@ class SessionGoalState:
 class GoalStateRepository:
     """Persist the latest Goal slot for one conversation."""
 
-    def __init__(self, state: PluginSessionStateStore) -> None:
+    def __init__(self, state: PluginSessionStateView | None) -> None:
+        if state is None:
+            raise RuntimeError("Session state requires an active plugin invocation")
         self._state = state
 
-    def load(self, session_id: str) -> SessionGoalState:
-        persisted = self._state.load(validate_session_id(session_id))
+    def load(self) -> SessionGoalState:
+        persisted = self._state.read()
         if persisted is None:
             return SessionGoalState()
         if persisted.state_schema_version != _STATE_SCHEMA_VERSION:
             raise ValueError("unsupported Goal state schema")
         return SessionGoalState.from_json(persisted.payload)
 
-    def save(self, session_id: str, state: SessionGoalState) -> None:
-        self._state.save(
-            validate_session_id(session_id),
+    def save(self, state: SessionGoalState) -> None:
+        self._state.replace(
             state_schema_version=_STATE_SCHEMA_VERSION,
             payload=cast(JsonValue, state.to_json()),
             branch_policy="reset",
@@ -186,8 +187,8 @@ class GoalStateRepository:
             ),
         )
 
-    def delete(self, session_id: str) -> None:
-        self._state.delete(validate_session_id(session_id))
+    def delete(self) -> None:
+        self._state.delete()
 
 
 def utc_now() -> str:

@@ -13,7 +13,7 @@ from ouro.builtin_plugins.plan.interaction import (
     parse_builtin_plan_confirmation,
 )
 from ouro.cli.interactive_output import OutputFunc
-from ouro.sdk.plugins.v1 import JsonValue
+from ouro.sdk.plugins.v2 import JsonValue
 
 InputFunc = Callable[[str], str]
 

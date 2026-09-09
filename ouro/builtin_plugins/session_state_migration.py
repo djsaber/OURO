@@ -10,7 +10,7 @@ from ouro.builtin_plugins.plan.state import SessionPlanState
 from ouro.builtin_plugins.toolkit.todos import TodoItem
 from ouro.core.errors import MigrationRequiredError, PersistenceError
 from ouro.core.session_extensions import SessionExtensionStateRecord
-from ouro.sdk.plugins.v1 import JsonValue
+from ouro.sdk.plugins.v2 import JsonValue
 from ouro.sessions.base import SessionRepository
 
 _PLAN_OWNER = "dev.ouro.plan"

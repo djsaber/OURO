@@ -8,6 +8,7 @@ from pydantic import Field, field_validator, model_validator
 
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
+from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.redaction import redact_text
 from ouro.core.tools import ToolBatchBehavior, ToolEffect, ToolPermissionControl, ToolSource
 
@@ -18,6 +19,7 @@ ToolPolicyMode = Literal["approval", "deny"]
 class ToolPolicyCall(OuroModel):
     """Bounded preflight view evaluated before the Host executes a tool."""
 
+    harness: HarnessCallSnapshot | None = None
     session_id: str
     run_id: str
     tool_call_id: str

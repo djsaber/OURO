@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, cast
 
-from ouro.sdk.plugins.v1 import (
+from ouro.sdk.plugins.v2 import (
     ContributionSet,
     PluginContext,
     ToolCall,
@@ -323,10 +322,7 @@ _MISSING = object()
 
 class ToolkitPlugin:
     def __init__(self, context: PluginContext) -> None:
-        if context.session_state is None:
-            raise RuntimeError("toolkit requires Host-managed Session state")
-        self._todos = TodoListRepository(context.session_state)
-        self._todo_lock = threading.RLock()
+        del context
 
     async def prepare(self) -> ContributionSet:
         return ContributionSet(
@@ -357,6 +353,7 @@ class ToolkitPlugin:
                     parameters_schema=_TODOLIST_SCHEMA,
                     permission_mode="auto",
                     effect="state_changing",
+                    batch_behavior="exclusive",
                 ),
             ]
         )
@@ -469,22 +466,22 @@ class ToolkitPlugin:
         )
 
     def todolist(self, call: ToolCall) -> ToolOutput:
+        repository = TodoListRepository(call.session_state)
         raw = call.arguments.get("todos", _MISSING)
-        with self._todo_lock:
-            if raw is _MISSING:
-                todos = self._todos.load(call.session_id)
-                content = _render_todos(todos) if todos else "Todo list is empty."
-                return ToolOutput(
-                    content=content,
-                    structured={"todos": [item.to_json() for item in todos]},
-                )
-            if not isinstance(raw, list):
-                raise ValueError("tool argument 'todos' must be a list")
-            todos = tuple(TodoItem.from_json(item) for item in raw)
-            if not todos:
-                self._todos.clear(call.session_id)
-                return ToolOutput(content="Todo list cleared.", structured={"todos": []})
-            self._todos.save(call.session_id, todos)
+        if raw is _MISSING:
+            todos = repository.load()
+            content = _render_todos(todos) if todos else "Todo list is empty."
+            return ToolOutput(
+                content=content,
+                structured={"todos": [item.to_json() for item in todos]},
+            )
+        if not isinstance(raw, list):
+            raise ValueError("tool argument 'todos' must be a list")
+        todos = tuple(TodoItem.from_json(item) for item in raw)
+        if not todos:
+            repository.clear()
+            return ToolOutput(content="Todo list cleared.", structured={"todos": []})
+        repository.save(todos)
         return ToolOutput(
             content=f"Todo list updated.\n{_render_todos(todos)}\n\n{_TODOLIST_GUIDANCE}",
             structured={"todos": [item.to_json() for item in todos]},

@@ -1,4 +1,4 @@
-from ouro.sdk.plugins.v1 import (
+from ouro.sdk.plugins.v2 import (
     ContributionSet,
     PromptPolicyContribution,
     PromptPolicyDecision,

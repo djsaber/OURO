@@ -28,7 +28,7 @@
 | [上下文与压缩](OURO_上下文与压缩规格_2026-09-02.md) | ContextView、原子帧、预算、摘要、投影与 lineage | `ouro/core/context.py`、`ouro/application/compaction.py` |
 | [Skills 与扩展](OURO_Skills与扩展规格_2026-09-02.md) | Skills、显式激活、扩展边界与来源策略 | `ouro/skills`、`ouro/application/skill_activations.py` |
 | [MCP 客户端](OURO_MCP客户端规格_2026-09-02.md) | transport、握手、工具发现/调用、重连、诊断与关闭 | `ouro/mcp`、`ouro/tools/registry.py` |
-| [插件系统](OURO_插件系统规格_2026-09-02.md) | 包、安装、Catalog/generation、13 类 contribution、策略与恢复 | `ouro/plugins`、`ouro/sdk/plugins/v1.py` |
+| [插件系统](OURO_插件系统规格_2026-09-02.md) | 包、安装、Catalog/generation、13 类 contribution、策略与恢复 | `ouro/plugins`、`ouro/sdk/plugins/v2.py` |
 | [资源与运行监督](OURO_资源与运行监督规格_2026-09-02.md) | 内容寻址资源、引用可达性、RuntimeSupervisor 调度与订阅 | `ouro/resources`、`ouro/application/resources.py`、`ouro/application/supervisor.py` |
 | [自动任务](OURO_自动任务规格_2026-09-06.md) | 计划与时区、原子领取、任务/执行状态、后台会话、恢复与 TUI 管理 | `ouro/automation`、`ouro/application/tasks.py`、`ouro/application/task_execution.py`、`ouro/tui/task_workflows.py` |
 | [子智能体](OURO_子智能体规格_2026-09-02.md) | AgentDefinition、Delegation、控制工具、HITL、权限、交付与恢复 | `ouro/core/agents.py`、`ouro/application/agents.py`、`ouro/sessions` |

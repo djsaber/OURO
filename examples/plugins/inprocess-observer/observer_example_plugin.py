@@ -1,4 +1,4 @@
-from ouro.sdk.plugins.v1 import ContributionSet, ObserverContribution, RunFinishedObservation
+from ouro.sdk.plugins.v2 import ContributionSet, ObserverContribution, RunFinishedObservation
 
 
 class ObserverExamplePlugin:

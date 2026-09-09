@@ -5,11 +5,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Protocol
 
+from .state import JsonValue, PluginSessionState, PluginSessionStateView
+
 PermissionMode = Literal["auto", "approval", "deny"]
 ToolPermissionControl = Literal["host", "tool"]
 ToolEffect = Literal["read_only", "state_changing", "unknown"]
 ToolBatchBehavior = Literal["compatible", "exclusive"]
-type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 SessionInputMode = Literal["follow_up", "steer"]
 SessionInputRole = Literal["system", "user", "assistant", "tool_result"]
 PromptInputSource = Literal["user", "host", "plugin", "delegation"]
@@ -64,30 +65,6 @@ class PluginDataStore(Protocol):
     def delete(self, relative_path: str) -> None: ...
 
 
-@dataclass(frozen=True)
-class PluginSessionState:
-    """One plugin-owned value whose lifecycle is governed by its Session."""
-
-    state_schema_version: int
-    payload: JsonValue
-
-
-class PluginSessionStateStore(Protocol):
-    def load(self, session_id: str) -> PluginSessionState | None: ...
-
-    def save(
-        self,
-        session_id: str,
-        *,
-        state_schema_version: int,
-        payload: JsonValue,
-        branch_policy: Literal["copy", "reset", "reject"] = "reset",
-        projection_semantic_tags: tuple[str, ...] = (),
-    ) -> None: ...
-
-    def delete(self, session_id: str) -> None: ...
-
-
 class PluginCredentialResolver(Protocol):
     def resolve(self, slot: str) -> str: ...
 
@@ -129,7 +106,6 @@ class PluginContext:
     permissions: frozenset[str] = frozenset()
     artifact_root: str | None = None
     host_home: str | None = None
-    session_state: PluginSessionStateStore | None = None
 
 
 class CancellationContext(Protocol):
@@ -166,6 +142,7 @@ class ToolExecutionContext(CancellationContext, Protocol):
 
 @dataclass(frozen=True)
 class ToolCall:
+    session_state: PluginSessionStateView | None = field(default=None, kw_only=True)
     tool_call_id: str
     session_id: str
     run_id: str
@@ -221,6 +198,7 @@ ToolHandler = (
 
 @dataclass(frozen=True)
 class ToolResumeCall:
+    session_state: PluginSessionStateView | None = field(default=None, kw_only=True)
     tool_call_id: str
     session_id: str
     run_id: str
@@ -305,6 +283,7 @@ ToolPolicyAction = Literal["ignore", "require_approval", "deny"]
 
 @dataclass(frozen=True)
 class ToolPolicyCall:
+    session_state: PluginSessionStateView | None = field(default=None, kw_only=True)
     session_id: str
     run_id: str
     tool_call_id: str
@@ -360,6 +339,7 @@ class PromptSkillActivationMetadata:
 
 @dataclass(frozen=True)
 class PromptPolicyCall:
+    session_state: PluginSessionStateView | None = field(default=None, kw_only=True)
     session_id: str
     prospective_run_id: str
     prompt: str
@@ -397,6 +377,7 @@ TurnPolicyAction = Literal["allow", "continue"]
 
 @dataclass(frozen=True)
 class TurnCompletionCall:
+    session_state: PluginSessionStateView | None = field(default=None, kw_only=True)
     session_id: str
     run_id: str
     turn_id: str
@@ -427,6 +408,7 @@ class TurnPolicyContribution:
 
 @dataclass(frozen=True)
 class RunOutcome:
+    session_state: PluginSessionStateView | None = field(default=None, kw_only=True)
     session_id: str
     run_id: str
     status: RunStatus
@@ -451,6 +433,7 @@ class RuntimeEventView:
 
 @dataclass(frozen=True)
 class RuntimeEventObservation:
+    session_state: PluginSessionStateView | None = field(default=None, kw_only=True)
     session_id: str
     run_id: str | None
     record: RuntimeEventView
@@ -459,6 +442,7 @@ class RuntimeEventObservation:
 
 @dataclass(frozen=True)
 class ContextPreparedObservation:
+    session_state: PluginSessionStateView | None = field(default=None, kw_only=True)
     session_id: str
     run_id: str
     message_count: int
@@ -470,6 +454,7 @@ class ContextPreparedObservation:
 
 @dataclass(frozen=True)
 class ToolCallRequestedObservation:
+    session_state: PluginSessionStateView | None = field(default=None, kw_only=True)
     session_id: str
     run_id: str
     tool_call_id: str
@@ -487,6 +472,7 @@ class ToolCallRequestedObservation:
 
 @dataclass(frozen=True)
 class ToolCallFinishedObservation:
+    session_state: PluginSessionStateView | None = field(default=None, kw_only=True)
     session_id: str
     run_id: str
     tool_call_id: str
@@ -505,6 +491,7 @@ class ToolCallFinishedObservation:
 
 @dataclass(frozen=True)
 class RunFinishedObservation:
+    session_state: PluginSessionStateView | None = field(default=None, kw_only=True)
     session_id: str
     run_id: str
     outcome: RunOutcome
@@ -534,6 +521,7 @@ class ObserverContribution:
 
 @dataclass(frozen=True)
 class CommandCall:
+    session_state: PluginSessionStateView | None = field(default=None, kw_only=True)
     command_id: str
     argument: str = ""
     session_id: str | None = None
@@ -623,6 +611,7 @@ class SessionControlTransition:
 
 @dataclass(frozen=True)
 class SessionControllerCall:
+    session_state: PluginSessionStateView | None = field(default=None, kw_only=True)
     session_id: str
     session_kind: SessionKind
     activation_id: str
@@ -658,6 +647,7 @@ class SessionControllerContribution:
 
 @dataclass(frozen=True)
 class ContextCall:
+    session_state: PluginSessionStateView | None = field(default=None, kw_only=True)
     session_id: str
     run_id: str
     message_count: int
@@ -708,6 +698,7 @@ class ContextContribution:
 
 @dataclass(frozen=True)
 class CompactionCall:
+    session_state: PluginSessionStateView | None = field(default=None, kw_only=True)
     session_id: str
     run_id: str | None
     previous_summary: str | None
@@ -806,6 +797,8 @@ __all__ = [
     "PluginLogger",
     "PluginProvenanceSummary",
     "PluginTaskGroup",
+    "PluginSessionState",
+    "PluginSessionStateView",
     "PromptAttachmentMetadata",
     "PromptInputSource",
     "PromptPolicyAction",

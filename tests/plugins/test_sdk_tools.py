@@ -8,7 +8,7 @@ import pytest
 from ouro.core.cancellation import AbortSignal
 from ouro.core.tools import ToolInvocation
 from ouro.plugins.api import adapt_sdk_contributions
-from ouro.sdk.plugins import v1 as sdk
+from ouro.sdk.plugins import v2 as sdk
 from ouro.tools import ToolExecutionContext, ToolExecutor, ToolRegistry
 
 
@@ -25,7 +25,8 @@ async def test_sync_sdk_tool_handler_does_not_block_the_event_loop() -> None:
         return sdk.ToolOutput(content=f"completed {call.tool_name}")
 
     contributions = adapt_sdk_contributions(
-        sdk.ContributionSet(
+        owner_id="example.plugin",
+        contributions=sdk.ContributionSet(
             tools=[
                 sdk.ToolContribution(
                     id="blocking",
@@ -80,7 +81,8 @@ async def test_sync_sdk_tool_uses_host_cancellation_context() -> None:
             checkpoint.wait(timeout=0.01)
 
     contributions = adapt_sdk_contributions(
-        sdk.ContributionSet(
+        owner_id="example.plugin",
+        contributions=sdk.ContributionSet(
             tools=[
                 sdk.ToolContribution(
                     id="cooperative",

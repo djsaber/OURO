@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import importlib
 import importlib.util
 import inspect
@@ -13,10 +12,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType, ModuleType
-from typing import Any, Literal
+from typing import Any
 from uuid import uuid4
 
-from ouro.core.callbacks import invoke_callback, invoke_owned_callback
+from ouro.core.callbacks import invoke_callback
 from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import (
     CompactionAbortedError,
@@ -60,7 +59,6 @@ from ouro.core.session_controls import (
     SessionInputBatchRequest,
     SessionInputRequest,
 )
-from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.tool_policies import (
     ToolPolicyCall,
     ToolPolicyDecision,
@@ -73,6 +71,7 @@ from ouro.core.turn_policies import (
 )
 from ouro.plugins.candidates import PluginRuntimeCandidate
 from ouro.plugins.contributions import PluginContributions
+from ouro.plugins.harness_calls import invoke_plugin_callback
 from ouro.plugins.models import PluginDiagnostic, PluginGenerationRecord
 from ouro.plugins.paths import portable_relative_path
 from ouro.plugins.registry import (
@@ -85,8 +84,7 @@ from ouro.plugins.session_controllers import (
     PluginSessionControllerCall,
     PluginSessionControllerOutput,
 )
-from ouro.sdk.plugins import v1 as sdk
-from ouro.sessions.base import SessionRepository
+from ouro.sdk.plugins import v2 as sdk
 from ouro.tools import (
     Tool,
     ToolDefinition,
@@ -166,72 +164,6 @@ class ScopedPluginDataStore:
         if not path.is_relative_to(root):
             raise ValueError("plugin data path escapes private data root")
         return path
-
-
-class BoundPluginSessionStateStore:
-    """Owner-bound access to canonical Session state, gated by Generation activation."""
-
-    def __init__(
-        self,
-        repository: SessionRepository,
-        owner_id: str,
-        *,
-        active: bool = False,
-    ) -> None:
-        self._repository = repository
-        self._owner_id = owner_id
-        self._active = active
-
-    def load(self, session_id: str) -> sdk.PluginSessionState | None:
-        record = next(
-            (
-                state
-                for state in self._repository.load_session_extension_states(session_id)
-                if state.owner_id == self._owner_id
-            ),
-            None,
-        )
-        if record is None:
-            return None
-        return sdk.PluginSessionState(
-            state_schema_version=record.state_schema_version,
-            payload=copy.deepcopy(record.payload),
-        )
-
-    def save(
-        self,
-        session_id: str,
-        *,
-        state_schema_version: int,
-        payload: sdk.JsonValue,
-        branch_policy: Literal["copy", "reset", "reject"] = "reset",
-        projection_semantic_tags: tuple[str, ...] = (),
-    ) -> None:
-        self._require_active()
-        self._repository.save_session_extension_state(
-            SessionExtensionStateRecord(
-                session_id=session_id,
-                owner_id=self._owner_id,
-                state_schema_version=state_schema_version,
-                branch_policy=branch_policy,
-                projection_semantic_tags=projection_semantic_tags,
-                payload=payload,
-            )
-        )
-
-    def delete(self, session_id: str) -> None:
-        self._require_active()
-        self._repository.delete_session_extension_state(session_id, self._owner_id)
-
-    def activate(self) -> None:
-        self._active = True
-
-    def deactivate(self) -> None:
-        self._active = False
-
-    def _require_active(self) -> None:
-        if not self._active:
-            raise RuntimeError("candidate plugin Generation cannot mutate canonical Session state")
 
 
 class BoundCredentialResolver:
@@ -511,7 +443,6 @@ def build_plugin_context(
     diagnostics: list[PluginDiagnostic],
     redactor: SensitiveValueRedactor,
     data_store: ScopedPluginDataStore | None = None,
-    session_state_store: BoundPluginSessionStateStore | None = None,
     artifact_root: Path | None = None,
     host_home: Path | None = None,
 ) -> sdk.PluginContext:
@@ -546,11 +477,12 @@ def build_plugin_context(
             else None
         ),
         host_home=(str(host_home.resolve(strict=False)) if host_home is not None else None),
-        session_state=session_state_store,
     )
 
 
-def adapt_sdk_contributions(contributions: sdk.ContributionSet) -> PluginContributions:
+def adapt_sdk_contributions(
+    contributions: sdk.ContributionSet, *, owner_id: str
+) -> PluginContributions:
     from ouro.plugins.contribution_types import contribution_type_adapters
 
     adapted = PluginContributions()
@@ -559,17 +491,19 @@ def adapt_sdk_contributions(contributions: sdk.ContributionSet) -> PluginContrib
         if adapter is None:
             continue
         source = getattr(contributions, adapter.attribute)
-        setattr(adapted, adapter.attribute, [adapter.adapt(item) for item in source])
+        setattr(
+            adapted, adapter.attribute, [adapter.adapt(item, owner_id=owner_id) for item in source]
+        )
     return adapted
 
 
 @dataclass(frozen=True)
 class SDKContributionAdapter:
     attribute: str
-    adapt: Callable[[Any], Any]
+    adapt: Callable[..., Any]
 
 
-def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
+def _adapt_tool(contribution: sdk.ToolContribution, *, owner_id: str) -> Tool:
     async def handler(
         invocation: ToolInvocation,
         context: ToolExecutionContext,
@@ -583,17 +517,22 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             workspace=str(context.workspace) if context.workspace is not None else None,
             workspace_only=context.workspace_only,
         )
-        args, kwargs = _sdk_handler_arguments(
+        raw, change = await invoke_plugin_callback(
             contribution.handler,
             call,
-            _SDKToolExecutionContext(context),
+            snapshot=context.harness,
+            owner_id=owner_id,
+            writable=contribution.effect != "read_only",
+            signal=context.signal,
+            context=_SDKToolExecutionContext(context),
+            owned=True,
         )
-        raw = await invoke_owned_callback(contribution.handler, *args, **kwargs)
         if isinstance(raw, str):
             raw = sdk.ToolOutput(content=raw)
         if isinstance(raw, sdk.ToolInputRequest):
-            return ToolInputRequest(data=raw.data)
+            return ToolInputRequest(data=raw.data, harness_change=change)
         return ToolResult(
+            harness_change=change,
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,
             content=raw.content,
@@ -635,17 +574,22 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             workspace=str(context.workspace) if context.workspace is not None else None,
             workspace_only=context.workspace_only,
         )
-        args, kwargs = _sdk_handler_arguments(
+        raw, change = await invoke_plugin_callback(
             contribution.resume_handler,
             call,
-            _SDKToolExecutionContext(context),
+            snapshot=context.harness,
+            owner_id=owner_id,
+            writable=contribution.effect != "read_only",
+            signal=context.signal,
+            context=_SDKToolExecutionContext(context),
+            owned=True,
         )
-        raw = await invoke_owned_callback(contribution.resume_handler, *args, **kwargs)
         if isinstance(raw, str):
             raw = sdk.ToolOutput(content=raw)
         if isinstance(raw, sdk.ToolInputRequest):
-            return ToolInputRequest(data=raw.data)
+            return ToolInputRequest(data=raw.data, harness_change=change)
         return ToolResult(
+            harness_change=change,
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,
             content=raw.content,
@@ -738,35 +682,16 @@ class _SDKToolExecutionContext:
         return str(resolved) if resolved is not None else None
 
 
-def _sdk_handler_arguments(
-    handler,
-    call: sdk.ToolCall | sdk.ToolResumeCall | sdk.CompactionCall,
-    context: sdk.CancellationContext,
-) -> tuple[tuple[object, ...], dict[str, object]]:
-    try:
-        parameters = tuple(inspect.signature(handler).parameters.values())
-    except (TypeError, ValueError):
-        return (call,), {}
-    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters):
-        return (call,), {"context": context}
-    if any(parameter.name == "context" for parameter in parameters):
-        return (call,), {"context": context}
-    positional = [
-        parameter
-        for parameter in parameters
-        if parameter.kind
-        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-    ]
-    if len(positional) >= 2:
-        return (call, context), {}
-    return (call,), {}
-
-
-def _adapt_observer(contribution: sdk.ObserverContribution) -> ObserverRegistration:
+def _adapt_observer(
+    contribution: sdk.ObserverContribution, *, owner_id: str
+) -> ObserverRegistration:
     async def handler(observation: Observation) -> None:
-        raw: object = await invoke_callback(
+        raw, change = await invoke_plugin_callback(
             contribution.handler,
             _sdk_observation(observation),
+            snapshot=observation.harness,
+            owner_id=owner_id,
+            writable=False,
         )
         if raw is not None:
             raise TypeError("observer handler must return None")
@@ -856,9 +781,9 @@ def _sdk_observation(observation: Observation) -> sdk.Observation:
     raise TypeError(f"unsupported observation: {type(observation).__name__}")
 
 
-def _adapt_command(contribution: sdk.CommandContribution) -> PluginCommand:
+def _adapt_command(contribution: sdk.CommandContribution, *, owner_id: str) -> PluginCommand:
     async def handler(request: PluginCommandRequest) -> PluginCommandResult:
-        raw = await invoke_callback(
+        raw, change = await invoke_plugin_callback(
             contribution.handler,
             sdk.CommandCall(
                 command_id=request.command_id,
@@ -866,11 +791,17 @@ def _adapt_command(contribution: sdk.CommandContribution) -> PluginCommand:
                 session_id=request.session_id,
                 workspace=request.workspace,
             ),
+            snapshot=request.harness,
+            owner_id=owner_id,
+            writable=True,
         )
         if isinstance(raw, str):
-            return PluginCommandResult(command_id=request.command_id, output=raw)
+            return PluginCommandResult(
+                command_id=request.command_id, output=raw, harness_change=change
+            )
         if isinstance(raw, sdk.CommandOutput):
             return PluginCommandResult(
+                harness_change=change,
                 command_id=request.command_id,
                 output=raw.output,
                 data=dict(raw.data),
@@ -916,7 +847,9 @@ def _adapt_command(contribution: sdk.CommandContribution) -> PluginCommand:
                     for item in raw.session_control_transitions
                 ],
             )
-        return PluginCommandResult(command_id=request.command_id, data=dict(raw))
+        return PluginCommandResult(
+            command_id=request.command_id, data=dict(raw), harness_change=change
+        )
 
     return PluginCommand(
         name=contribution.id,
@@ -929,9 +862,11 @@ def _adapt_command(contribution: sdk.CommandContribution) -> PluginCommand:
 
 def _adapt_session_controller(
     contribution: sdk.SessionControllerContribution,
+    *,
+    owner_id: str,
 ) -> PluginSessionController:
     async def invoke(handler, call: PluginSessionControllerCall):
-        raw = await invoke_callback(
+        raw, change = await invoke_plugin_callback(
             handler,
             sdk.SessionControllerCall(
                 session_id=call.session_id,
@@ -943,10 +878,14 @@ def _adapt_session_controller(
                 reason=call.reason,
                 workspace=call.workspace,
             ),
+            snapshot=call.harness,
+            owner_id=owner_id,
+            writable=True,
         )
         if not isinstance(raw, sdk.SessionControllerOutput):
             raise TypeError("session controller handler must return SessionControllerOutput")
         return PluginSessionControllerOutput(
+            harness_change=change,
             output=raw.output,
             data=dict(raw.data),
             owner_state_revision=raw.owner_state_revision,
@@ -965,9 +904,11 @@ def _adapt_session_controller(
     )
 
 
-def _adapt_context(contribution: sdk.ContextContribution) -> ContextProviderRegistration:
+def _adapt_context(
+    contribution: sdk.ContextContribution, *, owner_id: str
+) -> ContextProviderRegistration:
     async def handler(call: ContextProviderCall) -> ContextProviderResult:
-        raw = await invoke_callback(
+        raw, change = await invoke_plugin_callback(
             contribution.handler,
             sdk.ContextCall(
                 session_id=call.session_id,
@@ -976,6 +917,9 @@ def _adapt_context(contribution: sdk.ContextContribution) -> ContextProviderRegi
                 model_round=call.model_round,
                 workspace=call.workspace,
             ),
+            snapshot=call.harness,
+            owner_id=owner_id,
+            writable=False,
         )
         if isinstance(raw, sdk.ContextOutput):
             values = raw.fragments
@@ -1012,7 +956,8 @@ def _adapt_context(contribution: sdk.ContextContribution) -> ContextProviderRegi
 
 
 class _SDKCompactionStrategy:
-    def __init__(self, contribution: sdk.CompactionContribution) -> None:
+    def __init__(self, contribution: sdk.CompactionContribution, *, owner_id: str) -> None:
+        self._owner_id = owner_id
         self.strategy_id = contribution.id
         self.version = contribution.version
         self._handler = contribution.handler
@@ -1035,8 +980,16 @@ class _SDKCompactionStrategy:
             input_token_budget=request.input_token_budget,
             summary_output_tokens=request.summary_output_tokens,
         )
-        args, kwargs = _sdk_handler_arguments(self._handler, call, context)
-        raw = await invoke_owned_callback(self._handler, *args, **kwargs)
+        raw, _ = await invoke_plugin_callback(
+            self._handler,
+            call,
+            snapshot=request.harness,
+            owner_id=self._owner_id,
+            writable=False,
+            signal=signal,
+            context=context,
+            owned=True,
+        )
         context.raise_if_aborted()
         return CompactionArtifact(summary=raw.summary, usage=dict(raw.usage))
 
@@ -1069,7 +1022,8 @@ class _SDKCompactionCancellationContext:
 
 
 class _SDKBackgroundService:
-    def __init__(self, contribution: sdk.BackgroundServiceContribution) -> None:
+    def __init__(self, contribution: sdk.BackgroundServiceContribution, *, owner_id: str) -> None:
+        del owner_id
         self.service_id = contribution.id
         self._start = contribution.start
         self._stop = contribution.stop
@@ -1083,6 +1037,8 @@ class _SDKBackgroundService:
 
 def _adapt_continuation_policy(
     contribution: sdk.ContinuationPolicyContribution,
+    *,
+    owner_id: str,
 ) -> ContinuationPolicyRegistration:
     async def handler(outcome) -> ContinuationDecision:
         sdk_outcome = sdk.RunOutcome(
@@ -1094,10 +1050,17 @@ def _adapt_continuation_policy(
             error=outcome.error,
             usage=MappingProxyType(dict(outcome.usage)),
         )
-        raw = await invoke_callback(contribution.handler, sdk_outcome)
+        raw, change = await invoke_plugin_callback(
+            contribution.handler,
+            sdk_outcome,
+            snapshot=outcome.harness,
+            owner_id=owner_id,
+            writable=True,
+        )
         if not isinstance(raw, sdk.ContinuationDecision):
             raise TypeError("continuation policy must return ContinuationDecision")
         return ContinuationDecision(
+            harness_change=change,
             action=raw.action,
             prompt=raw.prompt,
             mode=raw.mode,
@@ -1135,9 +1098,11 @@ def _adapt_continuation_policy(
 
 def _adapt_tool_policy(
     contribution: sdk.ToolPolicyContribution,
+    *,
+    owner_id: str,
 ) -> ToolPolicyRegistration:
     async def handler(call: ToolPolicyCall) -> ToolPolicyDecision:
-        raw = await invoke_callback(
+        raw, change = await invoke_plugin_callback(
             contribution.handler,
             sdk.ToolPolicyCall(
                 session_id=call.session_id,
@@ -1153,6 +1118,9 @@ def _adapt_tool_policy(
                 permission_control=call.permission_control,
                 workspace=call.workspace,
             ),
+            snapshot=call.harness,
+            owner_id=owner_id,
+            writable=False,
         )
         if not isinstance(raw, sdk.ToolPolicyDecision):
             raise TypeError("tool policy must return ToolPolicyDecision")
@@ -1170,9 +1138,11 @@ def _adapt_tool_policy(
 
 def _adapt_prompt_policy(
     contribution: sdk.PromptPolicyContribution,
+    *,
+    owner_id: str,
 ) -> PromptPolicyRegistration:
     async def handler(call: PromptPolicyCall) -> PromptPolicyDecision:
-        raw = await invoke_callback(
+        raw, change = await invoke_plugin_callback(
             contribution.handler,
             sdk.PromptPolicyCall(
                 session_id=call.session_id,
@@ -1202,6 +1172,9 @@ def _adapt_prompt_policy(
                 catalog_id=call.catalog_id,
                 execution_contracts=MappingProxyType(dict(call.execution_contracts)),
             ),
+            snapshot=call.harness,
+            owner_id=owner_id,
+            writable=False,
         )
         if not isinstance(raw, sdk.PromptPolicyDecision):
             raise TypeError("prompt policy must return PromptPolicyDecision")
@@ -1219,9 +1192,11 @@ def _adapt_prompt_policy(
 
 def _adapt_turn_policy(
     contribution: sdk.TurnPolicyContribution,
+    *,
+    owner_id: str,
 ) -> TurnPolicyRegistration:
     async def handler(candidate: TurnCompletionCandidate) -> TurnPolicyDecision:
-        raw = await invoke_callback(
+        raw, change = await invoke_plugin_callback(
             contribution.handler,
             sdk.TurnCompletionCall(
                 session_id=candidate.session_id,
@@ -1230,6 +1205,9 @@ def _adapt_turn_policy(
                 assistant_text=candidate.assistant_text,
                 assistant_reasoning=candidate.assistant_reasoning,
             ),
+            snapshot=candidate.harness,
+            owner_id=owner_id,
+            writable=False,
         )
         if not isinstance(raw, sdk.TurnPolicyDecision):
             raise TypeError("turn policy must return TurnPolicyDecision")

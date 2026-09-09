@@ -8,6 +8,7 @@ from pydantic import Field, field_validator, model_validator
 
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
+from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.redaction import redact_text
 
 PromptInputSource = Literal["user", "host", "plugin", "delegation"]
@@ -30,6 +31,7 @@ class PromptSkillActivationMetadata(OuroModel):
 class PromptPolicyCall(OuroModel):
     """Bounded pre-persistence view of one prospective model input."""
 
+    harness: HarnessCallSnapshot | None = None
     session_id: str
     prospective_run_id: str
     prompt: str = ""

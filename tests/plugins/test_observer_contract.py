@@ -23,7 +23,7 @@ from ouro.plugins.worker import (
     _validate_worker_result,
     _worker_observation_payload,
 )
-from ouro.sdk.plugins import v1 as sdk
+from ouro.sdk.plugins import v2 as sdk
 
 OBSERVATIONS: tuple[tuple[str, Observation, type[object], set[str]], ...] = (
     (
@@ -120,7 +120,8 @@ async def test_observation_sdk_and_worker_payloads_cover_every_public_type(
 ) -> None:
     seen: list[sdk.Observation] = []
     contributions = adapt_sdk_contributions(
-        sdk.ContributionSet(
+        owner_id="example.plugin",
+        contributions=sdk.ContributionSet(
             observers=[
                 sdk.ObserverContribution(
                     id="facts",
@@ -179,7 +180,8 @@ def test_manifest_rejects_unknown_observation_and_misplaced_runtime_filter() -> 
 @pytest.mark.asyncio
 async def test_inprocess_and_worker_observers_reject_return_values() -> None:
     contributions = adapt_sdk_contributions(
-        sdk.ContributionSet(
+        owner_id="example.plugin",
+        contributions=sdk.ContributionSet(
             observers=[
                 sdk.ObserverContribution(
                     id="invalid",
@@ -208,7 +210,8 @@ async def test_sync_sdk_observer_does_not_block_the_event_loop() -> None:
         release.wait()
 
     contributions = adapt_sdk_contributions(
-        sdk.ContributionSet(
+        owner_id="example.plugin",
+        contributions=sdk.ContributionSet(
             observers=[
                 sdk.ObserverContribution(
                     id="blocking",

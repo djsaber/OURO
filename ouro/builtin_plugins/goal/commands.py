@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import re
-from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 
-from ouro.sdk.plugins.v1 import (
+from ouro.sdk.plugins.v2 import (
     CommandCall,
     CommandOutput,
     JsonValue,
@@ -34,10 +33,8 @@ class GoalCommandService:
     def __init__(
         self,
         state: GoalStateRepository,
-        lock: AbstractContextManager[object],
     ) -> None:
         self._state = state
-        self._lock = lock
 
     def handle(self, call: CommandCall) -> CommandOutput:
         if call.session_id is None:
@@ -45,8 +42,7 @@ class GoalCommandService:
         parsed = parse_goal_command(call.argument)
         if parsed.error is not None:
             return CommandOutput(output=parsed.error, data={"error": "invalid_command"})
-        with self._lock:
-            current = self._state.load(call.session_id).goal
+        current = self._state.load().goal
 
         if parsed.action == "status":
             if current is None:
@@ -132,10 +128,9 @@ class GoalCommandService:
             )
         if parsed.action == "cancel":
             if current.status == "complete":
-                with self._lock:
-                    latest = self._state.load(call.session_id).goal
-                    if latest == current:
-                        self._state.delete(call.session_id)
+                latest = self._state.load().goal
+                if latest == current:
+                    self._state.delete()
                 return _lifecycle_output(
                     None,
                     action="cancelled",

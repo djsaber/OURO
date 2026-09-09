@@ -1292,7 +1292,7 @@ def _write_skill_plugin(source: Path) -> None:
   "name": "TUI Skill",
   "version": "1.0.0",
   "namespace": "tui_skill",
-  "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
+  "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^3.0.0"},
   "runtime": {"kind": "declarative"},
   "contributes": {"skills": [{"id": "calendar", "path": "./skills/calendar"}]},
   "permissions": [],

@@ -1,7 +1,7 @@
 # OURO 会话撤销、Harness 状态与插件交互实施计划
 
 > 文档类型：本次改进实施计划
-> 状态：实施中；M1 底层契约已验证，M2–M6 尚未完成
+> 状态：实施中；M1–M2 阶段契约已验证，M3–M6 尚未完成
 > 计划基线：2026-09-08
 > 范围：仅本次状态、插件交互与撤销改进，不包含其他路线图项目
 
@@ -76,16 +76,24 @@ M1 验证入口：`tests/sessions/test_harness_commits.py`、`test_harness_migra
 
 依赖 M1。保留不可变 Catalog、Generation gate/lease 和现有 contribution 类型。
 
-- [ ] 为现有 callback 适配链加入显式调用范围：owner/Session 绑定、快照、只读或暂存写、取消、关闭与有效性。
-- [ ] 从 PluginContext 移除长期 canonical 写能力；共享最小状态视图和变更封装，不向 SDK 泄露存储端口。
-- [ ] 明确 readonly contribution 和可变更 contribution 的授予规则；合并决策前不提交任何策略提案。
-- [ ] worker 随调用传入快照、随结果返回变更，与 in-process 共用验证和结算；显式升级 SDK/协议与执行契约。
-- [ ] 验证同步 handler、异步 handler、嵌套 callback、保存旧视图的后台 task、worker 超时/迟到的失效行为。
-- [ ] Todo 完整迁移：读取、修改、工具结果共同提交、失败无写入；维护一个最小 in-process 与 worker 状态示例。
-- [ ] 实例资源任务继续由现有 task group 管理；会话效果复用现有调度入口，确认不存在后台直接保存的旁路。
+- [x] 为现有 callback 适配链加入显式调用范围：owner/Session 绑定、快照、只读或暂存写、取消、关闭与有效性。
+- [x] 从 PluginContext 移除长期 canonical 写能力；共享最小状态视图和变更封装，不向 SDK 泄露存储端口。
+- [x] 明确 readonly contribution 和可变更 contribution 的授予规则；合并决策前不提交任何策略提案。
+- [x] worker 随调用传入快照、随结果返回变更，与 in-process 共用验证和结算；显式升级 SDK/协议与执行契约。
+- [x] 验证同步 handler、异步 handler、嵌套 callback、保存旧视图的后台 task、worker 超时/迟到的失效行为。
+- [x] Todo 完整迁移：读取、修改、工具结果共同提交、失败无写入；维护一个最小 in-process 与 worker 状态示例。
+- [x] 实例资源任务继续由现有 task group 管理；会话效果复用现有调度入口，确认不存在后台直接保存的旁路。
 
 退出条件：Todo 验证新机制的正常、冲突、失败和恢复链路；只读写入/越界/关闭后写入明确失败。
 AC-03 的 Todo 部分、AC-05/06 及插件形态等价性通过；不为 Plan/Goal 添加临时特殊撤销实现。
+
+M2 验证入口：`tests/core/test_harness_calls.py`、`tests/plugins/test_harness_calls.py`、
+`tests/application/test_harness_tools.py`，以及 SDK、Observer、工具批次、插件装配、worker、示例和架构回归。
+Windows 集中运行共 238 项通过，2 项仅适用于 File 的故障点在 SQLite 参数下跳过；SQLite 事务故障证据见 M1。
+原子提交验证覆盖真实 Todo 与 worker 子进程、File/SQLite、回调异常/非法输出、提交回复丢失、File 决定应用中断、
+恢复后同一结果重试和撤销后旧 Run 拒绝写入。`mypy ouro` 与 `ruff check ouro tests` 通过。
+SDK 入口为 v2，Plugin API/worker protocol 为 3.0；没有保留实例级 Session 写入接口。
+Plan/Goal 已调整为调用内状态接口，其命令/Controller/Continuation 结算和业务数据拆分仍属于 M3，尚未验收。
 
 ## 6. M3：控制、交互与续跑统一结算
 

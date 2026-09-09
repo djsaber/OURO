@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Literal, cast
 
 from ouro.core.tools import ToolInvocation
-from ouro.sdk.plugins.v1 import JsonValue
+from ouro.sdk.plugins.v2 import JsonValue
 
 type PlanConfirmationAction = Literal["accept", "revise", "reject"]
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import threading
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -9,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from ouro.sdk.plugins.v1 import (
+from ouro.sdk.plugins.v2 import (
     CommandContribution,
     CommandOutput,
     ContextContribution,
@@ -112,11 +111,7 @@ class PlanPlugin:
     def __init__(self, context: PluginContext) -> None:
         if context.artifact_root is None:
             raise RuntimeError("plan mode requires a Host-managed artifact root")
-        if context.session_state is None:
-            raise RuntimeError("plan mode requires Host-managed Session state")
-        self._state = PlanStateRepository(context.session_state)
         self._artifact_root = Path(context.artifact_root).expanduser().resolve(strict=False)
-        self._lock = threading.RLock()
 
     async def prepare(self) -> ContributionSet:
         return ContributionSet(
@@ -252,6 +247,7 @@ class PlanPlugin:
         )
 
     def plan_command(self, call) -> CommandOutput:
+        repository = PlanStateRepository(call.session_state)
         if call.session_id is None:
             return CommandOutput(output="The /plan command requires a target Session.")
         argument = call.argument.strip().lower()
@@ -266,8 +262,7 @@ class PlanPlugin:
                 ),
             )
         if argument == "status":
-            with self._lock:
-                state = self._state.load(call.session_id)
+            state = repository.load()
             return CommandOutput(
                 output=(
                     f"Plan mode phase: {state.phase}."
@@ -291,25 +286,25 @@ class PlanPlugin:
         )
 
     def activate_plan_controller(self, call) -> SessionControllerOutput:
+        repository = PlanStateRepository(call.session_state)
         activation_tool_call_id = None
         if isinstance(call.payload, dict):
             raw_tool_call_id = call.payload.get("activation_tool_call_id")
             if isinstance(raw_tool_call_id, str):
                 activation_tool_call_id = raw_tool_call_id
-        with self._lock:
-            current = self._state.load(call.session_id)
-            if current.phase in _ACTIVE_PHASES:
-                if current.host_activation_id not in {None, call.activation_id}:
-                    raise RuntimeError("Plan mode is already owned by another activation")
-                state = replace(current, host_activation_id=call.activation_id)
-            else:
-                state = self._new_active_state(
-                    call.session_id,
-                    previous=current,
-                    activation_tool_call_id=activation_tool_call_id,
-                    host_activation_id=call.activation_id,
-                )
-            self._state.save(call.session_id, state)
+        current = repository.load()
+        if current.phase in _ACTIVE_PHASES:
+            if current.host_activation_id not in {None, call.activation_id}:
+                raise RuntimeError("Plan mode is already owned by another activation")
+            state = replace(current, host_activation_id=call.activation_id)
+        else:
+            state = self._new_active_state(
+                call.session_id,
+                previous=current,
+                activation_tool_call_id=activation_tool_call_id,
+                host_activation_id=call.activation_id,
+            )
+        repository.save(state)
         assert state.plan_path is not None
         return SessionControllerOutput(
             output=f"Plan mode activated. Plan file: {state.plan_path}",
@@ -318,26 +313,26 @@ class PlanPlugin:
         )
 
     def deactivate_plan_controller(self, call) -> SessionControllerOutput:
-        with self._lock:
-            current = self._state.load(call.session_id)
-            if current.phase == "inactive":
-                return SessionControllerOutput(
-                    output="Plan mode is already inactive.",
-                    data={"phase": "inactive", "plan_path": current.plan_path},
-                    owner_state_revision=current.revision,
-                )
-            if current.host_activation_id not in {None, call.activation_id}:
-                raise RuntimeError("Plan mode activation identity does not match release")
-            state = replace(
-                current,
-                phase="inactive",
-                revision=current.revision + 1,
-                approval_tool_call_id=None,
-                approval_digest=None,
-                options=(),
-                host_activation_id=None,
+        repository = PlanStateRepository(call.session_state)
+        current = repository.load()
+        if current.phase == "inactive":
+            return SessionControllerOutput(
+                output="Plan mode is already inactive.",
+                data={"phase": "inactive", "plan_path": current.plan_path},
+                owner_state_revision=current.revision,
             )
-            self._state.save(call.session_id, state)
+        if current.host_activation_id not in {None, call.activation_id}:
+            raise RuntimeError("Plan mode activation identity does not match release")
+        state = replace(
+            current,
+            phase="inactive",
+            revision=current.revision + 1,
+            approval_tool_call_id=None,
+            approval_digest=None,
+            options=(),
+            host_activation_id=None,
+        )
+        repository.save(state)
         return SessionControllerOutput(
             output="Plan mode deactivated. All tools are now available for the next round.",
             data={
@@ -349,11 +344,11 @@ class PlanPlugin:
         )
 
     def plan_context(self, call) -> ContextOutput:
-        with self._lock:
-            state = self._state.load(call.session_id)
-            if state.plan_path is None:
-                return ContextOutput()
-            scaffold = _SCAFFOLD.format(plan_path=state.plan_path)
+        repository = PlanStateRepository(call.session_state)
+        state = repository.load()
+        if state.plan_path is None:
+            return ContextOutput()
+        scaffold = _SCAFFOLD.format(plan_path=state.plan_path)
         return ContextOutput(
             fragments=(
                 ContextFragment(
@@ -367,8 +362,8 @@ class PlanPlugin:
         )
 
     def plan_tool_gate(self, call) -> ToolPolicyDecision:
-        with self._lock:
-            state = self._state.load(call.session_id)
+        repository = PlanStateRepository(call.session_state)
+        state = repository.load()
         if call.canonical_tool_id in _OWN_TOOLS:
             return ToolPolicyDecision()
         if call.canonical_tool_id in _PLAN_WRITERS:
@@ -397,191 +392,191 @@ class PlanPlugin:
         )
 
     def exit_plan_mode(self, call) -> ToolOutput | ToolInputRequest:
-        with self._lock:
-            state = self._state.load(call.session_id)
-            if (
-                state.phase == "awaiting_approval"
-                and state.approval_tool_call_id == call.tool_call_id
-                and state.plan_path is not None
-            ):
-                plan, error = _read_plan(state.plan_path)
-                if error is not None:
-                    self._state.save(call.session_id, _clear_pending_approval(state))
-                    return ToolOutput(content=error, is_error=True)
-                if _plan_digest(plan) != state.approval_digest:
-                    self._state.save(call.session_id, _clear_pending_approval(state))
-                    return ToolOutput(
-                        content=(
-                            "The plan file changed while ExitPlanMode was being recovered. "
-                            "Call ExitPlanMode again."
-                        ),
-                        is_error=True,
-                    )
-                return _approval_request(state, plan=plan)
-            if state.phase != "active" or state.plan_path is None:
-                return ToolOutput(
-                    content="Plan mode is not active. Call EnterPlanMode first.",
-                    is_error=True,
-                )
+        repository = PlanStateRepository(call.session_state)
+        state = repository.load()
+        if (
+            state.phase == "awaiting_approval"
+            and state.approval_tool_call_id == call.tool_call_id
+            and state.plan_path is not None
+        ):
             plan, error = _read_plan(state.plan_path)
             if error is not None:
+                repository.save(_clear_pending_approval(state))
                 return ToolOutput(content=error, is_error=True)
-            options = _normalize_options(call.arguments.get("options"))
-            digest = _plan_digest(plan)
-            awaiting = replace(
-                state,
-                phase="awaiting_approval",
-                revision=state.revision + 1,
-                approval_tool_call_id=call.tool_call_id,
-                approval_digest=digest,
-                options=options,
-                last_resume_tool_call_id=None,
-                last_resume_output=None,
+            if _plan_digest(plan) != state.approval_digest:
+                repository.save(_clear_pending_approval(state))
+                return ToolOutput(
+                    content=(
+                        "The plan file changed while ExitPlanMode was being recovered. "
+                        "Call ExitPlanMode again."
+                    ),
+                    is_error=True,
+                )
+            return _approval_request(state, plan=plan)
+        if state.phase != "active" or state.plan_path is None:
+            return ToolOutput(
+                content="Plan mode is not active. Call EnterPlanMode first.",
+                is_error=True,
             )
-            self._state.save(call.session_id, awaiting)
+        plan, error = _read_plan(state.plan_path)
+        if error is not None:
+            return ToolOutput(content=error, is_error=True)
+        options = _normalize_options(call.arguments.get("options"))
+        digest = _plan_digest(plan)
+        awaiting = replace(
+            state,
+            phase="awaiting_approval",
+            revision=state.revision + 1,
+            approval_tool_call_id=call.tool_call_id,
+            approval_digest=digest,
+            options=options,
+            last_resume_tool_call_id=None,
+            last_resume_output=None,
+        )
+        repository.save(awaiting)
         return _approval_request(awaiting, plan=plan)
 
     def resume_exit_plan_mode(self, call: ToolResumeCall) -> ToolOutput | ToolInputRequest:
-        with self._lock:
-            state = self._state.load(call.session_id)
-            if (
-                state.last_resume_tool_call_id == call.tool_call_id
-                and state.last_resume_output is not None
-            ):
-                return _tool_output_from_json(state.last_resume_output)
-            if (
-                state.phase != "awaiting_approval"
-                or state.approval_tool_call_id != call.tool_call_id
-                or state.plan_path is None
-            ):
-                return ToolOutput(
-                    content="This plan approval request is no longer active.",
-                    is_error=True,
-                )
-            plan, error = _read_plan(state.plan_path)
-            if error is not None:
-                output = ToolOutput(content=error, is_error=True)
-                self._finish_resume(call.session_id, state, output, phase="active")
-                return output
-            if _plan_digest(plan) != state.approval_digest:
-                output = ToolOutput(
-                    content=(
-                        "The plan file changed after the approval prompt was created. "
-                        "Review it and call ExitPlanMode again."
+        repository = PlanStateRepository(call.session_state)
+        state = repository.load()
+        if (
+            state.last_resume_tool_call_id == call.tool_call_id
+            and state.last_resume_output is not None
+        ):
+            return _tool_output_from_json(state.last_resume_output)
+        if (
+            state.phase != "awaiting_approval"
+            or state.approval_tool_call_id != call.tool_call_id
+            or state.plan_path is None
+        ):
+            return ToolOutput(
+                content="This plan approval request is no longer active.",
+                is_error=True,
+            )
+        plan, error = _read_plan(state.plan_path)
+        if error is not None:
+            output = ToolOutput(content=error, is_error=True)
+            self._finish_resume(repository, state, output, phase="active")
+            return output
+        if _plan_digest(plan) != state.approval_digest:
+            output = ToolOutput(
+                content=(
+                    "The plan file changed after the approval prompt was created. "
+                    "Review it and call ExitPlanMode again."
+                ),
+                is_error=True,
+            )
+            self._finish_resume(repository, state, output, phase="active")
+            return output
+        if isinstance(call.resolution, UnattendedResolution):
+            selected_option = state.options[0].label if len(state.options) == 1 else None
+            option_selection = (
+                "only_option"
+                if selected_option is not None
+                else "agent_discretion"
+                if state.options
+                else "not_applicable"
+            )
+            selected = (
+                f"\nSelected option by AFK policy: {selected_option}\n"
+                if selected_option is not None
+                else ""
+            )
+            output = ToolOutput(
+                content=(
+                    "Exited plan mode under AFK policy. User approval was not "
+                    "requested; execution is delegated to the agent.\n"
+                    f"Plan saved to: {state.plan_path}\n{selected}\n{plan}"
+                ),
+                structured={
+                    "phase": "inactive",
+                    "plan_path": state.plan_path,
+                    "plan": plan,
+                    "decision": "proceed",
+                    "resolved_by": call.resolution.resolved_by,
+                    "resolver_id": call.resolution.resolver_id,
+                    "selected_option": selected_option,
+                    "option_selection": option_selection,
+                },
+            )
+            output = replace(
+                output,
+                session_control_transitions=(
+                    SessionControlTransition(
+                        action="release",
+                        controller_id="mode",
+                        reason="unattended_plan_exit",
                     ),
-                    is_error=True,
-                )
-                self._finish_resume(call.session_id, state, output, phase="active")
-                return output
-            if isinstance(call.resolution, UnattendedResolution):
-                selected_option = state.options[0].label if len(state.options) == 1 else None
-                option_selection = (
-                    "only_option"
-                    if selected_option is not None
-                    else "agent_discretion"
-                    if state.options
-                    else "not_applicable"
-                )
-                selected = (
-                    f"\nSelected option by AFK policy: {selected_option}\n"
-                    if selected_option is not None
-                    else ""
-                )
-                output = ToolOutput(
-                    content=(
-                        "Exited plan mode under AFK policy. User approval was not "
-                        "requested; execution is delegated to the agent.\n"
-                        f"Plan saved to: {state.plan_path}\n{selected}\n{plan}"
-                    ),
-                    structured={
-                        "phase": "inactive",
-                        "plan_path": state.plan_path,
-                        "plan": plan,
-                        "decision": "proceed",
-                        "resolved_by": call.resolution.resolved_by,
-                        "resolver_id": call.resolution.resolver_id,
-                        "selected_option": selected_option,
-                        "option_selection": option_selection,
-                    },
-                )
-                output = replace(
-                    output,
-                    session_control_transitions=(
-                        SessionControlTransition(
-                            action="release",
-                            controller_id="mode",
-                            reason="unattended_plan_exit",
-                        ),
-                    ),
-                )
-                self._finish_resume(call.session_id, state, output, phase="active")
-                return output
-            try:
-                answer = PlanConfirmationAnswer.from_json(call.answer)
-            except ValueError:
+                ),
+            )
+            self._finish_resume(repository, state, output, phase="active")
+            return output
+        try:
+            answer = PlanConfirmationAnswer.from_json(call.answer)
+        except ValueError:
+            return _approval_request(
+                state,
+                plan=plan,
+                error="Choose accept, revise, or reject.",
+            )
+        action = answer.action
+        selected_option = answer.option
+        feedback = answer.feedback
+        if action == "accept" and state.options:
+            labels = {option.label for option in state.options}
+            if selected_option not in labels:
                 return _approval_request(
                     state,
                     plan=plan,
-                    error="Choose accept, revise, or reject.",
+                    error="Select one of the proposed plan options before accepting.",
                 )
-            action = answer.action
-            selected_option = answer.option
-            feedback = answer.feedback
-            if action == "accept" and state.options:
-                labels = {option.label for option in state.options}
-                if selected_option not in labels:
-                    return _approval_request(
-                        state,
-                        plan=plan,
-                        error="Select one of the proposed plan options before accepting.",
-                    )
-            if action == "accept":
-                selected = (
-                    f"\nSelected option: {selected_option}\n" if selected_option is not None else ""
-                )
-                output = ToolOutput(
-                    content=(
-                        "Exited plan mode. Plan mode deactivated. All tools are now "
-                        f"available.\nPlan saved to: {state.plan_path}\n{selected}\n{plan}"
+        if action == "accept":
+            selected = (
+                f"\nSelected option: {selected_option}\n" if selected_option is not None else ""
+            )
+            output = ToolOutput(
+                content=(
+                    "Exited plan mode. Plan mode deactivated. All tools are now "
+                    f"available.\nPlan saved to: {state.plan_path}\n{selected}\n{plan}"
+                ),
+                structured={
+                    "phase": "inactive",
+                    "plan_path": state.plan_path,
+                    "plan": plan,
+                    "selected_option": selected_option,
+                },
+            )
+            output = replace(
+                output,
+                session_control_transitions=(
+                    SessionControlTransition(
+                        action="release",
+                        controller_id="mode",
+                        reason="plan_accepted",
                     ),
-                    structured={
-                        "phase": "inactive",
-                        "plan_path": state.plan_path,
-                        "plan": plan,
-                        "selected_option": selected_option,
-                    },
-                )
-                output = replace(
-                    output,
-                    session_control_transitions=(
-                        SessionControlTransition(
-                            action="release",
-                            controller_id="mode",
-                            reason="plan_accepted",
-                        ),
-                    ),
-                )
-                self._finish_resume(call.session_id, state, output, phase="active")
-                return output
-            if action == "revise":
-                suffix = f" Feedback: {feedback}" if feedback else ""
-                output = ToolOutput(
-                    content=f"Plan revision requested by user.{suffix}",
-                    structured={"phase": "active", "action": "revise", "feedback": feedback},
-                    is_error=True,
-                )
-            else:
-                output = ToolOutput(
-                    content="Plan rejected by user. Plan mode remains active.",
-                    structured={"phase": "active", "action": "reject"},
-                    is_error=True,
-                )
-            self._finish_resume(call.session_id, state, output, phase="active")
+                ),
+            )
+            self._finish_resume(repository, state, output, phase="active")
             return output
+        if action == "revise":
+            suffix = f" Feedback: {feedback}" if feedback else ""
+            output = ToolOutput(
+                content=f"Plan revision requested by user.{suffix}",
+                structured={"phase": "active", "action": "revise", "feedback": feedback},
+                is_error=True,
+            )
+        else:
+            output = ToolOutput(
+                content="Plan rejected by user. Plan mode remains active.",
+                structured={"phase": "active", "action": "reject"},
+                is_error=True,
+            )
+        self._finish_resume(repository, state, output, phase="active")
+        return output
 
     def _finish_resume(
         self,
-        session_id: str,
+        repository: PlanStateRepository,
         state: SessionPlanState,
         output: ToolOutput,
         *,
@@ -597,7 +592,7 @@ class PlanPlugin:
             last_resume_tool_call_id=state.approval_tool_call_id,
             last_resume_output=_tool_output_to_json(output),
         )
-        self._state.save(session_id, completed)
+        repository.save(completed)
 
     def _new_active_state(
         self,

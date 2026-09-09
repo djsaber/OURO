@@ -18,7 +18,7 @@ from ouro.core.redaction import SensitiveValueRedactor
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.package import PLUGIN_API_VERSION
 from ouro.plugins.paths import portable_relative_path
-from ouro.sdk.plugins import v1 as sdk
+from ouro.sdk.plugins import v2 as sdk
 
 
 class WorkerProtocolError(RuntimeError):
@@ -377,18 +377,62 @@ class WorkerPluginInstance:
                 await self.client.request("lifecycle.stop", {"reason": reason}, timeout=2.0)
         await self.client.close()
 
-    def _result(self, raw: object, method: str) -> dict[str, Any]:
+    def _result(
+        self, raw: object, method: str, *, state_view: sdk.PluginSessionStateView | None = None
+    ) -> dict[str, Any]:
         try:
             result = _object_result(raw, method)
+            changed = "session_state" in result
+            change = result.pop("session_state", None)
             _validate_worker_result(method, result)
+            if changed:
+                if state_view is None:
+                    raise WorkerProtocolError("worker state change requires a Session invocation")
+                if change is None:
+                    state_view.delete()
+                elif isinstance(change, dict):
+                    # Validate once at the shared SDK boundary, with host-bound identity.
+                    state_view.replace(**change)
+                else:
+                    raise WorkerProtocolError(
+                        "worker session_state must be a replacement object or null"
+                    )
             return result
         except WorkerProtocolError as exc:
             self.client.report_invalid_result(exc)
             raise
 
+    async def _session_request(
+        self,
+        method: str,
+        params: dict[str, object],
+        *,
+        state_view: sdk.PluginSessionStateView | None,
+    ) -> dict[str, Any]:
+        """Exchange an owner snapshot and a staged replacement through the call protocol."""
+
+        if state_view is not None:
+            value = state_view.read()
+            params = {
+                **params,
+                "session_state": {
+                    "writable": state_view.writable,
+                    "value": (
+                        {
+                            "state_schema_version": value.state_schema_version,
+                            "payload": value.payload,
+                        }
+                        if value is not None
+                        else None
+                    ),
+                },
+            }
+        raw = await self.client.request(method, params)
+        return self._result(raw, method, state_view=state_view)
+
     def _tool_handler(self, identity: str):
         async def handler(call: sdk.ToolCall) -> sdk.ToolOutput | sdk.ToolInputRequest:
-            raw = await self.client.request(
+            raw = await self._session_request(
                 "tool.call",
                 {
                     "contribution_id": identity,
@@ -402,8 +446,9 @@ class WorkerPluginInstance:
                         "workspace_only": call.workspace_only,
                     },
                 },
+                state_view=call.session_state,
             )
-            result = self._result(raw, "tool.call")
+            result = raw
             if "input_request" in result:
                 return sdk.ToolInputRequest(data=result["input_request"])
             return sdk.ToolOutput(
@@ -420,7 +465,7 @@ class WorkerPluginInstance:
         async def handler(
             call: sdk.ToolResumeCall,
         ) -> sdk.ToolOutput | sdk.ToolInputRequest:
-            raw = await self.client.request(
+            raw = await self._session_request(
                 "tool.resume",
                 {
                     "contribution_id": identity,
@@ -436,8 +481,9 @@ class WorkerPluginInstance:
                         "workspace_only": call.workspace_only,
                     },
                 },
+                state_view=call.session_state,
             )
-            result = self._result(raw, "tool.resume")
+            result = raw
             if "input_request" in result:
                 return sdk.ToolInputRequest(data=result["input_request"])
             return sdk.ToolOutput(
@@ -452,20 +498,20 @@ class WorkerPluginInstance:
 
     def _observer_handler(self, identity: str):
         async def handler(observation: sdk.Observation) -> None:
-            raw = await self.client.request(
+            await self._session_request(
                 "observer.observe",
                 {
                     "contribution_id": identity,
                     "observation": _worker_observation_payload(observation),
                 },
+                state_view=observation.session_state,
             )
-            self._result(raw, "observer.observe")
 
         return handler
 
     def _context_handler(self, identity: str):
         async def handler(call: sdk.ContextCall) -> sdk.ContextOutput:
-            raw = await self.client.request(
+            raw = await self._session_request(
                 "context.call",
                 {
                     "contribution_id": identity,
@@ -476,8 +522,9 @@ class WorkerPluginInstance:
                         "model_round": call.model_round,
                     },
                 },
+                state_view=call.session_state,
             )
-            result = self._result(raw, "context.call")
+            result = raw
             return sdk.ContextOutput(
                 fragments=tuple(
                     _worker_context_fragment(item) for item in result.get("fragments", [])
@@ -488,7 +535,7 @@ class WorkerPluginInstance:
 
     def _command_handler(self, identity: str):
         async def handler(call: sdk.CommandCall) -> sdk.CommandOutput:
-            raw = await self.client.request(
+            raw = await self._session_request(
                 "command.call",
                 {
                     "contribution_id": identity,
@@ -499,8 +546,9 @@ class WorkerPluginInstance:
                         "workspace": call.workspace,
                     },
                 },
+                state_view=call.session_state,
             )
-            result = self._result(raw, "command.call")
+            result = raw
             return sdk.CommandOutput(
                 output=str(result.get("output", "")),
                 data=_object_value(result.get("data", {})),
@@ -513,7 +561,7 @@ class WorkerPluginInstance:
 
     def _session_controller_handler(self, identity: str):
         async def handler(call: sdk.SessionControllerCall) -> sdk.SessionControllerOutput:
-            raw = await self.client.request(
+            raw = await self._session_request(
                 "session_controller.call",
                 {
                     "contribution_id": identity,
@@ -528,8 +576,9 @@ class WorkerPluginInstance:
                         "workspace": call.workspace,
                     },
                 },
+                state_view=call.session_state,
             )
-            result = self._result(raw, "session_controller.call")
+            result = raw
             owner_revision = result.get("owner_state_revision")
             return sdk.SessionControllerOutput(
                 output=str(result.get("output", "")),
@@ -541,7 +590,7 @@ class WorkerPluginInstance:
 
     def _compaction_handler(self, identity: str):
         async def handler(call: sdk.CompactionCall) -> sdk.CompactionOutput:
-            raw = await self.client.request(
+            raw = await self._session_request(
                 "compaction.call",
                 {
                     "contribution_id": identity,
@@ -554,8 +603,9 @@ class WorkerPluginInstance:
                         "summary_output_tokens": call.summary_output_tokens,
                     },
                 },
+                state_view=call.session_state,
             )
-            result = self._result(raw, "compaction.call")
+            result = raw
             usage = {
                 str(key): value
                 for key, value in _object_value(result.get("usage", {})).items()
@@ -567,7 +617,7 @@ class WorkerPluginInstance:
 
     def _continuation_handler(self, identity: str):
         async def handler(call: sdk.RunOutcome) -> sdk.ContinuationDecision:
-            raw = await self.client.request(
+            raw = await self._session_request(
                 "continuation.call",
                 {
                     "contribution_id": identity,
@@ -581,8 +631,9 @@ class WorkerPluginInstance:
                         "usage": dict(call.usage),
                     },
                 },
+                state_view=call.session_state,
             )
-            result = self._result(raw, "continuation.call")
+            result = raw
             action = result.get("action", "ignore")
             if action not in {"ignore", "continue", "complete", "pause", "fail"}:
                 raise WorkerProtocolError(f"worker continuation action is invalid: {action}")
@@ -601,9 +652,7 @@ class WorkerPluginInstance:
                 scaffold=_worker_scaffold(result.get("scaffold", True)),
                 semantic_tag=_worker_semantic_tag(result.get("semantic_tag")),
                 coalesce_key=(
-                    str(result["coalesce_key"])
-                    if result.get("coalesce_key") is not None
-                    else None
+                    str(result["coalesce_key"]) if result.get("coalesce_key") is not None else None
                 ),
                 reason=(str(result["reason"]) if result.get("reason") is not None else None),
                 state_revision=revision,
@@ -614,7 +663,7 @@ class WorkerPluginInstance:
 
     def _tool_policy_handler(self, identity: str):
         async def handler(call: sdk.ToolPolicyCall) -> sdk.ToolPolicyDecision:
-            raw = await self.client.request(
+            raw = await self._session_request(
                 "tool_policy.call",
                 {
                     "contribution_id": identity,
@@ -633,8 +682,9 @@ class WorkerPluginInstance:
                         "workspace": call.workspace,
                     },
                 },
+                state_view=call.session_state,
             )
-            result = self._result(raw, "tool_policy.call")
+            result = raw
             action = result.get("action", "ignore")
             if action not in {"ignore", "require_approval", "deny"}:
                 raise WorkerProtocolError(f"worker tool policy action is invalid: {action}")
@@ -647,7 +697,7 @@ class WorkerPluginInstance:
 
     def _prompt_policy_handler(self, identity: str):
         async def handler(call: sdk.PromptPolicyCall) -> sdk.PromptPolicyDecision:
-            raw = await self.client.request(
+            raw = await self._session_request(
                 "prompt_policy.call",
                 {
                     "contribution_id": identity,
@@ -679,8 +729,9 @@ class WorkerPluginInstance:
                         "execution_contracts": dict(call.execution_contracts),
                     },
                 },
+                state_view=call.session_state,
             )
-            result = self._result(raw, "prompt_policy.call")
+            result = raw
             action = result.get("action", "allow")
             if action not in {"allow", "deny"}:
                 raise WorkerProtocolError(f"worker prompt policy action is invalid: {action}")
@@ -693,7 +744,7 @@ class WorkerPluginInstance:
 
     def _turn_policy_handler(self, identity: str):
         async def handler(call: sdk.TurnCompletionCall) -> sdk.TurnPolicyDecision:
-            raw = await self.client.request(
+            raw = await self._session_request(
                 "turn_policy.call",
                 {
                     "contribution_id": identity,
@@ -705,8 +756,9 @@ class WorkerPluginInstance:
                         "assistant_reasoning": call.assistant_reasoning,
                     },
                 },
+                state_view=call.session_state,
             )
-            result = self._result(raw, "turn_policy.call")
+            result = raw
             action = result.get("action", "allow")
             if action not in {"allow", "continue"}:
                 raise WorkerProtocolError(f"worker turn policy action is invalid: {action}")

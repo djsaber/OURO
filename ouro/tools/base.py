@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from functools import partial
 from inspect import Parameter, signature
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from pydantic import Field
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_owned_callback
 from ouro.core.cancellation import AbortSignal
+from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.interactions import ToolInputResolution
 from ouro.core.tools import (
     PermissionMode,
@@ -119,6 +121,7 @@ class _BoundedProcessOutput:
 
 @dataclass
 class ToolExecutionContext:
+    harness: HarnessCallSnapshot | None = None
     signal: AbortSignal | None = None
     poll_interval: float = 0.05
     workspace: str | Path | None = None
@@ -427,7 +430,7 @@ class Tool(OuroModel):
     ) -> ToolExecutionResult:
         context = context or ToolExecutionContext(signal=signal)
         args, kwargs = _handler_arguments(self.handler, invocation, context)
-        return await invoke_owned_callback(self.handler, *args, **kwargs)
+        return await invoke_owned_callback(partial(self.handler, *args, **kwargs))
 
     async def resume(
         self,
@@ -448,7 +451,7 @@ class Tool(OuroModel):
             request,
             context,
         )
-        return await invoke_owned_callback(self.resume_handler, *args, **kwargs)
+        return await invoke_owned_callback(partial(self.resume_handler, *args, **kwargs))
 
 
 def _handler_arguments(

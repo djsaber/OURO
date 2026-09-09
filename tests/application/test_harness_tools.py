@@ -1,0 +1,245 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from ouro.application.harness import capture_harness
+from ouro.application.runtime import RuntimeService
+from ouro.builtin_plugins.toolkit.toolkit_plugin import ToolkitPlugin
+from ouro.core.adapter import RuntimeAdapter
+from ouro.core.errors import PersistenceError
+from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
+from ouro.core.session_commits import SessionCommit, SessionCommitConflict
+from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.tools import ToolInvocation
+from ouro.plugins.api import adapt_sdk_contributions
+from ouro.plugins.manifest import PluginManifest
+from ouro.plugins.worker import WorkerPluginInstance
+from ouro.providers import FauxProvider
+from ouro.sdk.plugins import v2 as sdk
+from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.file_commits import FileSessionCommits
+from ouro.tools import ToolExecutionContext, ToolExecutor, ToolRegistry
+
+
+@pytest.fixture(params=["files", "sqlite"])
+def store(tmp_path, request):
+    result = (
+        LocalSessionStore(tmp_path / "files")
+        if request.param == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.db")
+    )
+    result.initialize()
+    return result
+
+
+@pytest.fixture(params=["inprocess", "worker"])
+async def state_tool(tmp_path, request):
+    if request.param == "inprocess":
+        contributions = await ToolkitPlugin(None).prepare()
+        todo = next(tool for tool in contributions.tools if tool.exposed_name == "TodoList")
+        owner = "dev.ouro.toolkit"
+        arguments = {"todos": [{"title": "verify", "status": "pending"}]}
+        yield (
+            adapt_sdk_contributions(sdk.ContributionSet(tools=[todo]), owner_id=owner).tools[0],
+            owner,
+            arguments,
+            arguments,
+        )
+        return
+    package = Path(__file__).parents[2] / "examples" / "plugins" / "worker-tool"
+    raw = json.loads((package / ".ouro-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    raw["contributes"]["tools"][0]["permission_mode"] = "auto"
+    manifest = PluginManifest.model_validate(raw)
+    worker = WorkerPluginInstance(
+        manifest,
+        package_root=package,
+        package_digest="test",
+        permissions=frozenset(),
+        configuration={},
+        data_directory=tmp_path / "worker",
+        credentials={},
+        diagnostic=lambda *_args: None,
+    )
+    try:
+        contributions = await worker.prepare()
+        tool = adapt_sdk_contributions(contributions, owner_id=manifest.plugin_id).tools[0]
+        yield tool, manifest.plugin_id, {"value": "verify"}, {"calls": 1, "last_value": "verify"}
+    finally:
+        await worker.stop("shutdown", 0)
+
+
+def runtime(store, tool, arguments):
+    registry = ToolRegistry()
+    registry.register(tool)
+    return RuntimeService(
+        store=store,
+        tools=registry,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                event_batches=[
+                    [
+                        ProviderStreamEvent(
+                            type="tool_call_delta",
+                            tool_call_delta=ToolCallDelta(
+                                index=0,
+                                id_delta="call_state",
+                                name_delta=tool.definition.name,
+                                arguments_delta=json.dumps(arguments),
+                            ),
+                        ),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                    [
+                        ProviderStreamEvent(type="text_delta", text="finished"),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                ]
+            ),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+    )
+
+
+async def test_state_and_tool_message_commit_together_and_undo_restores_before_state(
+    store,
+    state_tool,
+    monkeypatch,
+):
+    tool, owner, arguments, expected = state_tool
+    app = runtime(store, tool, arguments)
+    native_commit = store.commit_session
+    result_commits = []
+
+    def observe(request):
+        steps = [step for step in request.steps if step.message and step.message.tool_result]
+        if steps:
+            assert not store.load_harness(request.before.session_id).state.states
+            assert len(steps) == 1
+            assert steps[0].harness.states[0].payload == expected
+            result_commits.append(request)
+        return native_commit(request)
+
+    monkeypatch.setattr(store, "commit_session", observe)
+    result = await app.run("track this work")
+    assert result.run.status == "completed"
+    assert len(result_commits) == 1
+    snapshot = store.load_session(result.session.session_id)
+    state = store.load_harness(result.session.session_id).state.states[0]
+    assert (state.owner_id, state.payload) == (owner, expected)
+    tool_message = next(message for message in snapshot.messages if message.tool_result)
+    before = store.load_harness(result.session.session_id, tool_message.before_harness_version)
+    assert not before.state.states
+    assert snapshot.messages[-1].before_harness_version == snapshot.session.harness_version
+    store.commit_session(
+        SessionCommit(
+            before=snapshot.session,
+            before_message_id=snapshot.messages[0].message_id,
+        )
+    )
+    assert not store.load_harness(snapshot.session.session_id).state.states
+    assert not store.load_session(snapshot.session.session_id).messages
+
+
+@pytest.mark.parametrize("failure", ["exception", "invalid_result"])
+async def test_failed_callback_discards_staged_state(store, failure):
+    def handler(call):
+        call.session_state.replace(state_schema_version=1, payload={"unaccepted": True})
+        if failure == "exception":
+            raise ValueError("callback failed")
+        return object()
+
+    tool = adapt_sdk_contributions(
+        sdk.ContributionSet(
+            tools=[
+                sdk.ToolContribution(
+                    id="state",
+                    exposed_name="State",
+                    description="stage a change",
+                    permission_mode="auto",
+                    effect="state_changing",
+                    handler=handler,
+                )
+            ]
+        ),
+        owner_id="example.plugin",
+    ).tools[0]
+    app = runtime(store, tool, {})
+    result = await app.run("try")
+    assert result.tool_results[0].is_error
+    assert not store.load_harness(result.session.session_id).state.states
+
+
+@pytest.mark.parametrize("failure_point", ["response", "file_application"])
+async def test_tool_result_retry_after_durable_decision_is_not_applied_twice(
+    store,
+    state_tool,
+    monkeypatch,
+    failure_point,
+):
+    if failure_point == "file_application" and not isinstance(store, LocalSessionStore):
+        pytest.skip("file replay boundary; SQLite rollback is covered by store contracts")
+    tool, _owner, arguments, expected = state_tool
+    app = runtime(store, tool, arguments)
+    session = SessionRecord()
+    store.create_session(session)
+    run = RunRecord(session_id=session.session_id, status="running")
+    store.save_run(run)
+    invocation = ToolInvocation(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        tool_call_id="call_state",
+        tool_name=tool.definition.name,
+        arguments=arguments,
+    )
+    outcome = await ToolExecutor(app.tools).execute_prepared(
+        invocation,
+        context=ToolExecutionContext(harness=capture_harness(store, session.session_id)),
+    )
+    assert outcome.result is not None and not outcome.result.is_error
+    commit = store.commit_session
+
+    def lose_response(request):
+        commit(request)
+        raise OSError("response lost after commit")
+
+    write_suffix = FileSessionCommits._write_suffix
+
+    def interrupt_application(path, offset, records):
+        write_suffix(path, offset, records)
+        raise OSError("interrupted before publishing the Session state")
+
+    with monkeypatch.context() as fault:
+        if failure_point == "response":
+            fault.setattr(store, "commit_session", lose_response)
+        else:
+            fault.setattr(FileSessionCommits, "_write_suffix", staticmethod(interrupt_application))
+        with pytest.raises(OSError if failure_point == "response" else PersistenceError):
+            app.run_lifecycle.append_tool_result_message(
+                session=session,
+                run=run,
+                result=outcome.result,
+                sequence=1,
+            )
+    message = app.run_lifecycle.append_tool_result_message(
+        session=session,
+        run=run,
+        result=outcome.result,
+        sequence=1,
+    )
+    snapshot = store.load_session(session.session_id)
+    assert snapshot.messages == [message]
+    assert store.load_harness(session.session_id).state.states[0].payload == expected
+    store.commit_session(
+        SessionCommit(before=snapshot.session, before_message_id=message.message_id)
+    )
+    with pytest.raises(SessionCommitConflict, match="withdrawn"):
+        app.run_lifecycle.append_tool_result_message(
+            session=session,
+            run=run,
+            result=outcome.result,
+            sequence=1,
+        )
+    assert not store.load_session(session.session_id).messages

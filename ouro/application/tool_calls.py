@@ -11,6 +11,7 @@ from pydantic import JsonValue, TypeAdapter
 
 from ouro.application.dto import Diagnostic
 from ouro.application.events import RuntimeEventRecorder
+from ouro.application.harness import capture_harness
 from ouro.application.runs import RunLifecycle
 from ouro.application.session_controls import (
     SessionControlCoordinator,
@@ -716,6 +717,9 @@ class ToolCallCoordinator:
             return resolved
 
         execution_context = ToolExecutionContext(
+            harness=await run_blocking(
+                capture_harness, self.runs.store, session.session_id, run_id=run.run_id
+            ),
             signal=abort_signal,
             workspace=session.workspace or self.default_workspace,
             artifact_root=self.artifact_root,
@@ -851,7 +855,7 @@ class ToolCallCoordinator:
                 committed_calls.append(call)
                 continue
             message = next(result_messages)
-            self.after(session, run, call.result, invocation=call.invocation)
+            await self.after(session, run, call.result, invocation=call.invocation)
             committed_calls.append(
                 call.model_copy(update={"result_message_id": message.message_id})
             )
@@ -1067,6 +1071,12 @@ class ToolCallCoordinator:
                     resolution=resolution,
                     request=call.input_request,
                     context=ToolExecutionContext(
+                        harness=await run_blocking(
+                            capture_harness,
+                            self.runs.store,
+                            session.session_id,
+                            run_id=call.invocation.run_id,
+                        ),
                         workspace=workspace or self.default_workspace,
                         artifact_root=self.artifact_root,
                         workspace_only=self.execution_config.workspace_only,
@@ -1180,7 +1190,7 @@ class ToolCallCoordinator:
             },
         )
 
-    def after(
+    async def after(
         self,
         session: SessionRecord,
         run: RunRecord,
@@ -1192,7 +1202,7 @@ class ToolCallCoordinator:
             "Mapping[str, FrozenJson]",
             freeze_json(result.structured),
         )
-        self.events.observe(
+        await self.events.observe(
             ToolCallFinishedObservation(
                 session_id=session.session_id,
                 run_id=run.run_id,
@@ -1291,7 +1301,7 @@ class ToolCallCoordinator:
             "Mapping[str, FrozenJson]",
             freeze_json(request.arguments),
         )
-        self.events.observe(
+        await self.events.observe(
             ToolCallRequestedObservation(
                 session_id=session.session_id,
                 run_id=run.run_id,
@@ -1456,6 +1466,11 @@ class ToolCallCoordinator:
             return invocation, None, None, sequence
         policy = await self.tool_policies.evaluate(
             ToolPolicyCall(
+                harness=await run_blocking(
+                    capture_harness, self.runs.store, session.session_id, run_id=run.run_id
+                )
+                if self.tool_policies.registered()
+                else None,
                 session_id=session.session_id,
                 run_id=run.run_id,
                 tool_call_id=invocation.tool_call_id,

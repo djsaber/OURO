@@ -26,11 +26,14 @@ async def invoke_callback(
 async def invoke_owned_callback(
     handler: Callable[..., Any],
     *args: Any,
+    on_cancel: Callable[[], None] | None = None,
     **kwargs: Any,
 ) -> Any:
     """Invoke a callback while retaining ownership of cancelled synchronous work."""
 
-    return await _invoke_callback(handler, args, kwargs, own_sync_cancellation=True)
+    return await _invoke_callback(
+        handler, args, kwargs, own_sync_cancellation=True, on_cancel=on_cancel
+    )
 
 
 async def run_blocking[ResultT](
@@ -63,6 +66,7 @@ async def _invoke_callback(
     kwargs: dict[str, Any],
     *,
     own_sync_cancellation: bool,
+    on_cancel: Callable[[], None] | None = None,
 ) -> Any:
     callback = partial(handler, *args, **kwargs)
     if inspect.iscoroutinefunction(handler):
@@ -75,6 +79,9 @@ async def _invoke_callback(
             try:
                 result = await asyncio.shield(thread)
             except asyncio.CancelledError:
+                # Revoke call-scoped access before waiting for an owned thread.
+                if on_cancel is not None:
+                    on_cancel()
                 await settle_owned_tasks(thread)
                 result = thread.result()
                 if inspect.iscoroutine(result):

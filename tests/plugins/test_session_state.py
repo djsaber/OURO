@@ -8,35 +8,12 @@ from ouro.builtin_plugins.session_state_migration import migrate_builtin_session
 from ouro.core.errors import MigrationRequiredError
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import SessionRecord
-from ouro.plugins.api import BoundPluginSessionStateStore
+from ouro.sdk.plugins.v2 import PluginContext
 from ouro.sessions import LocalSessionStore
 
 
-def test_candidate_generation_cannot_mutate_canonical_session_state(tmp_path) -> None:
-    repository = LocalSessionStore(tmp_path / "home")
-    repository.initialize()
-    session = SessionRecord(title="Generation gate")
-    repository.create_session(session)
-    state = BoundPluginSessionStateStore(repository, "dev.example.plugin")
-
-    with pytest.raises(RuntimeError, match="candidate plugin Generation"):
-        state.save(
-            session.session_id,
-            state_schema_version=1,
-            payload={"phase": "candidate"},
-        )
-
-    state.activate()
-    state.save(
-        session.session_id,
-        state_schema_version=1,
-        payload={"phase": "active"},
-        branch_policy="copy",
-    )
-
-    assert repository.load_session_extension_states(session.session_id)[0].payload == {
-        "phase": "active"
-    }
+def test_plugin_instance_context_exposes_no_session_writer() -> None:
+    assert "session_state" not in PluginContext.__dataclass_fields__
 
 
 def test_legacy_builtin_state_migrates_and_orphans_move_to_trash(tmp_path) -> None:

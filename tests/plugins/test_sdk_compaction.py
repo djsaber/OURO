@@ -15,7 +15,7 @@ from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
 from ouro.core.state import SessionRecord
 from ouro.plugins.api import adapt_sdk_contributions
-from ouro.sdk.plugins import v1 as sdk
+from ouro.sdk.plugins import v2 as sdk
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
 
@@ -33,7 +33,8 @@ class PassiveProvider:
 
 def _strategy(handler):
     contributions = adapt_sdk_contributions(
-        sdk.ContributionSet(
+        owner_id="example.plugin",
+        contributions=sdk.ContributionSet(
             compaction_strategies=[
                 sdk.CompactionContribution(
                     id="plugin.summary",

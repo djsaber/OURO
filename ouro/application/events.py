@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from inspect import isawaitable, iscoroutinefunction
 from typing import Any, Protocol, cast
 
 from ouro.application.event_models import validate_runtime_event_payload
+from ouro.application.harness import capture_harness
 from ouro.application.observers import ObserverDispatcher
+from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import settle_owned_tasks
 from ouro.core.context_providers import ContextProviderFailure
 from ouro.core.events import EventRecord
@@ -130,8 +132,8 @@ class RuntimeEventRecorder:
             raise RuntimeError("event recorder is closed")
         self._runtime_event_observer_matcher = matcher
 
-    def observe(self, observation: Observation) -> None:
-        """Enqueue a fact without awaiting plugin code or applying backpressure."""
+    async def observe(self, observation: Observation) -> None:
+        """Capture committed state, then enqueue without awaiting plugin code."""
 
         if self._closed:
             return
@@ -140,6 +142,22 @@ class RuntimeEventRecorder:
             release = _noop_release
         else:
             registry, release = self._observer_registry_resolver(observation)
+        try:
+            if not registry.matching(observation):
+                release()
+                return
+            observation = replace(
+                observation,
+                harness=await run_blocking(
+                    capture_harness,
+                    self.store,
+                    observation.session_id,
+                    run_id=observation.run_id,
+                ),
+            )
+        except BaseException:
+            release()
+            raise
         self._observer_dispatcher.enqueue(registry, observation, release=release)
 
     def finish_run_observers(self, run_id: str) -> None:
@@ -302,10 +320,10 @@ class RuntimeEventRecorder:
         self, event: EventRecord, *, notify_observers: bool
     ) -> EventRecord:
         recorded = await self._append_ordered_event(event)
-        self._publish(recorded, notify_observers=notify_observers)
+        await self._publish(recorded, notify_observers=notify_observers)
         return recorded
 
-    def _publish(self, event: EventRecord, *, notify_observers: bool) -> None:
+    async def _publish(self, event: EventRecord, *, notify_observers: bool) -> None:
         if self._closed:
             return
         self._ensure_sink_observers_started()
@@ -324,7 +342,7 @@ class RuntimeEventRecorder:
                     ),
                 )
         if notify_observers and self._has_runtime_event_observer(event):
-            self.observe(_runtime_event_observation(event))
+            await self.observe(_runtime_event_observation(event))
 
     def _has_runtime_event_observer(self, event: EventRecord) -> bool:
         matcher = self._runtime_event_observer_matcher

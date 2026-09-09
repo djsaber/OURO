@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Literal, cast
 
-from ouro.sdk.plugins.v1 import JsonValue, PluginSessionStateStore
+from ouro.sdk.plugins.v2 import JsonValue, PluginSessionStateView
 
 _STATE_SCHEMA_VERSION = 1
-_SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 
 TodoStatus = Literal["pending", "in_progress", "done"]
 _TODO_STATUSES = frozenset({"pending", "in_progress", "done"})
@@ -37,13 +35,15 @@ class TodoItem:
 
 
 class TodoListRepository:
-    """Persist each Session's list independently through the plugin data store."""
+    """Read and stage the calling Session's TODO list through its owner view."""
 
-    def __init__(self, state: PluginSessionStateStore) -> None:
+    def __init__(self, state: PluginSessionStateView | None) -> None:
+        if state is None:
+            raise RuntimeError("Session state requires an active plugin invocation")
         self._state = state
 
-    def load(self, session_id: str) -> tuple[TodoItem, ...]:
-        persisted = self._state.load(self._validated_session_id(session_id))
+    def load(self) -> tuple[TodoItem, ...]:
+        persisted = self._state.read()
         if persisted is None:
             return ()
         if persisted.state_schema_version != _STATE_SCHEMA_VERSION:
@@ -56,25 +56,18 @@ class TodoListRepository:
             raise ValueError("TodoList state todos must be a list")
         return tuple(TodoItem.from_json(item) for item in todos)
 
-    def save(self, session_id: str, todos: tuple[TodoItem, ...]) -> None:
+    def save(self, todos: tuple[TodoItem, ...]) -> None:
         if not todos:
-            self.clear(session_id)
+            self.clear()
             return
-        self._state.save(
-            self._validated_session_id(session_id),
+        self._state.replace(
             state_schema_version=_STATE_SCHEMA_VERSION,
             payload=cast(JsonValue, {"todos": [item.to_json() for item in todos]}),
             branch_policy="reset",
         )
 
-    def clear(self, session_id: str) -> None:
-        self._state.delete(self._validated_session_id(session_id))
-
-    @staticmethod
-    def _validated_session_id(session_id: str) -> str:
-        if _SESSION_ID.fullmatch(session_id) is None:
-            raise ValueError("invalid TodoList Session id")
-        return session_id
+    def clear(self) -> None:
+        self._state.delete()
 
 
 __all__ = ["TodoItem", "TodoListRepository", "TodoStatus"]

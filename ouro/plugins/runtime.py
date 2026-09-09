@@ -12,7 +12,6 @@ from typing import Any, Literal
 from ouro.core.base import new_id
 from ouro.core.redaction import SensitiveValueRedactor, redact_text
 from ouro.plugins.api import (
-    BoundPluginSessionStateStore,
     LoadedPluginModule,
     OwnedTaskGroup,
     ScopedPluginDataStore,
@@ -68,7 +67,7 @@ from ouro.plugins.package import PLUGIN_API_VERSION
 from ouro.plugins.readiness import plugin_install_readiness
 from ouro.plugins.store import PluginPackageStore, PluginStateConflictError
 from ouro.plugins.worker import WorkerPluginInstance
-from ouro.sdk.plugins import v1 as sdk
+from ouro.sdk.plugins import v2 as sdk
 from ouro.sessions.base import SessionRepository
 from ouro.skills import SkillMetadata
 
@@ -99,7 +98,6 @@ class ActivePluginGeneration:
     gate: GenerationGate
     tasks: OwnedTaskGroup
     data_store: ScopedPluginDataStore | None = None
-    session_state_store: BoundPluginSessionStateStore | None = None
     module: LoadedPluginModule | None = None
     resources: list[Any] = field(default_factory=list)
     diagnostics: list[PluginDiagnostic] = field(default_factory=list)
@@ -630,8 +628,6 @@ class PluginRuntimeResource:
             for generation in rebuilt:
                 if generation.data_store is not None:
                     generation.data_store.activate()
-                if generation.session_state_store is not None:
-                    generation.session_state_store.activate()
                 generation.tasks.activate()
                 generation.gate.open()
             lease = catalog.acquire()
@@ -940,8 +936,6 @@ class PluginRuntimeResource:
                                 suggested_action="Inspect the plugin data directory and retry.",
                             )
                         )
-                if generation.session_state_store is not None:
-                    generation.session_state_store.activate()
                 generation.tasks.activate()
                 generation.gate.open()
             self._active = next_generations
@@ -1095,8 +1089,7 @@ class PluginRuntimeResource:
             if (
                 current is not None
                 and self._catalog_base is not None
-                and self._catalog_base.tool_registry_revision
-                == self.coordinator.tools.revision
+                and self._catalog_base.tool_registry_revision == self.coordinator.tools.revision
             ):
                 return current
             catalog_base = self._capture_catalog_base(skills=self.base_skills)
@@ -1440,7 +1433,6 @@ class PluginRuntimeResource:
         instance: Any = _DeclarativePluginInstance()
         prepared: PreparedContributionSet | None = None
         data_store: ScopedPluginDataStore | None = None
-        session_state_store: BoundPluginSessionStateStore | None = None
         package_root = (
             self.store.verify_package(candidate.plugin_id, candidate.package_digest)
             if candidate.package_digest is not None
@@ -1464,11 +1456,6 @@ class PluginRuntimeResource:
                     self.store.data_root / candidate.plugin_id,
                     staged=True,
                 )
-                if self.session_repository is not None:
-                    session_state_store = BoundPluginSessionStateStore(
-                        self.session_repository,
-                        candidate.plugin_id,
-                    )
                 context = build_plugin_context(
                     candidate,
                     generation,
@@ -1480,7 +1467,6 @@ class PluginRuntimeResource:
                     diagnostics=diagnostics,
                     redactor=redactor,
                     data_store=data_store,
-                    session_state_store=session_state_store,
                     artifact_root=self.store.home / "artifacts",
                     host_home=self.store.home,
                 )
@@ -1533,7 +1519,7 @@ class PluginRuntimeResource:
             _validate_instance(instance)
             contributions = await instance.prepare()
             if isinstance(contributions, sdk.ContributionSet):
-                contributions = adapt_sdk_contributions(contributions)
+                contributions = adapt_sdk_contributions(contributions, owner_id=candidate.plugin_id)
             if not isinstance(contributions, PluginContributions):
                 raise TypeError("plugin prepare() must return SDK ContributionSet")
             prepared_resources = await prepare_generation_resources(
@@ -1609,7 +1595,6 @@ class PluginRuntimeResource:
                 gate=generation_gate,
                 tasks=tasks,
                 data_store=data_store,
-                session_state_store=session_state_store,
                 module=module,
                 resources=resources,
                 diagnostics=diagnostics,
@@ -1668,8 +1653,6 @@ class PluginRuntimeResource:
                     errors.append(exc)
             if generation.module is not None:
                 generation.module.close()
-            if generation.session_state_store is not None:
-                generation.session_state_store.deactivate()
             generation.record.status = "disabled"
             generation.stopped = True
             self._diagnostics.extend(generation.diagnostics)

@@ -10,6 +10,7 @@ from pydantic import Field, JsonValue
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
 from ouro.core.extensions import PluginSource
+from ouro.core.harness_calls import HarnessCallSnapshot, HarnessStateChange
 from ouro.core.redaction import redact_text
 from ouro.core.session_controls import SessionControlClaim
 from ouro.plugins.models import PluginClass
@@ -18,6 +19,7 @@ _CONTROLLER_ID = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 
 
 class PluginSessionControllerCall(OuroModel):
+    harness: HarnessCallSnapshot | None = None
     session_id: str
     session_kind: Literal["primary", "subagent"]
     activation_id: str
@@ -29,6 +31,7 @@ class PluginSessionControllerCall(OuroModel):
 
 
 class PluginSessionControllerOutput(OuroModel):
+    harness_change: HarnessStateChange | None = None
     output: str = ""
     data: dict[str, object] = Field(default_factory=dict)
     owner_state_revision: int | None = Field(default=None, ge=0)

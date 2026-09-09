@@ -83,7 +83,7 @@ from ouro.plugins.store import (
     PluginStoreIOError,
 )
 from ouro.plugins.worker import JsonRpcWorkerClient, WorkerProtocolError
-from ouro.sdk.plugins.v1 import ContributionSet
+from ouro.sdk.plugins.v2 import ContributionSet
 from ouro.sessions import LocalSessionStore
 from ouro.skills import SkillMetadata
 from ouro.tools import (
@@ -115,7 +115,7 @@ def _write_native_plugin(
         "name": plugin_id.rsplit(".", 1)[-1].title(),
         "version": version,
         "namespace": plugin_id.rsplit(".", 1)[-1].replace("-", "_"),
-        "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
+        "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^3.0.0"},
         "runtime": runtime or {"kind": "declarative"},
         "contributes": contributes or {},
         "permissions": [],
@@ -190,7 +190,7 @@ def _builtin_plugin(
                 "name": plugin_id.rsplit(".", 1)[-1].title(),
                 "version": version,
                 "namespace": namespace,
-                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
+                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^3.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": f"{namespace}_plugin:create_plugin",
@@ -833,7 +833,7 @@ async def test_inprocess_owned_package_dependency_is_unloaded_with_generation(tm
     (package / "helper.py").write_text("VALUE = 'owned'\n", encoding="utf-8")
     (package / "__init__.py").write_text(
         """from .helper import VALUE
-from ouro.sdk.plugins.v1 import ContributionSet
+from ouro.sdk.plugins.v2 import ContributionSet
 class Plugin:
     async def prepare(self): return ContributionSet()
     async def start(self): assert VALUE == 'owned'
@@ -866,7 +866,7 @@ async def test_inprocess_loaded_top_level_namespace_conflict_rejects_activation(
         runtime={"kind": "python-inprocess", "entrypoint": "echo_plugin:create_plugin"},
     )
     (source / "echo_plugin.py").write_text(
-        "from ouro.sdk.plugins.v1 import ContributionSet\n"
+        "from ouro.sdk.plugins.v2 import ContributionSet\n"
         "class Plugin:\n"
         "    async def prepare(self): return ContributionSet()\n"
         "    async def start(self): pass\n"
@@ -918,7 +918,7 @@ async def test_inprocess_lifecycle_requires_separate_grants_and_drains_snapshot(
         },
     )
     (source / "echo_plugin.py").write_text(
-        """from ouro.sdk.plugins.v1 import ContributionSet, ToolContribution, ToolOutput
+        """from ouro.sdk.plugins.v2 import ContributionSet, ToolContribution, ToolOutput
 
 class Plugin:
     def __init__(self, context):
@@ -1040,7 +1040,7 @@ async def test_immutable_catalogs_allow_nonblocking_generation_switches(tmp_path
         encoding="utf-8",
     )
     (source / "echo_plugin.py").write_text(
-        """from ouro.sdk.plugins.v1 import ContributionSet, ToolContribution, ToolOutput
+        """from ouro.sdk.plugins.v2 import ContributionSet, ToolContribution, ToolOutput
 class Plugin:
     async def prepare(self):
         async def run(call):
@@ -1268,7 +1268,7 @@ async def test_executable_plugin_runs_only_after_explicit_enable(tmp_path) -> No
     )
     (source / "echo_plugin.py").write_text(
         f"""from pathlib import Path
-from ouro.sdk.plugins.v1 import ContributionSet
+from ouro.sdk.plugins.v2 import ContributionSet
 Path({json.dumps(str(import_marker))}).write_text('imported', encoding='utf-8')
 class Plugin:
     def __init__(self, context):
@@ -1355,7 +1355,7 @@ async def test_commands_and_background_services_use_owned_lifecycle(tmp_path) ->
         },
     )
     (source / "echo_plugin.py").write_text(
-        """from ouro.sdk.plugins.v1 import (
+        """from ouro.sdk.plugins.v2 import (
     BackgroundServiceContribution, CommandContribution, ContributionSet,
 )
 class Plugin:
@@ -1738,7 +1738,7 @@ async def test_worker_prompt_policy_timeout_is_fail_closed_and_sends_cancel(tmp_
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "2.0",
+            "protocol": "3.0",
         },
         contributes={
             "prompt_policies": [
@@ -1770,7 +1770,7 @@ for line in sys.stdin:
     result = {}
     if method == 'initialize':
         cancel_log = pathlib.Path(request['params']['data_directory']) / 'cancel.log'
-        result = {'protocol_version': '2.0'}
+        result = {'protocol_version': '3.0'}
     elif method == 'contributions.prepare':
         result = {'prompt_policies': ['guard']}
     elif method == 'prompt_policy.call':
@@ -1963,7 +1963,7 @@ async def test_worker_runtime_uses_stdio_protocol_and_closes_process(tmp_path) -
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "2.0",
+            "protocol": "3.0",
         },
         contributes={
             "tools": [
@@ -1982,7 +1982,7 @@ for line in sys.stdin:
     method = request.get('method')
     result = {}
     if method == 'initialize':
-        result = {'protocol_version': '2.0'}
+        result = {'protocol_version': '3.0'}
     elif method == 'contributions.prepare':
         result = {'tools': {'echo': {'parameters_schema': {'type': 'object'}}}}
     elif method == 'tool.call':
@@ -2026,7 +2026,7 @@ async def test_worker_tool_can_return_structured_input_request(tmp_path) -> None
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "2.0",
+            "protocol": "3.0",
         },
         contributes={
             "tools": [
@@ -2045,7 +2045,7 @@ for line in sys.stdin:
     method = request.get('method')
     result = {}
     if method == 'initialize':
-        result = {'protocol_version': '2.0'}
+        result = {'protocol_version': '3.0'}
     elif method == 'contributions.prepare':
         result = {'tools': {'confirm': {}}}
     elif method == 'tool.call':
@@ -2086,7 +2086,7 @@ async def test_worker_resumable_tool_receives_unattended_resolution_contract(tmp
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "2.0",
+            "protocol": "3.0",
         },
         contributes={
             "tools": [
@@ -2107,7 +2107,7 @@ for line in sys.stdin:
     method = request.get('method')
     result = {}
     if method == 'initialize':
-        result = {'protocol_version': '2.0'}
+        result = {'protocol_version': '3.0'}
     elif method == 'contributions.prepare':
         result = {'tools': {'confirm': {}}}
     elif method == 'tool.call':
@@ -2163,7 +2163,7 @@ async def test_worker_invalid_call_result_is_bounded_diagnostic(tmp_path) -> Non
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "2.0",
+            "protocol": "3.0",
         },
         contributes={
             "tools": [
@@ -2181,7 +2181,7 @@ for line in sys.stdin:
     request = json.loads(line)
     method = request.get('method')
     result = {}
-    if method == 'initialize': result = {'protocol_version': '2.0'}
+    if method == 'initialize': result = {'protocol_version': '3.0'}
     elif method == 'contributions.prepare': result = {'tools': {'run': {}}}
     elif method == 'tool.call': result = {'resource_refs': 'not-an-array'}
     if 'id' in request:
@@ -2226,7 +2226,7 @@ async def test_worker_exit_withdraws_generation_and_projects_failed(tmp_path) ->
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "2.0",
+            "protocol": "3.0",
         },
         contributes={
             "tools": [
@@ -2248,7 +2248,7 @@ for line in sys.stdin:
     method = request.get('method')
     result = {}
     if method == 'initialize':
-        result = {'protocol_version': '2.0'}
+        result = {'protocol_version': '3.0'}
     elif method == 'contributions.prepare':
         result = {'tools': {'run': {}}}
     if 'id' in request:
@@ -2295,7 +2295,7 @@ async def test_worker_supports_session_inputs_and_semantic_policies(tmp_path) ->
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "2.0",
+            "protocol": "3.0",
         },
         contributes={
             "commands": [{"id": "goal", "description": "Start a goal."}],
@@ -2343,7 +2343,7 @@ for line in sys.stdin:
     method = request.get('method')
     result = {}
     if method == 'initialize':
-        result = {'protocol_version': '2.0'}
+        result = {'protocol_version': '3.0'}
     elif method == 'contributions.prepare':
         result = {
             'commands': ['goal'],
@@ -2616,7 +2616,7 @@ async def test_worker_initialize_must_confirm_manifest_protocol(tmp_path) -> Non
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "2.0",
+            "protocol": "3.0",
         },
     )
     (source / "worker.py").write_text(
@@ -2655,7 +2655,7 @@ async def test_worker_credentials_use_declared_slots_without_protocol_or_log_lea
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "2.0",
+            "protocol": "3.0",
         },
         extra={
             "permissions": [
@@ -2681,7 +2681,7 @@ for line in sys.stdin:
         else:
             name = params['credential_environment']['calendar_api']
             print(os.environ[name], file=sys.stderr, flush=True)
-            result = {'protocol_version': '2.0'}
+            result = {'protocol_version': '3.0'}
     elif method == 'contributions.prepare':
         result = {}
     if 'id' in request:
@@ -2745,7 +2745,7 @@ async def test_inprocess_resolved_credentials_are_redacted_from_all_plugin_outpu
         },
     )
     (source / "inprocess_credentials_plugin.py").write_text(
-        """from ouro.sdk.plugins.v1 import ContributionSet
+        """from ouro.sdk.plugins.v2 import ContributionSet
 class Plugin:
     def __init__(self, context): self.context = context
     async def prepare(self): return ContributionSet()
@@ -2877,7 +2877,7 @@ async def test_failed_dependency_blocks_dependant_and_retry_recovers_closure(tmp
         runtime={"kind": "python-inprocess", "entrypoint": "dependency_plugin:create_plugin"},
     )
     (dependency_v1 / "dependency_plugin.py").write_text(
-        """from ouro.sdk.plugins.v1 import ContributionSet
+        """from ouro.sdk.plugins.v2 import ContributionSet
 class Plugin:
     async def prepare(self): return ContributionSet()
     async def start(self): raise RuntimeError('dependency failed')
@@ -2953,7 +2953,7 @@ async def test_supervised_task_failure_projects_degraded_consistently(tmp_path) 
     )
     (source / "degraded_plugin.py").write_text(
         """import asyncio
-from ouro.sdk.plugins.v1 import ContributionSet
+from ouro.sdk.plugins.v2 import ContributionSet
 class Plugin:
     def __init__(self, context): self.context = context
     async def prepare(self): return ContributionSet()
@@ -3002,7 +3002,7 @@ async def test_missing_optional_contribution_projects_degraded(tmp_path) -> None
         },
     )
     (source / "optional_plugin.py").write_text(
-        """from ouro.sdk.plugins.v1 import ContributionSet
+        """from ouro.sdk.plugins.v2 import ContributionSet
 class Plugin:
     async def prepare(self): return ContributionSet()
     async def start(self): pass
@@ -3072,7 +3072,7 @@ async def test_failed_digest_selection_never_replaces_previous_active_generation
         contributes=contributes,
     )
     (first_source / "echo_plugin.py").write_text(
-        """from ouro.sdk.plugins.v1 import ContributionSet, ToolContribution
+        """from ouro.sdk.plugins.v2 import ContributionSet, ToolContribution
 class Plugin:
     async def prepare(self):
         async def run(call): return 'first'
@@ -3087,7 +3087,7 @@ def create_plugin(context): return Plugin()
         encoding="utf-8",
     )
     (second_source / "echo_plugin.py").write_text(
-        """from ouro.sdk.plugins.v1 import ContributionSet, ToolContribution
+        """from ouro.sdk.plugins.v2 import ContributionSet, ToolContribution
 class Plugin:
     async def prepare(self):
         async def run(call): return 'second'
@@ -3149,7 +3149,7 @@ async def test_failed_active_configuration_never_commits_candidate_revision(tmp_
         encoding="utf-8",
     )
     (source / "configuration_plugin.py").write_text(
-        """from ouro.sdk.plugins.v1 import ContributionSet
+        """from ouro.sdk.plugins.v2 import ContributionSet
 class Plugin:
     def __init__(self, context): self.fail = context.configuration['fail']
     async def prepare(self): return ContributionSet()
@@ -3204,7 +3204,7 @@ async def test_sdk_tool_id_must_match_manifest_even_when_exposed_name_matches(tm
         },
     )
     (source / "tool_identity_plugin.py").write_text(
-        """from ouro.sdk.plugins.v1 import ContributionSet, ToolContribution
+        """from ouro.sdk.plugins.v2 import ContributionSet, ToolContribution
 class Plugin:
     async def prepare(self):
         async def run(call): return 'bad'
@@ -3251,7 +3251,7 @@ async def test_sdk_tool_permission_contract_must_match_manifest(tmp_path) -> Non
         },
     )
     (source / "tool_permission_plugin.py").write_text(
-        """from ouro.sdk.plugins.v1 import ContributionSet, ToolContribution
+        """from ouro.sdk.plugins.v2 import ContributionSet, ToolContribution
 class Plugin:
     async def prepare(self):
         async def control(call): return 'bad'
@@ -3297,7 +3297,7 @@ async def test_sdk_tool_description_must_match_manifest(tmp_path) -> None:
         },
     )
     (source / "tool_description_plugin.py").write_text(
-        """from ouro.sdk.plugins.v1 import ContributionSet, ToolContribution
+        """from ouro.sdk.plugins.v2 import ContributionSet, ToolContribution
 class Plugin:
     async def prepare(self):
         async def inspect(call): return 'bad'
@@ -3531,7 +3531,7 @@ async def test_failed_candidate_discards_staged_data_and_desired_state(tmp_path)
         runtime={"kind": "python-inprocess", "entrypoint": "echo_plugin:create_plugin"},
     )
     (source / "echo_plugin.py").write_text(
-        """from ouro.sdk.plugins.v1 import ContributionSet
+        """from ouro.sdk.plugins.v2 import ContributionSet
 class Plugin:
     def __init__(self, context): self.context = context
     async def prepare(self): return ContributionSet()
@@ -3670,7 +3670,7 @@ async def test_background_service_ownership_handover_is_ordered(tmp_path) -> Non
         encoding="utf-8",
     )
     (source / "service_handover_plugin.py").write_text(
-        """from ouro.sdk.plugins.v1 import BackgroundServiceContribution, ContributionSet
+        """from ouro.sdk.plugins.v2 import BackgroundServiceContribution, ContributionSet
 class Plugin:
     def __init__(self, context): self.context = context
     def append(self, value):
@@ -3885,7 +3885,7 @@ def test_native_manifest_model_ignores_unknown_fields() -> None:
             "name": "Strict",
             "version": "1.0.0",
             "namespace": "strict",
-            "engines": {"ouro": "^0.1.0", "plugin_api": "^2.0.0"},
+            "engines": {"ouro": "^0.1.0", "plugin_api": "^3.0.0"},
             "verified": True,
         }
     )
@@ -3902,7 +3902,7 @@ def test_native_manifest_rejects_tool_controlled_approval_permission() -> None:
                 "name": "Control",
                 "version": "1.0.0",
                 "namespace": "control",
-                "engines": {"ouro": "^0.1.0", "plugin_api": "^2.0.0"},
+                "engines": {"ouro": "^0.1.0", "plugin_api": "^3.0.0"},
                 "contributes": {
                     "tools": [
                         {
@@ -3927,7 +3927,7 @@ def test_native_manifest_rejects_unknown_activation_binding() -> None:
                 "name": "Bound",
                 "version": "1.0.0",
                 "namespace": "bound",
-                "engines": {"ouro": "^0.1.0", "plugin_api": "^2.0.0"},
+                "engines": {"ouro": "^0.1.0", "plugin_api": "^3.0.0"},
                 "contributes": {"context_providers": [{"id": "context", "active_when": "missing"}]},
             }
         )
@@ -3942,7 +3942,7 @@ def test_native_manifest_rejects_unknown_interaction_controller() -> None:
                 "name": "Bound",
                 "version": "1.0.0",
                 "namespace": "bound",
-                "engines": {"ouro": "^0.1.0", "plugin_api": "^2.0.0"},
+                "engines": {"ouro": "^0.1.0", "plugin_api": "^3.0.0"},
                 "contributes": {
                     "tools": [
                         {

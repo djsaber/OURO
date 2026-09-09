@@ -8,6 +8,7 @@ from pydantic import Field, model_validator
 
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
+from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.redaction import redact_text
@@ -18,6 +19,7 @@ ContextFragmentTarget = Literal["message", "system_prompt"]
 
 
 class ContextProviderCall(OuroModel):
+    harness: HarnessCallSnapshot | None = None
     session_id: str
     run_id: str
     message_count: int = Field(ge=0)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ouro.sdk.plugins.v1 import CommandContribution, ContributionSet
+from ouro.sdk.plugins.v2 import CommandContribution, ContributionSet
 
 
 class Plugin:

@@ -8,37 +8,13 @@ import pytest
 from ouro.builtin_plugins import LOCAL_BUILTIN_PLUGINS
 from ouro.builtin_plugins.toolkit import TOOLKIT_PLUGIN
 from ouro.builtin_plugins.toolkit.toolkit_plugin import ToolkitPlugin
+from ouro.core.harness import HarnessState
+from ouro.core.harness_calls import HarnessCallSnapshot, accept_state_changes
 from ouro.plugins.api import ScopedPluginDataStore
-from ouro.sdk.plugins import v1 as sdk
+from ouro.plugins.harness_calls import invoke_plugin_callback
+from ouro.sdk.plugins import v2 as sdk
 
 PLUGIN_ID = "dev.ouro.toolkit"
-_SESSION_STATES: dict[Path, dict[str, sdk.PluginSessionState]] = {}
-
-
-class _MemorySessionStateStore:
-    def __init__(self, values: dict[str, sdk.PluginSessionState]) -> None:
-        self._values = values
-
-    def load(self, session_id: str) -> sdk.PluginSessionState | None:
-        return self._values.get(session_id)
-
-    def save(
-        self,
-        session_id: str,
-        *,
-        state_schema_version: int,
-        payload: sdk.JsonValue,
-        branch_policy="reset",
-        projection_semantic_tags=(),
-    ) -> None:
-        del branch_policy, projection_semantic_tags
-        self._values[session_id] = sdk.PluginSessionState(
-            state_schema_version=state_schema_version,
-            payload=payload,
-        )
-
-    def delete(self, session_id: str) -> None:
-        self._values.pop(session_id, None)
 
 
 class _ExecutionContext:
@@ -102,7 +78,6 @@ def _make_plugin(data_root: Path) -> ToolkitPlugin:
         tasks=None,  # type: ignore[arg-type]
         logger=None,  # type: ignore[arg-type]
         diagnostics=None,  # type: ignore[arg-type]
-        session_state=_MemorySessionStateStore(_SESSION_STATES.setdefault(data_root.resolve(), {})),
     )
     plugin = TOOLKIT_PLUGIN.factory(context)
     assert isinstance(plugin, ToolkitPlugin)
@@ -602,16 +577,32 @@ async def test_grep_reports_no_matches(
 # ---------------------------------------------------------------------------
 
 
+async def _todo(tool, arguments, state=None, *, session_id="s1"):
+    snapshot = state or HarnessCallSnapshot(
+        session_id=session_id,
+        harness_version="harness_test",
+        history_epoch=0,
+        state=HarnessState(),
+    )
+    output, change = await invoke_plugin_callback(
+        tool.handler,
+        _call("TodoList", arguments, session_id=session_id),
+        snapshot=snapshot,
+        owner_id=PLUGIN_ID,
+        writable=True,
+    )
+    return output, accept_state_changes(snapshot, [change] if change else [])
+
+
 async def test_todolist_update_query_and_clear_cycle(tmp_path: Path) -> None:
-    plugin = _make_plugin(tmp_path / "data")
-    tools = await _tools(plugin)
+    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tool = tools["TodoList"]
     todos = [
         {"title": "任务 A - 新建待处理", "status": "pending"},
         {"title": "任务 B - 进行中", "status": "in_progress"},
         {"title": "任务 C - 已完成", "status": "done"},
     ]
-
-    updated = tools["TodoList"].handler(_call("TodoList", {"todos": todos}))
+    updated, state = await _todo(tool, {"todos": todos})
     assert updated.content == (
         "Todo list updated.\n"
         "Current todo list:\n"
@@ -623,51 +614,36 @@ async def test_todolist_update_query_and_clear_cycle(tmp_path: Path) -> None:
         "immediately after finishing them, and keep exactly one task in_progress when work "
         "is underway."
     )
-
-    queried = tools["TodoList"].handler(_call("TodoList", {}))
+    queried, unchanged = await _todo(tool, {}, state)
+    assert unchanged is state
     assert queried.content == (
         "Current todo list:\n"
         "  [pending] 任务 A - 新建待处理\n"
         "  [in_progress] 任务 B - 进行中\n"
         "  [done] 任务 C - 已完成"
     )
-
-    cleared = tools["TodoList"].handler(_call("TodoList", {"todos": []}))
+    cleared, state = await _todo(tool, {"todos": []}, state)
     assert cleared.content == "Todo list cleared."
-
-    empty = tools["TodoList"].handler(_call("TodoList", {}))
+    empty, state = await _todo(tool, {}, state)
     assert empty.content == "Todo list is empty."
+    assert not state.state.states
 
 
-async def test_todolist_persists_across_plugin_instances(tmp_path: Path) -> None:
+async def test_todolist_state_belongs_to_the_call_not_the_plugin_instance(tmp_path: Path) -> None:
     first = await _tools(_make_plugin(tmp_path / "data"))
-    first["TodoList"].handler(
-        _call("TodoList", {"todos": [{"title": "kept", "status": "pending"}]})
-    )
-
+    _, state = await _todo(first["TodoList"], {"todos": [{"title": "kept", "status": "pending"}]})
     second = await _tools(_make_plugin(tmp_path / "data"))
-    queried = second["TodoList"].handler(_call("TodoList", {}))
-
+    queried, _ = await _todo(second["TodoList"], {}, state)
     assert queried.content == "Current todo list:\n  [pending] kept"
-
-
-async def test_todolist_sessions_are_isolated(tmp_path: Path) -> None:
-    tools = await _tools(_make_plugin(tmp_path / "data"))
-    tools["TodoList"].handler(
-        _call("TodoList", {"todos": [{"title": "mine", "status": "done"}]}, session_id="s1")
-    )
-
-    other = tools["TodoList"].handler(_call("TodoList", {}, session_id="s2"))
-
+    other, _ = await _todo(first["TodoList"], {}, session_id="s2")
     assert other.content == "Todo list is empty."
 
 
 async def test_todolist_rejects_invalid_items(tmp_path: Path) -> None:
     tools = await _tools(_make_plugin(tmp_path / "data"))
-
     with pytest.raises(ValueError, match="status"):
-        tools["TodoList"].handler(_call("TodoList", {"todos": [{"title": "x", "status": "doing"}]}))
+        await _todo(tools["TodoList"], {"todos": [{"title": "x", "status": "doing"}]})
     with pytest.raises(ValueError, match="title"):
-        tools["TodoList"].handler(_call("TodoList", {"todos": [{"title": "", "status": "done"}]}))
+        await _todo(tools["TodoList"], {"todos": [{"title": "", "status": "done"}]})
     with pytest.raises(ValueError, match="must be a list"):
-        tools["TodoList"].handler(_call("TodoList", {"todos": "not-a-list"}))
+        await _todo(tools["TodoList"], {"todos": "not-a-list"})

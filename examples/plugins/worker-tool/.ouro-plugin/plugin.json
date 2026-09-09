@@ -7,7 +7,7 @@
   "namespace": "worker_tool",
   "engines": {
     "ouro": ">=0.1.0,<0.2.0",
-    "plugin_api": "^2.0.0"
+    "plugin_api": "^3.0.0"
   },
   "runtime": {
     "kind": "worker",
@@ -15,14 +15,16 @@
       "{python}",
       "./worker.py"
     ],
-    "protocol": "2.0"
+    "protocol": "3.0"
   },
   "contributes": {
     "tools": [
       {
         "id": "echo",
         "exposed_name": "worker_example__echo",
-        "description": "Echo a value through the worker process.",
+        "description": "Echo a value and track the call in this Session's state.",
+        "effect": "state_changing",
+        "batch_behavior": "exclusive",
         "permission_mode": "approval"
       }
     ]

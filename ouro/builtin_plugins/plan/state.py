@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal, cast
 
-from ouro.sdk.plugins.v1 import JsonValue, PluginSessionStateStore
+from ouro.sdk.plugins.v2 import JsonValue, PluginSessionStateView
 
 from .interaction import PlanOption
 
@@ -82,20 +82,21 @@ class SessionPlanState:
 class PlanStateRepository:
     """Persist each Session independently so Generation overlap cannot clobber peers."""
 
-    def __init__(self, state: PluginSessionStateStore) -> None:
+    def __init__(self, state: PluginSessionStateView | None) -> None:
+        if state is None:
+            raise RuntimeError("Session state requires an active plugin invocation")
         self._state = state
 
-    def load(self, session_id: str) -> SessionPlanState:
-        persisted = self._state.load(validate_session_id(session_id))
+    def load(self) -> SessionPlanState:
+        persisted = self._state.read()
         if persisted is None:
             return SessionPlanState()
         if persisted.state_schema_version != _STATE_SCHEMA_VERSION:
             raise ValueError("unsupported plan mode state schema")
         return SessionPlanState.from_json(persisted.payload)
 
-    def save(self, session_id: str, state: SessionPlanState) -> None:
-        self._state.save(
-            validate_session_id(session_id),
+    def save(self, state: SessionPlanState) -> None:
+        self._state.replace(
             state_schema_version=_STATE_SCHEMA_VERSION,
             payload=cast(JsonValue, state.to_json()),
             branch_policy="reset",

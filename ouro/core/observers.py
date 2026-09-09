@@ -8,6 +8,7 @@ from typing import Literal
 
 from ouro.core.base import OuroModel
 from ouro.core.extensions import PluginSource
+from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.state import RunOrigin, RunStatus
 from ouro.core.tools import ToolBatchBehavior, ToolEffect
 
@@ -85,6 +86,7 @@ class RunOutcomeView:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeEventObservation:
+    harness: HarnessCallSnapshot | None = field(default=None, kw_only=True)
     session_id: str
     run_id: str | None
     record: RuntimeEventView
@@ -93,6 +95,7 @@ class RuntimeEventObservation:
 
 @dataclass(frozen=True, slots=True)
 class ContextPreparedObservation:
+    harness: HarnessCallSnapshot | None = field(default=None, kw_only=True)
     session_id: str
     run_id: str
     message_count: int
@@ -104,6 +107,7 @@ class ContextPreparedObservation:
 
 @dataclass(frozen=True, slots=True)
 class ToolCallRequestedObservation:
+    harness: HarnessCallSnapshot | None = field(default=None, kw_only=True)
     session_id: str
     run_id: str
     tool_call_id: str
@@ -121,6 +125,7 @@ class ToolCallRequestedObservation:
 
 @dataclass(frozen=True, slots=True)
 class ToolCallFinishedObservation:
+    harness: HarnessCallSnapshot | None = field(default=None, kw_only=True)
     session_id: str
     run_id: str
     tool_call_id: str
@@ -139,6 +144,7 @@ class ToolCallFinishedObservation:
 
 @dataclass(frozen=True, slots=True)
 class RunFinishedObservation:
+    harness: HarnessCallSnapshot | None = field(default=None, kw_only=True)
     session_id: str
     run_id: str
     outcome: RunOutcomeView

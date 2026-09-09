@@ -13,7 +13,7 @@ from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
 from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.plugins.api import adapt_sdk_contributions
 from ouro.providers import FauxProvider
-from ouro.sdk.plugins import v1 as sdk
+from ouro.sdk.plugins import v2 as sdk
 from ouro.sessions import LocalSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 
@@ -154,19 +154,19 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(
         ],
     )
     tool_result_batches: list[list[str]] = []
-    append_messages = runtime.store.append_messages
+    commit_session = runtime.store.commit_session
 
-    def capture_message_batch(messages) -> None:
+    def capture_message_batch(commit):
         result_ids = [
-            message.tool_result.tool_call_id
-            for message in messages
-            if message.tool_result is not None
+            step.message.tool_result.tool_call_id
+            for step in commit.steps
+            if step.message is not None and step.message.tool_result is not None
         ]
         if result_ids:
             tool_result_batches.append(result_ids)
-        append_messages(messages)
+        return commit_session(commit)
 
-    monkeypatch.setattr(runtime.store, "append_messages", capture_message_batch)
+    monkeypatch.setattr(runtime.store, "commit_session", capture_message_batch)
     planned_states: list[tuple[str, str, list[str]]] = []
 
     def capture_planned_state(event) -> None:
@@ -279,7 +279,8 @@ async def test_sdk_tool_structured_input_round_trips_through_wait_and_resume(tmp
         return sdk.ToolInputRequest(data=requested)
 
     contributions = adapt_sdk_contributions(
-        sdk.ContributionSet(
+        owner_id="example.plugin",
+        contributions=sdk.ContributionSet(
             tools=[
                 sdk.ToolContribution(
                     id="confirm_plan",
@@ -355,7 +356,8 @@ async def test_unattended_session_resumes_capable_tool_without_waiting(
         return _result(invocation, "continued batch")
 
     contribution = adapt_sdk_contributions(
-        sdk.ContributionSet(
+        owner_id="example.plugin",
+        contributions=sdk.ContributionSet(
             tools=[
                 sdk.ToolContribution(
                     id="confirm",
@@ -420,7 +422,8 @@ async def test_unattended_session_returns_explicit_error_for_unsupported_tool(tm
         return sdk.ToolInputRequest(data={"type": "form", "fields": ["environment"]})
 
     contribution = adapt_sdk_contributions(
-        sdk.ContributionSet(
+        owner_id="example.plugin",
+        contributions=sdk.ContributionSet(
             tools=[
                 sdk.ToolContribution(
                     id="form",
@@ -465,7 +468,8 @@ async def test_unattended_resume_cannot_request_user_input_again(tmp_path) -> No
         return sdk.ToolInputRequest(data={"stage": "second"})
 
     contribution = adapt_sdk_contributions(
-        sdk.ContributionSet(
+        owner_id="example.plugin",
+        contributions=sdk.ContributionSet(
             tools=[
                 sdk.ToolContribution(
                     id="loop",
@@ -518,7 +522,8 @@ async def test_resumable_tool_can_request_multiple_inputs_and_owns_final_result(
         )
 
     contribution = adapt_sdk_contributions(
-        sdk.ContributionSet(
+        owner_id="example.plugin",
+        contributions=sdk.ContributionSet(
             tools=[
                 sdk.ToolContribution(
                     id="workflow",
@@ -573,7 +578,8 @@ async def test_approved_tool_can_transition_to_user_input_without_reexecution(tm
         return sdk.ToolInputRequest(data={"type": "confirm", "value": "deploy"})
 
     contribution = adapt_sdk_contributions(
-        sdk.ContributionSet(
+        owner_id="example.plugin",
+        contributions=sdk.ContributionSet(
             tools=[
                 sdk.ToolContribution(
                     id="deploy",
@@ -623,7 +629,8 @@ async def test_unattended_session_resolves_remaining_approval_with_policy_proven
         return sdk.ToolOutput(content=f"executed {call.tool_name}")
 
     contribution = adapt_sdk_contributions(
-        sdk.ContributionSet(
+        owner_id="example.plugin",
+        contributions=sdk.ContributionSet(
             tools=[
                 sdk.ToolContribution(
                     id="deploy",
@@ -672,7 +679,8 @@ async def test_sequential_batch_stops_after_input_request_until_answer(tmp_path)
         return _result(invocation, "continued")
 
     sdk_tool = adapt_sdk_contributions(
-        sdk.ContributionSet(
+        owner_id="example.plugin",
+        contributions=sdk.ContributionSet(
             tools=[
                 sdk.ToolContribution(
                     id="choose",
@@ -731,7 +739,8 @@ async def test_parallel_batch_does_not_start_queued_calls_after_input_request(tm
         return _result(invocation, "done")
 
     sdk_tool = adapt_sdk_contributions(
-        sdk.ContributionSet(
+        owner_id="example.plugin",
+        contributions=sdk.ContributionSet(
             tools=[
                 sdk.ToolContribution(
                     id="confirm",

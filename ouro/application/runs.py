@@ -10,6 +10,7 @@ from ouro.core.billing import UsagePurpose
 from ouro.core.callbacks import run_blocking
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
+from ouro.core.harness_calls import HarnessCallSnapshot, HarnessStateChange, accept_state_changes
 from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import (
@@ -26,6 +27,7 @@ from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunPauseReason
 from ouro.core.run_transitions import plan_run_transition
+from ouro.core.session_commits import SessionCommit, SessionCommitConflict, SessionCommitStep
 from ouro.core.state import (
     ACTIVE_RUN_STATUSES,
     RunPhase,
@@ -94,7 +96,7 @@ class RunLifecycle:
         self._validate_resource_refs = validate_resource_refs
         self._message_cache: dict[
             tuple[str, str],
-            dict[tuple[str, str], MessageRecord],
+            tuple[str | None, dict[tuple[str, str], MessageRecord]],
         ] = {}
 
     def start(
@@ -221,8 +223,7 @@ class RunLifecycle:
         provider_continuation: ProviderContinuationArtifact | None = None,
     ) -> MessageRecord:
         existing = self._find_message(
-            session.session_id,
-            run.run_id,
+            run,
             ("assistant_tools", turn_id),
         )
         if existing is not None:
@@ -260,8 +261,7 @@ class RunLifecycle:
         """Durably commit a completed assistant turn without completing its run."""
 
         existing = self._find_message(
-            session.session_id,
-            run.run_id,
+            run,
             ("assistant", turn_id),
         )
         if existing is not None:
@@ -321,11 +321,11 @@ class RunLifecycle:
 
         messages: list[MessageRecord] = []
         missing: list[MessageRecord] = []
+        state_changes: dict[str, HarnessStateChange] = {}
         missing_by_tool_call_id: dict[str, MessageRecord] = {}
         for index, result in enumerate(results):
             existing = self._find_message(
-                session.session_id,
-                run.run_id,
+                run,
                 ("tool_result", result.tool_call_id),
             )
             if existing is None:
@@ -357,11 +357,14 @@ class RunLifecycle:
             messages.append(message)
             missing.append(message)
             missing_by_tool_call_id[result.tool_call_id] = message
+            if result.harness_change is not None:
+                state_changes[message.message_id] = result.harness_change
         self.append_messages(
             session=session,
             run=run,
             messages=missing,
             allow_interrupted=True,
+            state_changes=state_changes,
         )
         return messages
 
@@ -879,6 +882,7 @@ class RunLifecycle:
         run: RunRecord,
         messages: list[MessageRecord],
         allow_interrupted: bool = False,
+        state_changes: dict[str, HarnessStateChange] | None = None,
     ) -> None:
         """Persist one ordered message batch and advance the Session projection once."""
 
@@ -890,72 +894,71 @@ class RunLifecycle:
         ):
             raise ValueError("message batch must belong to the supplied Session and Run")
         with self.store.session_mutation(session.session_id):
+            current = self.store.load_session_record(session.session_id)
             latest_run = self.store.load_run(session.session_id, run.run_id)
+            if latest_run.history_epoch != current.history_epoch:
+                raise SessionCommitConflict("Run belongs to withdrawn Session history")
             reconcilable_statuses = {"aborted", "failed", "recoverable"}
             if not allow_interrupted or latest_run.status not in reconcilable_statuses:
                 self._require_active(latest_run)
-            self.store.append_messages(messages)
-            self._persist_appended_message(
-                session=session,
-                run=latest_run,
-                message=messages[-1],
-                allow_interrupted=allow_interrupted,
+            draft = (
+                HarnessCallSnapshot(
+                    session_id=current.session_id,
+                    harness_version=current.harness_version,
+                    history_epoch=current.history_epoch,
+                    last_message_id=current.last_message_id,
+                    run_id=run.run_id,
+                    state=self.store.load_harness(
+                        current.session_id, current.harness_version
+                    ).state,
+                )
+                if state_changes
+                else None
             )
-            cache = self._message_cache.get((session.session_id, run.run_id))
-            if cache is not None:
+            owners: set[str] = set()
+            steps = []
+            for message in messages:
+                change = (state_changes or {}).get(message.message_id)
+                if change is not None:
+                    assert draft is not None
+                    if change.owner_id in owners:
+                        raise SessionCommitConflict(
+                            "tool batch has competing owner state proposals"
+                        )
+                    owners.add(change.owner_id)
+                    draft = accept_state_changes(draft, [change])
+                steps.append(
+                    SessionCommitStep(
+                        message=message,
+                        harness=draft.state if change is not None and draft is not None else None,
+                    )
+                )
+            after = current.model_copy(
+                update={
+                    "last_activity_at": utc_now(),
+                    "updated_at": utc_now(),
+                    "last_run_id": run.run_id,
+                }
+            )
+            committed = self.store.commit_session(
+                SessionCommit(before=current, after=after, steps=tuple(steps))
+            )
+            for message, canonical in zip(messages, committed.messages, strict=True):
+                message.sequence = canonical.sequence
+                message.before_harness_version = canonical.before_harness_version
+            cache_key = (session.session_id, run.run_id)
+            cached = self._message_cache.get(cache_key)
+            if cached is not None and cached[0] == current.last_message_id:
+                cache = cached[1]
                 for message in messages:
                     key = _message_cache_key(message)
                     if key is not None:
                         cache[key] = message
+                self._message_cache[cache_key] = (committed.session.last_message_id, cache)
         # A durable message batch changes the bounded list projection even
         # while its Run remains active. Refresh only this Session; catalog
         # query paths never compensate by scanning canonical history.
         self.store.refresh_catalog(session.session_id)
-
-    def _persist_appended_message(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        message: MessageRecord,
-        allow_interrupted: bool,
-    ) -> None:
-        latest_session = self.store.load_session_record(session.session_id)
-        latest_run = self.store.load_run(session.session_id, run.run_id)
-        if latest_run.status not in ACTIVE_RUN_STATUSES or latest_run.abort_requested:
-            reconcilable_statuses = {"aborted", "failed", "recoverable"}
-            if not allow_interrupted or latest_run.status not in reconcilable_statuses:
-                self._require_active(latest_run)
-            updated_session = latest_session.model_copy(
-                update={
-                    "updated_at": utc_now(),
-                    "last_activity_at": utc_now(),
-                    "last_run_id": run.run_id,
-                    "last_message_id": message.message_id,
-                    "message_count": max(
-                        latest_session.message_count,
-                        session.message_count,
-                        message.sequence,
-                    ),
-                }
-            )
-            self.store.save_session(updated_session)
-            return
-        updated_session = latest_session.model_copy(
-            update={
-                "updated_at": utc_now(),
-                "last_activity_at": utc_now(),
-                "last_run_id": run.run_id,
-                "active_run_id": run.run_id,
-                "last_message_id": message.message_id,
-                "message_count": max(
-                    latest_session.message_count,
-                    session.message_count,
-                    message.sequence,
-                ),
-            }
-        )
-        self.store.save_session(updated_session)
 
     @staticmethod
     def _require_active(run: RunRecord) -> None:
@@ -964,24 +967,26 @@ class RunLifecycle:
 
     def _find_message(
         self,
-        session_id: str,
-        run_id: str,
+        run: RunRecord,
         key: tuple[str, str],
     ) -> MessageRecord | None:
-        cache_key = (session_id, run_id)
-        cache = self._message_cache.get(cache_key)
-        if cache is None:
-            cache = {}
-            for message in self.store.load_runtime_session(
-                session_id,
-            ).messages:
-                if message.run_id != run_id:
-                    continue
-                message_key = _message_cache_key(message)
-                if message_key is not None:
-                    cache[message_key] = message
-            self._message_cache[cache_key] = cache
-        return cache.get(key)
+        cache_key = (run.session_id, run.run_id)
+        with self.store.session_mutation(run.session_id):
+            # This read also recovers a decided commit before inspecting the cache.
+            current = self.store.load_session_record(run.session_id)
+            if run.history_epoch != current.history_epoch:
+                raise SessionCommitConflict("Run belongs to withdrawn Session history")
+            cached = self._message_cache.get(cache_key)
+            if cached is None or cached[0] != current.last_message_id:
+                cache = {}
+                for message in self.store.load_run_messages(run.session_id, run.run_id):
+                    message_key = _message_cache_key(message)
+                    if message_key is not None:
+                        cache[message_key] = message
+                self._message_cache[cache_key] = (current.last_message_id, cache)
+            else:
+                cache = cached[1]
+            return cache.get(key)
 
     def finish_run(self, run: RunRecord) -> None:
         self._message_cache.pop((run.session_id, run.run_id), None)

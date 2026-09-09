@@ -26,7 +26,7 @@ from ouro.local_application import LocalApplication
 from ouro.plugins.models import BuiltinPluginActivationOverride
 from ouro.plugins.store import PluginPackageStore
 from ouro.providers import FauxProvider
-from ouro.sdk.plugins import v1 as sdk
+from ouro.sdk.plugins import v2 as sdk
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
 

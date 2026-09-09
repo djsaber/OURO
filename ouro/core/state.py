@@ -8,6 +8,7 @@ from pydantic import Field, model_validator
 from ouro.core.agents import AgentCatalogSnapshot
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
+from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.reasoning import ReasoningRequest
@@ -56,6 +57,7 @@ RunContinuationState = Literal["pending", "resolved"]
 class RunOutcome(OuroModel):
     """Bounded terminal Run projection shared by extension control surfaces."""
 
+    harness: HarnessCallSnapshot | None = None
     session_id: str
     run_id: str
     status: RunStatus

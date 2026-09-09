@@ -21,7 +21,7 @@ from ouro.core.provider import (
 from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.local_application import LocalApplication
 from ouro.plugins.api import ScopedPluginDataStore
-from ouro.sdk.plugins import v1 as sdk
+from ouro.sdk.plugins import v2 as sdk
 from ouro.sessions import LocalSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 

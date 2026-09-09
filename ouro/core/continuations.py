@@ -8,6 +8,7 @@ from pydantic import Field, model_validator
 
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
+from ouro.core.harness_calls import HarnessStateChange
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.redaction import redact_text
 from ouro.core.session_controls import (
@@ -23,6 +24,7 @@ ContinuationAction = Literal["ignore", "continue", "complete", "pause", "fail"]
 class ContinuationDecision(OuroModel):
     """A policy decision interpreted by the application after a terminal Run."""
 
+    harness_change: HarnessStateChange | None = None
     action: ContinuationAction = "ignore"
     prompt: str | None = None
     mode: SessionInputMode = "follow_up"

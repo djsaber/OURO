@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from ouro import __version__
-from ouro.sdk.plugins.v1 import (
+from ouro.sdk.plugins.v2 import (
     ContextCall,
     ContextContribution,
     ContextFragment,

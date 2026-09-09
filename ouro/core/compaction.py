@@ -17,6 +17,7 @@ from ouro.core.context import (
 )
 from ouro.core.errors import CompactionError, CompactionStateError
 from ouro.core.events import EventRecord
+from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ProviderFinishReason
 from ouro.core.state import RunRecord, SessionRecord
@@ -37,6 +38,7 @@ class CompactionPolicy(OuroModel):
 
 
 class CompactionRequest(OuroModel):
+    harness: HarnessCallSnapshot | None = None
     session_id: str
     run_id: str | None = None
     strategy_id: str

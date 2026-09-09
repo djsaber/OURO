@@ -9,6 +9,7 @@ from time import monotonic
 from typing import Protocol, cast
 
 from ouro.application.events import RuntimeEventRecorder
+from ouro.application.harness import capture_harness
 from ouro.config.compaction import CompactionConfig, CompactionModelConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id, utc_now
@@ -676,6 +677,11 @@ class ContextPreparationService:
         active_context_providers = context_providers or self.context_providers
         provider_result = await active_context_providers.evaluate(
             ContextProviderCall(
+                harness=await run_blocking(
+                    capture_harness, self.store, session.session_id, run_id=run.run_id
+                )
+                if active_context_providers.registered()
+                else None,
                 session_id=session.session_id,
                 run_id=run.run_id,
                 message_count=len(messages),
@@ -892,7 +898,7 @@ class ContextPreparationService:
             messages.append(message)
         return ephemeral
 
-    def _observe_built_context(
+    async def _observe_built_context(
         self,
         *,
         session: SessionRecord,
@@ -904,7 +910,7 @@ class ContextPreparationService:
             "Mapping[str, FrozenJson]",
             freeze_json(view.context_metadata),
         )
-        self.events.observe(
+        await self.events.observe(
             ContextPreparedObservation(
                 session_id=session.session_id,
                 run_id=run.run_id,
@@ -942,7 +948,7 @@ class ContextPreparationService:
             source_messages=source_messages,
             injected_message_count=injected_message_count,
         )
-        self._observe_built_context(
+        await self._observe_built_context(
             session=session,
             run=run,
             view=prepared,
@@ -1084,6 +1090,9 @@ class ContextPreparationService:
         )
 
         request = CompactionRequest(
+            harness=await run_blocking(
+                capture_harness, self.store, session.session_id, run_id=run.run_id
+            ),
             session_id=session.session_id,
             run_id=run.run_id,
             strategy_id=self.config.strategy_id,

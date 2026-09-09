@@ -7,7 +7,7 @@
   "namespace": "declarative_skill",
   "engines": {
     "ouro": ">=0.1.0,<0.2.0",
-    "plugin_api": "^2.0.0"
+    "plugin_api": "^3.0.0"
   },
   "runtime": {
     "kind": "declarative"

@@ -19,6 +19,7 @@ from ouro.application.events import (
     RuntimeEventSink,
     RuntimeEventSinkRegistration,
 )
+from ouro.application.harness import capture_harness
 from ouro.application.models import (
     AvailableModel,
     FixedRuntimeAdapterCatalog,
@@ -2794,6 +2795,11 @@ class RuntimeService:
     ) -> TurnCompletionPolicyResult:
         evaluation = await policies.evaluate(
             TurnCompletionCandidate(
+                harness=await run_blocking(
+                    capture_harness, self.store, session.session_id, run_id=run.run_id
+                )
+                if policies.registered()
+                else None,
                 session_id=session.session_id,
                 run_id=run.run_id,
                 turn_id=turn_id,
@@ -3115,6 +3121,9 @@ class RuntimeService:
             for generation in (snapshot.generations if snapshot is not None else ())
             if generation.execution_contract_hash is not None
         }
+        harness = await run_blocking(
+            capture_harness, self.store, session.session_id, run_id=run.run_id
+        )
         for item in inputs:
             if item.source != "user":
                 continue
@@ -3138,6 +3147,7 @@ class RuntimeService:
                 )
             evaluation = await registry.evaluate(
                 PromptPolicyCall(
+                    harness=harness,
                     session_id=session.session_id,
                     prospective_run_id=run.run_id,
                     prompt=item.prompt,
@@ -3751,7 +3761,7 @@ class RuntimeService:
                     error=run.error,
                     usage=MappingProxyType(dict(run.usage)),
                 )
-                self.event_recorder.observe(
+                await self.event_recorder.observe(
                     RunFinishedObservation(
                         session_id=run.session_id,
                         run_id=run.run_id,
