@@ -4,11 +4,13 @@ from threading import get_ident
 
 import pytest
 
+from ouro.application.harness import capture_harness
 from ouro.application.session_controls import (
     SessionControlConflictError,
     SessionControlCoordinator,
     SessionControlError,
 )
+from ouro.core.errors import MigrationRequiredError
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     SessionControlClaim,
@@ -50,7 +52,6 @@ def _controller(
         return PluginSessionControllerOutput(
             output=f"activated {call.controller_id}",
             data={"activation_id": call.activation_id},
-            owner_state_revision=1,
         )
 
     async def deactivate(call):
@@ -486,7 +487,7 @@ async def test_replace_cannot_take_over_another_plugin_activation(tmp_path) -> N
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
-def test_interrupted_lifecycle_reconciliation_fails_closed(tmp_path, backend) -> None:
+def test_legacy_lifecycle_requires_explicit_maintenance(tmp_path, backend) -> None:
     store = _store(tmp_path, backend)
     session = SessionRecord()
     store.create_session(session)
@@ -518,11 +519,13 @@ def test_interrupted_lifecycle_reconciliation_fails_closed(tmp_path, backend) ->
     store.save_session(session.model_copy(update={"controls": controls}))
     coordinator = SessionControlCoordinator(store)
 
-    assert coordinator.reconcile_interrupted(session.session_id) is True
-
-    reconciled = store.load_session_record(session.session_id).controls
-    assert reconciled.revision == 2
-    assert len(reconciled.activations) == 1
-    assert reconciled.activations[0].controller_local_id == "starting"
-    assert reconciled.activations[0].phase == "failed"
-    assert "interrupted" in (reconciled.activations[0].error or "")
+    before = store.load_harness(session.session_id)
+    with pytest.raises(MigrationRequiredError, match="explicit maintenance"):
+        capture_harness(store, session.session_id)
+    assert store.load_harness(session.session_id) == before
+    # Explicit Host cleanup still works without a plugin callback.
+    for activation in controls.activations:
+        coordinator.force_release(
+            session_id=session.session_id, activation_id=activation.activation_id
+        )
+    assert capture_harness(store, session.session_id).state.controls.activations == []

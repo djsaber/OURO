@@ -176,6 +176,8 @@ ToolInputRequest、审批或子调用等待是显式阶段边界：状态变化�
 active 关系或 owner 状态。replace 内所有相关回调与状态变化作为一次逻辑转换结算。
 
 replace 在同一草稿内先 deactivate 所选旧关系，再 activate 新关系；新回调读取已接受的前序草稿。
+deactivate 的 `replacement_controller_id` 显式提供目标 canonical id，普通 release 为 None；
+owner 不通过 reason 或私有 activation 副本推断替换语义，替换仍受现有同 owner 约束。
 Continuation 保存的 settlement plan 必须包含已准备完成的状态提案与控制转换结果。恢复不再次调用策略或
 Controller；基准状态失效时暂停该旧决定，不能覆盖新状态。没有可证明状态基准的旧计划只能暂停。
 

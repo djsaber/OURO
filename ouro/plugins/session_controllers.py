@@ -28,13 +28,13 @@ class PluginSessionControllerCall(OuroModel):
     payload: JsonValue = None
     reason: str | None = None
     workspace: str | None = None
+    replacement_controller_id: str | None = None
 
 
 class PluginSessionControllerOutput(OuroModel):
     harness_change: HarnessStateChange | None = None
     output: str = ""
     data: dict[str, object] = Field(default_factory=dict)
-    owner_state_revision: int | None = Field(default=None, ge=0)
     usage_scope: str | None = None
 
 
@@ -105,6 +105,7 @@ class PluginSessionController:
         reason: str | None = None,
         workspace: str | None = None,
         harness: HarnessCallSnapshot | None = None,
+        replacement_controller_id: str | None = None,
     ) -> PluginSessionControllerOutput:
         return await self._invoke(
             self.deactivate_handler,
@@ -115,6 +116,7 @@ class PluginSessionController:
                 activation_id=activation_id,
                 controller_id=self.canonical_id,
                 action="deactivate",
+                replacement_controller_id=replacement_controller_id,
                 payload=payload,
                 reason=reason,
                 workspace=workspace,

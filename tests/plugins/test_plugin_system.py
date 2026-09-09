@@ -2377,7 +2377,6 @@ for line in sys.stdin:
                 'role': 'user',
                 'semantic_tag': 'goal-continue',
                 'coalesce_key': 'goal-control',
-                'state_revision': 3,
             }
         else:
             result = {
@@ -2461,7 +2460,6 @@ for line in sys.stdin:
     assert decision.role == "user"
     assert decision.semantic_tag == "goal-continue"
     assert decision.coalesce_key == "goal-control"
-    assert decision.state_revision == 3
     terminal_decision = await policy.handler(
         RunOutcome(
             session_id="ses_worker",

@@ -177,6 +177,8 @@ Command 调用 Controller 时共享同一逻辑操作的暂存视图；禁止嵌
 replace 在同一草稿内依次接受旧 Controller 的 deactivate 与新 Controller 的 activate，后者看到前者已接受的
 状态和控制移除；完成之前 canonical 状态保持原样。Continuation 的 durable settlement plan 保存已完成的
 策略与嵌套 Controller 决策，恢复只提交这份决定，不重新执行回调。
+deactivate 调用显式携带 `replacement_controller_id`（普通 release 为 None），供 owner 区分自身切换与退出；
+不解析 reason 文本，也不扩展既有同 owner 的替换权限。
 
 插件回调期间不持有数据库事务或文件 mutation 锁。短提交检查 history_epoch、基准状态版本、调用有效性、
 消息头/队列前置条件及控制 claim；只读调用可以并发，现有排他工具规则继续生效。

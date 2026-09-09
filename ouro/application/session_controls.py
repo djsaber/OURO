@@ -206,6 +206,7 @@ class SessionControlCoordinator:
                     activation_id=target.activation_id,
                     payload=transition.payload,
                     reason=transition.reason or ("replaced" if controller else None),
+                    replacement_controller_id=(controller.canonical_id if controller else None),
                     workspace=workspace,
                     harness=draft,
                 )
@@ -350,7 +351,9 @@ class SessionControlCoordinator:
         activation_id: str,
         reason: str = "host_force_release",
     ) -> SessionControlTransitionResult:
-        before, draft = capture_session_harness(self.store, session_id)
+        with self.store.session_mutation(session_id):
+            before = self.store.load_session_record(session_id)
+            state = self.store.load_harness(session_id, before.harness_version).state
         retained = [
             item for item in before.controls.activations if item.activation_id != activation_id
         ]
@@ -375,48 +378,13 @@ class SessionControlCoordinator:
                     before=before,
                     output={"session_control": result.model_dump(mode="json")},
                     steps=(
-                        SessionCommitStep(
-                            harness=draft.state.model_copy(update={"controls": controls})
-                        ),
+                        SessionCommitStep(harness=state.model_copy(update={"controls": controls})),
                     ),
                 ),
                 released_activation_ids=(activation_id,),
             )
             return self.with_cancellations(result, committed)
         return result
-
-    def reconcile_interrupted(self, session_id: str) -> bool:
-        """Normalize legacy transition phases; new operations never publish those phases."""
-        before, draft = capture_session_harness(self.store, session_id)
-        controls = before.controls
-        if not any(item.phase in {"activating", "deactivating"} for item in controls.activations):
-            return False
-        removed = tuple(
-            item.activation_id for item in controls.activations if item.phase == "deactivating"
-        )
-        retained = [
-            item.model_copy(
-                update={"phase": "failed", "error": "activation interrupted before commit"}
-            )
-            if item.phase == "activating"
-            else item
-            for item in controls.activations
-            if item.activation_id not in removed
-        ]
-        self.commit(
-            SessionCommit(
-                before=before,
-                steps=(
-                    SessionCommitStep(
-                        harness=draft.state.model_copy(
-                            update={"controls": _replace_control_state(controls, retained)},
-                        )
-                    ),
-                ),
-            ),
-            released_activation_ids=removed,
-        )
-        return True
 
     @staticmethod
     def _event(

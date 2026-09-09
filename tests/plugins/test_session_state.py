@@ -55,8 +55,9 @@ def test_legacy_builtin_state_migrates_and_orphans_move_to_trash(tmp_path) -> No
     plan = repository.load_session_extension_states(plan_session.session_id)[0]
     todo = repository.load_session_extension_states(todo_session.session_id)[0]
     assert plan.projection_semantic_tags == ("plan-context",)
-    assert plan.state_schema_version == 2
-    assert plan.payload == {"plan_path": None}
+    # Import retains the source schema; the explicit Harness migration converts its references.
+    assert plan.state_schema_version == 1
+    assert plan.payload == {}
     assert todo.payload == {"todos": [{"title": "verify", "status": "pending"}]}
 
 

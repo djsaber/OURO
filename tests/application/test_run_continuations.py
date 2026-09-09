@@ -202,12 +202,10 @@ class Plugin:
                     action='continue',
                     prompt='Check the goal and continue if it is not complete.',
                     reason='goal_still_active',
-                    state_revision=1,
                 )
             return ContinuationDecision(
                 action='complete',
                 reason='goal_complete',
-                state_revision=2,
             )
 
         return ContributionSet(

@@ -589,6 +589,7 @@ class WorkerPluginInstance:
                         "activation_id": call.activation_id,
                         "controller_id": call.controller_id,
                         "action": call.action,
+                        "replacement_controller_id": call.replacement_controller_id,
                         "payload": call.payload,
                         "reason": call.reason,
                         "workspace": call.workspace,
@@ -597,11 +598,9 @@ class WorkerPluginInstance:
                 state_view=call.session_state,
             )
             result = raw
-            owner_revision = result.get("owner_state_revision")
             return sdk.SessionControllerOutput(
                 output=str(result.get("output", "")),
                 data=_object_value(result.get("data", {})),
-                owner_state_revision=(owner_revision if isinstance(owner_revision, int) else None),
                 usage_scope=result.get("usage_scope"),
             )
 
@@ -659,9 +658,6 @@ class WorkerPluginInstance:
             mode = result.get("mode", "follow_up")
             if mode not in {"follow_up", "steer"}:
                 raise WorkerProtocolError(f"worker continuation mode is invalid: {mode}")
-            revision = result.get("state_revision")
-            if revision is not None and not isinstance(revision, int):
-                raise WorkerProtocolError("worker continuation state_revision must be an integer")
             return sdk.ContinuationDecision(
                 action=action,
                 prompt=(str(result["prompt"]) if result.get("prompt") is not None else None),
@@ -674,7 +670,6 @@ class WorkerPluginInstance:
                     str(result["coalesce_key"]) if result.get("coalesce_key") is not None else None
                 ),
                 reason=(str(result["reason"]) if result.get("reason") is not None else None),
-                state_revision=revision,
                 session_control_transitions=tuple(_worker_control_transitions(result)),
             )
 
@@ -1384,13 +1379,6 @@ def _validate_worker_result(method: str, result: dict[str, Any]) -> None:
         _require_optional_type(result, "output", str, method)
         _require_optional_type(result, "data", dict, method)
         _require_optional_type(result, "usage_scope", str, method, allow_none=True)
-        _require_optional_type(
-            result,
-            "owner_state_revision",
-            int,
-            method,
-            allow_none=True,
-        )
         return
     if method == "compaction.call":
         _require_optional_type(result, "summary", str, method)
@@ -1415,7 +1403,6 @@ def _validate_worker_result(method: str, result: dict[str, Any]) -> None:
         _require_optional_type(result, "semantic_tag", str, method, allow_none=True)
         _require_optional_type(result, "coalesce_key", str, method, allow_none=True)
         _require_optional_type(result, "reason", str, method, allow_none=True)
-        _require_optional_type(result, "state_revision", int, method, allow_none=True)
         _worker_control_transitions(result)
         return
     if method == "tool_policy.call":

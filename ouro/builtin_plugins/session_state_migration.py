@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from ouro.builtin_plugins.plan.state import STATE_SCHEMA_VERSION as PLAN_STATE_SCHEMA_VERSION
 from ouro.builtin_plugins.plan.state import SessionPlanState
 from ouro.builtin_plugins.toolkit.todos import TodoItem
 from ouro.core.errors import MigrationRequiredError, PersistenceError
@@ -29,7 +28,7 @@ def migrate_builtin_session_state(
     home: Path,
     repository: SessionRepository,
 ) -> BuiltinSessionStateMigrationReport:
-    """Move legacy builtin files into canonical state; remove after layout-v7 migration."""
+    """Import legacy files once; builtin schema conversion has a separate native commit."""
 
     report = BuiltinSessionStateMigrationReport()
     roots = (
@@ -50,7 +49,26 @@ def migrate_builtin_session_state(
                 )
                 continue
 
-            record = _load_legacy_record(source, session_id=session_id, owner_id=owner_id)
+            created = _import_legacy_record(repository, source, session_id, owner_id)
+            report = BuiltinSessionStateMigrationReport(
+                migrated=report.migrated + created,
+                discarded_duplicate=report.discarded_duplicate + (not created),
+                orphaned_to_trash=report.orphaned_to_trash,
+            )
+    return report
+
+
+def _import_legacy_record(
+    repository: SessionRepository, source: Path, session_id: str, owner_id: str
+) -> bool:
+    lock = repository.acquire_session_lock(session_id, "builtin-state-import")
+    if lock is None:
+        raise MigrationRequiredError(
+            f"stop Session execution before importing builtin state: {session_id}"
+        )
+    try:
+        record = _load_legacy_record(source, session_id=session_id, owner_id=owner_id)
+        with repository.session_mutation(session_id):
             existing = next(
                 (
                     state
@@ -67,18 +85,16 @@ def migrate_builtin_session_state(
                     f"legacy builtin Session state conflicts with canonical state: {source}"
                 )
             repository.save_session_extension_state(record)
-            try:
-                source.unlink()
-            except OSError as exc:
-                raise PersistenceError(
-                    f"could not remove migrated Session state {source}: {exc}"
-                ) from exc
-            report = BuiltinSessionStateMigrationReport(
-                migrated=report.migrated + (existing is None),
-                discarded_duplicate=report.discarded_duplicate + (existing is not None),
-                orphaned_to_trash=report.orphaned_to_trash,
-            )
-    return report
+        # The canonical commit must be durable before removing its legacy source.
+        try:
+            source.unlink()
+        except OSError as exc:
+            raise PersistenceError(
+                f"could not remove migrated Session state {source}: {exc}"
+            ) from exc
+        return existing is None
+    finally:
+        lock.release()
 
 
 def _load_legacy_record(
@@ -95,8 +111,9 @@ def _load_legacy_record(
         if owner_id == _PLAN_OWNER:
             if raw.get("schema_version") != 1:
                 raise ValueError("unsupported Plan state schema")
-            payload = cast(JsonValue, SessionPlanState.from_json(raw.get("state")).to_json())
-            state_schema_version = PLAN_STATE_SCHEMA_VERSION
+            SessionPlanState.from_json(raw.get("state"))
+            payload = cast(JsonValue, raw["state"])
+            state_schema_version = 1
             projection_tags = ("plan-context",)
         else:
             if raw.get("schema_version") != 1 or not isinstance(raw.get("todos"), list):

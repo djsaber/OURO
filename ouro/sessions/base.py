@@ -14,7 +14,7 @@ from ouro.core.harness import HarnessVersion
 from ouro.core.message_frames import MessageTruncation
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference
-from ouro.core.session_commits import SessionCommit, SessionCommitResult
+from ouro.core.session_commits import HarnessMigration, SessionCommit, SessionCommitResult
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions.index import SessionIndex
@@ -70,6 +70,10 @@ class SessionRepository(Protocol):
     def commit_session(self, request: SessionCommit) -> SessionCommitResult: ...
 
     def load_commit(self, session_id: str, operation_id: str) -> SessionCommitResult | None: ...
+
+    def migrate_harness(self, request: HarnessMigration) -> SessionCommitResult:
+        """Publish a prepared schema migration; the caller owns Session execution."""
+        ...
 
     def create_session(self, session: SessionRecord) -> None: ...
 

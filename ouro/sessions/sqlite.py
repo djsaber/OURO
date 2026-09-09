@@ -29,6 +29,7 @@ from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.resources import SessionResourceReference
 from ouro.core.session_commits import (
+    HarnessMigration,
     SessionCommit,
     SessionCommitConflict,
     SessionCommitResult,
@@ -649,6 +650,10 @@ class SQLiteSessionStore:
         with self._read_connection() as connection:
             self._require_session(connection, session_id)
             return SQLiteSessionCommits(connection).load_result(session_id, operation_id)
+
+    def migrate_harness(self, request: HarnessMigration) -> SessionCommitResult:
+        with self.session_mutation(request.before.session_id):
+            return SQLiteSessionCommits(self._transaction_connection()).migrate_harness(request)
 
     def commit_session(self, request: SessionCommit) -> SessionCommitResult:
         with self.session_mutation(request.before.session_id):

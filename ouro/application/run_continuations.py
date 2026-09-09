@@ -335,7 +335,6 @@ class RunContinuationService:
             semantic_tag=decision.semantic_tag,
             coalesce_key=decision.coalesce_key,
             reason=decision.reason,
-            state_revision=decision.state_revision,
             session_control_transitions=transitions,
         )
 
@@ -499,7 +498,6 @@ class RunContinuationService:
                 action=action,
                 controller_id=controller_id,
                 reason=reason,
-                state_revision=plan.state_revision,
             )
             self.session_controls.commit(
                 SessionCommit(
@@ -667,7 +665,6 @@ class RunContinuationService:
         action: str,
         controller_id: str | None = None,
         reason: str | None = None,
-        state_revision: int | None = None,
     ) -> RunRecord:
         with self.store.session_mutation(run.session_id):
             latest = self.store.load_run(run.session_id, run.run_id)
@@ -679,7 +676,6 @@ class RunContinuationService:
                 action=action,
                 controller_id=controller_id,
                 reason=reason,
-                state_revision=state_revision,
             )
 
     def _resolve_locked(
@@ -689,14 +685,12 @@ class RunContinuationService:
         action: str,
         controller_id: str | None = None,
         reason: str | None = None,
-        state_revision: int | None = None,
     ) -> RunRecord:
         resolved = _resolved_run(
             run,
             action=action,
             controller_id=controller_id,
             reason=reason,
-            state_revision=state_revision,
         )
         assert run.continuation is not None
         self.store.commit_session(
@@ -716,7 +710,6 @@ def _resolved_run(
     action: str,
     controller_id: str | None = None,
     reason: str | None = None,
-    state_revision: int | None = None,
 ) -> RunRecord:
     checkpoint = run.continuation
     assert checkpoint is not None
@@ -728,7 +721,6 @@ def _resolved_run(
                     "action": action,
                     "selected_controller_id": controller_id,
                     "reason": reason,
-                    "state_revision": state_revision,
                     "resolved_at": utc_now(),
                 }
             )

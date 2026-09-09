@@ -128,7 +128,6 @@ class RunContinuationSettlementPlan(OuroModel):
     semantic_tag: SemanticTag | None = None
     coalesce_key: str | None = Field(default=None, min_length=1, max_length=128)
     reason: str | None = None
-    state_revision: int | None = Field(default=None, ge=0)
     session_control_transitions: list[SessionControlTransitionRequest] = Field(default_factory=list)
     harness: HarnessCallSnapshot | None = None
     released_activation_ids: tuple[str, ...] = ()
@@ -156,7 +155,6 @@ class RunContinuationCheckpoint(OuroModel):
     action: Literal["continue", "complete", "pause", "fail"] | None = None
     selected_controller_id: str | None = None
     reason: str | None = None
-    state_revision: int | None = None
     resolved_at: datetime | None = None
 
 

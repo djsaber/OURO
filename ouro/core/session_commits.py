@@ -96,6 +96,76 @@ class PreparedSessionCommit(VersionedOuroModel):
     invalidate_context: bool = False
 
 
+class HarnessMigration(OuroModel):
+    """Explicit maintenance replacement of reachable checkpoints and their references."""
+
+    operation_id: str = Field(
+        default_factory=lambda: new_id("migration"), pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+    )
+    before: SessionRecord
+    replacements: dict[str, HarnessVersion] = Field(min_length=1)
+
+    @property
+    def digest(self) -> str:
+        payload = json.dumps(self.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def prepare_harness_migration(
+    request: HarnessMigration,
+    current: SessionRecord,
+    messages: tuple[MessageRecord, ...],
+) -> PreparedSessionCommit:
+    """Preserve history and immutable source versions while changing only state references."""
+
+    before = request.before
+    if (
+        current.session_id,
+        current.harness_version,
+        current.history_epoch,
+        current.last_message_id,
+    ) != (before.session_id, before.harness_version, before.history_epoch, before.last_message_id):
+        raise SessionCommitConflict("Session changed while preparing Harness migration")
+    references = {current.harness_version} | {
+        item.before_harness_version for item in messages if item.before_harness_version is not None
+    }
+    for source, target in request.replacements.items():
+        if (
+            source not in references
+            or target.session_id != current.session_id
+            or target.version_id in references
+        ):
+            raise PersistenceError(
+                "Harness migration must replace local reachable versions with new identities"
+            )
+    mapped = {source: target.version_id for source, target in request.replacements.items()}
+    session = current.model_copy(deep=True)
+    if current.harness_version in request.replacements:
+        target = request.replacements[current.harness_version]
+        session.harness_version = target.version_id
+        session.controls = target.state.controls.model_copy(deep=True)
+    session.history_epoch += 1
+    session.updated_at = utc_now()
+    return PreparedSessionCommit(
+        result=SessionCommitResult(
+            operation_id=request.operation_id,
+            request_digest=request.digest,
+            session=session,
+            messages=tuple(
+                item.model_copy(
+                    update={"before_harness_version": mapped[item.before_harness_version]}
+                )
+                if item.before_harness_version in mapped
+                else item
+                for item in messages
+            ),
+            output={"harness_migration": {source: target for source, target in mapped.items()}},
+        ),
+        versions=tuple(request.replacements.values()),
+        invalidate_context=True,
+    )
+
+
 def prepare_session_commit(
     request: SessionCommit,
     current: SessionRecord,

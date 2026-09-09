@@ -586,23 +586,6 @@ class RuntimeService:
         session = self.store.load_session_record(session_id)
         return tuple(item.model_copy(deep=True) for item in session.controls.activations)
 
-    def reconcile_interrupted_session_controls(
-        self,
-        session_id: str | None = None,
-    ) -> tuple[str, ...]:
-        """Reconcile a target Session, or every Session for explicit maintenance."""
-
-        reconciled: list[str] = []
-        session_ids = (
-            (session_id,)
-            if session_id is not None
-            else tuple(entry.session_id for entry in self.sessions.catalog().entries)
-        )
-        for candidate_id in session_ids:
-            if self.session_controls.reconcile_interrupted(candidate_id):
-                reconciled.append(candidate_id)
-        return tuple(reconciled)
-
     async def reconcile_pending_run_continuations(
         self,
         session_id: str | None = None,
@@ -638,11 +621,7 @@ class RuntimeService:
     ) -> RuntimeSessionSnapshot:
         """Recover execution state for exactly one Session."""
 
-        def recover() -> RuntimeSessionSnapshot:
-            self.reconcile_interrupted_session_controls(session_id)
-            return self.session_recovery.recover_runtime(session_id)
-
-        snapshot = await run_blocking(recover)
+        snapshot = await run_blocking(self.session_recovery.recover_runtime, session_id)
         settled = await self.reconcile_pending_run_continuations(session_id)
         return (
             await run_blocking(self.store.load_runtime_session, session_id) if settled else snapshot

@@ -874,6 +874,7 @@ def _adapt_session_controller(
                 activation_id=call.activation_id,
                 controller_id=call.controller_id,
                 action=call.action,
+                replacement_controller_id=call.replacement_controller_id,
                 payload=call.payload,
                 reason=call.reason,
                 workspace=call.workspace,
@@ -888,7 +889,6 @@ def _adapt_session_controller(
             harness_change=change,
             output=raw.output,
             data=dict(raw.data),
-            owner_state_revision=raw.owner_state_revision,
             usage_scope=raw.usage_scope,
         )
 
@@ -1071,7 +1071,6 @@ def _adapt_continuation_policy(
             semantic_tag=raw.semantic_tag,
             coalesce_key=raw.coalesce_key,
             reason=raw.reason,
-            state_revision=raw.state_revision,
             session_control_transitions=[
                 SessionControlTransitionRequest(
                     action=item.action,

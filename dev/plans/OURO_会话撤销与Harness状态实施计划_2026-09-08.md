@@ -1,7 +1,7 @@
 # OURO 会话撤销、Harness 状态与插件交互实施计划
 
 > 文档类型：本次改进实施计划
-> 状态：实施中；M1–M2 已验证，M3 核心结算链路已接入，Goal 与迁移仍待完成，M4–M6 未完成
+> 状态：实施中；M1–M3 已实现并完成阶段回归，M4–M6 未完成
 > 计划基线：2026-09-08
 > 范围：仅本次状态、插件交互与撤销改进，不包含其他路线图项目
 
@@ -104,10 +104,10 @@ Plan/Goal 已调整为调用内状态接口，其命令/Controller/Continuation 
 - [x] Tool/Command 输出接入应用提交边界；外部效果的事实归属与 canonical Harness 结算分别表达。
 - [x] 把 ToolInputRequest、审批和等待阶段的状态/恢复身份一并提交；恢复使用新调用范围并检查原等待记录。
 - [x] Continuation 使用现有 durable settlement plan，纳入状态提案和稳定去重；多策略失败/冲突无部分保存。
-- [ ] Plan 迁移模式与业务值，去除旧 pending 执行许可混存；审批记录保留原生所有权，计划文件不回滚。
-- [ ] Goal 从原生 Run 控制快照取得执行绑定；稳定目标身份关联原生 usage，Context 不保存、计费不随快照回退。
-- [ ] 编写已知 Todo/Plan/Goal schema 的一次性迁移，处理可验证 usage 基线；不确定历史明确拒绝或保留边界。
-- [ ] 删除被替代的插件存储锁、重复持久化 revision、run_binding 与补偿路径，保留必要业务校验。
+- [x] Plan 迁移模式与业务值，去除旧 pending 执行许可混存；审批记录保留原生所有权，计划文件不回滚。
+- [x] Goal 从原生 Run 控制快照取得执行绑定；稳定目标身份关联原生 usage，Context 不保存、计费不随快照回退。
+- [x] 编写已知 Todo/Plan/Goal schema 的一次性迁移，处理可验证 usage 基线；不确定历史明确拒绝或保留边界。
+- [x] 删除被替代的插件存储锁、重复持久化 revision、run_binding 与补偿路径，保留必要业务校验。
 
 退出条件：激活、replace、等待、取消、异常终结、完成、续跑均不产生模式/数据错位；schema 迁移可重入。
 AC-04、AC-09 的交互部分、AC-14，以及 AC-03 的 Plan/Goal 部分通过。
@@ -116,12 +116,29 @@ M3 当前证据：`test_harness_commands.py`、`test_harness_controls.py`、`tes
 `test_harness_tools.py` 覆盖两后端的嵌套草稿、失败/冲突丢弃、提交前故障、提交后响应丢失/取消，以及互动和
 AFK 等待阶段；不修改 owner 数据的等待请求也使用原生版本前置条件。Plan schema 2 只保存计划路径，模式读取
 原生控制关系，审批数据留在原生请求；实际“写计划→等待→重启→接受”及 /plan、/control 流程通过。
-当前集中回归 296 项通过、2 项 File 专属故障点在 SQLite 下跳过。检查范围含 Runtime、Context、观察、SDK/worker、
-插件装配、架构、原生提交和迁移；Ruff、mypy（296 个源文件）、编译检查及改动文件格式检查通过。
-原生 usage 关联底座已接入控制器输出、每轮运行快照、既有账本与 SDK/worker 只读视图。`test_harness_usage.py`
-验证两后端撤销保留消耗、迟到请求按原绑定记账、重试去重与目标隔离；账本测试覆盖修订/重开/多写入者及本进程
-增量缓存，worker 测试覆盖真实进程协议。Goal 插件业务接入、已有 owner 版本的完整迁移及旧执行字段清理未完成；
-本阶段不开放新的 /undo。
+Goal schema 4 已只保留稳定 goal_id、目标内容、业务状态、报告、预算与业务时间；移除 Context 写入器、
+私有 activation/run_binding、累计 tokens_used/last_accounted_run_id 和重复 revision。控制器仅声明目标
+usage_scope；状态查询、预算和续跑读取原生事实。SDK、worker、Continuation 与控制关系中的旧 revision 字段
+同步移除，不留运行时双格式分支。replace 显式携带目标 controller id，保留同 owner 权限边界。
+
+`test_builtin_goal.py` 验证两后端的生命周期、旧请求隔离、重复续跑不写快照、未知用量、精确预算、撤销后的
+实际消耗，以及真实创建→续跑→完成和冷恢复中断。创建前请求与释放后确认不记入目标，新目标不串账。
+
+`test_builtin_harness_migration.py` 覆盖 Plan 1→2、Goal 3→4、当前 Todo 原样保留、历史可达版本及消息锚点
+一致重映射、同一目标的原生 usage 归属、重复执行、归属后未发布重试、File 决定恢复与 SQLite 事务回滚。
+迁移生成新不可变版本，保留原快照；无法证明的计数、同 Run 多目标归属、未结算执行和未知 schema 明确拒绝。
+旧 Plan/Todo 文件先经有执行所有权的单次导入，提交持久后移除源文件；Plan 保留源 schema 再统一转换。
+组合根提供显式 `migrate_builtin_harness_state` 入口；M5 负责接入 Host 的会话维护/导入生命周期，
+不在启动、普通读取或 undo 热路径全量扫描和迁移。
+
+旧 activating/deactivating 自动补偿已删除。执行调用对非 active 的旧控制关系明确要求维护，
+保留原数据及现有显式 Host force-release 入口；新提交的中断恢复只应用原生 durable decision。
+本阶段不开放新的 /undo；M4 仍需完成待办交互的精确 activation/epoch 所有权与所有迟到会话效果的拒绝。
+
+M3 阶段验证（Windows）：集中运行 418 项通过，2 项 File 专属故障点在 SQLite 参数下跳过。
+范围含 Harness 命令/控制/工具/续跑/usage、Runtime、本地装配、真实 Goal/Plan、已知迁移、SDK worker、
+插件系统、两后端原生提交/迁移和架构边界。后续局部修改分别重跑受影响的 Goal 与迁移用例。
+Ruff、mypy（297 个源文件）、编译及改动文件格式检查通过；仓库全量验收仍属于 M6。
 
 集中回归同时修正提交底座的上下文失效范围和文件创建发布边界：普通响应追加保留最近请求上下文，Harness
 改变或历史截断才失效；Session 枚举不读取尚未发布的暂存目录。消息准入前的新 Session/Run 使用显式准备值，

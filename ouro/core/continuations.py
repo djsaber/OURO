@@ -34,7 +34,6 @@ class ContinuationDecision(OuroModel):
     semantic_tag: SemanticTag | None = None
     coalesce_key: str | None = Field(default=None, min_length=1, max_length=128)
     reason: str | None = None
-    state_revision: int | None = Field(default=None, ge=0)
     session_control_transitions: list[SessionControlTransitionRequest] = Field(default_factory=list)
 
     @model_validator(mode="after")

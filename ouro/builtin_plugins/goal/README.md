@@ -30,8 +30,7 @@ It does not use the user-plugin installation lifecycle.
 | Tool | `update-goal` / `UpdateGoal` | Auto-approved, state-changing, exclusive-batch transition to `complete` or `blocked` |
 | Command | `/goal` | Creates, inspects, pauses, resumes, replaces, or cancels the Goal |
 | Session Controller | `mode` | Owns one Goal lifecycle and exclusively claims `ouro.session.primary_behavior` |
-| Context Provider | `goal-run-binding` | Binds an active Run to the current Goal activation |
-| Continuation Policy | `goal-continuation` | Settles usage and decides whether bounded work continues or stops |
+| Continuation Policy | `goal-continuation` | Reads native usage and decides whether bounded work continues or stops |
 | Prompt Policy | `goal-input-gate` | Prevents ordinary prompts from implicitly resuming a stopped Goal |
 
 The three tools are exposed together in every Goal state. Stable tool visibility preserves the
@@ -43,8 +42,9 @@ model-facing tool prefix across a conversation. Exact descriptions and schemas a
 
 ### Goal Model
 
-The Session owns a capacity-one Goal slot. A Goal has an objective, status, optional total token
-budget, cumulative token usage, report, activation identity, and revision. Supported statuses are:
+The Session owns a capacity-one Goal slot. Its schema 4 business value contains a stable goal_id,
+objective, status, optional total token budget, report, and timestamps. Execution bindings and actual
+usage come from framework-owned read-only views. Supported statuses are:
 
 - `active`;
 - `paused`;
@@ -70,6 +70,9 @@ Omitting `--token-budget` during creation means unlimited work. Omitting it duri
 replace clears an existing budget. An explicit replacement budget must be greater than the tokens
 already used.
 
+Lifecycle commands return the accepted action and controller settlement; query status or GetGoal
+for the current business state and native usage.
+
 ### Model Tools
 
 `GetGoal` returns the latest public Goal state. `CreateGoal` creates an active Goal only when no
@@ -78,12 +81,15 @@ the current execution binding; it cannot change identity, activation, usage, or 
 
 ### Execution and Budget Settlement
 
-Each active execution is privately bound to the activation that started it. Pause, resume, replace,
-or other lifecycle changes rotate that activation, preventing an older execution from completing a
-newer objective.
+Each model request captures native controller bindings. Goal reads that request's activation and
+usage scope to authorize updates. Pause, resume, and replace rotate the native activation; only
+creation allocates a new goal_id. Goal uses no Context writer or private Run binding.
 
-Token usage is settled after each complete bounded execution. A valid `complete` or `blocked`
-transition from that execution takes precedence. Otherwise:
+The native usage ledger attributes each response to the goal_id bound when its request started.
+Requests before activation or after release have no Goal scope. Reads, retries, and undo do not
+recount or refund usage. Paused controllers retain their claim without a usage scope. At the end of
+bounded execution, a valid complete or blocked transition takes precedence over the budget check.
+Otherwise:
 
 - reaching the cumulative budget sets `budget_exhausted`;
 - unavailable usage for a budgeted execution pauses work instead of guessing;
@@ -107,11 +113,15 @@ transition from that execution takes precedence. Otherwise:
 - [`goal_plugin.py`](goal_plugin.py): contributions, controller lifecycle, tools, policies, and
   settlement.
 - [`commands.py`](commands.py): `/goal` parsing and user-owned lifecycle commands.
-- [`state.py`](state.py): versioned Goal and Run-binding state.
+- [`state.py`](state.py): versioned business state and native control/usage projections.
 - [`prompts.py`](prompts.py): model-facing tool and continuation instructions.
 
 The implementation and manifest are the source of truth for tool schemas, transition validation,
 permissions, and continuation decisions.
+
+Known schema 3 state is converted only through the explicit builtin Harness migration entry.
+Conversion preserves source checkpoints, remaps reachable message anchors, and requires a provable
+native usage baseline. Uncertain attribution is rejected. Normal reads accept only schema 4.
 
 ## Verification
 

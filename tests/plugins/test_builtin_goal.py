@@ -1,28 +1,40 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from ouro.application.harness import capture_harness
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.session_controls import SessionControlCoordinator, SessionControlError
+from ouro.application.usage import UsageService
+from ouro.billing import LocalUsageLedger
 from ouro.builtin_plugins.goal import GOAL_PLUGIN
 from ouro.builtin_plugins.goal.commands import parse_goal_command
 from ouro.builtin_plugins.goal.goal_plugin import GoalPlugin
-from ouro.builtin_plugins.goal.state import GoalStateRepository, SessionGoalState
+from ouro.builtin_plugins.goal.state import SessionGoalState
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.harness_calls import accept_state_changes
+from ouro.core.messages import MessageRecord
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
     ProviderStreamEvent,
     Usage,
 )
+from ouro.core.session_commits import SessionCommit, SessionCommitStep
+from ouro.core.session_controls import AttributedSessionControlTransition
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest, ToolInvocation
-from ouro.local_application import LocalApplication
-from ouro.plugins.api import ScopedPluginDataStore
+from ouro.local_application import LocalApplication, migrate_builtin_harness_state
+from ouro.plugins.api import ScopedPluginDataStore, adapt_sdk_contributions
+from ouro.plugins.harness_calls import invoke_plugin_callback
+from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sdk.plugins import v2 as sdk
-from ouro.sessions import LocalSessionStore
+from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 
 PLUGIN_ID = "dev.ouro.goal"
@@ -133,34 +145,7 @@ class _AbortableGoalProvider:
         )
 
 
-class _MemorySessionStateStore:
-    def __init__(self) -> None:
-        self.values: dict[str, sdk.PluginSessionState] = {}
-
-    def load(self, session_id: str) -> sdk.PluginSessionState | None:
-        return self.values.get(session_id)
-
-    def save(
-        self,
-        session_id: str,
-        *,
-        state_schema_version: int,
-        payload: sdk.JsonValue,
-        branch_policy="reset",
-        projection_semantic_tags=(),
-    ) -> None:
-        del branch_policy, projection_semantic_tags
-        self.values[session_id] = sdk.PluginSessionState(
-            state_schema_version=state_schema_version,
-            payload=payload,
-        )
-
-    def delete(self, session_id: str) -> None:
-        self.values.pop(session_id, None)
-
-
-def _plugin(tmp_path: Path) -> tuple[GoalPlugin, _MemorySessionStateStore]:
-    state = _MemorySessionStateStore()
+def _plugin(tmp_path: Path) -> GoalPlugin:
     context = sdk.PluginContext(
         identity=sdk.PluginIdentity(
             plugin_id=PLUGIN_ID,
@@ -182,84 +167,154 @@ def _plugin(tmp_path: Path) -> tuple[GoalPlugin, _MemorySessionStateStore]:
         logger=None,  # type: ignore[arg-type]
         diagnostics=None,  # type: ignore[arg-type]
         permissions=frozenset({"sessions.write", "background.run", "sessions.prompt.inspect"}),
-        session_state=state,
     )
     plugin = GOAL_PLUGIN.factory(context)
     assert isinstance(plugin, GoalPlugin)
-    return plugin, state
+    return plugin
 
 
-def _tool_call(
-    name: str,
-    arguments: dict[str, object],
-    *,
-    run_id: str = "run_1",
-) -> sdk.ToolCall:
-    return sdk.ToolCall(
-        tool_call_id=f"call_{name}",
-        session_id="session_1",
-        run_id=run_id,
-        tool_name=name,
-        arguments=arguments,
-    )
+class _GoalHarness:
+    def __init__(self, store, plugin, controllers, usage):
+        self.store, self.plugin, self.controllers, self.usage = store, plugin, controllers, usage
+        self.session = SessionRecord()
+        store.create_session(self.session)
+        self.coordinator = SessionControlCoordinator(store, usage_service=usage)
 
-
-def _activate(
-    plugin: GoalPlugin,
-    *,
-    activation_id: str,
-    payload: sdk.JsonValue,
-) -> sdk.SessionControllerOutput:
-    return plugin.activate_goal_controller(
-        sdk.SessionControllerCall(
-            session_id="session_1",
-            session_kind="primary",
-            activation_id=activation_id,
-            controller_id=f"{PLUGIN_ID}/session_controllers/mode",
-            action="activate",
-            payload=payload,
+    def request(self):
+        current = self.store.load_session_record(self.session.session_id)
+        return RunRecord(
+            session_id=current.session_id,
+            history_epoch=current.history_epoch,
+            metadata={
+                "session_control_snapshot": {
+                    "activations": [
+                        item.model_dump(mode="json") for item in current.controls.activations
+                    ]
+                }
+            },
         )
-    )
 
-
-def _deactivate(
-    plugin: GoalPlugin,
-    *,
-    activation_id: str,
-    payload: sdk.JsonValue,
-) -> sdk.SessionControllerOutput:
-    return plugin.deactivate_goal_controller(
-        sdk.SessionControllerCall(
-            session_id="session_1",
-            session_kind="primary",
-            activation_id=activation_id,
-            controller_id=f"{PLUGIN_ID}/session_controllers/mode",
-            action="deactivate",
-            payload=payload,
+    def goal(self):
+        record = next(
+            (
+                item
+                for item in self.store.load_session_extension_states(self.session.session_id)
+                if item.owner_id == PLUGIN_ID
+            ),
+            None,
         )
+        return SessionGoalState.from_json(record.payload).goal if record is not None else None
+
+    async def call(self, handler, call, *, run=None, writable=True):
+        before = self.store.load_session_record(self.session.session_id)
+        snapshot = capture_harness(self.store, before.session_id, run=run, usage_service=self.usage)
+        result, change = await invoke_plugin_callback(
+            handler, call, snapshot=snapshot, owner_id=PLUGIN_ID, writable=writable
+        )
+        draft = accept_state_changes(snapshot, [change] if change else [])
+        for transition in result.session_control_transitions:
+            draft, _ = await self.coordinator.stage(
+                AttributedSessionControlTransition(
+                    action=transition.action,
+                    controller_id=transition.controller_id,
+                    activation_id=transition.activation_id,
+                    replace_activation_ids=list(transition.replace_activation_ids),
+                    payload=transition.payload,
+                    reason=transition.reason,
+                    plugin_id=PLUGIN_ID,
+                    generation_id="generation",
+                    execution_contract_hash="c" * 64,
+                ),
+                session=before,
+                draft=draft,
+                controllers=self.controllers,
+            )
+        self.coordinator.commit(
+            SessionCommit(before=before, steps=(SessionCommitStep(harness=draft.state),))
+        )
+        return result
+
+    async def tool(self, name, arguments, *, run=None):
+        run = run or self.request()
+        handler = {
+            "CreateGoal": self.plugin.create_goal,
+            "UpdateGoal": self.plugin.update_goal,
+            "GetGoal": self.plugin.get_goal,
+        }[name]
+        return await self.call(
+            handler,
+            sdk.ToolCall(
+                tool_call_id=f"call_{name}",
+                session_id=self.session.session_id,
+                run_id=run.run_id,
+                tool_name=name,
+                arguments=arguments,
+            ),
+            run=run,
+            writable=name != "GetGoal",
+        )
+
+    async def command(self, argument):
+        return await self.call(
+            self.plugin.goal_command,
+            sdk.CommandCall(
+                command_id=f"{PLUGIN_ID}:goal",
+                argument=argument,
+                session_id=self.session.session_id,
+            ),
+        )
+
+    async def continue_run(self, run, *, status="completed", usage=None):
+        return await self.call(
+            self.plugin.goal_continuation,
+            sdk.RunOutcome(
+                session_id=self.session.session_id,
+                run_id=run.run_id,
+                origin="user",
+                status=status,
+                usage={"input_tokens": 3, "output_tokens": 2} if usage is None else usage,
+            ),
+            run=run,
+        )
+
+    def record_usage(self, run, tokens=5):
+        assert self.usage is not None
+        return self.usage.record_provider_usage(
+            run=run,
+            usage=Usage(input_tokens=tokens, output_tokens=0),
+            model=ModelMetadata(model_id="goal-test", provider_id="test"),
+            request_id=run.run_id,
+            purpose="agent",
+        )
+
+
+@pytest.fixture(params=["files", "sqlite"])
+async def goal_session(tmp_path, request):
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if request.param == "files"
+        else SQLiteSessionStore(tmp_path / "db")
     )
-
-
-def _create(
-    plugin: GoalPlugin,
-    *,
-    objective: str = "Ship the feature",
-    token_budget: int | None = None,
-    run_id: str = "run_1",
-    activation_id: str = "activation_1",
-) -> None:
-    arguments: dict[str, object] = {"objective": objective}
-    if token_budget is not None:
-        arguments["token_budget"] = token_budget
-    result = plugin.create_goal(_tool_call("CreateGoal", arguments, run_id=run_id))
-    assert result.is_error is False
-    transition = result.session_control_transitions[0]
-    assert transition.action == "acquire"
-    _activate(plugin, activation_id=activation_id, payload=transition.payload)
-
-
-def _goal(state: _MemorySessionStateStore):
-    return GoalStateRepository(state).load("session_1").goal
+    store.initialize()
+    plugin = _plugin(tmp_path / "plugin")
+    contributed = adapt_sdk_contributions(await plugin.prepare(), owner_id=PLUGIN_ID)
+    controllers = PluginSessionControllerRegistry()
+    controllers.replace_owner(
+        "instance",
+        [
+            replace(
+                item,
+                plugin_id=PLUGIN_ID,
+                release_id="release",
+                generation_id="generation",
+                execution_contract_hash="c" * 64,
+            )
+            for item in contributed.session_controllers
+        ],
+    )
+    ledger = LocalUsageLedger(tmp_path / "home")
+    ledger.initialize()
+    return _GoalHarness(store, plugin, controllers, UsageService(ledger))
 
 
 def test_manifest_and_tool_contract_are_minimal_and_generic() -> None:
@@ -272,7 +327,7 @@ def test_manifest_and_tool_contract_are_minimal_and_generic() -> None:
         "create-goal",
         "update-goal",
     }
-    assert [item.id for item in manifest.contributes.context_providers] == ["goal-run-binding"]
+    assert [item.id for item in manifest.contributes.context_providers] == []
     assert [item.id for item in manifest.contributes.prompt_policies] == ["goal-input-gate"]
     assert {item.active_when for item in manifest.contributes.tools} == {None}
     assert {item.id for item in manifest.permissions} == {
@@ -299,7 +354,7 @@ def test_manifest_and_tool_contract_are_minimal_and_generic() -> None:
 
 @pytest.mark.asyncio
 async def test_tool_schemas_use_objective_and_implicit_update_identity(tmp_path) -> None:
-    plugin, _ = _plugin(tmp_path)
+    plugin = _plugin(tmp_path)
     contributions = await plugin.prepare()
     tools = {item.exposed_name: item for item in contributions.tools}
 
@@ -317,16 +372,8 @@ async def test_tool_schemas_use_objective_and_implicit_update_identity(tmp_path)
     assert {item.active_when for item in tools.values()} == {None}
 
 
-def test_create_command_returns_one_atomic_user_message_pair(tmp_path) -> None:
-    plugin, _ = _plugin(tmp_path)
-
-    result = plugin._commands.handle(  # noqa: SLF001 - builtin contract test
-        sdk.CommandCall(
-            command_id=f"{PLUGIN_ID}:goal",
-            argument="--token-budget 1200 Preserve this objective exactly",
-            session_id="session_1",
-        )
-    )
+async def test_create_command_returns_one_atomic_user_message_pair(goal_session) -> None:
+    result = await goal_session.command("--token-budget 1200 Preserve this objective exactly")
 
     assert result.session_inputs == ()
     assert len(result.session_input_batches) == 1
@@ -343,9 +390,12 @@ async def test_goal_runs_end_to_end_and_retains_final_usage(tmp_path) -> None:
     home = tmp_path / "home"
     store = LocalSessionStore(home)
     store.initialize()
+    ledger = LocalUsageLedger(home)
+    ledger.initialize()
     provider = _EndToEndGoalProvider()
     runtime = RuntimeService(
         store=store,
+        usage_service=UsageService(ledger),
         adapter=RuntimeAdapter(
             provider,
             ModelMetadata(model_id="goal-e2e", provider_id=provider.provider_id),
@@ -365,12 +415,11 @@ async def test_goal_runs_end_to_end_and_retains_final_usage(tmp_path) -> None:
             "--token-budget 100 Ship end to end",
             session_id=session.session_id,
         )
-        assert len(command.session_input_batches) == 1
-
-        await runtime.submit_plugin_input_batch(
-            command.session_input_batches[0],
-            session_id=session.session_id,
+        assert len(command.accepted_inputs) == 1
+        pending = runtime.queued_inputs.eligible_session(
+            store.load_session_record(session.session_id)
         )
+        await runtime.run(pending[0].prompt, session_id=session.session_id, _queued_inputs=pending)
 
         assert provider.calls == 4
         record = next(
@@ -381,7 +430,15 @@ async def test_goal_runs_end_to_end_and_retains_final_usage(tmp_path) -> None:
         goal = SessionGoalState.from_json(record.payload).goal
         assert goal is not None
         assert goal.status == "complete"
-        assert goal.tokens_used == 20
+        assert runtime.usage.session_scope_tokens(session.session_id) == {
+            PLUGIN_ID: {goal.goal_id: 10}
+        }
+        # Creation precedes activation; the acknowledgement follows release.
+        assert sum(entry.total_tokens for entry in runtime.usage.ledger.list_entries()) == 20
+        status = await application.plugins.execute_command(
+            f"{PLUGIN_ID}:goal", "status", session_id=session.session_id
+        )
+        assert status.data["goal"]["tokens_used"] == 10
         assert goal.report == "Delivered and checked."
         assert runtime.store.load_session(session.session_id).runs[-1].status == "completed"
 
@@ -428,6 +485,7 @@ async def test_cold_abort_restores_goal_snapshot_and_pauses_goal(tmp_path) -> No
     )
     runtime = RuntimeService(
         store=store,
+        usage_service=UsageService(LocalUsageLedger(home)),
         adapter=RuntimeAdapter(
             provider,
             ModelMetadata(model_id="goal-abort", provider_id=provider.provider_id),
@@ -448,9 +506,11 @@ async def test_cold_abort_restores_goal_snapshot_and_pauses_goal(tmp_path) -> No
             session_id=session.session_id,
         )
         assert command.output == "Requesting goal creation."
-        pending_create = await runtime.submit_plugin_input_batch(
-            command.session_input_batches[0],
-            session_id=session.session_id,
+        pending = runtime.queued_inputs.eligible_session(
+            store.load_session_record(session.session_id)
+        )
+        pending_create = await runtime.run(
+            pending[0].prompt, session_id=session.session_id, _queued_inputs=pending
         )
         assert pending_create.run.status == "waiting_approval"
 
@@ -521,355 +581,275 @@ def test_goal_command_parser_treats_missing_budget_as_unlimited(
     assert parsed.objective == objective
 
 
-def test_latest_goal_wrapper_is_retained_after_completion(tmp_path) -> None:
-    plugin, state = _plugin(tmp_path)
-    _create(plugin)
-    update = plugin.update_goal(
-        _tool_call(
-            "UpdateGoal",
-            {"status": "complete", "report": "Delivered and verified."},
+async def test_lifecycle_uses_native_controls_and_keeps_one_business_identity(goal_session):
+    g = goal_session
+    await g.tool("CreateGoal", {"objective": "Ship", "token_budget": 30})
+    first = g.goal()
+    run = g.request()
+    g.record_usage(run, 12)
+    for command, status in [
+        ("pause", "paused"),
+        ("resume --token-budget 40", "active"),
+        ("replace Updated objective", "active"),
+    ]:
+        result = await g.command(command)
+        assert not result.data.get("error")
+        assert "goal" not in result.data  # Lifecycle intent is not a final state read.
+        goal = g.goal()
+        assert goal.status == status
+        assert goal.goal_id == first.goal_id
+        assert goal.created_at == first.created_at
+        assert g.usage.session_scope_tokens(g.session.session_id) == {PLUGIN_ID: {goal.goal_id: 12}}
+    assert g.goal().objective == "Updated objective"
+    assert g.goal().token_budget is None
+    stale = await g.tool("UpdateGoal", {"status": "complete", "report": "old work"}, run=run)
+    assert stale.structured["error_type"] == "stale_goal_update"
+    assert g.goal().status == "active"
+    await g.command("cancel")
+    assert g.goal() is None
+    assert not g.store.load_session_record(g.session.session_id).controls.activations
+    await g.tool("CreateGoal", {"objective": "New work"})
+    assert g.goal().goal_id != first.goal_id
+    result = await g.tool("GetGoal", {})
+    assert result.structured["goal"]["tokens_used"] == 0
+
+
+async def test_create_result_does_not_bind_the_request_that_created_it(goal_session):
+    g = goal_session
+    request = g.request()
+    await g.tool("CreateGoal", {"objective": "Ship"}, run=request)
+    result = await g.tool("UpdateGoal", {"status": "complete", "report": "premature"}, run=request)
+    assert result.structured["error_type"] == "stale_goal_update"
+    complete = await g.tool("UpdateGoal", {"status": "complete", "report": "checked"})
+    assert not complete.is_error
+    assert g.goal().status == "complete"
+    assert g.goal().report == "checked"
+    assert not g.store.load_session_record(g.session.session_id).controls.activations
+    await g.command("cancel")
+    assert g.goal() is None
+
+
+@pytest.mark.parametrize("status", ["aborted", "failed", "paused", "recoverable"])
+async def test_abnormal_termination_pauses_without_copying_execution_data(goal_session, status):
+    g = goal_session
+    await g.tool("CreateGoal", {"objective": "Ship"})
+    run = g.request()
+    outcome = await g.continue_run(run, status=status)
+    assert outcome.action == "pause"
+    assert outcome.reason == f"run_{status}"
+    assert g.goal().status == "paused"
+    control = g.store.load_session_record(g.session.session_id).controls.activations[0]
+    assert control.activation_id != run.control_bindings[0].activation_id
+    assert control.usage_scope is None
+
+
+async def test_budget_uses_native_totals_and_does_not_write_on_ordinary_continuation(goal_session):
+    g = goal_session
+    await g.tool("CreateGoal", {"objective": "Ship", "token_budget": 10})
+    run = g.request()
+    g.record_usage(run, 7)
+    before = g.store.load_harness(g.session.session_id)
+    for _ in range(2):
+        decision = await g.continue_run(run)
+        assert decision.action == "continue"
+        assert "tokens used: 7" in decision.prompt
+    assert g.store.load_harness(g.session.session_id) == before
+    next_run = g.request()
+    g.record_usage(next_run, 5)
+    decision = await g.continue_run(next_run)
+    assert decision.action == "pause"
+    assert g.goal().status == "budget_exhausted"
+    assert g.usage.session_scope_tokens(g.session.session_id)[PLUGIN_ID][g.goal().goal_id] == 12
+    invalid = await g.command("resume --token-budget 12")
+    assert invalid.data["error"] == "invalid_token_budget"
+    await g.command("resume")
+    assert g.goal().status == "active"
+    assert g.goal().token_budget is None
+
+
+@pytest.mark.parametrize("missing", ["ledger", "provider"])
+async def test_unavailable_usage_pauses_budgeted_goal_without_inventing_zero(goal_session, missing):
+    g = goal_session
+    await g.tool("CreateGoal", {"objective": "Ship", "token_budget": 10})
+    run = g.request()
+    if missing == "ledger":
+        g.usage = None
+    outcome = await g.continue_run(run, usage={} if missing == "provider" else None)
+    assert outcome.reason == "usage_unavailable"
+    assert g.goal().status == "paused"
+    if missing == "ledger":
+        result = await g.tool("GetGoal", {})
+        assert result.structured["goal"]["tokens_used"] is None
+        assert "unknown" in result.content
+
+
+async def test_blocked_goal_retains_claim_but_stops_usage_scope_and_gates_prompts(goal_session):
+    g = goal_session
+    await g.tool("CreateGoal", {"objective": "Ship"})
+    run = g.request()
+    g.record_usage(run, 8)
+    await g.tool(
+        "UpdateGoal", {"status": "blocked", "report": "Three attempts; needs input"}, run=run
+    )
+    assert g.goal().status == "blocked"
+    control = g.store.load_session_record(g.session.session_id).controls.activations[0]
+    assert control.usage_scope is None
+    g.record_usage(g.request(), 3)
+    assert g.usage.session_scope_tokens(g.session.session_id)[PLUGIN_ID][g.goal().goal_id] == 8
+    snapshot = capture_harness(g.store, g.session.session_id, usage_service=g.usage)
+    decision, change = await invoke_plugin_callback(
+        g.plugin.goal_input_gate,
+        sdk.PromptPolicyCall(
+            session_id=g.session.session_id, prospective_run_id="next", prompt="go"
+        ),
+        snapshot=snapshot,
+        owner_id=PLUGIN_ID,
+        writable=False,
+    )
+    assert decision.action == "deny"
+    assert change is None
+
+
+async def test_goal_undo_restores_business_state_but_keeps_real_usage(goal_session):
+    g = goal_session
+    await g.tool("CreateGoal", {"objective": "Ship", "token_budget": 50})
+    goal = g.goal()
+    boundary = MessageRecord(
+        session_id=g.session.session_id,
+        role="user",
+        content=[{"type": "text", "text": "Change goal"}],
+    )
+    g.store.commit_session(
+        SessionCommit(
+            before=g.store.load_session_record(g.session.session_id),
+            steps=(SessionCommitStep(message=boundary),),
         )
     )
-    transition = update.session_control_transitions[0]
-    assert transition.action == "release"
-
-    _deactivate(plugin, activation_id="activation_1", payload=transition.payload)
-    decision = plugin.goal_continuation(
-        sdk.RunOutcome(
-            session_id="session_1",
-            run_id="run_1",
-            status="completed",
-            origin="plugin",
-            usage={"input_tokens": 8, "output_tokens": 5},
+    run = g.request()
+    g.record_usage(run, 20)
+    await g.command("replace Revised")
+    assert g.goal().objective == "Revised"
+    g.store.commit_session(
+        SessionCommit(
+            before=g.store.load_session_record(g.session.session_id),
+            before_message_id=boundary.message_id,
         )
     )
-
-    goal = _goal(state)
-    assert goal is not None
-    assert goal.status == "complete"
-    assert goal.tokens_used == 13
-    assert goal.report == "Delivered and verified."
-    assert goal.activation_id is None
-    assert decision.action == "complete"
-    public = plugin.get_goal(_tool_call("GetGoal", {})).structured["goal"]
-    assert public == goal.to_public()
-    assert set(public) == {
+    assert g.goal() == goal
+    result = await g.tool("GetGoal", {})
+    assert result.structured["goal"]["tokens_used"] == 20
+    assert result.structured["goal"]["tokens_remaining"] == 30
+    payload = g.store.load_session_extension_states(g.session.session_id)[0].payload
+    assert set(payload) == {"goal"}
+    assert set(payload["goal"]) == {
+        "goal_id",
         "objective",
         "status",
         "token_budget",
-        "tokens_used",
-        "tokens_remaining",
         "created_at",
         "updated_at",
         "report",
     }
 
 
-def test_old_execution_cannot_update_replaced_goal(tmp_path) -> None:
-    plugin, state = _plugin(tmp_path)
-    _create(plugin, objective="Old objective", run_id="old_run")
-    current = _goal(state)
-    assert current is not None
-
-    _activate(
-        plugin,
-        activation_id="activation_2",
-        payload={
-            "operation": "replace",
-            "expected_activation_id": current.activation_id,
-            "expected_revision": current.revision,
-            "objective": "New objective",
-            "token_budget": None,
-        },
-    )
-    stale = plugin.update_goal(
-        _tool_call(
-            "UpdateGoal",
-            {"status": "complete", "report": "Old work finished."},
-            run_id="old_run",
+async def test_failed_self_replacement_keeps_goal_and_different_controller_releases_it(
+    goal_session,
+):
+    g = goal_session
+    await g.tool("CreateGoal", {"objective": "Ship"})
+    before = g.store.load_harness(g.session.session_id)
+    activation = before.state.controls.activations[0]
+    with pytest.raises(SessionControlError, match="unsupported Goal transition"):
+        await g.coordinator.apply(
+            AttributedSessionControlTransition(
+                action="replace",
+                controller_id="mode",
+                plugin_id=PLUGIN_ID,
+                generation_id="generation",
+                execution_contract_hash="c" * 64,
+                replace_activation_ids=[activation.activation_id],
+                payload={"operation": "invalid"},
+                reason="arbitrary user explanation",
+            ),
+            session_id=g.session.session_id,
+            controllers=g.controllers,
         )
-    )
+    assert g.store.load_harness(g.session.session_id) == before
 
-    assert stale.is_error is True
-    assert stale.structured["error_type"] == "stale_goal_update"
-    decision = plugin.goal_continuation(
-        sdk.RunOutcome(
-            session_id="session_1",
-            run_id="old_run",
-            status="completed",
-            origin="plugin",
-            usage={"input_tokens": 6, "output_tokens": 4},
-        )
-    )
-    goal = _goal(state)
-    assert goal is not None
-    assert goal.objective == "New objective"
-    assert goal.status == "active"
-    assert goal.tokens_used == 10
-    assert decision.action == "ignore"
+    def activate(call):
+        return sdk.SessionControllerOutput()
 
-
-def test_blocked_update_rotates_activation_and_retains_final_usage(tmp_path) -> None:
-    plugin, state = _plugin(tmp_path)
-    _create(plugin)
-    update = plugin.update_goal(
-        _tool_call(
-            "UpdateGoal",
-            {"status": "blocked", "report": "Same external outage after three attempts."},
-        )
-    )
-    transition = update.session_control_transitions[0]
-    assert transition.action == "replace"
-    _activate(plugin, activation_id="activation_2", payload=transition.payload)
-    assert (
-        plugin.bind_goal_run(
-            sdk.ContextCall(
-                session_id="session_1",
-                run_id="run_1",
-                message_count=1,
-                model_round=2,
+    alternative = adapt_sdk_contributions(
+        sdk.ContributionSet(
+            session_controllers=[
+                sdk.SessionControllerContribution(
+                    id="alternative",
+                    description="another mode",
+                    claims=(sdk.SessionControlClaim("ouro.session.primary_behavior", "exclusive"),),
+                    activate=activate,
+                    deactivate=activate,
+                )
+            ]
+        ),
+        owner_id=PLUGIN_ID,
+    ).session_controllers[0]
+    g.controllers.replace_owner(
+        "alternative",
+        [
+            replace(
+                alternative,
+                plugin_id=PLUGIN_ID,
+                release_id="release",
+                generation_id="generation",
+                execution_contract_hash="c" * 64,
             )
-        ).fragments
-        == ()
+        ],
+    )
+    await g.coordinator.apply(
+        AttributedSessionControlTransition(
+            action="replace",
+            controller_id="alternative",
+            plugin_id=PLUGIN_ID,
+            generation_id="generation",
+            execution_contract_hash="c" * 64,
+            replace_activation_ids=[activation.activation_id],
+            payload="opaque data owned by the replacement controller",
+            reason="arbitrary user explanation",
+        ),
+        session_id=g.session.session_id,
+        controllers=g.controllers,
+    )
+    assert g.goal() is None
+    assert (
+        g.store.load_session_record(g.session.session_id)
+        .controls.activations[0]
+        .controller_local_id
+        == "alternative"
     )
 
-    decision = plugin.goal_continuation(
-        sdk.RunOutcome(
-            session_id="session_1",
-            run_id="run_1",
-            status="completed",
-            origin="plugin",
-            usage={"input_tokens": 10, "output_tokens": 7},
-        )
+
+async def test_migrated_goal_uses_the_current_controller_and_call_contract(goal_session):
+    g = goal_session
+    await g.tool("CreateGoal", {"objective": "Ship"})
+    current = g.store.load_session_extension_states(g.session.session_id)[0]
+    goal = current.payload["goal"]
+    del goal["goal_id"]
+    goal.update(tokens_used=0, revision=1, last_accounted_run_id=None)
+    g.store.save_session_extension_state(current.model_copy(update={"state_schema_version": 3}))
+    migrated = migrate_builtin_harness_state(
+        g.store,
+        g.session.session_id,
+        controllers=g.controllers,
+        usage_service=g.usage,
     )
-
-    goal = _goal(state)
-    assert goal is not None
-    assert goal.status == "blocked"
-    assert goal.activation_id == "activation_2"
-    assert goal.tokens_used == 17
-    assert decision.action == "pause"
-
-
-def test_budget_is_settled_after_the_full_execution_and_then_stops(tmp_path) -> None:
-    plugin, state = _plugin(tmp_path)
-    _create(plugin, token_budget=10)
-
-    decision = plugin.goal_continuation(
-        sdk.RunOutcome(
-            session_id="session_1",
-            run_id="run_1",
-            status="completed",
-            origin="plugin",
-            usage={"input_tokens": 8, "output_tokens": 5},
-        )
-    )
-
-    assert decision.action == "pause"
-    transition = decision.session_control_transitions[0]
-    assert transition.action == "replace"
-    _activate(plugin, activation_id="activation_2", payload=transition.payload)
-    goal = _goal(state)
-    assert goal is not None
-    assert goal.status == "budget_exhausted"
-    assert goal.tokens_used == 13
-    assert goal.tokens_used > goal.token_budget  # type: ignore[operator]
-
-
-@pytest.mark.parametrize("run_status", ["aborted", "failed", "paused", "recoverable"])
-def test_abnormal_run_status_pauses_active_goal(
-    tmp_path,
-    run_status: sdk.RunStatus,
-) -> None:
-    plugin, state = _plugin(tmp_path)
-    _create(plugin)
-
-    decision = plugin.goal_continuation(
-        sdk.RunOutcome(
-            session_id="session_1",
-            run_id="run_1",
-            status=run_status,
-            origin="user",
-            error=f"Run ended as {run_status}.",
-            usage={"input_tokens": 3, "output_tokens": 2},
-        )
-    )
-
-    assert decision.action == "pause"
-    assert decision.reason == f"run_{run_status}"
-    transition = decision.session_control_transitions[0]
-    assert transition.action == "replace"
-    assert transition.payload["operation"] == "runtime_paused"
-    _activate(plugin, activation_id="activation_2", payload=transition.payload)
-    goal = _goal(state)
-    assert goal is not None
-    assert goal.status == "paused"
-    assert goal.tokens_used == 5
-    assert goal.report == f"Run ended as {run_status}."
-
-
-def test_complete_wins_over_budget_exhaustion_in_the_same_execution(tmp_path) -> None:
-    plugin, state = _plugin(tmp_path)
-    _create(plugin, token_budget=10)
-    update = plugin.update_goal(
-        _tool_call(
-            "UpdateGoal",
-            {"status": "complete", "report": "Verified complete."},
-        )
-    )
-    transition = update.session_control_transitions[0]
-    _deactivate(plugin, activation_id="activation_1", payload=transition.payload)
-
-    decision = plugin.goal_continuation(
-        sdk.RunOutcome(
-            session_id="session_1",
-            run_id="run_1",
-            status="completed",
-            origin="plugin",
-            usage={"input_tokens": 20, "output_tokens": 3},
-        )
-    )
-
-    goal = _goal(state)
-    assert goal is not None
-    assert goal.status == "complete"
-    assert goal.tokens_used == 23
-    assert decision.action == "complete"
-
-
-def test_resume_exhausted_goal_without_budget_removes_the_budget(tmp_path) -> None:
-    plugin, state = _plugin(tmp_path)
-    _create(plugin, token_budget=10)
-    decision = plugin.goal_continuation(
-        sdk.RunOutcome(
-            session_id="session_1",
-            run_id="run_1",
-            status="completed",
-            origin="plugin",
-            usage={"input_tokens": 10, "output_tokens": 1},
-        )
-    )
-    transition = decision.session_control_transitions[0]
-    _activate(plugin, activation_id="activation_2", payload=transition.payload)
-
-    too_small = plugin._commands.handle(  # noqa: SLF001 - builtin contract test
-        sdk.CommandCall(
-            command_id=f"{PLUGIN_ID}:goal",
-            argument="resume --token-budget 11",
-            session_id="session_1",
-        )
-    )
-    resumed = plugin._commands.handle(  # noqa: SLF001 - builtin contract test
-        sdk.CommandCall(
-            command_id=f"{PLUGIN_ID}:goal",
-            argument="resume",
-            session_id="session_1",
-        )
-    )
-
-    assert too_small.data["error"] == "invalid_token_budget"
-    assert len(resumed.session_input_batches) == 1
-    assert resumed.session_input_batches[0].coalesce_key == "goal-lifecycle"
-    resume_transition = resumed.session_control_transitions[0]
-    _activate(plugin, activation_id="activation_3", payload=resume_transition.payload)
-    goal = _goal(state)
-    assert goal is not None
-    assert goal.status == "active"
-    assert goal.token_budget is None
-    assert goal.tokens_used == 11
-
-
-def test_pause_resume_replace_and_cancel_are_user_owned_transitions(tmp_path) -> None:
-    plugin, state = _plugin(tmp_path)
-    _create(plugin, objective="Initial", token_budget=100)
-    initial = _goal(state)
-    assert initial is not None
-    created_at = initial.created_at
-
-    pause = plugin._commands.handle(  # noqa: SLF001 - builtin contract test
-        sdk.CommandCall(
-            command_id=f"{PLUGIN_ID}:goal",
-            argument="pause",
-            session_id="session_1",
-        )
-    )
-    assert pause.session_control_transitions[0].action == "replace"
-    assert pause.session_input_batches[0].inputs[0].semantic_tag == "goal-paused"
-    _activate(
-        plugin,
-        activation_id="activation_2",
-        payload=pause.session_control_transitions[0].payload,
-    )
-
-    replace_output = plugin._commands.handle(  # noqa: SLF001 - builtin contract test
-        sdk.CommandCall(
-            command_id=f"{PLUGIN_ID}:goal",
-            argument="replace Updated objective",
-            session_id="session_1",
-        )
-    )
-    assert replace_output.session_input_batches[0].inputs[0].semantic_tag == "goal-updated"
-    _activate(
-        plugin,
-        activation_id="activation_3",
-        payload=replace_output.session_control_transitions[0].payload,
-    )
-    updated = _goal(state)
-    assert updated is not None
-    assert updated.objective == "Updated objective"
-    assert updated.created_at == created_at
-    assert updated.token_budget is None
-
-    cancel = plugin._commands.handle(  # noqa: SLF001 - builtin contract test
-        sdk.CommandCall(
-            command_id=f"{PLUGIN_ID}:goal",
-            argument="cancel",
-            session_id="session_1",
-        )
-    )
-    assert cancel.session_input_batches[0].inputs[0].semantic_tag == "goal-cancelled"
-    _deactivate(
-        plugin,
-        activation_id="activation_3",
-        payload=cancel.session_control_transitions[0].payload,
-    )
-    assert _goal(state) is None
-
-
-def test_prompt_gate_rejects_ordinary_input_while_goal_is_stopped(tmp_path) -> None:
-    plugin, _ = _plugin(tmp_path)
-    _create(plugin)
-    pause = plugin._commands.handle(  # noqa: SLF001 - builtin contract test
-        sdk.CommandCall(
-            command_id=f"{PLUGIN_ID}:goal",
-            argument="pause",
-            session_id="session_1",
-        )
-    )
-    _activate(
-        plugin,
-        activation_id="activation_2",
-        payload=pause.session_control_transitions[0].payload,
-    )
-
-    decision = plugin.goal_input_gate(
-        sdk.PromptPolicyCall(
-            session_id="session_1",
-            prospective_run_id="run_2",
-            prompt="Continue anyway",
-        )
-    )
-
-    assert decision.action == "deny"
-    assert "/goal resume" in (decision.reason or "")
-
-
-def test_old_state_schema_is_rejected_instead_of_silently_converted(tmp_path) -> None:
-    _, state = _plugin(tmp_path)
-    state.values["session_1"] = sdk.PluginSessionState(
-        state_schema_version=2,
-        payload={"goal": None, "run_binding": None},
-    )
-
-    with pytest.raises(ValueError, match="unsupported Goal state schema"):
-        GoalStateRepository(state).load("session_1")
+    assert migrated is not None
+    identity = g.goal().goal_id
+    await g.command("pause")
+    await g.command("resume --token-budget 50")
+    assert g.goal().goal_id == identity
+    request = g.request()
+    g.record_usage(request, 5)
+    await g.tool("UpdateGoal", {"status": "complete", "report": "Checked"}, run=request)
+    assert g.goal().status == "complete"
+    result = await g.tool("GetGoal", {})
+    assert result.structured["goal"]["tokens_used"] == 5

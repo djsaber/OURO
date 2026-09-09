@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ouro.application.usage import UsageService
+from ouro.core.errors import MigrationRequiredError
 from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions.base import SessionRepository
@@ -29,6 +30,10 @@ def capture_session_harness(
     with store.session_mutation(session_id):
         session = store.load_session_record(session_id)
         version = store.load_harness(session_id, session.harness_version)
+        if any(item.phase != "active" for item in version.state.controls.activations):
+            raise MigrationRequiredError(
+                "legacy controller transition state requires explicit maintenance before execution"
+            )
         return session, HarnessCallSnapshot(
             session_id=session_id,
             harness_version=version.version_id,

@@ -277,7 +277,6 @@ class SessionControlActivation(OuroModel):
     claims: list[SessionControlClaim] = Field(default_factory=list)
     revision: int = Field(default=1, ge=1)
     phase: SessionControlPhase = "active"
-    owner_state_revision: int | None = Field(default=None, ge=0)
     usage_scope: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

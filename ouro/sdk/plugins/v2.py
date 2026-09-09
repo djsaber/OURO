@@ -565,7 +565,6 @@ class ContinuationDecision:
     semantic_tag: str | None = None
     coalesce_key: str | None = None
     reason: str | None = None
-    state_revision: int | None = None
     session_control_transitions: tuple[SessionControlTransition, ...] = ()
 
 
@@ -626,13 +625,13 @@ class SessionControllerCall:
     payload: JsonValue = None
     reason: str | None = None
     workspace: str | None = None
+    replacement_controller_id: str | None = None
 
 
 @dataclass(frozen=True)
 class SessionControllerOutput:
     output: str = ""
     data: Mapping[str, object] = field(default_factory=dict)
-    owner_state_revision: int | None = None
     usage_scope: str | None = None
 
 

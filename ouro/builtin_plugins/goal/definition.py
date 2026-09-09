@@ -106,15 +106,6 @@ GOAL_PLUGIN = BuiltinPluginDefinition(
                         "timeout_seconds": 5,
                     }
                 ],
-                "context_providers": [
-                    {
-                        "id": "goal-run-binding",
-                        "priority": 10,
-                        "timeout_seconds": 5,
-                        "failure_mode": "block",
-                        "active_when": "mode",
-                    }
-                ],
                 "continuation_policies": [
                     {
                         "id": "goal-continuation",

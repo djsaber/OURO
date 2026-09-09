@@ -31,6 +31,7 @@ from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.resources import SessionResourceReference, SessionResourceReferences
 from ouro.core.session_commits import (
+    HarnessMigration,
     SessionCommit,
     SessionCommitConflict,
     SessionCommitResult,
@@ -470,6 +471,15 @@ class LocalSessionStore:
         with self.session_mutation(session_id):
             self._require_session_dir(session_id)
             return self._commits.load_result(session_id, operation_id)
+
+    def migrate_harness(self, request: HarnessMigration) -> SessionCommitResult:
+        with self.session_mutation(request.before.session_id):
+            try:
+                return self._commits.migrate_harness(request)
+            except OSError as exc:
+                raise PersistenceError(
+                    f"could not migrate Harness for Session {request.before.session_id}: {exc}"
+                ) from exc
 
     def commit_session(self, request: SessionCommit) -> SessionCommitResult:
         with self.session_mutation(request.before.session_id):

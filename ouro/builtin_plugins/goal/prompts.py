@@ -68,13 +68,17 @@ def creation_instruction(token_budget: int | None) -> str:
     return _CREATE.format(budget=_json(token_budget))
 
 
-def continuation_prompt(goal: GoalRecord) -> str:
-    remaining = None if goal.token_budget is None else max(goal.token_budget - goal.tokens_used, 0)
+def continuation_prompt(goal: GoalRecord, *, tokens_used: int | None) -> str:
+    remaining = (
+        "unlimited"
+        if goal.token_budget is None
+        else (max(goal.token_budget - tokens_used, 0) if tokens_used is not None else "unknown")
+    )
     return _CONTINUE.format(
         goal=goal.objective,
         budget="unlimited" if goal.token_budget is None else goal.token_budget,
-        used=goal.tokens_used,
-        remaining="unlimited" if remaining is None else remaining,
+        used=tokens_used if tokens_used is not None else "unknown",
+        remaining=remaining,
     )
 
 

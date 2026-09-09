@@ -34,7 +34,9 @@ for line in sys.stdin:
     elif method == 'contributions.prepare':
         result = {'tools': {'echo': {}}, 'session_controllers': ['mode']}
     elif method == 'session_controller.call':
-        result = {'data': request['params']['session_state'], 'usage_scope': 'next-goal'}
+        result = {'data': {**request['params']['session_state'],
+                  'replacement': request['params']['call']['replacement_controller_id']},
+                  'usage_scope': 'next-goal'}
     if isinstance(request.get('id'), int):
         print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
     if method == 'shutdown':
@@ -89,6 +91,19 @@ for line in sys.stdin:
             {"controller_id": "mode", "activation_id": "old", "usage_scope": "goal"}
         ]
         assert output.data["controls"] == []
+        assert output.data["replacement"] is None
+        deactivated = await prepared.session_controllers[0].deactivate(
+            sdk.SessionControllerCall(
+                session_id="session",
+                session_kind="primary",
+                activation_id="old",
+                controller_id="mode",
+                action="deactivate",
+                session_state=view,
+                replacement_controller_id=f"{owner}/session_controllers/mode",
+            )
+        )
+        assert deactivated.data["replacement"] == f"{owner}/session_controllers/mode"
         assert view.finish() is None
     finally:
         view.close()

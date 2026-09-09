@@ -9,6 +9,7 @@ from ouro.sdk.plugins.v2 import (
     CommandCall,
     CommandOutput,
     JsonValue,
+    PluginSessionControl,
     SessionControlTransition,
     SessionInput,
     SessionInputBatch,
@@ -43,12 +44,15 @@ class GoalCommandService:
         if parsed.error is not None:
             return CommandOutput(output=parsed.error, data={"error": "invalid_command"})
         current = self._state.load().goal
+        control = self._state.control()
+        tokens_used = self._state.tokens_used(current) if current is not None else None
 
         if parsed.action == "status":
             if current is None:
                 return CommandOutput(output="No goal exists.", data={"goal": None})
             return CommandOutput(
-                output=format_goal_status(current), data={"goal": current.to_public()}
+                output=format_goal_status(current, tokens_used=tokens_used),
+                data={"goal": current.to_public(tokens_used=tokens_used)},
             )
         if parsed.action == "create":
             assert parsed.objective is not None
@@ -57,6 +61,7 @@ class GoalCommandService:
                     "unfinished_goal_exists",
                     f"The current goal is {current.status}; use /goal replace or /goal cancel.",
                     current,
+                    tokens_used=tokens_used,
                 )
             return _creation_output(parsed.objective, parsed.token_budget)
         if current is None:
@@ -67,12 +72,13 @@ class GoalCommandService:
                     "goal_not_active",
                     f"The current goal is {current.status}; it cannot be paused.",
                     current,
+                    tokens_used=tokens_used,
                 )
             return _lifecycle_output(
                 current,
                 action="paused",
                 output="Pausing the current goal.",
-                transition=_replace_transition(current, operation="pause"),
+                transition=_replace_transition(control, operation="pause"),
             )
         if parsed.action == "resume":
             if current.status not in {"paused", "blocked", "budget_exhausted"}:
@@ -80,18 +86,21 @@ class GoalCommandService:
                     "goal_not_resumable",
                     f"The current goal is {current.status}; it cannot be resumed.",
                     current,
+                    tokens_used=tokens_used,
                 )
             token_budget = parsed.token_budget
-            budget_error = _validate_changed_budget(token_budget, current.tokens_used)
+            budget_error = _validate_changed_budget(token_budget, tokens_used)
             if budget_error is not None:
-                return _command_error("invalid_token_budget", budget_error, current)
+                return _command_error(
+                    "invalid_token_budget", budget_error, current, tokens_used=tokens_used
+                )
             resumed = replace(current, status="active", token_budget=token_budget, report=None)
             return _lifecycle_output(
                 resumed,
                 action="resumed",
                 output="Resuming the current goal.",
                 transition=_replace_transition(
-                    current,
+                    control,
                     operation="resume",
                     token_budget=token_budget,
                 ),
@@ -102,12 +111,15 @@ class GoalCommandService:
                     "goal_complete",
                     "The latest goal is complete; use /goal <objective> to create a new one.",
                     current,
+                    tokens_used=tokens_used,
                 )
             assert parsed.objective is not None
             token_budget = parsed.token_budget
-            budget_error = _validate_changed_budget(token_budget, current.tokens_used)
+            budget_error = _validate_changed_budget(token_budget, tokens_used)
             if budget_error is not None:
-                return _command_error("invalid_token_budget", budget_error, current)
+                return _command_error(
+                    "invalid_token_budget", budget_error, current, tokens_used=tokens_used
+                )
             updated = replace(
                 current,
                 objective=parsed.objective,
@@ -120,23 +132,20 @@ class GoalCommandService:
                 action="updated",
                 output="Updating the current goal.",
                 transition=_replace_transition(
-                    current,
+                    control,
                     operation="replace",
                     objective=parsed.objective,
                     token_budget=token_budget,
                 ),
             )
         if parsed.action == "cancel":
-            if current.status == "complete":
-                latest = self._state.load().goal
-                if latest == current:
-                    self._state.delete()
+            if control is None:
+                self._state.delete()
                 return _lifecycle_output(
                     None,
                     action="cancelled",
                     output="Cancelled the latest goal.",
                 )
-            assert current.activation_id is not None
             return _lifecycle_output(
                 None,
                 action="cancelled",
@@ -144,12 +153,8 @@ class GoalCommandService:
                 transition=SessionControlTransition(
                     action="release",
                     controller_id="mode",
-                    activation_id=current.activation_id,
-                    payload={
-                        "operation": "cancel",
-                        "expected_activation_id": current.activation_id,
-                        "expected_revision": current.revision,
-                    },
+                    activation_id=control.activation_id,
+                    payload={"operation": "cancel"},
                     reason="user_cancelled_goal",
                 ),
             )
@@ -192,7 +197,7 @@ def _lifecycle_output(
 ) -> CommandOutput:
     return CommandOutput(
         output=output,
-        data={"goal": goal.to_public() if goal is not None else None},
+        data={"action": action},
         session_input_batches=(
             SessionInputBatch(
                 inputs=(
@@ -212,26 +217,21 @@ def _lifecycle_output(
 
 
 def _replace_transition(
-    goal: GoalRecord,
+    control: PluginSessionControl | None,
     *,
     operation: str,
     objective: str | None = None,
     token_budget: int | None = None,
 ) -> SessionControlTransition:
-    assert goal.activation_id is not None
-    payload: dict[str, JsonValue] = {
-        "operation": operation,
-        "expected_activation_id": goal.activation_id,
-        "expected_revision": goal.revision,
-    }
+    payload: dict[str, JsonValue] = {"operation": operation}
     if objective is not None:
         payload["objective"] = objective
     if operation in {"resume", "replace"}:
         payload["token_budget"] = token_budget
     return SessionControlTransition(
-        action="replace",
+        action="replace" if control is not None else "acquire",
         controller_id="mode",
-        replace_activation_ids=(goal.activation_id,),
+        replace_activation_ids=(control.activation_id,) if control is not None else (),
         payload=payload,
         reason=f"user_{operation}d_goal",
     )
@@ -290,23 +290,30 @@ def _parse_budget_prefix(text: str) -> tuple[int | None, str, str | None]:
     return int(raw_budget), text[match.end() :].strip(), None
 
 
-def _validate_changed_budget(token_budget: int | None, tokens_used: int) -> str | None:
-    if token_budget is not None and token_budget <= tokens_used:
+def _validate_changed_budget(token_budget: int | None, tokens_used: int | None) -> str | None:
+    if token_budget is None:
+        return None
+    if tokens_used is None:
+        return "Token usage is unavailable; a total budget cannot be validated."
+    if token_budget <= tokens_used:
         return f"The total token budget must be greater than tokens used ({tokens_used})."
     return None
 
 
-def format_goal_status(goal: GoalRecord) -> str:
+def format_goal_status(goal: GoalRecord, *, tokens_used: int | None) -> str:
     budget = "unlimited" if goal.token_budget is None else str(goal.token_budget)
     remaining = (
         "unlimited"
         if goal.token_budget is None
-        else str(max(goal.token_budget - goal.tokens_used, 0))
+        else (
+            str(max(goal.token_budget - tokens_used, 0)) if tokens_used is not None else "unknown"
+        )
     )
+    used = str(tokens_used) if tokens_used is not None else "unknown"
     lines = [
         f"Goal: {goal.status}",
         f"Objective: {goal.objective}",
-        f"Usage: {goal.tokens_used} tokens; budget: {budget}; remaining: {remaining}.",
+        f"Usage: {used} tokens; budget: {budget}; remaining: {remaining}.",
         f"Created: {goal.created_at}",
         f"Updated: {goal.updated_at}",
     ]
@@ -319,10 +326,15 @@ def _command_error(
     error: str,
     message: str,
     goal: GoalRecord | None = None,
+    *,
+    tokens_used: int | None = None,
 ) -> CommandOutput:
     return CommandOutput(
         output=message,
-        data={"error": error, "goal": goal.to_public() if goal is not None else None},
+        data={
+            "error": error,
+            "goal": goal.to_public(tokens_used=tokens_used) if goal is not None else None,
+        },
     )
 
 
