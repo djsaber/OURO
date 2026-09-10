@@ -1,7 +1,7 @@
 # OURO 会话撤销、Harness 状态与插件交互实施计划
 
 > 文档类型：本次改进实施计划
-> 状态：实施中；M1–M3 已实现并完成阶段回归，M4–M6 未完成
+> 状态：实施中；M1–M4 已完成并通过阶段回归；M5–M6 未完成
 > 计划基线：2026-09-08
 > 范围：仅本次状态、插件交互与撤销改进，不包含其他路线图项目
 
@@ -149,18 +149,50 @@ Ruff、mypy（297 个源文件）、编译及改动文件格式检查通过；�
 
 依赖 M3。底层契约完整后才替换原撤销限制。
 
-- [ ] 原生撤销接受任意消息角色和精确 before_message_id，恢复消息前版本，递增代次，修正消息头与派生状态。
-- [ ] 从裁剪前置条件中移除工具帧限制；Provider 投影处理不完整交换，保留原切口并提供明确诊断。
-- [ ] 应用入口按真实来源只接受直接用户输入，支持 message_id/queue_id 和约定的默认选择，返回完整输入。
-- [ ] 消费与 acknowledge 收敛为原子语义；取消/消费竞争按 queue_id 定位，不出现双消费或误选其他输入。
-- [ ] 撤销保留其他待消费直接用户输入，不自动 drain；旧 epoch 自动输入和交付失效，恢复消费重新检查策略。
-- [ ] 将代次检查接到工具结果、状态命令、Continuation、挂起恢复、后台调用和 child delivery 所有会话效果入口。
-- [ ] /continue 在撤销后基于当前历史创建新执行，不恢复旧 Run checkpoint，不重复添加保留输入或补交撤回结果。
-- [ ] 保留 parent/child 审计；按既有归属取消相关工作，以父提交检查拒绝迟到投递。
-- [ ] 用受控同步点覆盖执行所有权、中断结算、命令/工具/撤销竞争；提交后取消按实际 durable 结果处理。
+- [x] 原生撤销接受任意消息角色和精确 before_message_id，恢复消息前版本，递增代次，修正消息头与派生状态。
+- [x] 从裁剪前置条件中移除工具帧限制；Provider 投影处理不完整交换，保留原切口并提供明确诊断。
+- [x] 应用入口按真实来源只接受直接用户输入，支持 message_id/queue_id 和约定的默认选择，返回完整输入。
+- [x] 消费与 acknowledge 收敛为原子语义；取消/消费竞争按 queue_id 定位，不出现双消费或误选其他输入。
+- [x] 撤销保留其他待消费直接用户输入，不自动 drain；旧 epoch 自动输入和交付失效，恢复消费重新检查策略。
+- [x] 将代次检查接到工具结果、状态命令、Continuation、挂起恢复、后台调用和 child delivery 所有会话效果入口。
+- [x] /continue 在撤销后基于当前历史创建新执行，不恢复旧 Run checkpoint，不重复添加保留输入或补交撤回结果。
+- [x] 保留 parent/child 审计；按既有归属取消相关工作，以父提交检查拒绝迟到投递。
+- [x] 用受控同步点覆盖执行所有权、中断结算、命令/工具/撤销竞争；提交后取消按实际 durable 结果处理。
 
 退出条件：AC-01/03/06/08/09/10/12 全部对应场景通过；不存在按插件 id、消息格式或 delegation 存在性
 建立的 blanket 撤销禁令。所有新增成功路径都有相应失败与恢复证据。
+
+M4 实现收口（2026-09-10）：原生裁剪恢复 before_harness_version 并递增 history_epoch，旧 Run/事件/usage
+保留审计身份。应用 undo 按直接用户来源选择 message_id/queue_id，返回完整输入；Runtime 拥有提交后的租约与
+bound child 结算。活动 Run 查询、请求准备、挂起、续跑与恢复均按当前代次判定执行有效性；审批绑定具体
+controller activation。没有增加插件专用 undo 或撤销业务回调。
+
+新 Run 启动及运行边界消费统一提交整批输入、消息锚点、Run 与队列移除，删除独立 acknowledge 和旧半消费
+修复分支。独立输入保留身份并清除旧许可；Host 接受事实复用原生提交回执；旧 finalizer 和排队 continuation
+不能在撤销后驱动消费。父结果在父接受边界检查代次，bound 子工作沿用已有取消结算。子会话的新执行复用
+委派准备入口，保留冻结定义、工具范围、约束和预算，并更新当前 child Run 身份。
+
+阶段验证入口及对应边界：
+
+| 验收 | 测试入口与证据 |
+|---|---|
+| AC-01/10 | test_history_execution、test_harness_commits：任意角色及工具结果内部精确切口；Provider 排除不完整交换并保留诊断；新 Run 不补旧结果、不重复输入 |
+| AC-03 | test_harness_tools、test_builtin_goal、test_builtin_plan：真实 Todo/Goal 状态与用量、Plan 连续中断撤销；恢复原版本，再写入使用新身份，计划文件保留 |
+| AC-06/08 | test_harness_commands、test_history_execution、test_undo_inputs：命令/撤销、取消/消费受控竞争；完整批次决定前失败、决定回复丢失、同身份重试及忙碌时拒绝 |
+| AC-09 | test_harness_tools、test_harness_continuations、test_undo_inputs、test_builtin_plan：旧工具范围/续跑计划/交互失效；旧终态不能 drain，Supervisor 旧请求拒绝执行 |
+| AC-12 | test_agents：父接受前发生撤销时拒绝 child 迟到交付；已完成父 Run 的 bound child 被结算，保留子事实；子会话新执行保留委派约束 |
+
+M4 阶段验证（Windows）：集中运行 513 项通过，2 项 File 专属故障点在 SQLite 参数下预期跳过；
+覆盖 Runtime、Agent、精确撤销、队列、Harness、真实 Plan/Goal、Supervisor、两后端原生提交/迁移、
+TUI 历史命令及架构边界。补充上下文压缩、Agent 恢复、执行所有权和消息裁剪回归 76 项通过；
+Supervisor 查询避免新增消息历史读取后，31 项回归通过；排队继续请求竞争及 Plan 连续撤销另跑 3 项通过。
+这些为分别运行的结果，存在重叠，不合计为独立用例总数。
+
+Ruff、mypy（297 个源文件）、编译、33 个改动 Python 文件的格式检查与 diff 空白检查通过；
+三份文档的 19 个本地链接有效。完整仓库质量门槛仍由 M6 执行。
+
+TUI 本阶段只接入新 undo 结果及现有技能/资源草稿表示。Host 代次观察、完整输入显示、重启活动、跨后端
+生命周期与性能测量仍由 M5 验收；当前证据不代表最初 Windows TUI 崩溃场景已经完成端到端验收。
 
 ## 8. M5：Host 观察、输入与会话生命周期
 

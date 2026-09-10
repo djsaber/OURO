@@ -32,7 +32,10 @@ class SessionRecoveryService:
         with self.store.session_mutation(session_id):
             runtime = self.store.load_runtime_session(session_id)
             incomplete_run_ids = tuple(
-                run.run_id for run in runtime.runs if run.status in _INCOMPLETE_RUN_STATUSES
+                run.run_id
+                for run in runtime.runs
+                if run.history_epoch == runtime.session.history_epoch
+                and run.status in _INCOMPLETE_RUN_STATUSES
             )
             events = (
                 self._load_run_events(session_id, incomplete_run_ids)
@@ -88,6 +91,9 @@ class SessionRecoveryService:
         recovered_incomplete = False
 
         for run in runs:
+            if run.history_epoch != session.history_epoch:
+                recovered_runs.append(run)
+                continue
             interaction_error = _interaction_state_error(run)
             if not run_is_live and (
                 run.status in _INCOMPLETE_RUN_STATUSES or interaction_error is not None
@@ -328,6 +334,7 @@ def _reconcile_session_projection(
     messages: list[MessageRecord],
     runs: list[RunRecord],
 ) -> tuple[SessionRecord, bool]:
+    runs = [run for run in runs if run.history_epoch == session.history_epoch]
     active_runs = [run for run in runs if run.status in ACTIVE_RUN_STATUSES]
     if len(active_runs) > 1:
         active_ids = ", ".join(run.run_id for run in active_runs)

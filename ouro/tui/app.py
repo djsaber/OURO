@@ -3581,7 +3581,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _edit_session_history(self, command: str) -> None:
         if (
             self._visible_read_only
-            or self._has_active_run()
+            or (command != "/undo" and self._has_active_run())
             or self._activity_override is not None
             or self._history_edit_in_progress
         ):
@@ -3601,7 +3601,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if command == "/undo":
                 selected = await self._controller.undo()
                 await self._show_main_session()
-                self._edit_draft(user_message_text(selected))
+                self._edit_draft(user_message_text(selected.input))
+                if selected.resource_refs:
+                    self.notify(
+                        f"Restored {len(selected.resource_refs)} attachment(s) to this input"
+                    )
             else:
                 result = await self._controller.continue_session()
                 await self._apply_run_result(result)

@@ -81,7 +81,7 @@ async def test_restart_after_continue_recovers_only_the_current_attempt(store, n
 
 
 @pytest.mark.parametrize("status", ["failed", "aborted", "recoverable", "running", "paused"])
-async def test_continue_keeps_run_and_input_identity_and_discards_partial_tail(store, status):
+async def test_continue_keeps_run_input_and_partial_history(store, status):
     session = SessionRecord()
     store.create_session(session)
     run = RunRecord(
@@ -123,9 +123,11 @@ async def test_continue_keeps_run_and_input_identity_and_discards_partial_tail(s
         assert result.run.run_id == run.run_id
         assert len(snapshot.runs) == 1
         assert snapshot.messages[0] == prompt
-        assert len(snapshot.messages) == 2
-        assert snapshot.messages[1].text_content == "Hello from OURO."
-        assert snapshot.session.message_count == 2
+        assert len(snapshot.messages) == 3
+        assert snapshot.messages[1] == partial
+        assert snapshot.messages[2].text_content == "Hello from OURO."
+        assert snapshot.session.message_count == 3
+        assert snapshot.session.history_epoch == 0
         assert not any(event.event_type == "user_message_added" for event in result.events)
         with pytest.raises(ValueError, match="completed"):
             await runtime.continue_run(session_id=session.session_id)
@@ -181,7 +183,8 @@ async def test_undo_incomplete_exchange_then_edit_and_continue_in_original_sessi
         assert selected.text_content == "continue"
         assert store.load_runtime_session(first.session.session_id).messages == before.messages[:2]
         continued = await runtime.continue_run(session_id=first.session.session_id)
-        assert continued.run.run_id == first.run.run_id
+        assert continued.run.run_id != first.run.run_id
+        assert continued.run.history_epoch == 1
         revised = await runtime.run("revised input", session_id=first.session.session_id)
         assert revised.run.status == "failed"
         # The next incomplete frame may be cut even though an older attempt also failed.

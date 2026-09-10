@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from ouro.application.queued_inputs import QUEUED_INPUTS_KEY, QueuedInputQueue
 from ouro.core.messages import MessageRecord, SkillActivationContent
+from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_controls import HostSessionInput, SessionInputRequest
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
@@ -42,11 +43,11 @@ def test_queued_input_queue_persists_items_fifo_and_clears_when_empty(tmp_path) 
 
     first = queue.peek(snapshot)
     assert first is not None
-    queue.acknowledge(snapshot, first.queue_id)
+    queue.cancel_user_input(session_id=session.session_id, queue_id=first.queue_id)
     snapshot = store.load_session(session.session_id)
     second = queue.peek(snapshot)
     assert second is not None
-    queue.acknowledge(snapshot, second.queue_id)
+    queue.cancel_user_input(session_id=session.session_id, queue_id=second.queue_id)
     snapshot = store.load_session(session.session_id)
 
     assert first.prompt == "first"
@@ -150,7 +151,7 @@ def test_queued_input_queue_drops_host_item_without_source_attribution(tmp_path)
     assert QUEUED_INPUTS_KEY not in snapshot.session.metadata
 
 
-def test_queued_input_queue_requires_explicit_acknowledgement(tmp_path) -> None:
+def test_queued_input_queue_read_does_not_consume(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Queue")
@@ -171,7 +172,7 @@ def test_queued_input_queue_requires_explicit_acknowledgement(tmp_path) -> None:
     assert first is not None
     assert repeated is not None
     assert repeated.queue_id == first.queue_id
-    queue.acknowledge(snapshot, first.queue_id)
+    queue.cancel_user_input(session_id=session.session_id, queue_id=first.queue_id)
     assert queue.peek(store.load_session(session.session_id)) is None
 
 
@@ -484,8 +485,14 @@ def test_host_receipt_is_atomic_across_pending_and_consumed_input(tmp_path, back
         }
     )
     with first.session_mutation(session.session_id):
-        first.append_message(message)
-        queues[0].acknowledge(first.load_runtime_session(session.session_id), request.queue_id)
+        before = first.load_session_record(session.session_id)
+        first.commit_session(
+            SessionCommit(
+                before=before,
+                after=queues[0].without_inputs(before, (request.queue_id,)),
+                steps=(SessionCommitStep(message=message),),
+            )
+        )
     with ThreadPoolExecutor(max_workers=4) as executor:
         retried = list(
             executor.map(

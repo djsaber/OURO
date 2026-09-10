@@ -224,6 +224,9 @@ def prepare_session_commit(
             raise PersistenceError("history checkpoint does not belong to the selected boundary")
         harness = restore
         session.history_epoch += 1
+        session.status = "idle"
+        session.active_run_id = None
+        session.last_run_id = None
         session.message_count = max(0, current.message_count - truncation.removed_count)
         session.last_message_id = (
             truncation.last_retained.message_id if truncation.last_retained is not None else None

@@ -61,6 +61,7 @@ from ouro.core.errors import DelegationRevisionConflictError, PersistenceError, 
 from ouro.core.redaction import redact_text
 from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason
 from ouro.core.run_transitions import plan_run_transition
+from ouro.core.session_commits import SessionCommit, SessionCommitConflict
 from ouro.core.session_controls import DelegatedTaskInput, HostSessionInput
 from ouro.core.state import (
     ACTIVE_RUN_STATUSES,
@@ -474,7 +475,10 @@ class AgentService:
                     child_delegation_id=relation.delegation_id,
                 )
             return _TerminalSettlementTargets()
-        if run.status not in {"aborted", "failed"}:
+        if (
+            run.status not in {"aborted", "failed"}
+            and run.history_epoch == parent_session.history_epoch
+        ):
             return _TerminalSettlementTargets()
         self._resolve_interrupted_parent_wait(run.session_id, run.run_id)
         relations = tuple(
@@ -535,6 +539,8 @@ class AgentService:
 
         parent_session = self.store.load_session_record(request.parent_session_id)
         parent_run = self.store.load_run(request.parent_session_id, request.parent_run_id)
+        if parent_run.history_epoch != parent_session.history_epoch:
+            raise SessionCommitConflict("Parent Run belongs to withdrawn Session history")
         active_parent = (
             parent_run.status in ACTIVE_RUN_STATUSES
             and parent_session.active_run_id == parent_run.run_id
@@ -1029,8 +1035,26 @@ class AgentService:
         self._execution.own_receipt(handle)
         return await run_blocking(self._handle, relation)
 
+    async def prepare_history_continuation(self, run: RunRecord) -> RunRecord:
+        session = await run_blocking(self.store.load_session_record, run.session_id)
+        relation = await run_blocking(
+            self.store.find_delegation_by_child_session,
+            session.agent_root_session_id,
+            session.session_id,
+        )
+        if relation is None:
+            raise PersistenceError("Child Session has no owning Delegation")
+        lock = self._result_locks.setdefault(relation.delegation_id, asyncio.Lock())
+        async with lock:
+            relation = await run_blocking(self._load_by_id, relation.delegation_id)
+            updated, prepared = await run_blocking(
+                self._prepare_agent_follow_up, relation, continuation=run
+            )
+            self._execution.watch(updated)
+            return prepared
+
     def _prepare_agent_follow_up(
-        self, relation: DelegationRecord
+        self, relation: DelegationRecord, *, continuation: RunRecord | None = None
     ) -> tuple[DelegationRecord, RunRecord]:
         assert relation.child_session_id is not None
         assert relation.current_child_run_id is not None
@@ -1054,15 +1078,17 @@ class AgentService:
             relation.current_child_run_id,
         )
         run = RunRecord(
+            run_id=continuation.run_id if continuation is not None else new_id("run"),
             session_id=child.session_id,
+            history_epoch=child.history_epoch,
             status="queued",
-            origin="host",
+            origin=continuation.origin if continuation is not None else "host",
             parent_run_id=relation.parent_run_id,
             initiator_id=f"ouro.subagents/{relation.delegation_id}",
-            trigger="subagent_follow_up",
+            trigger="continue" if continuation is not None else "subagent_follow_up",
             model=relation.definition.model or child.current_model,
             metadata={
-                **self._extension_metadata(previous_run),
+                **(self._extension_metadata(previous_run) if continuation is None else {}),
                 "delegation_id": relation.delegation_id,
                 "root_session_id": relation.root_session_id,
                 "agent_id": relation.agent_id,
@@ -1087,8 +1113,9 @@ class AgentService:
                 current_run=None,
                 next_run=run,
             )
-            self.store.save_run(transition.run)
-            self.store.save_session(transition.session)
+            self.store.commit_session(
+                SessionCommit(before=latest_child, after=transition.session, runs=(transition.run,))
+            )
             run = transition.run
         relation = self.store.save_delegation(
             relation.model_copy(
@@ -1392,7 +1419,13 @@ class AgentService:
                 )
             except (FileNotFoundError, PersistenceError):
                 continue
-            if parent_run.status in {"aborted", "failed"}:
+            parent_session = await run_blocking(
+                self.store.load_session_record, relation.parent_session_id
+            )
+            if (
+                parent_run.status in {"aborted", "failed"}
+                or parent_run.history_epoch != parent_session.history_epoch
+            ):
                 terminal_parents[(parent_run.session_id, parent_run.run_id)] = parent_run
         for parent_run in terminal_parents.values():
             await self.settle_terminal_run(parent_run)
@@ -1723,17 +1756,24 @@ class AgentService:
             result = relation.result
             assert result is not None
             prompt = await run_blocking(self._delivery_prompt, relation)
-            receipt = await self.scheduler.route_host_input(
-                HostSessionInput(
-                    prompt=prompt,
-                    mode="steer",
-                    host_source_id=f"ouro.subagents/results/{result.delivery.delivery_id}",
-                    semantic_tag="subagent-result",
-                    queue_id=result.delivery.delivery_id,
-                    resource_refs=parent_resource_refs,
-                ),
-                session_id=relation.parent_session_id,
+            parent_run = await run_blocking(
+                self.store.load_run, relation.parent_session_id, relation.parent_run_id
             )
+            try:
+                receipt = await self.scheduler.route_host_input(
+                    HostSessionInput(
+                        prompt=prompt,
+                        mode="steer",
+                        host_source_id=f"ouro.subagents/results/{result.delivery.delivery_id}",
+                        semantic_tag="subagent-result",
+                        queue_id=result.delivery.delivery_id,
+                        resource_refs=parent_resource_refs,
+                        history_epoch=parent_run.history_epoch,
+                    ),
+                    session_id=relation.parent_session_id,
+                )
+            except SessionCommitConflict:
+                return await run_blocking(self._skip_withdrawn_delivery, relation)
             return await self._record_delivery(
                 relation,
                 target_queue_id=receipt.queue_id,
@@ -1753,11 +1793,38 @@ class AgentService:
             return relation, (), False
         if result.delivery.policy in {"notify_only", "resume_waiter"}:
             return relation, (), False
+        parent = self.store.load_session_record(relation.parent_session_id)
+        parent_run = self.store.load_run(relation.parent_session_id, relation.parent_run_id)
+        if parent_run.history_epoch != parent.history_epoch:
+            return self._skip_withdrawn_delivery(relation), (), False
         parent_resource_refs = self._copy_result_resources_to_parent(
             (relation,),
             parent_session_id=relation.parent_session_id,
         )
         return relation, parent_resource_refs, True
+
+    def _skip_withdrawn_delivery(self, relation: DelegationRecord) -> DelegationRecord:
+        with self.store.session_mutation(relation.root_session_id):
+            latest = self.store.load_delegation(relation.root_session_id, relation.delegation_id)
+            if latest.result is None or latest.result.delivery.status != "pending":
+                return latest
+            return self.store.save_delegation(
+                latest.model_copy(
+                    update={
+                        "result": latest.result.model_copy(
+                            update={
+                                "delivery": latest.result.delivery.model_copy(
+                                    update={
+                                        "status": "skipped",
+                                        "error": "parent_history_withdrawn",
+                                    }
+                                ),
+                            }
+                        )
+                    }
+                ),
+                expected_revision=latest.revision,
+            )
 
     def _delivery_prompt(self, relation: DelegationRecord) -> str:
         assert relation.result is not None

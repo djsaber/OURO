@@ -12,7 +12,7 @@ from ouro.core.context import ContextMetrics, ProviderContext
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import (
@@ -32,6 +32,21 @@ from ouro.sessions.index import (
 )
 
 SessionSort = Literal["updated_desc", "created_desc", "title"]
+
+
+class SessionUndoResult(ApplicationDTO):
+    session: SessionRecord
+    input: ModelMessage
+    resource_refs: tuple[str, ...] = ()
+    message_id: str | None = None
+    queue_id: str | None = None
+    run_id: str | None = None
+    removed_count: int = 0
+    cancelled_queue_ids: tuple[str, ...] = ()
+
+    @property
+    def text_content(self) -> str:
+        return self.input.text_content
 
 
 class SessionCatalogQuery(ApplicationDTO):

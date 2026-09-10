@@ -62,6 +62,7 @@ class _RunJob:
     background: bool = False
     prepared_run: RunRecord | None = None
     continue_existing: bool = False
+    history_epoch: int | None = None
     session_input: HostSessionInput | DelegatedTaskInput | None = None
     host_input_receipt: HostInputReceipt | None = None
     agent_wait_resolution: AgentWaitResolution | None = None
@@ -305,7 +306,7 @@ class RuntimeSupervisor:
             await self.runtime.reconcile_session(session_id)
         if session_id in self._jobs_by_session:
             raise SessionBusyError(f"session already has a supervised run: {session_id}")
-        if maybe_active_run(await run_blocking(self.store.load_runs, session_id)) is not None:
+        if await run_blocking(self._load_active_run, session_id) is not None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
 
         handle = RunHandle(session_id=session_id)
@@ -314,7 +315,7 @@ class RuntimeSupervisor:
         return handle
 
     async def continue_run(self, *, session_id: str, run_id: str | None = None) -> RunHandle:
-        """Schedule existing interrupted execution without creating a new Run."""
+        """Schedule a continuation against the history accepted by this Host request."""
         await self.start()
         if session_id in self._jobs_by_session:
             raise SessionBusyError(f"session already has a supervised run: {session_id}")
@@ -324,7 +325,13 @@ class RuntimeSupervisor:
             raise SessionBusyError("The requested continuation is no longer the latest run")
         handle = RunHandle(session_id=session_id)
         await self._enqueue_job(
-            _RunJob(handle=handle, prompt="", title=None, continue_existing=True),
+            _RunJob(
+                handle=handle,
+                prompt="",
+                title=None,
+                continue_existing=True,
+                history_epoch=snapshot.session.history_epoch,
+            ),
             run_id=run.run_id,
         )
         return handle
@@ -346,7 +353,7 @@ class RuntimeSupervisor:
         session_id = run.session_id
         if session_id in self._jobs_by_session:
             raise SessionBusyError(f"session already has a supervised run: {session_id}")
-        active = maybe_active_run(await run_blocking(self.store.load_runs, session_id))
+        active = await run_blocking(self._load_active_run, session_id)
         if active is None or active.run_id != run.run_id or active.status != "queued":
             raise SessionBusyError(
                 f"prepared run is not the Session's queued active run: {run.run_id}"
@@ -1065,6 +1072,7 @@ class RuntimeSupervisor:
                         job.result = await self.runtime.continue_run(
                             session_id=job.handle.session_id,
                             run_id=self._snapshots[job.handle.handle_id].run_id,
+                            history_epoch=job.history_epoch,
                         )
                     elif job.prepared_run is not None:
                         job.provider_stream_started.set()
@@ -1283,11 +1291,16 @@ class RuntimeSupervisor:
             return snapshot.session_id
         return handle_or_session
 
+    def _load_active_run(self, session_id: str) -> RunRecord | None:
+        with self.store.session_mutation(session_id):
+            session = self.store.load_session_record(session_id)
+            return maybe_active_run(
+                self.store.load_runs(session_id), history_epoch=session.history_epoch
+            )
+
     async def _finish_interrupted_job(self, job: _RunJob) -> None:
         try:
-            active = maybe_active_run(
-                await run_blocking(self.store.load_runs, job.handle.session_id)
-            )
+            active = await run_blocking(self._load_active_run, job.handle.session_id)
         except Exception:  # noqa: BLE001 - shutdown must still release process state.
             active = None
         self._finish_job(

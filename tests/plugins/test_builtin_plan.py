@@ -629,6 +629,50 @@ async def test_plan_off_cancels_activation_bound_pending_approval(tmp_path) -> N
     await application.close()
 
 
+async def test_interrupted_plan_can_be_undone_repeatedly_without_reverting_files(tmp_path):
+    home, workspace = tmp_path / "home", tmp_path / "workspace"
+    workspace.mkdir()
+    provider = PlanBuildProvider()
+    runtime, store = _runtime(home, workspace, provider)
+    application = LocalApplication.from_runtime(runtime, home=home)
+    await _enable_plan_mode(application)
+    session_id = None
+    versions = set()
+    try:
+        for epoch in range(2):
+            provider.stream_count = 0
+            waiting = await runtime.run(
+                "Design the implementation", session_id=session_id, approval_mode="auto"
+            )
+            session_id = waiting.session.session_id
+            assert waiting.run.status == "waiting_user"
+            current = store.load_harness(session_id)
+            assert current.version_id not in versions
+            versions.add(current.version_id)
+            invocation = waiting.run.active_tool_batch.calls[-1].invocation
+            assert (
+                invocation.interaction_activation_id
+                == current.state.controls.activations[0].activation_id
+            )
+            plan_path = provider.plan_path
+            plan_text = plan_path.read_text(encoding="utf-8")
+            await runtime.abort_run(session_id=session_id, run_id=waiting.run.run_id)
+            audit = store.load_run(session_id, waiting.run.run_id)
+            undone = await runtime.undo(session_id)
+            assert undone.session.history_epoch == epoch + 1
+            assert not store.load_runtime_session(session_id).messages
+            state = store.load_harness(session_id).state
+            assert not state.states and not state.controls.activations
+            assert store.load_run(session_id, waiting.run.run_id) == audit
+            assert plan_path.read_text(encoding="utf-8") == plan_text
+            with pytest.raises(ValueError, match="not waiting for user input"):
+                await runtime.answer_user(
+                    session_id=session_id, run_id=waiting.run.run_id, answer={"action": "accept"}
+                )
+    finally:
+        await application.close()
+
+
 @pytest.mark.asyncio
 async def test_plan_off_releases_controller_without_creating_run_or_deleting_artifact(
     tmp_path,

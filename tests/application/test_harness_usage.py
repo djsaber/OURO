@@ -11,7 +11,7 @@ from ouro.core.harness import HarnessState
 from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_controls import SessionControlActivation, SessionControlState
-from ouro.core.state import SessionRecord
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.plugins.harness_calls import PluginStateView
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
@@ -86,15 +86,12 @@ async def test_native_usage_survives_undo_and_keeps_request_attribution(store, t
                 steps=(SessionCommitStep(harness=HarnessState(controls=goal_controls("goal-b"))),),
             )
         )
-        latest = original_run.model_copy(
-            update={
-                "metadata": {
-                    **original_run.metadata,
-                    "session_control_snapshot": app._session_control_snapshot(
-                        session.session_id, run_id=original_run.run_id, model_round=2
-                    ),
-                }
-            }
+        latest = RunRecord(
+            session_id=session.session_id,
+            history_epoch=store.load_session_record(session.session_id).history_epoch,
+        )
+        latest.metadata["session_control_snapshot"] = app._session_control_snapshot(
+            session.session_id, run_id=latest.run_id, model_round=1
         )
         store.save_run(latest)
         for _ in range(2):

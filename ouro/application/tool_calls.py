@@ -70,6 +70,10 @@ _OBSERVER_TOOL_CONTENT_LIMIT = 32_768
 
 
 class AgentControlExecutor(Protocol):
+    async def prepare_history_continuation(self, run: RunRecord) -> RunRecord:
+        """Bind a new child execution to its existing frozen Delegation contract."""
+        ...
+
     async def continue_children(self, run: RunRecord) -> None:
         """Schedule interrupted children of the original Run without new input."""
         ...

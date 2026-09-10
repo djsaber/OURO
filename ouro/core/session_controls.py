@@ -97,6 +97,7 @@ class HostSessionInput(SessionInputRequest):
     """A scaffold input produced by an OURO Host/Application component."""
 
     scaffold: Literal[True] = True
+    history_epoch: int | None = Field(default=None, ge=0)
     host_source_id: str = Field(min_length=1)
     semantic_tag: SemanticTag | None = None
     queue_id: str | None = Field(default=None, min_length=1, max_length=256)

@@ -126,6 +126,9 @@ class RunContinuationService:
         ):
             return RunContinuationSettlement(run=run)
 
+        withdrawn = await run_blocking(self.settle_withdrawn, run)
+        if withdrawn is not None:
+            return withdrawn
         if checkpoint.settlement_plan is not None:
             return await self._settle_plan(run, checkpoint.settlement_plan)
         before, draft = await run_blocking(
@@ -387,6 +390,20 @@ class RunContinuationService:
             )
         ]
 
+    def settle_withdrawn(self, run: RunRecord) -> RunContinuationSettlement | None:
+        """Cancel an obsolete execution permit without loading its plugin generation."""
+        with self.store.session_mutation(run.session_id):
+            session = self.store.load_session_record(run.session_id)
+            if run.history_epoch == session.history_epoch:
+                return None
+            latest = self.store.load_run(run.session_id, run.run_id)
+            if latest.continuation is None or latest.continuation.state == "resolved":
+                return RunContinuationSettlement(run=latest)
+            resolved = self._resolve_locked(
+                latest, action="pause", reason="session_history_withdrawn"
+            )
+            return RunContinuationSettlement(run=resolved, settled=True)
+
     def _stage_plan(
         self,
         run: RunRecord,
@@ -471,6 +488,7 @@ class RunContinuationService:
                     item = QueuedInput(
                         queue_id=checkpoint.queue_id,
                         queued_at=utc_now(),
+                        history_epoch=before.history_epoch,
                         prompt=plan.prompt,
                         mode=plan.mode,
                         title=plan.title,

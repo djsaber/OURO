@@ -53,6 +53,7 @@ from ouro.core.errors import (
     PersistenceError,
 )
 from ouro.core.events import EventRecord
+from ouro.core.message_frames import project_tool_exchanges
 from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import MessageRecord, ModelMessage, model_visible_message
@@ -63,6 +64,7 @@ from ouro.core.provider import (
     ProviderStreamEvent,
     Usage,
 )
+from ouro.core.session_commits import SessionCommitConflict
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolDefinition
 from ouro.prompts import AFK_CONTEXT_PROMPT, SUMMARIZATION_PROMPT, render_summarization_prompt
@@ -727,6 +729,7 @@ class ContextPreparationService:
         active = await run_blocking(self.store.load_active_compaction, session.session_id)
         source_messages, view = await run_blocking(
             self._project_context,
+            session=session,
             messages=messages,
             active=active,
             tools=tools,
@@ -798,6 +801,7 @@ class ContextPreparationService:
             active = execution.record or active
             source_messages, view = await run_blocking(
                 self._project_context,
+                session=session,
                 messages=messages,
                 active=active,
                 tools=tools,
@@ -979,26 +983,32 @@ class ContextPreparationService:
 
         if context.context_id is None:
             raise ValueError("prepared model context is missing its identity")
-        self.store.save_latest_context(
-            ContextSnapshotRecord(
-                context_id=context.context_id,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                turn_id=turn_id,
-                model_round=model_round,
-                provider_id=adapter.model.provider_id,
-                endpoint_id=adapter.model.endpoint_id,
-                model_id=adapter.model.model_id,
-                supports_vision=adapter.model.supports_vision,
-                system_prompt=context.system_prompt,
-                injected_messages=context.model_messages[:injected_message_count],
-                source_messages=source_messages,
-                tool_definitions=context.tool_definitions,
-                metrics=context.metrics,
-                context_metadata=context.context_metadata,
-                context_digest=context_view_digest(context),
+        with self.store.session_mutation(session.session_id):
+            if (
+                run.history_epoch
+                != self.store.load_session_record(session.session_id).history_epoch
+            ):
+                raise SessionCommitConflict("Run belongs to withdrawn Session history")
+            self.store.save_latest_context(
+                ContextSnapshotRecord(
+                    context_id=context.context_id,
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    turn_id=turn_id,
+                    model_round=model_round,
+                    provider_id=adapter.model.provider_id,
+                    endpoint_id=adapter.model.endpoint_id,
+                    model_id=adapter.model.model_id,
+                    supports_vision=adapter.model.supports_vision,
+                    system_prompt=context.system_prompt,
+                    injected_messages=context.model_messages[:injected_message_count],
+                    source_messages=source_messages,
+                    tool_definitions=context.tool_definitions,
+                    metrics=context.metrics,
+                    context_metadata=context.context_metadata,
+                    context_digest=context_view_digest(context),
+                )
             )
-        )
 
     async def compact(
         self,
@@ -1026,6 +1036,7 @@ class ContextPreparationService:
         )
         _, initial_view = await run_blocking(
             self._project_context,
+            session=session,
             messages=messages,
             active=active,
             tools=tools,
@@ -1154,6 +1165,7 @@ class ContextPreparationService:
             )
             _, final_view = await run_blocking(
                 self._project_context,
+                session=session,
                 messages=messages,
                 active=record,
                 tools=tools,
@@ -1176,7 +1188,7 @@ class ContextPreparationService:
                     ),
                 }
             )
-            await run_blocking(self._commit_compaction, record)
+            await run_blocking(self._commit_compaction, record, run)
         except Exception as exc:
             if isinstance(exc, CompactionStrategyError):
                 sequence = await self._record_model_outputs(
@@ -1312,6 +1324,7 @@ class ContextPreparationService:
     def _project_context(
         self,
         *,
+        session: SessionRecord,
         messages: list[MessageRecord],
         active: CompactionRecord | None,
         tools: list[ToolDefinition],
@@ -1319,7 +1332,28 @@ class ContextPreparationService:
         adapter: RuntimeAdapter,
         skill_instructions: str,
     ) -> tuple[list[MessageRecord], ContextView]:
-        source_messages = project_recovery_messages(project_compacted_messages(messages, active))
+        complete_messages, excluded = project_tool_exchanges(
+            project_compacted_messages(messages, active)
+        )
+        # Opaque provider state is an execution permit, not rollbackable business state.
+        artifact_runs = {
+            message.run_id
+            for message in complete_messages
+            if message.provider_continuation is not None and message.run_id is not None
+        }
+        replayable = {
+            run_id
+            for run_id in artifact_runs
+            if self.store.load_run(session.session_id, run_id).history_epoch
+            == session.history_epoch
+        }
+        complete_messages = [
+            message.model_copy(update={"provider_continuation": None})
+            if message.provider_continuation is not None and message.run_id not in replayable
+            else message
+            for message in complete_messages
+        ]
+        source_messages = project_recovery_messages(complete_messages)
         effective_messages = self._materialize_messages(source_messages, adapter)
         view = self._build_view(
             messages=effective_messages,
@@ -1334,6 +1368,11 @@ class ContextPreparationService:
                 "compaction_id": active.compaction_id if active else None,
                 "compaction_strategy": active.strategy_id if active else None,
                 "covered_message_count": len(active.covered_message_ids) if active else 0,
+                "history_diagnostics": (
+                    [{"code": "incomplete_tool_exchange", "message_ids": list(excluded)}]
+                    if excluded
+                    else []
+                ),
             }
         )
         return source_messages, view.model_copy(update={"context_metadata": metadata})
@@ -1357,8 +1396,10 @@ class ContextPreparationService:
             reserved_output_tokens=adapter.model.max_output_tokens,
         )
 
-    def _commit_compaction(self, record: CompactionRecord) -> None:
+    def _commit_compaction(self, record: CompactionRecord, run: RunRecord) -> None:
         with self.store.session_mutation(record.session_id):
+            if run.history_epoch != self.store.load_session_record(record.session_id).history_epoch:
+                raise SessionCommitConflict("Run belongs to withdrawn Session history")
             self.store.append_compaction(record)
             self.store.activate_compaction(record.session_id, record.compaction_id)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from typing import Literal
 
@@ -11,6 +12,7 @@ from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import SkillActivationContent
+from ouro.core.session_commits import SessionCommit, SessionCommitConflict
 from ouro.core.session_controls import HostSessionInput, SessionInputMode, SessionInputRequest
 from ouro.core.state import SessionRecord
 from ouro.sessions import RuntimeSessionSnapshot, SessionRepository
@@ -34,6 +36,8 @@ class QueuedUserInputView(ApplicationDTO):
 
 
 class QueuedInput(OuroModel):
+    history_epoch: int = Field(default=0, ge=0)
+    history_bound: bool = False
     queue_id: str = Field(min_length=1)
     prompt: str = ""
     skill_activation: SkillActivationContent | None = None
@@ -172,6 +176,8 @@ class QueuedInputQueue:
         queue_id = request.queue_id or new_id("queued")
         with self.store.session_mutation(session_id):
             session = self.store.load_session_record(session_id)
+            if request.history_epoch is not None and request.history_epoch != session.history_epoch:
+                raise SessionCommitConflict("Host input belongs to withdrawn Session history")
             existing = self.find_session(session, queue_id)
             if existing is not None:
                 if (
@@ -216,6 +222,10 @@ class QueuedInputQueue:
                     None,
                     session,
                 )
+            if self.store.load_commit(session_id, _input_operation_id(queue_id)) is not None:
+                raise ValueError(
+                    "Host input was already accepted and has been withdrawn or cancelled"
+                )
             session, item, _ = self.enqueue(
                 snapshot=RuntimeSessionSnapshot(session=session),
                 prompt=request.prompt,
@@ -229,6 +239,7 @@ class QueuedInputQueue:
                 semantic_tag=request.semantic_tag,
                 host_source_id=request.host_source_id,
                 caused_by_run_id=session.active_run_id,
+                history_bound=request.history_epoch is not None,
             )
             return (
                 HostInputReceipt(
@@ -269,9 +280,12 @@ class QueuedInputQueue:
         extension_catalog_id: str | None = None,
         extension_generations: tuple[dict[str, object], ...] = (),
         coalesce_key: str | None = None,
+        history_bound: bool = False,
     ) -> tuple[SessionRecord, QueuedInput, int]:
         batch_id = new_id("batch") if coalesce_key is not None else None
         item = QueuedInput(
+            history_epoch=snapshot.session.history_epoch,
+            history_bound=history_bound,
             queue_id=queue_id or new_id("queued"),
             prompt=prompt,
             skill_activation=skill_activation,
@@ -304,6 +318,8 @@ class QueuedInputQueue:
         )
         with self.store.session_mutation(snapshot.session.session_id):
             latest = self.store.load_session_record(snapshot.session.session_id)
+            if item.history_epoch != latest.history_epoch:
+                raise SessionCommitConflict("Queued input belongs to withdrawn Session history")
             metadata = dict(latest.metadata)
             queue = self._raw_queue(metadata)
             for raw_item in queue:
@@ -313,7 +329,14 @@ class QueuedInputQueue:
             queue.append(item.model_dump(mode="python"))
             metadata[QUEUED_INPUTS_KEY] = queue
             session = latest.model_copy(update={"metadata": metadata, "updated_at": utc_now()})
-            self.store.save_session(session)
+            self.store.commit_session(
+                SessionCommit(
+                    operation_id=_input_operation_id(item.queue_id),
+                    before=latest,
+                    after=session,
+                    output={"queue_id": item.queue_id},
+                )
+            )
         return session, item, len(queue)
 
     def enqueue_batch(
@@ -340,6 +363,7 @@ class QueuedInputQueue:
         batch_id = new_id("batch")
         queued_items = tuple(
             QueuedInput(
+                history_epoch=snapshot.session.history_epoch,
                 queue_id=new_id("queued"),
                 prompt=item.prompt,
                 mode=item.mode,
@@ -375,6 +399,8 @@ class QueuedInputQueue:
         queued_items: tuple[QueuedInput, ...],
     ) -> tuple[SessionRecord, tuple[QueuedInput, ...]]:
         """Append a prepared unit to the caller's Session draft, without saving it."""
+        if any(item.history_epoch != session.history_epoch for item in queued_items):
+            raise SessionCommitConflict("Queued input belongs to withdrawn Session history")
         first = queued_items[0]
         metadata = dict(session.metadata)
         superseded: list[QueuedInput] = []
@@ -426,6 +452,18 @@ class QueuedInputQueue:
             if item is None:
                 saw_invalid = True
                 continue
+            if item.history_epoch != session.history_epoch:
+                if item.history_bound or item.source in {"plugin", "delegation"}:
+                    continue
+                item = item.model_copy(
+                    update={
+                        "history_epoch": session.history_epoch,
+                        "prompt_policy_checked": False,
+                        "prospective_run_id": None,
+                        "extension_catalog_id": None,
+                        "extension_generations": (),
+                    }
+                )
             if mode is None or item.mode == mode:
                 valid.append(item)
                 if limit is not None and len(valid) >= limit:
@@ -500,58 +538,49 @@ class QueuedInputQueue:
                 return item
         return None
 
-    def acknowledge(self, snapshot: RuntimeSessionSnapshot, queue_id: str) -> None:
-        """Remove an item only after its canonical message is durably appended."""
-
-        with self.store.session_mutation(snapshot.session.session_id):
-            latest = self.store.load_session_record(snapshot.session.session_id)
-            metadata = dict(latest.metadata)
-            queue = self._raw_queue(metadata)
-            for index, raw_item in enumerate(queue):
-                item = self._parse_item(raw_item)
-                if item is not None and item.queue_id == queue_id:
-                    queue.pop(index)
-                    self._save_queue(latest, metadata, queue)
-                    return
-
-    def acknowledge_many(self, *, session_id: str, queue_ids: tuple[str, ...]) -> None:
-        """Atomically remove a complete delivery unit after all messages are durable."""
-
+    def without_inputs(self, session: SessionRecord, queue_ids: tuple[str, ...]) -> SessionRecord:
+        """Stage exact removals for the same decision that appends their messages."""
         selected = set(queue_ids)
-        if not selected:
-            return
-        with self.store.session_mutation(session_id):
-            latest = self.store.load_session_record(session_id)
-            metadata = dict(latest.metadata)
-            queue = self._raw_queue(metadata)
-            retained = []
-            removed: set[str] = set()
-            for raw_item in queue:
-                item = self._parse_item(raw_item)
-                if item is not None and item.queue_id in selected:
-                    removed.add(item.queue_id)
-                else:
-                    retained.append(raw_item)
-            if removed:
-                self._save_queue(latest, metadata, retained)
+        metadata = dict(session.metadata)
+        retained = [
+            raw
+            for raw in self._raw_queue(metadata)
+            if not isinstance(raw, dict) or raw.get("queue_id") not in selected
+        ]
+        if retained:
+            metadata[QUEUED_INPUTS_KEY] = retained
+        else:
+            metadata.pop(QUEUED_INPUTS_KEY, None)
+        return session.model_copy(update={"metadata": metadata})
 
-    def acknowledge_batch(self, *, session_id: str, batch_id: str) -> None:
-        """Atomically acknowledge every still-queued member of one batch."""
-
-        with self.store.session_mutation(session_id):
-            latest = self.store.load_session_record(session_id)
-            metadata = dict(latest.metadata)
-            queue = self._raw_queue(metadata)
-            retained = []
-            removed = False
-            for raw_item in queue:
-                item = self._parse_item(raw_item)
-                if item is not None and item.batch_id == batch_id:
-                    removed = True
-                else:
-                    retained.append(raw_item)
-            if removed:
-                self._save_queue(latest, metadata, retained)
+    def after_withdrawal(self, session: SessionRecord) -> tuple[SessionRecord, tuple[str, ...]]:
+        """Keep independent accepted inputs, replacing only their obsolete execution permits."""
+        retained = []
+        cancelled = []
+        for raw in self._raw_queue(session.metadata):
+            item = self._parse_item(raw)
+            if item is None:
+                continue
+            if item.history_bound or item.source in {"plugin", "delegation"}:
+                cancelled.append(item.queue_id)
+                continue
+            retained.append(
+                item.model_copy(
+                    update={
+                        "history_epoch": session.history_epoch + 1,
+                        "prompt_policy_checked": False,
+                        "prospective_run_id": None,
+                        "extension_catalog_id": None,
+                        "extension_generations": (),
+                    }
+                ).model_dump(mode="python")
+            )
+        metadata = dict(session.metadata)
+        if retained:
+            metadata[QUEUED_INPUTS_KEY] = retained
+        else:
+            metadata.pop(QUEUED_INPUTS_KEY, None)
+        return session.model_copy(update={"metadata": metadata}), tuple(cancelled)
 
     def cancel_for_session_control(
         self,
@@ -634,3 +663,8 @@ class QueuedInputQueue:
             return QueuedInput.model_validate(item)
         except ValidationError:
             return None
+
+
+def _input_operation_id(queue_id: str) -> str:
+    """Acceptance survives consumption and history withdrawal in the native receipt journal."""
+    return "input_" + hashlib.sha256(queue_id.encode("utf-8")).hexdigest()

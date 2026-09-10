@@ -27,6 +27,7 @@ from ouro.core.context import estimate_message_tokens
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
+from ouro.core.session_commits import SessionCommit
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolInvocation
 from ouro.providers.anthropic_codec import messages_to_anthropic
@@ -612,6 +613,7 @@ async def _services(
     tmp_path,
     *,
     spawn_policy: AgentSpawnPolicy | None = None,
+    bind_controls: bool = False,
 ):
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -640,7 +642,6 @@ async def _services(
         system_prompt="BASE INSTRUCTIONS",
         resources=resources,
     )
-    runtime.bind_extensions(agent_definitions=definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
     await supervisor.start()
     service = AgentService(
@@ -650,6 +651,9 @@ async def _services(
         events=runtime.event_recorder,
         resources=resources,
         spawn_policy=spawn_policy,
+    )
+    runtime.bind_extensions(
+        agent_definitions=definitions, agent_controls=service if bind_controls else None
     )
 
     root = SessionRecord(
@@ -928,6 +932,42 @@ async def test_root_continue_resumes_its_interrupted_child_without_new_runs(tmp_
         assert child_runs[0].status == "completed"
         assert child_runs[0].run_id == child.child_run_id
         assert child_attempts == 2
+    finally:
+        await service.close()
+        await supervisor.shutdown()
+
+
+async def test_child_history_continuation_keeps_frozen_contract_and_new_run_ownership(tmp_path):
+    service, supervisor, store, provider = await _services(tmp_path, bind_controls=True)
+    try:
+        child = await service.spawn_agent(
+            SpawnAgentRequest(
+                request_id="host/undo-child",
+                parent_session_id="ses_root",
+                parent_run_id="run_parent",
+                agent_id="reader",
+                task="inspect",
+                description="Inspect repository",
+            )
+        )
+        await service.wait_agents((child.delegation_id,))
+        before = store.load_runtime_session(child.child_session_id)
+        store.commit_session(
+            SessionCommit(before=before.session, before_message_id=before.messages[-1].message_id)
+        )
+        result = await supervisor.runtime.continue_run(session_id=child.child_session_id)
+        assert result.run.status == "completed"
+        assert result.run.run_id != child.child_run_id
+        assert result.run.history_epoch == 1
+        relation = store.load_delegation("ses_root", child.delegation_id)
+        assert relation.current_child_run_id == result.run.run_id
+        assert relation.result.child_run_id == result.run.run_id
+        assert store.load_run(child.child_session_id, child.child_run_id) == before.runs[0]
+        assert store.load_runtime_session(child.child_session_id).messages[0] == before.messages[0]
+        assert provider.tool_names[-1] == ["Read"]
+        assert "CHILD READER INSTRUCTIONS" in provider.system_prompts[-1]
+        for field in ("effective_tool_refs", "delegated_constraints", "run_budget"):
+            assert result.run.metadata[field] == before.runs[0].metadata[field]
     finally:
         await service.close()
         await supervisor.shutdown()
@@ -3337,3 +3377,110 @@ async def test_delivery_run_can_message_the_same_subagent_without_deadlock(tmp_p
     assert len(child_snapshot.runs) == 2
     await service.close()
     await supervisor.shutdown()
+
+
+async def test_late_child_delivery_is_rejected_at_parent_acceptance_after_undo(
+    tmp_path, monkeypatch
+):
+    service, supervisor, store, _ = await _services(tmp_path)
+    runtime = supervisor.runtime
+    parent = store.load_run("ses_root", "run_parent")
+    user = MessageRecord.text(
+        session_id=parent.session_id,
+        run_id=parent.run_id,
+        role="user",
+        text="withdraw parent",
+    ).model_copy(update={"metadata": {"session_input_source": "user"}})
+    store.append_message(user)
+    entered, release = asyncio.Event(), asyncio.Event()
+    route = supervisor.route_host_input
+
+    async def gated(request, *, session_id):
+        entered.set()
+        await release.wait()
+        return await route(request, session_id=session_id)
+
+    monkeypatch.setattr(supervisor, "route_host_input", gated)
+    try:
+        handle = await service.spawn_agent(
+            SpawnAgentRequest(
+                request_id="late-delivery",
+                parent_session_id=parent.session_id,
+                parent_run_id=parent.run_id,
+                parent_tool_call_id="spawn",
+                agent_id="reader",
+                task="Return evidence",
+                description="Delayed delivery",
+                execution_mode="async",
+            )
+        )
+        await asyncio.wait_for(entered.wait(), 5)
+        child_before = store.load_runtime_session(handle.child_session_id)
+        await runtime.abort_run(session_id=parent.session_id, run_id=parent.run_id)
+        await runtime.undo(parent.session_id, message_id=user.message_id)
+        release.set()
+        async with asyncio.timeout(5):
+            while True:
+                relation = store.load_delegation(parent.session_id, handle.delegation_id)
+                if relation.result.delivery.status == "skipped":
+                    break
+                await asyncio.sleep(0.01)
+        assert relation.result.delivery.error == "parent_history_withdrawn"
+        assert store.load_runtime_session(parent.session_id).messages == []
+        assert (
+            runtime.queued_inputs.eligible_session(store.load_session_record(parent.session_id))
+            == []
+        )
+        child_after = store.load_runtime_session(handle.child_session_id)
+        assert child_after.messages == child_before.messages
+        assert child_after.runs == child_before.runs
+    finally:
+        release.set()
+        await service.close()
+        await supervisor.shutdown()
+
+
+async def test_undo_completed_parent_cancels_bound_child_without_rewriting_parent_audit(tmp_path):
+    service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
+    user = MessageRecord.text(
+        session_id=root.session_id,
+        run_id=parent.run_id,
+        role="user",
+        text="withdraw parent",
+    ).model_copy(update={"metadata": {"session_input_source": "user"}})
+    store.append_message(user)
+    try:
+        handle = await service.spawn_agent(
+            SpawnAgentRequest(
+                request_id="withdraw-bound-child",
+                parent_session_id=root.session_id,
+                parent_run_id=parent.run_id,
+                agent_id="reader",
+                task="Remain active",
+                description="Bound child",
+                execution_mode="async",
+            )
+        )
+        await asyncio.wait_for(provider.started.wait(), 5)
+        completed = parent.model_copy(update={"status": "completed", "ended_at": utc_now()})
+        current = store.load_session_record(root.session_id)
+        store.commit_session(
+            SessionCommit(
+                before=current,
+                after=current.model_copy(update={"status": "idle", "active_run_id": None}),
+                runs=(completed,),
+            )
+        )
+        child_before = store.load_runtime_session(handle.child_session_id)
+        result = await supervisor.runtime.undo(root.session_id, message_id=user.message_id)
+        assert result.session.history_epoch == 1
+        assert store.load_run(root.session_id, parent.run_id) == completed
+        child_after = store.load_runtime_session(handle.child_session_id)
+        assert child_after.messages[: len(child_before.messages)] == child_before.messages
+        assert child_after.runs[-1].status == "aborted"
+        relation = store.load_delegation(root.session_id, handle.delegation_id)
+        assert relation.result is not None
+        assert relation.result.terminal_status == "aborted"
+    finally:
+        await service.close()
+        await supervisor.shutdown()

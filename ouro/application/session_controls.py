@@ -481,7 +481,11 @@ class SessionControlCoordinator:
             return session, None
         run = self.store.load_run(session.session_id, session.active_run_id)
         batch = run.active_tool_batch
-        if run.status != "waiting_user" or batch is None:
+        if (
+            run.history_epoch != session.history_epoch
+            or run.status != "waiting_user"
+            or batch is None
+        ):
             return session, None
         owned = [
             call
@@ -490,6 +494,7 @@ class SessionControlCoordinator:
             and call.request.id != exclude_tool_call_id
             and call.invocation is not None
             and call.invocation.interaction_controller_id == activation.controller_id
+            and call.invocation.interaction_activation_id == activation.activation_id
         ]
         if not owned:
             return session, None

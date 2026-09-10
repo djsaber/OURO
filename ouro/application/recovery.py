@@ -42,6 +42,8 @@ class RunRecoveryService:
         }
 
         for run in snapshot.runs:
+            if run.history_epoch != snapshot.session.history_epoch:
+                continue
             if run_ids is not None and run.run_id not in run_ids:
                 continue
             if run.status not in RESUMABLE_RUN_STATUSES:

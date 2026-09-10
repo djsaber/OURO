@@ -74,6 +74,7 @@ async def execute_plugin_command(
                 QueuedInput(
                     queue_id=new_id("queued"),
                     queued_at=utc_now(),
+                    history_epoch=before.history_epoch,
                     source="plugin",
                     prompt=item.prompt,
                     mode=item.mode,

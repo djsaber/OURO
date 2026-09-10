@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ouro.core.base import utc_now
+from ouro.core.session_commits import SessionCommitConflict
 from ouro.core.state import (
     ACTIVE_RUN_STATUSES,
     RESUMABLE_RUN_STATUSES,
@@ -54,6 +55,8 @@ def plan_run_transition(
 
     if session.session_id != next_run.session_id:
         raise ValueError("Run transition Session identity does not match its Run")
+    if next_run.history_epoch != session.history_epoch:
+        raise SessionCommitConflict("Run belongs to withdrawn Session history")
     if resume and (
         current_run is None
         or current_run.status not in RESUMABLE_RUN_STATUSES

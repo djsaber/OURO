@@ -5,6 +5,7 @@ from typing import Any
 
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.harness import capture_harness
+from ouro.application.queued_inputs import QueuedInputQueue
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.application.usage import UsageService
 from ouro.core.base import utc_now
@@ -70,6 +71,7 @@ def reserve_run(
                 pass
             else:
                 raise SessionBusyError(f"Run identity is already reserved: {run.run_id}")
+            run = run.model_copy(update={"history_epoch": session.history_epoch})
             if configure_session is not None:
                 session = configure_session(session)
             transition = plan_run_transition(session, current_run=None, next_run=run)
@@ -109,12 +111,14 @@ class RunLifecycle:
         run: RunRecord,
         snapshot: RuntimeSessionSnapshot,
         resume: bool = False,
+        input_messages: tuple[MessageRecord, ...] = (),
+        consumed_inputs: tuple[str, ...] = (),
     ) -> tuple[SessionRecord, RunRecord]:
         """Persist the shared session/run transition into an active run."""
 
         with self.store.session_mutation(session.session_id):
             latest_session = self.store.load_session_record(session.session_id)
-            existing = maybe_active_run(snapshot.runs)
+            existing = maybe_active_run(snapshot.runs, history_epoch=latest_session.history_epoch)
             if existing is not None and existing.run_id != run.run_id:
                 raise SessionBusyError(f"session already has an active run: {existing.run_id}")
             if latest_session.active_run_id not in {None, run.run_id}:
@@ -131,12 +135,24 @@ class RunLifecycle:
                 next_run=run.model_copy(update={"status": "running"}),
                 resume=resume,
             )
-            # The Run is authoritative. If the second write fails, recovery can
-            # safely reconstruct the Session projection from this record.
-            self.store.save_run(transition.run)
-            self.store.save_session(transition.session)
+            after = (
+                QueuedInputQueue(self.store).without_inputs(transition.session, consumed_inputs)
+                if consumed_inputs
+                else transition.session
+            )
+            committed = self.store.commit_session(
+                SessionCommit(
+                    before=latest_session,
+                    after=after,
+                    runs=(transition.run,),
+                    steps=tuple(SessionCommitStep(message=item) for item in input_messages),
+                )
+            )
+            for message, canonical in zip(input_messages, committed.messages, strict=True):
+                message.sequence = canonical.sequence
+                message.before_harness_version = canonical.before_harness_version
             active_run = transition.run
-            active_session = transition.session
+            active_session = committed.session
         self.store.refresh_catalog(active_session.session_id)
         return active_session, active_run
 
@@ -498,6 +514,35 @@ class RunLifecycle:
                             )
                             if call.status in {"waiting_user", "resolving_input"}
                             and call.input_request is not None
+                            else call
+                            for call in batch.calls
+                        ]
+                    }
+                )
+            if batch is not None:
+                accepted = steps[0].harness if steps else None
+                controls = accepted.controls if accepted is not None else latest_session.controls
+                activations = {
+                    item.controller_id: item.activation_id for item in controls.activations
+                }
+                batch = batch.model_copy(
+                    update={
+                        "calls": [
+                            call.model_copy(
+                                update={
+                                    "invocation": call.invocation.model_copy(
+                                        update={
+                                            "interaction_activation_id": activations.get(
+                                                call.invocation.interaction_controller_id
+                                            ),
+                                        }
+                                    )
+                                }
+                            )
+                            if call.status == "waiting_user"
+                            and call.invocation is not None
+                            and call.invocation.interaction_controller_id is not None
+                            and call.invocation.interaction_activation_id is None
                             else call
                             for call in batch.calls
                         ]
@@ -935,6 +980,7 @@ class RunLifecycle:
         messages: list[MessageRecord],
         allow_interrupted: bool = False,
         state_changes: dict[str, HarnessStateChange] | None = None,
+        consumed_inputs: tuple[str, ...] = (),
     ) -> None:
         """Persist one ordered message batch and advance the Session projection once."""
 
@@ -999,6 +1045,8 @@ class RunLifecycle:
                     "last_run_id": run.run_id,
                 }
             )
+            if consumed_inputs:
+                after = QueuedInputQueue(self.store).without_inputs(after, consumed_inputs)
             request = SessionCommit(before=current, after=after, steps=tuple(steps))
             if control_message is not None:
                 assert draft is not None and control_message.tool_result is not None
@@ -1083,7 +1131,11 @@ def abort_run_state(
     with store.session_mutation(session_id):
         session = store.load_session_record(session_id)
         runs = store.load_runs(session_id)
-        run = find_run(runs, run_id) if run_id else find_active_run(runs)
+        run = (
+            find_run(runs, run_id)
+            if run_id
+            else find_active_run(runs, history_epoch=session.history_epoch)
+        )
         if run.status not in ACTIVE_RUN_STATUSES:
             return session, run, False
         now = utc_now()
@@ -1125,7 +1177,11 @@ def request_run_abort_state(
     with store.session_mutation(session_id):
         session = store.load_session_record(session_id)
         runs = store.load_runs(session_id)
-        run = find_run(runs, run_id) if run_id else find_active_run(runs)
+        run = (
+            find_run(runs, run_id)
+            if run_id
+            else find_active_run(runs, history_epoch=session.history_epoch)
+        )
         if run.status not in ACTIVE_RUN_STATUSES or run.abort_requested:
             return session, run, False
         metadata = dict(run.metadata)
@@ -1157,8 +1213,12 @@ def _message_cache_key(message: MessageRecord) -> tuple[str, str] | None:
     return None
 
 
-def find_active_run(runs: list[RunRecord]) -> RunRecord:
-    active = [run for run in runs if run.status in ACTIVE_RUN_STATUSES]
+def find_active_run(runs: list[RunRecord], *, history_epoch: int) -> RunRecord:
+    active = [
+        run
+        for run in runs
+        if run.status in ACTIVE_RUN_STATUSES and run.history_epoch == history_epoch
+    ]
     if len(active) > 1:
         raise PersistenceError("multiple active runs: " + ", ".join(run.run_id for run in active))
     if active:
@@ -1166,9 +1226,9 @@ def find_active_run(runs: list[RunRecord]) -> RunRecord:
     raise ValueError("no active run")
 
 
-def maybe_active_run(runs: list[RunRecord]) -> RunRecord | None:
+def maybe_active_run(runs: list[RunRecord], *, history_epoch: int) -> RunRecord | None:
     try:
-        return find_active_run(runs)
+        return find_active_run(runs, history_epoch=history_epoch)
     except ValueError:
         return None
 

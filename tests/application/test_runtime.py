@@ -2233,54 +2233,6 @@ async def test_runtime_cancels_pending_user_input_before_follow_up_consumption(
 
 
 @pytest.mark.asyncio
-async def test_runtime_acknowledges_follow_up_with_an_already_durable_user_message(
-    tmp_path,
-) -> None:
-    store = LocalSessionStore(tmp_path)
-    store.initialize()
-    provider = CapturingProvider()
-    runtime = RuntimeService(
-        store=store,
-        adapter=RuntimeAdapter(
-            provider,
-            ModelMetadata(model_id="capture", provider_id="capture"),
-        ),
-        tools=_tools(),
-    )
-    session = runtime.sessions.create(title="Crash window").session
-    queued_session, _, _ = runtime.queued_inputs.enqueue(
-        snapshot=store.load_session(session.session_id),
-        prompt="Queued prompt",
-        title=None,
-        role="user",
-        scaffold=False,
-    )
-    queued = runtime.queued_inputs.peek(store.load_session(queued_session.session_id))
-    assert queued is not None
-    store.append_message(
-        MessageRecord.text(
-            session_id=session.session_id,
-            role="user",
-            text=queued.prompt,
-            sequence=1,
-        ).model_copy(update={"metadata": {"queued_input_id": queued.queue_id}})
-    )
-
-    result = await runtime.run("Continue", session_id=session.session_id)
-    snapshot = store.load_session(session.session_id)
-
-    assert result.run.status == "completed"
-    assert provider.calls == 1
-    assert len(snapshot.runs) == 1
-    assert [message.text_content for message in snapshot.messages] == [
-        "Queued prompt",
-        "Continue",
-        "ok",
-    ]
-    assert "follow_up_queue" not in snapshot.session.metadata
-
-
-@pytest.mark.asyncio
 async def test_runtime_continues_after_auto_tool_result(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -3345,36 +3297,38 @@ async def test_runtime_releases_session_lock_when_startup_persistence_fails(tmp_
 
 
 @pytest.mark.asyncio
-async def test_runtime_recovers_when_session_projection_fails_after_run_start(tmp_path) -> None:
-    class FailingProjectionStore(LocalSessionStore):
-        fail_active_projection = True
+async def test_runtime_recovers_when_start_commit_response_is_lost(tmp_path) -> None:
+    class LostStartResponseStore(LocalSessionStore):
+        lose_start_response = True
 
-        def save_session(self, session) -> None:
-            if self.fail_active_projection and session.active_run_id is not None:
-                raise PersistenceError("simulated session projection failure")
-            super().save_session(session)
+        def commit_session(self, request):
+            result = super().commit_session(request)
+            if self.lose_start_response and request.runs and result.session.active_run_id:
+                raise PersistenceError("simulated lost start response")
+            return result
 
-    store = FailingProjectionStore(tmp_path)
+    store = LostStartResponseStore(tmp_path)
     store.initialize()
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
-            FauxProvider([ProviderStreamEvent(type="text_delta", text="unused")]),
+            FauxProvider(),
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
         tools=_tools(),
     )
-
-    with pytest.raises(PersistenceError, match="session projection failure"):
-        await runtime.run("hello")
-
-    session = store.list_sessions()[0]
-    assert store.is_session_locked(session.session_id) is False
-    store.fail_active_projection = False
-    recovered = runtime.session_recovery.recover(session.session_id)
-    assert recovered.session.status == "idle"
-    assert recovered.session.active_run_id is None
-    assert recovered.runs[0].status == "recoverable"
+    try:
+        with pytest.raises(PersistenceError, match="lost start response"):
+            await runtime.run("hello")
+        session = store.list_sessions()[0]
+        assert store.is_session_locked(session.session_id) is False
+        store.lose_start_response = False
+        recovered = runtime.session_recovery.recover(session.session_id)
+        assert recovered.session.status == "idle"
+        assert recovered.session.active_run_id is None
+        assert recovered.runs[0].status == "recoverable"
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio

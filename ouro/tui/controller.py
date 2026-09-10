@@ -60,6 +60,7 @@ from ouro.application.session_models import (
     SessionContextStatus,
     SessionDetail,
     SessionObservationSnapshot,
+    SessionUndoResult,
     SessionView,
 )
 from ouro.application.skill_activations import SkillInvocationRequest
@@ -490,6 +491,7 @@ class TuiController:
         self._close_application = close_application
         self._started = False
         self._session_id: str | None = None
+        self._restored_input: SessionUndoResult | None = None
         self._session_archived = False
         self._initial_model: str | None = None
         self._draft_workspace: str | None = None
@@ -615,6 +617,12 @@ class TuiController:
                 prompt,
                 skill_invocation=skill_invocation,
                 session_id=self._session_id,
+                resource_refs=(
+                    self._restored_input.resource_refs
+                    if self._restored_input is not None
+                    and self._restored_input.session.session_id == self._session_id
+                    else None
+                ),
                 queue_mode=queue_mode,
                 initial_model=self._initial_model if is_new_session else None,
                 initial_reasoning_request=(self._reasoning_request if is_new_session else None),
@@ -623,6 +631,7 @@ class TuiController:
                 workspace=self._draft_workspace if is_new_session else None,
                 on_session_created=self._bind_created_session,
             )
+            self._restored_input = None
             self._session_id = result.session.session_id
             self._initial_model = None
             await self._unarchive_current_session_after_update()
@@ -655,8 +664,10 @@ class TuiController:
         await self._unarchive_current_session_after_update()
         return result
 
-    async def undo(self) -> MessageRecord:
-        return await asyncio.to_thread(self._runtime().sessions.undo, self._require_session())
+    async def undo(self) -> SessionUndoResult:
+        result = await self._runtime().undo(self._require_session())
+        self._restored_input = result
+        return result
 
     async def abort(self) -> RunResult | None:
         if self._session_id is None:
@@ -772,6 +783,7 @@ class TuiController:
         runtime = self._runtime()
         previous_route = await self._leaving_session_route()
         self._session_id = None
+        self._restored_input = None
         self._session_archived = False
         self._draft_workspace = runtime.default_workspace
         if previous_route is not None:

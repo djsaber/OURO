@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from ouro.application.dto import Diagnostic
 from ouro.application.runs import abort_run_state, find_run
-from ouro.application.session_editing import undo_latest_user_message
+from ouro.application.session_editing import undo_user_input
 from ouro.application.session_history import (
     apply_extension_branch_policies,
     copy_branch_compactions,
@@ -31,6 +31,7 @@ from ouro.application.session_models import (
     SessionObservationSnapshot,
     SessionReplay,
     SessionTrashResult,
+    SessionUndoResult,
     SessionView,
 )
 from ouro.application.session_recovery import SessionRecoveryService
@@ -754,9 +755,11 @@ class SessionService:
                 active.append(relation)
         return active
 
-    def undo(self, session_id: str) -> MessageRecord:
-        """Withdraw the latest editable user message in this Session."""
-        return undo_latest_user_message(self._store, session_id)
+    def undo(
+        self, session_id: str, *, message_id: str | None = None, queue_id: str | None = None
+    ) -> SessionUndoResult:
+        """Cancel or withdraw one directly submitted input and return its complete editor data."""
+        return undo_user_input(self._store, session_id, message_id=message_id, queue_id=queue_id)
 
     def branch(
         self,

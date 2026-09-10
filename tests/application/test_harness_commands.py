@@ -9,8 +9,11 @@ import pytest
 from ouro.application.plugin_commands import execute_plugin_command
 from ouro.application.queued_inputs import QueuedInputQueue
 from ouro.application.session_controls import SessionControlError
+from ouro.application.sessions import SessionService
 from ouro.core.errors import PersistenceError
+from ouro.core.messages import MessageRecord
 from ouro.core.observers import ObserverRegistry
+from ouro.core.session_commits import SessionCommit, SessionCommitConflict, SessionCommitStep
 from ouro.core.state import SessionRecord
 from ouro.plugins.api import adapt_sdk_contributions
 from ouro.plugins.catalog import ExtensionCatalogBase, build_extension_catalog
@@ -122,6 +125,45 @@ async def test_controller_declares_native_usage_scope_in_the_accepted_control(st
     assert control.plugin_id == OWNER
     assert control.usage_scope == "goal-identity"
     assert store.load_session_record(session.session_id).controls.activations[0] == control
+
+
+@pytest.mark.parametrize("winner", ["command", "undo"])
+async def test_command_and_undo_accept_only_the_winning_history(store, winner):
+    session = SessionRecord()
+    store.create_session(session)
+    message = MessageRecord.text(
+        session_id=session.session_id,
+        role="user",
+        text="change state",
+    )
+    message.metadata["session_input_source"] = "user"
+    store.commit_session(SessionCommit(before=session, steps=(SessionCommitStep(message=message),)))
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def held_activate(call):
+        entered.set()
+        await release.wait()
+        return activate(call)
+
+    task = asyncio.create_task(execute(store, session, held_activate))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        if winner == "command":
+            release.set()
+            await task
+        undone = SessionService(store).undo(session.session_id, message_id=message.message_id)
+        release.set()
+        if winner == "undo":
+            with pytest.raises(SessionCommitConflict):
+                await task
+        assert undone.session.history_epoch == 1
+        state = store.load_harness(session.session_id).state
+        assert not state.states and not state.controls.activations
+        assert not pending(store, session)
+        assert not store.load_messages_tail(session.session_id)
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 def activate(call):

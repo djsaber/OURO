@@ -40,7 +40,7 @@ from ouro.builtin_plugins.plan.interaction import (
 )
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextMetrics
-from ouro.core.messages import MessageRecord, TextContent
+from ouro.core.messages import MessageRecord, ModelMessage, SkillActivationContent, TextContent
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import TuiCommand, TuiCommandArgument
 from ouro.tui.controller import TuiApprovalPreset, TuiSystemStatus
@@ -3514,8 +3514,10 @@ class StatusLine(Horizontal):
         self._context_width = content_width
 
 
-def user_message_text(message: MessageRecord) -> str:
-    activations = message.skill_activations
+def user_message_text(message: MessageRecord | ModelMessage) -> str:
+    activations = tuple(
+        block for block in message.content if isinstance(block, SkillActivationContent)
+    )
     if not activations:
         return message.text_content
     task = message.text_content.strip()

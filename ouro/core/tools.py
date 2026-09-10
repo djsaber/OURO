@@ -107,6 +107,7 @@ class ToolInvocation(OuroModel):
     execution_contract_hash: str | None = None
     active_when_controller_id: str | None = None
     interaction_controller_id: str | None = None
+    interaction_activation_id: str | None = None
     tool_policy_ids: list[str] = Field(default_factory=list)
     tool_policy_reason: str | None = None
 

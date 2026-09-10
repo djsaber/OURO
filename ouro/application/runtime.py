@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Mapping
 from functools import partial
@@ -53,6 +54,7 @@ from ouro.application.runs import (
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.application.session_editing import continuable_run
+from ouro.application.session_models import SessionUndoResult
 from ouro.application.session_recovery import SessionRecoveryService
 from ouro.application.sessions import SessionService
 from ouro.application.skill_activations import SkillActivationService, SkillInvocationRequest
@@ -72,7 +74,7 @@ from ouro.core.agents import (
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.base import new_id, utc_now
 from ouro.core.callbacks import run_blocking
-from ouro.core.cancellation import AbortSignal
+from ouro.core.cancellation import AbortSignal, settle_owned_tasks
 from ouro.core.compaction import (
     CompactionAbortedError,
     CompactionCommandResult,
@@ -105,7 +107,6 @@ from ouro.core.interactions import (
     SESSION_INTERACTION_MODES,
     SessionInteractionMode,
 )
-from ouro.core.message_frames import incomplete_suffix_start
 from ouro.core.message_roles import MessageRole
 from ouro.core.messages import (
     MessageRecord,
@@ -129,6 +130,7 @@ from ouro.core.reasoning import ReasoningRequest
 from ouro.core.redaction import SensitiveValueRedactor, redact_text
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason
+from ouro.core.session_commits import SessionCommitConflict
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     AttributedSessionInput,
@@ -872,13 +874,10 @@ class RuntimeService:
             pending = self.queued_inputs.find_session(snapshot.session, queue_id)
             if pending is None or pending.source != "user":
                 return None
-            if self._queued_input_is_durable(snapshot.messages, queue_id):
-                self.queued_inputs.acknowledge(snapshot, queue_id)
-            else:
-                cancelled = self.queued_inputs.cancel_user_input(
-                    session_id=session_id,
-                    queue_id=queue_id,
-                )
+            cancelled = self.queued_inputs.cancel_user_input(
+                session_id=session_id,
+                queue_id=queue_id,
+            )
         return self.store.load_session_record(session_id), cancelled
 
     def current_model(self, session_id: str | None = None) -> AvailableModel:
@@ -1395,11 +1394,18 @@ class RuntimeService:
                     recover=False,
                 )
             session = snapshot.session
+            if (
+                isinstance(_input_attribution, HostSessionInput)
+                and _input_attribution.history_epoch is not None
+                and _input_attribution.history_epoch != session.history_epoch
+            ):
+                raise SessionCommitConflict("Host input belongs to withdrawn Session history")
             pending_continuation = next(
                 (
                     candidate
                     for candidate in snapshot.runs
-                    if self._run_continuation_is_pending(candidate)
+                    if candidate.history_epoch == snapshot.session.history_epoch
+                    and self._run_continuation_is_pending(candidate)
                 ),
                 None,
             )
@@ -1408,7 +1414,9 @@ class RuntimeService:
                     "session has an unresolved terminal Run continuation: "
                     f"{pending_continuation.run_id}"
                 )
-            active_run = maybe_active_run(snapshot.runs)
+            active_run = maybe_active_run(
+                snapshot.runs, history_epoch=snapshot.session.history_epoch
+            )
             self._validate_model_resource_refs(
                 session,
                 input_resource_refs,
@@ -1461,6 +1469,7 @@ class RuntimeService:
                     else new_id("run")
                 ),
                 session_id=session.session_id,
+                history_epoch=session.history_epoch,
                 status="running",
                 origin=(
                     attributed_source
@@ -1494,7 +1503,9 @@ class RuntimeService:
                 self.store.load_runtime_session,
                 session.session_id,
             )
-            active_run = maybe_active_run(snapshot.runs)
+            active_run = maybe_active_run(
+                snapshot.runs, history_epoch=snapshot.session.history_epoch
+            )
             self._validate_model_resource_refs(
                 snapshot.session,
                 input_resource_refs,
@@ -1537,7 +1548,9 @@ class RuntimeService:
             )
             locked_snapshot = await self.run_recovery.reconcile(locked_snapshot)
             session = locked_snapshot.session
-            locked_active_run = maybe_active_run(locked_snapshot.runs)
+            locked_active_run = maybe_active_run(
+                locked_snapshot.runs, history_epoch=locked_snapshot.session.history_epoch
+            )
             if locked_active_run is not None and (
                 _prepared_run is None or locked_active_run.run_id != _prepared_run.run_id
             ):
@@ -1766,13 +1779,57 @@ class RuntimeService:
             drain_queued_inputs=_drain_queued_inputs,
         )
 
-    async def continue_run(self, *, session_id: str, run_id: str | None = None) -> RunResult:
-        """Resume the latest interrupted Run without accepting a new input or Run."""
+    async def undo(
+        self, session_id: str, *, message_id: str | None = None, queue_id: str | None = None
+    ) -> SessionUndoResult:
+        """Own the history decision through cancellation, then settle its local work."""
+        task = asyncio.create_task(
+            self._undo_and_settle(session_id, message_id=message_id, queue_id=queue_id)
+        )
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await settle_owned_tasks(task)
+            return task.result()
+
+    async def _undo_and_settle(
+        self, session_id: str, *, message_id: str | None, queue_id: str | None
+    ) -> SessionUndoResult:
+        result = await run_blocking(
+            self.sessions.undo, session_id, message_id=message_id, queue_id=queue_id
+        )
+        for identity in result.cancelled_queue_ids:
+            self._release_queued_extension_snapshot(identity)
+        if result.removed_count:
+            # Pending independent inputs survive, but their old catalog permits do not.
+            for item in self.queued_inputs.eligible_session(result.session):
+                self._release_queued_extension_snapshot(item.queue_id)
+            if self._agent_controls is not None:
+                await self._agent_controls.reconcile_session(result.session)
+        return result
+
+    async def continue_run(
+        self, *, session_id: str, run_id: str | None = None, history_epoch: int | None = None
+    ) -> RunResult:
+        """Continue current history, reusing a checkpoint only in its original epoch."""
 
         snapshot = await run_blocking(self.session_recovery.recover_runtime, session_id)
-        run = continuable_run(snapshot)
-        if run_id is not None and run.run_id != run_id:
+        if history_epoch is not None and history_epoch != snapshot.session.history_epoch:
+            raise SessionCommitConflict("Continuation belongs to withdrawn Session history")
+        source = continuable_run(snapshot)
+        if run_id is not None and source.run_id != run_id:
             raise SessionBusyError("The requested continuation is no longer the latest run")
+        fresh = source.history_epoch != snapshot.session.history_epoch
+        run = (
+            RunRecord(
+                session_id=session_id,
+                history_epoch=snapshot.session.history_epoch,
+                origin="user",
+                trigger="continue",
+            )
+            if fresh
+            else source
+        )
         lock = await self.run_ownership.acquire(session_id, run.run_id)
         if lock is None:
             raise SessionBusyError("The session already has an execution owner")
@@ -1783,42 +1840,46 @@ class RuntimeService:
         try:
             snapshot = await run_blocking(self.store.load_runtime_session, session_id)
             latest_run = continuable_run(snapshot)
-            if latest_run.run_id != run.run_id:
+            if (
+                latest_run.run_id != source.run_id
+                or run.history_epoch != snapshot.session.history_epoch
+            ):
                 raise SessionBusyError(
                     "The latest run changed before continuation acquired ownership"
                 )
-            run = latest_run
             session, adapter = await run_blocking(self._resolve_session_adapter, snapshot.session)
-            self._restore_run_tool_cap(run)
-            await self._ensure_extension_snapshot(run)
-            if self._run_continuation_is_pending(run):
-                settlement = await self._settle_run_continuation(run)
-                if settlement.settled:
-                    await self._emit_continuation_resolution(settlement, emitted)
-                if self._run_continuation_is_pending(settlement.run):
-                    detail = (
-                        "; ".join(settlement.diagnostics)
-                        or "terminal policy settlement is still pending"
-                    )
-                    raise ValueError(f"Cannot continue until terminal state is settled: {detail}")
-                snapshot = await run_blocking(self.store.load_runtime_session, session_id)
-                run = continuable_run(snapshot)
-            # Preserve durable tool results, including results committed just
-            # before failure. Unknown outcomes become explicit protocol results.
-            snapshot = await self.run_recovery.reconcile(snapshot, run_ids=frozenset({run.run_id}))
-            run = continuable_run(snapshot)
-            boundary = incomplete_suffix_start(
-                [message for message in snapshot.messages if message.run_id == run.run_id]
-            )
-            if boundary is not None:
-                await run_blocking(
-                    self.store.truncate_messages,
-                    session_id,
-                    before_message_id=boundary.message_id,
-                    expected_last_message_id=snapshot.messages[-1].message_id,
+            if fresh:
+                if session.session_kind == "subagent":
+                    if self._agent_controls is None:
+                        raise ValueError("Child continuation requires the Agent service")
+                    run = await self._agent_controls.prepare_history_continuation(run)
+                    snapshot = await run_blocking(self.store.load_runtime_session, session_id)
+                run = run.model_copy(update={"model": adapter.model.model_id})
+                run = await self._attach_extension_snapshot(run)
+                self._restore_run_tool_cap(run)
+            else:
+                run = latest_run
+                self._restore_run_tool_cap(run)
+                await self._ensure_extension_snapshot(run)
+                if self._run_continuation_is_pending(run):
+                    settlement = await self._settle_run_continuation(run)
+                    if settlement.settled:
+                        await self._emit_continuation_resolution(settlement, emitted)
+                    if self._run_continuation_is_pending(settlement.run):
+                        detail = (
+                            "; ".join(settlement.diagnostics)
+                            or "terminal policy settlement is still pending"
+                        )
+                        raise ValueError(
+                            f"Cannot continue until terminal state is settled: {detail}"
+                        )
+                    snapshot = await run_blocking(self.store.load_runtime_session, session_id)
+                    run = continuable_run(snapshot)
+                snapshot = await self.run_recovery.reconcile(
+                    snapshot, run_ids=frozenset({run.run_id})
                 )
-                snapshot = await run_blocking(self.store.load_runtime_session, session_id)
-            await run_blocking(self.run_lifecycle.finish_run, run)
+                run = continuable_run(snapshot)
+                await run_blocking(self.run_lifecycle.finish_run, run)
             previous_status = run.status
             metadata = dict(run.metadata)
             metadata.pop("pause", None)
@@ -1840,7 +1901,7 @@ class RuntimeService:
                 session=snapshot.session,
                 run=run,
                 snapshot=snapshot,
-                resume=True,
+                resume=not fresh,
             )
             started = True
             sequence = await self.event_recorder.emit(
@@ -1848,10 +1909,14 @@ class RuntimeService:
                 await run_blocking(self.store.latest_event_sequence, session_id),
                 session_id=session_id,
                 run_id=run.run_id,
-                event_type="run_status_changed",
-                payload={"from_status": previous_status, "to_status": "running", "resumed": True},
+                event_type="run_started" if fresh else "run_status_changed",
+                payload=(
+                    {"trigger": "continue", "origin": run.origin}
+                    if fresh
+                    else {"from_status": previous_status, "to_status": "running", "resumed": True}
+                ),
             )
-            if self._agent_controls is not None:
+            if not fresh and self._agent_controls is not None:
                 await self._agent_controls.continue_children(run)
             signal = await self.run_ownership.activate_signal(session_id, run.run_id)
             result = await self._continue_model_loop(
@@ -1883,7 +1948,7 @@ class RuntimeService:
                 if result is None:
                     self._release_extension_snapshot(run.run_id)
                 await self.run_ownership.release(run.run_id, lock)
-        return await self._finalize_run_boundary(result, drain_queued_inputs=False)
+        return await self._finalize_run_boundary(result, drain_queued_inputs=True)
 
     async def run_prepared(
         self,
@@ -2022,10 +2087,14 @@ class RuntimeService:
         """Manually compact a session through the same durable summary pipeline as auto mode."""
 
         snapshot = await run_blocking(self._load_runtime_snapshot, session_id, recover=True)
-        if maybe_active_run(snapshot.runs) is not None:
+        if (
+            maybe_active_run(snapshot.runs, history_epoch=snapshot.session.history_epoch)
+            is not None
+        ):
             raise SessionBusyError(f"session already has an active run: {session_id}")
         run = RunRecord(
             session_id=session_id,
+            history_epoch=snapshot.session.history_epoch,
             kind="compaction",
             trigger="manual_compaction",
             status="running",
@@ -2043,7 +2112,10 @@ class RuntimeService:
             sequence = await run_blocking(self.store.latest_event_sequence, session_id)
             abort_signal = await self.run_ownership.activate_signal(session_id, run.run_id)
             snapshot = await run_blocking(self.store.load_runtime_session, session_id)
-            if maybe_active_run(snapshot.runs) is not None:
+            if (
+                maybe_active_run(snapshot.runs, history_epoch=snapshot.session.history_epoch)
+                is not None
+            ):
                 raise SessionBusyError(f"session already has an active run: {session_id}")
             active_session, active_adapter = await run_blocking(
                 self._resolve_session_adapter, snapshot.session
@@ -2217,7 +2289,9 @@ class RuntimeService:
     ) -> tuple[SessionRecord, RunRecord]:
         session = self.store.load_session_record(session_id)
         runs = self.store.load_runs(session_id)
-        return session, find_run(runs, run_id) if run_id else find_active_run(runs)
+        return session, find_run(runs, run_id) if run_id else find_active_run(
+            runs, history_epoch=session.history_epoch
+        )
 
     async def submit_plugin_input(
         self,
@@ -2244,7 +2318,7 @@ class RuntimeService:
         """Durably accept and consume one attributed atomic input unit."""
 
         snapshot = await self._load_submission_snapshot(session_id)
-        active = maybe_active_run(snapshot.runs)
+        active = maybe_active_run(snapshot.runs, history_epoch=snapshot.session.history_epoch)
         queued_session, queued, _ = await self._queue_input_batch(
             snapshot=snapshot,
             active_run=active,
@@ -2255,9 +2329,13 @@ class RuntimeService:
         target_ids = {item.queue_id for item in queued}
         while True:
             snapshot = await self._load_submission_snapshot(session_id)
-            active = maybe_active_run(snapshot.runs)
+            active = maybe_active_run(snapshot.runs, history_epoch=snapshot.session.history_epoch)
             if active is not None:
                 return RunResult(session=snapshot.session, run=active)
+            if snapshot.session.history_epoch != queued_session.history_epoch:
+                raise SessionCommitConflict(
+                    "Plugin input batch belongs to withdrawn Session history"
+                )
             pending = self._pending_queued_inputs(snapshot)
             if not pending:
                 break
@@ -2327,7 +2405,9 @@ class RuntimeService:
 
         while True:
             snapshot = await self._load_submission_snapshot(receipt.session_id)
-            active = maybe_active_run(snapshot.runs)
+            if self.queued_inputs.find_session(snapshot.session, receipt.queue_id) is None:
+                break
+            active = maybe_active_run(snapshot.runs, history_epoch=snapshot.session.history_epoch)
             if active is not None:
                 return RunResult(session=snapshot.session, run=active)
             pending = self._pending_queued_inputs(snapshot)
@@ -2367,6 +2447,12 @@ class RuntimeService:
         resource_refs: tuple[str, ...] = (),
         attribution: (AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None) = None,
     ) -> tuple[SessionRecord, QueuedInput, list[EventRecord]]:
+        if (
+            isinstance(attribution, HostSessionInput)
+            and attribution.history_epoch is not None
+            and attribution.history_epoch != snapshot.session.history_epoch
+        ):
+            raise SessionCommitConflict("Host input belongs to withdrawn Session history")
         source = _attributed_input_source(attribution) if attribution is not None else "user"
         role = _input_role(attribution)
         scaffold = _input_scaffold(attribution)
@@ -2386,6 +2472,7 @@ class RuntimeService:
         if prompt_policy_checked:
             prospective = RunRecord(
                 session_id=snapshot.session.session_id,
+                history_epoch=snapshot.session.history_epoch,
                 status="running",
                 origin=source,
             )
@@ -2494,6 +2581,10 @@ class RuntimeService:
                     active_run.run_id
                     if active_run is not None and attribution is not None
                     else None
+                ),
+                history_bound=(
+                    isinstance(attribution, HostSessionInput)
+                    and attribution.history_epoch is not None
                 ),
                 prompt_policy_checked=prompt_policy_checked,
                 prospective_run_id=prospective_run_id,
@@ -2626,10 +2717,15 @@ class RuntimeService:
             )
         return session, queued, emitted
 
-    async def _drain_queued_input_queue(self, session_id: str) -> None:
+    async def _drain_queued_input_queue(self, session_id: str, history_epoch: int) -> None:
         while True:
             snapshot = await self._load_submission_snapshot(session_id)
-            if maybe_active_run(snapshot.runs) is not None:
+            if snapshot.session.history_epoch != history_epoch:
+                return
+            if (
+                maybe_active_run(snapshot.runs, history_epoch=snapshot.session.history_epoch)
+                is not None
+            ):
                 return
             pending = self._pending_queued_inputs(snapshot)
             if not pending:
@@ -2648,21 +2744,7 @@ class RuntimeService:
                 return
 
     def _pending_queued_inputs(self, snapshot: RuntimeSessionSnapshot) -> list[QueuedInput]:
-        units = self.queued_inputs.eligible_units(snapshot)
-        pending_units: list[tuple[QueuedInput, ...]] = []
-        for unit in units:
-            durable = [
-                self._queued_input_is_durable(snapshot.messages, item.queue_id) for item in unit
-            ]
-            if all(durable):
-                self.queued_inputs.acknowledge_many(
-                    session_id=snapshot.session.session_id,
-                    queue_ids=tuple(item.queue_id for item in unit),
-                )
-                for item in unit:
-                    self._release_queued_extension_snapshot(item.queue_id)
-                continue
-            pending_units.append(unit)
+        pending_units = self.queued_inputs.eligible_units(snapshot)
         if not pending_units:
             return []
         if self.queued_input_config.consumption_mode == "one_by_one":
@@ -2731,40 +2813,36 @@ class RuntimeService:
             if not any(message.message_id == assistant_message.message_id for message in messages):
                 appended.append(assistant_message)
 
-        for item in eligible:
-            input_message, newly_consumed = await run_blocking(
-                self._consume_queued_turn_input,
+        for unit in units:
+            consumed = await run_blocking(
+                self._consume_queued_turn_inputs,
                 session=session,
                 run=run,
-                item=item,
+                inputs=unit,
                 sequence=len(messages) + len(appended) + 1,
             )
-            if input_message is None:
+            if not consumed:
                 continue
-            self._release_queued_extension_snapshot(item.queue_id)
-            if not any(
-                message.message_id == input_message.message_id for message in (*messages, *appended)
-            ):
-                appended.append(input_message)
-            if not newly_consumed:
-                continue
-            sequence = await self.event_recorder.emit(
-                emitted,
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type="queued_input_consumed",
-                payload={
-                    "queue_id": item.queue_id,
-                    "message_id": input_message.message_id,
-                    "mode": item.mode,
-                    "turn_id": turn_id,
-                    "source": item.source,
-                    "host_source_id": item.host_source_id,
-                    "plugin_id": item.plugin_id,
-                    "contribution_id": item.contribution_id,
-                },
-            )
+            appended.extend(consumed)
+            for item, input_message in zip(unit, consumed, strict=True):
+                self._release_queued_extension_snapshot(item.queue_id)
+                sequence = await self.event_recorder.emit(
+                    emitted,
+                    sequence,
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    event_type="queued_input_consumed",
+                    payload={
+                        "queue_id": item.queue_id,
+                        "message_id": input_message.message_id,
+                        "mode": item.mode,
+                        "turn_id": turn_id,
+                        "source": item.source,
+                        "host_source_id": item.host_source_id,
+                        "plugin_id": item.plugin_id,
+                        "contribution_id": item.contribution_id,
+                    },
+                )
         return TurnBoundaryInputResult(sequence=sequence, messages=appended)
 
     async def _evaluate_turn_completion(
@@ -2988,79 +3066,57 @@ class RuntimeService:
             }
             if any(current.get(item.queue_id) != item for item in inputs):
                 raise _QueuedInputSelectionChanged
-            started_session, started_run = self.run_lifecycle.start(
-                session=session,
-                run=run,
-                snapshot=snapshot,
-            )
             messages = [
                 self._create_session_input_message(
-                    session=started_session,
-                    run=started_run,
+                    session=latest_session,
+                    run=run,
                     item=item,
                     sequence=existing_message_count + index + 1,
                     is_queued=True,
                 )
                 for index, item in enumerate(inputs)
             ]
-            self.run_lifecycle.append_messages(
-                session=started_session,
-                run=started_run,
-                messages=messages,
-            )
-            self.queued_inputs.acknowledge_many(
-                session_id=session.session_id,
-                queue_ids=tuple(item.queue_id for item in inputs),
+            started_session, started_run = self.run_lifecycle.start(
+                session=latest_session,
+                run=run,
+                snapshot=snapshot,
+                input_messages=tuple(messages),
+                consumed_inputs=tuple(item.queue_id for item in inputs),
             )
         return started_session, started_run, messages
 
-    def _consume_queued_turn_input(
+    def _consume_queued_turn_inputs(
         self,
         *,
         session: SessionRecord,
         run: RunRecord,
-        item: QueuedInput,
+        inputs: tuple[QueuedInput, ...],
         sequence: int,
-    ) -> tuple[MessageRecord | None, bool]:
-        """Atomically choose cancellation or durable turn-boundary consumption."""
+    ) -> list[MessageRecord]:
+        """Consume one complete unit and its queue identities in one durable decision."""
 
         with self.store.session_mutation(session.session_id):
-            latest = self.store.load_runtime_session(session.session_id)
-            if self.queued_inputs.find_session(latest.session, item.queue_id) != item:
-                return None, False
-            durable = next(
-                (
-                    message
-                    for message in latest.messages
-                    if message.metadata.get("queued_input_id") == item.queue_id
-                ),
-                None,
-            )
-            if durable is not None:
-                if item.batch_id is None:
-                    self.queued_inputs.acknowledge(latest, item.queue_id)
-                elif item.batch_size is not None and item.batch_index == item.batch_size - 1:
-                    self.queued_inputs.acknowledge_batch(
-                        session_id=session.session_id,
-                        batch_id=item.batch_id,
-                    )
-                return durable, False
-            message = self._append_session_input(
-                session=session,
-                run=run,
-                item=item,
-                sequence=sequence,
-                is_queued=True,
-            )
-            if item.batch_id is None:
-                latest = self.store.load_runtime_session(session.session_id)
-                self.queued_inputs.acknowledge(latest, item.queue_id)
-            elif item.batch_size is not None and item.batch_index == item.batch_size - 1:
-                self.queued_inputs.acknowledge_batch(
-                    session_id=session.session_id,
-                    batch_id=item.batch_id,
+            latest = self.store.load_session_record(session.session_id)
+            current = {item.queue_id: item for item in self.queued_inputs.eligible_session(latest)}
+            if any(current.get(item.queue_id) != item for item in inputs):
+                return []
+            messages = [
+                self._create_session_input_message(
+                    session=latest,
+                    run=run,
+                    item=item,
+                    sequence=sequence + index,
+                    is_queued=True,
                 )
-            return message, True
+                for index, item in enumerate(inputs)
+            ]
+            self.run_lifecycle.append_messages(
+                session=latest,
+                run=run,
+                messages=messages,
+                consumed_inputs=tuple(item.queue_id for item in inputs),
+            )
+            return messages
 
     def _validate_model_resource_refs(
         self,
@@ -3187,10 +3243,6 @@ class RuntimeService:
                 failure_message=prompt_redactor.redact(failure.message),
             )
 
-    @staticmethod
-    def _queued_input_is_durable(messages: list[MessageRecord], queue_id: str) -> bool:
-        return any(message.metadata.get("queued_input_id") == queue_id for message in messages)
-
     async def _load_submission_snapshot(self, session_id: str) -> RuntimeSessionSnapshot:
         """Load one Host submission snapshot without blocking the orchestration loop."""
 
@@ -3227,7 +3279,11 @@ class RuntimeService:
             recover=True,
         )
         session = snapshot.session
-        run = find_run(snapshot.runs, run_id) if run_id else find_active_run(snapshot.runs)
+        run = (
+            find_run(snapshot.runs, run_id)
+            if run_id
+            else find_active_run(snapshot.runs, history_epoch=snapshot.session.history_epoch)
+        )
         if run.status != "waiting_approval":
             raise ValueError(f"run is not waiting for approval: {run.status}")
         batch = run.active_tool_batch
@@ -3806,7 +3862,7 @@ class RuntimeService:
             and run.status == "completed"
             and not self._run_continuation_is_pending(run)
         ):
-            await self._drain_queued_input_queue(run.session_id)
+            await self._drain_queued_input_queue(run.session_id, run.history_epoch)
         return updated
 
     async def _settle_run_continuation(
@@ -3818,6 +3874,16 @@ class RuntimeService:
         if not self._run_continuation_is_pending(run):
             return RunContinuationSettlement(run=run)
 
+        withdrawn = await run_blocking(
+            RunContinuationService(
+                store=self.store,
+                registry=self.continuations,
+                queue=self.queued_inputs,
+            ).settle_withdrawn,
+            run,
+        )
+        if withdrawn is not None:
+            return withdrawn
         try:
             await self._ensure_extension_snapshot(run)
             if self._run_has_extension_binding(run) and (
@@ -3973,6 +4039,8 @@ class RuntimeService:
         del session
         with self.store.session_mutation(run.session_id):
             latest = self.store.load_run(run.session_id, run.run_id)
+            if latest.history_epoch != self.store.load_session_record(run.session_id).history_epoch:
+                raise SessionCommitConflict("Run belongs to withdrawn Session history")
             if latest.abort_requested or latest.status not in ACTIVE_RUN_STATUSES:
                 return latest
             metadata = dict(latest.metadata)
@@ -4002,6 +4070,8 @@ class RuntimeService:
         del session, model_round
         with self.store.session_mutation(run.session_id):
             latest = self.store.load_run(run.session_id, run.run_id)
+            if latest.history_epoch != self.store.load_session_record(run.session_id).history_epoch:
+                raise SessionCommitConflict("Run belongs to withdrawn Session history")
             if latest.abort_requested or latest.status not in ACTIVE_RUN_STATUSES:
                 return latest
             updated = latest.model_copy(

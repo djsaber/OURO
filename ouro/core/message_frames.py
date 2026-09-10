@@ -33,45 +33,38 @@ def retain_compactions(
     return retained
 
 
-def validate_frame_boundary(
-    first_removed: MessageRecord, last_retained: MessageRecord | None
-) -> None:
-    """Validate the cut itself, without imposing new validity rules on its prefix.
+def project_tool_exchanges(
+    messages: Sequence[MessageRecord],
+) -> tuple[list[MessageRecord], tuple[str, ...]]:
+    """Omit incomplete exchanges from Provider context without editing history."""
 
-    Inputs start independent frames, even after interrupted output. Truncation
-    may expose an already incomplete frame, but must not split an existing one.
-    Protocol recovery before execution is a separate operation.
-    """
-    if first_removed.role in {"user", "system"}:
-        return
-    if first_removed.role == "tool_result" or (
-        last_retained is not None
-        and last_retained.role not in {"user", "system"}
-        and first_removed.turn_id is not None
-        and first_removed.turn_id == last_retained.turn_id
-        and first_removed.run_id == last_retained.run_id
-    ):
-        raise ValueError("cannot truncate inside a message frame")
-
-
-def incomplete_suffix_start(messages: Sequence[MessageRecord]) -> MessageRecord | None:
-    """Find the first unfinished frame, preserving every complete input and exchange.
-
-    Recovery must first commit known tool outcomes. An unfinished exchange is
-    indivisible: exposing an assistant call without its results is invalid.
-    """
-
-    pending: set[str] = set()
-    start: MessageRecord | None = None
+    results = {
+        (message.run_id, message.turn_id, message.tool_result.tool_call_id)
+        for message in messages
+        if message.tool_result is not None
+    }
+    complete_calls = set()
+    complete_messages = set()
     for message in messages:
-        if message.metadata.get("incomplete"):
-            return start or message
-        if message.tool_calls:
-            if start is None:
-                start = message
-            pending.update(call.id for call in message.tool_calls)
+        if not message.tool_calls or message.metadata.get("incomplete"):
+            continue
+        calls = {(message.run_id, message.turn_id, call.id) for call in message.tool_calls}
+        if calls <= results:
+            complete_calls.update(calls)
+            complete_messages.add(message.message_id)
+
+    projected = []
+    excluded = []
+    for message in messages:
+        incomplete = bool(message.tool_calls) and message.message_id not in complete_messages
         if message.tool_result is not None:
-            pending.discard(message.tool_result.tool_call_id)
-            if not pending:
-                start = None
-    return start
+            incomplete = (
+                message.run_id,
+                message.turn_id,
+                message.tool_result.tool_call_id,
+            ) not in complete_calls
+        if incomplete:
+            excluded.append(message.message_id)
+        else:
+            projected.append(message)
+    return projected, tuple(excluded)
