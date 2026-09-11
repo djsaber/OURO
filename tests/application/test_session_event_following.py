@@ -9,7 +9,9 @@ from ouro.application.runtime import RuntimeService
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.events import EventRecord
+from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata
+from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
@@ -83,6 +85,55 @@ async def test_subscription_follows_other_runtime_and_later_events(stores):
         assert (await events(subscription, 1))[0].sequence == fourth.sequence
     finally:
         subscription.close()
+        await supervisor.shutdown()
+
+
+async def test_other_host_observes_undo_and_filters_late_old_epoch_on_reconnect(stores):
+    writer, reader = stores
+    session = SessionRecord()
+    writer.create_session(session)
+    message = MessageRecord.text(session_id=session.session_id, role="user", text="withdraw")
+    added = writer.commit_session(
+        SessionCommit(before=session, steps=(SessionCommitStep(message=message),))
+    )
+    supervisor = supervisor_for(reader)
+    subscription = await supervisor.subscribe(session.session_id, include_activity=True)
+    reconnected = None
+    try:
+        writer.commit_session(
+            SessionCommit(
+                before=added.session,
+                before_message_id=message.message_id,
+                events=(
+                    EventRecord(
+                        session_id=session.session_id,
+                        event_type="session_history_withdrawn",
+                        payload={"history_epoch": 1},
+                    ),
+                ),
+            )
+        )
+        observed = (await events(subscription, 1))[0]
+        assert observed.history_epoch == 1
+        writer.append_ordered_event(
+            EventRecord(
+                session_id=session.session_id, event_type="model_request_started", history_epoch=0
+            )
+        )
+        current = writer.append_ordered_event(
+            EventRecord(session_id=session.session_id, event_type="diagnostic", history_epoch=1)
+        )
+        assert (await events(subscription, 1))[0].sequence == current.sequence
+        assert supervisor._activities[session.session_id].activity == "idle"
+        reconnected = await supervisor.subscribe(session.session_id, include_activity=True)
+        assert reconnected.initial_activity.history_epoch == 1
+        assert reconnected.initial_activity.activity == "idle"
+        replay = await events(reconnected, 2)
+        assert [event.event_type for event in replay] == ["session_history_withdrawn", "diagnostic"]
+    finally:
+        subscription.close()
+        if reconnected is not None:
+            reconnected.close()
         await supervisor.shutdown()
 
 

@@ -101,7 +101,8 @@ def _copy_snapshot(
         snapshot.session,
         snapshot.messages,
         resource_references=references,
-        extension_states=snapshot.extension_states,
+        harness_versions=snapshot.harness_versions,
+        commits=snapshot.commits,
         compactions=snapshot.compactions,
     )
     for run in snapshot.runs:

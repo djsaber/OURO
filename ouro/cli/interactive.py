@@ -8,6 +8,8 @@ from ouro.application.events import RuntimeEventSink
 from ouro.application.plugins import PluginService
 from ouro.application.queued_inputs import QueuedInputMode
 from ouro.application.runtime import RuntimeService
+from ouro.application.session_models import SessionUndoResult
+from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.supervisor_models import HostInputReceipt
 from ouro.cli.interactive_attachments import InteractiveAttachmentDraft
 from ouro.cli.interactive_commands import handle_command
@@ -26,6 +28,7 @@ from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import OuroError
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
+from ouro.core.messages import SkillActivationContent
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.core.session_controls import AttributedSessionInput, AttributedSessionInputBatch
@@ -131,6 +134,7 @@ async def _run_interactive_session(
     initial_model = runtime.current_model().key
     plugin_run_task: asyncio.Task[RunResult] | None = None
     attachments = InteractiveAttachmentDraft()
+    restored_input: SessionUndoResult | None = None
     coordinator = InteractionCoordinator(
         runtime=runtime,
         output=output,
@@ -200,7 +204,7 @@ async def _run_interactive_session(
                     plugin_run_task = None
 
             line = raw_line.strip()
-            if not line:
+            if not line and restored_input is None:
                 continue
 
             queue_mode: QueuedInputMode = "follow_up"
@@ -211,6 +215,18 @@ async def _run_interactive_session(
                 line = line.removeprefix("/follow ").strip()
 
             skill_invocation = None
+            if restored_input is not None and not line.startswith("/"):
+                line = line or restored_input.text_content
+                activation = next(
+                    (
+                        block
+                        for block in restored_input.input.content
+                        if isinstance(block, SkillActivationContent)
+                    ),
+                    None,
+                )
+                if activation is not None:
+                    skill_invocation = SkillInvocationRequest(name=activation.name, arguments=line)
             if line.startswith("/"):
                 try:
                     previous_session_id = session_id
@@ -232,6 +248,16 @@ async def _run_interactive_session(
                 session_id = command_result.session_id
                 if session_id != previous_session_id:
                     attachments.retain_for_session(session_id)
+                    restored_input = None
+                if command_result.restored_input is not None:
+                    restored_input = command_result.restored_input
+                    (
+                        current_approval_mode,
+                        current_interaction_mode,
+                        current_reasoning_request,
+                    ) = _session_preferences(runtime, restored_input.session.session_id)
+                if command_result.run_result is not None:
+                    session_id = await coordinator.resolve_run(command_result.run_result)
                 if command_result.approval_mode is not None:
                     current_approval_mode = command_result.approval_mode
                 if command_result.interaction_mode is not None:
@@ -315,6 +341,7 @@ async def _run_interactive_session(
                 # Preserve the durable Session identity even when approval or AskUser
                 # continuation fails after the initial RunResult has been returned.
                 session_id = result.session.session_id
+                restored_input = None
                 if resource_refs:
                     attachments.clear()
                 if plugin_run_task is not None and any(

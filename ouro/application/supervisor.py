@@ -562,7 +562,17 @@ class RuntimeSupervisor:
 
     async def _enqueue_job(self, job: _RunJob, *, run_id: str | None = None) -> None:
         session_id = job.handle.session_id
-        sequence = await run_blocking(self.store.latest_event_sequence, session_id)
+
+        def read_boundary() -> tuple[int, int]:
+            with self.store.session_mutation(session_id):
+                return (
+                    self.store.load_session_record(session_id).history_epoch,
+                    self.store.latest_event_sequence(session_id),
+                )
+
+        epoch, sequence = await run_blocking(read_boundary)
+        if job.history_epoch is None:
+            job.history_epoch = epoch
         # Queries yield to other submissions and shutdown. Commit process-local
         # scheduling atomically only after checking the current ownership again.
         if self._closed:
@@ -582,7 +592,9 @@ class RuntimeSupervisor:
             status="queued",
         )
         if run_id is None or job.prepared_run is not None:
-            activity = queued_runtime_activity(session_id, sequence=sequence)
+            activity = queued_runtime_activity(
+                session_id, sequence=sequence, history_epoch=job.history_epoch
+            )
             self._publish_activity(
                 activity if run_id is None else activity.model_copy(update={"run_id": run_id})
             )
@@ -653,10 +665,12 @@ class RuntimeSupervisor:
             def read_replay() -> tuple[
                 RuntimeActivitySnapshot | None, tuple[RuntimeNotification, ...], bool
             ]:
-                self.store.load_session_record(session_id)
-                initial = activity
-                if initial is None:
-                    initial = self._load_activity(session_id, status_override=status_override)
+                with self.store.session_mutation(session_id):
+                    session = self.store.load_session_record(session_id)
+                    initial = activity
+                    if initial is None or initial.history_epoch != session.history_epoch:
+                        initial = self._load_activity(session_id, status_override=status_override)
+                # Events are immutable facts; read replay outside the snapshot lock.
                 events, truncated = self.store.load_events_after(
                     session_id,
                     after_sequence=after_sequence,
@@ -666,6 +680,7 @@ class RuntimeSupervisor:
                     tuple(
                         RuntimeNotification(kind="event", event=project_runtime_event(event))
                         for event in events
+                        if event.history_epoch >= session.history_epoch
                     )
                     if not truncated
                     else ()
@@ -1019,7 +1034,9 @@ class RuntimeSupervisor:
                 )
                 current_activity = self._activities.get(job.handle.session_id)
                 if current_activity is None and queued_snapshot.run_id is None:
-                    current_activity = queued_runtime_activity(job.handle.session_id)
+                    current_activity = queued_runtime_activity(
+                        job.handle.session_id, history_epoch=job.history_epoch or 0
+                    )
                 if current_activity is not None and current_activity.run_id is None:
                     self._publish_activity(
                         current_activity.model_copy(
@@ -1129,7 +1146,11 @@ class RuntimeSupervisor:
 
     async def _on_event(self, event: EventRecord) -> None:
         job = self._jobs_by_session.get(event.session_id)
-        if job is not None and not job.done.is_set():
+        if (
+            job is not None
+            and not job.done.is_set()
+            and (job.history_epoch is None or event.history_epoch >= job.history_epoch)
+        ):
             current = self._snapshots[job.handle.handle_id]
             status = _status_from_event(event, current.status)
             self._snapshots[job.handle.handle_id] = current.model_copy(
@@ -1149,10 +1170,12 @@ class RuntimeSupervisor:
         if stream is not None:
             stream.offer(event)
             return
+        previous_activity = self._activities.get(event.session_id)
+        if previous_activity is not None and event.history_epoch < previous_activity.history_epoch:
+            return
         notification = RuntimeNotification(kind="event", event=project_runtime_event(event))
         for subscription in subscriptions:
             subscription._offer(notification)
-        previous_activity = self._activities.get(event.session_id)
         if previous_activity is None:
             current_activity = await run_blocking(self._load_activity, event.session_id)
         else:
@@ -1171,10 +1194,12 @@ class RuntimeSupervisor:
                     subscription._offer(activity_notification)
 
     def _publish_observed_event(self, event: EventRecord) -> None:
+        previous = self._activities.get(event.session_id)
+        if previous is not None and event.history_epoch < previous.history_epoch:
+            return
         notification = RuntimeNotification(kind="event", event=project_runtime_event(event))
         for subscription in tuple(self._subscriptions.get(event.session_id, ())):
             subscription._offer(notification)
-        previous = self._activities.get(event.session_id)
         if previous is not None:
             self._publish_activity(reduce_runtime_activity(previous, event))
 

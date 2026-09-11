@@ -11,9 +11,11 @@ from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextMetrics, ProviderContext
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.events import EventRecord
+from ouro.core.harness import HarnessVersion
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.reasoning import ReasoningRequest
+from ouro.core.session_commits import SessionCommitResult
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import (
     RunRecord,
@@ -109,6 +111,8 @@ class SessionCatalogEntry(ApplicationDTO):
 
 
 class SessionView(ApplicationDTO):
+    history_epoch: int = 0
+    harness_version: str | None = None
     session_id: str
     namespace: str = "default"
     session_kind: Literal["primary", "subagent"] = "primary"
@@ -142,6 +146,8 @@ class SessionView(ApplicationDTO):
     @classmethod
     def from_record(cls, session: SessionRecord) -> SessionView:
         return cls(
+            history_epoch=session.history_epoch,
+            harness_version=session.harness_version,
             session_id=session.session_id,
             namespace=session.namespace,
             session_kind=session.session_kind,
@@ -236,16 +242,19 @@ class SessionContextSnapshot(ApplicationDTO):
 class SessionExport(ApplicationDTO):
     """Explicit complete-history transfer DTO; interactive Host reads stay paged."""
 
-    session: SessionView
+    session: SessionRecord
     messages: tuple[MessageRecord, ...] = ()
     events: tuple[EventRecord, ...] = ()
     runs: tuple[RunRecord, ...] = ()
     compactions: tuple[CompactionRecord, ...] = ()
     extension_states: tuple[SessionExtensionStateRecord, ...] = ()
+    harness_versions: tuple[HarnessVersion, ...] = ()
+    commits: tuple[SessionCommitResult, ...] = ()
 
 
 class SessionMessagePage(ApplicationDTO):
     session_id: str
+    history_epoch: int = 0
     messages: tuple[MessageRecord, ...] = ()
     next_cursor: int | None = None
 

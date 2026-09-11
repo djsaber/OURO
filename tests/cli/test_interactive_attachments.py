@@ -1,14 +1,53 @@
 from __future__ import annotations
 
+import pytest
+
 from ouro.application.resources import ResourceService
 from ouro.application.runtime import RuntimeService
 from ouro.cli.interactive import run_interactive
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.messages import ImageContent, ModelMessage
+from ouro.core.messages import ImageContent, ModelMessage, SkillActivationContent
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore
+from ouro.skills import discover_skill_catalog
 from ouro.tools import ToolRegistry
+
+
+@pytest.mark.parametrize("replacement", ["", "edited prompt"])
+async def test_interactive_undo_restores_resources_and_uses_normal_submission(
+    tmp_path, replacement
+):
+    runtime, provider = _runtime(tmp_path, supports_vision=True)
+    image = tmp_path / "reference.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nreference")
+    inputs = iter(
+        [f'/attach "{image}"', "original prompt", "/undo", "/attachments", replacement, "/quit"]
+    )
+    outputs = []
+    try:
+        assert (
+            await run_interactive(
+                runtime=runtime, input_func=lambda _: next(inputs), output_func=outputs.append
+            )
+            == 0
+        )
+        session = runtime.sessions.catalog().entries[0]
+        snapshot = runtime.store.load_runtime_session(session.session_id)
+        user = next(item for item in snapshot.messages if item.role == "user")
+        assert user.text_content == (replacement or "original prompt")
+        assert len(user.resource_refs) == 1
+        assert snapshot.session.history_epoch == 1
+        assert len(provider.requests) == 2
+        assert any("Restored input:" in line for line in outputs)
+        assert any("[1] reference.png" in line for line in outputs)
+        assert any(
+            isinstance(block, ImageContent)
+            for message in provider.requests[-1]
+            for block in message.content
+        )
+    finally:
+        await runtime.close()
 
 
 class _CapturingProvider:
@@ -53,9 +92,47 @@ def _runtime(tmp_path, *, supports_vision: bool) -> tuple[RuntimeService, _Captu
             adapter=adapter,
             tools=ToolRegistry(),
             resources=resources,
+            skills=tuple(discover_skill_catalog(home=tmp_path).skills),
         ),
         provider,
     )
+
+
+async def test_interactive_failed_undo_keeps_restored_skill_and_attachments(tmp_path):
+    skill = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\nname: demo\ndescription: Demo.\n---\nApply the demo.\n", encoding="utf-8"
+    )
+    runtime, _ = _runtime(tmp_path, supports_vision=True)
+    notes = tmp_path / "notes.txt"
+    notes.write_text("reference", encoding="utf-8")
+    inputs = iter(
+        [f'/attach "{notes}"', "/skill demo original", "/undo", "/undo", "edited", "/quit"]
+    )
+    outputs = []
+    try:
+        assert (
+            await run_interactive(
+                runtime=runtime, input_func=lambda _: next(inputs), output_func=outputs.append
+            )
+            == 0
+        )
+        session = runtime.sessions.catalog().entries[0]
+        user = next(
+            message
+            for message in runtime.store.load_messages_tail(session.session_id)
+            if message.role == "user"
+        )
+        assert user.text_content == "edited"
+        assert len(user.resource_refs) == 1
+        assert any(
+            isinstance(block, SkillActivationContent) and block.name == "demo"
+            for block in user.content
+        )
+        assert any(line.startswith("Error:") for line in outputs)
+    finally:
+        await runtime.close()
 
 
 async def test_interactive_attachment_uses_canonical_resource_projection(tmp_path) -> None:
@@ -83,8 +160,7 @@ async def test_interactive_attachment_uses_canonical_resource_projection(tmp_pat
         assert code == 0
         assert any("Attached for next message: [1] reference image.png" in line for line in outputs)
         assert any(
-            "Already attached for next message: [1] reference image.png" in line
-            for line in outputs
+            "Already attached for next message: [1] reference image.png" in line for line in outputs
         )
         assert any(line.startswith("Attachments for the next message:") for line in outputs)
 

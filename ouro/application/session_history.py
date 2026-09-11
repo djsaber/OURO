@@ -10,8 +10,9 @@ from ouro.core.compaction import (
 from ouro.core.context import estimate_message_tokens
 from ouro.core.errors import CompactionStateError, SessionBranchError
 from ouro.core.events import EventRecord
+from ouro.core.harness import HarnessState, HarnessVersion
 from ouro.core.messages import MessageRecord
-from ouro.core.session_extensions import SessionExtensionStateRecord
+from ouro.core.session_controls import SessionControlState
 
 
 def select_branch_messages(
@@ -140,8 +141,7 @@ def copy_branch_compactions(
                         compaction_id_map[previous_id] if previous_id is not None else None
                     ),
                     "covered_message_ids": [
-                        message_id_map[message_id]
-                        for message_id in compaction.covered_message_ids
+                        message_id_map[message_id] for message_id in compaction.covered_message_ids
                     ],
                     "history_boundary_message_id": message_id_map[
                         compaction.history_boundary_message_id
@@ -226,40 +226,59 @@ def _extend_branch_context_metrics(
 def apply_extension_branch_policies(
     messages: list[MessageRecord],
     requested_message_id: str | None,
-    states: list[SessionExtensionStateRecord],
+    versions: list[HarnessVersion],
     branch_session_id: str,
-) -> tuple[list[MessageRecord], list[SessionExtensionStateRecord]]:
-    """Apply owner-declared Session lifecycle rules before publishing a branch."""
+) -> tuple[list[MessageRecord], list[HarnessVersion], dict[str, str]]:
+    """Apply each owner's lifecycle policy across the complete retained history."""
 
-    rejecting_owners = sorted(state.owner_id for state in states if state.branch_policy == "reject")
-    if rejecting_owners:
+    states = [state for version in versions for state in version.state.states]
+    rejecting = sorted({state.owner_id for state in states if state.branch_policy == "reject"})
+    if rejecting:
         raise SessionBranchError(
-            "branch rejected by Session extension state owners: " + ", ".join(rejecting_owners)
+            "branch rejected by Session extension state owners: " + ", ".join(rejecting)
         )
-
+    resetting = {state.owner_id for state in states if state.branch_policy == "reset"}
+    copying = {state.owner_id for state in states if state.branch_policy == "copy"} - resetting
     reset_tags = {
         tag
         for state in states
-        if state.branch_policy == "reset"
+        if state.owner_id in resetting
         for tag in state.projection_semantic_tags
     }
     requested = next(
-        (message for message in messages if message.message_id == requested_message_id),
-        None,
+        (message for message in messages if message.message_id == requested_message_id), None
     )
     if requested is not None and requested.semantic_tag in reset_tags:
         raise SessionBranchError(
             "branch point is an extension projection that must reset; "
             "choose an earlier durable message"
         )
-
-    retained_messages = [message for message in messages if message.semantic_tag not in reset_tags]
-    copied_states = [
-        state.model_copy(update={"session_id": branch_session_id})
-        for state in states
-        if state.branch_policy == "copy"
+    retained = [message for message in messages if message.semantic_tag not in reset_tags]
+    identities = {version.version_id: new_id("harness") for version in versions}
+    copied = [
+        HarnessVersion(
+            session_id=branch_session_id,
+            version_id=identities[version.version_id],
+            state=HarnessState(
+                states=tuple(
+                    state.model_copy(update={"session_id": branch_session_id})
+                    for state in version.state.states
+                    if state.owner_id in copying
+                ),
+                controls=SessionControlState(
+                    activations=[
+                        # Activation identity is Session-scoped and may be referenced
+                        # by opaque owner data; copy it together with that state.
+                        activation.model_copy(deep=True)
+                        for activation in version.state.controls.activations
+                        if activation.plugin_id in copying
+                    ]
+                ),
+            ),
+        )
+        for version in versions
     ]
-    return retained_messages, copied_states
+    return retained, copied, identities
 
 
 def project_replay_frames(events: list[EventRecord]) -> tuple[ReplayFrame, ...]:

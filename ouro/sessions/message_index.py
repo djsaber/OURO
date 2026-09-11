@@ -3,21 +3,20 @@ from __future__ import annotations
 import json
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from hashlib import sha256
 from pathlib import Path
 from threading import Lock
 
 from ouro.core.errors import PersistenceError
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
+from ouro.local_io import read_text_atomic
 
 
 @dataclass
 class _JournalIndex:
     identity: tuple[int, int] | None = None
     size: int = 0
-    tail_offset: int = 0
-    tail_digest: bytes = b""
+    history_epoch: int | None = None
     messages: dict[str, int] = field(default_factory=dict)
     queued: dict[str, int] = field(default_factory=dict)
     runs: dict[str, list[int]] = field(default_factory=dict)
@@ -28,20 +27,13 @@ class _JournalIndex:
         with path.open("rb") as stream:
             stat = path.stat()
             identity = stat.st_dev, stat.st_ino
-            stream.seek(self.tail_offset)
-            if (
-                identity != self.identity
-                or stat.st_size < self.size
-                or (self.size and sha256(stream.readline()).digest() != self.tail_digest)
-            ):
+            epoch = json.loads(read_text_atomic(path.with_name("session.json")))["history_epoch"]
+            if identity != self.identity or stat.st_size < self.size or epoch != self.history_epoch:
                 self.size = 0
-                self.tail_offset = 0
-                self.tail_digest = b""
                 self.messages.clear()
                 self.queued.clear()
                 self.runs.clear()
             stream.seek(self.size)
-            last_line = None
             while line := stream.readline():
                 offset = self.size
                 self.size += len(line)
@@ -53,11 +45,8 @@ class _JournalIndex:
                 run_id = record.get("run_id")
                 if isinstance(run_id, str):
                     self.runs.setdefault(run_id, []).append(offset)
-                self.tail_offset = offset
-                last_line = line
             self.identity = identity
-            if last_line is not None:
-                self.tail_digest = sha256(last_line).digest()
+            self.history_epoch = epoch
 
 
 class MessageJournalQueries:
@@ -65,9 +54,9 @@ class MessageJournalQueries:
 
     Callers hold the Session mutation lock. First access indexes that journal;
     subsequent reads inspect only its appended suffix and the requested records.
-    A digest of the last indexed record detects suffix replacement even when
-    size and trailing fields are unchanged. Normal appends still index only new
-    records. Cached data contains offsets and one digest, never message bodies.
+    The canonical history epoch invalidates offsets after any cut, including
+    same-length or growing rewrites observed by an independent reader. Normal
+    appends index only new records; cached data never contains message bodies.
     """
 
     def __init__(self) -> None:

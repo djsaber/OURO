@@ -13,7 +13,7 @@ from ouro.core.observers import (
     ObserverRegistry,
     RuntimeEventObservation,
 )
-from ouro.core.state import SessionRecord
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore
 
 
@@ -25,6 +25,7 @@ async def test_event_recorder_persists_event_and_dispatches_runtime_event_observ
     store.initialize()
     session = SessionRecord(title="Events")
     store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
     observers = ObserverRegistry()
     seen: list[str] = []
 
@@ -65,6 +66,7 @@ async def test_runtime_event_observer_receives_a_redacted_payload(tmp_path) -> N
     store.initialize()
     session = SessionRecord(title="Redacted events")
     store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
     observers = ObserverRegistry()
     seen: list[object] = []
 
@@ -103,6 +105,7 @@ async def test_application_event_publish_uses_same_durable_observer_boundary(tmp
     store.initialize()
     session = SessionRecord(title="Application events")
     store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, run_id="run_parent"))
     seen: list[EventRecord] = []
     recorder = RuntimeEventRecorder(
         store=store,
@@ -153,6 +156,7 @@ async def test_event_observer_retains_registry_resolved_at_publish_time(tmp_path
     store.initialize()
     session = SessionRecord(title="Catalog-bound events")
     store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, run_id="run_catalog"))
     first_observers = ObserverRegistry()
     second_observers = ObserverRegistry()
     seen: list[str] = []
@@ -205,6 +209,7 @@ async def test_unmatched_runtime_event_skips_observation_projection(
     store.initialize()
     session = SessionRecord(title="Filtered events")
     store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, run_id="run_filtered"))
     observers = ObserverRegistry()
     observers.register(
         ObserverRegistration(
@@ -241,6 +246,7 @@ async def test_runtime_event_matcher_short_circuits_catalog_resolution(tmp_path)
     store.initialize()
     session = SessionRecord(title="Catalog matcher")
     store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, run_id="run_catalog"))
     observers = ObserverRegistry()
     observers.register(
         ObserverRegistration(
@@ -281,6 +287,7 @@ async def test_event_recorder_records_observer_failures_as_events(tmp_path) -> N
     store.initialize()
     session = SessionRecord(title="Observer failures")
     store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
     recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
 
     failure = ObserverFailure(
@@ -306,6 +313,7 @@ async def test_event_recorder_converts_observer_failure_to_failure_event(tmp_pat
     store.initialize()
     session = SessionRecord(title="Event observer failure")
     store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
     observers = ObserverRegistry()
 
     def broken_on_event(_observation) -> None:
@@ -350,6 +358,7 @@ async def test_event_recorder_allocates_unique_sequences_across_concurrent_emitt
     store.initialize()
     session = SessionRecord(title="Concurrent events")
     store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
     sink_entered = asyncio.Event()
     release_sink = asyncio.Event()
 
@@ -419,6 +428,7 @@ async def test_event_recorder_fanout_preserves_same_session_persistence_order(
     store.initialize()
     session = SessionRecord(title="Ordered fan-out")
     store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
     seen: list[int] = []
     recorder = RuntimeEventRecorder(
         store=store,
@@ -481,7 +491,9 @@ async def test_slow_file_persistence_does_not_block_another_session(tmp_path) ->
     blocked = SessionRecord(title="Blocked")
     independent = SessionRecord(title="Independent")
     store.create_session(blocked)
+    store.save_run(RunRecord(session_id=blocked.session_id, run_id="run_blocked"))
     store.create_session(independent)
+    store.save_run(RunRecord(session_id=independent.session_id, run_id="run_independent"))
     store.blocked_session_id = blocked.session_id
     recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
 
@@ -520,6 +532,7 @@ async def test_observer_timeout_cannot_block_durable_event(tmp_path) -> None:
     store.initialize()
     session = SessionRecord(title="Observer timeout")
     store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
     observers = ObserverRegistry()
 
     async def never_returns(_observation) -> None:
@@ -564,6 +577,7 @@ async def test_event_recorder_close_applies_observer_shutdown_deadline(tmp_path)
     store.initialize()
     session = SessionRecord(title="Observer shutdown")
     store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
     observers = ObserverRegistry()
     started = asyncio.Event()
 
@@ -605,6 +619,7 @@ async def test_stable_runtime_event_payload_is_validated_before_persistence(tmp_
     store.initialize()
     session = SessionRecord(title="Invalid event")
     store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
     recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
 
     with pytest.raises(ValueError, match="requires string payload field text"):
@@ -627,6 +642,7 @@ async def test_tool_output_with_malformed_url_does_not_break_event_delivery(tmp_
     store.initialize()
     session = SessionRecord(title="Untrusted tool output")
     store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
     recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
     seen: list[str] = []
     recorder.add_event_sink(lambda event: seen.append(event.event_type))
@@ -666,6 +682,7 @@ async def test_host_event_sink_registration_detaches_without_closing_runtime(tmp
     store.initialize()
     session = SessionRecord(title="Detachable host")
     store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
     recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
     seen: list[str] = []
     registration = recorder.add_event_sink(lambda event: seen.append(event.event_type))
@@ -701,6 +718,7 @@ async def test_host_sink_worker_starts_with_eager_task_factory(tmp_path) -> None
     store.initialize()
     session = SessionRecord(title="Eager host")
     store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, run_id="run_eager"))
     recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
     seen: list[str] = []
 

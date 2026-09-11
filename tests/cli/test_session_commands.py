@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from ouro.application.runtime import RuntimeService
 from ouro.cli.main import main
 from ouro.cli.parser import build_parser
@@ -17,11 +19,87 @@ from ouro.core.compaction import (
     CompactionRequest,
     CompactionStrategyRegistry,
 )
+from ouro.core.harness import HarnessState
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
+from ouro.core.session_commits import SessionCommit, SessionCommitStep
+from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.local_application import build_local_session_services
 from ouro.sessions import LocalSessionStore, SessionStore
 from ouro.tools import ToolRegistry
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+def test_explicit_harness_maintenance_is_reentrant_and_does_not_start_runs(
+    tmp_path, capsys, backend
+):
+    services = build_local_session_services(tmp_path, session_backend=backend)
+    store = services._store
+    session = SessionRecord()
+    store.create_session(session)
+    old = SessionExtensionStateRecord(
+        session_id=session.session_id,
+        owner_id="dev.ouro.plan",
+        state_schema_version=1,
+        payload={"phase": "inactive"},
+    )
+    store.commit_session(
+        SessionCommit(
+            before=session, steps=(SessionCommitStep(harness=HarnessState(states=(old,))),)
+        )
+    )
+    original = store.load_harness(session.session_id)
+    args = [
+        "session",
+        "migrate-harness",
+        session.session_id,
+        "--home",
+        str(tmp_path),
+        "--session-backend",
+        backend,
+        "--json",
+    ]
+    assert main(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["changed"] is True
+    assert store.load_harness(session.session_id).state.states[0].state_schema_version == 2
+    assert store.load_harness(session.session_id, original.version_id) == original
+    assert main(args) == 0
+    assert json.loads(capsys.readouterr().out)["changed"] is False
+    assert not store.load_session(session.session_id).runs
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+def test_export_contains_canonical_harness_checkpoints_and_receipts(tmp_path, capsys, backend):
+    services = build_local_session_services(tmp_path, session_backend=backend)
+    store = services._store
+    session = SessionRecord()
+    store.create_session(session)
+    message = MessageRecord.text(session_id=session.session_id, role="user", text="input")
+    commit = store.commit_session(
+        SessionCommit(before=session, steps=(SessionCommitStep(message=message),))
+    )
+    assert (
+        main(
+            [
+                "session",
+                "export",
+                session.session_id,
+                "--home",
+                str(tmp_path),
+                "--session-backend",
+                backend,
+                "--json",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["session"]["history_epoch"] == 0
+    assert payload["session"]["harness_version"] == session.harness_version
+    assert payload["harness_versions"][0]["version_id"] == session.harness_version
+    assert payload["commits"][0]["operation_id"] == commit.operation_id
 
 
 def test_session_list_shows_new_session(tmp_path, capsys) -> None:

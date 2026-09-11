@@ -226,6 +226,7 @@ class TuiSessionProjection:
     """Small UI projection derived exclusively from the canonical event stream."""
 
     session_id: str
+    history_epoch: int = 0
     activity: RuntimeActivitySnapshot = field(init=False)
     _assistant_text: _TextAccumulator = field(default_factory=_TextAccumulator, init=False)
     _reasoning_text: _TextAccumulator = field(default_factory=_TextAccumulator, init=False)
@@ -243,6 +244,7 @@ class TuiSessionProjection:
 
     def __post_init__(self) -> None:
         self.activity = RuntimeActivitySnapshot(
+            history_epoch=self.history_epoch,
             session_id=self.session_id,
             status="idle",
             activity="idle",
@@ -303,6 +305,8 @@ class TuiSessionProjection:
         if event.session_id != self.session_id or event.sequence <= self._last_sequence:
             return None
         self._last_sequence = event.sequence
+        if event.history_epoch != self.history_epoch:
+            return None
         self.activity = reduce_runtime_activity(self.activity, event)
 
         payload = event.payload

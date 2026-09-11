@@ -113,6 +113,7 @@ class RuntimeToolCallActivity(ApplicationDTO):
 
 
 class RuntimeActivitySnapshot(ApplicationDTO):
+    history_epoch: int = 0
     session_id: str
     run_id: str | None = None
     status: SupervisorRunStatus

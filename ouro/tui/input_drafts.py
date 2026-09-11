@@ -19,6 +19,7 @@ MAX_SESSION_DRAFTS = 20
 class TuiSessionDraft(OuroModel):
     session_id: str
     text: str
+    resource_refs: tuple[str, ...] = ()
 
     @field_validator("session_id")
     @classmethod
@@ -31,6 +32,7 @@ class TuiSessionDraft(OuroModel):
 class TuiInputDrafts(VersionedOuroModel):
     """Welcome draft plus an MRU window of Session-owned drafts."""
 
+    schema_version: int = 2
     welcome: str = ""
     sessions: tuple[TuiSessionDraft, ...] = ()
 
@@ -45,7 +47,7 @@ class TuiInputDrafts(VersionedOuroModel):
         session_ids = tuple(draft.session_id for draft in value)
         if len(set(session_ids)) != len(session_ids):
             raise ValueError("sessions must contain unique session IDs")
-        if any(not draft.text for draft in value):
+        if any(not draft.text and not draft.resource_refs for draft in value):
             raise ValueError("session drafts must not be empty")
         return value
 
@@ -57,7 +59,14 @@ class TuiInputDrafts(VersionedOuroModel):
             "",
         )
 
-    def remember(self, session_id: str | None, text: str) -> TuiInputDrafts:
+    def resources_for(self, session_id: str | None) -> tuple[str, ...]:
+        return next(
+            (draft.resource_refs for draft in self.sessions if draft.session_id == session_id), ()
+        )
+
+    def remember(
+        self, session_id: str | None, text: str, *, resource_refs: tuple[str, ...] | None = None
+    ) -> TuiInputDrafts:
         """Return state with one draft updated and empty drafts removed."""
 
         if session_id is None:
@@ -71,12 +80,19 @@ class TuiInputDrafts(VersionedOuroModel):
             (draft for draft in self.sessions if draft.session_id == session_id),
             None,
         )
-        if current is not None and current.text == text:
+        refs = (
+            (current.resource_refs if current is not None else ())
+            if resource_refs is None
+            else resource_refs
+        )
+        if current is not None and current.text == text and current.resource_refs == refs:
             return self
         remaining = tuple(draft for draft in self.sessions if draft.session_id != session_id)
         sessions = (
-            (TuiSessionDraft(session_id=session_id, text=text), *remaining)[:MAX_SESSION_DRAFTS]
-            if text
+            (TuiSessionDraft(session_id=session_id, text=text, resource_refs=refs), *remaining)[
+                :MAX_SESSION_DRAFTS
+            ]
+            if text or refs
             else remaining
         )
         return TuiInputDrafts(welcome=self.welcome, sessions=sessions)

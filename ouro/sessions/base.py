@@ -44,6 +44,8 @@ class SessionSnapshot(RuntimeSessionSnapshot):
 
     events: list[EventRecord] = Field(default_factory=list)
     extension_states: list[SessionExtensionStateRecord] = Field(default_factory=list)
+    harness_versions: list[HarnessVersion] = Field(default_factory=list)
+    commits: list[SessionCommitResult] = Field(default_factory=list)
 
 
 class SessionObservationState(RuntimeSessionSnapshot):
@@ -104,8 +106,9 @@ class SessionRepository(Protocol):
         session: SessionRecord,
         messages: list[MessageRecord],
         resource_references: list[SessionResourceReference] | None = None,
-        extension_states: list[SessionExtensionStateRecord] | None = None,
+        harness_versions: list[HarnessVersion] | None = None,
         compactions: list[CompactionRecord] | None = None,
+        commits: list[SessionCommitResult] | None = None,
     ) -> None: ...
 
     def save_session(self, session: SessionRecord) -> None: ...

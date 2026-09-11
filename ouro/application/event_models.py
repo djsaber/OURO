@@ -23,6 +23,7 @@ RuntimeEventCategory = Literal[
 
 
 class RuntimeEventView(ApplicationDTO):
+    history_epoch: int = 0
     event_id: str
     session_id: str
     run_id: str | None = None
@@ -60,6 +61,7 @@ def project_runtime_event(event: EventRecord) -> RuntimeEventView:
     redacted = redact_data(payload)
     assert isinstance(redacted, dict)
     return RuntimeEventView(
+        history_epoch=event.history_epoch,
         event_id=event.event_id,
         session_id=event.session_id,
         run_id=event.run_id,

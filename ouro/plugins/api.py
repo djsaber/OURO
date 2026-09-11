@@ -722,6 +722,7 @@ def _sdk_observation(observation: Observation) -> sdk.Observation:
                 event_type=record.event_type,
                 created_at=record.created_at,
                 sequence=record.sequence,
+                history_epoch=record.history_epoch,
                 payload=record.payload,
                 metadata=record.metadata,
             ),

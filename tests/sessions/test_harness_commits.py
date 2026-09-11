@@ -98,7 +98,7 @@ def test_file_session_enumeration_excludes_unpublished_creation(tmp_path, monkey
     observed = []
 
     def inspect(source, destination):
-        if source.name.endswith(".staging") and source.parent == store.sessions_dir:
+        if source.parent == store.sessions_dir and source != destination:
             assert (source / "session.json").exists()
             observed.append(store.list_sessions())
         return publish(source, destination)

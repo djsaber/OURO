@@ -240,7 +240,17 @@ def prepare_session_commit(
     session.controls = harness.state.controls.model_copy(deep=True)
     session.updated_at = request.after.updated_at if request.after is not None else utc_now()
     events = tuple(
-        event.model_copy(update={"sequence": event_sequence + index + 1}, deep=True)
+        event.model_copy(
+            update={
+                "sequence": event_sequence + index + 1,
+                "history_epoch": next(
+                    (run.history_epoch for run in request.runs if run.run_id == event.run_id),
+                    session.history_epoch,
+                ),
+                "metadata": {**event.metadata, "operation_id": request.operation_id},
+            },
+            deep=True,
+        )
         for index, event in enumerate(request.events)
     )
     return PreparedSessionCommit(

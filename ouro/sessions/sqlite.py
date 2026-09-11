@@ -49,6 +49,7 @@ from ouro.sessions.catalog import (
     catalog_entry_from_session,
     sort_catalog_entries,
 )
+from ouro.sessions.event_migration import migrate_event_journal, migrate_result_events
 from ouro.sessions.harness_migration import (
     migrate_message_record,
     migrate_run_record,
@@ -59,7 +60,7 @@ from ouro.sessions.locks import SessionRunLock
 from ouro.sessions.sqlite_commits import SQLiteSessionCommits
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
-SQLITE_SCHEMA_VERSION = 5
+SQLITE_SCHEMA_VERSION = 6
 
 
 class SQLiteSessionStore:
@@ -207,9 +208,19 @@ class SQLiteSessionStore:
                     "INSERT INTO metadata(key, value) VALUES('sqlite_schema_version', ?)",
                     (str(SQLITE_SCHEMA_VERSION),),
                 )
-            elif int(existing[0]) in {1, 2, 3, 4}:
+            elif int(existing[0]) in {1, 2, 3, 4, 5}:
                 connection.execute("BEGIN IMMEDIATE")
-                self._migrate_harness(connection, migration_locks)
+                if int(existing[0]) < 5:
+                    self._migrate_harness(connection, migration_locks)
+                else:
+                    for (session_id,) in connection.execute("SELECT session_id FROM sessions"):
+                        lock = self.acquire_session_lock(session_id, "event_migration")
+                        if lock is None:
+                            raise MigrationRequiredError(
+                                "stop active Sessions before migrating event history"
+                            )
+                        migration_locks.callback(lock.release)
+                self._migrate_events(connection)
                 connection.execute(
                     "UPDATE metadata SET value = ? WHERE key = 'sqlite_schema_version'",
                     (str(SQLITE_SCHEMA_VERSION),),
@@ -237,6 +248,43 @@ class SQLiteSessionStore:
             if connection is not None:
                 connection.close()
             migration_locks.close()
+
+    def _migrate_events(self, connection: sqlite3.Connection) -> None:
+        for (session_id,) in connection.execute("SELECT session_id FROM sessions").fetchall():
+            run_epochs = {
+                run.run_id: run.history_epoch
+                for run in self._load_models(
+                    connection,
+                    "SELECT payload FROM runs WHERE session_id = ?",
+                    (session_id,),
+                    RunRecord,
+                )
+            }
+            events = migrate_event_journal(
+                [
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT payload FROM events WHERE session_id = ? ORDER BY sequence",
+                        (session_id,),
+                    )
+                ],
+                run_epochs,
+            )
+            connection.executemany(
+                "UPDATE events SET payload = ? WHERE session_id = ? AND event_id = ?",
+                [(event.model_dump_json(), session_id, event.event_id) for event in events],
+            )
+            for operation_id, payload in connection.execute(
+                "SELECT operation_id, payload FROM session_commits WHERE session_id = ?",
+                (session_id,),
+            ).fetchall():
+                raw = json.loads(payload)
+                migrate_result_events(raw, run_epochs)
+                connection.execute(
+                    "UPDATE session_commits SET payload = ? "
+                    "WHERE session_id = ? AND operation_id = ?",
+                    (json.dumps(raw, ensure_ascii=False), session_id, operation_id),
+                )
 
     def _migrate_harness(self, connection: sqlite3.Connection, locks: ExitStack) -> None:
         commits = SQLiteSessionCommits(connection)
@@ -454,8 +502,9 @@ class SQLiteSessionStore:
         session: SessionRecord,
         messages: list[MessageRecord],
         resource_references: list[SessionResourceReference] | None = None,
-        extension_states: list[SessionExtensionStateRecord] | None = None,
+        harness_versions: list[HarnessVersion] | None = None,
         compactions: list[CompactionRecord] | None = None,
+        commits: list[SessionCommitResult] | None = None,
     ) -> None:
         with self.session_mutation(session.session_id):
             connection = self._transaction_connection()
@@ -472,15 +521,33 @@ class SQLiteSessionStore:
                         ).model_dump_json(exclude={"controls"}),
                     ),
                 )
-                SQLiteSessionCommits(connection).save_version(
-                    HarnessVersion(
-                        session_id=session.session_id,
-                        version_id=session.harness_version,
-                        state=HarnessState(
-                            controls=session.controls, states=tuple(extension_states or ())
-                        ),
-                    )
+                versions = (
+                    harness_versions
+                    if harness_versions is not None
+                    else [
+                        HarnessVersion(
+                            session_id=session.session_id,
+                            version_id=session.harness_version,
+                            state=HarnessState(controls=session.controls),
+                        )
+                    ]
                 )
+                checkpoints = {version.version_id: version for version in versions}
+                if session.harness_version not in checkpoints or any(
+                    message.before_harness_version is not None
+                    and message.before_harness_version not in checkpoints
+                    for message in messages
+                ):
+                    raise PersistenceError("Session snapshot has a missing Harness checkpoint")
+                storage = SQLiteSessionCommits(connection)
+                for version in versions:
+                    if version.session_id != session.session_id:
+                        raise PersistenceError("Harness checkpoint belongs to another Session")
+                    storage.save_version(version)
+                for receipt in commits or ():
+                    if receipt.session.session_id != session.session_id:
+                        raise PersistenceError("Session receipt belongs to another Session")
+                    storage.save_result(receipt)
                 for message in messages:
                     if message.session_id != session.session_id:
                         raise PersistenceError(
@@ -512,12 +579,6 @@ class SQLiteSessionStore:
                     )
                 for reference in resource_references or ():
                     self._insert_resource_reference(connection, session.session_id, reference)
-                for state in extension_states or ():
-                    if state.session_id != session.session_id:
-                        raise PersistenceError(
-                            f"extension state {state.owner_id} does not belong to "
-                            f"{session.session_id}"
-                        )
             except sqlite3.IntegrityError as exc:
                 raise PersistenceError(f"session already exists: {session.session_id}") from exc
 
@@ -776,6 +837,19 @@ class SQLiteSessionStore:
                     "SELECT payload FROM compactions WHERE session_id = ? ORDER BY row_id",
                     (session_id,),
                     CompactionRecord,
+                ),
+                harness_versions=self._load_models(
+                    connection,
+                    "SELECT payload FROM harness_versions WHERE session_id = ? ORDER BY version_id",
+                    (session_id,),
+                    HarnessVersion,
+                ),
+                commits=self._load_models(
+                    connection,
+                    "SELECT payload FROM session_commits "
+                    "WHERE session_id = ? ORDER BY operation_id",
+                    (session_id,),
+                    SessionCommitResult,
                 ),
                 extension_states=list(
                     SQLiteSessionCommits(connection)

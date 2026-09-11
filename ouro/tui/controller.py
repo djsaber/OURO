@@ -59,6 +59,7 @@ from ouro.application.session_models import (
     SessionCatalogEntry,
     SessionContextStatus,
     SessionDetail,
+    SessionMessagePage,
     SessionObservationSnapshot,
     SessionUndoResult,
     SessionView,
@@ -491,7 +492,6 @@ class TuiController:
         self._close_application = close_application
         self._started = False
         self._session_id: str | None = None
-        self._restored_input: SessionUndoResult | None = None
         self._session_archived = False
         self._initial_model: str | None = None
         self._draft_workspace: str | None = None
@@ -607,6 +607,7 @@ class TuiController:
         *,
         queue_mode: QueuedInputMode = "follow_up",
         skill_invocation: SkillInvocationRequest | None = None,
+        resource_refs: tuple[str, ...] = (),
     ) -> RunResult:
         runtime = self._runtime()
         is_new_session = self._session_id is None
@@ -617,12 +618,7 @@ class TuiController:
                 prompt,
                 skill_invocation=skill_invocation,
                 session_id=self._session_id,
-                resource_refs=(
-                    self._restored_input.resource_refs
-                    if self._restored_input is not None
-                    and self._restored_input.session.session_id == self._session_id
-                    else None
-                ),
+                resource_refs=resource_refs,
                 queue_mode=queue_mode,
                 initial_model=self._initial_model if is_new_session else None,
                 initial_reasoning_request=(self._reasoning_request if is_new_session else None),
@@ -631,7 +627,6 @@ class TuiController:
                 workspace=self._draft_workspace if is_new_session else None,
                 on_session_created=self._bind_created_session,
             )
-            self._restored_input = None
             self._session_id = result.session.session_id
             self._initial_model = None
             await self._unarchive_current_session_after_update()
@@ -665,9 +660,7 @@ class TuiController:
         return result
 
     async def undo(self) -> SessionUndoResult:
-        result = await self._runtime().undo(self._require_session())
-        self._restored_input = result
-        return result
+        return await self._runtime().undo(self._require_session())
 
     async def abort(self) -> RunResult | None:
         if self._session_id is None:
@@ -783,7 +776,6 @@ class TuiController:
         runtime = self._runtime()
         previous_route = await self._leaving_session_route()
         self._session_id = None
-        self._restored_input = None
         self._session_archived = False
         self._draft_workspace = runtime.default_workspace
         if previous_route is not None:
@@ -1020,6 +1012,16 @@ class TuiController:
     async def message(self, session_id: str, message_id: str) -> MessageRecord:
         runtime = self._runtime()
         return await asyncio.to_thread(runtime.sessions.message, session_id, message_id)
+
+    async def messages_at_history(
+        self, session_id: str, message_ids: tuple[str, ...], *, history_epoch: int
+    ) -> SessionMessagePage:
+        return await asyncio.to_thread(
+            self._runtime().sessions.messages_at_history,
+            session_id,
+            message_ids,
+            history_epoch=history_epoch,
+        )
 
     async def run_record(self, session_id: str, run_id: str) -> RunRecord:
         return await asyncio.to_thread(self._runtime().sessions.run_record, session_id, run_id)
@@ -2234,20 +2236,21 @@ class TuiController:
     def _read_session(self, session_id: str) -> LoadedSession:
         runtime = self._runtime()
         sessions = runtime.sessions
-        snapshot = sessions.observation_snapshot(session_id)
-        detail = _observation_detail(snapshot)
-        return LoadedSession(
-            detail=detail,
-            messages=snapshot.messages,
-            events=snapshot.events,
-            runs=snapshot.runs,
-            context_status=sessions.context_status(session_id),
-            effective_context_metrics=runtime.session_context_metrics(session_id),
-            compactions=snapshot.compactions,
-            queued_inputs=self._queued_user_inputs(session_id),
-            session_controls=self._session_control_statuses(session_id),
-            event_high_water=snapshot.event_high_water,
-        )
+        with runtime.store.session_mutation(session_id):
+            snapshot = sessions.observation_snapshot(session_id)
+            detail = _observation_detail(snapshot)
+            return LoadedSession(
+                detail=detail,
+                messages=snapshot.messages,
+                events=snapshot.events,
+                runs=snapshot.runs,
+                context_status=sessions.context_status(session_id),
+                effective_context_metrics=runtime.session_context_metrics(session_id),
+                compactions=snapshot.compactions,
+                queued_inputs=self._queued_user_inputs(session_id),
+                session_controls=self._session_control_statuses(session_id),
+                event_high_water=snapshot.event_high_water,
+            )
 
     def _session_messages(self, session_id: str) -> list[MessageRecord]:
         sessions = self._runtime().sessions

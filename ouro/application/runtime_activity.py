@@ -54,9 +54,11 @@ def queued_runtime_activity(
     session_id: str,
     *,
     sequence: int = 0,
+    history_epoch: int = 0,
 ) -> RuntimeActivitySnapshot:
     return RuntimeActivitySnapshot(
         session_id=session_id,
+        history_epoch=history_epoch,
         status="queued",
         activity="queued",
         sequence=sequence,
@@ -79,6 +81,7 @@ def project_runtime_activity(
         status = status_override or "idle"
         return RuntimeActivitySnapshot(
             session_id=snapshot.session.session_id,
+            history_epoch=snapshot.session.history_epoch,
             status=status,
             activity=runtime_activity_for_status(status),
             context_status=context_status,
@@ -88,6 +91,7 @@ def project_runtime_activity(
 
     activity = RuntimeActivitySnapshot(
         session_id=snapshot.session.session_id,
+        history_epoch=snapshot.session.history_epoch,
         run_id=run.run_id,
         status="queued",
         activity="queued",
@@ -121,6 +125,9 @@ def project_runtime_activity_state(
 ) -> RuntimeActivitySnapshot:
     """Project bounded current activity without replaying historical events."""
 
+    if run is not None and run.history_epoch != session.history_epoch:
+        run = None
+        status_override = None
     effective_metrics = effective_context_metrics or (
         context_status.metrics if context_status is not None else None
     )
@@ -128,6 +135,7 @@ def project_runtime_activity_state(
         status = status_override or "idle"
         return RuntimeActivitySnapshot(
             session_id=session.session_id,
+            history_epoch=session.history_epoch,
             status=status,
             activity=runtime_activity_for_status(status),
             context_status=context_status,
@@ -136,6 +144,7 @@ def project_runtime_activity_state(
         )
     activity = RuntimeActivitySnapshot(
         session_id=session.session_id,
+        history_epoch=session.history_epoch,
         run_id=run.run_id,
         status=run.status,
         activity=runtime_activity_for_status(run.status),
@@ -161,6 +170,15 @@ def reduce_runtime_activity(
 ) -> RuntimeActivitySnapshot:
     if event.sequence <= current.sequence:
         return current
+    if event.history_epoch < current.history_epoch:
+        return current.model_copy(update={"sequence": event.sequence})
+    if event.history_epoch > current.history_epoch:
+        current = RuntimeActivitySnapshot(
+            session_id=current.session_id,
+            history_epoch=event.history_epoch,
+            status="idle",
+            activity="idle",
+        )
     resumed = event.event_type == "run_status_changed" and event.payload.get("resumed") is True
     if current.status in _TERMINAL_ACTIVITY and event.event_type != "run_started" and not resumed:
         return current.model_copy(update={"sequence": event.sequence})
@@ -430,16 +448,17 @@ def runtime_activity_changed(
 
 
 def _selected_run(snapshot: SessionSnapshot, *, run_id: str | None) -> RunRecord | None:
+    runs = [run for run in snapshot.runs if run.history_epoch == snapshot.session.history_epoch]
     if run_id is not None:
-        return next((run for run in snapshot.runs if run.run_id == run_id), None)
-    active = [run for run in snapshot.runs if run.status in ACTIVE_RUN_STATUSES]
+        return next((run for run in runs if run.run_id == run_id), None)
+    active = [run for run in runs if run.status in ACTIVE_RUN_STATUSES]
     if active:
         return active[-1]
     if snapshot.session.last_run_id is not None:
-        for run in reversed(snapshot.runs):
+        for run in reversed(runs):
             if run.run_id == snapshot.session.last_run_id:
                 return run
-    return snapshot.runs[-1] if snapshot.runs else None
+    return runs[-1] if runs else None
 
 
 def overlay_run_activity(
@@ -450,8 +469,11 @@ def overlay_run_activity(
 
     if current.session_id != run.session_id:
         raise ValueError("Run and activity belong to different Sessions")
+    if current.history_epoch != run.history_epoch:
+        return current
     if current.run_id != run.run_id:
         current = RuntimeActivitySnapshot(
+            history_epoch=current.history_epoch,
             session_id=run.session_id,
             run_id=run.run_id,
             status=run.status,

@@ -78,6 +78,8 @@ MODEL_STREAM_DELTA_EVENT_TYPES = frozenset(
 
 
 class EventRecord(VersionedOuroModel):
+    schema_version: int = 2
+    history_epoch: int = Field(default=0, ge=0)
     event_id: str = Field(default_factory=lambda: new_id("evt"))
     session_id: str
     run_id: str | None = None

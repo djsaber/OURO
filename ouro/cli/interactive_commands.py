@@ -22,6 +22,7 @@ from ouro.config import BUILTIN_FAUX_PROVIDER_ID
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.errors import OuroError, PersistenceError
 from ouro.core.interactions import SessionInteractionMode
+from ouro.core.messages import SkillActivationContent
 from ouro.core.reasoning import (
     REASONING_EFFORTS,
     ReasoningEffort,
@@ -32,7 +33,9 @@ from ouro.core.reasoning import (
 if TYPE_CHECKING:
     from ouro.application.models import ModelReasoningState
     from ouro.application.plugins import PluginService
+    from ouro.application.session_models import SessionUndoResult
     from ouro.application.supervisor_models import HostInputReceipt
+    from ouro.core.results import RunResult
     from ouro.core.session_controls import AttributedSessionInput, AttributedSessionInputBatch
 
 _APPROVAL_MODE_CHOICES = "|".join(SESSION_APPROVAL_MODES)
@@ -53,6 +56,8 @@ class CommandResult:
     session_inputs: tuple[AttributedSessionInput, ...] = ()
     session_input_batches: tuple[AttributedSessionInputBatch, ...] = ()
     skill_invocation: SkillInvocationRequest | None = None
+    restored_input: SessionUndoResult | None = None
+    run_result: RunResult | None = None
 
 
 async def handle_command(
@@ -88,6 +93,46 @@ async def handle_command(
         return CommandResult(session_id=session_id, output=_sessions_text(runtime))
     if command == "/open":
         return _open_session(runtime, argument)
+    if command == "/undo":
+        if session_id is None:
+            return CommandResult(session_id=None, output="There is no session history to edit.")
+        try:
+            selected = await runtime.undo(session_id, message_id=argument or None)
+        except ValueError as exc:
+            return CommandResult(session_id=session_id, output=f"Error: {exc}")
+        if attachments is not None:
+            resources = (
+                [runtime.resources.show_resource(session_id, ref) for ref in selected.resource_refs]
+                if runtime.resources is not None
+                else []
+            )
+            attachments.clear()
+            for resource in resources:
+                attachments.add(session_id, resource)
+        activation = next(
+            (
+                block
+                for block in selected.input.content
+                if isinstance(block, SkillActivationContent)
+            ),
+            None,
+        )
+        text = selected.text_content
+        if activation is not None:
+            text = f"/skill {activation.name} {text}".rstrip()
+        return CommandResult(
+            session_id=session_id,
+            restored_input=selected,
+            output=f"Restored input:\n{text}\nPress Enter to resend, or type its replacement.",
+        )
+    if command == "/continue":
+        if session_id is None:
+            return CommandResult(session_id=None, output="There is no session to continue.")
+        try:
+            result = await runtime.continue_run(session_id=session_id)
+        except ValueError as exc:
+            return CommandResult(session_id=session_id, output=f"Error: {exc}")
+        return CommandResult(session_id=session_id, run_result=result)
     if command == "/models":
         return _available_models(runtime, session_id, initial_model)
     if command == "/model":
@@ -188,6 +233,8 @@ def _help_text(plugins: PluginService | None = None) -> str:
         "/config - Show active local config path.",
         "/export - Show active session data path.",
         "/history - Show current session messages.",
+        "/undo [message_id] - Withdraw a user input and restore it for editing.",
+        "/continue - Continue the interrupted or withdrawn session.",
         "/events - Show current session events.",
         "/skills - List available skills.",
         "/skill <name> [task] - Run one task with an explicitly selected skill.",

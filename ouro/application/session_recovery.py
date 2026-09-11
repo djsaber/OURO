@@ -24,6 +24,9 @@ class SessionRecoveryService:
         with self.store.session_mutation(session_id):
             snapshot = self.store.load_session(session_id)
             recovered, changed = self._recover_snapshot(snapshot)
+            # Recovery can create native receipts and checkpoints. Complete
+            # maintenance reads return the committed aggregate, not a rebuilt DTO.
+            recovered = self.store.load_session(session_id) if changed else snapshot
         if changed:
             self.store.refresh_catalog(session_id)
         return recovered
@@ -155,6 +158,7 @@ class SessionRecoveryService:
                 recovery_event = self._append_recovery_event(
                     session_id=session.session_id,
                     run_id=recovered.run_id,
+                    history_epoch=recovered.history_epoch,
                     previous_status=run.status,
                     reason=(
                         "invalid_interaction_state"
@@ -293,6 +297,7 @@ class SessionRecoveryService:
         *,
         session_id: str,
         run_id: str,
+        history_epoch: int,
         previous_status: str,
         reason: str,
     ) -> EventRecord:
@@ -300,6 +305,7 @@ class SessionRecoveryService:
             EventRecord(
                 session_id=session_id,
                 run_id=run_id,
+                history_epoch=history_epoch,
                 event_type="run_status_changed",
                 payload={
                     "from_status": previous_status,

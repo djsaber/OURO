@@ -433,6 +433,7 @@ class RuntimeEventView:
     event_type: str
     created_at: datetime
     sequence: int
+    history_epoch: int = 0
     payload: Mapping[str, object] = field(default_factory=dict)
     metadata: Mapping[str, object] = field(default_factory=dict)
 

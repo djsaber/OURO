@@ -196,15 +196,15 @@ class InnerAgentLoop:
                     final_text=state.final_text(),
                     tool_results=state.tool_results,
                 )
-            if self.ports.turns.begin_model_round is not None:
-                state.run = await run_blocking(
-                    self.ports.turns.begin_model_round,
-                    session=state.session,
-                    run=state.run,
-                    model_round=model_round,
-                )
             round_state = _RoundState()
             try:
+                if self.ports.turns.begin_model_round is not None:
+                    state.run = await run_blocking(
+                        self.ports.turns.begin_model_round,
+                        session=state.session,
+                        run=state.run,
+                        model_round=model_round,
+                    )
                 if self.ports.context.resolve_model_request is not None:
                     state.session, self.adapter = await run_blocking(
                         self.ports.context.resolve_model_request,

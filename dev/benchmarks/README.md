@@ -28,3 +28,22 @@ uv run --frozen python -m dev.benchmarks.session_pipeline --mode tui --store-del
 
 2026-09-05 的原始对照数据见 `results/2026-09-05/`，解释见
 [本次审计报告](../../docs/OURO_会话与TUI性能审计_2026-09-05.md)。
+
+## Harness 状态与撤销成本
+
+```powershell
+uv run --frozen python -m dev.benchmarks.harness_lifecycle --label m5 --repeat 3
+uv run --frozen python -m dev.benchmarks.harness_lifecycle --label m4 --source C:/path/to/m4 --repeat 3
+```
+
+同一脚本、Python 环境依次运行两个 revision，不与 pytest 并行。每个后端覆盖 100/10,000 条保留消息、
+固定 2 条撤回后缀、1 × 1 KiB / 8 × 8 KiB / 8 × 64 KiB owner 数据，各 3 次。先写入另一份状态，
+再撤销并验证恢复原值；单独测量首次状态提交、整阶段状态读取、并发只读与无变化回调。
+夹具创建、文件索引首次建立和检查点计数不计入耗时，因此不代表冷启动万条消息的首屏成本。
+
+记录进程 I/O 调用与字节、Python fsync 调用和新增版本数。Windows 使用 GetProcessIoCounters，
+Linux 使用 `/proc/self/io`；这些是操作系统进程计数，不能等同于绕过文件缓存的物理介质读写量。
+SQLite VFS 在 C 层调用同步，不会经过 Python 包装器，原生同步次数标为 `null`；保持 WAL/FULL 原有策略。
+测试脚本不改变业务代码、持久化强度、同步配置或缓存上限。
+
+2026-09-11 的原始数据与解释见 [Windows 成本对照](results/harness-windows-2026-09-11.md)。

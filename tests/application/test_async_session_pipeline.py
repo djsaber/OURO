@@ -213,8 +213,13 @@ async def test_subscription_initialization_failure_detaches(supervisor, monkeypa
     store.create_session(session)
     entered, release = Event(), Event()
     read = store.load_events_after
+    replay_buffer = 17
 
     def paused_read(*args, **kwargs):
+        # Pause only this subscriber's replay, not the shared live follower.
+        # Shutdown must be able to close that independent reader.
+        if kwargs["limit"] != replay_buffer:
+            return read(*args, **kwargs)
         entered.set()
         assert release.wait(5)
         if ending == "read_error":
@@ -222,7 +227,9 @@ async def test_subscription_initialization_failure_detaches(supervisor, monkeypa
         return read(*args, **kwargs)
 
     monkeypatch.setattr(store, "load_events_after", paused_read)
-    pending = asyncio.create_task(supervisor.subscribe(session.session_id))
+    pending = asyncio.create_task(
+        supervisor.subscribe(session.session_id, max_buffer=replay_buffer)
+    )
     try:
         assert await asyncio.to_thread(entered.wait, 2)
         if ending == "cancel":

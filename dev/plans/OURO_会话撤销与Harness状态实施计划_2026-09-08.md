@@ -1,7 +1,7 @@
 # OURO 会话撤销、Harness 状态与插件交互实施计划
 
 > 文档类型：本次改进实施计划
-> 状态：实施中；M1–M4 已完成并通过阶段回归；M5–M6 未完成
+> 状态：实施中；M1–M4 已完成并通过阶段回归；M5 实现与验收推进中；M6 未开始
 > 计划基线：2026-09-08
 > 范围：仅本次状态、插件交互与撤销改进，不包含其他路线图项目
 
@@ -198,17 +198,59 @@ TUI 本阶段只接入新 undo 结果及现有技能/资源草稿表示。Host �
 
 依赖 M4，复用现有应用 DTO、资源引用、草稿和订阅能力。
 
-- [ ] 提交通知和 initial/live snapshot 关联 history_epoch；lag/重连后读取一致的消息、状态、活动和队列。
-- [ ] TUI/CLI 接入精确撤销结果；成功后标准重载，再恢复正文、附件和技能；失败不丢原草稿。
-- [ ] 旧事件按归属过滤，不读取已撤回消息、不吞掉当前历史的真实 PersistenceError。
-- [ ] 验证重启后的活动恢复、中断再提交、多 Host 观察、同长度/增长重写及独立 reader 索引有效性。
-- [ ] 导出/导入、trash、File/SQLite 转换保留可达版本与锚点；分支 copy/reset/reject 一致处理状态和版本引用。
-- [ ] 完成旧会话迁移集成：基线前不可恢复边界明确可诊断；插件缺失时状态仍保留，执行报契约不可用。
+- [x] 提交通知和 initial/live snapshot 关联 history_epoch；lag/重连后读取一致的消息、状态、活动和队列。
+- [x] TUI/CLI 接入精确撤销结果；成功后标准重载，再恢复正文、附件和技能；失败不丢原草稿。
+- [x] 旧事件按归属过滤，不读取已撤回消息、不吞掉当前历史的真实 PersistenceError。
+- [x] 验证重启后的活动恢复、中断再提交、多 Host 观察、同长度/增长重写及独立 reader 索引有效性。
+- [x] 导出/导入、trash、File/SQLite 转换保留可达版本与锚点；分支 copy/reset/reject 一致处理状态和版本引用。
+- [x] 完成旧会话迁移集成：基线前不可恢复边界明确可诊断；插件缺失时状态仍保留，执行报契约不可用。
 - [ ] 做性能对照：固定短后缀、100/10,000 条保留消息、多 owner 与不同 Harness 大小、无变化回调、只读并发。
   记录耗时、读取/写入量、fsync 次数和快照数，验证 PF-01；不为通过基准降低持久化保证。
 
 退出条件：AC-02/11/13/15/16 通过；实际 Windows TUI 验证中断→撤销→编辑→提交→重启进入会话。
 另覆盖 POSIX 的文件提交恢复语义。测试使用临时 OURO_HOME，不修改用户真实会话或计划制品。
+
+M5 当前实现采用 Event schema 2、File layout 8、SQLite schema 6。Run 归属只在首次事件读取后进入有界缓存，
+流式 delta 不重复读取 Run，也不升级为逐 token 的完整 fsync。消息索引用 canonical history_epoch 识别重写。
+完整快照包含所有保存的 Harness 版本与提交回执；普通观察保持有界查询，SQLite 完整读取沿用已有只读事务。
+文件快照发布使用短临时目录名，避免重复拼接 Session 身份造成 Windows 路径超长。
+
+TUI 的附件选择进入 schema 2 草稿，和正文、技能选择共用生命周期；Controller 不再保留第二份待恢复输入。
+空正文可以保留附件；提交失败恢复尚未被新输入替换的草稿。CLI 复用现有附件选择及 `/skill` 表示，
+`/undo` 展示恢复内容，空行重发或输入替换正文；`/continue` 调用现行运行时继续入口。
+显式 `session migrate-harness` 维护租用插件 Catalog，不启动模型、任务调度或 MCP。
+
+验收证据与尚未闭合项：
+
+- Windows 上真实 Textual 消息循环与 Pilot 已覆盖中断、同长/更长重发、重启、附件/技能导航恢复、失败草稿保留；
+  另以 Windows PTY 运行 `OuroTuiApp.run()`，发送终端按键完成中断→undo→编辑更长正文→提交→退出→新进程重启。
+  重启显示 Ready，再分步输入并提交 `after restart` 成功；canonical Session 的 active_run_id 为空，
+  原 Run 保留 epoch 0/aborted，新 Run 为 epoch 1/completed。这是自动终端操作，Provider 为离线 Faux。
+- 已有 `test_queued_input_does_not_hide_or_block_subagent_approval` 的子会话启动 2 秒超时，在未修改的
+  M4 `7a241fa` 独立工作树上同样复现；未延长超时，也未将其计为 M5 通过项。
+- 性能脚本与原始数据保存在 `dev/benchmarks/harness_lifecycle.py` 及其 `results/harness-*-windows-2026-09-11.jsonl`。
+  两个 revision 顺序执行最终工作负载，各 36 组；状态实际由另一份值回退至消息前值。结果及测量边界见
+  [Windows 成本报告](../benchmarks/results/harness-windows-2026-09-11.md)。File 撤销的读取量在前缀增加 100 倍时
+  仅增加 10 字节，写入增加 16 字节；两后端撤销不新建版本，只读及无变化回调均无写入。
+  SQLite 的原生 VFS 同步次数不能由 Python `os.fsync` 包装器得到，以 `null` 明确表示未测；不能把 0 次
+  Python 调用解释为未做持久化同步。成本验收需同时保留这个测量边界。
+- 当前机器没有安装 WSL Linux 发行版；不将 Windows 故障注入结果冒充 POSIX 验收。M5 尚未宣称完成。
+
+M5 收口验证（Windows，分别运行，不合计重叠用例）：
+
+| 范围 | 结果与边界 |
+|---|---|
+| 事件归属、活动、Supervisor、消息查询和格式迁移 | 聚焦组 110 项通过 |
+| 快照、生命周期、会话编辑与异步管线 | 194 项通过，1 项订阅关闭故障注入同时阻塞 live/replay；修正注入范围后 6 个初始化失败场景通过，异步管线也在下列 212 项组内通过 |
+| Runtime、Harness 控制/命令/续跑、真实 Plan/Goal、InnerLoop、异步管线 | 210 项通过，2 项工具启动 1 秒超时；两项在 M4 和当前 M5 单独执行均通过，未更改超时 |
+| 缺失插件恢复/执行与 CLI 富输入 | 38 项通过 |
+| TUI 状态、历史命令与草稿 | 聚焦组 56 项通过，239 项未选中 |
+| 架构边界 | 17 项通过 |
+
+最后复核保留 SQLite 完整读取的既有只读事务，删除重复写锁；事件消息读取按代次批量解析，
+当前代次真实缺失仍抛出 PersistenceError。插件契约失败接入模型轮次现有失败出口，不增加另一套恢复状态机。
+提交前 Ruff 与 51 个改动 Python 文件格式检查、mypy（298 个源文件）、编译、25 个本地文档链接及 diff 空白检查通过。
+完整仓库质量门槛仍属于 M6；剩余 M5 验收为 POSIX 文件恢复及 SQLite 原生同步次数的测量证据。
 
 ## 9. M6：集成验收与规范收敛
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
@@ -239,6 +240,20 @@ class LocalApplication:
 
     async def __aexit__(self, *_: object) -> None:
         await self.close()
+
+    async def migrate_session_harness(self, session_id: str) -> SessionCommitResult | None:
+        """Run explicit maintenance with a leased catalog, without scheduling Session work."""
+        if self.plugin_runtime is None:
+            raise RuntimeError("local plugin catalog is unavailable")
+        await self.plugin_runtime.start()
+        with self.plugin_runtime.snapshot() as catalog:
+            return await asyncio.to_thread(
+                migrate_builtin_harness_state,
+                self.runtime.store,
+                session_id,
+                controllers=catalog.session_controllers,
+                usage_service=self.runtime.usage,
+            )
 
     async def start(self) -> None:
         if self._closed:
@@ -563,8 +578,11 @@ def migrate_builtin_harness_state(
         with session_store.session_mutation(session_id):
             snapshot = session_store.load_runtime_session(session_id)
             if any(
-                run.status in ACTIVE_RUN_STATUSES
-                or (run.continuation is not None and run.continuation.state != "resolved")
+                run.history_epoch == snapshot.session.history_epoch
+                and (
+                    run.status in ACTIVE_RUN_STATUSES
+                    or (run.continuation is not None and run.continuation.state != "resolved")
+                )
                 for run in snapshot.runs
             ):
                 raise MigrationRequiredError(

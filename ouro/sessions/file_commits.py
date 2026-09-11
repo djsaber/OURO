@@ -80,7 +80,7 @@ class FileSessionCommits:
         return result
 
     def commit(self, request: SessionCommit) -> SessionCommitResult:
-        request = SessionCommit.model_validate(request.model_dump())
+        request = SessionCommit.model_validate(request.model_dump(mode="json"))
         session_id = request.before.session_id
         previous = self.load_result(session_id, request.operation_id)
         if previous is not None:
@@ -194,8 +194,13 @@ class FileSessionCommits:
         self.save_session_record(directory, result.session)
         if result.events:
             self._write_suffix(directory / "events.jsonl", decision.event_offset, result.events)
-        write_model_atomic(self._result_path(session_id, result.operation_id), result)
+        self.save_result(result)
         path.unlink()
+
+    def save_result(self, result: SessionCommitResult) -> None:
+        write_model_atomic(
+            self._result_path(result.session.session_id, result.operation_id), result
+        )
 
     def save_version(self, version: HarnessVersion) -> None:
         path = self._version_path(version.session_id, version.version_id)

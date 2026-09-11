@@ -47,6 +47,7 @@ from ouro.local_io import (
     replace_path_with_retry,
     write_json_atomic,
     write_model_atomic,
+    write_text_atomic,
 )
 from ouro.local_locks import is_lock_held
 from ouro.sessions.base import (
@@ -54,6 +55,7 @@ from ouro.sessions.base import (
     SessionObservationState,
     SessionSnapshot,
 )
+from ouro.sessions.event_migration import migrate_event_journal, migrate_result_events
 from ouro.sessions.file_commits import FileSessionCommits
 from ouro.sessions.harness_migration import (
     finish_legacy_history_cut,
@@ -229,16 +231,18 @@ class LocalSessionStore:
         session: SessionRecord,
         messages: list[MessageRecord],
         resource_references: list[SessionResourceReference] | None = None,
-        extension_states: list[SessionExtensionStateRecord] | None = None,
+        harness_versions: list[HarnessVersion] | None = None,
         compactions: list[CompactionRecord] | None = None,
+        commits: list[SessionCommitResult] | None = None,
     ) -> None:
         with self.session_mutation(session.session_id):
             self._create_session_snapshot(
                 session,
                 messages,
                 resource_references,
-                extension_states,
+                harness_versions,
                 compactions,
+                commits,
             )
 
     def _create_session_snapshot(
@@ -246,27 +250,47 @@ class LocalSessionStore:
         session: SessionRecord,
         messages: list[MessageRecord],
         resource_references: list[SessionResourceReference] | None,
-        extension_states: list[SessionExtensionStateRecord] | None,
+        harness_versions: list[HarnessVersion] | None,
         compactions: list[CompactionRecord] | None,
+        commits: list[SessionCommitResult] | None,
     ) -> None:
         session_dir = self._session_dir(session.session_id)
         if session_dir.exists():
             raise PersistenceError(f"session already exists: {session.session_id}")
 
-        staging_dir = self.sessions_dir / f".{session.session_id}.{new_id('stage')}.staging"
+        staging_dir = self.sessions_dir / f".{new_id('stage')}"
         try:
             (staging_dir / "runs").mkdir(parents=True)
             (staging_dir / "event-index" / "runs").mkdir(parents=True)
             (staging_dir / "resources").mkdir(parents=True)
             (staging_dir / "harness").mkdir(parents=True)
-            initial = HarnessVersion(
-                session_id=session.session_id,
-                version_id=session.harness_version,
-                state=HarnessState(controls=session.controls, states=tuple(extension_states or ())),
+            versions = (
+                harness_versions
+                if harness_versions is not None
+                else [
+                    HarnessVersion(
+                        session_id=session.session_id,
+                        version_id=session.harness_version,
+                        state=HarnessState(controls=session.controls),
+                    )
+                ]
             )
-            self._write_model_atomic(
-                staging_dir / "harness" / f"{initial.version_id}.json", initial
-            )
+            checkpoints = {version.version_id: version for version in versions}
+            if session.harness_version not in checkpoints or any(
+                message.before_harness_version is not None
+                and message.before_harness_version not in checkpoints
+                for message in messages
+            ):
+                raise PersistenceError("Session snapshot has a missing Harness checkpoint")
+            staged = FileSessionCommits(lambda _session_id: staging_dir, MessageJournalQueries())
+            for version in versions:
+                if version.session_id != session.session_id:
+                    raise PersistenceError("Harness checkpoint belongs to another Session")
+                staged.save_version(version)
+            for receipt in commits or ():
+                if receipt.session.session_id != session.session_id:
+                    raise PersistenceError("Session receipt belongs to another Session")
+                staged.save_result(receipt)
             session = session.model_copy(
                 update={
                     "message_count": len(messages),
@@ -303,11 +327,6 @@ class LocalSessionStore:
                     mode="json"
                 ),
             )
-            states = extension_states or []
-            if any(state.session_id != session.session_id for state in states):
-                raise PersistenceError(
-                    f"extension state does not belong to session {session.session_id}"
-                )
             replace_path_with_retry(staging_dir, session_dir)
             self._event_sequence_cache[session.session_id] = (0, 0)
             self._event_sequence_index_cache[session.session_id] = None
@@ -645,6 +664,18 @@ class LocalSessionStore:
                 **runtime.model_dump(),
                 events=events,
                 extension_states=self.load_session_extension_states(session_id),
+                harness_versions=[
+                    self._commits.load_harness(session_id, path.stem)
+                    for path in sorted((session_dir / "harness").glob("*.json"))
+                ],
+                commits=[
+                    decode_versioned_record_json(
+                        SessionCommitResult,
+                        read_text_atomic(path),
+                        label=f"Session receipt {path.stem}",
+                    )
+                    for path in sorted((session_dir / "operations").glob("*.json"))
+                ],
             )
         return snapshot
 
@@ -1069,6 +1100,9 @@ class LocalSessionStore:
         if current_version == 6:
             self._migrate_layout_v6_to_v7()
             current_version = 7
+        if current_version == 7:
+            self._migrate_layout_v7_to_v8()
+            current_version = 8
         if current_version == DATA_LAYOUT_VERSION:
             if manifest.data_layout_version != DATA_LAYOUT_VERSION:
                 migrated = manifest.model_copy(
@@ -1084,6 +1118,52 @@ class LocalSessionStore:
                 "OURO data layout migration required: "
                 f"found {manifest.data_layout_version}, expected {DATA_LAYOUT_VERSION}"
             )
+
+    def _migrate_layout_v7_to_v8(self) -> None:
+        for path in sorted(self.sessions_dir.glob("[!.]*/session.json")):
+            session_id = path.parent.name
+            lock = self.acquire_session_lock(session_id, "event_migration")
+            if lock is None:
+                raise MigrationRequiredError("stop active Sessions before migrating event history")
+            try:
+                # Convert a pending decision before ordinary recovery decodes it.
+                with SessionMutationLock(
+                    self._mutation_lock_path(session_id), session_id=session_id
+                ):
+                    directory = path.parent
+                    run_epochs = {
+                        run.run_id: run.history_epoch
+                        for run in (
+                            RunRecord.model_validate_json(read_text_atomic(run_path))
+                            for run_path in (directory / "runs").glob("*.json")
+                        )
+                    }
+                    pending = directory / "commit.json"
+                    if pending.exists():
+                        raw = json.loads(read_text_atomic(pending))
+                        run_epochs.update(
+                            {run["run_id"]: run["history_epoch"] for run in raw["runs"]}
+                        )
+                        migrate_result_events(raw["result"], run_epochs)
+                        write_json_atomic(pending, raw)
+                        self._commits.finish(session_id)
+                    events = migrate_event_journal(
+                        read_text_atomic(directory / "events.jsonl").splitlines(), run_epochs
+                    )
+                    write_text_atomic(
+                        directory / "events.jsonl",
+                        "".join(f"{event.model_dump_json()}\n" for event in events),
+                    )
+                    for receipt in (directory / "operations").glob("*.json"):
+                        raw = json.loads(read_text_atomic(receipt))
+                        migrate_result_events(raw, run_epochs)
+                        write_json_atomic(receipt, raw)
+                    # Byte offsets are disposable; the canonical journal changed.
+                    for index in (directory / "event-index").rglob("*"):
+                        if index.is_file():
+                            index.unlink()
+            finally:
+                lock.release()
 
     def _migrate_layout_v6_to_v7(self) -> None:
         for path in sorted(self.sessions_dir.glob("[!.]*/session.json")):

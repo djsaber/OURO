@@ -237,12 +237,14 @@ class SessionService:
     def export(self, session_id: str) -> SessionExport:
         snapshot = self._load_snapshot(session_id, recover=False)
         return SessionExport(
-            session=SessionView.from_record(snapshot.session),
+            session=snapshot.session,
             messages=tuple(snapshot.messages),
             events=tuple(snapshot.events),
             runs=tuple(snapshot.runs),
             compactions=tuple(snapshot.compactions),
             extension_states=tuple(snapshot.extension_states),
+            harness_versions=tuple(snapshot.harness_versions),
+            commits=tuple(snapshot.commits),
         )
 
     def observation_snapshot(self, session_id: str) -> SessionObservationSnapshot:
@@ -274,21 +276,41 @@ class SessionService:
         cursor: int = 0,
         limit: int = 100,
     ) -> SessionMessagePage:
-        messages, next_cursor = self._store.load_messages_page(
-            session_id,
-            cursor=cursor,
-            limit=limit,
-        )
-        return SessionMessagePage(
-            session_id=session_id,
-            messages=tuple(messages),
-            next_cursor=next_cursor,
-        )
+        with self._store.session_mutation(session_id):
+            messages, next_cursor = self._store.load_messages_page(
+                session_id,
+                cursor=cursor,
+                limit=limit,
+            )
+            return SessionMessagePage(
+                session_id=session_id,
+                history_epoch=self._store.load_session_record(session_id).history_epoch,
+                messages=tuple(messages),
+                next_cursor=next_cursor,
+            )
 
     def message(self, session_id: str, message_id: str) -> MessageRecord:
         """Read one canonical message by its stable event-facing identity."""
 
         return self._store.load_message(session_id, message_id)
+
+    def messages_at_history(
+        self, session_id: str, message_ids: tuple[str, ...], *, history_epoch: int
+    ) -> SessionMessagePage:
+        """Resolve event references only within their observed canonical history."""
+        with self._store.session_mutation(session_id):
+            session = self._store.load_session_record(session_id)
+            return SessionMessagePage(
+                session_id=session_id,
+                history_epoch=session.history_epoch,
+                messages=(
+                    tuple(
+                        self._store.load_message(session_id, identity) for identity in message_ids
+                    )
+                    if session.history_epoch == history_epoch
+                    else ()
+                ),
+            )
 
     def event_page(
         self,
@@ -792,16 +814,34 @@ class SessionService:
         messages = self._load_messages(source_session_id)
         runs = self._store.load_runs(source_session_id)
         compactions = self._store.load_compactions(source_session_id)
-        extension_states = self._store.load_session_extension_states(source_session_id)
         if (
             source.active_run_id is not None
             or source.status in {"running", "waiting_approval", "waiting_user"}
-            or any(run.status in ACTIVE_RUN_STATUSES for run in runs)
+            or any(
+                run.status in ACTIVE_RUN_STATUSES and run.history_epoch == source.history_epoch
+                for run in runs
+            )
         ):
             raise SessionBusyError(
                 f"cannot branch Session while it has an active Run: {source_session_id}"
             )
         selected_messages, source_message = select_branch_messages(messages, message_id)
+        head_version = (
+            source.harness_version
+            if len(selected_messages) == len(messages)
+            else messages[len(selected_messages)].before_harness_version
+        )
+        if head_version is None:
+            raise SessionBranchError("branch point predates the recorded Harness baseline")
+        version_ids = {source.harness_version, head_version} | {
+            message.before_harness_version
+            for message in selected_messages
+            if message.before_harness_version is not None
+        }
+        versions = [
+            self._store.load_harness(source_session_id, identity)
+            for identity in sorted(version_ids)
+        ]
 
         now = utc_now()
         branch = SessionRecord(
@@ -824,10 +864,10 @@ class SessionService:
             interaction_mode=source.interaction_mode,
             tags=list(source.tags),
         )
-        selected_messages, extension_states = apply_extension_branch_policies(
+        selected_messages, versions, version_ids_map = apply_extension_branch_policies(
             selected_messages,
             source_message.message_id if source_message else None,
-            extension_states,
+            versions,
             branch.session_id,
         )
         resource_ids = list(
@@ -846,6 +886,22 @@ class SessionService:
             branch.session_id,
             selected_messages,
         )
+        for message in copied_messages:
+            if message.before_harness_version is not None:
+                message.before_harness_version = version_ids_map[message.before_harness_version]
+        branch.harness_version = version_ids_map[head_version]
+        reachable = {branch.harness_version} | {
+            message.before_harness_version
+            for message in copied_messages
+            if message.before_harness_version is not None
+        }
+        versions = [version for version in versions if version.version_id in reachable]
+        branch.controls = next(
+            version.state.controls
+            for version in versions
+            if version.version_id == branch.harness_version
+        )
+
         copied_compactions = copy_branch_compactions(
             branch.session_id,
             selected_messages,
@@ -876,7 +932,7 @@ class SessionService:
             branch,
             copied_messages,
             resource_references=resource_references,
-            extension_states=extension_states,
+            harness_versions=versions,
             compactions=copied_compactions,
         )
         return SessionBranchResult(

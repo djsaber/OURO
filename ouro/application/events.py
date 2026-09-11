@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from inspect import isawaitable, iscoroutinefunction
 from typing import Any, Protocol, cast
 
@@ -93,6 +94,8 @@ class RuntimeEventRecorder:
         if sink_timeout_seconds <= 0:
             raise ValueError("sink_timeout_seconds must be positive")
         self.store = store
+        # Run history ownership is immutable; avoid reading a Run for every delta.
+        self._run_history_epoch = lru_cache(maxsize=128)(self._load_run_history_epoch)
         self.usage_service = usage_service
         self.observers = observers
         self._observer_queue_size = observer_queue_size
@@ -294,7 +297,18 @@ class RuntimeEventRecorder:
             await asyncio.gather(*sink_tasks, return_exceptions=True)
 
     async def _append_ordered_event(self, event: EventRecord) -> EventRecord:
-        return await asyncio.to_thread(self.store.append_ordered_event, event)
+        return await asyncio.to_thread(self._append_event_in_history, event)
+
+    def _load_run_history_epoch(self, session_id: str, run_id: str) -> int:
+        return self.store.load_run(session_id, run_id).history_epoch
+
+    def _append_event_in_history(self, event: EventRecord) -> EventRecord:
+        epoch = (
+            self._run_history_epoch(event.session_id, event.run_id)
+            if event.run_id is not None
+            else self.store.load_session_record(event.session_id).history_epoch
+        )
+        return self.store.append_ordered_event(event.model_copy(update={"history_epoch": epoch}))
 
     async def _record_event(
         self,
@@ -504,6 +518,7 @@ def _runtime_event_observation(event: EventRecord) -> RuntimeEventObservation:
             event_type=event.event_type,
             created_at=event.created_at,
             sequence=event.sequence,
+            history_epoch=event.history_epoch,
             payload=payload,
             metadata=metadata,
         ),

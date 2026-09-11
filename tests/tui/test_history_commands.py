@@ -2,17 +2,26 @@ import asyncio
 
 import pytest
 
+from ouro.application.resources import ResourceService
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
+from ouro.core.messages import MessageRecord, SkillActivationContent
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.local_application import LocalApplication
 from ouro.providers import FauxProvider
+from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.skills import discover_skill_catalog
 from ouro.tools import ToolRegistry
 from ouro.tui.app import OuroTuiApp, _active_stream_tail
+from ouro.tui.input_drafts import TuiInputDraftStore
+from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.widgets import Composer, ConversationView
 from tests.tui.helpers import run_ready_app
 
@@ -24,17 +33,75 @@ def application_at(tmp_path, provider=None, *, backend="files"):
         else SQLiteSessionStore(tmp_path / "sessions.db")
     )
     store.initialize()
+    resources = LocalResourceStore(tmp_path)
+    resources.initialize()
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
             provider or FauxProvider(), ModelMetadata(model_id="faux", provider_id="faux")
         ),
         tools=ToolRegistry(),
+        resources=ResourceService(store=resources, sessions=store),
+        skills=tuple(discover_skill_catalog(home=tmp_path).skills),
         environment=RuntimeEnvironment.local(
             tmp_path, store.sessions_dir if backend == "files" else None
         ),
     )
     return LocalApplication.from_runtime(runtime)
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_undo_skill_and_attachment_survive_navigation_restart_and_submission(
+    tmp_path, backend
+):
+    skill = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\nname: demo\ndescription: Demo.\n---\nUse this workflow.\n", encoding="utf-8"
+    )
+    application = application_at(tmp_path, backend=backend)
+    runtime = application.runtime
+    session = runtime.create_session(title="rich input")
+    resource_file = tmp_path / "notes.txt"
+    resource_file.write_text("reference details", encoding="utf-8")
+    resource = runtime.resources.import_resource(session.session_id, resource_file).resource
+    original = await runtime.run(
+        "original",
+        session_id=session.session_id,
+        skill_invocation=SkillInvocationRequest(name="demo", arguments="original"),
+        resource_refs=(resource.resource_id,),
+    )
+    other = runtime.create_session(title="other")
+    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
+    async with run_ready_app(app, size=(100, 32)) as pilot:
+        await command(app, pilot, "/undo")
+        assert app.query_one(Composer).text == "/skill demo original"
+        await app._open_session(other.session_id)
+        assert app._input_drafts.resources_for(other.session_id) == ()
+        await app._open_session(session.session_id)
+        assert app.query_one(Composer).text == "/skill demo original"
+        assert app._input_drafts.resources_for(session.session_id) == (resource.resource_id,)
+    assert TuiInputDraftStore(tmp_path).load().resources_for(session.session_id) == (
+        resource.resource_id,
+    )
+    restarted_application = application_at(tmp_path, backend=backend)
+    restarted = OuroTuiApp(application=restarted_application, resume_session_id=session.session_id)
+    async with run_ready_app(restarted, size=(100, 32)) as pilot:
+        assert restarted.query_one(Composer).text == "/skill demo original"
+        await command(restarted, pilot, "/skill demo edited")
+        async with asyncio.timeout(10):
+            workers = tuple(w for w in restarted.workers if w.group == "run")
+            if workers:
+                await restarted.workers.wait_for_complete(workers)
+        messages = restarted_application.runtime.store.load_messages_tail(session.session_id)
+        user = next(message for message in messages if message.role == "user")
+        assert user.text_content == "edited"
+        assert user.resource_refs == [resource.resource_id]
+        assert any(
+            isinstance(block, SkillActivationContent) and block.name == "demo"
+            for block in user.content
+        )
+        assert user.run_id != original.run.run_id
 
 
 async def command(app, pilot, value):
@@ -56,6 +123,37 @@ async def command(app, pilot, value):
     await pilot.pause()
 
 
+@pytest.mark.parametrize("remember", [True, False])
+async def test_failed_undo_and_submit_keep_text_and_resources(tmp_path, monkeypatch, remember):
+    TuiPreferencesStore(tmp_path).save(TuiPreferences(input_draft_memory_enabled=remember))
+    application = application_at(tmp_path)
+    first = await application.runtime.run("original")
+    app = OuroTuiApp(application=application, resume_session_id=first.session.session_id)
+    async with run_ready_app(app, size=(100, 32)) as pilot:
+        app._remember_input_draft(
+            first.session.session_id, "draft", resource_refs=("res_selected",)
+        )
+        app._edit_draft("draft")
+
+        async def fail(*args, **kwargs):
+            raise PersistenceError("injected failure")
+
+        monkeypatch.setattr(app._controller, "undo", fail)
+        await app._edit_session_history("/undo").wait()
+        assert app.query_one(Composer).text == "draft"
+        assert app._input_drafts.resources_for(first.session.session_id) == ("res_selected",)
+        monkeypatch.setattr(app._controller, "submit", fail)
+        await command(app, pilot, "edited draft")
+        async with asyncio.timeout(10):
+            workers = tuple(w for w in app.workers if w.group == "run")
+            if workers:
+                await app.workers.wait_for_complete(workers)
+        assert app.query_one(Composer).text == "edited draft"
+        assert app._input_drafts.resources_for(first.session.session_id) == ("res_selected",)
+    stored = TuiInputDraftStore(tmp_path).load()
+    assert stored.resources_for(first.session.session_id) == (("res_selected",) if remember else ())
+
+
 async def test_undo_returns_latest_user_message_to_composer_and_edit_stays_in_session(tmp_path):
     application = application_at(tmp_path)
     first = await application.runtime.run("first question")
@@ -67,6 +165,8 @@ async def test_undo_returns_latest_user_message_to_composer_and_edit_stays_in_se
         assert app.query_one(Composer).text == "second question"
         assert app._controller.session_id == first.session.session_id
         assert app.query_one(ConversationView).user_turn_summaries() == ("first question",)
+        await app._apply_run_result(second)
+        assert app._projection.assistant_text == ""
         messages = application.runtime.store.load_runtime_session(first.session.session_id).messages
         assert all(message.run_id != second.run.run_id for message in messages)
         app.query_one(Composer).load_text("edited question")
@@ -84,7 +184,48 @@ async def test_undo_returns_latest_user_message_to_composer_and_edit_stays_in_se
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
-async def test_abort_undo_and_resubmit_equal_length_input_completes_in_tui(tmp_path, backend):
+async def test_tui_message_query_reloads_if_history_changes_during_event_delivery(
+    tmp_path, backend, monkeypatch
+):
+    application = application_at(tmp_path, backend=backend)
+    runtime = application.runtime
+    first = await runtime.run("keep")
+    session_id = first.session.session_id
+    app = OuroTuiApp(application=application, resume_session_id=session_id)
+    async with run_ready_app(app, size=(100, 32)):
+        session = runtime.store.load_session_record(session_id)
+        message = MessageRecord.text(session_id=session_id, role="user", text="withdraw")
+        added = runtime.store.commit_session(
+            SessionCommit(before=session, steps=(SessionCommitStep(message=message),))
+        )
+        read = app._controller.messages_at_history
+
+        async def withdraw_before_read(*args, **kwargs):
+            runtime.store.commit_session(
+                SessionCommit(before=added.session, before_message_id=message.message_id)
+            )
+            return await read(*args, **kwargs)
+
+        monkeypatch.setattr(app._controller, "messages_at_history", withdraw_before_read)
+        event = EventRecord(
+            session_id=session_id,
+            sequence=app._projection.last_sequence + 1,
+            event_type="user_message_added",
+            payload={"message_id": message.message_id},
+        )
+        await app._apply_runtime_events((event,))
+        assert app._projection.history_epoch == 1
+        assert app._projection.activity.activity == "idle"
+        assert app.query_one(ConversationView).user_turn_summaries() == ("keep",)
+        monkeypatch.setattr(app._controller, "messages_at_history", read)
+        # The same missing identity within the current epoch is data loss, not lag.
+        with pytest.raises(PersistenceError, match="message not found"):
+            await app._apply_runtime_events((event.model_copy(update={"history_epoch": 1}),))
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("edited", ["other question", "a longer replacement question"])
+async def test_abort_undo_edit_resubmit_and_restart_in_tui(tmp_path, backend, edited):
     class InterruptedProvider(FauxProvider):
         def __init__(self):
             super().__init__()
@@ -110,10 +251,24 @@ async def test_abort_undo_and_resubmit_equal_length_input_completes_in_tui(tmp_p
                 await app.workers.wait_for_complete(workers)
         assert app._projection.activity.status == "aborted"
         session_id = app._controller.session_id
+        original = application.runtime.store.load_messages_tail(session_id)[0]
         await command(app, pilot, "/undo")
         assert app.query_one(Composer).text == "first question"
         assert app.query_one(ConversationView).user_turn_summaries() == ()
-        await command(app, pilot, "other question")
+        # A delayed input notification must not reload the withdrawn message.
+        late = application.runtime.store.append_ordered_event(
+            EventRecord(
+                session_id=session_id,
+                run_id=original.run_id,
+                history_epoch=0,
+                event_type="user_message_added",
+                payload={"message_id": original.message_id},
+            )
+        )
+        await app._apply_runtime_events((late,))
+        assert app._projection.history_epoch == 1
+        assert app._projection.activity.activity == "idle"
+        await command(app, pilot, edited)
         async with asyncio.timeout(10):
             workers = tuple(w for w in app.workers if w.group == "run")
             if workers:
@@ -121,8 +276,17 @@ async def test_abort_undo_and_resubmit_equal_length_input_completes_in_tui(tmp_p
         await pilot.pause()
         assert app._controller.session_id == session_id
         assert app._projection.activity.status == "completed"
-        assert app.query_one(ConversationView).user_turn_summaries() == ("other question",)
+        assert app.query_one(ConversationView).user_turn_summaries() == (edited,)
         assert not app.query_one(Composer).disabled
+
+    restarted = OuroTuiApp(
+        application=application_at(tmp_path, backend=backend), resume_session_id=session_id
+    )
+    async with run_ready_app(restarted, size=(100, 32)):
+        assert restarted._projection.history_epoch == 1
+        assert restarted._projection.activity.status == "completed"
+        assert restarted.query_one(ConversationView).user_turn_summaries() == (edited,)
+        assert not restarted.query_one(Composer).disabled
 
 
 @pytest.mark.parametrize("live", [False, True])

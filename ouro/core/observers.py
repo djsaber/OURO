@@ -69,6 +69,7 @@ class RuntimeEventView:
     event_type: str
     created_at: datetime
     sequence: int
+    history_epoch: int = 0
     payload: Mapping[str, FrozenJson] = field(default_factory=lambda: MappingProxyType({}))
     metadata: Mapping[str, FrozenJson] = field(default_factory=lambda: MappingProxyType({}))
 
@@ -312,10 +313,7 @@ class ObserverRegistry:
         for registration in self._registrations:
             if not registration.enabled or registration.event != event:
                 continue
-            if (
-                is_scoped
-                and registration.active_when_controller_id is not None
-            ):
+            if is_scoped and registration.active_when_controller_id is not None:
                 if active is None:
                     assert active_resolver is not None
                     active = active_resolver()

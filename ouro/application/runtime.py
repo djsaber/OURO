@@ -52,7 +52,7 @@ from ouro.application.runs import (
     reserve_run,
 )
 from ouro.application.runtime_environment import RuntimeEnvironment
-from ouro.application.session_controls import SessionControlCoordinator
+from ouro.application.session_controls import SessionControlContractError, SessionControlCoordinator
 from ouro.application.session_editing import continuable_run
 from ouro.application.session_models import SessionUndoResult
 from ouro.application.session_recovery import SessionRecoveryService
@@ -4110,13 +4110,20 @@ class RuntimeService:
         for activation in controls.activations:
             if activation.phase != "active":
                 continue
-            if catalog is not None:
-                try:
-                    controller = catalog.session_controllers.get(activation.controller_id)
-                except KeyError:
-                    continue
-                if controller.execution_contract_hash != activation.execution_contract_hash:
-                    continue
+            try:
+                controller = (
+                    catalog.session_controllers.get(activation.controller_id)
+                    if catalog is not None
+                    else None
+                )
+            except KeyError:
+                controller = None
+            if controller is None or (
+                controller.execution_contract_hash != activation.execution_contract_hash
+            ):
+                raise SessionControlContractError(
+                    f"Session controller contract is unavailable: {activation.controller_id}"
+                )
             eligible_controller_ids.add(activation.controller_id)
         self._session_control_snapshots[run_id] = frozenset(eligible_controller_ids)
         return {

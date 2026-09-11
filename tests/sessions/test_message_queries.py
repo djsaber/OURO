@@ -146,3 +146,28 @@ def test_repeated_local_queries_only_index_appended_records(tmp_path, monkeypatc
     assert store.load_message(session.session_id, appended.message_id) == appended
     # One new index entry and one validation of the selected point read.
     assert len(indexed) == 2
+
+
+def test_other_reader_invalidates_offsets_even_when_last_record_is_identical(tmp_path):
+    writer, reader = LocalSessionStore(tmp_path), LocalSessionStore(tmp_path)
+    writer.initialize()
+    session = SessionRecord()
+    writer.create_session(session)
+    old = MessageRecord.text(session_id=session.session_id, role="user", text="old")
+    tail = MessageRecord.text(session_id=session.session_id, role="assistant", text="same tail")
+    writer.append_messages([old, tail])
+    assert reader.load_message(session.session_id, old.message_id) == old
+    original_size = (tmp_path / "sessions" / session.session_id / "messages.jsonl").stat().st_size
+    writer.truncate_messages(
+        session.session_id,
+        before_message_id=old.message_id,
+        expected_last_message_id=tail.message_id,
+    )
+    replacement = old.model_copy(update={"message_id": old.message_id[:-3] + "new"})
+    writer.append_messages([replacement, tail])
+    assert (
+        tmp_path / "sessions" / session.session_id / "messages.jsonl"
+    ).stat().st_size == original_size
+    assert reader.load_message(session.session_id, replacement.message_id) == replacement
+    with pytest.raises(PersistenceError, match="message not found"):
+        reader.load_message(session.session_id, old.message_id)

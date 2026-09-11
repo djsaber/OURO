@@ -39,7 +39,7 @@ from ouro.application.plugin_models import (
 from ouro.application.queued_inputs import QueuedUserInputView
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
-from ouro.application.session_models import SessionContextStatus
+from ouro.application.session_models import SessionContextStatus, SessionMessagePage
 from ouro.application.supervisor_models import RuntimeActivitySnapshot, RuntimeToolCallActivity
 from ouro.builtin_plugins.plan.interaction import PlanConfirmationRequest
 from ouro.config import reasoning_preset
@@ -5464,15 +5464,19 @@ async def test_plugin_message_event_renders_non_scaffold_user_input(
     )
     by_id = {message.message_id: message for message in (visible, scaffold)}
 
-    async def message(_session_id: str, message_id: str) -> MessageRecord:
-        return by_id[message_id]
+    async def messages_at_history(session_id, message_ids, *, history_epoch):
+        return SessionMessagePage(
+            session_id=session_id,
+            history_epoch=history_epoch,
+            messages=tuple(by_id[message_id] for message_id in message_ids),
+        )
 
     async def queued_user_inputs(_session_id: str):
         return ()
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        monkeypatch.setattr(app._controller, "message", message)
+        monkeypatch.setattr(app._controller, "messages_at_history", messages_at_history)
         monkeypatch.setattr(app._controller, "queued_user_inputs", queued_user_inputs)
         events = tuple(
             EventRecord(

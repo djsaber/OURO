@@ -76,6 +76,12 @@ class SQLiteSessionCommits:
             raise PersistenceError("Session commit result has a foreign identity")
         return result
 
+    def save_result(self, result: SessionCommitResult) -> None:
+        self.connection.execute(
+            "INSERT INTO session_commits(session_id, operation_id, payload) VALUES(?, ?, ?)",
+            (result.session.session_id, result.operation_id, result.model_dump_json()),
+        )
+
     def migrate_harness(self, request: HarnessMigration) -> SessionCommitResult:
         session_id = request.before.session_id
         previous = self.load_result(session_id, request.operation_id)
@@ -104,14 +110,11 @@ class SQLiteSessionCommits:
             "UPDATE sessions SET payload = ? WHERE session_id = ?",
             (result.session.model_dump_json(exclude={"controls"}), session_id),
         )
-        connection.execute(
-            "INSERT INTO session_commits(session_id, operation_id, payload) VALUES(?, ?, ?)",
-            (session_id, result.operation_id, result.model_dump_json()),
-        )
+        self.save_result(result)
         return result
 
     def commit(self, request: SessionCommit) -> SessionCommitResult:
-        request = SessionCommit.model_validate(request.model_dump())
+        request = SessionCommit.model_validate(request.model_dump(mode="json"))
         session_id = request.before.session_id
         previous = self.load_result(session_id, request.operation_id)
         if previous is not None:
@@ -221,8 +224,5 @@ class SQLiteSessionCommits:
                 "VALUES(?, ?, ?, ?, ?)",
                 (session_id, event.event_id, event.run_id, event.sequence, event.model_dump_json()),
             )
-        connection.execute(
-            "INSERT INTO session_commits(session_id, operation_id, payload) VALUES(?, ?, ?)",
-            (session_id, result.operation_id, result.model_dump_json()),
-        )
+        self.save_result(result)
         return result

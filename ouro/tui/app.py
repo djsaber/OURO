@@ -1660,24 +1660,56 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         projection = self._projection
         if projection is not None and any(
             event.session_id == projection.session_id
-            and event.sequence > projection.last_sequence
-            and event.event_type == "run_status_changed"
-            and event.payload.get("resumed") is True
+            and (
+                event.history_epoch > projection.history_epoch
+                or (
+                    event.sequence > projection.last_sequence
+                    and event.history_epoch == projection.history_epoch
+                    and event.event_type == "run_status_changed"
+                    and event.payload.get("resumed") is True
+                )
+            )
             for event in events
         ):
-            # Canonical history may have lost an unfinished frame. Reload before
-            # displaying this attempt's deltas, outside the view mutation lock.
+            # A new history or resumed checkpoint uses the same snapshot/live handoff.
             await self._reload_visible_observation()
+        projection = self._projection
+        input_messages: dict[str, MessageRecord] = {}
+        if events:
+            session_id = projection.session_id if projection is not None else events[0].session_id
+            epoch = projection.history_epoch if projection is not None else events[0].history_epoch
+            message_ids = tuple(
+                dict.fromkeys(
+                    identity
+                    for event in events
+                    if event.session_id == session_id
+                    and event.history_epoch == epoch
+                    and (projection is None or event.sequence > projection.last_sequence)
+                    and event.event_type
+                    in {*_SESSION_INPUT_MESSAGE_EVENTS, "queued_input_consumed"}
+                    if isinstance((identity := event.payload.get("message_id")), str)
+                )
+            )
+            if message_ids:
+                page = await self._controller.messages_at_history(
+                    session_id, message_ids, history_epoch=epoch
+                )
+                if page.history_epoch != epoch:
+                    await self._reload_visible_observation()
+                    return
+                input_messages = {message.message_id: message for message in page.messages}
         async with self._runtime_event_apply_lock:
             await self._apply_runtime_event_batch(
                 events,
                 allow_new_projection=allow_new_projection,
+                input_messages=input_messages,
             )
 
     async def _apply_runtime_event_batch(
         self,
         events: Sequence[EventRecord],
         *,
+        input_messages: dict[str, MessageRecord],
         allow_new_projection: bool = False,
     ) -> None:
         if self._host_closing or not events or not self.query(ConversationView):
@@ -1686,7 +1718,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if projection is None:
             if not self._waiting_for_session_event and not allow_new_projection:
                 return
-            projection = TuiSessionProjection(events[0].session_id)
+            projection = TuiSessionProjection(
+                events[0].session_id, history_epoch=events[0].history_epoch
+            )
             self._projection = projection
             # A selected draft becomes a durable primary Session at this
             # boundary. Synthetic or foreign event projections do not own the
@@ -1768,7 +1802,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await flush_stream()
                 message_id = event.payload.get("message_id")
                 if isinstance(message_id, str):
-                    input_message = await self._controller.message(event.session_id, message_id)
+                    input_message = input_messages[message_id]
                     if input_message.role == "user":
                         await conversation.add_user_message(input_message)
             if event.event_type == "compaction_completed":
@@ -1892,7 +1926,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._visible_read_only:
             self.notify("Subagent sessions are read-only", severity="warning")
             return
-        self._remember_input_draft(self._controller.session_id, "")
         interaction = self._interaction
         if interaction is not None and interaction.kind == "approval":
             self.query_one(InteractionBar).focus()
@@ -1924,7 +1957,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._projection is None:
             self.query_one(Composer).disabled = True
             self._waiting_for_session_event = True
-        self._run_prompt(prompt, queue_mode, skill_invocation=skill_invocation)
+        resource_refs = self._input_drafts.resources_for(self._controller.session_id)
+        self._remember_input_draft(self._controller.session_id, "", resource_refs=())
+        self._run_prompt(
+            prompt, queue_mode, skill_invocation=skill_invocation, resource_refs=resource_refs
+        )
 
     @work(group="run")
     async def _run_prompt(
@@ -1933,16 +1970,28 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         queue_mode: QueuedInputMode,
         *,
         skill_invocation: SkillInvocationRequest | None = None,
+        resource_refs: tuple[str, ...] = (),
     ) -> None:
         try:
             result = await self._controller.submit(
                 prompt,
                 queue_mode=queue_mode,
                 skill_invocation=skill_invocation,
+                resource_refs=resource_refs,
             )
             await self._apply_run_result(result)
             await self._sync_queued_inputs(result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - providers and tools fail across this boundary.
+            if not self.query_one(Composer).text:
+                restored = (
+                    f"/skill {skill_invocation.name} {prompt}".rstrip()
+                    if skill_invocation
+                    else prompt
+                )
+                self._remember_input_draft(
+                    self._controller.session_id, restored, resource_refs=resource_refs
+                )
+                self._edit_draft(restored)
             self.query_one(StatusLine).set_activity("failed")
             self.notify(str(exc), severity="error", markup=False)
         finally:
@@ -1958,8 +2007,16 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._visible_read_only:
             await self._refresh_usage_status()
             return
+        if (
+            self._projection is not None
+            and self._projection.session_id == result.session.session_id
+            and result.run.history_epoch < self._projection.history_epoch
+        ):
+            return
         if self._projection is None or self._projection.session_id != result.session.session_id:
-            self._projection = TuiSessionProjection(result.session.session_id)
+            self._projection = TuiSessionProjection(
+                result.session.session_id, history_epoch=result.session.history_epoch
+            )
         if result.final_text and not self._projection.assistant_text:
             self._projection.assistant_text = result.final_text
             conversation = self.query_one(ConversationView)
@@ -2482,12 +2539,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if self._preferences.input_draft_memory_enabled
             else ""
         )
-        self.query_one(Composer).restore_command_draft(draft)
-
-    def _remember_input_draft(self, session_id: str | None, text: str) -> None:
         if not self._preferences.input_draft_memory_enabled:
-            return
-        self._set_input_drafts(self._input_drafts.remember(session_id, text))
+            self._remember_input_draft(session_id, "", resource_refs=())
+        self.query_one(Composer).restore_command_draft(draft)
+        count = len(self._input_drafts.resources_for(session_id))
+        if count:
+            self.notify(f"Restored {count} attachment(s) to this input")
+
+    def _remember_input_draft(
+        self, session_id: str | None, text: str, *, resource_refs: tuple[str, ...] | None = None
+    ) -> None:
+        self._set_input_drafts(
+            self._input_drafts.remember(session_id, text, resource_refs=resource_refs)
+        )
 
     def _forget_input_drafts(self, session_ids: Sequence[str]) -> None:
         if not self._preferences.input_draft_memory_enabled:
@@ -2503,6 +2567,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if drafts == self._input_drafts and not force_persist:
             return
         self._input_drafts = drafts
+        if not self._preferences.input_draft_memory_enabled and not force_persist:
+            return
         self._input_draft_revision += 1
         task = self._input_draft_save_task
         if task is None or task.done():
@@ -2518,7 +2584,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await asyncio.sleep(_INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS)
                 if revision != self._input_draft_revision:
                     continue
-                drafts = self._input_drafts
+                drafts = (
+                    self._input_drafts
+                    if self._preferences.input_draft_memory_enabled
+                    else TuiInputDrafts()
+                )
                 try:
                     await asyncio.to_thread(self._input_draft_store.save, drafts)
                 except OuroError as exc:
@@ -3601,7 +3671,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if command == "/undo":
                 selected = await self._controller.undo()
                 await self._show_main_session()
-                self._edit_draft(user_message_text(selected.input))
+                text = user_message_text(selected.input)
+                self._remember_input_draft(
+                    selected.session.session_id, text, resource_refs=selected.resource_refs
+                )
+                self._edit_draft(text)
                 if selected.resource_refs:
                     self.notify(
                         f"Restored {len(selected.resource_refs)} attachment(s) to this input"
@@ -3687,7 +3761,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         """Build persisted projections without occupying Textual's event loop."""
 
         ordered_events = canonical_event_order(loaded.events)
-        projection = TuiSessionProjection(loaded.detail.session.session_id)
+        projection = TuiSessionProjection(
+            loaded.detail.session.session_id, history_epoch=loaded.detail.session.history_epoch
+        )
         projection.restore(
             ordered_events,
             event_high_water=loaded.event_high_water,
@@ -4444,10 +4520,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 return False
             self._preferences = preferences
         drafts = TuiInputDrafts()
-        if enabled and not self._visible_read_only and self.query(Composer):
+        if not self._visible_read_only and self.query(Composer):
             drafts = drafts.remember(
                 self._controller.session_id,
                 self.query_one(Composer).text,
+                resource_refs=self._input_drafts.resources_for(self._controller.session_id),
             )
         self._set_input_drafts(drafts, force_persist=True)
         return True
@@ -4549,6 +4626,7 @@ def _event_record(event: RuntimeEventView) -> EventRecord:
     """Adapt the redacted Host event DTO to the existing TUI reducer input."""
 
     return EventRecord(
+        history_epoch=event.history_epoch,
         event_id=event.event_id,
         session_id=event.session_id,
         run_id=event.run_id,

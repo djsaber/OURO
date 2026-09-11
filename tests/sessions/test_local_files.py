@@ -1296,7 +1296,7 @@ def test_store_rejects_incompatible_data_layout_without_modifying_manifest(tmp_p
     )
     before = layout_path.read_bytes()
 
-    with pytest.raises(MigrationRequiredError, match="found 999, expected 7"):
+    with pytest.raises(MigrationRequiredError, match="found 999, expected 8"):
         LocalSessionStore(tmp_path).initialize()
 
     assert layout_path.read_bytes() == before
@@ -1310,7 +1310,7 @@ def test_store_rejects_data_from_before_typed_tool_messages(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(MigrationRequiredError, match="found 2, expected 7"):
+    with pytest.raises(MigrationRequiredError, match="found 2, expected 8"):
         LocalSessionStore(tmp_path).initialize()
 
 
@@ -1344,7 +1344,7 @@ def test_store_migrates_extension_state_layout(
     assert migrated.load_session_extension_states(session.session_id) == []
     assert (
         json.loads((tmp_path / "layout.json").read_text(encoding="utf-8"))["data_layout_version"]
-        == 7
+        == 8
     )
     assert not (extension_dir / "index.json").exists()
     assert migrated.load_harness(session.session_id).version_id == "harness_baseline"

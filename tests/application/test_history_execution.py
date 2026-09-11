@@ -16,9 +16,13 @@ from ouro.core.messages import (
 )
 from ouro.core.provider import ModelMetadata
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict, SessionCommitStep
-from ouro.core.session_controls import SessionInputRequest
+from ouro.core.session_controls import (
+    SessionControlActivation,
+    SessionControlState,
+    SessionInputRequest,
+)
 from ouro.core.session_extensions import SessionExtensionStateRecord
-from ouro.core.state import RunContinuationCheckpoint, RunRecord
+from ouro.core.state import RunContinuationCheckpoint, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolResult
 from ouro.providers import FauxProvider
@@ -43,6 +47,56 @@ def runtime_for(store):
         adapter=RuntimeAdapter(FauxProvider(), ModelMetadata(model_id="test", provider_id="faux")),
         tools=ToolRegistry(),
     )
+
+
+async def test_undo_restores_missing_plugin_data_but_execution_requires_its_contract(store):
+    runtime = runtime_for(store)
+    session = SessionRecord()
+    store.create_session(session)
+    owner = "example.unavailable"
+    state = HarnessState(
+        states=(
+            SessionExtensionStateRecord(
+                session_id=session.session_id,
+                owner_id=owner,
+                state_schema_version=99,
+                payload={"opaque": ["preserve", 3]},
+            ),
+        ),
+        controls=SessionControlState(
+            activations=[
+                SessionControlActivation(
+                    controller_id=f"{owner}/session_controllers/mode",
+                    plugin_id=owner,
+                    controller_local_id="mode",
+                    plugin_class="user",
+                    release_id="release",
+                    generation_id="generation",
+                    execution_contract_hash="contract",
+                )
+            ]
+        ),
+    )
+    message = MessageRecord.text(session_id=session.session_id, role="user", text="withdraw")
+    message.metadata["session_input_source"] = "user"
+    store.commit_session(
+        SessionCommit(
+            before=session,
+            steps=(
+                SessionCommitStep(harness=state),
+                SessionCommitStep(message=message, harness=HarnessState()),
+            ),
+        )
+    )
+    try:
+        await runtime.undo(session.session_id)
+        assert store.load_harness(session.session_id).state == state
+        result = await runtime.run("retry", session_id=session.session_id)
+        assert result.run.status == "failed"
+        assert "unavailable" in result.run.error
+        assert store.load_harness(session.session_id).state == state
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.parametrize("resume", [False, True])
