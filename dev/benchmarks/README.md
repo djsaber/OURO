@@ -43,7 +43,12 @@ uv run --frozen python -m dev.benchmarks.harness_lifecycle --label m4 --source C
 
 记录进程 I/O 调用与字节、Python fsync 调用和新增版本数。Windows 使用 GetProcessIoCounters，
 Linux 使用 `/proc/self/io`；这些是操作系统进程计数，不能等同于绕过文件缓存的物理介质读写量。
-SQLite VFS 在 C 层调用同步，不会经过 Python 包装器，原生同步次数标为 `null`；保持 WAL/FULL 原有策略。
-测试脚本不改变业务代码、持久化强度、同步配置或缓存上限。
+SQLite 同步单独计数：Windows 通过 [VFS 系统调用接口](https://www.sqlite.org/c3ref/vfs.html) 观察
+`FlushFileBuffers`，继续执行原函数并保留返回值及系统错误；测量结束或异常时恢复原函数。
+Linux 的 Unix VFS 不提供同步调用钩子，使用 strace 附加当前诊断进程，观察 `fsync`/`fdatasync`。
+附加、退出和读取 trace 在计时与 I/O 采样之外；计时仍包含系统调用被跟踪的开销，两个 revision 使用同一方式。
+Linux 需安装 strace 并具备附加本进程的权限。观测不可用会明确失败，不报告伪造的零值。
+每阶段的 `sqlite_sync_calls` 记录实际调用；不修改 OURO 或 SQLite 实现，保持 WAL/FULL 原有策略及缓存上限。
+`tests/benchmarks/test_sqlite_sync.py` 校准持久提交、只读和异常清理。
 
-2026-09-11 的原始数据与解释见 [Windows 成本对照](results/harness-windows-2026-09-11.md)。
+2026-09-11 的原始数据与收尾复核见 [Windows / POSIX 成本对照](results/harness-platform-comparison-2026-09-12.md)。

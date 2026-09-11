@@ -1,8 +1,8 @@
 """Offline M5 probe; run the same file against M4 and M5 using --source.
 
 Fixture creation, index warmup and checkpoint counts are outside measured sections.
-Process I/O includes SQLite's native calls; Python fsync counts do NOT include SQLite
-VFS synchronization. This is diagnostic evidence, not a machine-independent CI limit.
+Process I/O includes SQLite's native calls. Its VFS sync calls are counted separately
+from Python fsync. This is diagnostic evidence, not a machine-independent CI limit.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import sqlite3
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
+from contextlib import closing, nullcontext
 from pathlib import Path
 from time import perf_counter
 from unittest.mock import patch
@@ -57,7 +57,9 @@ def process_io():
     }
 
 
-def measure(operation):
+def measure(operation, *, sqlite=False):
+    from dev.benchmarks.sqlite_sync import sqlite_sync_calls
+
     syncs = 0
     fsync = os.fsync
 
@@ -66,7 +68,8 @@ def measure(operation):
         syncs += 1
         return fsync(fd)
 
-    with patch("os.fsync", counted):
+    native = sqlite_sync_calls() if sqlite else nullcontext({})
+    with patch("os.fsync", counted), native as sqlite_calls:
         before = process_io()
         start = perf_counter()
         result = operation()
@@ -75,6 +78,7 @@ def measure(operation):
     return result, {
         "elapsed_ms": round(elapsed, 3),
         "python_fsync_calls": syncs,
+        "sqlite_sync_calls": sqlite_calls,
         **{key: after[key] - before[key] for key in before},
     }
 
@@ -114,7 +118,8 @@ def probe(store, backend, prefix, owners, owner_bytes):
     _, write = measure(
         lambda: store.commit_session(
             SessionCommit(before=session, steps=(SessionCommitStep(harness=state),))
-        )
+        ),
+        sqlite=backend == "sqlite",
     )
     count = checkpoint_count(store, session.session_id, backend)
     state_change_versions = count - baseline_count
@@ -140,7 +145,8 @@ def probe(store, backend, prefix, owners, owner_bytes):
     cut, withdrawal = measure(
         lambda: store.commit_session(
             SessionCommit(before=session, before_message_id=messages[-2].message_id)
-        )
+        ),
+        sqlite=backend == "sqlite",
     )
     assert cut.truncation is not None and cut.truncation.removed_count == 2
     assert checkpoint_count(store, session.session_id, backend) == count
@@ -158,7 +164,7 @@ def probe(store, backend, prefix, owners, owner_bytes):
                 state=store.load_harness(session.session_id).state,
             )
 
-    snapshot, read = measure(capture)
+    snapshot, read = measure(capture, sqlite=backend == "sqlite")
 
     def callback(owner, writable):
         for _ in range(20):
@@ -171,10 +177,12 @@ def probe(store, backend, prefix, owners, owner_bytes):
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         _, readonly = measure(
-            lambda: list(executor.map(lambda owner: callback(owner, False), snapshot.state.states))
+            lambda: list(executor.map(lambda owner: callback(owner, False), snapshot.state.states)),
+            sqlite=backend == "sqlite",
         )
         _, noop = measure(
-            lambda: list(executor.map(lambda owner: callback(owner, True), snapshot.state.states))
+            lambda: list(executor.map(lambda owner: callback(owner, True), snapshot.state.states)),
+            sqlite=backend == "sqlite",
         )
     assert checkpoint_count(store, session.session_id, backend) == count
     return {
@@ -192,7 +200,6 @@ def probe(store, backend, prefix, owners, owner_bytes):
         "state_change_versions": state_change_versions,
         "cut_versions": 0,
         "callback_versions": 0,
-        "native_sqlite_fsync_calls": None,
     }
 
 
@@ -202,6 +209,10 @@ def main():
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--label", required=True)
     args = parser.parse_args()
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    # The probe helpers always come from this script's checkout, including M4 runs.
+    from dev.benchmarks.sqlite_sync import sqlite_sync_calls  # noqa: F401
+
     sys.path.insert(0, str(args.source.resolve()))
     from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 
@@ -222,6 +233,11 @@ def main():
                                 {
                                     "label": args.label,
                                     "platform": platform.platform(),
+                                    "python": platform.python_version(),
+                                    "sqlite": sqlite3.sqlite_version,
+                                    "sqlite_sync_observer": (
+                                        "windows-vfs" if sys.platform == "win32" else "strace"
+                                    ),
                                     "repeat": repeat,
                                     **probe(store, backend, prefix, owners, size),
                                 }
