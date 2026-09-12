@@ -2078,6 +2078,41 @@ async def test_welcome_tips_point_to_keyboard_help_instead_of_sessions(tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_welcome_spacing_adapts_to_height_without_moving_composer_off_center(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with run_ready_app(app, size=(100, 40)) as pilot:
+        welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
+        composer = app.query_one(Composer)
+        status = app.query_one(StatusLine)
+        version = app.query_one("#welcome-version", Static)
+
+        for height in (40, 38, 37, 36, 35, 34, 33, 32, 24, 16, 32, 40):
+            await pilot.resize_terminal(100, height)
+            await pilot.pause()
+
+            section_gap = welcome._lower.region.y - status.region.bottom
+            system_gap = welcome._system.region.y - welcome._lower.region.bottom
+            assert 1 <= section_gap <= 2
+            assert 1 <= system_gap <= 3
+            assert abs(welcome._top.region.height - welcome._bottom.region.height) <= 1
+            assert composer.region.y == welcome._top.region.bottom
+            assert composer.region.x == app.screen.region.width - composer.region.right
+            assert welcome._usage.region.height == welcome._tips.region.height == 4
+            assert welcome._system.region.height == 7
+
+            if height >= 32:
+                assert welcome._system.region.bottom <= welcome._bottom.region.bottom
+                assert welcome._system.region.bottom <= version.region.y
+            if height <= 32:
+                assert (section_gap, system_gap) == (1, 1)
+            if height == 40:
+                assert (section_gap, system_gap) == (2, 3)
+
+
+@pytest.mark.asyncio
 async def test_welcome_layout_stays_centered_across_terminal_width_bounds(
     tmp_path: Path,
 ) -> None:

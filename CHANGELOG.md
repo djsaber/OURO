@@ -6,6 +6,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- TUI welcome-page spacing adapts to terminal height while keeping the composer centered.
+  Gaps above USAGE/TIPS and SYSTEM shrink to one row, expand to their two- and three-row
+  limits, and reserve a row for the version footer.
 - Session Harness state now has immutable native versions and per-message anchors. State,
   control transitions, messages, queue effects and receipts use one recoverable Session commit;
   undo restores the precise message boundary and rejects effects from withdrawn history epochs.

@@ -1428,7 +1428,9 @@ class WelcomePanel(Vertical):
             classes="welcome-only welcome-top",
         )
         self._bottom = Vertical(
+            Static(classes="welcome-gap welcome-section-gap"),
             self._lower,
+            Static(classes="welcome-gap welcome-system-gap"),
             self._system,
             classes="welcome-only welcome-bottom",
         )

@@ -448,7 +448,22 @@ _OURO_TUI_CSS = """
         width: 100%;
         height: 1fr;
         min-height: 0;
+        /* Reserve the overlaid version footer without shifting the composer. */
+        padding-bottom: 1;
         overflow: hidden;
+    }
+
+    .welcome-gap {
+        height: 1fr;
+        min-height: 1;
+    }
+
+    .welcome-section-gap {
+        max-height: $welcome-section-gap;
+    }
+
+    .welcome-system-gap {
+        max-height: $welcome-system-gap;
     }
 
     .welcome-section {
@@ -458,7 +473,6 @@ _OURO_TUI_CSS = """
 
     .welcome-system {
         width: 100%;
-        margin: $welcome-system-gap 0 0 0;
         overflow: hidden;
     }
 
@@ -491,7 +505,6 @@ _OURO_TUI_CSS = """
     .welcome-lower {
         width: auto;
         height: auto;
-        margin: $welcome-section-gap 0 0 0;
         overflow: hidden;
     }
 
