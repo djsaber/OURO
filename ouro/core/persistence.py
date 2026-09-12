@@ -5,7 +5,7 @@ import json
 from pydantic import ValidationError
 
 from ouro.core.base import VersionedOuroModel
-from ouro.core.errors import MigrationRequiredError, PersistenceError
+from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
 
 
 def decode_versioned_record_json[RecordT: VersionedOuroModel](
@@ -27,8 +27,8 @@ def decode_versioned_record_json[RecordT: VersionedOuroModel](
     expected = model_type.model_fields["schema_version"].default
     if type(version) is not int or version != expected:
         found = "missing" if "schema_version" not in raw else repr(version)
-        raise MigrationRequiredError(
-            f"{label} schema migration required: found {found}, expected {expected}"
+        raise UnsupportedDataVersionError(
+            f"unsupported {label} schema: found {found}, expected {expected}"
         )
 
     try:

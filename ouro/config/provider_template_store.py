@@ -1,4 +1,4 @@
-"""Local provider template catalog file: materialization, sync, and migration.
+"""Local provider template catalog file: materialization and content synchronization.
 
 The inline catalog in ``provider_templates`` stays the single source of truth.
 This store materializes it into ``config/provider-templates.json`` and keeps
@@ -12,9 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
-from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -33,10 +31,6 @@ from ouro.core.errors import ConfigError
 
 #: Current structure (schema) version of the local template file.
 SCHEMA_VERSION = 1
-
-#: Field-level migration steps keyed by the structure version they produce.
-#: A step mutates one raw template entry in place and must not touch ``meta``.
-_STRUCTURE_MIGRATIONS: dict[int, Callable[[dict[str, Any]], None]] = {}
 
 
 class ProviderTemplateMeta(OuroModel):
@@ -68,9 +62,8 @@ def template_fingerprint(business: Mapping[str, Any]) -> str:
     """Hash the canonical form of one template's business fields.
 
     The basis is the raw business mapping (``meta`` excluded) canonicalized
-    with sorted keys and compact separators. Raw mappings are the only basis
-    that stays comparable across structure versions, which the pre-migration
-    modification check depends on.
+    with sorted keys and compact separators. The raw mapping preserves user edits
+    when comparing the local overlay with its saved content baseline.
     """
 
     payload = json.dumps(business, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -141,7 +134,6 @@ def _normalize_meta(
     raw_meta: Any,
     template_id: str,
     inline_ids: frozenset[str],
-    business: Mapping[str, Any],
 ) -> ProviderTemplateMeta:
     """Read ``meta`` tolerantly; missing or mistyped fields fall back to safe defaults."""
 
@@ -169,14 +161,10 @@ def _normalize_meta(
             origin="custom",
             enabled=enabled,
         )
-    # Meta-less inline-origin entries count as unmodified at revision 1; today
-    # that state is inert because the inline catalog itself starts at revision 1.
     return ProviderTemplateMeta(
         origin="inline",
-        baseline_revision=baseline_revision if baseline_revision is not None else 1,
-        baseline_fingerprint=baseline_fingerprint
-        if baseline_fingerprint is not None
-        else template_fingerprint(business),
+        baseline_revision=baseline_revision,
+        baseline_fingerprint=baseline_fingerprint,
         deprecated=deprecated,
         enabled=enabled,
     )
@@ -265,6 +253,12 @@ class ProviderTemplateStore:
                 raise ConfigError(
                     f"cannot restore until the provider template file is fixed: {exc}"
                 ) from exc
+            version = raw_root.get("schema_version")
+            if not _is_schema_version(version) or version != SCHEMA_VERSION:
+                raise ConfigError(
+                    f"unsupported provider template schema: found {version!r}, "
+                    f"expected {SCHEMA_VERSION}"
+                )
             templates_raw = raw_root.get("templates")
             if not isinstance(templates_raw, dict):
                 templates_raw = {}
@@ -306,18 +300,14 @@ class ProviderTemplateStore:
             )
         assert isinstance(local_schema, int)
 
-        loaded = self._load_templates(templates_raw, inline_ids, notices)
-        if local_schema > SCHEMA_VERSION:
-            # Newer structure than this build understands: load read-only.
-            return self._snapshot(loaded, notices, inline)
-        if local_schema < SCHEMA_VERSION and not self._migrate_structure(
-            raw_root, templates_raw, loaded, local_schema, notices
-        ):
+        if local_schema != SCHEMA_VERSION:
             return self._inline_fallback(
                 inline,
                 notices,
-                "provider template structure migration failed; the file was left unchanged",
+                f"unsupported provider template schema: found {local_schema}, "
+                f"expected {SCHEMA_VERSION}; the local file was left unchanged",
             )
+        loaded = self._load_templates(templates_raw, inline_ids, notices)
         self._upgrade_content(raw_root, templates_raw, loaded, inline, notices)
         return self._snapshot(loaded, notices, inline)
 
@@ -335,7 +325,7 @@ class ProviderTemplateStore:
                 )
                 continue
             business = _business(raw)
-            meta = _normalize_meta(raw.get("meta"), template_id, inline_ids, business)
+            meta = _normalize_meta(raw.get("meta"), template_id, inline_ids)
             notice = _plaintext_credential_notice(template_id, business)
             if notice is not None:
                 notices.append(notice)
@@ -373,46 +363,6 @@ class ProviderTemplateStore:
         notices.append(f"provider template file created at {self._file.path}")
         return self._snapshot(loaded, notices, inline)
 
-    def _migrate_structure(
-        self,
-        raw_root: Mapping[str, Any],
-        templates_raw: dict[str, Any],
-        loaded: Mapping[str, _LoadedTemplate],
-        local_schema: int,
-        notices: list[str],
-    ) -> bool:
-        backup = self._backup_file()
-        notices.append(
-            f"provider template file migrated from structure version {local_schema}"
-            f" to {SCHEMA_VERSION}"
-            + (f"; original backed up at {backup}" if backup is not None else "")
-        )
-        try:
-            version = local_schema
-            while version < SCHEMA_VERSION:
-                version += 1
-                step = _STRUCTURE_MIGRATIONS.get(version)
-                if step is None:
-                    raise ConfigError(
-                        f"no structure migration registered for provider template version {version}"
-                    )
-                for item in loaded.values():
-                    step(item.raw)
-            # ``item.modified`` was captured before the steps rewrote the
-            # entries, so unmodified templates can safely re-baseline now.
-            for template_id, item in loaded.items():
-                if item.template is None:
-                    continue
-                item.template = self._parse_template(item.raw, template_id, notices)
-                if item.template is not None and not item.modified:
-                    item.meta.baseline_fingerprint = template_fingerprint(_business(item.raw))
-                    _sync_meta(item)
-        except ConfigError as exc:
-            notices.append(f"structure migration failed: {exc}")
-            return False
-        self._write_root(raw_root, templates_raw)
-        return True
-
     def _upgrade_content(
         self,
         raw_root: Mapping[str, Any],
@@ -449,8 +399,12 @@ class ProviderTemplateStore:
                     f"provider template '{template_id}' is available again; deprecated flag cleared"
                 )
             baseline = item.meta.baseline_revision
-            if baseline is None or baseline > inline_template.revision:
-                # Local content is newer than this build ships; never rewrite it.
+            if (
+                baseline is None
+                or item.meta.baseline_fingerprint is None
+                or baseline > inline_template.revision
+            ):
+                # A saved baseline is required; never infer one or downgrade content.
                 continue
             if baseline == inline_template.revision:
                 continue
@@ -548,12 +502,3 @@ class ProviderTemplateStore:
         root["schema_version"] = SCHEMA_VERSION
         root["templates"] = dict(templates_raw)
         self._file.write(root)
-
-    def _backup_file(self) -> Path | None:
-        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-        backup = self._file.path.with_name(f"{self._file.path.stem}.backup-{stamp}.json")
-        try:
-            shutil.copy2(self._file.path, backup)
-        except OSError:
-            return None
-        return backup

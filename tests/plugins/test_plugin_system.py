@@ -507,37 +507,6 @@ def test_state_format_error_remains_a_typed_persistence_failure(tmp_path) -> Non
         store.read_state()
 
 
-@pytest.mark.parametrize("legacy_version", [2, 3])
-def test_plugin_state_migrates_without_losing_user_installs(
-    tmp_path,
-    legacy_version: int,
-) -> None:
-    source = tmp_path / "source"
-    source.mkdir()
-    _write_native_plugin(source)
-    service = build_local_plugin_service(tmp_path / "home")
-    installed = service.install(source)
-    raw = json.loads(service.store.state_path.read_text(encoding="utf-8"))
-    raw["schema_version"] = legacy_version
-    if legacy_version == 2:
-        raw.pop("builtin_activation_overrides")
-    else:
-        activation = raw["plugins"]["dev.ouro.echo"]["activation"]
-        activation["capability_grants"] = []
-        activation["code_trust_grants"] = []
-    service.store.state_path.write_text(json.dumps(raw), encoding="utf-8")
-
-    migrated = service.store.read_state()
-
-    selected = migrated.plugins["dev.ouro.echo"].selected()
-    assert selected is not None
-    assert selected.package_digest == installed.package_digest
-    assert migrated.builtin_activation_overrides == {}
-    service.store.mutate_state(lambda state: state)
-    persisted = json.loads(service.store.state_path.read_text(encoding="utf-8"))
-    assert persisted["schema_version"] == 4
-
-
 def test_permission_registry_and_builtin_identity_are_enforced_before_install(tmp_path) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -4021,3 +3990,17 @@ async def test_plugin_command_attributes_an_atomic_input_batch_as_one_owner() ->
     assert [item.prompt for item in batch.inputs] == ["control", "objective"]
     assert {item.plugin_id for item in batch.inputs} == {"dev.example.commands"}
     assert {item.contribution_id for item in batch.inputs} == {"batch"}
+
+
+@pytest.mark.parametrize("version", [None, 1, 2, 3, 5])
+def test_plugin_state_rejects_other_versions_without_rewriting(tmp_path, version):
+    store = PluginPackageStore(tmp_path / "home")
+    store.initialize()
+    raw = {"plugins": {}}
+    if version is not None:
+        raw["schema_version"] = version
+    store.state_path.write_text(json.dumps(raw), encoding="utf-8")
+    before = store.state_path.read_bytes()
+    with pytest.raises(PluginStoreError, match="invalid plugin state"):
+        store.read_state()
+    assert store.state_path.read_bytes() == before

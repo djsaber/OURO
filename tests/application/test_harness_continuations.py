@@ -22,6 +22,7 @@ from ouro.plugins.api import adapt_sdk_contributions
 from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sdk.plugins import v2 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from tests.harness_state import replace_harness_state
 
 OWNER = "example.continuation"
 CONTRACT = "c" * 64
@@ -50,10 +51,11 @@ def setup(store, action):
     )
     session = SessionRecord(controls=SessionControlState(revision=1, activations=[activation]))
     store.create_session(session)
-    store.save_session_extension_state(
+    replace_harness_state(
+        store,
         SessionExtensionStateRecord(
             session_id=session.session_id, owner_id=OWNER, state_schema_version=1, payload="before"
-        )
+        ),
     )
     run = RunRecord(
         session_id=session.session_id,
@@ -232,10 +234,11 @@ async def test_staged_continuation_cannot_overwrite_newer_state(store, monkeypat
         boundary.setattr(store, "commit_session", interrupt)
         with pytest.raises(PersistenceError):
             await service.settle(session_id=run.session_id, run_id=run.run_id)
-    store.save_session_extension_state(
+    replace_harness_state(
+        store,
         SessionExtensionStateRecord(
             session_id=run.session_id, owner_id=OWNER, state_schema_version=1, payload="newer"
-        )
+        ),
     )
     newer = store.load_harness(run.session_id)
     result = await service.settle(session_id=run.session_id, run_id=run.run_id)

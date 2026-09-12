@@ -16,6 +16,7 @@ from ouro.core.state import RunRecord
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
+from tests.harness_state import replace_harness_state
 
 
 @pytest.fixture(params=["files", "sqlite"])
@@ -56,12 +57,12 @@ async def test_undo_restores_owner_state_and_preserves_independent_pending_input
         state_schema_version=1,
         payload={"value": 1},
     )
-    store.save_session_extension_state(state)
+    replace_harness_state(store, state)
     second = await runtime.run("edit this", session_id=session_id)
     target = next(
         m for m in store.load_run_messages(session_id, second.run.run_id) if m.role == "user"
     )
-    store.save_session_extension_state(state.model_copy(update={"payload": {"value": 2}}))
+    replace_harness_state(store, state.model_copy(update={"payload": {"value": 2}}))
     user = enqueue(
         runtime, session_id, "later", prompt_policy_checked=True, prospective_run_id="old"
     )

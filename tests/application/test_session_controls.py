@@ -4,13 +4,11 @@ from threading import get_ident
 
 import pytest
 
-from ouro.application.harness import capture_harness
 from ouro.application.session_controls import (
     SessionControlConflictError,
     SessionControlCoordinator,
     SessionControlError,
 )
-from ouro.core.errors import MigrationRequiredError
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     SessionControlClaim,
@@ -484,48 +482,3 @@ async def test_replace_cannot_take_over_another_plugin_activation(tmp_path) -> N
             session_id=session.session_id,
             controllers=registry,
         )
-
-
-@pytest.mark.parametrize("backend", ["files", "sqlite"])
-def test_legacy_lifecycle_requires_explicit_maintenance(tmp_path, backend) -> None:
-    store = _store(tmp_path, backend)
-    session = SessionRecord()
-    store.create_session(session)
-    activating = _controller(
-        "dev.example.interrupted",
-        "starting",
-        "dev.example.starting",
-        [],
-    )
-    deactivating = _controller(
-        "dev.example.interrupted",
-        "stopping",
-        "dev.example.stopping",
-        [],
-    )
-    controls = session.controls.model_copy(
-        update={
-            "revision": 1,
-            "activations": [
-                SessionControlCoordinator._new_activation(activating).model_copy(
-                    update={"phase": "activating"}
-                ),
-                SessionControlCoordinator._new_activation(deactivating).model_copy(
-                    update={"phase": "deactivating"}
-                ),
-            ],
-        }
-    )
-    store.save_session(session.model_copy(update={"controls": controls}))
-    coordinator = SessionControlCoordinator(store)
-
-    before = store.load_harness(session.session_id)
-    with pytest.raises(MigrationRequiredError, match="explicit maintenance"):
-        capture_harness(store, session.session_id)
-    assert store.load_harness(session.session_id) == before
-    # Explicit Host cleanup still works without a plugin callback.
-    for activation in controls.activations:
-        coordinator.force_release(
-            session_id=session.session_id, activation_id=activation.activation_id
-        )
-    assert capture_harness(store, session.session_id).state.controls.activations == []

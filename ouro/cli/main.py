@@ -71,7 +71,6 @@ from ouro.cli.session_commands import (
     list_session_events,
     list_session_messages,
     list_sessions,
-    migrate_session_harness,
     pin_session,
     remove_session,
     rename_session,
@@ -220,12 +219,6 @@ def _session_command(args: argparse.Namespace) -> int:
     home = args.home
     command = args.session_command
     session_backend = _selected_session_backend(args)
-    if command == "migrate-harness":
-        return asyncio.run(
-            migrate_session_harness(
-                args.session_id, home=home, json_mode=args.json, session_backend=session_backend
-            )
-        )
     if command == "list":
         return list_sessions(
             home=home,

@@ -12,7 +12,7 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 - [自动任务](docs/OURO_自动任务_2026-09-06.md)：持久化执行计划、工作空间与模型配置，启动后静默调度，
   支持新建/复用会话、审批挂起、状态查询，以及 TUI Task 管理和 USER/TASK 会话域切换。
 - 后端中立的会话、消息、事件、运行记录和压缩记录；本地文件与 SQLite 实现共享同一契约，支持显式恢复、
-  原子验证迁移、搜索、分支、回放、归档、置顶、回收站删除和长历史 cursor 分页。
+  原子验证导入、搜索、分支、回放、归档、置顶、回收站删除和长历史 cursor 分页。
 - 内容寻址的本地资源导入、去重、校验、分支引用复制、导出、可达性清理，以及文本/图片请求内模型投影。
 - 进程内 RuntimeSupervisor：跨 Session FIFO 调度、并发上限、有界类型化事件订阅、abort 与 shutdown 协议；
   `LocalApplication` 统一拥有 Runtime、MCP 和后台 worker 生命周期。
@@ -99,7 +99,10 @@ uv run ouro agent tree <session_id> --home ./.ouro-dev
 未指定 `--home` 时，OURO 使用 `OURO_HOME`；两者都未设置时使用 `~/.ouro`。
 Session 后端默认是 `files`，也可通过 `OURO_SESSION_BACKEND=sqlite` 设置当前 Host 的默认值；命令行
 `--session-backend files|sqlite` 优先于环境变量。交互、run、session、resource 和审批命令使用同一选择结果。
-切换后端不会隐式迁移数据，文件和 SQLite 是两个独立数据集；迁移必须通过显式、可验证、可回滚的导入流程完成。
+切换后端不会混读数据，文件和 SQLite 是两个独立数据集；当前格式的跨后端转移通过显式、可验证、可回滚的导入完成。
+
+OURO 处于测试开发阶段，只支持当前数据格式，不提供历史兼容或迁移。遇到版本不符时，请使用新的 `OURO_HOME`
+或清理失效测试数据；程序不会自动清空会话。
 
 自动任务配置与执行记录也支持 `files`（默认）和 `sqlite`，通过 `--task-backend files|sqlite` 或
 `OURO_TASK_BACKEND` 选择，命令行优先。文件数据位于 `<home>/tasks/`，SQLite 数据位于 `<home>/tasks.sqlite3`；

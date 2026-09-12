@@ -12,7 +12,7 @@ from ouro.application.session_recovery import SessionRecoveryService
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextBuilder
 from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
-from ouro.core.errors import MigrationRequiredError, PersistenceError
+from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import ReasoningRequest
@@ -20,6 +20,7 @@ from ouro.core.resources import SessionResourceReference
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore, SessionStore, SQLiteSessionStore
+from tests.harness_state import remove_harness_state, replace_harness_state
 
 
 @pytest.fixture(params=("files", "sqlite"))
@@ -214,7 +215,7 @@ def test_session_store_rejects_record_without_explicit_schema_version(
         finally:
             connection.close()
 
-    with pytest.raises(MigrationRequiredError, match="found missing, expected 2"):
+    with pytest.raises(UnsupportedDataVersionError, match="found missing, expected 2"):
         session_store.load_session_record(session.session_id)
 
 
@@ -356,15 +357,15 @@ def test_session_store_owns_extension_state_lifecycle(session_store: SessionStor
     )
 
     assert session_store.load_session_extension_states(session.session_id) == []
-    session_store.save_session_extension_state(state)
+    replace_harness_state(session_store, state)
     assert session_store.load_session_extension_states(session.session_id) == [state]
 
     updated = state.model_copy(update={"payload": {"status": "complete"}})
-    session_store.save_session_extension_state(updated)
+    replace_harness_state(session_store, updated)
     assert session_store.load_session_extension_states(session.session_id) == [updated]
     assert session_store.load_session(session.session_id).extension_states == [updated]
 
-    session_store.delete_session_extension_state(session.session_id, state.owner_id)
+    remove_harness_state(session_store, session.session_id, state.owner_id)
     assert session_store.load_session_extension_states(session.session_id) == []
 
 
@@ -442,7 +443,7 @@ def test_session_store_trashes_complete_tree_without_loading_domain_records(
         state_schema_version=1,
         payload={"phase": "active"},
     )
-    session_store.save_session_extension_state(state)
+    replace_harness_state(session_store, state)
 
     version_id = session_store.load_session_record(child.session_id).harness_version
     trash_id = session_store.trash_session_tree(

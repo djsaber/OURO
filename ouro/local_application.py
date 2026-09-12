@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
@@ -31,9 +30,6 @@ from ouro.automation.local_files import LocalTaskRepository
 from ouro.automation.sqlite import SQLiteTaskRepository
 from ouro.billing import LocalUsageLedger
 from ouro.builtin_plugins import LOCAL_BUILTIN_PLUGINS
-from ouro.builtin_plugins.harness_migration import prepare_builtin_harness_migration
-from ouro.builtin_plugins.migrations import migrate_builtin_plugin_state
-from ouro.builtin_plugins.session_state_migration import migrate_builtin_session_state
 from ouro.config import CompactionConfig, CredentialRef, CredentialResolver
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.core.adapter import RuntimeAdapter
@@ -41,11 +37,9 @@ from ouro.core.compaction import CompactionStrategyRegistry
 from ouro.core.context import ContextBuilder
 from ouro.core.context_providers import ContextProviderRegistry
 from ouro.core.continuations import RunContinuationRegistry
-from ouro.core.errors import MigrationRequiredError, OuroError, SessionBusyError
+from ouro.core.errors import OuroError
 from ouro.core.observers import ObserverRegistry
 from ouro.core.prompt_policies import PromptPolicyRegistry
-from ouro.core.session_commits import SessionCommitResult
-from ouro.core.state import ACTIVE_RUN_STATUSES
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.deployment import (
@@ -58,7 +52,6 @@ from ouro.mcp import MCPRuntimeResource, MCPServerConfig, MCPServerRecord
 from ouro.plugins.contributions import ContributionCoordinator
 from ouro.plugins.registry import PluginCommandRegistry
 from ouro.plugins.runtime import PluginRuntimeResource
-from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.plugins.store import PluginPackageStore
 from ouro.providers import build_runtime_adapter
 from ouro.resources import LocalResourceStore
@@ -240,20 +233,6 @@ class LocalApplication:
 
     async def __aexit__(self, *_: object) -> None:
         await self.close()
-
-    async def migrate_session_harness(self, session_id: str) -> SessionCommitResult | None:
-        """Run explicit maintenance with a leased catalog, without scheduling Session work."""
-        if self.plugin_runtime is None:
-            raise RuntimeError("local plugin catalog is unavailable")
-        await self.plugin_runtime.start()
-        with self.plugin_runtime.snapshot() as catalog:
-            return await asyncio.to_thread(
-                migrate_builtin_harness_state,
-                self.runtime.store,
-                session_id,
-                controllers=catalog.session_controllers,
-                usage_service=self.runtime.usage,
-            )
 
     async def start(self) -> None:
         if self._closed:
@@ -562,60 +541,6 @@ def build_local_usage_service(home: str | Path | None = None) -> UsageService:
     return UsageService(usage_ledger)
 
 
-def migrate_builtin_harness_state(
-    session_store: SessionStore,
-    session_id: str,
-    *,
-    controllers: PluginSessionControllerRegistry,
-    usage_service: UsageService | None,
-) -> SessionCommitResult | None:
-    """Explicit, quiescent builtin migration; never called by undo or plugin state reads."""
-
-    lock = session_store.acquire_session_lock(session_id, "harness-migration")
-    if lock is None:
-        raise SessionBusyError("stop Session execution before migrating Harness state")
-    try:
-        with session_store.session_mutation(session_id):
-            snapshot = session_store.load_runtime_session(session_id)
-            if any(
-                run.history_epoch == snapshot.session.history_epoch
-                and (
-                    run.status in ACTIVE_RUN_STATUSES
-                    or (run.continuation is not None and run.continuation.state != "resolved")
-                )
-                for run in snapshot.runs
-            ):
-                raise MigrationRequiredError(
-                    "settle Session execution before migrating Harness state"
-                )
-            references = {snapshot.session.harness_version} | {
-                message.before_harness_version
-                for message in snapshot.messages
-                if message.before_harness_version is not None
-            }
-            versions = tuple(
-                session_store.load_harness(session_id, identity) for identity in sorted(references)
-            )
-            plan = prepare_builtin_harness_migration(
-                snapshot.session,
-                versions,
-                entries=tuple(usage_service.ledger.list_entries()) if usage_service else None,
-                controllers=controllers,
-            )
-            if plan.request is None:
-                return None
-            # Attribution is idempotent and cannot refund usage. Publish converted state only
-            # after every required entry is associated; retries verify the same native totals.
-            for entry in plan.usage_replacements:
-                assert usage_service is not None
-                usage_service.ledger.replace(entry, note="Goal schema 3 to 4 usage attribution")
-            result = session_store.migrate_harness(plan.request)
-        session_store.refresh_catalog(session_id)
-        return result
-    finally:
-        lock.release()
-
-
 def build_local_plugin_service(
     home: str | Path | None = None,
     *,
@@ -625,9 +550,6 @@ def build_local_plugin_service(
 
     store = PluginPackageStore(resolve_local_home(home))
     store.initialize()
-    migrate_builtin_plugin_state(store)
-    if session_store is not None:
-        migrate_builtin_session_state(store.home, session_store)
     return PluginService(
         store,
         session_store=session_store,
@@ -678,9 +600,6 @@ def _build_local_plugin_runtime(
 ) -> tuple[PluginRuntimeResource, PluginService]:
     store = PluginPackageStore(home)
     store.initialize()
-    migrate_builtin_plugin_state(store)
-    if session_store is not None:
-        migrate_builtin_session_state(home, session_store)
     commands = PluginCommandRegistry()
     runtime = PluginRuntimeResource(
         store,

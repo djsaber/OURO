@@ -147,11 +147,7 @@ class SessionControlCoordinator:
             controller = self._controller_for_transition(controllers, canonical_id, transition)
             if transition.action == "acquire":
                 existing = next(
-                    (
-                        item
-                        for item in controls.activations
-                        if item.controller_id == canonical_id and item.phase != "failed"
-                    ),
+                    (item for item in controls.activations if item.controller_id == canonical_id),
                     None,
                 )
                 if existing is not None:
@@ -169,8 +165,6 @@ class SessionControlCoordinator:
                 targets = [item for item in controls.activations if item.activation_id in selected]
                 if {item.activation_id for item in targets} != selected:
                     raise SessionControlConflictError("replace target activation is unavailable")
-                if any(item.phase != "active" for item in targets):
-                    raise SessionControlConflictError("replace targets must all be active")
             conflicts = _claim_conflicts(
                 controller.claims,
                 controls.activations,
@@ -569,7 +563,7 @@ def _claim_conflicts(
     ignored = ignored_activation_ids or set()
     for claim in requested:
         for activation in activations:
-            if activation.phase == "failed" or activation.activation_id in ignored:
+            if activation.activation_id in ignored:
                 continue
             for held in activation.claims:
                 if held.domain != claim.domain:
@@ -605,11 +599,7 @@ def _select_release_activation(
     assert transition.controller_id is not None
     canonical_id = f"{transition.plugin_id}/session_controllers/{transition.controller_id}"
     return next(
-        (
-            item
-            for item in controls.activations
-            if item.controller_id == canonical_id and item.phase != "failed"
-        ),
+        (item for item in controls.activations if item.controller_id == canonical_id),
         None,
     )
 

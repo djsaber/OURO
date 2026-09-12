@@ -66,6 +66,7 @@ async def test_restart_after_continue_recovers_only_the_current_attempt(store, n
                 session_id=session.session_id,
                 run_id=run.run_id,
                 event_type=kind,
+                turn_id=payload.get("turn_id"),
                 payload=payload,
                 sequence=index + 1,
             )

@@ -20,9 +20,9 @@ from ouro.core.compaction import CompactionRecord
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.errors import (
     DelegationRevisionConflictError,
-    MigrationRequiredError,
     PersistenceError,
     ResourceNotFoundError,
+    UnsupportedDataVersionError,
 )
 from ouro.core.events import MODEL_STREAM_DELTA_EVENT_TYPES, EventRecord
 from ouro.core.harness import HarnessState, HarnessVersion
@@ -31,14 +31,12 @@ from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.resources import SessionResourceReference, SessionResourceReferences
 from ouro.core.session_commits import (
-    HarnessMigration,
     SessionCommit,
     SessionCommitConflict,
     SessionCommitResult,
     SessionCommitStep,
 )
 from ouro.core.session_extensions import (
-    SessionExtensionStateCollection,
     SessionExtensionStateRecord,
 )
 from ouro.core.state import RunRecord, SessionRecord
@@ -47,7 +45,6 @@ from ouro.local_io import (
     replace_path_with_retry,
     write_json_atomic,
     write_model_atomic,
-    write_text_atomic,
 )
 from ouro.local_locks import is_lock_held
 from ouro.sessions.base import (
@@ -55,13 +52,7 @@ from ouro.sessions.base import (
     SessionObservationState,
     SessionSnapshot,
 )
-from ouro.sessions.event_migration import migrate_event_journal, migrate_result_events
 from ouro.sessions.file_commits import FileSessionCommits
-from ouro.sessions.harness_migration import (
-    finish_legacy_history_cut,
-    migrate_file_records,
-    migrate_session_record,
-)
 from ouro.sessions.index import SessionIndex
 from ouro.sessions.layout import DATA_LAYOUT_VERSION, DataLayoutManifest
 from ouro.sessions.local_index import LocalSessionIndex
@@ -97,12 +88,12 @@ class LocalSessionStore:
         )
 
     def initialize(self) -> None:
+        self._initialize_layout()
         (self.root / "config").mkdir(parents=True, exist_ok=True)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.session_locks_dir.mkdir(parents=True, exist_ok=True)
         self.session_mutation_locks_dir.mkdir(parents=True, exist_ok=True)
         self.trash_sessions_dir.mkdir(parents=True, exist_ok=True)
-        self._initialize_layout()
         self._recover_trash_staging()
         self._catalog.try_initialize()
 
@@ -490,15 +481,6 @@ class LocalSessionStore:
         with self.session_mutation(session_id):
             self._require_session_dir(session_id)
             return self._commits.load_result(session_id, operation_id)
-
-    def migrate_harness(self, request: HarnessMigration) -> SessionCommitResult:
-        with self.session_mutation(request.before.session_id):
-            try:
-                return self._commits.migrate_harness(request)
-            except OSError as exc:
-                raise PersistenceError(
-                    f"could not migrate Harness for Session {request.before.session_id}: {exc}"
-                ) from exc
 
     def commit_session(self, request: SessionCommit) -> SessionCommitResult:
         with self.session_mutation(request.before.session_id):
@@ -966,45 +948,6 @@ class LocalSessionStore:
     def load_session_extension_states(self, session_id: str) -> list[SessionExtensionStateRecord]:
         return list(self.load_harness(session_id).state.states)
 
-    def save_session_extension_state(self, state: SessionExtensionStateRecord) -> None:
-        with self.session_mutation(state.session_id):
-            current = self.load_session_record(state.session_id)
-            harness = self.load_harness(state.session_id).state
-            states = {item.owner_id: item for item in harness.states}
-            states[state.owner_id] = state
-            self.commit_session(
-                SessionCommit(
-                    before=current,
-                    steps=(
-                        SessionCommitStep(
-                            harness=HarnessState(
-                                controls=harness.controls, states=tuple(states.values())
-                            )
-                        ),
-                    ),
-                )
-            )
-
-    def delete_session_extension_state(self, session_id: str, owner_id: str) -> None:
-        with self.session_mutation(session_id):
-            current = self.load_session_record(session_id)
-            harness = self.load_harness(session_id).state
-            self.commit_session(
-                SessionCommit(
-                    before=current,
-                    steps=(
-                        SessionCommitStep(
-                            harness=HarnessState(
-                                controls=harness.controls,
-                                states=tuple(
-                                    item for item in harness.states if item.owner_id != owner_id
-                                ),
-                            )
-                        ),
-                    ),
-                )
-            )
-
     def scan_catalog(self) -> SessionIndex:
         return self._catalog.scan()
 
@@ -1068,9 +1011,6 @@ class LocalSessionStore:
     def _resource_reference_path(self, session_id: str) -> Path:
         return self._require_session_dir(session_id) / "resources" / "index.json"
 
-    def _extension_state_path(self, session_id: str) -> Path:
-        return self._require_session_dir(session_id) / "extensions" / "index.json"
-
     def _require_session_dir(self, session_id: str) -> Path:
         session_dir = self._session_dir(session_id)
         session_path = session_dir / "session.json"
@@ -1080,6 +1020,10 @@ class LocalSessionStore:
 
     def _initialize_layout(self) -> None:
         if not self._layout_path.exists():
+            if self.sessions_dir.exists() and any(self.sessions_dir.iterdir()):
+                raise UnsupportedDataVersionError(
+                    f"OURO Session store has no format version: {self._layout_path}"
+                )
             self._write_model_atomic(self._layout_path, DataLayoutManifest())
             return
         try:
@@ -1088,139 +1032,17 @@ class LocalSessionStore:
             raise PersistenceError(
                 f"could not load data layout manifest {self._layout_path}: {exc}"
             ) from exc
-        current_version = manifest.data_layout_version
-        if current_version == 3:
-            current_version = 4
-        if current_version == 4:
-            self._migrate_layout_v4_to_v5()
-            current_version = 5
-        if current_version == 5:
-            self._migrate_layout_v5_to_v6()
-            current_version = 6
-        if current_version == 6:
-            self._migrate_layout_v6_to_v7()
-            current_version = 7
-        if current_version == 7:
-            self._migrate_layout_v7_to_v8()
-            current_version = 8
-        if current_version == DATA_LAYOUT_VERSION:
-            if manifest.data_layout_version != DATA_LAYOUT_VERSION:
-                migrated = manifest.model_copy(
-                    update={
-                        "data_layout_version": DATA_LAYOUT_VERSION,
-                        "updated_at": utc_now(),
-                    }
-                )
-                self._write_model_atomic(self._layout_path, migrated)
-            return
-        if current_version != DATA_LAYOUT_VERSION:
-            raise MigrationRequiredError(
-                "OURO data layout migration required: "
-                f"found {manifest.data_layout_version}, expected {DATA_LAYOUT_VERSION}"
+        version = (
+            manifest.data_layout_version
+            if "data_layout_version" in manifest.model_fields_set
+            else "missing"
+        )
+        if version != DATA_LAYOUT_VERSION:
+            raise UnsupportedDataVersionError(
+                f"unsupported OURO data layout at {self._layout_path}: "
+                f"found {version}, expected {DATA_LAYOUT_VERSION}; "
+                "use a new OURO_HOME or remove obsolete development data"
             )
-
-    def _migrate_layout_v7_to_v8(self) -> None:
-        for path in sorted(self.sessions_dir.glob("[!.]*/session.json")):
-            session_id = path.parent.name
-            lock = self.acquire_session_lock(session_id, "event_migration")
-            if lock is None:
-                raise MigrationRequiredError("stop active Sessions before migrating event history")
-            try:
-                # Convert a pending decision before ordinary recovery decodes it.
-                with SessionMutationLock(
-                    self._mutation_lock_path(session_id), session_id=session_id
-                ):
-                    directory = path.parent
-                    run_epochs = {
-                        run.run_id: run.history_epoch
-                        for run in (
-                            RunRecord.model_validate_json(read_text_atomic(run_path))
-                            for run_path in (directory / "runs").glob("*.json")
-                        )
-                    }
-                    pending = directory / "commit.json"
-                    if pending.exists():
-                        raw = json.loads(read_text_atomic(pending))
-                        run_epochs.update(
-                            {run["run_id"]: run["history_epoch"] for run in raw["runs"]}
-                        )
-                        migrate_result_events(raw["result"], run_epochs)
-                        write_json_atomic(pending, raw)
-                        self._commits.finish(session_id)
-                    events = migrate_event_journal(
-                        read_text_atomic(directory / "events.jsonl").splitlines(), run_epochs
-                    )
-                    write_text_atomic(
-                        directory / "events.jsonl",
-                        "".join(f"{event.model_dump_json()}\n" for event in events),
-                    )
-                    for receipt in (directory / "operations").glob("*.json"):
-                        raw = json.loads(read_text_atomic(receipt))
-                        migrate_result_events(raw, run_epochs)
-                        write_json_atomic(receipt, raw)
-                    # Byte offsets are disposable; the canonical journal changed.
-                    for index in (directory / "event-index").rglob("*"):
-                        if index.is_file():
-                            index.unlink()
-            finally:
-                lock.release()
-
-    def _migrate_layout_v6_to_v7(self) -> None:
-        for path in sorted(self.sessions_dir.glob("[!.]*/session.json")):
-            session_id = path.parent.name
-            lock = self.acquire_session_lock(session_id, "harness_migration")
-            if lock is None:
-                raise MigrationRequiredError("stop active Sessions before migrating Harness state")
-            try:
-                with self.session_mutation(session_id):
-                    finish_legacy_history_cut(path.parent)
-                    extension_path = path.parent / "extensions" / "index.json"
-                    states = []
-                    if extension_path.exists():
-                        states = decode_versioned_record_json(
-                            SessionExtensionStateCollection,
-                            read_text_atomic(extension_path),
-                            label="legacy extension states",
-                        ).states
-                    session, baseline = migrate_session_record(read_text_atomic(path), states)
-                    if session.session_id != session_id:
-                        raise PersistenceError(
-                            "legacy Session identity does not match its directory"
-                        )
-                    if baseline is not None:
-                        self._commits.save_version(baseline)
-                    else:
-                        self._commits.load_harness(session_id, session.harness_version)
-                    migrate_file_records(path.parent)
-                    self._commits.save_session_record(path.parent, session)
-                    extension_path.unlink(missing_ok=True)
-            finally:
-                lock.release()
-
-    def _migrate_layout_v4_to_v5(self) -> None:
-        """Create canonical per-Session extension state collections.
-
-        The migration is intentionally idempotent. The layout manifest is advanced
-        only after every existing Session has a valid collection.
-        """
-        for session_path in sorted(self.sessions_dir.glob("[!.]*/session.json")):
-            session_dir = session_path.parent
-            extension_path = session_dir / "extensions" / "index.json"
-            if extension_path.exists():
-                decode_versioned_record_json(
-                    SessionExtensionStateCollection,
-                    read_text_atomic(extension_path),
-                    label=f"extension state collection for session {session_dir.name}",
-                )
-                continue
-            extension_path.parent.mkdir(parents=True, exist_ok=True)
-            self._write_model_atomic(extension_path, SessionExtensionStateCollection())
-
-    def _migrate_layout_v5_to_v6(self) -> None:
-        """Discard the transcript-bearing catalog; it is a rebuildable projection."""
-        with suppress(OSError):
-            self._catalog.index_path.unlink()
-        self._catalog.rebuild()
 
     def _recover_trash_staging(self) -> None:
         for staging_dir in self.trash_sessions_dir.glob(".*.staging"):

@@ -11,6 +11,7 @@ from ouro.core.session_commits import SessionCommit, SessionCommitConflict, Sess
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import SessionRecord
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from tests.harness_state import replace_harness_state
 
 
 def owner_value(value):
@@ -143,7 +144,7 @@ def test_application_accepts_a_proposal_only_with_its_original_store_preconditio
     proposal = call.finish()
     assert store.load_session_extension_states(session.session_id) == []
     draft = accept_state_changes(snapshot, [proposal])
-    store.save_session_extension_state(owner_value("concurrent"))
+    replace_harness_state(store, owner_value("concurrent"))
     with pytest.raises(SessionCommitConflict):
         store.commit_session(
             SessionCommit(before=session, steps=(SessionCommitStep(harness=draft.state),))

@@ -12,9 +12,14 @@ This project records user-visible and framework-contract changes in this file.
 - Plugin API 3.0.0, Python SDK `ouro.sdk.plugins.v2`, and worker protocol 3.0 expose invocation-scoped
   owner state proposals. PluginContext no longer writes canonical Session state. Todo, Plan and
   Goal use this contract; Goal schema 4 keeps actual usage in the native ledger across undo.
-- Session/Run/Message/Event schemas are 2, file layout is 8, and SQLite schema is 6. Explicit
-  `session migrate-harness` converts supported builtin owner schemas without starting execution;
-  messages predating a provable state baseline retain unavailable undo anchors.
+- Only current development data formats are supported: Session/Run/Message/Event schemas 2,
+  file layout 8, and SQLite schema 6. Removed layout/record/Harness/plugin state migrations, builtin
+  identity aliases, and the `session migrate-harness` command. Unsupported versions fail explicitly;
+  obsolete test data must be removed by the user or replaced with a fresh data directory. Current
+  commit recovery and cross-backend import remain available.
+- Removed historical turn/timing inference and template schema conversion. Owner state writes use
+  native Session commits; template updates require stored provenance instead of adopting untracked
+  providers or inventing content baselines.
 
 - Session and Agent-tree subscriptions now initialize asynchronously: callers must await
   `RuntimeSupervisor.subscribe` and `AgentService.subscribe_agent_tree`. Replay reads and tree
@@ -52,7 +57,7 @@ This project records user-visible and framework-contract changes in this file.
 - Preset-created providers now retain compact template provenance and support atomic three-way
   updates through CLI and the TUI provider submenu. Unmodified preset values follow the latest
   template, while customized, deleted, unknown, and colliding endpoints are preserved and
-  reported; legacy providers are adopted conservatively on their first update.
+  reported. Providers without template provenance require an explicit replacement from a template.
 - TUI `/workspace <path>` selection for new-session drafts, with inline history/freeform input,
   immutable created-session workspaces, and a persistent twenty-entry recent-workspace list that
   records each terminal startup directory.

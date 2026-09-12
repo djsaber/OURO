@@ -33,6 +33,7 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
+from tests.harness_state import replace_harness_state
 
 
 def _service(tmp_path) -> tuple[LocalSessionStore, SessionService]:
@@ -657,7 +658,7 @@ def test_stale_unreadable_projection_does_not_block_explicit_trash(
         store.load_session_record(session.session_id)
 
 
-def test_catalog_marks_incompatible_session_record_as_migration_required(tmp_path) -> None:
+def test_catalog_marks_incompatible_session_record_as_unsupported_version(tmp_path) -> None:
     store, sessions = _service(tmp_path)
     session = sessions.create(title="Old record").session
     session_path = store.sessions_dir / session.session_id / "session.json"
@@ -669,7 +670,7 @@ def test_catalog_marks_incompatible_session_record_as_migration_required(tmp_pat
 
     result = sessions.catalog()
     entry = next(item for item in result.entries if item.session_id == session.session_id)
-    assert entry.health == "migration_required"
+    assert entry.health == "unsupported_version"
 
 
 def test_branch_remaps_messages_and_expands_complete_tool_exchange(tmp_path) -> None:
@@ -811,7 +812,8 @@ def test_branch_applies_extension_copy_and_reset_policies(tmp_path) -> None:
     )
     for message in (first, projection, branch_point):
         store.append_message(message)
-    store.save_session_extension_state(
+    replace_harness_state(
+        store,
         SessionExtensionStateRecord(
             session_id=source.session_id,
             owner_id="dev.example.reset_state",
@@ -819,16 +821,17 @@ def test_branch_applies_extension_copy_and_reset_policies(tmp_path) -> None:
             branch_policy="reset",
             projection_semantic_tags=("example-projection",),
             payload={"status": "active"},
-        )
+        ),
     )
-    store.save_session_extension_state(
+    replace_harness_state(
+        store,
         SessionExtensionStateRecord(
             session_id=source.session_id,
             owner_id="dev.example.preferences",
             state_schema_version=1,
             branch_policy="copy",
             payload={"detail": "concise"},
-        )
+        ),
     )
 
     exported = sessions.export(source.session_id)
@@ -861,7 +864,8 @@ def test_branch_rejects_reset_projection_as_branch_point(tmp_path) -> None:
         sequence=1,
     )
     store.append_message(projection)
-    store.save_session_extension_state(
+    replace_harness_state(
+        store,
         SessionExtensionStateRecord(
             session_id=source.session_id,
             owner_id="dev.ouro.plan",
@@ -869,7 +873,7 @@ def test_branch_rejects_reset_projection_as_branch_point(tmp_path) -> None:
             branch_policy="reset",
             projection_semantic_tags=("plan-context",),
             payload={"steps": []},
-        )
+        ),
     )
 
     with pytest.raises(SessionBranchError, match="must reset"):
@@ -886,14 +890,15 @@ def test_branch_honors_extension_reject_policy(tmp_path) -> None:
         sequence=1,
     )
     store.append_message(message)
-    store.save_session_extension_state(
+    replace_harness_state(
+        store,
         SessionExtensionStateRecord(
             session_id=source.session_id,
             owner_id="dev.example.unbranchable",
             state_schema_version=1,
             branch_policy="reject",
             payload={"external_transaction": "open"},
-        )
+        ),
     )
 
     with pytest.raises(SessionBranchError, match="dev.example.unbranchable"):
@@ -920,7 +925,8 @@ def test_sqlite_branch_applies_extension_reset_policy(tmp_path) -> None:
     )
     store.append_message(projection)
     store.append_message(branch_point)
-    store.save_session_extension_state(
+    replace_harness_state(
+        store,
         SessionExtensionStateRecord(
             session_id=source.session_id,
             owner_id="dev.example.reset_state",
@@ -928,7 +934,7 @@ def test_sqlite_branch_applies_extension_reset_policy(tmp_path) -> None:
             branch_policy="reset",
             projection_semantic_tags=("example-projection",),
             payload={"status": "active"},
-        )
+        ),
     )
 
     result = sessions.branch(source.session_id, branch_point.message_id)
@@ -1037,14 +1043,15 @@ def test_branch_publish_failure_leaves_source_unchanged_and_no_partial_branch(
         sequence=1,
     )
     store.append_message(message)
-    store.save_session_extension_state(
+    replace_harness_state(
+        store,
         SessionExtensionStateRecord(
             session_id=source.session_id,
             owner_id="dev.example.copy",
             state_schema_version=1,
             branch_policy="copy",
             payload={"value": 1},
-        )
+        ),
     )
     before = store.load_session(source.session_id).model_dump()
     original = store._write_json_atomic

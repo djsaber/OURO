@@ -8,7 +8,7 @@ import pytest
 
 from ouro.billing import LocalUsageLedger
 from ouro.core.billing import ProviderUsageEntry, UsageFilter
-from ouro.core.errors import MigrationRequiredError, PersistenceError
+from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
 
 
 def _entry(index: int, *, model: str = "model-a") -> ProviderUsageEntry:
@@ -69,7 +69,7 @@ def test_local_usage_ledger_rejects_event_without_explicit_schema_version(tmp_pa
     raw.pop("schema_version")
     ledger.journal_path.write_text(json.dumps(raw) + "\n", encoding="utf-8")
 
-    with pytest.raises(MigrationRequiredError, match="found missing, expected 1"):
+    with pytest.raises(UnsupportedDataVersionError, match="found missing, expected 1"):
         LocalUsageLedger(tmp_path).list_events()
 
 

@@ -25,9 +25,9 @@ SessionHealth = Literal[
     "recoverable",
     "corrupt",
     "missing_resource",
-    "migration_required",
+    "unsupported_version",
 ]
-UNREADABLE_SESSION_HEALTHS: frozenset[SessionHealth] = frozenset({"corrupt", "migration_required"})
+UNREADABLE_SESSION_HEALTHS: frozenset[SessionHealth] = frozenset({"corrupt", "unsupported_version"})
 PendingInteraction = Literal["approval", "user"]
 
 
@@ -121,8 +121,8 @@ def invalid_session_index_entry(
             if isinstance(title, str) and title
             else "Invalid session index entry"
             if error_scope == "catalog"
-            else "Migration required"
-            if health == "migration_required"
+            else "Unsupported data version"
+            if health == "unsupported_version"
             else "Corrupt session"
         ),
         created_at=now,

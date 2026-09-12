@@ -430,17 +430,19 @@ class ProviderConfigManager:
             )
 
         previous = current.template
-        if previous is not None:
-            if previous.template_id != template.template_id:
-                raise ConfigError(
-                    f"provider is bound to template {previous.template_id}, not "
-                    f"{template.template_id}"
-                )
-            if previous.origin != template_origin:
-                raise ConfigError(
-                    f"provider template source changed: {previous.origin} != "
-                    f"{template_origin}; replace the provider to accept a different source"
-                )
+        if previous is None:
+            raise ConfigError(
+                "provider has no template provenance; replace it from a template before updating"
+            )
+        if previous.template_id != template.template_id:
+            raise ConfigError(
+                f"provider is bound to template {previous.template_id}, not {template.template_id}"
+            )
+        if previous.origin != template_origin:
+            raise ConfigError(
+                f"provider template source changed: {previous.origin} != "
+                f"{template_origin}; replace the provider to accept a different source"
+            )
 
         added: list[str] = []
         updated: list[str] = []
@@ -455,66 +457,19 @@ class ProviderConfigManager:
         next_endpoints = dict(current_endpoints)
         endpoint_ids: dict[str, str] = {}
 
-        if previous is None:
-            # Old OURO releases persisted no provenance. The first update adopts
-            # conservatively: existing values are never guessed to be template-owned.
-            for template_endpoint in template.endpoints:
-                template_endpoint_id = template_endpoint.endpoint_id
-                endpoint_ids[template_endpoint_id] = template_endpoint_id
-                existing = current_endpoints.get(template_endpoint_id)
-                if existing is None:
-                    next_endpoints[template_endpoint_id] = template_endpoint
-                    added.append(template_endpoint_id)
-                elif _template_endpoint_fingerprint(
-                    existing,
-                    template_endpoint_id=template_endpoint_id,
-                ) != _template_endpoint_fingerprint(template_endpoint):
-                    preserved.append(template_endpoint_id)
-            preserved.extend(sorted(set(current_endpoints).difference(latest_endpoints)))
-            next_default = current.default_endpoint
-            next_credential = current.credential_ref
-            next_base_url = current.base_url
-            next_api_path = current.api_path
-        else:
-            old_bindings = {item.template_endpoint_id: item for item in previous.endpoints}
-            old_default_binding = old_bindings.get(previous.default_endpoint)
-            old_configured_default = (
-                old_default_binding.configured_endpoint_id
-                if old_default_binding is not None
-                else None
-            )
-            default_was_managed = current.default_endpoint == old_configured_default
+        old_bindings = {item.template_endpoint_id: item for item in previous.endpoints}
+        old_default_binding = old_bindings.get(previous.default_endpoint)
+        old_configured_default = (
+            old_default_binding.configured_endpoint_id if old_default_binding is not None else None
+        )
+        default_was_managed = current.default_endpoint == old_configured_default
 
-            for template_endpoint_id, old_binding in old_bindings.items():
-                configured_endpoint_id = old_binding.configured_endpoint_id
-                existing = current_endpoints.get(configured_endpoint_id)
-                latest = latest_endpoints.get(template_endpoint_id)
-                if latest is None:
-                    if existing is None:
-                        continue
-                    endpoint_was_managed = (
-                        _template_endpoint_fingerprint(
-                            existing,
-                            template_endpoint_id=template_endpoint_id,
-                        )
-                        == old_binding.fingerprint
-                    )
-                    user_selected_endpoint = (
-                        current.default_endpoint == configured_endpoint_id
-                        and not default_was_managed
-                    )
-                    if endpoint_was_managed and not user_selected_endpoint:
-                        next_endpoints.pop(configured_endpoint_id, None)
-                        removed.append(configured_endpoint_id)
-                    else:
-                        preserved.append(configured_endpoint_id)
-                    continue
-
-                endpoint_ids[template_endpoint_id] = configured_endpoint_id
+        for template_endpoint_id, old_binding in old_bindings.items():
+            configured_endpoint_id = old_binding.configured_endpoint_id
+            existing = current_endpoints.get(configured_endpoint_id)
+            latest = latest_endpoints.get(template_endpoint_id)
+            if latest is None:
                 if existing is None:
-                    # Absence is a user edit just like a changed field. Keep the
-                    # binding so later template releases do not recreate it.
-                    preserved.append(configured_endpoint_id)
                     continue
                 endpoint_was_managed = (
                     _template_endpoint_fingerprint(
@@ -523,69 +478,92 @@ class ProviderConfigManager:
                     )
                     == old_binding.fingerprint
                 )
-                projected_latest = _configured_template_endpoint(
-                    latest,
-                    configured_endpoint_id=configured_endpoint_id,
+                user_selected_endpoint = (
+                    current.default_endpoint == configured_endpoint_id and not default_was_managed
                 )
-                if endpoint_was_managed:
-                    if existing != projected_latest:
-                        next_endpoints[configured_endpoint_id] = projected_latest
-                        updated.append(configured_endpoint_id)
-                elif old_binding.fingerprint != _template_endpoint_fingerprint(latest):
+                if endpoint_was_managed and not user_selected_endpoint:
+                    next_endpoints.pop(configured_endpoint_id, None)
+                    removed.append(configured_endpoint_id)
+                else:
                     preserved.append(configured_endpoint_id)
+                continue
 
-            for template_endpoint in template.endpoints:
-                template_endpoint_id = template_endpoint.endpoint_id
-                if template_endpoint_id in endpoint_ids:
-                    continue
-                configured_endpoint_id = template_endpoint_id
-                if configured_endpoint_id in next_endpoints:
-                    conflicts.append(configured_endpoint_id)
-                    continue
-                next_endpoints[configured_endpoint_id] = template_endpoint
-                endpoint_ids[template_endpoint_id] = configured_endpoint_id
-                added.append(configured_endpoint_id)
+            endpoint_ids[template_endpoint_id] = configured_endpoint_id
+            if existing is None:
+                # Absence is a user edit just like a changed field. Keep the
+                # binding so later template releases do not recreate it.
+                preserved.append(configured_endpoint_id)
+                continue
+            endpoint_was_managed = (
+                _template_endpoint_fingerprint(
+                    existing,
+                    template_endpoint_id=template_endpoint_id,
+                )
+                == old_binding.fingerprint
+            )
+            projected_latest = _configured_template_endpoint(
+                latest,
+                configured_endpoint_id=configured_endpoint_id,
+            )
+            if endpoint_was_managed:
+                if existing != projected_latest:
+                    next_endpoints[configured_endpoint_id] = projected_latest
+                    updated.append(configured_endpoint_id)
+            elif old_binding.fingerprint != _template_endpoint_fingerprint(latest):
+                preserved.append(configured_endpoint_id)
 
-            next_default = current.default_endpoint
-            latest_default_id = endpoint_ids.get(template.default_endpoint)
-            if default_was_managed:
-                if latest_default_id is not None and latest_default_id in next_endpoints:
-                    next_default = latest_default_id
-                    if next_default != current.default_endpoint:
-                        updated_fields.append("default_endpoint")
-                elif current.default_endpoint in current_endpoints:
-                    next_endpoints[current.default_endpoint] = current_endpoints[
-                        current.default_endpoint
-                    ]
-                    if current.default_endpoint in removed:
-                        removed.remove(current.default_endpoint)
-                    preserved.append(current.default_endpoint)
-                    preserved_fields.append("default_endpoint")
-            elif previous.default_endpoint != template.default_endpoint:
+        for template_endpoint in template.endpoints:
+            template_endpoint_id = template_endpoint.endpoint_id
+            if template_endpoint_id in endpoint_ids:
+                continue
+            configured_endpoint_id = template_endpoint_id
+            if configured_endpoint_id in next_endpoints:
+                conflicts.append(configured_endpoint_id)
+                continue
+            next_endpoints[configured_endpoint_id] = template_endpoint
+            endpoint_ids[template_endpoint_id] = configured_endpoint_id
+            added.append(configured_endpoint_id)
+
+        next_default = current.default_endpoint
+        latest_default_id = endpoint_ids.get(template.default_endpoint)
+        if default_was_managed:
+            if latest_default_id is not None and latest_default_id in next_endpoints:
+                next_default = latest_default_id
+                if next_default != current.default_endpoint:
+                    updated_fields.append("default_endpoint")
+            elif current.default_endpoint in current_endpoints:
+                next_endpoints[current.default_endpoint] = current_endpoints[
+                    current.default_endpoint
+                ]
+                if current.default_endpoint in removed:
+                    removed.remove(current.default_endpoint)
+                preserved.append(current.default_endpoint)
                 preserved_fields.append("default_endpoint")
+        elif previous.default_endpoint != template.default_endpoint:
+            preserved_fields.append("default_endpoint")
 
-            next_credential = current.credential_ref
-            if previous.credential_env != template.credential_env:
-                old_credential = CredentialRef.parse(f"env:{previous.credential_env}")
-                if current.credential_ref == old_credential:
-                    next_credential = CredentialRef.parse(f"env:{template.credential_env}")
-                    updated_fields.append("credential")
-                else:
-                    preserved_fields.append("credential")
-            next_base_url = current.base_url
-            if previous.base_url != template.base_url:
-                if current.base_url == previous.base_url:
-                    next_base_url = template.base_url
-                    updated_fields.append("base_url")
-                else:
-                    preserved_fields.append("base_url")
-            next_api_path = current.api_path
-            if previous.api_path != template.api_path:
-                if current.api_path == previous.api_path:
-                    next_api_path = template.api_path
-                    updated_fields.append("api_path")
-                else:
-                    preserved_fields.append("api_path")
+        next_credential = current.credential_ref
+        if previous.credential_env != template.credential_env:
+            old_credential = CredentialRef.parse(f"env:{previous.credential_env}")
+            if current.credential_ref == old_credential:
+                next_credential = CredentialRef.parse(f"env:{template.credential_env}")
+                updated_fields.append("credential")
+            else:
+                preserved_fields.append("credential")
+        next_base_url = current.base_url
+        if previous.base_url != template.base_url:
+            if current.base_url == previous.base_url:
+                next_base_url = template.base_url
+                updated_fields.append("base_url")
+            else:
+                preserved_fields.append("base_url")
+        next_api_path = current.api_path
+        if previous.api_path != template.api_path:
+            if current.api_path == previous.api_path:
+                next_api_path = template.api_path
+                updated_fields.append("api_path")
+            else:
+                preserved_fields.append("api_path")
 
         next_binding = _provider_template_binding(
             template,
@@ -677,9 +655,8 @@ class ProviderConfigManager:
         return ProviderTemplateUpdateResult(
             provider=provider,
             template_id=template.template_id,
-            from_revision=previous.revision if previous is not None else None,
+            from_revision=previous.revision,
             to_revision=template.revision,
-            adopted=previous is None,
             changed=provider != current,
             added_endpoints=tuple(sorted(set(added))),
             updated_endpoints=tuple(sorted(set(updated))),

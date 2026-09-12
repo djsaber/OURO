@@ -326,9 +326,7 @@ Interactive 支持 `/undo [message_id]` 与 `/continue`。undo 只选择直接�
 文本、技能与资源引用。恢复后空行确认可重新提交，也可修改文本后提交；Host 不在本地裁剪消息或解释
 插件 payload。continue 在当前代次恢复检查点，撤销后使用新 Run。
 
-`ouro session migrate-harness <session_id> --session-backend files|sqlite` 是明确的状态维护入口。组合根
-只租用插件 Catalog 并执行维护；不启动 Supervisor、自动任务、MCP 或模型调用。未知 schema 或活跃执行
-返回可诊断错误，普通运行不隐式迁移业务状态。
+CLI 不提供历史数据或 Harness 状态迁移命令；不支持的数据格式明确报错。
 
 ## 验收证据
 

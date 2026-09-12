@@ -23,8 +23,8 @@ class DelegationRevisionConflictError(PersistenceError):
     """A Delegation compare-and-swap lost to a concurrent durable update."""
 
 
-class MigrationRequiredError(PersistenceError):
-    """Persisted data cannot be opened without an explicit layout migration."""
+class UnsupportedDataVersionError(PersistenceError):
+    """Persisted data uses a format this build does not support."""
 
 
 class SessionBusyError(OuroError):

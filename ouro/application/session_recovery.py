@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from ouro.core.base import utc_now
@@ -233,14 +232,11 @@ class SessionRecoveryService:
         if not start_indexes:
             return None
         start_event = run_events[start_indexes[-1]]
-        payload_turn_id = start_event.payload.get("turn_id")
-        turn_id = (
-            start_event.turn_id
-            if start_event.turn_id is not None
-            else payload_turn_id
-            if isinstance(payload_turn_id, str)
-            else None
-        )
+        turn_id = start_event.turn_id
+        if turn_id is None:
+            raise PersistenceError(
+                f"model request event has no turn identity: {start_event.event_id}"
+            )
         streamed_events = run_events[start_indexes[-1] + 1 :]
         if any(
             event.event_type
@@ -257,7 +253,6 @@ class SessionRecoveryService:
         if _model_round_is_durable(
             durable_run_messages,
             turn_id=turn_id,
-            started_at=start_event.created_at,
         ):
             return None
 
@@ -316,23 +311,11 @@ class SessionRecoveryService:
         )
 
 
-def _model_round_is_durable(
-    messages: list[MessageRecord],
-    *,
-    turn_id: str | None,
-    started_at: datetime,
-) -> bool:
-    durable_messages = [
-        message for message in messages if message.role in {"assistant", "tool_result"}
-    ]
-    if turn_id is not None:
-        return any(message.turn_id == turn_id for message in durable_messages)
-    if not durable_messages:
-        return False
-    # Layout-v6 history may predate typed turn identities. Preserve its
-    # conservative duplicate avoidance until the explicit layout-v7 migration;
-    # current journals use turn_id and never compare independent log clocks.
-    return durable_messages[-1].created_at >= started_at
+def _model_round_is_durable(messages: list[MessageRecord], *, turn_id: str) -> bool:
+    return any(
+        message.turn_id == turn_id and message.role in {"assistant", "tool_result"}
+        for message in messages
+    )
 
 
 def _reconcile_session_projection(

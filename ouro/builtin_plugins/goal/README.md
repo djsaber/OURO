@@ -119,9 +119,7 @@ Otherwise:
 The implementation and manifest are the source of truth for tool schemas, transition validation,
 permissions, and continuation decisions.
 
-Known schema 3 state is converted only through the explicit builtin Harness migration entry.
-Conversion preserves source checkpoints, remaps reachable message anchors, and requires a provable
-native usage baseline. Uncertain attribution is rejected. Normal reads accept only schema 4.
+Only schema 4 is supported. Unsupported state fails explicitly; historical data is not converted.
 
 ## Verification
 

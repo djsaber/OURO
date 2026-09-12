@@ -300,7 +300,7 @@ def test_syntax_error_falls_back_to_inline_without_touching_file(tmp_path) -> No
     assert _file_path(tmp_path).read_text(encoding="utf-8") == "{ not json"
 
 
-def test_newer_structure_version_is_loaded_read_only(tmp_path) -> None:
+def test_newer_structure_version_is_rejected_without_writing(tmp_path) -> None:
     store = ProviderTemplateStore(tmp_path)
     store.catalog()
     root = _read_json(tmp_path)
@@ -313,7 +313,7 @@ def test_newer_structure_version_is_loaded_read_only(tmp_path) -> None:
     snapshot = store.catalog()
 
     assert {entry.template.template_id for entry in snapshot.entries} == set(_INLINE_BY_ID)
-    assert snapshot.notices == ()
+    assert any("unsupported provider template schema" in notice for notice in snapshot.notices)
     assert _file_path(tmp_path).read_text(encoding="utf-8") == written_text
 
 
@@ -356,41 +356,7 @@ def test_empty_templates_object_refills_from_inline(tmp_path) -> None:
     assert set(_read_json(tmp_path)["templates"]) == set(_INLINE_BY_ID)
 
 
-def test_structure_migration_backs_up_rebaselines_and_preserves_user_edits(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    store = ProviderTemplateStore(tmp_path)
-    store.catalog()
-    root = _read_json(tmp_path)
-    root["templates"]["qwen"]["meta"]["baseline_fingerprint"] = "sha256:user-edit"
-    _write_json(tmp_path, root)
-    monkeypatch.setattr(store_module, "SCHEMA_VERSION", 2)
-
-    def add_marker(raw: dict) -> None:
-        raw["migration_marker"] = True
-
-    monkeypatch.setitem(store_module._STRUCTURE_MIGRATIONS, 2, add_marker)
-
-    snapshot = store.catalog()
-
-    assert any("migrated from structure version 1 to 2" in notice for notice in snapshot.notices)
-    backups = list(_file_path(tmp_path).parent.glob("provider-templates.backup-*.json"))
-    assert len(backups) == 1
-    rewritten = _read_json(tmp_path)
-    assert rewritten["schema_version"] == 2
-    openai = rewritten["templates"]["openai"]
-    qwen = rewritten["templates"]["qwen"]
-    assert openai["migration_marker"] is True
-    assert qwen["migration_marker"] is True
-    assert openai["meta"]["baseline_fingerprint"] == template_fingerprint(
-        {key: value for key, value in openai.items() if key != "meta"}
-    )
-    assert qwen["meta"]["baseline_fingerprint"] == "sha256:user-edit"
-    assert {entry.template.template_id for entry in snapshot.entries} == set(_INLINE_BY_ID)
-
-
-def test_missing_structure_migration_step_falls_back_without_writing(tmp_path) -> None:
+def test_old_structure_version_is_rejected_without_writing(tmp_path) -> None:
     store = ProviderTemplateStore(tmp_path)
     store.catalog()
     root = _read_json(tmp_path)
@@ -401,7 +367,7 @@ def test_missing_structure_migration_step_falls_back_without_writing(tmp_path) -
     snapshot = store.catalog()
 
     assert {entry.template.template_id for entry in snapshot.entries} == set(_INLINE_BY_ID)
-    assert any("migration failed" in notice for notice in snapshot.notices)
+    assert any("unsupported provider template schema" in notice for notice in snapshot.notices)
     assert _file_path(tmp_path).read_text(encoding="utf-8") == written_text
 
 
@@ -463,3 +429,38 @@ def test_plaintext_credential_in_template_produces_notice(tmp_path) -> None:
     assert any("possible plaintext credential" in notice for notice in snapshot.notices)
     glm = next(entry for entry in snapshot.entries if entry.template.template_id == "glm")
     assert glm.template.endpoints[0].request_options["api_key"] == "sk-live-secret"
+
+
+@pytest.mark.parametrize("missing", ["baseline_revision", "baseline_fingerprint", "meta"])
+def test_catalog_does_not_invent_missing_content_baseline(tmp_path, monkeypatch, missing):
+    store = ProviderTemplateStore(tmp_path)
+    store.catalog()
+    root = _read_json(tmp_path)
+    entry = root["templates"]["openai"]
+    if missing == "meta":
+        entry.pop("meta")
+    else:
+        entry["meta"].pop(missing)
+    _write_json(tmp_path, root)
+    before = _file_path(tmp_path).read_bytes()
+    bumped = _revise(_INLINE_BY_ID["openai"], display_name="Updated upstream")
+    _fake_inline(
+        monkeypatch, tuple(bumped if t.template_id == "openai" else t for t in provider_templates())
+    )
+
+    store.catalog()
+
+    assert _file_path(tmp_path).read_bytes() == before
+
+
+@pytest.mark.parametrize("version", [None, 0, SCHEMA_VERSION + 1])
+def test_restore_does_not_relabel_an_unsupported_template_file(tmp_path, version):
+    store = ProviderTemplateStore(tmp_path)
+    store.catalog()
+    root = _read_json(tmp_path)
+    root["schema_version"] = version
+    _write_json(tmp_path, root)
+    before = _file_path(tmp_path).read_bytes()
+    with pytest.raises(ConfigError, match="unsupported provider template schema"):
+        store.restore("openai")
+    assert _file_path(tmp_path).read_bytes() == before

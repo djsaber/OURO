@@ -4658,11 +4658,6 @@ def _active_stream_tail(
         for message in messages
         if message.role == "assistant" and message.run_id == run_id and message.turn_id is not None
     }
-    covered_legacy_rounds = sum(
-        1
-        for message in messages
-        if message.role == "assistant" and message.run_id == run_id and message.turn_id is None
-    )
     start = 0
     for index, event in enumerate(ordered):
         if event.event_type == "run_status_changed" and event.payload.get("resumed") is True:
@@ -4671,9 +4666,6 @@ def _active_stream_tail(
         if event.event_type != "model_message_completed":
             continue
         if event.turn_id is not None and event.turn_id in covered_turns:
-            start = index + 1
-        elif event.turn_id is None and covered_legacy_rounds:
-            covered_legacy_rounds -= 1
             start = index + 1
     reasoning: list[str] = []
     answer: list[str] = []

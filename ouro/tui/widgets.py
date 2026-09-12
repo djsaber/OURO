@@ -1547,12 +1547,12 @@ def _tool_activities_from_messages(
                         "started_at": (
                             message.tool_execution.started_at
                             if message.tool_execution is not None
-                            else activity.requested_at
+                            else None
                         ),
                         "ended_at": (
                             message.tool_execution.ended_at
                             if message.tool_execution is not None
-                            else message.created_at
+                            else None
                         ),
                     }
                 )

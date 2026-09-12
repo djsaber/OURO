@@ -656,7 +656,7 @@ def _checked_target_label(
 
 
 def _template_update_summary(update: ProviderTemplateUpdateView) -> str:
-    mode = "adopted" if update.adopted else f"r{update.from_revision} -> r{update.to_revision}"
+    mode = f"r{update.from_revision} -> r{update.to_revision}"
     counts = (
         f"{len(update.added_endpoints)} added",
         f"{len(update.updated_endpoints)} updated",

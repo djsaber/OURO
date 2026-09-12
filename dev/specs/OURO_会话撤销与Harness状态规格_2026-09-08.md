@@ -132,7 +132,7 @@ Host 建立的调用范围为准，不信任 worker 自报归属。沿用现有�
 
 两种运行形态必须在只读限制、schema 错误、取消、超时、挂起、迟到结果和重复结算上具有相同可见结果。
 本次 SDK 与 worker 协议必须显式推进版本，并纳入既有执行契约；旧接口不得无提示改变 save 的生效语义。
-升级以新契约和明确迁移/拒绝为准，不保留运行时双写或直接保存 fallback。
+升级以当前契约和明确拒绝为准，不保留运行时双写或直接保存 fallback。
 
 ## 5. 提交、失败与恢复
 
@@ -315,9 +315,8 @@ tokens_used、remaining 等展示和预算裁决从账本与当前业务预算�
 控制器的可选 `usage_scope` 是 owner 内业务身份；运行准备固定控制及用量归属，账本保留请求当时的绑定，
 不使用完成时的当前 Harness 重新归属。相同 owner/scope 每个 usage entry 只累计一次。
 SDK `run_controls()` 与 `usage_tokens()` 是 owner 绑定的只读调用视图；没有原生账本时 usage 为 `None`，
-不得解释为零。worker 使用同一快照语义。无归属信息的旧账本 entry 不推断归属，已知迁移另行处理。
+不得解释为零。worker 使用同一快照语义。无归属信息的账本 entry 不推断归属。
 运行绑定来自执行调用实际持有的 Run 请求快照；命令和事件观察不通过 run_id 反查并推断请求归属。
-旧数据迁移不得把无法精确归属的 usage 重复计入多个目标，需保存可验证基线或明确拒绝不确定转换。
 
 ## 9. 观察、索引与 Host
 
@@ -339,38 +338,28 @@ TUI 在撤销成功后重载标准会话投影并恢复输入草稿；失败保�
 消息查询索引必须识别截断后同长度或更长的重写，覆盖跨 store reader 情形；不得仅按文件大小或固定短尾判断有效。
 压缩和上下文引用必须按保留消息可达性处理，不清空所有仍有效压缩，也不保留覆盖被撤回消息的摘要。
 
-## 10. 数据与接口迁移
+## 10. 数据与接口版本
 
-### MG-01：明确基线
+### DV-01：单一当前格式
 
-持久化模型、layout、SQLite schema、SDK 与 worker 协议按各自现有版本规则升级；不得靠默认字段吞掉旧格式。
-迁移必须可重入、在一致状态下读取源数据，全部必要数据成功后才推进完成标记，不破坏原始审计。
+开发阶段只支持当前格式，不提供旧布局、旧记录、旧插件状态、旧 API 的兼容或迁移路径。
+Session/Run/Message/Event 使用 schema 2，File layout 8，SQLite schema 6；各版本域独立校验。
+不支持或缺失的存储版本在读取边界明确拒绝，不扫描历史文件、补默认值或转换后重试。
+由用户清理失效测试数据或使用新目录，不在运行时自动删除 canonical 数据。
 
-已有会话以可验证的当前 Harness 建立迁移基线。基线之前的消息没有可证明的历史状态时，显式标记锚点不可用；
-不得为它们填入空状态或当前状态。此后新消息具有准确锚点，可以撤销回基线，但不能越过不可恢复边界。
-有活跃执行所有权的旧会话不能一边运行一边迁移，必须先按既有所有权机制静止。
+每条已提交消息具有准确 Harness 锚点，不构造旧消息的猜测基线。
+文件后端仍恢复当前格式已记录的提交决定，SQLite 仍使用事务；崩溃恢复不属于格式迁移。
 
-旧 plugin state、Run 绑定和 usage 的转换必须针对已知 schema 编写明确迁移。迁移结束后移除旧直接写路径，
-不长期保留旧私有文件/旧 controls 与新 Harness 的双读双写。
-
-EventRecord 使用 schema 2，File layout 8，SQLite schema 6。事件归属来自 Run 的不可变 history_epoch，
-原生提交事件与提交决定一起记录代次。已知旧事件在布局维护中一次性转换；文件未完成决定先按原日志偏移
-完成，再转换事件日志，不把格式转换嵌入普通事件读取。
-已知内置 owner 状态的维护入口为 `ouro session migrate-harness <session_id>`，支持 `--session-backend`。
-组合根租用当前插件 Catalog，在后台线程完成独占维护，不启动 Supervisor、任务调度、MCP 或模型调用。
-维护只处理当前可达检查点；保留原不可变版本。活动执行拒绝维护，已撤回代次的 Run 审计不构成活动所有权。
-
-### MG-02：恢复与插件可用性
+### DV-02：恢复与插件可用性
 
 恢复已保存 Harness 版本是原生存储操作，不调用插件 activate/deactivate、工具或业务初始化来重放效果。
 框架结构有效但 owner 插件暂时缺失时可以恢复原始状态；相关执行明确报告契约不可用，不静默丢弃状态或更换版本。
 正常加载仍使用现有 Catalog 和执行契约；Generation 资源按当前进程重新建立，不从快照恢复句柄。
 模型轮次准备也属于现有运行失败边界：契约检查失败必须结束该 Run，不能留下持续“准备上下文”的活动状态。
 
-不支持的 owner schema 保留为可诊断数据，业务读取/执行明确失败。若需要 schema 迁移，以明确迁移生成新版本并
-一致更新引用，不原地修改不可变历史快照，不把迁移回调塞进 undo 热路径。
+不支持的 owner schema 在业务读取/执行时明确拒绝，不转换状态、不改写不可变快照。
 
-### MG-03：已有会话生命周期
+### DV-03：已有会话生命周期
 
 导出/导入、回收站和 File/SQLite 转换必须保留当前状态、保留消息锚点所需快照、代次与必要去重事实。
 会话分支复用既有 copy/reset/reject：按该策略一致转换复制的状态版本和当前状态，并重映射 Session/版本引用。
@@ -417,7 +406,7 @@ reset 的 owner 状态不得通过分支内 undo 复活；reject 不得因新格
 | AC-12 | child 迟到交付被拒绝；child 审计保留；无关会话与插件实例继续工作 | QU-03 |
 | AC-13 | 附件、技能输入、插件伪用户来源与无参数 /undo 选择 | UN-04 |
 | AC-14 | Goal 撤销后真实 usage 不消失、恢复不重复计费、新目标不串账 | BI-02 |
-| AC-15 | 旧基线、未知 schema、插件缺失、迁移中断、分支/导出/跨后端转换 | MG-01/02/03 |
+| AC-15 | 不支持的版本、未知 owner schema、插件缺失、分支/导出/跨后端导入 | DV-01/02/03 |
 | AC-16 | 固定短后缀/长前缀、多 owner、大状态、无变化回调及只读并发的成本 | PF-01/02 |
 
 存储契约测试必须参数化覆盖 File/SQLite；插件交互契约必须覆盖 in-process/worker。
@@ -447,7 +436,7 @@ P 覆盖存储、Core 调用范围和历史执行/观察，未声明 POSIX 全�
 | AC-12 | [agents](../../tests/application/test_agents.py)、[undo_inputs](../../tests/application/test_undo_inputs.py) | F/S；IP | W |
 | AC-13 | [history_commands](../../tests/tui/test_history_commands.py)、[CLI history](../../tests/cli/test_interactive_attachments.py)、[undo_inputs](../../tests/application/test_undo_inputs.py) | F/S；IP | W |
 | AC-14 | [harness_usage](../../tests/application/test_harness_usage.py)、[Goal](../../tests/plugins/test_builtin_goal.py)、[worker usage](../../tests/plugins/test_worker_harness_usage.py) | F/S；IP/WK | W |
-| AC-15 | [harness_migration](../../tests/sessions/test_harness_migration.py)、[builtin migration](../../tests/plugins/test_builtin_harness_migration.py)、[harness_lifecycle](../../tests/sessions/test_harness_lifecycle.py)、[history_execution](../../tests/application/test_history_execution.py) | F/S；IP / 缺失插件 | W；存储与历史执行 P |
+| AC-15 | [data_versions](../../tests/sessions/test_data_versions.py)、[sqlite_transfer](../../tests/sessions/test_sqlite_transfer.py)、[harness_lifecycle](../../tests/sessions/test_harness_lifecycle.py)、[history_execution](../../tests/application/test_history_execution.py) | F/S；IP / 缺失插件 | W；存储与历史执行 P |
 | AC-16 | [成本对照](../benchmarks/results/harness-platform-comparison-2026-09-12.md)、[同步探针](../../tests/benchmarks/test_sqlite_sync.py) | F/S；原生多 owner | W/P |
 
 ### 恢复、平台和实际终端
@@ -466,8 +455,8 @@ M5 的 POSIX 集成组通过 257 项业务测试，另有 2 项原生同步探�
 - `PluginContext`、SDK 和 worker 不持有 Session Store writer；状态视图由 Host 绑定并随调用关闭。
 - Command、Controller、工具结果、Continuation 结算和队列消费把相互依赖的效果放入同一 `SessionCommit`。
   控制释放通过 `without_session_control` 准备队列变化，不再保留独立持久化取消入口。
-- Session controls 与 extension 读取均投影当前 Harness。显式迁移使用的状态写入端口也归入原生提交，
-  不存在另一份 extensions 状态真相；旧 history-cut 仅属于明确格式迁移。
+- Session controls 与 extension 读取均投影当前 Harness。状态写入统一通过原生提交，
+  不存在另一份 extensions 状态真相或历史格式写入端口。
 - 快照、分支和跨后端转移保留版本闭包与回执；恢复没有插件业务分支，undo 不增加文件系统事务。
 
 ### 恢复入口的补充验收
@@ -478,14 +467,16 @@ queued 尚无执行锁不能证明进程中断。控制会话选择只对 runnin
 
 ### 仓库质量门槛
 
-2026-09-12，Windows / Python 3.14.6，锁定依赖执行完整回归：**2695 项通过、4 项预期跳过**，
-覆盖率 **84.42%**，高于仓库 80% 门槛。通过命令为 `uv run pytest --cov=ouro --cov-report=term-missing`。
+2026-09-12，Windows / Python 3.14.6，锁定依赖的完整回归与定点复验共确认 **2685 项通过、4 项预期跳过**，
+覆盖率 **84.39%**，高于仓库 80% 门槛。完整回归为 2684 项通过、1 项失败、4 项跳过；
+唯一失败是 TUI 删除测试在目录移除后、目录投影刷新前进行断言。测试改为等待界面目录投影刷新后，
+该项定点复验通过；生产代码在完整回归后没有变化。完整回归使用 `pytest --cov=ouro --cov-report=term-missing`。
 跳过项包括两项 File 决定恢复故障点的 SQLite 参数（事务回滚由存储契约独立覆盖），以及两项本机不可用的
 符号链接场景。平台与后端范围以上述矩阵为准。
 
 `uv sync --frozen --all-groups`、`ruff check ouro tests`、`ruff format --check ouro tests`、`mypy ouro`、
-`python -m compileall -q ouro`、`uv build` 和 `git diff --check` 均通过；mypy 检查 298 个源文件，
-格式门槛覆盖 489 个 Python 文件。架构与 Core 聚焦门槛通过 202 项，包含在完整回归中，不重复合计。
+`python -m compileall -q ouro`、`uv build` 和 `git diff --check` 均通过；mypy 检查 293 个源文件，
+格式门槛覆盖 483 个 Python 文件。版本边界等聚焦回归通过 72 项，包含在完整回归中，不重复合计。
 
 Worker 取消/超时测试以握手确认调用已进入 worker，再触发取消和迟到回复，验证已关闭视图、跨会话隔离及
 worker 继续可用。TUI 异步测试等待实际持久化与菜单投影完成，保留防抖和最新草稿断言，不依赖固定 sleep

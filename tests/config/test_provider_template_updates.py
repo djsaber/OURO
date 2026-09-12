@@ -211,41 +211,21 @@ def test_template_update_keeps_configured_endpoint_id_mapping(tmp_path) -> None:
     assert renamed.provider.endpoint("new-alias").context_window == 300_000
 
 
-def test_first_update_adopts_legacy_provider_without_overwriting_ambiguous_values(
-    tmp_path,
-) -> None:
+def test_update_requires_template_provenance_without_rewriting_provider(tmp_path) -> None:
     manager = ProviderConfigManager(tmp_path)
     manager.create_provider(
-        "legacy",
-        provider_type="openai",
-        base_url="https://gateway.example.test/v1",
-        api_key_env="PRIVATE_KEY",
+        "manual", provider_type="openai", base_url="https://gateway.example.test/v1"
     )
-    manager.upsert_endpoint(
-        "legacy",
-        "primary",
-        model_id="user-model",
-        context_window=32_000,
-        make_default=True,
-    )
-    manager.upsert_endpoint("legacy", "unknown", model_id="unknown-model")
+    manager.upsert_endpoint("manual", "primary", model_id="user-model", make_default=True)
+    path = tmp_path / "config" / "config.json"
+    before = path.read_bytes()
 
-    result = manager.update_from_template(
-        _template(2, _endpoint("primary"), _endpoint("new")),
-        provider_id="legacy",
-    )
+    with pytest.raises(ConfigError, match="no template provenance"):
+        manager.update_from_template(
+            _template(2, _endpoint("primary"), _endpoint("new")), provider_id="manual"
+        )
 
-    assert result.adopted is True
-    assert result.from_revision is None
-    assert result.provider.base_url == "https://gateway.example.test/v1"
-    assert result.provider.credential_ref.display() == "env:PRIVATE_KEY"
-    assert result.provider.endpoint("primary").model_id == "user-model"
-    assert result.provider.endpoint("new") is not None
-    assert set(result.preserved_endpoints) == {"primary", "unknown"}
-
-    restored = ProviderConfigManager(tmp_path).get_provider("legacy")
-    assert restored is not None and restored.template is not None
-    assert restored.template.template_id == "openai"
+    assert path.read_bytes() == before
 
 
 def test_template_source_change_is_rejected_without_rewriting_provider(tmp_path) -> None:

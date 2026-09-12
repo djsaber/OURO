@@ -1005,7 +1005,7 @@ def _provider_template_update_notice(
     *,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> str:
-    mode = "preset adopted" if update.adopted else f"updated to r{update.to_revision}"
+    mode = f"updated to r{update.to_revision}"
     changes = (
         f"{len(update.added_endpoints)} added",
         f"{len(update.updated_endpoints)} updated",

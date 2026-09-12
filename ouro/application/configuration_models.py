@@ -102,9 +102,8 @@ class ProviderView(ApplicationDTO):
 
 class ProviderTemplateUpdateView(ApplicationDTO):
     template_id: str
-    from_revision: int | None = None
+    from_revision: int
     to_revision: int
-    adopted: bool = False
     changed: bool = False
     added_endpoints: list[str] = Field(default_factory=list)
     updated_endpoints: list[str] = Field(default_factory=list)

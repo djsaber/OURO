@@ -8,7 +8,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from ouro.core.base import new_id, utc_now
-from ouro.core.errors import MigrationRequiredError, PersistenceError
+from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.state import RunRecord, SessionRecord
@@ -153,11 +153,11 @@ class LocalSessionIndex:
                 raw_session,
                 label=f"session record {session_id}",
             )
-        except MigrationRequiredError as exc:
+        except UnsupportedDataVersionError as exc:
             return invalid_session_index_entry(
                 _json_object(raw_session),
                 fallback_session_id=session_id,
-                health="migration_required",
+                health="unsupported_version",
                 error=str(exc),
             )
         except (PersistenceError, ValidationError, ValueError) as exc:
@@ -169,10 +169,10 @@ class LocalSessionIndex:
 
         try:
             projection = self._load_projection(session_dir, session)
-        except MigrationRequiredError as exc:
+        except UnsupportedDataVersionError as exc:
             return catalog_entry_from_session(
                 session,
-                health="migration_required",
+                health="unsupported_version",
                 error_detail=str(exc),
             )
         except (FileNotFoundError, PersistenceError) as exc:
@@ -252,7 +252,9 @@ class LocalSessionIndex:
             session_id=session_dir.name,
             session_kind="primary",
             root_session_id=session_dir.name,
-            title=("Migration required" if health == "migration_required" else "Corrupt session"),
+            title=(
+                "Unsupported data version" if health == "unsupported_version" else "Corrupt session"
+            ),
             created_at=modified,
             updated_at=modified,
             last_activity_at=modified,

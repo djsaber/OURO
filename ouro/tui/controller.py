@@ -1939,8 +1939,6 @@ class TuiController:
         statuses: list[TuiSessionControlStatus] = []
         seen_labels: set[str] = set()
         for activation in self._runtime().session_control_activations(session_id):
-            if activation.phase != "active":
-                continue
             label = plugin_names.get(activation.plugin_id) or _session_control_fallback_label(
                 activation.plugin_id
             )

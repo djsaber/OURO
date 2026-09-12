@@ -17,13 +17,11 @@ from ouro.core.message_frames import MessageTruncation, retain_compactions
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.session_commits import (
-    HarnessMigration,
     HistoryBoundaryUnavailable,
     PreparedSessionCommit,
     SessionCommit,
     SessionCommitConflict,
     SessionCommitResult,
-    prepare_harness_migration,
     prepare_session_commit,
 )
 from ouro.core.state import SessionRecord
@@ -108,7 +106,7 @@ class FileSessionCommits:
             truncation, message_offset, removed_ids = self._locate_cut(request)
             version_id = truncation.first_removed.before_harness_version
             if version_id is None:
-                raise HistoryBoundaryUnavailable("message predates the recorded Harness baseline")
+                raise HistoryBoundaryUnavailable("message has no Harness checkpoint")
             restore = self.load_harness(session_id, version_id)
             existing = [
                 decode_versioned_record_json(CompactionRecord, line, label="compaction")
@@ -129,31 +127,6 @@ class FileSessionCommits:
             **prepared.model_dump(), message_offset=message_offset, event_offset=event_offset
         )
         self._validate_appends(directory, decision)
-        for version in decision.versions:
-            self.save_version(version)
-        write_model_atomic(directory / "commit.json", decision)
-        self.finish(session_id)
-        return decision.result
-
-    def migrate_harness(self, request: HarnessMigration) -> SessionCommitResult:
-        session_id = request.before.session_id
-        previous = self.load_result(session_id, request.operation_id)
-        if previous is not None:
-            if previous.request_digest != request.digest:
-                raise SessionCommitConflict("migration identity was reused for different effects")
-            return previous
-        directory = self.directory(session_id)
-        messages = tuple(
-            decode_versioned_record_json(MessageRecord, line, label="migration message")
-            for line in read_text_atomic(directory / "messages.jsonl").splitlines()
-            if line.strip()
-        )
-        prepared = prepare_harness_migration(request, self.load_session(session_id), messages)
-        decision = FileCommitDecision(
-            **prepared.model_dump(),
-            message_offset=0,
-            event_offset=(directory / "events.jsonl").stat().st_size,
-        )
         for version in decision.versions:
             self.save_version(version)
         write_model_atomic(directory / "commit.json", decision)

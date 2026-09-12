@@ -24,36 +24,7 @@ from ouro.core.approvals import SessionApprovalMode
 from ouro.core.compaction import CompactionCommandResult
 from ouro.core.errors import OuroError
 from ouro.deployment import SessionBackend
-from ouro.local_application import LocalApplication, build_local_session_services
-
-
-async def migrate_session_harness(
-    session_id: str,
-    *,
-    home: str | Path | None = None,
-    json_mode: bool = False,
-    session_backend: SessionBackend | None = None,
-) -> int:
-    application = LocalApplication.build(home, session_backend=session_backend)
-    try:
-        result = await application.migrate_session_harness(session_id)
-        if json_mode:
-            print(
-                json.dumps(
-                    {
-                        "status": "ok",
-                        "session_id": session_id,
-                        "changed": result is not None,
-                        "result": result.model_dump(mode="json") if result else None,
-                    },
-                    ensure_ascii=False,
-                )
-            )
-        else:
-            print("Harness state migrated." if result else "Harness state is already current.")
-        return 0
-    finally:
-        await application.close()
+from ouro.local_application import build_local_session_services
 
 
 def list_sessions(

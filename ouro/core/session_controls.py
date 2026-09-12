@@ -13,7 +13,7 @@ from ouro.core.message_semantics import SemanticTag
 SessionInputMode = Literal["follow_up", "steer"]
 SessionInputRole = MessageRole
 SessionControlAccess = Literal["exclusive", "shared"]
-SessionControlPhase = Literal["activating", "active", "deactivating", "failed"]
+SessionControlPhase = Literal["active"]
 SessionControlTransitionAction = Literal["acquire", "release", "replace"]
 
 _CONTROL_DOMAIN = re.compile(
@@ -296,7 +296,7 @@ class SessionControlActivation(OuroModel):
 
 
 class SessionControlState(OuroModel):
-    """Canonical Session projection for all active or transitioning controllers."""
+    """Canonical Session projection for committed active controllers."""
 
     revision: int = Field(default=0, ge=0)
     activations: list[SessionControlActivation] = Field(default_factory=list)
@@ -306,16 +306,9 @@ class SessionControlState(OuroModel):
         activation_ids = [item.activation_id for item in self.activations]
         if len(activation_ids) != len(set(activation_ids)):
             raise ValueError("duplicate session control activation id")
-        by_controller: dict[str, list[SessionControlActivation]] = {}
-        for activation in self.activations:
-            if activation.phase != "failed":
-                by_controller.setdefault(activation.controller_id, []).append(activation)
-        for controller_id, values in by_controller.items():
-            if len(values) == 1:
-                continue
-            phases = {item.phase for item in values}
-            if len(values) != 2 or phases != {"activating", "deactivating"}:
-                raise ValueError(f"duplicate active session controller identity: {controller_id}")
+        controller_ids = [item.controller_id for item in self.activations]
+        if len(controller_ids) != len(set(controller_ids)):
+            raise ValueError("duplicate active session controller identity")
         return self
 
 

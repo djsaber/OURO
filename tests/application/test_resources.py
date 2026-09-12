@@ -11,7 +11,6 @@ from ouro.application.resources import ResourceService
 from ouro.application.runs import RunLifecycle
 from ouro.application.sessions import SessionService
 from ouro.core.errors import (
-    MigrationRequiredError,
     PersistenceError,
     ResourceAttachmentError,
     ResourceIntegrityError,
@@ -19,6 +18,7 @@ from ouro.core.errors import (
     ResourceNotFoundError,
     SessionBusyError,
     UnsafeResourcePathError,
+    UnsupportedDataVersionError,
     UnsupportedMediaTypeError,
 )
 from ouro.core.messages import ImageContent, MessageRecord
@@ -78,7 +78,7 @@ def test_resource_store_rejects_record_without_explicit_schema_version(tmp_path)
     raw.pop("schema_version")
     record_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(MigrationRequiredError, match="found missing, expected 1"):
+    with pytest.raises(UnsupportedDataVersionError, match="found missing, expected 1"):
         resource_store.load_record(imported.resource.resource_id)
 
 

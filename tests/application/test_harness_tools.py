@@ -24,6 +24,7 @@ from ouro.sdk.plugins import v2 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.file_commits import FileSessionCommits
 from ouro.tools import ToolExecutionContext, ToolExecutor, ToolRegistry
+from tests.harness_state import replace_harness_state
 
 
 @pytest.fixture(params=["files", "sqlite"])
@@ -259,13 +260,14 @@ async def test_waiting_request_without_state_changes_still_checks_its_captured_v
     task = asyncio.create_task(app.run("wait", session_id=session.session_id))
     try:
         await asyncio.wait_for(entered.wait(), 5)
-        store.save_session_extension_state(
+        replace_harness_state(
+            store,
             SessionExtensionStateRecord(
                 session_id=session.session_id,
                 owner_id="example.wait",
                 state_schema_version=1,
                 payload="changed concurrently",
-            )
+            ),
         )
     finally:
         release.set()

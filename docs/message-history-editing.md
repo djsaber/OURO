@@ -34,7 +34,6 @@ snapshot、活动状态和消息点查携带同一 history_epoch。TUI 先过滤
 时重载标准 snapshot/live 交接。当前代次缺失消息仍是持久化错误，不通过吞掉异常掩盖。增量事件与终态快照
 遵守同一代次规则，重开会话不得恢复已撤销 Run 的“准备上下文”状态。
 
-旧数据迁移只建立可证明的 Harness 基线。基线前没有状态锚点的消息不能撤销；已知 owner schema 的维护
-使用 `ouro session migrate-harness <session_id>`，不在 undo 路径中猜测或修复旧格式。
+只支持当前数据格式；版本不符时明确拒绝。请使用新的数据目录或清理失效测试数据，框架不转换旧消息或插件状态。
 
 规范依据：[会话撤销与 Harness 状态规格](../dev/specs/OURO_会话撤销与Harness状态规格_2026-09-08.md)。

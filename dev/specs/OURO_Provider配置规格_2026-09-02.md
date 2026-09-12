@@ -183,10 +183,8 @@ Provider 级 `base_url`、`api_path`、模板凭据环境变量和默认 Endpoin
 才跟随新模板，否则保留用户值。`enabled`、timeout、retry、provider options 和 Provider id 始终归用户管理。
 Endpoint id/model、连接和凭据等本次 CLI 显式参数在合并后应用，并作为用户覆盖留待后续合并识别。
 
-旧版 OURO 创建的内置类型 Provider 没有 `template` 绑定，无法可靠还原旧模板。首次 update 执行保守接管：补充
-最新模板中缺失的 Endpoint，保留所有已有 Provider/Endpoint 值和未知 Endpoint，并从当前模板建立基线；之后
-进入正常三方合并。该行为明确牺牲首次更新时对“已有但已过期 Endpoint”的猜测性覆盖，以避免静默破坏用户
-配置。
+没有 `template` 绑定的 Provider 无法执行模板更新，不根据类型或端点名称接管已有配置。
+用户可显式从模板替换该 Provider，建立当前基线后再使用 update。
 
 模板已被删除或禁用、绑定模板来源发生 inline/custom 替换、Provider type/protocol 与模板不一致时，更新明确
 失败且 Provider 配置不变。每次成功更新返回新增、更新、删除、保留、冲突 Endpoint 及 Provider 字段的类型化

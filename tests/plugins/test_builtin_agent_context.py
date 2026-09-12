@@ -18,13 +18,10 @@ from ouro.builtin_plugins.agent_context.instructions import (
     AgentInstructionLoader,
     render_agent_instructions,
 )
-from ouro.builtin_plugins.migrations import migrate_builtin_plugin_state
 from ouro.cli.interactive_commands import handle_command
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.local_application import LocalApplication
-from ouro.plugins.models import BuiltinPluginActivationOverride
-from ouro.plugins.store import PluginPackageStore
 from ouro.providers import FauxProvider
 from ouro.sdk.plugins import v2 as sdk
 from ouro.sessions import LocalSessionStore
@@ -47,28 +44,6 @@ def test_agent_context_manifest_is_default_enabled_context_contract() -> None:
     assert manifest.permissions == []
     assert AGENT_CONTEXT_PLUGIN.default_enabled is True
     assert LOCAL_BUILTIN_PLUGINS.require(PLUGIN_ID) is AGENT_CONTEXT_PLUGIN
-
-
-def test_renamed_builtin_preserves_explicit_activation_choice(tmp_path: Path) -> None:
-    store = PluginPackageStore(tmp_path)
-    store.initialize()
-    store.mutate_state(
-        lambda state: state.model_copy(
-            update={
-                "builtin_activation_overrides": {
-                    "dev.ouro.system_information": BuiltinPluginActivationOverride(
-                        desired_enabled=False
-                    )
-                }
-            }
-        )
-    )
-
-    migrate_builtin_plugin_state(store)
-
-    overrides = store.read_state().builtin_activation_overrides
-    assert "dev.ouro.system_information" not in overrides
-    assert overrides[PLUGIN_ID].desired_enabled is False
 
 
 def test_system_information_is_tagged_prompt_tail_with_day_precision() -> None:

@@ -29,7 +29,7 @@ from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest, ToolInvocation
-from ouro.local_application import LocalApplication, migrate_builtin_harness_state
+from ouro.local_application import LocalApplication
 from ouro.plugins.api import ScopedPluginDataStore, adapt_sdk_contributions
 from ouro.plugins.harness_calls import invoke_plugin_callback
 from ouro.plugins.session_controllers import PluginSessionControllerRegistry
@@ -826,30 +826,3 @@ async def test_failed_self_replacement_keeps_goal_and_different_controller_relea
         .controller_local_id
         == "alternative"
     )
-
-
-async def test_migrated_goal_uses_the_current_controller_and_call_contract(goal_session):
-    g = goal_session
-    await g.tool("CreateGoal", {"objective": "Ship"})
-    current = g.store.load_session_extension_states(g.session.session_id)[0]
-    goal = current.payload["goal"]
-    del goal["goal_id"]
-    goal.update(tokens_used=0, revision=1, last_accounted_run_id=None)
-    g.store.save_session_extension_state(current.model_copy(update={"state_schema_version": 3}))
-    migrated = migrate_builtin_harness_state(
-        g.store,
-        g.session.session_id,
-        controllers=g.controllers,
-        usage_service=g.usage,
-    )
-    assert migrated is not None
-    identity = g.goal().goal_id
-    await g.command("pause")
-    await g.command("resume --token-budget 50")
-    assert g.goal().goal_id == identity
-    request = g.request()
-    g.record_usage(request, 5)
-    await g.tool("UpdateGoal", {"status": "complete", "report": "Checked"}, run=request)
-    assert g.goal().status == "complete"
-    result = await g.tool("GetGoal", {})
-    assert result.structured["goal"]["tokens_used"] == 5

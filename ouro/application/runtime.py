@@ -4104,12 +4104,9 @@ class RuntimeService:
                 "usage_scope": activation.usage_scope,
             }
             for activation in controls.activations
-            if activation.phase == "active"
         ]
         eligible_controller_ids: set[str] = set()
         for activation in controls.activations:
-            if activation.phase != "active":
-                continue
             try:
                 controller = (
                     catalog.session_controllers.get(activation.controller_id)
@@ -4246,7 +4243,6 @@ class RuntimeService:
             for activation in (
                 session_record or self.store.load_session_record(run.session_id)
             ).controls.activations
-            if activation.phase == "active"
         }
         controllers: list[RunContinuationControllerRef] = []
         for registration in self._continuations_for_run(run.run_id).registered():

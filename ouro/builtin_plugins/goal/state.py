@@ -96,7 +96,7 @@ class GoalStateRepository:
         if persisted is None:
             return SessionGoalState()
         if persisted.state_schema_version != _STATE_SCHEMA_VERSION:
-            raise ValueError("unsupported Goal state schema; explicit migration is required")
+            raise ValueError("unsupported Goal state schema")
         return SessionGoalState.from_json(persisted.payload)
 
     def control(self) -> PluginSessionControl | None:

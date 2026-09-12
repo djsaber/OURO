@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
-from contextlib import closing
-
 import pytest
 
 from ouro.core.agents import AgentDefinition, DelegationRecord
@@ -16,23 +13,7 @@ from ouro.sessions import (
     SQLiteSessionStore,
     import_sessions_to_sqlite,
 )
-
-
-def test_sqlite_v3_migration_builds_catalog_projection(tmp_path) -> None:
-    database = tmp_path / "ouro.db"
-    store = SQLiteSessionStore(database)
-    store.initialize()
-    session = SessionRecord(session_id="ses_v3", title="Migrated catalog")
-    store.create_session(session)
-    with closing(sqlite3.connect(database)) as connection:
-        connection.execute("UPDATE metadata SET value = '3' WHERE key = 'sqlite_schema_version'")
-        connection.execute("DROP TABLE session_catalog")
-        connection.commit()
-
-    migrated = SQLiteSessionStore(database)
-    migrated.initialize()
-
-    assert migrated.read_catalog().sessions[0].title == "Migrated catalog"
+from tests.harness_state import replace_harness_state
 
 
 def test_import_sessions_to_sqlite_is_exact_and_verified(tmp_path) -> None:
@@ -49,13 +30,14 @@ def test_import_sessions_to_sqlite_is_exact_and_verified(tmp_path) -> None:
     run = RunRecord(session_id=first.session_id, status="completed")
     reference = SessionResourceReference(resource_id="res_" + "c" * 64)
     source.create_session_snapshot(first, [message], [reference])
-    source.save_session_extension_state(
+    replace_harness_state(
+        source,
         SessionExtensionStateRecord(
             session_id=first.session_id,
             owner_id="dev.ouro.goal",
             state_schema_version=2,
             payload={"status": "active"},
-        )
+        ),
     )
     source.save_run(run)
     source.append_ordered_event(
@@ -67,12 +49,12 @@ def test_import_sessions_to_sqlite_is_exact_and_verified(tmp_path) -> None:
     )
     source.create_session(second)
     delegation = DelegationRecord(
-        idempotency_key="migration/delegation",
+        idempotency_key="transfer/delegation",
         root_session_id=first.session_id,
         parent_session_id=first.session_id,
         parent_run_id=run.run_id,
         agent_id="reader",
-        task_description="Verify migration",
+        task_description="Verify transfer",
         prompt_digest="sha256:" + "a" * 64,
         definition=AgentDefinition(
             agent_id="reader",

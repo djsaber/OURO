@@ -86,7 +86,7 @@ class HarnessInvocation:
         self._controls = tuple(
             item.model_copy(deep=True)
             for item in snapshot.state.controls.activations
-            if item.plugin_id == owner_id and item.phase == "active"
+            if item.plugin_id == owner_id
         )
         self._writable = writable
         self._run_controls = tuple(

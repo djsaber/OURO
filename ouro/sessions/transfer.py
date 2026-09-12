@@ -38,7 +38,7 @@ def import_sessions_to_sqlite(
     report = SQLiteImportReport()
 
     try:
-        with target.session_mutation("migration"):
+        with target.session_mutation("import"):
             if target.list_sessions():
                 raise PersistenceError("SQLite import target must contain no active sessions")
 

@@ -181,7 +181,6 @@ def test_provider_update_json_exposes_safe_template_merge_report(tmp_path, capsy
         "template_id": "openai",
         "from_revision": revision,
         "to_revision": revision,
-        "adopted": False,
         "changed": False,
         "added_endpoints": [],
         "updated_endpoints": [],

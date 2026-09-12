@@ -5,7 +5,7 @@ import re
 import sqlite3
 import threading
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, ExitStack, contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
@@ -18,9 +18,9 @@ from ouro.core.compaction import CompactionRecord
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.errors import (
     DelegationRevisionConflictError,
-    MigrationRequiredError,
     PersistenceError,
     ResourceNotFoundError,
+    UnsupportedDataVersionError,
 )
 from ouro.core.events import MODEL_STREAM_DELTA_EVENT_TYPES, EventRecord
 from ouro.core.harness import HarnessState, HarnessVersion
@@ -29,7 +29,6 @@ from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.resources import SessionResourceReference
 from ouro.core.session_commits import (
-    HarnessMigration,
     SessionCommit,
     SessionCommitConflict,
     SessionCommitResult,
@@ -48,12 +47,6 @@ from ouro.sessions.catalog import (
     catalog_entry_from_projection,
     catalog_entry_from_session,
     sort_catalog_entries,
-)
-from ouro.sessions.event_migration import migrate_event_journal, migrate_result_events
-from ouro.sessions.harness_migration import (
-    migrate_message_record,
-    migrate_run_record,
-    migrate_session_record,
 )
 from ouro.sessions.index import SessionIndex, SessionIndexEntry, invalid_session_index_entry
 from ouro.sessions.locks import SessionRunLock
@@ -75,13 +68,33 @@ class SQLiteSessionStore:
         self.database.parent.mkdir(parents=True, exist_ok=True)
         self._locks_dir.mkdir(parents=True, exist_ok=True)
         connection: sqlite3.Connection | None = None
-        migration_locks = ExitStack()
         try:
             connection = self._connect()
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            existing = None
+            if tables:
+                if "metadata" not in tables:
+                    raise UnsupportedDataVersionError(
+                        f"SQLite store has no format version: {self.database}"
+                    )
+                existing = connection.execute(
+                    "SELECT value FROM metadata WHERE key = 'sqlite_schema_version'"
+                ).fetchone()
+                if existing is None or existing[0] != str(SQLITE_SCHEMA_VERSION):
+                    found = existing[0] if existing is not None else "missing"
+                    raise UnsupportedDataVersionError(
+                        f"unsupported OURO SQLite schema at {self.database}: "
+                        f"found {found}, expected {SQLITE_SCHEMA_VERSION}; "
+                        "use a new database or remove obsolete development data"
+                    )
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = FULL")
             connection.executescript(
                 """
+                    BEGIN IMMEDIATE;
                     CREATE TABLE IF NOT EXISTS metadata (
                         key TEXT PRIMARY KEY,
                         value TEXT NOT NULL
@@ -199,42 +212,13 @@ class SQLiteSessionStore:
                         ON delegations(delivery_status);
                 """
             )
-            existing = connection.execute(
-                "SELECT value FROM metadata WHERE key = 'sqlite_schema_version'"
-            ).fetchone()
-            rebuild_catalog = False
             if existing is None:
                 connection.execute(
                     "INSERT INTO metadata(key, value) VALUES('sqlite_schema_version', ?)",
                     (str(SQLITE_SCHEMA_VERSION),),
                 )
-            elif int(existing[0]) in {1, 2, 3, 4, 5}:
-                connection.execute("BEGIN IMMEDIATE")
-                if int(existing[0]) < 5:
-                    self._migrate_harness(connection, migration_locks)
-                else:
-                    for (session_id,) in connection.execute("SELECT session_id FROM sessions"):
-                        lock = self.acquire_session_lock(session_id, "event_migration")
-                        if lock is None:
-                            raise MigrationRequiredError(
-                                "stop active Sessions before migrating event history"
-                            )
-                        migration_locks.callback(lock.release)
-                self._migrate_events(connection)
-                connection.execute(
-                    "UPDATE metadata SET value = ? WHERE key = 'sqlite_schema_version'",
-                    (str(SQLITE_SCHEMA_VERSION),),
-                )
-                rebuild_catalog = True
-            elif int(existing[0]) != SQLITE_SCHEMA_VERSION:
-                raise MigrationRequiredError(
-                    "OURO SQLite migration required: "
-                    f"found {existing[0]}, expected {SQLITE_SCHEMA_VERSION}"
-                )
-            if rebuild_catalog:
-                self._replace_catalog(connection, self._scan_catalog(connection))
             connection.commit()
-        except MigrationRequiredError:
+        except UnsupportedDataVersionError:
             if connection is not None:
                 connection.rollback()
             raise
@@ -247,103 +231,6 @@ class SQLiteSessionStore:
         finally:
             if connection is not None:
                 connection.close()
-            migration_locks.close()
-
-    def _migrate_events(self, connection: sqlite3.Connection) -> None:
-        for (session_id,) in connection.execute("SELECT session_id FROM sessions").fetchall():
-            run_epochs = {
-                run.run_id: run.history_epoch
-                for run in self._load_models(
-                    connection,
-                    "SELECT payload FROM runs WHERE session_id = ?",
-                    (session_id,),
-                    RunRecord,
-                )
-            }
-            events = migrate_event_journal(
-                [
-                    row[0]
-                    for row in connection.execute(
-                        "SELECT payload FROM events WHERE session_id = ? ORDER BY sequence",
-                        (session_id,),
-                    )
-                ],
-                run_epochs,
-            )
-            connection.executemany(
-                "UPDATE events SET payload = ? WHERE session_id = ? AND event_id = ?",
-                [(event.model_dump_json(), session_id, event.event_id) for event in events],
-            )
-            for operation_id, payload in connection.execute(
-                "SELECT operation_id, payload FROM session_commits WHERE session_id = ?",
-                (session_id,),
-            ).fetchall():
-                raw = json.loads(payload)
-                migrate_result_events(raw, run_epochs)
-                connection.execute(
-                    "UPDATE session_commits SET payload = ? "
-                    "WHERE session_id = ? AND operation_id = ?",
-                    (json.dumps(raw, ensure_ascii=False), session_id, operation_id),
-                )
-
-    def _migrate_harness(self, connection: sqlite3.Connection, locks: ExitStack) -> None:
-        commits = SQLiteSessionCommits(connection)
-        has_legacy_states = (
-            connection.execute(
-                "SELECT 1 FROM sqlite_master "
-                "WHERE type = 'table' AND name = 'session_extension_states'"
-            ).fetchone()
-            is not None
-        )
-        for session_id, payload in connection.execute(
-            "SELECT session_id, payload FROM sessions"
-        ).fetchall():
-            lock = self.acquire_session_lock(session_id, "harness_migration")
-            if lock is None:
-                raise MigrationRequiredError("stop active Sessions before migrating Harness state")
-            # Ownership is retained until the entire migration transaction ends.
-            locks.callback(lock.release)
-            states = []
-            if has_legacy_states:
-                states = self._load_models(
-                    connection,
-                    "SELECT payload FROM session_extension_states "
-                    "WHERE session_id = ? ORDER BY owner_id",
-                    (session_id,),
-                    SessionExtensionStateRecord,
-                )
-            session, baseline = migrate_session_record(payload, states)
-            if session.session_id != session_id:
-                raise PersistenceError("legacy Session has a foreign identity")
-            if baseline is not None:
-                commits.save_version(baseline)
-            else:
-                commits.load_harness(session_id, session.harness_version)
-            for row_id, message_payload in connection.execute(
-                "SELECT row_id, payload FROM messages WHERE session_id = ?", (session_id,)
-            ).fetchall():
-                message = migrate_message_record(message_payload)
-                if message.session_id != session_id:
-                    raise PersistenceError("legacy message belongs to another Session")
-                connection.execute(
-                    "UPDATE messages SET payload = ? WHERE row_id = ?",
-                    (message.model_dump_json(), row_id),
-                )
-            for run_id, run_payload in connection.execute(
-                "SELECT run_id, payload FROM runs WHERE session_id = ?", (session_id,)
-            ).fetchall():
-                run = migrate_run_record(run_payload)
-                if run.session_id != session_id:
-                    raise PersistenceError("legacy Run belongs to another Session")
-                connection.execute(
-                    "UPDATE runs SET payload = ? WHERE session_id = ? AND run_id = ?",
-                    (run.model_dump_json(), session_id, run_id),
-                )
-            connection.execute(
-                "UPDATE sessions SET payload = ? WHERE session_id = ?",
-                (session.model_dump_json(exclude={"controls"}), session_id),
-            )
-        connection.execute("DROP TABLE IF EXISTS session_extension_states")
 
     def create_session(self, session: SessionRecord) -> None:
         self.create_session_snapshot(session, [])
@@ -711,10 +598,6 @@ class SQLiteSessionStore:
         with self._read_connection() as connection:
             self._require_session(connection, session_id)
             return SQLiteSessionCommits(connection).load_result(session_id, operation_id)
-
-    def migrate_harness(self, request: HarnessMigration) -> SessionCommitResult:
-        with self.session_mutation(request.before.session_id):
-            return SQLiteSessionCommits(self._transaction_connection()).migrate_harness(request)
 
     def commit_session(self, request: SessionCommit) -> SessionCommitResult:
         with self.session_mutation(request.before.session_id):
@@ -1132,45 +1015,6 @@ class SQLiteSessionStore:
     def load_session_extension_states(self, session_id: str) -> list[SessionExtensionStateRecord]:
         return list(self.load_harness(session_id).state.states)
 
-    def save_session_extension_state(self, state: SessionExtensionStateRecord) -> None:
-        with self.session_mutation(state.session_id):
-            current = self.load_session_record(state.session_id)
-            harness = self.load_harness(state.session_id).state
-            states = {item.owner_id: item for item in harness.states}
-            states[state.owner_id] = state
-            self.commit_session(
-                SessionCommit(
-                    before=current,
-                    steps=(
-                        SessionCommitStep(
-                            harness=HarnessState(
-                                controls=harness.controls, states=tuple(states.values())
-                            )
-                        ),
-                    ),
-                )
-            )
-
-    def delete_session_extension_state(self, session_id: str, owner_id: str) -> None:
-        with self.session_mutation(session_id):
-            current = self.load_session_record(session_id)
-            harness = self.load_harness(session_id).state
-            self.commit_session(
-                SessionCommit(
-                    before=current,
-                    steps=(
-                        SessionCommitStep(
-                            harness=HarnessState(
-                                controls=harness.controls,
-                                states=tuple(
-                                    item for item in harness.states if item.owner_id != owner_id
-                                ),
-                            )
-                        ),
-                    ),
-                )
-            )
-
     def refresh_catalog(
         self,
         session_id: str,
@@ -1286,12 +1130,12 @@ class SQLiteSessionStore:
                     row[1],
                     f"session {session_id}",
                 )
-            except MigrationRequiredError as exc:
+            except UnsupportedDataVersionError as exc:
                 entries.append(
                     invalid_session_index_entry(
                         _json_object(row[1]),
                         fallback_session_id=session_id,
-                        health="migration_required",
+                        health="unsupported_version",
                         error=str(exc),
                     )
                 )
@@ -1324,11 +1168,11 @@ class SQLiteSessionStore:
                         f"latest Run for catalog {session_id}",
                     )
                 )
-            except MigrationRequiredError as exc:
+            except UnsupportedDataVersionError as exc:
                 entries.append(
                     catalog_entry_from_session(
                         session,
-                        health="migration_required",
+                        health="unsupported_version",
                         error_detail=str(exc),
                     )
                 )

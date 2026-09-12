@@ -5317,17 +5317,17 @@ async def test_history_load_keeps_the_active_tool_batch_in_live_rows(tmp_path: P
         assert row._frame != frame
 
 
-def test_history_recovers_legacy_tool_timing_from_message_boundaries() -> None:
+def test_history_does_not_infer_tool_execution_timing_from_message_boundaries() -> None:
     started_at = datetime(2026, 8, 26, 10, 0, tzinfo=UTC)
-    call_id = "legacy_call"
+    call_id = "untimed_call"
     request = MessageRecord(
-        session_id="ses_legacy_tools",
+        session_id="ses_untimed_tools",
         role="assistant",
         created_at=started_at,
         tool_calls=[ToolCallRequest(id=call_id, name="read")],
     )
     result = MessageRecord(
-        session_id="ses_legacy_tools",
+        session_id="ses_untimed_tools",
         role="tool_result",
         created_at=started_at + timedelta(seconds=4),
         tool_result=ToolResultReference(tool_call_id=call_id, tool_name="read"),
@@ -5335,8 +5335,8 @@ def test_history_recovers_legacy_tool_timing_from_message_boundaries() -> None:
 
     activity = _tool_activities_from_messages((request, result))[call_id]
 
-    assert activity.started_at == started_at
-    assert activity.ended_at == started_at + timedelta(seconds=4)
+    assert activity.started_at is None
+    assert activity.ended_at is None
 
 
 @pytest.mark.asyncio
@@ -6829,11 +6829,12 @@ async def test_delete_session_menu_force_deletes_catalog_error_and_quits_cleanly
         )
         await pilot.press("down", "enter")
         await _wait_until(
-            lambda: not session_dir.exists(),
+            lambda: not app._sessions,
             pilot,
-            description="catalog-error Session deletion",
+            description="deleted Session catalog projection",
         )
 
+        assert not session_dir.exists()
         assert application.runtime.sessions.catalog().entries == ()
         assert not list(app.query("Toast"))
 

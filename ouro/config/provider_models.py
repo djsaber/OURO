@@ -383,9 +383,8 @@ class ProviderTemplateUpdateResult(OuroModel):
 
     provider: ProviderConfig
     template_id: str
-    from_revision: int | None = None
+    from_revision: int
     to_revision: int
-    adopted: bool = False
     changed: bool = False
     added_endpoints: tuple[str, ...] = ()
     updated_endpoints: tuple[str, ...] = ()

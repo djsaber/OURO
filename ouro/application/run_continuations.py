@@ -472,7 +472,6 @@ class RunContinuationService:
                 elif controller_ref.activation_id is not None and not any(
                     item.activation_id == controller_ref.activation_id
                     and item.controller_id == controller_ref.active_when_controller_id
-                    and item.phase == "active"
                     for item in before.controls.activations
                 ):
                     action, reason = "pause", "session_control_released"
@@ -589,9 +588,7 @@ class RunContinuationService:
                 return RunContinuationSettlement(run=latest)
             failed_ids = {(failure.plugin_id, failure.policy_id) for failure in failures}
             current = {
-                (item.controller_id, item.activation_id)
-                for item in before.controls.activations
-                if item.phase == "active"
+                (item.controller_id, item.activation_id) for item in before.controls.activations
             }
             released = {
                 controller.activation_id
@@ -666,9 +663,7 @@ class RunContinuationService:
     ) -> tuple[RunContinuationControllerRef, ...]:
         session = self.store.load_session_record(session_id)
         current = {
-            (item.controller_id, item.activation_id)
-            for item in session.controls.activations
-            if item.phase == "active"
+            (item.controller_id, item.activation_id) for item in session.controls.activations
         }
         return tuple(
             controller

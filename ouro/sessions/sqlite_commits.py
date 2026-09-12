@@ -9,12 +9,10 @@ from ouro.core.message_frames import MessageTruncation, retain_compactions
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.session_commits import (
-    HarnessMigration,
     HistoryBoundaryUnavailable,
     SessionCommit,
     SessionCommitConflict,
     SessionCommitResult,
-    prepare_harness_migration,
     prepare_session_commit,
 )
 from ouro.core.state import SessionRecord
@@ -82,37 +80,6 @@ class SQLiteSessionCommits:
             (result.session.session_id, result.operation_id, result.model_dump_json()),
         )
 
-    def migrate_harness(self, request: HarnessMigration) -> SessionCommitResult:
-        session_id = request.before.session_id
-        previous = self.load_result(session_id, request.operation_id)
-        if previous is not None:
-            if previous.request_digest != request.digest:
-                raise SessionCommitConflict("migration identity was reused for different effects")
-            return previous
-        connection = self.connection
-        messages = tuple(
-            decode_versioned_record_json(MessageRecord, row[0], label="migration message")
-            for row in connection.execute(
-                "SELECT payload FROM messages WHERE session_id = ? ORDER BY row_id", (session_id,)
-            )
-        )
-        decision = prepare_harness_migration(request, self.load_session(session_id), messages)
-        for version in decision.versions:
-            self.save_version(version)
-        for message in decision.result.messages:
-            connection.execute(
-                "UPDATE messages SET payload = ? WHERE session_id = ? AND message_id = ?",
-                (message.model_dump_json(), session_id, message.message_id),
-            )
-        result = decision.result
-        connection.execute("DELETE FROM latest_contexts WHERE session_id = ?", (session_id,))
-        connection.execute(
-            "UPDATE sessions SET payload = ? WHERE session_id = ?",
-            (result.session.model_dump_json(exclude={"controls"}), session_id),
-        )
-        self.save_result(result)
-        return result
-
     def commit(self, request: SessionCommit) -> SessionCommitResult:
         request = SessionCommit.model_validate(request.model_dump(mode="json"))
         session_id = request.before.session_id
@@ -143,7 +110,7 @@ class SQLiteSessionCommits:
             cut_row = row[0]
             first = decode_versioned_record_json(MessageRecord, row[1], label="history boundary")
             if first.before_harness_version is None:
-                raise HistoryBoundaryUnavailable("message predates the recorded Harness baseline")
+                raise HistoryBoundaryUnavailable("message has no Harness checkpoint")
             restore = self.load_harness(session_id, first.before_harness_version)
             previous_row = connection.execute(
                 "SELECT payload FROM messages WHERE session_id = ? AND row_id < ? "

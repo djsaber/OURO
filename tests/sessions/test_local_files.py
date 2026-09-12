@@ -7,7 +7,7 @@ import ouro.sessions.local_files as local_files_module
 from ouro.application.session_recovery import SessionRecoveryService
 from ouro.core.approvals import ApprovalRecord
 from ouro.core.base import utc_now
-from ouro.core.errors import MigrationRequiredError, PersistenceError
+from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.state import RunRecord, SessionRecord
@@ -1040,6 +1040,7 @@ def test_recovery_does_not_duplicate_a_committed_current_tool_round(tmp_path) ->
         session_id=session.session_id,
         run_id=run.run_id,
         role="assistant",
+        turn_id="turn_1",
         text="calling",
         sequence=2,
     ).model_copy(update={"tool_calls": [ToolCallRequest(id="call_1", name="Read")]})
@@ -1048,6 +1049,7 @@ def test_recovery_does_not_duplicate_a_committed_current_tool_round(tmp_path) ->
         EventRecord(
             session_id=session.session_id,
             run_id=run.run_id,
+            turn_id="turn_1",
             event_type="model_request_started",
             sequence=1,
         )
@@ -1056,6 +1058,7 @@ def test_recovery_does_not_duplicate_a_committed_current_tool_round(tmp_path) ->
         EventRecord(
             session_id=session.session_id,
             run_id=run.run_id,
+            turn_id="turn_1",
             event_type="model_text_delta",
             sequence=2,
             payload={"text": "calling"},
@@ -1066,6 +1069,7 @@ def test_recovery_does_not_duplicate_a_committed_current_tool_round(tmp_path) ->
         EventRecord(
             session_id=session.session_id,
             run_id=run.run_id,
+            turn_id="turn_1",
             event_type="tool_call_requested",
             sequence=3,
         )
@@ -1296,7 +1300,7 @@ def test_store_rejects_incompatible_data_layout_without_modifying_manifest(tmp_p
     )
     before = layout_path.read_bytes()
 
-    with pytest.raises(MigrationRequiredError, match="found 999, expected 8"):
+    with pytest.raises(UnsupportedDataVersionError, match="found 999, expected 8"):
         LocalSessionStore(tmp_path).initialize()
 
     assert layout_path.read_bytes() == before
@@ -1310,68 +1314,5 @@ def test_store_rejects_data_from_before_typed_tool_messages(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(MigrationRequiredError, match="found 2, expected 8"):
+    with pytest.raises(UnsupportedDataVersionError, match="found 2, expected 8"):
         LocalSessionStore(tmp_path).initialize()
-
-
-@pytest.mark.parametrize("source_version", (3, 4))
-def test_store_migrates_extension_state_layout(
-    tmp_path,
-    source_version: int,
-) -> None:
-    store = LocalSessionStore(tmp_path)
-    store.initialize()
-    session = SessionRecord(title="Existing Session")
-    store.create_session(session)
-    extension_dir = store.sessions_dir / session.session_id / "extensions"
-    raw = session.model_dump(mode="json", exclude={"harness_version", "history_epoch"})
-    raw["schema_version"] = 1
-    (extension_dir.parent / "session.json").write_text(json.dumps(raw), encoding="utf-8")
-    (tmp_path / "layout.json").write_text(
-        json.dumps(
-            {
-                "data_layout_version": source_version,
-                "created_at": "2026-01-01T00:00:00Z",
-                "updated_at": "2026-01-01T00:00:00Z",
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    migrated = LocalSessionStore(tmp_path)
-    migrated.initialize()
-
-    assert migrated.load_session_extension_states(session.session_id) == []
-    assert (
-        json.loads((tmp_path / "layout.json").read_text(encoding="utf-8"))["data_layout_version"]
-        == 8
-    )
-    assert not (extension_dir / "index.json").exists()
-    assert migrated.load_harness(session.session_id).version_id == "harness_baseline"
-
-
-def test_store_migrates_v5_by_discarding_transcript_catalog(tmp_path) -> None:
-    store = LocalSessionStore(tmp_path)
-    store.initialize()
-    session = SessionRecord(title="Bounded catalog")
-    store.create_session(session)
-    (tmp_path / "layout.json").write_text(
-        json.dumps(
-            {
-                "data_layout_version": 5,
-                "created_at": "2026-01-01T00:00:00Z",
-                "updated_at": "2026-01-01T00:00:00Z",
-            }
-        ),
-        encoding="utf-8",
-    )
-    store._catalog.index_path.write_text(
-        '{"data_layout_version":5,"sessions":[{"search_text":"full transcript"}]}',
-        encoding="utf-8",
-    )
-
-    migrated = LocalSessionStore(tmp_path)
-    migrated.initialize()
-
-    assert migrated.read_catalog().sessions[0].title == "Bounded catalog"
-    assert "full transcript" not in migrated._catalog.index_path.read_text(encoding="utf-8")
