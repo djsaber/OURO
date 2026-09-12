@@ -582,24 +582,6 @@ class QueuedInputQueue:
             metadata.pop(QUEUED_INPUTS_KEY, None)
         return session.model_copy(update={"metadata": metadata}), tuple(cancelled)
 
-    def cancel_for_session_control(
-        self,
-        *,
-        session_id: str,
-        controller_id: str,
-        activation_id: str,
-    ) -> tuple[str, ...]:
-        with self.store.session_mutation(session_id):
-            latest = self.store.load_session_record(session_id)
-            updated, cancelled = self.without_session_control(
-                latest,
-                controller_id=controller_id,
-                activation_id=activation_id,
-            )
-            if cancelled:
-                self.store.save_session(updated)
-        return cancelled
-
     def without_session_control(
         self,
         session: SessionRecord,

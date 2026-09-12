@@ -38,8 +38,9 @@ def test_interactive_command_afk_flag_passes_policy_pair_to_host(monkeypatch, tm
         approval_mode,
         interaction_mode,
         session_backend=None,
+        task_backend=None,
     ) -> int:
-        del home, system_prompt, session_backend
+        del home, system_prompt, session_backend, task_backend
         calls.append((approval_mode, interaction_mode))
         return 0
 

@@ -23,7 +23,7 @@ from ouro.core.events import EventRecord
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.core.session_controls import AttributedSessionInput, AttributedSessionInputBatch
-from ouro.core.state import SessionRecord
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolInvocation
 from ouro.local_application import LocalApplication
 from ouro.mcp import MCPServerConfigUpdate
@@ -137,6 +137,9 @@ async def test_controller_detaches_event_sink_when_shared_application_stays_open
     )
     await controller.start()
     session = application.runtime.sessions.create(title="Shared runtime").session
+    application.runtime.store.save_run(
+        RunRecord(run_id="run_shared", session_id=session.session_id)
+    )
     await controller.load_session(session.session_id)
 
     try:

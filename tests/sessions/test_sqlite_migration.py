@@ -25,9 +25,7 @@ def test_sqlite_v3_migration_builds_catalog_projection(tmp_path) -> None:
     session = SessionRecord(session_id="ses_v3", title="Migrated catalog")
     store.create_session(session)
     with closing(sqlite3.connect(database)) as connection:
-        connection.execute(
-            "UPDATE metadata SET value = '3' WHERE key = 'sqlite_schema_version'"
-        )
+        connection.execute("UPDATE metadata SET value = '3' WHERE key = 'sqlite_schema_version'")
         connection.execute("DROP TABLE session_catalog")
         connection.commit()
 

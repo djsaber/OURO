@@ -17,6 +17,7 @@ from ouro.sdk.plugins.v2 import JsonValue
 
 InputFunc = Callable[[str], str]
 
+
 class PlanConfirmationControl(Enum):
     ABORT = "abort"
     EOF = "eof"

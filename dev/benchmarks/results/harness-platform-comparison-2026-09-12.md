@@ -80,6 +80,16 @@ Linux SQLite 的状态捕获阶段有固定 8 字节进程写入，M4/M5 一致�
 POSIX 业务回归 257 项通过：存储 183、核心 Harness 调用 12、历史观察/事件跟随/撤销执行 62。
 覆盖文件决定写入失败、部分提交恢复、迁移重入、历史截断、独立 reader 和跨后端生命周期。
 原生同步探针在 Windows、Linux 各 2 项通过，验证实际持久提交、只读及测量异常后的清理。
-Linux 测试命令和 M5 验收映射见 [实施计划](../../plans/OURO_会话撤销与Harness状态实施计划_2026-09-08.md)。
+在 Linux ext4 源码目录中使用锁定依赖执行：
+
+```bash
+python -m pytest tests/sessions tests/core/test_harness_calls.py \
+  tests/application/test_history_observation.py \
+  tests/application/test_session_event_following.py \
+  tests/application/test_history_execution.py -q
+python -m pytest tests/benchmarks/test_sqlite_sync.py -q
+```
+
+完整验收映射见[会话撤销与 Harness 规格](../../specs/OURO_会话撤销与Harness状态规格_2026-09-08.md#13-验收证据索引)。
 
 这些证据完成 M5 性能与 POSIX 文件恢复验收；不代表物理掉电测试、所有 POSIX 系统或 M6 全仓库验收。

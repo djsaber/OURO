@@ -42,7 +42,7 @@ def _strategy(handler):
                     handler=handler,
                 )
             ]
-        )
+        ),
     )
     return contributions.compaction_strategies[0]
 

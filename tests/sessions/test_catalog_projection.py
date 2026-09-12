@@ -270,14 +270,10 @@ def test_sqlite_catalog_read_uses_only_projection_rows(
     catalog_selects = [
         statement
         for statement in statements
-        if statement.lstrip().upper().startswith(
-            "SELECT PAYLOAD, SESSION_ID FROM SESSION_CATALOG"
-        )
+        if statement.lstrip().upper().startswith("SELECT PAYLOAD, SESSION_ID FROM SESSION_CATALOG")
     ]
     canonical_selects = [
-        statement
-        for statement in statements
-        if "FROM SESSIONS S" in statement.upper()
+        statement for statement in statements if "FROM SESSIONS S" in statement.upper()
     ]
     assert len(catalog.sessions) == 25
     assert len(catalog_selects) == 1

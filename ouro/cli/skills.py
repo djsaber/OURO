@@ -100,8 +100,7 @@ def show_skill(
     skill = loaded.skill
     lines = [
         f"Skill: {skill.name}",
-        "Source: "
-        + ("plugin" if skill.source == "plugin" else f"{skill.origin}.{skill.source}"),
+        "Source: " + ("plugin" if skill.source == "plugin" else f"{skill.origin}.{skill.source}"),
         f"Enabled: {'yes' if skill.enabled else 'no'}",
         f"Location: {skill.location}",
     ]

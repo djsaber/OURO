@@ -225,11 +225,11 @@ def _process_is_running(process_id: int) -> bool:
         result = subprocess.run(
             ["tasklist", "/FI", f"PID eq {process_id}", "/FO", "CSV", "/NH"],
             capture_output=True,
-            text=True,
             timeout=2,
             check=False,
         )
-        return f'"{process_id}"' in result.stdout
+        # PID matching is ASCII; localized tasklist diagnostics need no decoding.
+        return f'"{process_id}"'.encode("ascii") in result.stdout
     try:
         os.kill(process_id, 0)
     except ProcessLookupError:

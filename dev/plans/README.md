@@ -1,6 +1,6 @@
 # OURO 规划索引
 
-> 索引基线：2026-09-08
+> 索引基线：2026-09-12
 
 本目录只保存尚需执行或验证的规划。已实现行为直接写入现行规格，发布变化写入 `CHANGELOG.md`；
 不为已完成工作保留与规格重复的 checklist、逐步实施记录或“旧方案改为新方案”说明。
@@ -9,7 +9,6 @@
 
 | 规划 | 范围 | 关键前置 |
 |---|---|---|
-| [会话撤销与 Harness 状态实施计划](OURO_会话撤销与Harness状态实施计划_2026-09-08.md) | 本次原生状态、插件交互、精确撤销与恢复；待实施 | [设计与核心哲学](../../docs/OURO_会话撤销与Harness状态设计_2026-09-08.md)、[目标规格](../specs/OURO_会话撤销与Harness状态规格_2026-09-08.md) |
 | [桌面 Host](OURO_桌面Host规划_2026-09-02.md) | 本地桌面会话、运行、资源、diff、设置与发布 | Application services/DTO、RuntimeSupervisor、ResourceService |
 | [高级智能体能力](OURO_高级智能体能力规划_2026-09-02.md) | 长期记忆、Durable Task/Workflow 及其与 Goal/Delegation 的组合 | 当前 Session/Run、Context、资源、子智能体和 Host 控制面 |
 | [性能优化](OURO_性能优化规划_2026-09-02.md) | 真实终端验收、长历史分页、Context/Compaction 与资源投影 | 当前性能规格与可重复测量证据 |

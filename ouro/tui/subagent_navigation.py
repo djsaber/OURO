@@ -111,9 +111,7 @@ class SubagentNavigationPanel(Static):
         self._refresh_content()
 
     def set_current_session(self, session_id: str | None) -> None:
-        selected_session_id = (
-            self._selected_session_id if self._navigation_active else session_id
-        )
+        selected_session_id = self._selected_session_id if self._navigation_active else session_id
         if (
             session_id == self._current_session_id
             and selected_session_id == self._selected_session_id

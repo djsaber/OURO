@@ -57,9 +57,7 @@ def test_template_update_merges_managed_values_and_preserves_user_ownership(
         _endpoint("removed-custom"),
     )
     manager.create_from_template(original, provider_id="account")
-    raw = json.loads(
-        (tmp_path / "config" / "config.json").read_text(encoding="utf-8")
-    )
+    raw = json.loads((tmp_path / "config" / "config.json").read_text(encoding="utf-8"))
     binding = raw["providers"]["items"]["account"]["template"]
     assert binding["template_id"] == "openai"
     assert set(binding["endpoints"][0]) == {

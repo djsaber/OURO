@@ -7,9 +7,7 @@ from ouro.tui.plan_confirmation import project_plan_confirmation
 from ouro.tui.state import PendingInteraction
 
 
-def _interaction(
-    *, plugin_class: Literal["builtin", "user"] = "builtin"
-) -> PendingInteraction:
+def _interaction(*, plugin_class: Literal["builtin", "user"] = "builtin") -> PendingInteraction:
     request = PlanConfirmationRequest(
         plan_path="C:/private/session/plan.md",
         plan="# Plan\n\n1. Inspect.\n2. Implement.\n3. Verify.",

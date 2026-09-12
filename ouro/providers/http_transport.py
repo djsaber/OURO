@@ -225,9 +225,7 @@ def _provider_network_error(
             retryable=True,
         )
 
-    details = "; ".join(
-        f"{route}: {_describe_request_error(exc)}" for route, exc in failures
-    )
+    details = "; ".join(f"{route}: {_describe_request_error(exc)}" for route, exc in failures)
     return ProviderTransportError(
         f"provider connection failed after route fallback: {details}",
         retryable=True,

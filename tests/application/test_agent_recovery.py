@@ -384,9 +384,7 @@ async def test_local_application_reports_agent_recovery_when_root_is_opened(tmp_
 
     assert application.startup_report.diagnostics == ()
     diagnostics = await application.runtime.reconcile_session(root.session_id)
-    assert "delegation_child_missing" in {
-        item.code for item in diagnostics
-    }
+    assert "delegation_child_missing" in {item.code for item in diagnostics}
     assert (
         application.runtime.store.load_delegation(
             root.session_id,
@@ -416,9 +414,7 @@ async def test_incompatible_delegation_is_isolated_until_root_is_opened(tmp_path
 
     assert application.startup_report.diagnostics == ()
     diagnostics = await application.runtime.reconcile_session(root.session_id)
-    assert "session_runtime_incompatible" in {
-        item.code for item in diagnostics
-    }
+    assert "session_runtime_incompatible" in {item.code for item in diagnostics}
     result = await application.runtime.run("new independent Session")
     assert result.run.status == "completed"
     assert result.session.session_id != root.session_id

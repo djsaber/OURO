@@ -1,12 +1,12 @@
 # OURO 会话撤销、Harness 状态与插件交互规格
 
-> 文档类型：本次改进目标规格
-> 状态：实施中；M1–M5 已完成阶段验收；M6 未开始，完成范围以实施计划为准
-> 审视基线：2026-09-08
+> 文档类型：现行规格
+> 状态：M1–M6 已验收
+> 代码基线：2026-09-12
 > 范围：原生状态、消息撤销、插件交互、提交恢复、队列和 Host 接入
 
 设计依据见[设计文档](../../docs/OURO_会话撤销与Harness状态设计_2026-09-08.md)，
-工作分解见[实施计划](../plans/OURO_会话撤销与Harness状态实施计划_2026-09-08.md)。
+可重复验收入口与平台边界见本文第 13 节。
 “必须”“不得”为验收要求。条目编号是设计、实施和测试的共同追踪依据。
 
 ## 1. 适用范围与规范关系
@@ -18,10 +18,6 @@
 [核心运行时](OURO_核心运行时规格_2026-09-02.md)、
 [工具与人机协同](OURO_工具与人机协同规格_2026-09-02.md)和
 [会话观察](OURO_会话观察规格_2026-09-02.md)规格。
-
-本次明确替换的行为是：按消息帧限制撤销、存在 extension state 即禁止撤销、纯文本限定、队列存在即禁止
-撤销，以及 PluginContext 中实例级直接写入 canonical Session 状态。实现验收时必须同步更新相关现行规格，
-不得长期保留两套相互冲突的有效契约。
 
 不要求文件系统回滚、插件业务 undo/redo 钩子、完整事件重放、跨会话事务或新增通用工作流能力。
 
@@ -49,7 +45,7 @@ Harness 版本保存完整控制关系与 owner 状态集合；每次实际业�
 每个版本明确属于一个 Session；引用其他 Session 的版本必须失败。初始空状态也是有效版本。
 
 当前状态只有一个 canonical 版本引用。既有 controls/extension 读取端口必须从它取得同一状态，不能保留
-可独立写入的第二份 controls 或 extensions 真相；需要的兼容投影只读且可重建。
+可独立写入的第二份 controls 或 extensions 真相；需要的查询投影只读且可重建。
 
 ### HS-03：历史代次与前置条件
 
@@ -426,3 +422,71 @@ reset 的 owner 状态不得通过分支内 undo 复活；reject 不得因新格
 
 存储契约测试必须参数化覆盖 File/SQLite；插件交互契约必须覆盖 in-process/worker。
 故障和竞争测试使用可控同步点，不依赖随机 sleep；最终还需实际 TUI 中断/撤销/重启验收。
+
+## 13. 验收证据索引
+
+M6 全仓库质量门槛已通过；以下索引绑定可重复测试入口及实际验证范围。
+`W` 为 Windows/Python 3.14.6，`P` 为 M5 的 WSL2 Ubuntu 24.04.5/ext4/Python 3.14.6 验证。
+`F/S` 为 File 与 SQLite；`IP/WK` 为 in-process 与真实 worker 进程。破折号表示场景不涉及插件回调。
+每行列出该组证据覆盖的范围，不表示平台、后端与插件形态的所有组合均独立运行。
+P 覆盖存储、Core 调用范围和历史执行/观察，未声明 POSIX 全仓库或全部插件形态验收。
+
+| 验收 | 可重复测试入口（tests/ 下） | 后端 / 插件 | 平台 |
+|---|---|---|---|
+| AC-01 | [harness_commits](../../tests/sessions/test_harness_commits.py)、[history_execution](../../tests/application/test_history_execution.py) | F/S；— | W/P |
+| AC-02 | [history_commands](../../tests/tui/test_history_commands.py)、[history_editing](../../tests/application/test_history_editing.py)、[local_files](../../tests/sessions/test_local_files.py) | F/S；— | W；存储 P |
+| AC-03 | [harness_tools](../../tests/application/test_harness_tools.py)、[Goal](../../tests/plugins/test_builtin_goal.py)、[Plan](../../tests/plugins/test_builtin_plan.py) | F/S 状态与工具；Plan 为 F；IP/WK 工具、内置 IP | W |
+| AC-04 | [harness_controls](../../tests/application/test_harness_controls.py)、[harness_commands](../../tests/application/test_harness_commands.py)、[harness_continuations](../../tests/application/test_harness_continuations.py) | F/S；IP | W |
+| AC-05 | [Core calls](../../tests/core/test_harness_calls.py)、[SDK calls](../../tests/plugins/test_harness_calls.py)、[harness_tools](../../tests/application/test_harness_tools.py)、[worker calls](../../tests/plugins/test_worker_harness_calls.py) | F/S；IP/WK | W；Core P |
+| AC-06 | [harness_controls](../../tests/application/test_harness_controls.py)、[harness_commands](../../tests/application/test_harness_commands.py)、[undo_inputs](../../tests/application/test_undo_inputs.py) | F/S；IP | W |
+| AC-07 | [harness_commits](../../tests/sessions/test_harness_commits.py)、[harness_commands](../../tests/application/test_harness_commands.py)、[harness_continuations](../../tests/application/test_harness_continuations.py) | F/S；IP | W；存储 P |
+| AC-08 | [history_execution](../../tests/application/test_history_execution.py)、[undo_inputs](../../tests/application/test_undo_inputs.py) | F/S；— | W；历史执行 P |
+| AC-09 | [harness_tools](../../tests/application/test_harness_tools.py)、[undo_inputs](../../tests/application/test_undo_inputs.py)、[history_execution](../../tests/application/test_history_execution.py) | F/S；IP/WK 工具 | W；历史执行 P |
+| AC-10 | [history_execution](../../tests/application/test_history_execution.py) | F/S；— | W/P |
+| AC-11 | [history_observation](../../tests/application/test_history_observation.py)、[session_event_following](../../tests/application/test_session_event_following.py)、[history_commands](../../tests/tui/test_history_commands.py) | F/S；— | W；应用层 P |
+| AC-12 | [agents](../../tests/application/test_agents.py)、[undo_inputs](../../tests/application/test_undo_inputs.py) | F/S；IP | W |
+| AC-13 | [history_commands](../../tests/tui/test_history_commands.py)、[CLI history](../../tests/cli/test_interactive_attachments.py)、[undo_inputs](../../tests/application/test_undo_inputs.py) | F/S；IP | W |
+| AC-14 | [harness_usage](../../tests/application/test_harness_usage.py)、[Goal](../../tests/plugins/test_builtin_goal.py)、[worker usage](../../tests/plugins/test_worker_harness_usage.py) | F/S；IP/WK | W |
+| AC-15 | [harness_migration](../../tests/sessions/test_harness_migration.py)、[builtin migration](../../tests/plugins/test_builtin_harness_migration.py)、[harness_lifecycle](../../tests/sessions/test_harness_lifecycle.py)、[history_execution](../../tests/application/test_history_execution.py) | F/S；IP / 缺失插件 | W；存储与历史执行 P |
+| AC-16 | [成本对照](../benchmarks/results/harness-platform-comparison-2026-09-12.md)、[同步探针](../../tests/benchmarks/test_sqlite_sync.py) | F/S；原生多 owner | W/P |
+
+### 恢复、平台和实际终端
+
+File 故障注入覆盖 checkpoint、decision、receipt、messages、session、events、completion；SQLite 覆盖事务
+回滚。Command/Continuation 恢复测试在决定已保存后替换回调为失败入口，再恢复并检查单一结果，从而证明
+恢复不重调插件。未发生外部工具调用的故障测试，不作为任意外部文件副作用可回滚的证据。
+
+M5 的 POSIX 集成组通过 257 项业务测试，另有 2 项原生同步探针校准；不与 Windows 的重叠分组合计。
+实际 Windows PTY 验收使用临时 home 和 Faux Provider，启动真实 `OuroTuiApp.run()`，完成中断、撤销、
+长文本重提、退出重启与再次提交；重开后为 Ready，旧 Run 保持 epoch 0 的 aborted 审计，Session 为 epoch 1。
+性能报告保存 144 条跨平台/阶段测量及其误差边界。
+
+### 提交边界审计
+
+- `PluginContext`、SDK 和 worker 不持有 Session Store writer；状态视图由 Host 绑定并随调用关闭。
+- Command、Controller、工具结果、Continuation 结算和队列消费把相互依赖的效果放入同一 `SessionCommit`。
+  控制释放通过 `without_session_control` 准备队列变化，不再保留独立持久化取消入口。
+- Session controls 与 extension 读取均投影当前 Harness。显式迁移使用的状态写入端口也归入原生提交，
+  不存在另一份 extensions 状态真相；旧 history-cut 仅属于明确格式迁移。
+- 快照、分支和跨后端转移保留版本闭包与回执；恢复没有插件业务分支，undo 不增加文件系统事务。
+
+### 恢复入口的补充验收
+
+[Supervisor 恢复测试](../../tests/application/test_supervisor.py)保护已接管的 queued Run；
+[TUI 任务测试](../../tests/tui/test_tasks.py)保护排队任务选中后保持可取消且不会启动模型。
+queued 尚无执行锁不能证明进程中断。控制会话选择只对 running Run 请求既有恢复，普通观察保持只读。
+
+### 仓库质量门槛
+
+2026-09-12，Windows / Python 3.14.6，锁定依赖执行完整回归：**2695 项通过、4 项预期跳过**，
+覆盖率 **84.42%**，高于仓库 80% 门槛。通过命令为 `uv run pytest --cov=ouro --cov-report=term-missing`。
+跳过项包括两项 File 决定恢复故障点的 SQLite 参数（事务回滚由存储契约独立覆盖），以及两项本机不可用的
+符号链接场景。平台与后端范围以上述矩阵为准。
+
+`uv sync --frozen --all-groups`、`ruff check ouro tests`、`ruff format --check ouro tests`、`mypy ouro`、
+`python -m compileall -q ouro`、`uv build` 和 `git diff --check` 均通过；mypy 检查 298 个源文件，
+格式门槛覆盖 489 个 Python 文件。架构与 Core 聚焦门槛通过 202 项，包含在完整回归中，不重复合计。
+
+Worker 取消/超时测试以握手确认调用已进入 worker，再触发取消和迟到回复，验证已关闭视图、跨会话隔离及
+worker 继续可用。TUI 异步测试等待实际持久化与菜单投影完成，保留防抖和最新草稿断言，不依赖固定 sleep
+推断业务完成。排队 Run 的所有权由上述恢复入口测试保护。

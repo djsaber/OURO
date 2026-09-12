@@ -33,9 +33,7 @@ def test_skill_source_config_updates_scoped_ouro_and_host_sources(tmp_path, caps
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
-    states = {
-        source["source_id"]: source["enabled"] for source in payload["skills"]["sources"]
-    }
+    states = {source["source_id"]: source["enabled"] for source in payload["skills"]["sources"]}
     assert states["ouro.user"] is False
     assert states["ouro.workspace"] is True
     assert states["codex.user"] is True

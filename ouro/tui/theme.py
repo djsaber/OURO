@@ -214,9 +214,7 @@ class TuiTheme:
             isinstance(interval, bool)
             or not isinstance(interval, (int, float))
             or not isfinite(interval)
-            or not _MIN_SPINNER_INTERVAL_SECONDS
-            <= interval
-            <= _MAX_SPINNER_INTERVAL_SECONDS
+            or not _MIN_SPINNER_INTERVAL_SECONDS <= interval <= _MAX_SPINNER_INTERVAL_SECONDS
         ):
             raise ValueError(
                 "spinner_interval_seconds must be between "
@@ -413,9 +411,7 @@ _THEMES = (
     ),
 )
 
-TUI_THEMES: Mapping[str, TuiTheme] = MappingProxyType(
-    {theme.theme_id: theme for theme in _THEMES}
-)
+TUI_THEMES: Mapping[str, TuiTheme] = MappingProxyType({theme.theme_id: theme for theme in _THEMES})
 DEFAULT_TUI_THEME = TUI_THEMES["original"]
 
 

@@ -8,6 +8,7 @@ from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
+from ouro.core.session_commits import SessionCommit
 from ouro.core.session_controls import (
     AttributedSessionInput,
     AttributedSessionInputBatch,
@@ -113,13 +114,14 @@ async def test_one_by_one_consumption_persists_an_attributed_input_batch_togethe
         )
     )
     persisted_batch_sizes: list[int] = []
-    append_messages = store.append_messages
+    commit_session = store.commit_session
 
-    def record_batch(messages: list[MessageRecord]) -> None:
-        persisted_batch_sizes.append(len(messages))
-        append_messages(messages)
+    def record_batch(request: SessionCommit):
+        result = commit_session(request)
+        persisted_batch_sizes.append(len(result.messages))
+        return result
 
-    monkeypatch.setattr(store, "append_messages", record_batch)
+    monkeypatch.setattr(store, "commit_session", record_batch)
     provider.release_first.set()
 
     result = await runtime.submit_plugin_input_batch(batch, session_id=session.session_id)

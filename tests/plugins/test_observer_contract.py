@@ -129,7 +129,7 @@ async def test_observation_sdk_and_worker_payloads_cover_every_public_type(
                     handler=seen.append,
                 )
             ]
-        )
+        ),
     )
 
     await contributions.observers[0].handler(observation)
@@ -189,7 +189,7 @@ async def test_inprocess_and_worker_observers_reject_return_values() -> None:
                     handler=lambda _observation: {"control": "not-allowed"},
                 )
             ]
-        )
+        ),
     )
 
     with pytest.raises(TypeError, match="must return None"):
@@ -219,7 +219,7 @@ async def test_sync_sdk_observer_does_not_block_the_event_loop() -> None:
                     handler=blocking_handler,
                 )
             ]
-        )
+        ),
     )
     watchdog = threading.Timer(1, release.set)
     watchdog.start()

@@ -290,7 +290,7 @@ async def test_sdk_tool_structured_input_round_trips_through_wait_and_resume(tmp
                     handler=confirm_plan,
                 )
             ]
-        )
+        ),
     )
     registry = ToolRegistry()
     registry.register(contributions.tools[0])
@@ -369,7 +369,7 @@ async def test_unattended_session_resumes_capable_tool_without_waiting(
                     supports_unattended=True,
                 )
             ]
-        )
+        ),
     ).tools[0]
     registry = ToolRegistry()
     registry.register(contribution)
@@ -433,7 +433,7 @@ async def test_unattended_session_returns_explicit_error_for_unsupported_tool(tm
                     handler=request_input,
                 )
             ]
-        )
+        ),
     ).tools[0]
     registry = ToolRegistry()
     registry.register(contribution)
@@ -481,7 +481,7 @@ async def test_unattended_resume_cannot_request_user_input_again(tmp_path) -> No
                     supports_unattended=True,
                 )
             ]
-        )
+        ),
     ).tools[0]
     registry = ToolRegistry()
     registry.register(contribution)
@@ -534,7 +534,7 @@ async def test_resumable_tool_can_request_multiple_inputs_and_owns_final_result(
                     resume_handler=resume,
                 )
             ]
-        )
+        ),
     ).tools[0]
     registry = ToolRegistry()
     registry.register(contribution)
@@ -589,7 +589,7 @@ async def test_approved_tool_can_transition_to_user_input_without_reexecution(tm
                     handler=request_input,
                 )
             ]
-        )
+        ),
     ).tools[0]
     registry = ToolRegistry()
     registry.register(contribution)
@@ -640,7 +640,7 @@ async def test_unattended_session_resolves_remaining_approval_with_policy_proven
                     handler=execute,
                 )
             ]
-        )
+        ),
     ).tools[0]
     registry = ToolRegistry()
     registry.register(contribution)
@@ -690,7 +690,7 @@ async def test_sequential_batch_stops_after_input_request_until_answer(tmp_path)
                     handler=request_input,
                 )
             ]
-        )
+        ),
     ).tools[0]
     registry = ToolRegistry()
     registry.register(sdk_tool)
@@ -750,7 +750,7 @@ async def test_parallel_batch_does_not_start_queued_calls_after_input_request(tm
                     handler=request_input,
                 )
             ]
-        )
+        ),
     ).tools[0]
     registry = ToolRegistry()
     registry.register(sdk_tool)

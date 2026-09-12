@@ -68,9 +68,7 @@ def _present_spawn_agent(
 ) -> ToolPresentation:
     nickname = _non_blank_text(arguments.get("nickname"))
     handle = result.get("handle")
-    agent_name = (
-        _non_blank_text(handle.get("agent_name")) if isinstance(handle, dict) else None
-    )
+    agent_name = _non_blank_text(handle.get("agent_name")) if isinstance(handle, dict) else None
     title = nickname or agent_name or _non_blank_text(arguments.get("agent_id")) or "Subagent"
     return ToolPresentation(title=title)
 
@@ -82,24 +80,14 @@ def _present_read(
     theme: TuiTheme,
 ) -> ToolPresentation:
     path = _path(arguments.get("path"))
-    offset = (
-        _positive_int(result.get("offset"))
-        or _positive_int(arguments.get("offset"))
-        or 1
-    )
+    offset = _positive_int(result.get("offset")) or _positive_int(arguments.get("offset")) or 1
     line_count = _non_negative_int(result.get("line_count"))
     summary: str | None
     if line_count is not None:
-        summary = (
-            "0 lines"
-            if line_count == 0
-            else f"{offset} - {offset + line_count - 1} lines"
-        )
+        summary = "0 lines" if line_count == 0 else f"{offset} - {offset + line_count - 1} lines"
     else:
         limit = _positive_int(arguments.get("limit"))
-        summary = (
-            f"{offset} - {offset + limit - 1} lines" if limit is not None else None
-        )
+        summary = f"{offset} - {offset + limit - 1} lines" if limit is not None else None
     return ToolPresentation(lines=_file_detail_line(path, summary, theme=theme))
 
 

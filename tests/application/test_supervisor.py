@@ -910,3 +910,37 @@ async def test_wait_run_rechecks_exact_run_across_snapshot_subscribe_gap(
         assert supervisor._subscriptions == {}
     finally:
         await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_recovery_preserves_a_supervised_queued_run(tmp_path) -> None:
+    provider = BlockingProvider()
+    runtime = _runtime(tmp_path, provider)
+    supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
+    try:
+        await supervisor.submit("occupy the worker")
+        await provider.started.wait()
+        session = runtime.create_session(title="queued")
+        run = runtime.prepare_run(
+            RunRecord(session_id=session.session_id),
+            model=runtime.current_model().key,
+            reasoning=session.reasoning_request,
+            workspace=str(tmp_path),
+            approval_mode=session.approval_mode,
+            interaction_mode=session.interaction_mode,
+        )
+        handle = await supervisor.submit_prepared(
+            run, HostSessionInput(prompt="queued", host_source_id="test")
+        )
+
+        await supervisor.recover_session(session.session_id)
+
+        assert runtime.store.load_run(session.session_id, run.run_id).status == "queued"
+        assert not any(
+            event.event_type == "run_recovered"
+            for event in runtime.store.load_session(session.session_id).events
+        )
+        assert (await supervisor.abort(handle)).status == "aborted"
+        assert runtime.store.load_run(session.session_id, run.run_id).status == "aborted"
+    finally:
+        await supervisor.shutdown(ShutdownPolicy(mode="abort", timeout_seconds=5))

@@ -56,10 +56,7 @@ class TuiTextArea(_TerminalCursorSync, TextArea):
     def watch_selection(self) -> None:
         """Finish cursor scrolling after an edit has updated the document geometry."""
 
-        if (
-            self.is_mounted
-            and self.cursor_screen_offset not in self.scrollable_content_region
-        ):
+        if self.is_mounted and self.cursor_screen_offset not in self.scrollable_content_region:
             self.call_next(self._restore_cursor_visibility)
 
     def _restore_cursor_visibility(self) -> None:

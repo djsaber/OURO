@@ -93,9 +93,7 @@ def _single_question(tool_name: str, request: object) -> QuestionField:
         if projected is not None:
             return projected
     prompt = (
-        request.strip()
-        if isinstance(request, str) and request.strip()
-        else _json_preview(request)
+        request.strip() if isinstance(request, str) and request.strip() else _json_preview(request)
     )
     return QuestionField(
         question_id="answer",
@@ -121,9 +119,7 @@ def _question_from_mapping(request: object, *, fallback_id: str) -> QuestionFiel
     question_id = raw_id.strip() if isinstance(raw_id, str) and raw_id.strip() else fallback_id
     raw_header = request.get("header")
     header = (
-        raw_header.strip()
-        if isinstance(raw_header, str) and raw_header.strip()
-        else "Question"
+        raw_header.strip() if isinstance(raw_header, str) and raw_header.strip() else "Question"
     )
     options = _options(request.get("options"))
     multi_select = request.get("multi_select") is True

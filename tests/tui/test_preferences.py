@@ -166,9 +166,7 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
         {"theme": "harbor", "recent_workspaces": ["  "]},
     ),
 )
-def test_tui_preferences_reject_invalid_values(
-    tmp_path: Path, raw: dict[str, object]
-) -> None:
+def test_tui_preferences_reject_invalid_values(tmp_path: Path, raw: dict[str, object]) -> None:
     store = TuiPreferencesStore(tmp_path)
     store.path.parent.mkdir(parents=True)
     store.path.write_text(json.dumps(raw), encoding="utf-8")

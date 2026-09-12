@@ -35,7 +35,7 @@ async def test_sync_sdk_tool_handler_does_not_block_the_event_loop() -> None:
                     handler=blocking_handler,
                 )
             ]
-        )
+        ),
     )
     tool = contributions.tools[0]
     watchdog = threading.Timer(1, release.set)
@@ -92,7 +92,7 @@ async def test_sync_sdk_tool_uses_host_cancellation_context() -> None:
                     permission_mode="auto",
                 )
             ]
-        )
+        ),
     )
     registry = ToolRegistry()
     registry.register(contributions.tools[0])

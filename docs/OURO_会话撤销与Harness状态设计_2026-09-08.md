@@ -1,14 +1,13 @@
 # OURO 会话撤销、Harness 状态与插件交互改进设计
 
 > 文档类型：本次改进设计
-> 状态：实施中；M1–M5 已完成阶段验收；M6 未开始，完成范围以实施计划为准
-> 审视基线：2026-09-08
+> 状态：已实施并通过 M1–M6 验收
+> 代码基线：2026-09-12
 > 范围：会话撤销、原生 Harness 状态、插件调用与提交边界
 
 本文说明本次改进的理由、结构与取舍。强制契约及验收编号以
-[本次规格](../dev/specs/OURO_会话撤销与Harness状态规格_2026-09-08.md)为准，执行顺序见
-[实施计划](../dev/plans/OURO_会话撤销与Harness状态实施计划_2026-09-08.md)。
-这些文档只覆盖本次工作，不承接其他路线图能力。当前代码行为仍以现行领域规格和测试为准。
+[现行规格](../dev/specs/OURO_会话撤销与Harness状态规格_2026-09-08.md)为准，
+其第 13 节记录测试入口、验收结果与平台边界。本文只覆盖本次工作，不承接其他路线图能力。
 
 ## 核心设计哲学（实施与评审约束）
 
@@ -59,21 +58,21 @@
 不增加完整事件溯源平台、redo、多分支时间线 UI、插件专用撤销钩子、通用工作流引擎或文件系统回滚。
 现有会话分支、导出和迁移只做保存新数据契约所需的适配。
 
-## 2. 当前基础与需要调整的边界
+## 2. 复用基础与职责边界
 
-| 当前实现 | 可以复用的基础 | 本次调整 |
+| 机制 | 复用基础 | 职责 |
 |---|---|---|
-| [消息裁剪](message-history-editing.md) | 稳定消息身份、尾部定位、文件恢复意图、SQLite 事务、压缩清理 | 切口与 Provider 帧完整性分离；接入状态恢复和历史代次 |
-| [Session extension state](../ouro/core/session_extensions.py) | 原生 owner 归属、schema、会话生命周期 | 演进为可恢复 Harness 值，不增加并行状态仓库 |
-| [插件状态适配](../ouro/plugins/api.py) | owner 隔离、候选 Generation 写入门禁 | 从实例级直接写入改为调用内快照和暂存修改 |
-| [控制器协调](../ouro/application/session_controls.py) | claim、控制归属、转换校验 | 控制关系和 owner 数据一次结算；准备阶段不发布半完成业务状态 |
-| [续跑结算](../ouro/application/run_continuations.py) | 持久化结算计划、稳定交付身份 | 把状态变更纳入同一结算和恢复边界 |
-| [Catalog 与 Generation](../ouro/plugins/catalog.py) | 不可变目录、lease、gate、执行契约 | 保留；增加会话操作有效性检查，不用 Generation 代替历史代次 |
-| [队列](../ouro/application/queued_inputs.py) | queue_id、来源、批次、消费消息查找 | 消费与确认合并为原子语义，和撤销共享竞争边界 |
+| [消息裁剪](message-history-editing.md) | 稳定消息身份、尾部定位、SQLite 事务、压缩清理 | 精确切口、状态恢复和历史代次；Provider 投影单独保证协议完整性 |
+| [Harness 状态](../ouro/core/harness.py) | 原生 owner 归属、schema、会话生命周期 | 唯一可恢复状态；extension 查询投影当前版本 |
+| [插件状态调用](../ouro/plugins/harness_calls.py) | owner 隔离、Generation 门禁 | 调用内快照和暂存修改，随调用关闭 |
+| [控制器协调](../ouro/application/session_controls.py) | claim、控制归属、转换校验 | 控制关系和 owner 数据一次结算；准备阶段不发布半完成状态 |
+| [续跑结算](../ouro/application/run_continuations.py) | 持久化结算计划、稳定交付身份 | 状态变更与续跑决策共用提交和恢复边界 |
+| [Catalog 与 Generation](../ouro/plugins/catalog.py) | 不可变目录、lease、gate、执行契约 | 管理代码与资源生命周期；会话操作仍单独检查版本和历史代次 |
+| [队列](../ouro/application/queued_inputs.py) | queue_id、来源、批次、消费消息查找 | 消息与消费一次提交，和撤销共享竞争边界 |
 
-当前撤销入口因任意 controls 或 extension state 存在而拒绝操作，只能暂时避免不一致。
-删除该判断不是完整修复。Goal 在 Context 回调保存 Run 绑定、在 Continuation 决策接受前保存计费数据，
-也说明职责边界需要调整，而不是让每个插件补一套回滚处理。
+撤销依赖可证明的消息前状态，不能从当前 controls 或 owner 数据推算过去。框架统一拥有版本、提交与恢复，
+插件只解释自己的业务值；Run 绑定和实际计费事实由原生运行记录及 usage 账本拥有。这些边界使状态回退
+不依赖插件名称或业务恢复回调。
 
 ## 3. 最小数据模型
 
@@ -88,7 +87,7 @@
 Generation 实例、运行锁、等待中的回调、临时 activating/deactivating 过程不作为可恢复业务状态。
 恢复逻辑 activation 不等于恢复旧进程中的资源或执行许可。
 
-初始实现采用完整 Harness 快照：只有业务状态实际改变时创建不可变版本，未改变状态的消息复用版本引用。
+Harness 采用完整快照：只有业务状态实际改变时创建不可变版本，未改变状态的消息复用版本引用。
 不复制消息正文，不逐 token 写快照，不引入字段级 diff、持久化树或单独的内容去重服务。
 这是以小型控制数据换取简单、直接的恢复规则；性能验收同时覆盖多 owner 和较大 payload。
 
@@ -298,4 +297,4 @@ Host 观察携带 history_epoch，用同一次一致读取取得消息、状态�
 
 完成意味着两种存储后端、in-process/worker、内置插件、排队输入、恢复和 CLI/TUI 均满足同一组规格。
 不得以“快照已经保存”或“普通文本 /undo 成功”代替完整验收。
-具体依赖顺序、测试矩阵和退出条件见实施计划；本设计不追加条件性拓展或后续能力清单。
+测试矩阵和通过证据见现行规格第 12–13 节；本设计不追加条件性拓展或后续能力清单。

@@ -169,13 +169,16 @@ def test_semantic_tags_are_optional_and_independent_from_message_roles() -> None
     assert default.scaffold is False
     assert custom.scaffold is False
     assert assistant.scaffold is True
-    assert MessageRecord.model_validate(
-        {
-            "session_id": "ses_1",
-            "role": "system",
-            "content": [{"type": "text", "text": "unlabeled"}],
-        }
-    ).semantic_tag is None
+    assert (
+        MessageRecord.model_validate(
+            {
+                "session_id": "ses_1",
+                "role": "system",
+                "content": [{"type": "text", "text": "unlabeled"}],
+            }
+        ).semantic_tag
+        is None
+    )
     user_scaffold = MessageRecord.text(
         session_id="ses_1",
         role="user",
@@ -292,12 +295,16 @@ def test_context_builder_derives_budget_metrics_from_model_limits() -> None:
 
 
 def test_context_metrics_apply_model_limits_without_changing_usage_facts() -> None:
-    original = ContextBuilder().build(
-        messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
-        tools=[],
-        context_window_tokens=1_000,
-        reserved_output_tokens=200,
-    ).metrics
+    original = (
+        ContextBuilder()
+        .build(
+            messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
+            tools=[],
+            context_window_tokens=1_000,
+            reserved_output_tokens=200,
+        )
+        .metrics
+    )
 
     updated = original.with_model_limits(
         context_window_tokens=2_000,

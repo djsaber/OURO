@@ -774,9 +774,7 @@ async def test_runtime_persists_compaction_endpoint_and_route_metadata(tmp_path)
     assert restored.model_id == "summary-model"
     assert restored.metadata["model_route"] == "configured"
     output_events = [
-        event
-        for event in snapshot.events
-        if event.event_type == "compaction_model_output"
+        event for event in snapshot.events if event.event_type == "compaction_model_output"
     ]
     assert len(output_events) == 1
     assert output_events[0].payload["compaction_id"] == restored.compaction_id
@@ -812,9 +810,7 @@ async def test_runtime_persists_raw_compaction_output_when_validation_fails(tmp_
 
     snapshot = store.load_session(session.session_id)
     output_events = [
-        event
-        for event in snapshot.events
-        if event.event_type == "compaction_model_output"
+        event for event in snapshot.events if event.event_type == "compaction_model_output"
     ]
     failure = next(event for event in snapshot.events if event.event_type == "compaction_failed")
     assert len(output_events) == 1
@@ -927,9 +923,7 @@ async def test_manual_compaction_uses_same_pipeline_without_adding_messages(tmp_
         "compaction_completed",
         "run_completed",
     ]
-    completed = next(
-        event for event in result.events if event.event_type == "compaction_completed"
-    )
+    completed = next(event for event in result.events if event.event_type == "compaction_completed")
     assert completed.payload["context_metrics_after"] == (
         result.compaction.context_metrics_after.model_dump(mode="json")
     )

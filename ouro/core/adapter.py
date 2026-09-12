@@ -77,9 +77,7 @@ async def _interruptible(
     awaits cooperative work, with one explicit backpressure boundary when the
     FIFO is full.
     """
-    buffer: asyncio.Queue[_BufferedStreamItem] = asyncio.Queue(
-        maxsize=_STREAM_BUFFER_CAPACITY
-    )
+    buffer: asyncio.Queue[_BufferedStreamItem] = asyncio.Queue(maxsize=_STREAM_BUFFER_CAPACITY)
     reader = asyncio.create_task(
         _read_provider_stream(events, buffer, on_stream_start=on_stream_start)
     )

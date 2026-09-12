@@ -255,6 +255,9 @@ class RuntimeSupervisor:
         """Recover one Session execution boundary without scanning the store."""
 
         await self.start()
+        # Queued jobs already have a live owner before acquiring an execution lock.
+        if session_id in self._jobs_by_session:
+            return
         await self.runtime.reconcile_execution_session(session_id)
 
     async def _start(self) -> SupervisorStartResult:

@@ -242,9 +242,7 @@ class ProviderTemplateStore:
         for entry in snapshot.entries:
             if entry.template.template_id == normalized:
                 return entry
-        available = ", ".join(
-            sorted(entry.template.template_id for entry in snapshot.entries)
-        )
+        available = ", ".join(sorted(entry.template.template_id for entry in snapshot.entries))
         raise ConfigError(f"provider template not found: {template_id}; available: {available}")
 
     def restore(self, template_id: str) -> ProviderTemplate:
@@ -396,8 +394,7 @@ class ProviderTemplateStore:
                 step = _STRUCTURE_MIGRATIONS.get(version)
                 if step is None:
                     raise ConfigError(
-                        f"no structure migration registered for provider template"
-                        f" version {version}"
+                        f"no structure migration registered for provider template version {version}"
                     )
                 for item in loaded.values():
                     step(item.raw)
@@ -449,8 +446,7 @@ class ProviderTemplateStore:
                 _sync_meta(item)
                 changed = True
                 notices.append(
-                    f"provider template '{template_id}' is available again;"
-                    f" deprecated flag cleared"
+                    f"provider template '{template_id}' is available again; deprecated flag cleared"
                 )
             baseline = item.meta.baseline_revision
             if baseline is None or baseline > inline_template.revision:
@@ -555,9 +551,7 @@ class ProviderTemplateStore:
 
     def _backup_file(self) -> Path | None:
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-        backup = self._file.path.with_name(
-            f"{self._file.path.stem}.backup-{stamp}.json"
-        )
+        backup = self._file.path.with_name(f"{self._file.path.stem}.backup-{stamp}.json")
         try:
             shutil.copy2(self._file.path, backup)
         except OSError:

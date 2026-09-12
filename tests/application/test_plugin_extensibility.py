@@ -65,7 +65,7 @@ async def test_sdk_tool_receives_host_owned_workspace_and_cancellation_context(t
                     handler=inspect_workspace,
                 )
             ]
-        )
+        ),
     )
     signal = AbortSignal()
     result = await contributions.tools[0].execute(
@@ -1185,7 +1185,9 @@ async def test_waiting_approval_settles_before_missing_contract_failure(
     assert result.run.status == "failed"
     assert result.run.pending_approval_id is None
     assert "required plugin catalog is no longer available" in (result.run.error or "")
-    assert persisted_call is None
+    assert persisted_call is not None
+    assert persisted_call.calls[0].status == ("ready" if approved else "rejected")
+    assert persisted_call.calls[0].approval.resolved_at is not None
     assert approval_resolved.payload["approved"] is approved
     assert approval_resolved.payload["tool_call_status"] == ("ready" if approved else "rejected")
     removed = await second_application.plugins.remove(

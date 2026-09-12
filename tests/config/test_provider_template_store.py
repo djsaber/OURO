@@ -102,9 +102,7 @@ def test_fingerprint_normalizes_key_order() -> None:
     )
 
 
-def test_formatting_only_edits_still_upgrade_to_new_inline_revision(
-    tmp_path, monkeypatch
-) -> None:
+def test_formatting_only_edits_still_upgrade_to_new_inline_revision(tmp_path, monkeypatch) -> None:
     store = ProviderTemplateStore(tmp_path)
     store.catalog()
     reformatted = json.dumps(_read_json(tmp_path), ensure_ascii=False, indent=4)
@@ -120,9 +118,7 @@ def test_formatting_only_edits_still_upgrade_to_new_inline_revision(
 
     snapshot = store.catalog()
 
-    openai = next(
-        entry for entry in snapshot.entries if entry.template.template_id == "openai"
-    )
+    openai = next(entry for entry in snapshot.entries if entry.template.template_id == "openai")
     assert openai.template.display_name == "OpenAI v2"
     assert any("updated to inline revision" in notice for notice in snapshot.notices)
     entry = _read_json(tmp_path)["templates"]["openai"]
@@ -130,17 +126,13 @@ def test_formatting_only_edits_still_upgrade_to_new_inline_revision(
     assert entry["meta"]["baseline_revision"] == bumped.revision
 
 
-def test_qwen_revision_upgrade_replaces_incomplete_cached_template(
-    tmp_path, monkeypatch
-) -> None:
+def test_qwen_revision_upgrade_replaces_incomplete_cached_template(tmp_path, monkeypatch) -> None:
     latest = _INLINE_BY_ID["qwen"]
     incomplete = latest.model_copy(
         update={
             "revision": 2,
             "endpoints": tuple(
-                endpoint
-                for endpoint in latest.endpoints
-                if endpoint.endpoint_id != "qwen3.7-plus"
+                endpoint for endpoint in latest.endpoints if endpoint.endpoint_id != "qwen3.7-plus"
             ),
         }
     )
@@ -153,9 +145,7 @@ def test_qwen_revision_upgrade_replaces_incomplete_cached_template(
     )
     store = ProviderTemplateStore(tmp_path)
     initial = store.catalog()
-    initial_qwen = next(
-        entry for entry in initial.entries if entry.template.template_id == "qwen"
-    )
+    initial_qwen = next(entry for entry in initial.entries if entry.template.template_id == "qwen")
     assert {endpoint.endpoint_id for endpoint in initial_qwen.template.endpoints} == {
         "qwen3.8-max",
         "qwen3.8-flash",
@@ -164,9 +154,7 @@ def test_qwen_revision_upgrade_replaces_incomplete_cached_template(
     _fake_inline(monkeypatch, provider_templates())
     upgraded = store.catalog()
 
-    qwen = next(
-        entry for entry in upgraded.entries if entry.template.template_id == "qwen"
-    )
+    qwen = next(entry for entry in upgraded.entries if entry.template.template_id == "qwen")
     assert {endpoint.endpoint_id for endpoint in qwen.template.endpoints} == {
         "qwen3.8-max",
         "qwen3.8-flash",
@@ -177,9 +165,7 @@ def test_qwen_revision_upgrade_replaces_incomplete_cached_template(
     assert entry["meta"]["baseline_revision"] == latest.revision
 
 
-def test_user_modified_template_is_preserved_with_revision_advanced(
-    tmp_path, monkeypatch
-) -> None:
+def test_user_modified_template_is_preserved_with_revision_advanced(tmp_path, monkeypatch) -> None:
     store = ProviderTemplateStore(tmp_path)
     store.catalog()
     root = _read_json(tmp_path)
@@ -197,9 +183,7 @@ def test_user_modified_template_is_preserved_with_revision_advanced(
 
     snapshot = store.catalog()
 
-    openai = next(
-        entry for entry in snapshot.entries if entry.template.template_id == "openai"
-    )
+    openai = next(entry for entry in snapshot.entries if entry.template.template_id == "openai")
     assert openai.template.display_name == "My OpenAI fork"
     assert any("keeps the user version" in notice for notice in snapshot.notices)
     meta = _read_json(tmp_path)["templates"]["openai"]["meta"]
@@ -210,9 +194,7 @@ def test_user_modified_template_is_preserved_with_revision_advanced(
     assert not any("keeps the user version" in notice for notice in again.notices)
 
 
-def test_overwrite_replaces_business_fields_but_keeps_user_metadata(
-    tmp_path, monkeypatch
-) -> None:
+def test_overwrite_replaces_business_fields_but_keeps_user_metadata(tmp_path, monkeypatch) -> None:
     store = ProviderTemplateStore(tmp_path)
     store.catalog()
     root = _read_json(tmp_path)
@@ -229,9 +211,7 @@ def test_overwrite_replaces_business_fields_but_keeps_user_metadata(
 
     snapshot = store.catalog()
 
-    openai = next(
-        entry for entry in snapshot.entries if entry.template.template_id == "openai"
-    )
+    openai = next(entry for entry in snapshot.entries if entry.template.template_id == "openai")
     assert openai.template.display_name == "OpenAI v2"
     assert openai.enabled is False
     entry = _read_json(tmp_path)["templates"]["openai"]
@@ -274,9 +254,7 @@ def test_template_left_inline_is_deprecated_and_flag_cleared_on_return(
 
     deprecated = store.catalog()
 
-    mistral = next(
-        entry for entry in deprecated.entries if entry.template.template_id == "mistral"
-    )
+    mistral = next(entry for entry in deprecated.entries if entry.template.template_id == "mistral")
     assert mistral.deprecated is True
     assert any("no longer in the inline" in notice for notice in deprecated.notices)
     assert _read_json(tmp_path)["templates"]["mistral"]["meta"]["deprecated"] is True
@@ -284,9 +262,7 @@ def test_template_left_inline_is_deprecated_and_flag_cleared_on_return(
     monkeypatch.undo()
     restored = store.catalog()
 
-    mistral = next(
-        entry for entry in restored.entries if entry.template.template_id == "mistral"
-    )
+    mistral = next(entry for entry in restored.entries if entry.template.template_id == "mistral")
     assert mistral.deprecated is False
     assert any("available again" in notice for notice in restored.notices)
 
@@ -307,8 +283,7 @@ def test_broken_template_entry_is_skipped_and_preserved_in_file(tmp_path) -> Non
     assert "glm" not in ids
     assert ids == set(_INLINE_BY_ID) - {"glm"}
     assert any(
-        "'glm' skipped" in notice and "validation failed" in notice
-        for notice in snapshot.notices
+        "'glm' skipped" in notice and "validation failed" in notice for notice in snapshot.notices
     )
     assert _read_json(tmp_path)["templates"]["glm"]["endpoints"] == []
 
@@ -342,9 +317,7 @@ def test_newer_structure_version_is_loaded_read_only(tmp_path) -> None:
     assert _file_path(tmp_path).read_text(encoding="utf-8") == written_text
 
 
-def test_unknown_fields_and_root_keys_survive_synchronized_rewrites(
-    tmp_path, monkeypatch
-) -> None:
+def test_unknown_fields_and_root_keys_survive_synchronized_rewrites(tmp_path, monkeypatch) -> None:
     store = ProviderTemplateStore(tmp_path)
     store.catalog()
     root = _read_json(tmp_path)
@@ -482,17 +455,11 @@ def test_plaintext_credential_in_template_produces_notice(tmp_path) -> None:
     store = ProviderTemplateStore(tmp_path)
     store.catalog()
     root = _read_json(tmp_path)
-    root["templates"]["glm"]["endpoints"][0]["request_options"] = {
-        "api_key": "sk-live-secret"
-    }
+    root["templates"]["glm"]["endpoints"][0]["request_options"] = {"api_key": "sk-live-secret"}
     _write_json(tmp_path, root)
 
     snapshot = store.catalog()
 
-    assert any(
-        "possible plaintext credential" in notice for notice in snapshot.notices
-    )
-    glm = next(
-        entry for entry in snapshot.entries if entry.template.template_id == "glm"
-    )
+    assert any("possible plaintext credential" in notice for notice in snapshot.notices)
+    glm = next(entry for entry in snapshot.entries if entry.template.template_id == "glm")
     assert glm.template.endpoints[0].request_options["api_key"] == "sk-live-secret"

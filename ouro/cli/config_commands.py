@@ -177,8 +177,7 @@ def show_skill_discovery_config(
         conflicts = sorted(enabled_sources & disabled_sources)
         if conflicts:
             raise ConfigError(
-                "skill sources cannot be enabled and disabled together: "
-                + ", ".join(conflicts)
+                "skill sources cannot be enabled and disabled together: " + ", ".join(conflicts)
             )
         source_updates = {
             **{source_id: True for source_id in enabled_sources},

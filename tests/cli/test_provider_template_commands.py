@@ -7,6 +7,7 @@ import pytest
 from ouro.cli.main import main
 from ouro.cli.parser import build_parser
 from ouro.config import ProviderConfigManager
+from ouro.config.provider_templates import get_provider_template
 
 
 def test_provider_templates_command_lists_builtin_catalog(capsys) -> None:
@@ -168,17 +169,18 @@ def test_provider_update_json_exposes_safe_template_merge_report(tmp_path, capsy
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
+    revision = get_provider_template("openai").revision
     assert payload["operation"] == "update"
     assert payload["provider"]["template"] == {
         "template_id": "openai",
         "origin": "inline",
-        "revision": 1,
+        "revision": revision,
         "tracked": True,
     }
     assert payload["template_update"] == {
         "template_id": "openai",
-        "from_revision": 1,
-        "to_revision": 1,
+        "from_revision": revision,
+        "to_revision": revision,
         "adopted": False,
         "changed": False,
         "added_endpoints": [],

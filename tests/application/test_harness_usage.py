@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 import pytest
 
 from ouro.application.harness import capture_harness
@@ -10,9 +12,20 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.harness import HarnessState
 from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
-from ouro.core.session_controls import SessionControlActivation, SessionControlState
+from ouro.core.session_controls import (
+    SessionControlActivation,
+    SessionControlClaim,
+    SessionControlState,
+)
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.plugins.catalog import ExtensionCatalogBase, build_extension_catalog
 from ouro.plugins.harness_calls import PluginStateView
+from ouro.plugins.runtime import PluginRuntimeResource
+from ouro.plugins.session_controllers import (
+    PluginSessionController,
+    PluginSessionControllerOutput,
+    PluginSessionControllerRegistry,
+)
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
@@ -59,6 +72,38 @@ async def test_native_usage_survives_undo_and_keeps_request_attribution(store, t
         adapter=RuntimeAdapter(FauxProvider(), MODEL),
         usage_service=usage,
     )
+    controllers = PluginSessionControllerRegistry()
+    controllers.replace_owner(
+        OWNER,
+        (
+            PluginSessionController(
+                controller_id="mode",
+                plugin_id=OWNER,
+                description="Attribute native usage",
+                claims=(SessionControlClaim(domain="example.usage", access="shared"),),
+                generation_id="generation",
+                execution_contract_hash="c" * 64,
+                activate_handler=lambda call: PluginSessionControllerOutput(),
+                deactivate_handler=lambda call: PluginSessionControllerOutput(),
+            ),
+        ),
+    )
+    catalog = build_extension_catalog(
+        ExtensionCatalogBase.capture(
+            tools=app.tools,
+            observers=app.observers,
+            commands=None,
+            compaction=None,
+            continuations=None,
+            tool_policies=None,
+            session_controllers=controllers,
+        ),
+        (),
+    )
+    # This test owns one fixed catalog; execution still verifies the real controller contract.
+    resource = Mock(spec=PluginRuntimeResource)
+    resource.snapshot.side_effect = catalog.acquire
+    app.bind_extensions(catalog=resource)
     session = SessionRecord(controls=goal_controls("goal-a"))
     store.create_session(session)
     try:
@@ -90,9 +135,10 @@ async def test_native_usage_survives_undo_and_keeps_request_attribution(store, t
             session_id=session.session_id,
             history_epoch=store.load_session_record(session.session_id).history_epoch,
         )
-        latest.metadata["session_control_snapshot"] = app._session_control_snapshot(
-            session.session_id, run_id=latest.run_id, model_round=1
-        )
+        with catalog.acquire() as lease:
+            latest.metadata["session_control_snapshot"] = app._session_control_snapshot(
+                session.session_id, run_id=latest.run_id, model_round=1, catalog=lease
+            )
         store.save_run(latest)
         for _ in range(2):
             app.run_lifecycle.record_usage(

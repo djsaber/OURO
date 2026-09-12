@@ -31,9 +31,7 @@ def test_builtin_ask_user_projects_to_structured_answer_mapping() -> None:
 
     assert form.questions[0].question_id == "database"
     assert form.questions[0].options[1].label == "Postgres"
-    assert form.encode({"database": ["Postgres"]}) == {
-        "answers": {"database": ["Postgres"]}
-    }
+    assert form.encode({"database": ["Postgres"]}) == {"answers": {"database": ["Postgres"]}}
 
 
 def test_plugin_question_list_uses_same_form_without_builtin_tool_coupling() -> None:

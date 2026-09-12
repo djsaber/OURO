@@ -486,6 +486,7 @@ async def test_tui_cancels_a_queued_task_before_it_can_start(tmp_path):
             while application.supervisor.status(task.session_id).status != "queued":
                 await pilot.pause()
         await app._open_session(task.session_id)
+        assert app._projection.activity.status == "queued", app._projection
         app.action_abort()
         async with asyncio.timeout(5):
             while (await application.tasks.get(task.task_id)).active_execution_id is not None:

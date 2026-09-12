@@ -89,9 +89,7 @@ class ContextMetrics(OuroModel):
                 "reserved_output_tokens": reserved_output_tokens,
                 "input_budget_tokens": input_budget_tokens,
                 "estimated_remaining_tokens": estimated_remaining_tokens,
-                "estimated_utilization_ratio": (
-                    self.estimated_input_tokens / input_budget_tokens
-                ),
+                "estimated_utilization_ratio": (self.estimated_input_tokens / input_budget_tokens),
                 "over_budget": estimated_remaining_tokens < 0,
             }
         )

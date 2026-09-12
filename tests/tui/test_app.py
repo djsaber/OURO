@@ -3691,7 +3691,7 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(tmp_path: P
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"start child", "enter")
-        await asyncio.wait_for(provider.child_started.wait(), timeout=2)
+        await _wait_until(provider.child_started.is_set, pilot, description="owned child execution")
         await pilot.pause()
 
         try:
@@ -6410,7 +6410,8 @@ async def test_input_draft_persistence_debounces_to_the_latest_revision(
         app._remember_input_draft(None, "ab")
         await asyncio.sleep(0.04)
         app._remember_input_draft(None, "abc")
-        await asyncio.sleep(0.14)
+        assert app._input_draft_save_task is not None
+        await app._input_draft_save_task
 
         assert len(saved) == 1
         assert saved[0].draft_for(None) == "abc"
@@ -6635,6 +6636,14 @@ async def test_session_picker_and_archive_menu_project_and_toggle_archived_group
         await pilot.press("enter")
         await pilot.pause()
         assert app.screen is archive_screen
+        await _wait_until(
+            lambda: any(
+                choice.value == active.session_id and choice.group == "Archived"
+                for choice in archive_screen._choices
+            ),
+            pilot,
+            description="archived session menu",
+        )
         choices = {choice.value: choice for choice in archive_screen._choices}
         assert choices[active.session_id].group == "Archived"
         assert choices[archived.session_id].group == "Archived"
@@ -6645,6 +6654,14 @@ async def test_session_picker_and_archive_menu_project_and_toggle_archived_group
         await pilot.press("enter")
         await pilot.pause()
         assert app.screen is archive_screen
+        await _wait_until(
+            lambda: any(
+                choice.value == archived.session_id and choice.group == "Today"
+                for choice in archive_screen._choices
+            ),
+            pilot,
+            description="restored session menu",
+        )
         choices = {choice.value: choice for choice in archive_screen._choices}
         assert choices[archived.session_id].group == "Today"
         catalog = {item.session_id: item for item in application.runtime.sessions.catalog().entries}
@@ -6731,7 +6748,11 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         )
         await pilot.pause()
         assert app.screen is rename_screen
-        assert rename_screen._editing_value is None
+        await _wait_until(
+            lambda: rename_screen._editing_value is None,
+            pilot,
+            description="persisted session rename",
+        )
         assert rename_screen.query_one("#choice-filter", Input).disabled is False
         assert rename_screen.query_one("#choice-filter", Input).has_focus is True
         assert rename_screen.query_one("#choice-hint", Static).render().plain == (

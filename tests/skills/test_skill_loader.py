@@ -209,13 +209,7 @@ def test_configured_skill_paths_can_be_disabled_individually(tmp_path) -> None:
     config_dir.mkdir(parents=True)
     (config_dir / "config.json").write_text(
         json.dumps(
-            {
-                "skills": {
-                    "paths": [
-                        {"path": "shared-skills", "source": "user", "enabled": False}
-                    ]
-                }
-            }
+            {"skills": {"paths": [{"path": "shared-skills", "source": "user", "enabled": False}]}}
         ),
         encoding="utf-8",
     )

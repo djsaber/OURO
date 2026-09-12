@@ -313,8 +313,7 @@ def test_streaming_tool_uses_lowlight_left_filled_window_without_execution_detai
     )
     rendered = rendered_text.plain
     prefix = (
-        f"{DEFAULT_TUI_THEME.spinner_frames[9]} Write "
-        f"{DEFAULT_TUI_THEME.inline_separator_mark} "
+        f"{DEFAULT_TUI_THEME.spinner_frames[9]} Write {DEFAULT_TUI_THEME.inline_separator_mark} "
     )
     window = rendered.removeprefix(prefix)
 
@@ -352,17 +351,14 @@ def test_streaming_tool_window_keeps_the_latest_fixed_width_tail() -> None:
         frame=0,
         theme=DEFAULT_TUI_THEME,
     ).plain.removeprefix(
-        f"{DEFAULT_TUI_THEME.spinner_frames[0]} Write "
-        f"{DEFAULT_TUI_THEME.inline_separator_mark} "
+        f"{DEFAULT_TUI_THEME.spinner_frames[0]} Write {DEFAULT_TUI_THEME.inline_separator_mark} "
     )
     assert overflow_window == "x" * 48
 
 
 def test_tool_elapsed_time_omits_zero_and_uses_shared_duration_format() -> None:
     started_at = datetime(2026, 8, 28, tzinfo=UTC)
-    zero = _tool("Read").model_copy(
-        update={"started_at": started_at, "ended_at": started_at}
-    )
+    zero = _tool("Read").model_copy(update={"started_at": started_at, "ended_at": started_at})
     submillisecond = _tool("Read").model_copy(
         update={
             "started_at": started_at,
@@ -397,9 +393,7 @@ def test_tool_elapsed_time_omits_zero_and_uses_shared_duration_format() -> None:
     assert "0ms" not in submillisecond_text
     assert "5m 04.2s" in elapsed_text
     assert "304" not in elapsed_text
-    elapsed_style = elapsed_rendered.get_style_at_offset(
-        Console(), elapsed_text.index("5m 04.2s")
-    )
+    elapsed_style = elapsed_rendered.get_style_at_offset(Console(), elapsed_text.index("5m 04.2s"))
     assert not elapsed_style.bold
 
 
@@ -490,13 +484,9 @@ def test_spawn_agent_uses_task_outcome_status(
     rendered = rendered_text.plain
     header, detail = rendered.splitlines()
 
-    assert header.strip() == (
-        f"General Agent{DEFAULT_TUI_THEME.inline_separator}Scout  {expected}"
-    )
+    assert header.strip() == (f"General Agent{DEFAULT_TUI_THEME.inline_separator}Scout  {expected}")
     assert f"└ {expected.title()} • Inspect the event pipeline" == detail.strip()
-    title_style = rendered_text.get_style_at_offset(
-        Console(), rendered.index("General Agent")
-    )
+    title_style = rendered_text.get_style_at_offset(Console(), rendered.index("General Agent"))
     assert title_style.color is not None
     assert title_style.color.triplet is not None
     assert title_style.color.triplet.hex == (

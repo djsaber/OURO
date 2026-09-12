@@ -6,6 +6,16 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Session Harness state now has immutable native versions and per-message anchors. State,
+  control transitions, messages, queue effects and receipts use one recoverable Session commit;
+  undo restores the precise message boundary and rejects effects from withdrawn history epochs.
+- Plugin API 3.0.0, Python SDK `ouro.sdk.plugins.v2`, and worker protocol 3.0 expose invocation-scoped
+  owner state proposals. PluginContext no longer writes canonical Session state. Todo, Plan and
+  Goal use this contract; Goal schema 4 keeps actual usage in the native ledger across undo.
+- Session/Run/Message/Event schemas are 2, file layout is 8, and SQLite schema is 6. Explicit
+  `session migrate-harness` converts supported builtin owner schemas without starting execution;
+  messages predating a provable state baseline retain unavailable undo anchors.
+
 - Session and Agent-tree subscriptions now initialize asynchronously: callers must await
   `RuntimeSupervisor.subscribe` and `AgentService.subscribe_agent_tree`. Replay reads and tree
   projections run outside the event loop; registration precedes replay and sequence deduplication
@@ -21,6 +31,11 @@ This project records user-visible and framework-contract changes in this file.
   when acquisition is cancelled, so a promptly displayed interaction does not spuriously fail busy.
 
 ### Added
+
+- CLI and TUI `/undo` restore direct user inputs, including queued messages, skills and attachments.
+  `/continue` uses a new Run after history withdrawal. Snapshot, branch, export, trash and backend
+  transfer preserve Harness references and deduplication facts; filesystem effects and actual usage
+  remain outside undo. TUI history observations filter old epochs before looking up message IDs.
 
 - TUI `/workspace clear` now forgets recent workspace history without mutating the active
   Session workspace, while the Actions menu groups theme, thought display, and a persistent input
@@ -432,6 +447,8 @@ This project records user-visible and framework-contract changes in this file.
   requires embedding large payloads in canonical message journals.
 
 ### Fixed
+
+- Preserve queued Run ownership while selecting a TUI session; recovery no longer mistakes scheduler waiting for an interrupted process.
 
 - Message journal indexes validate the complete last indexed record, so undo followed by an
   equal-size replacement cannot hide the new message or return it under a withdrawn identity.

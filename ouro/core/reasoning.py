@@ -84,9 +84,7 @@ class ReasoningCapability(OuroModel):
             if enabled_effort is None and len(self.supported_efforts) == 1:
                 enabled_effort = self.supported_efforts[0]
             if enabled_effort is None:
-                raise ValueError(
-                    "reasoning with multiple efforts must declare a default effort"
-                )
+                raise ValueError("reasoning with multiple efforts must declare a default effort")
             if enabled_effort not in self.supported_efforts:
                 raise ValueError("enabled default effort must be supported by the endpoint")
             self.default_effort = enabled_effort

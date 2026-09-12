@@ -27,9 +27,7 @@ SessionHealth = Literal[
     "missing_resource",
     "migration_required",
 ]
-UNREADABLE_SESSION_HEALTHS: frozenset[SessionHealth] = frozenset(
-    {"corrupt", "migration_required"}
-)
+UNREADABLE_SESSION_HEALTHS: frozenset[SessionHealth] = frozenset({"corrupt", "migration_required"})
 PendingInteraction = Literal["approval", "user"]
 
 
