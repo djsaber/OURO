@@ -8,6 +8,7 @@ uv run --frozen python -m dev.benchmarks.session_pipeline --mode tui --store-del
 ```
 
 支持 `--mode runtime|tui|activity|all`、`--backend files|sqlite|all`。输出为 JSON Lines。
+`--deltas-per-round` 默认 40；可增加到 400 复核长流和动画尾延迟，比较时两版必须使用相同值。
 比较不同版本时，把相同脚本复制到各版本 checkout，使用同一 Python 环境，顺序运行，避免同时运行测试。
 
 - 每个 Session 预置 120 条历史消息，每条约 840 字符。
@@ -28,6 +29,24 @@ uv run --frozen python -m dev.benchmarks.session_pipeline --mode tui --store-del
 
 2026-09-05 的原始对照数据见 `results/2026-09-05/`，解释见
 [本次审计报告](../../docs/OURO_会话与TUI性能审计_2026-09-05.md)。
+
+## Run 资源生命周期
+
+```powershell
+uv run --frozen python -m dev.benchmarks.run_resources --label before --source C:/path/to/before
+uv run --frozen python -m dev.benchmarks.run_resources --label after
+```
+
+相同脚本依次比较各版本的正常终结、等待/恢复、排队租约转移和带等待 Run 关闭；每种场景默认 100/1,000 个
+Run，重复三次。使用真实 Runtime、工具协调器和 Catalog lease，仅 Catalog 查找替换为内存返回，不加载插件。
+计时与 tracemalloc 分开运行，记录租约峰值、关闭前后数量，以及 Runtime 对象仍在时通过弱引用观察到的协调器
+残留数。内存场景预先创建 RunRecord，保留结果和弱引用本身也有成本，不能把所有 traced current 都归为泄漏。
+另用 files/SQLite 的真实 `run_prepared` 路径核对委派约束解码次数、终态和消息摘要；计数与耗时分开。
+运行耗时在一次预热后记录十个独立 Session 的执行与事件收尾，创建会话和 reserve 不计入。
+
+此脚本不测真实插件热更新、磁盘吞吐或 TUI paint。运行/流式/按键响应复用 `session_pipeline.py`；插件代次、
+取消与请求重新绑定通过行为测试验证。R3 的原始数据和完整边界见
+[2026-09-13 R3 验收记录](results/2026-09-13-r3/README.md)。
 
 ## Harness 状态与撤销成本
 

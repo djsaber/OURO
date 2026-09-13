@@ -524,7 +524,7 @@ async def test_cold_abort_restores_goal_snapshot_and_pauses_goal(tmp_path) -> No
         before = store.load_session_record(session.session_id)
         assert len(before.controls.activations) == 1
         previous_activation_id = before.controls.activations[0].activation_id
-        runtime._release_extension_snapshot(pending_hold.run.run_id)
+        runtime._release_run_resources(pending_hold.run.run_id)
 
         aborted = await runtime.abort_run(
             session_id=session.session_id,

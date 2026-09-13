@@ -41,13 +41,14 @@ from ouro.tui.widgets import _BUSY_ACTIVITIES, ActivityIndicator, Composer
 
 class ScriptedProvider:
     provider_id = "faux"
+    deltas_per_round = 40
 
     def __init__(self) -> None:
         self.round = 0
 
     async def stream(self, **_):
         self.round += 1
-        for index in range(40):
+        for index in range(self.deltas_per_round):
             await asyncio.sleep(0.005)
             yield ProviderStreamEvent(type="text_delta", text=f"Evidence {index}. " * 8 + "\n\n")
         if self.round % 2:
@@ -350,7 +351,11 @@ async def main():
     parser.add_argument("--mode", choices=["runtime", "tui", "activity", "all"], default="all")
     parser.add_argument("--backend", choices=["files", "sqlite", "all"], default="all")
     parser.add_argument("--store-delay-ms", type=float, default=0)
+    parser.add_argument("--deltas-per-round", type=int, default=40)
     args = parser.parse_args()
+    if args.deltas_per_round < 1:
+        parser.error("--deltas-per-round must be positive")
+    ScriptedProvider.deltas_per_round = args.deltas_per_round
     print(
         json.dumps(
             {

@@ -11677,16 +11677,26 @@ async def test_approval_panel_denies_selected_tool(tmp_path: Path) -> None:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("w", "r", "i", "t", "e", "enter")
+        panel = app.query_one(InteractionBar)
         await _wait_until(
-            lambda: app._projection is not None and app._projection.pending_interaction is not None,
+            lambda: (
+                app._projection is not None
+                and app._projection.pending_interaction is not None
+                and panel.display
+                and panel.has_focus
+            ),
             pilot,
             description="tool approval request",
         )
 
-        panel = app.query_one(InteractionBar)
         await pilot.press("down", "enter")
+        # Projection state can change before asynchronous interaction rendering.
         await _wait_until(
-            lambda: app._projection is not None and app._projection.pending_interaction is None,
+            lambda: (
+                app._projection is not None
+                and app._projection.pending_interaction is None
+                and not panel.display
+            ),
             pilot,
             description="denied approval resolution",
         )

@@ -6,6 +6,12 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Runtime enumerates Run-owned resources in one cleanup inventory, shared by terminal/error
+  cleanup, queue transfer and shutdown. Shutdown releases bindings and tool coordinators even
+  without Catalog leases, and attempts other resources when a lease callback fails. Failed Catalog
+  restoration closes its lease before retry; delegated bindings are validated together and decoded
+  once per bind/restore entry. Queued inputs and observers keep independent leases; persisted
+  records, resource lookup paths and execution-time checks are unchanged.
 - Worker responses are decoded directly into their final SDK outputs before staging Session
   state proposals. Context fragments, command inputs/batches and control transitions are built
   once; tool call/resume share decoding, and policy handlers no longer repeat result validation.
