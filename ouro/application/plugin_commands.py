@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ouro.application.harness import capture_session_harness
 from ouro.application.plugin_models import PluginCommandExecutionView
@@ -8,14 +11,138 @@ from ouro.application.queued_inputs import QueuedInput, QueuedInputQueue
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.application.supervisor_models import HostInputReceipt
 from ouro.application.usage import UsageService
+from ouro.core.approvals import SessionApprovalMode
 from ouro.core.base import new_id, utc_now
 from ouro.core.callbacks import run_blocking
 from ouro.core.events import EventRecord
-from ouro.core.harness_calls import accept_state_changes
+from ouro.core.harness_calls import HarnessCallSnapshot, accept_state_changes
+from ouro.core.interactions import SessionInteractionMode
+from ouro.core.reasoning import ReasoningRequest
+from ouro.core.results import RunResult
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_controls import AttributedSessionInputBatch
+from ouro.core.state import SessionRecord
 from ouro.plugins.catalog import ExtensionCatalogLease
 from ouro.sessions import SessionStore
+
+if TYPE_CHECKING:
+    from ouro.application.plugins import PluginService
+    from ouro.application.runtime import RuntimeService
+
+
+class AmbiguousPluginCommandError(ValueError):
+    """A short command name resolves to more than one contribution."""
+
+
+@dataclass(frozen=True)
+class PluginCommandSubmission:
+    session_id: str | None
+    execution: PluginCommandExecutionView
+
+    @property
+    def has_inputs(self) -> bool:
+        return bool(
+            self.execution.accepted_inputs
+            or self.execution.session_input_batches
+            or self.execution.session_inputs
+        )
+
+
+async def submit_plugin_command(
+    plugins: PluginService,
+    runtime: RuntimeService,
+    selector: str,
+    argument: str,
+    *,
+    session_id: str | None,
+    workspace: str | None = None,
+    initial_model: str | None = None,
+    reasoning_request: ReasoningRequest | None = None,
+    approval_mode: SessionApprovalMode = "inherit",
+    interaction_mode: SessionInteractionMode = "interactive",
+    on_session_created: Callable[[str], None] | None = None,
+    input_title: Callable[[str], str] | None = None,
+) -> PluginCommandSubmission | None:
+    """Resolve and execute a command, preserving its target before input consumption.
+
+    Hosts may consume in their own foreground/background task. They never decide
+    between already accepted receipts, atomic batches and independent inputs.
+    """
+
+    matches = [
+        item
+        for item in plugins.list_commands()
+        if (item.command_id if ":" in selector else item.name) == selector
+    ]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        choices = ", ".join(f"/{item.command_id}" for item in matches)
+        raise AmbiguousPluginCommandError(
+            f"Ambiguous plugin command /{selector}; use one of: {choices}"
+        )
+    selected = matches[0]
+    title = " ".join(argument.split())[:60] or f"/{selected.name}"
+
+    async def create_session(title: str) -> None:
+        nonlocal session_id
+        created: SessionRecord | None = None
+
+        def persist() -> None:
+            nonlocal created
+            created = runtime.create_session(
+                title=title,
+                initial_model=initial_model,
+                reasoning_request=reasoning_request,
+                approval_mode=approval_mode,
+                interaction_mode=interaction_mode,
+                workspace=workspace,
+            )
+
+        try:
+            await run_blocking(persist)
+        finally:
+            # A cancelled caller still learns the identity of its completed owned write.
+            if created is not None:
+                session_id = created.session_id
+                if on_session_created is not None:
+                    on_session_created(session_id)
+
+    if session_id is None and selected.requires_session:
+        await create_session(title)
+    execution = await plugins.execute_command(
+        selected.command_id,
+        argument,
+        session_id=session_id,
+        workspace=workspace,
+    )
+    if session_id is None and (execution.session_inputs or execution.session_input_batches):
+        first = (
+            execution.session_inputs[0]
+            if execution.session_inputs
+            else execution.session_input_batches[0].inputs[0]
+        )
+        await create_session(first.title or (input_title(first.prompt) if input_title else title))
+    return PluginCommandSubmission(session_id=session_id, execution=execution)
+
+
+async def consume_plugin_command(
+    runtime: RuntimeService,
+    submission: PluginCommandSubmission,
+) -> AsyncIterator[RunResult]:
+    """Yield results through existing Runtime acceptance and FIFO boundaries."""
+
+    execution = submission.execution
+    if execution.accepted_inputs:
+        for receipt in execution.accepted_inputs:
+            yield await runtime.consume_host_input(receipt)
+    elif execution.session_input_batches:
+        assert submission.session_id is not None
+        for batch in execution.session_input_batches:
+            yield await runtime.submit_plugin_input_batch(batch, session_id=submission.session_id)
+    else:
+        for session_input in execution.session_inputs:
+            yield await runtime.submit_plugin_input(session_input, session_id=submission.session_id)
 
 
 async def execute_plugin_command(
@@ -27,13 +154,14 @@ async def execute_plugin_command(
     session_id: str | None,
     workspace: str | None,
     usage_service: UsageService | None = None,
+    captured_harness: tuple[SessionRecord, HarnessCallSnapshot] | None = None,
 ) -> PluginCommandExecutionView:
     """Accept one command's owner state, nested controllers and queued inputs together."""
-    before, draft = (
-        await run_blocking(capture_session_harness, store, session_id, usage_service=usage_service)
-        if store is not None and session_id is not None
-        else (None, None)
-    )
+    if captured_harness is None and store is not None and session_id is not None:
+        captured_harness = await run_blocking(
+            capture_session_harness, store, session_id, usage_service=usage_service
+        )
+    before, draft = captured_harness if captured_harness is not None else (None, None)
     result = await catalog.commands.execute(
         command_id,
         argument,

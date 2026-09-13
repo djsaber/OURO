@@ -1369,6 +1369,46 @@ async def test_controller_resolves_plugin_commands_and_creates_required_session(
         await controller.close()
 
 
+async def test_plugin_command_failure_keeps_created_tui_session_off_event_loop(
+    tmp_path, monkeypatch
+):
+    application = _reasoning_application(tmp_path)
+    controller = TuiController(lambda _event: None, lambda _status: None, application=application)
+    await controller.start()
+    loop_thread = threading.get_ident()
+    create = application.runtime.create_session
+
+    def checked_create(**kwargs):
+        assert threading.get_ident() != loop_thread
+        return create(**kwargs)
+
+    class Plugins:
+        def list_commands(self):
+            return [
+                PluginCommandView(
+                    command_id="test:fail",
+                    plugin_id="test",
+                    name="fail",
+                    requires_session=True,
+                )
+            ]
+
+        async def execute_command(self, command_id, argument, *, session_id, workspace):
+            assert controller.session_id == session_id
+            raise ValueError("command failed after Session creation")
+
+    application.plugins = Plugins()
+    monkeypatch.setattr(application.runtime, "create_session", checked_create)
+    try:
+        with pytest.raises(ValueError, match="command failed after Session creation"):
+            await controller.execute_plugin_command("fail", "preserve identity")
+        assert controller.session_id is not None
+        session = application.runtime.store.load_session_record(controller.session_id)
+        assert session.title == "preserve identity"
+    finally:
+        await controller.close()
+
+
 @pytest.mark.asyncio
 async def test_controller_submits_plugin_input_batch_as_one_run(tmp_path: Path) -> None:
     application = _reasoning_application(tmp_path)

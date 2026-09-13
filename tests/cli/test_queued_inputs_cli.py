@@ -1,9 +1,13 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
+from ouro.application.plugin_commands import consume_plugin_command
+from ouro.application.plugin_models import PluginCommandExecutionView, PluginCommandView
 from ouro.application.runtime import RuntimeService
-from ouro.cli.interactive import _submit_plugin_inputs, run_interactive
+from ouro.cli.interactive import run_interactive
+from ouro.cli.interactive_commands import handle_command
 from ouro.cli.main import main
 from ouro.cli.parser import build_parser
 from ouro.cli.run import build_default_runtime
@@ -131,7 +135,21 @@ async def test_cli_plugin_submission_preserves_atomic_batch(tmp_path) -> None:
         )
     )
 
-    result = await _submit_plugin_inputs(runtime, (), (batch,), session.session_id)
+    async def execute(command_id, argument, **kwargs):
+        return PluginCommandExecutionView(command_id=command_id, session_input_batches=[batch])
+
+    plugins = SimpleNamespace(
+        list_commands=lambda: [
+            PluginCommandView(
+                command_id="dev.example.goal:goal", plugin_id="dev.example.goal", name="goal"
+            )
+        ],
+        execute_command=execute,
+    )
+    command = await handle_command("/goal ship", runtime, session.session_id, plugins=plugins)
+    assert command.plugin_command is not None
+    results = [result async for result in consume_plugin_command(runtime, command.plugin_command)]
+    result = results[-1]
 
     assert result.run.status == "completed"
     messages = [

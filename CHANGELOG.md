@@ -6,6 +6,13 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Interactive CLI and TUI share application-level plugin command selection, Session creation
+  and input consumption. Hosts retain their presentation and foreground/background waiting;
+  receipts, independent inputs and atomic batches use the existing Runtime protocols. Session
+  creation and command context reads run outside the event loop. Catalog selection and execution
+  share one captured Session/Harness context; completed Session creation reports its identity even
+  when the caller is cancelled. Results are yielded individually, preserving CLI's retention of
+  only the last result and TUI's existing presentation needs.
 - Runtime enumerates Run-owned resources in one cleanup inventory, shared by terminal/error
   cleanup, queue transfer and shutdown. Shutdown releases bindings and tool coordinators even
   without Catalog leases, and attempts other resources when a lease callback fails. Failed Catalog

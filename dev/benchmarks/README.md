@@ -103,3 +103,21 @@ uv run --frozen python -m dev.benchmarks.worker_results --label after
 
 该基准只覆盖 Host 对响应的处理成本，不代表进程启动、IPC、插件执行或 TUI 端到端性能。
 R2 的结果与功能验证见 [验收记录](results/2026-09-13-r2/README.md)。
+
+## 插件命令与 Host 响应
+
+```powershell
+uv run --frozen python dev/benchmarks/plugin_commands.py --source C:/path/to/baseline --label before --repeat 3
+uv run --frozen python dev/benchmarks/plugin_commands.py --label after --repeat 3
+uv run --frozen python dev/benchmarks/plugin_commands.py --mode tui --store-delay-ms 5 --repeat 3
+```
+
+临时安装真实 SDK 插件，分别测无会话查询、必须预建会话、输出后创建会话、带 120 条历史的已有会话；输出包含
+一个两条输入的原子批次，经合成 Provider 流式响应和工具结果完成。覆盖 files/SQLite、交互 CLI 的命令处理与
+消费边界以及 headless TUI 工作流，复用现有管线探针记录 IO 线程归属、loop lag、按键和动画间隔。
+旧版 CLI 的消费分支仅保留在基准适配中，使同一脚本可对照旧源码；不进入生产代码。
+
+安装、启动和已有历史准备不计时；命令提交、首段文本与完整消费分别记录，核对消息摘要及 Run 终态。
+CLI 样本不包含终端输入线程和交互提示；headless TUI 不代表真实终端 paint。低样本分位数与 GC/桌面负载波动
+须保留，不能替代跨平台端到端保证。插件命令重构的最终结果及验证局限见
+[测量记录](results/2026-09-13-r5/README.md)。

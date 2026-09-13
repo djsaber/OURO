@@ -246,7 +246,7 @@ async def test_task_owned_by_another_runtime_streams_through_tools_and_session_s
                 while app._projection.activity.status != "completed":
                     await pilot.pause()
             for text in ("Live", "While", "After"):
-                assert text in app.export_screenshot()
+                await visible(pilot, app, text)
             assert provider.turns == 2
             assert not viewer.supervisor._jobs_by_session
     finally:

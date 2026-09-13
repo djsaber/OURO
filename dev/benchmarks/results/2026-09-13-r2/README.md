@@ -91,5 +91,4 @@ uv run --frozen python -u -m pytest --cov=ouro --cov-report=term-missing --cov-r
 非法 role/tag、bool 数值、互斥工具输出、畸形批次、错误状态提案及 owner 身份注入。
 进程退出、超时、取消、只读、代次撤销和诊断脱敏继续使用已有真实进程与集成回归。
 
-最终契约见[插件系统规格](../../../specs/OURO_插件系统规格_2026-09-02.md)，后续项见
-[设计减负计划](../../../plans/OURO_设计减负重构计划_2026-09-13.md)。
+最终契约见[插件系统规格](../../../specs/OURO_插件系统规格_2026-09-02.md)。

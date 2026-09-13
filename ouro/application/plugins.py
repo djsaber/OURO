@@ -4,6 +4,7 @@ import builtins
 from pathlib import Path
 
 from ouro.application.dto import Diagnostic
+from ouro.application.harness import capture_session_harness
 from ouro.application.plugin_commands import execute_plugin_command
 from ouro.application.plugin_models import (
     CompatibilityItemView,
@@ -21,8 +22,11 @@ from ouro.application.plugin_models import (
 )
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.application.usage import UsageService
+from ouro.core.callbacks import run_blocking
+from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.redaction import redact_text
 from ouro.core.session_controls import AttributedSessionControlTransition
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.plugins.builtin import BuiltinPluginDefinition, BuiltinPluginRegistry
 from ouro.plugins.catalog import ExtensionCatalogLease
 from ouro.plugins.compatibility import inspect_community_package
@@ -321,7 +325,14 @@ class PluginService:
         workspace: str | None = None,
     ) -> PluginCommandExecutionView:
         runtime = self._require_runtime()
-        snapshot = await self._command_catalog(runtime, session_id=session_id)
+        captured_harness = None
+        active_run = None
+        if session_id is not None and self.session_store is not None:
+            before, draft, active_run = await run_blocking(
+                self._capture_command_session, session_id
+            )
+            captured_harness = (before, draft)
+        snapshot = await self._command_catalog(runtime, active_run=active_run)
         try:
             return await execute_plugin_command(
                 catalog=snapshot,
@@ -331,6 +342,7 @@ class PluginService:
                 session_id=session_id,
                 workspace=workspace,
                 usage_service=self.usage_service,
+                captured_harness=captured_harness,
             )
         finally:
             snapshot.close()
@@ -339,17 +351,9 @@ class PluginService:
         self,
         runtime: PluginRuntimeResource,
         *,
-        session_id: str | None,
+        active_run: RunRecord | None,
     ) -> ExtensionCatalogLease:
-        if session_id is None or self.session_store is None:
-            return runtime.snapshot()
-        session = self.session_store.load_session_record(session_id)
-        active_run_id = session.active_run_id
-        if active_run_id is None:
-            return runtime.snapshot()
-        try:
-            active_run = self.session_store.load_run(session_id, active_run_id)
-        except FileNotFoundError:
+        if active_run is None:
             return runtime.snapshot()
         if active_run.status not in {
             "queued",
@@ -367,6 +371,22 @@ class PluginService:
         raw_catalog_id = active_run.metadata.get("extension_catalog_id")
         catalog_id = raw_catalog_id if isinstance(raw_catalog_id, str) else None
         return await runtime.snapshot_for(generations, catalog_id=catalog_id)
+
+    def _capture_command_session(
+        self, session_id: str
+    ) -> tuple[SessionRecord, HarnessCallSnapshot, RunRecord | None]:
+        assert self.session_store is not None
+        with self.session_store.session_mutation(session_id):
+            session, harness = capture_session_harness(
+                self.session_store, session_id, usage_service=self.usage_service
+            )
+            active_run = None
+            if session.active_run_id is not None:
+                try:
+                    active_run = self.session_store.load_run(session_id, session.active_run_id)
+                except FileNotFoundError:
+                    pass
+            return session, harness, active_run
 
     def dependencies(
         self,

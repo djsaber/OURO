@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from pydantic import ValidationError
 
+from ouro.application.plugin_commands import (
+    AmbiguousPluginCommandError,
+    PluginCommandSubmission,
+    submit_plugin_command,
+)
 from ouro.application.queued_inputs import QueuedInputMode
 from ouro.application.runtime import RuntimeService
 from ouro.application.skill_activations import SkillInvocationRequest
@@ -34,9 +40,7 @@ if TYPE_CHECKING:
     from ouro.application.models import ModelReasoningState
     from ouro.application.plugins import PluginService
     from ouro.application.session_models import SessionUndoResult
-    from ouro.application.supervisor_models import HostInputReceipt
     from ouro.core.results import RunResult
-    from ouro.core.session_controls import AttributedSessionInput, AttributedSessionInputBatch
 
 _APPROVAL_MODE_CHOICES = "|".join(SESSION_APPROVAL_MODES)
 _THINKING_CHOICES = ("default", "enabled", "disabled", *REASONING_EFFORTS)
@@ -52,9 +56,7 @@ class CommandResult:
     interaction_mode: SessionInteractionMode | None = None
     initial_model: str | None = None
     reasoning_request: ReasoningRequest | None = None
-    accepted_inputs: tuple[HostInputReceipt, ...] = ()
-    session_inputs: tuple[AttributedSessionInput, ...] = ()
-    session_input_batches: tuple[AttributedSessionInputBatch, ...] = ()
+    plugin_command: PluginCommandSubmission | None = None
     skill_invocation: SkillInvocationRequest | None = None
     restored_input: SessionUndoResult | None = None
     run_result: RunResult | None = None
@@ -71,6 +73,7 @@ async def handle_command(
     interaction_mode: SessionInteractionMode = "interactive",
     attachments: InteractiveAttachmentDraft | None = None,
     queue_mode: QueuedInputMode = "follow_up",
+    on_session_created: Callable[[str], None] | None = None,
 ) -> CommandResult:
     command, _, argument = line.partition(" ")
     command = command.lower()
@@ -209,6 +212,7 @@ async def handle_command(
         initial_model=initial_model,
         reasoning_request=reasoning_request or ReasoningRequest(),
         interaction_mode=interaction_mode,
+        on_session_created=on_session_created,
     )
     if plugin_result is not None:
         return plugin_result
@@ -372,51 +376,34 @@ async def _plugin_command(
     initial_model: str | None,
     reasoning_request: ReasoningRequest,
     interaction_mode: SessionInteractionMode,
+    on_session_created: Callable[[str], None] | None = None,
 ) -> CommandResult | None:
     if plugins is None:
         return None
-    commands = plugins.list_commands()
-    if ":" in selector:
-        matches = [item for item in commands if item.command_id == selector]
-    else:
-        matches = [item for item in commands if item.name == selector]
-    if not matches:
-        return None
-    if len(matches) > 1:
-        choices = ", ".join(f"/{item.command_id}" for item in matches)
-        return CommandResult(
+    try:
+        submitted = await submit_plugin_command(
+            plugins,
+            runtime,
+            selector,
+            argument,
             session_id=session_id,
-            output=f"Ambiguous plugin command /{selector}; use one of: {choices}",
-        )
-    selected = matches[0]
-    target_session_id = session_id
-    if target_session_id is None and selected.requires_session:
-        created = runtime.create_session(
-            title=_plugin_session_title(selected.name, argument),
+            workspace=workspace,
             initial_model=initial_model,
             reasoning_request=reasoning_request,
             approval_mode=approval_mode,
             interaction_mode=interaction_mode,
+            on_session_created=on_session_created,
+            input_title=lambda prompt: " ".join(prompt.split())[:60] or "New session",
         )
-        target_session_id = created.session_id
-    executed = await plugins.execute_command(
-        selected.command_id,
-        argument,
-        session_id=target_session_id,
-        workspace=workspace,
-    )
+    except AmbiguousPluginCommandError as exc:
+        return CommandResult(session_id=session_id, output=str(exc))
+    if submitted is None:
+        return None
     return CommandResult(
-        session_id=target_session_id,
-        output=executed.output,
-        accepted_inputs=executed.accepted_inputs,
-        session_inputs=tuple(executed.session_inputs),
-        session_input_batches=tuple(executed.session_input_batches),
+        session_id=submitted.session_id,
+        output=submitted.execution.output,
+        plugin_command=submitted,
     )
-
-
-def _plugin_session_title(command_name: str, argument: str) -> str:
-    normalized = " ".join(argument.split())
-    return normalized[:60] if normalized else f"/{command_name}"
 
 
 def _sessions_text(runtime: RuntimeService) -> str:

@@ -5,12 +5,12 @@ from contextlib import suppress
 from pathlib import Path
 
 from ouro.application.events import RuntimeEventSink
+from ouro.application.plugin_commands import PluginCommandSubmission, consume_plugin_command
 from ouro.application.plugins import PluginService
 from ouro.application.queued_inputs import QueuedInputMode
 from ouro.application.runtime import RuntimeService
 from ouro.application.session_models import SessionUndoResult
 from ouro.application.skill_activations import SkillInvocationRequest
-from ouro.application.supervisor_models import HostInputReceipt
 from ouro.cli.interactive_attachments import InteractiveAttachmentDraft
 from ouro.cli.interactive_commands import handle_command
 from ouro.cli.interactive_input import InputFunc, PromptFunc, write_terminal_prompt
@@ -31,7 +31,6 @@ from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import SkillActivationContent
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
-from ouro.core.session_controls import AttributedSessionInput, AttributedSessionInputBatch
 from ouro.deployment import SessionBackend, TaskBackend
 from ouro.local_application import LocalApplication
 
@@ -135,6 +134,13 @@ async def _run_interactive_session(
     plugin_run_task: asyncio.Task[RunResult] | None = None
     attachments = InteractiveAttachmentDraft()
     restored_input: SessionUndoResult | None = None
+
+    def plugin_session_created(created_id: str) -> None:
+        nonlocal session_id, restored_input
+        session_id = created_id
+        attachments.retain_for_session(created_id)
+        restored_input = None
+
     coordinator = InteractionCoordinator(
         runtime=runtime,
         output=output,
@@ -241,6 +247,7 @@ async def _run_interactive_session(
                         interaction_mode=current_interaction_mode,
                         attachments=attachments,
                         queue_mode=queue_mode,
+                        on_session_created=plugin_session_created,
                     )
                 except OuroError as exc:
                     await _report_runtime_error(runtime, output, output_func, exc)
@@ -271,52 +278,15 @@ async def _run_interactive_session(
                 if command_result.should_exit:
                     await _stop_plugin_run(runtime, plugin_run_task, session_id)
                     return 0
-                if command_result.accepted_inputs:
+                submission = command_result.plugin_command
+                if submission is not None and submission.has_inputs:
                     if plugin_run_task is None:
                         plugin_run_task = asyncio.create_task(
-                            _consume_command_inputs(runtime, command_result.accepted_inputs),
+                            _consume_plugin_command(runtime, submission),
                             name=f"ouro-plugin-input-{session_id}",
                         )
                     else:
-                        await _consume_command_inputs(runtime, command_result.accepted_inputs)
-                elif command_result.session_inputs or command_result.session_input_batches:
-                    if session_id is None:
-                        first = (
-                            command_result.session_inputs[0]
-                            if command_result.session_inputs
-                            else command_result.session_input_batches[0].inputs[0]
-                        )
-                        created = runtime.create_session(
-                            title=first.title or _interactive_title(first.prompt),
-                            initial_model=initial_model,
-                            reasoning_request=current_reasoning_request,
-                            approval_mode=current_approval_mode,
-                            interaction_mode=current_interaction_mode,
-                        )
-                        session_id = created.session_id
-                    if plugin_run_task is None:
-                        plugin_run_task = asyncio.create_task(
-                            _submit_plugin_inputs(
-                                runtime,
-                                command_result.session_inputs,
-                                command_result.session_input_batches,
-                                session_id,
-                            ),
-                            name=f"ouro-plugin-input-{session_id}",
-                        )
-                    else:
-                        if command_result.session_input_batches:
-                            for batch in command_result.session_input_batches:
-                                await runtime.submit_plugin_input_batch(
-                                    batch,
-                                    session_id=session_id,
-                                )
-                        else:
-                            for session_input in command_result.session_inputs:
-                                await runtime.submit_plugin_input(
-                                    session_input,
-                                    session_id=session_id,
-                                )
+                        await _consume_plugin_command(runtime, submission)
                 if command_result.skill_invocation is None:
                     continue
                 skill_invocation = command_result.skill_invocation
@@ -378,32 +348,15 @@ async def _report_runtime_error(
     output_func(f"Error: {error}")
 
 
-async def _consume_command_inputs(
+async def _consume_plugin_command(
     runtime: RuntimeService,
-    receipts: tuple[HostInputReceipt, ...],
+    submission: PluginCommandSubmission,
 ) -> RunResult:
-    result: RunResult | None = None
-    for receipt in receipts:
-        result = await runtime.consume_host_input(receipt)
-    assert result is not None
-    return result
-
-
-async def _submit_plugin_inputs(
-    runtime: RuntimeService,
-    session_inputs: tuple[AttributedSessionInput, ...],
-    session_input_batches: tuple[AttributedSessionInputBatch, ...],
-    session_id: str,
-) -> RunResult:
-    result: RunResult | None = None
-    if session_input_batches:
-        for batch in session_input_batches:
-            result = await runtime.submit_plugin_input_batch(batch, session_id=session_id)
-    else:
-        for session_input in session_inputs:
-            result = await runtime.submit_plugin_input(session_input, session_id=session_id)
-    assert result is not None
-    return result
+    last_result: RunResult | None = None
+    async for result in consume_plugin_command(runtime, submission):
+        last_result = result
+    assert last_result is not None
+    return last_result
 
 
 async def _stop_plugin_run(
@@ -427,11 +380,6 @@ async def _stop_plugin_run(
         await asyncio.gather(task, return_exceptions=True)
     except Exception:
         return
-
-
-def _interactive_title(prompt: str) -> str:
-    normalized = " ".join(prompt.split())
-    return normalized[:60] if normalized else "New session"
 
 
 def _interactive_prompt(attachment_count: int) -> str:

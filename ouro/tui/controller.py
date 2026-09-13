@@ -45,6 +45,7 @@ from ouro.application.configuration_models import (
 from ouro.application.dto import ApplicationStartupReport
 from ouro.application.events import RuntimeEventSinkRegistration
 from ouro.application.models import AvailableModel, ModelReasoningState
+from ouro.application.plugin_commands import consume_plugin_command, submit_plugin_command
 from ouro.application.plugin_models import (
     PluginActionResult,
     PluginCommandExecutionView,
@@ -1843,72 +1844,30 @@ class TuiController:
         application = self._application
         if application is None or application.plugins is None:
             return None
-        commands = self.plugin_commands()
-        matches = (
-            tuple(item for item in commands if item.command_id == selector)
-            if ":" in selector
-            else tuple(item for item in commands if item.name == selector)
-        )
-        if not matches:
-            return None
-        if len(matches) > 1:
-            choices = ", ".join(f"/{item.command_id}" for item in matches)
-            raise ValueError(f"Ambiguous plugin command /{selector}; use one of: {choices}")
-        selected = matches[0]
         runtime = self._runtime()
-        command_workspace = self._draft_workspace or runtime.default_workspace
-        if self._session_id is None and selected.requires_session:
-            created = runtime.create_session(
-                title=_plugin_session_title(selected.name, argument),
-                initial_model=self._initial_model,
-                reasoning_request=self._reasoning_request,
-                approval_mode=self._approval_mode,
-                interaction_mode=self._interaction_mode,
-                workspace=command_workspace,
-            )
-            self._session_id = created.session_id
+
+        def session_created(session_id: str) -> None:
+            self._session_id = session_id
             self._initial_model = None
-        execution = await application.plugins.execute_command(
-            selected.command_id,
+
+        submission = await submit_plugin_command(
+            application.plugins,
+            runtime,
+            selector,
             argument,
             session_id=self._session_id,
-            workspace=command_workspace,
+            workspace=self._draft_workspace or runtime.default_workspace,
+            initial_model=self._initial_model,
+            reasoning_request=self._reasoning_request,
+            approval_mode=self._approval_mode,
+            interaction_mode=self._interaction_mode,
+            on_session_created=session_created,
         )
-        if self._session_id is None and (
-            execution.session_inputs or execution.session_input_batches
-        ):
-            first = (
-                execution.session_inputs[0]
-                if execution.session_inputs
-                else execution.session_input_batches[0].inputs[0]
-            )
-            created = runtime.create_session(
-                title=first.title or _plugin_session_title(selected.name, argument),
-                initial_model=self._initial_model,
-                reasoning_request=self._reasoning_request,
-                approval_mode=self._approval_mode,
-                interaction_mode=self._interaction_mode,
-                workspace=command_workspace,
-            )
-            self._session_id = created.session_id
-            self._initial_model = None
-        results: list[RunResult] = []
-        if execution.accepted_inputs:
-            for receipt in execution.accepted_inputs:
-                results.append(await runtime.consume_host_input(receipt))
-        elif execution.session_input_batches:
-            assert self._session_id is not None
-            for batch in execution.session_input_batches:
-                results.append(
-                    await runtime.submit_plugin_input_batch(batch, session_id=self._session_id)
-                )
-        else:
-            for session_input in execution.session_inputs:
-                results.append(
-                    await runtime.submit_plugin_input(session_input, session_id=self._session_id)
-                )
+        if submission is None:
+            return None
+        results = [result async for result in consume_plugin_command(runtime, submission)]
         return TuiPluginCommandExecution(
-            execution=execution,
+            execution=submission.execution,
             run_results=tuple(results),
             session_controls=await self.session_control_statuses(),
         )
@@ -2345,11 +2304,6 @@ def _observation_detail(snapshot: SessionObservationSnapshot) -> SessionDetail:
         recent_run=recent_run,
         active_compaction=active_compaction,
     )
-
-
-def _plugin_session_title(name: str, argument: str) -> str:
-    normalized = " ".join(argument.split())
-    return normalized[:60] if normalized else f"/{name}"
 
 
 def _session_control_fallback_label(plugin_id: str) -> str:

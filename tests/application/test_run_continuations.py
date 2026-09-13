@@ -8,6 +8,7 @@ from dataclasses import replace
 import pytest
 
 from ouro.application.harness import capture_harness
+from ouro.application.plugin_commands import consume_plugin_command
 from ouro.application.plugin_models import PluginCommandView
 from ouro.application.queued_inputs import QueuedInputQueue
 from ouro.application.run_continuations import RunContinuationService
@@ -326,8 +327,10 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
         plugins=application.plugins,
     )
     assert alias.output == "Goal started."
-    assert alias.session_id is None
-    assert alias.session_inputs[0].prompt == "Work on: inspect the feature"
+    assert alias.session_id is not None
+    assert alias.plugin_command is not None
+    assert alias.plugin_command.execution.session_inputs[0].prompt == "Work on: inspect the feature"
+    assert store.load_runs(alias.session_id) == []
 
     command = await handle_command(
         f"/{TEST_GOAL_PLUGIN_ID}:goal ship the feature",
@@ -336,15 +339,18 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
         plugins=application.plugins,
     )
     assert command.output == "Goal started."
-    assert command.session_id is None
-    assert store.list_sessions() == []
-    assert len(command.session_inputs) == 1
-    attributed = command.session_inputs[0]
+    assert command.session_id is not None
+    assert command.plugin_command is not None
+    assert command.session_id != alias.session_id
+    assert store.load_runs(command.session_id) == []
+    assert len(command.plugin_command.execution.session_inputs) == 1
+    attributed = command.plugin_command.execution.session_inputs[0]
     assert attributed.plugin_id == TEST_GOAL_PLUGIN_ID
     assert attributed.contribution_id == "goal"
     assert attributed.generation_id
 
-    result = await runtime.submit_plugin_input(attributed, session_id=None)
+    (result,) = [result async for result in consume_plugin_command(runtime, command.plugin_command)]
+    assert result.session.session_id == command.session_id
     snapshot = store.load_runtime_session(result.session.session_id)
     assert len(snapshot.runs) == 1
     assert snapshot.runs[0].origin == "plugin"
