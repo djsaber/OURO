@@ -6,6 +6,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Worker responses are decoded directly into their final SDK outputs before staging Session
+  state proposals. Context fragments, command inputs/batches and control transitions are built
+  once; tool call/resume share decoding, and policy handlers no longer repeat result validation.
+  Protocol limits, cancellation, owner isolation and SDK-to-core boundaries remain unchanged.
 - SessionRepository exposes `load_session_harness` for a consistent Session/checkpoint pair.
   File and SQLite commit preparation, current-Harness reads, and application stage snapshots
   reuse the decoded checkpoint. Session controls remain isolated from Harness state; persistence

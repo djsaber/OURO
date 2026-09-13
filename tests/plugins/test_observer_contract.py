@@ -20,7 +20,7 @@ from ouro.plugins.api import adapt_sdk_contributions
 from ouro.plugins.manifest import PluginContributes
 from ouro.plugins.worker import (
     WorkerProtocolError,
-    _validate_worker_result,
+    _decode_worker_observer,
     _worker_observation_payload,
 )
 from ouro.sdk.plugins import v2 as sdk
@@ -195,7 +195,7 @@ async def test_inprocess_and_worker_observers_reject_return_values() -> None:
     with pytest.raises(TypeError, match="must return None"):
         await contributions.observers[0].handler(OBSERVATIONS[1][1])
     with pytest.raises(WorkerProtocolError, match="must be empty"):
-        _validate_worker_result("observer.observe", {"control": "not-allowed"})
+        _decode_worker_observer({"control": "not-allowed"}, "observer.observe")
 
 
 @pytest.mark.asyncio

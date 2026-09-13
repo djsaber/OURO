@@ -68,3 +68,19 @@ uv run --frozen python -m dev.benchmarks.session_harness_reads --label after
 
 2026-09-13 的读取减负结果、原始数据和验证边界见
 [R1 验收记录](results/2026-09-13-r1/README.md)。
+
+## Worker 返回值解码成本
+
+```powershell
+uv run --frozen python -m dev.benchmarks.worker_results --label before --source C:/path/to/baseline
+uv run --frozen python -m dev.benchmarks.worker_results --label after
+```
+
+同一脚本顺序比较两个实现。使用合成的 Context、Command、Tool、Continuation 与 Compaction 返回值，
+通过真实 worker handler 测量 1、64、512 项响应。`decoded` 从 JSON 解析后开始，`json` 包含 JSON 解析；
+模拟 transport 不启动插件进程，不访问网络或个人数据。每场景预热 10 次，默认采样 60 组，每组调用 5 次，
+记录每次调用的组内平均耗时。另行测量构造次数与 3 次 tracemalloc 峰值，避免探针影响耗时。
+输出保留原始样本及最终 SDK 输出摘要用于核对语义等价；峰值内存不等于累计分配量。
+
+该基准只覆盖 Host 对响应的处理成本，不代表进程启动、IPC、插件执行或 TUI 端到端性能。
+R2 的结果与功能验证见 [验收记录](results/2026-09-13-r2/README.md)。
