@@ -45,43 +45,10 @@ def test_default_command_starts_tui_with_host_options(monkeypatch, tmp_path) -> 
     }
 
 
-def test_interactive_command_forwards_command_scoped_options(monkeypatch, tmp_path) -> None:
-    captured: dict[str, object] = {}
-
-    async def fake_run_interactive(**kwargs: object) -> int:
-        captured.update(kwargs)
-        return 3
-
-    monkeypatch.setattr("ouro.cli.main.run_interactive", fake_run_interactive)
-
-    code = main(
-        [
-            "interactive",
-            "--home",
-            str(tmp_path),
-            "--system-prompt",
-            "Custom",
-            "--approval-mode",
-            "approval",
-            "--session-backend",
-            "sqlite",
-        ]
-    )
-
-    assert code == 3
-    assert captured == {
-        "home": str(tmp_path),
-        "system_prompt": "Custom",
-        "approval_mode": "approval",
-        "interaction_mode": "interactive",
-        "session_backend": "sqlite",
-        "task_backend": None,
-    }
-
-
-def test_removed_tui_command_is_rejected() -> None:
+@pytest.mark.parametrize("command", ["interactive", "tui"])
+def test_unsupported_host_commands_are_rejected(command) -> None:
     with pytest.raises(SystemExit) as exc_info:
-        build_parser().parse_args(["tui"])
+        build_parser().parse_args([command])
 
     assert exc_info.value.code == 2
 
@@ -104,7 +71,7 @@ def test_version_uses_canonical_short_option(capsys) -> None:
     (["--session", "ses_saved"], ["--approval-mode", "auto"], ["--afk"]),
 )
 def test_tui_only_options_are_not_silently_applied_to_commands(option, capsys) -> None:
-    code = main([*option, "interactive"])
+    code = main([*option, "run", "prompt"])
 
     assert code == 2
     assert "before a command are TUI options" in capsys.readouterr().err

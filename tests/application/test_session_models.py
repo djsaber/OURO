@@ -6,7 +6,6 @@ import pytest
 
 from ouro.application.models import AvailableModel
 from ouro.application.runtime import RuntimeService
-from ouro.cli.interactive import run_interactive
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
@@ -402,66 +401,6 @@ def test_model_and_reasoning_updates_do_not_load_message_history(
 
 
 @pytest.mark.asyncio
-async def test_interactive_lists_switches_and_reports_session_model(tmp_path) -> None:
-    runtime, _, providers = _runtime(tmp_path)
-    inputs = iter(
-        [
-            "hello",
-            "/models",
-            "/model beta/fast",
-            "again",
-            "/model",
-            "/quit",
-        ]
-    )
-    outputs: list[str] = []
-
-    code = await run_interactive(
-        runtime=runtime,
-        input_func=lambda _prompt: next(inputs),
-        output_func=outputs.append,
-    )
-
-    assert code == 0
-    assert any("Available models:" in output for output in outputs)
-    assert "Switched model: beta/fast (beta-model)" in outputs
-    assert "beta/fast" in outputs
-    assert providers["alpha"].models == ["alpha-model"]
-    assert providers["beta"].models == ["beta-model"]
-
-
-@pytest.mark.asyncio
-async def test_interactive_selects_model_before_creating_first_session(tmp_path) -> None:
-    runtime, _, providers = _runtime(tmp_path)
-    inputs = iter(
-        [
-            "/models",
-            "/model beta/fast",
-            "/models",
-            "/model",
-            "hello",
-            "/quit",
-        ]
-    )
-    outputs: list[str] = []
-
-    code = await run_interactive(
-        runtime=runtime,
-        input_func=lambda _prompt: next(inputs),
-        output_func=outputs.append,
-    )
-
-    assert code == 0
-    assert "Selected model for new session: beta/fast (beta-model)" in outputs
-    assert "beta/fast" in outputs
-    model_lists = [output for output in outputs if output.startswith("Available models:")]
-    assert model_lists[0].splitlines()[1].startswith("*")
-    assert any(line.startswith("* beta/fast") for line in model_lists[1].splitlines())
-    assert providers["alpha"].models == []
-    assert providers["beta"].models == ["beta-model"]
-
-
-@pytest.mark.asyncio
 async def test_session_reasoning_is_persisted_and_bound_per_model_request(tmp_path) -> None:
     runtime, catalog, providers = _runtime(tmp_path)
     high = ReasoningRequest(mode="enabled", effort="high")
@@ -535,43 +474,3 @@ def test_session_model_switch_atomically_replaces_incompatible_reasoning(tmp_pat
     state = runtime.session_reasoning(session.session_id)
     assert state.model.key == "beta/fast"
     assert state.effective == ReasoningRequest(mode="enabled", effort="low")
-
-
-@pytest.mark.asyncio
-async def test_interactive_thinking_command_keeps_new_sessions_independent(tmp_path) -> None:
-    runtime, _, providers = _runtime(tmp_path)
-    inputs = iter(
-        [
-            "/thinking high",
-            "first",
-            "/new",
-            "/thinking low",
-            "second",
-            "/thinking",
-            "/quit",
-        ]
-    )
-    outputs: list[str] = []
-
-    code = await run_interactive(
-        runtime=runtime,
-        input_func=lambda _prompt: next(inputs),
-        output_func=outputs.append,
-    )
-
-    assert code == 0
-    assert "Thinking: high (effective: high; available: default, enabled, disabled, low, high)" in (
-        outputs
-    )
-    assert "Thinking: low (effective: low; available: default, enabled, disabled, low, high)" in (
-        outputs
-    )
-    assert providers["alpha"].reasoning_requests == [
-        ReasoningRequest(mode="enabled", effort="high"),
-        ReasoningRequest(mode="enabled", effort="low"),
-    ]
-    sessions = runtime.sessions.catalog().entries
-    persisted = [
-        runtime.store.load_session_record(entry.session_id).reasoning_request for entry in sessions
-    ]
-    assert set(request.effort for request in persisted) == {"low", "high"}

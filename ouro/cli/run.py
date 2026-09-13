@@ -193,7 +193,7 @@ def _print_startup_diagnostics(report: ApplicationStartupReport) -> None:
 
 
 def _print_run_events(events: list[Any]) -> None:
-    """Print text and reasoning deltas, matching interactive-mode formatting."""
+    """Print text deltas and render reasoning deltas in italics."""
 
     in_reasoning = False
     streamed_text = False

@@ -18,7 +18,6 @@ from ouro.builtin_plugins.agent_context.instructions import (
     AgentInstructionLoader,
     render_agent_instructions,
 )
-from ouro.cli.interactive_commands import handle_command
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.local_application import LocalApplication
@@ -297,11 +296,7 @@ async def test_default_builtin_injects_instructions_then_runtime_facts_without_p
         assert application.plugins is not None
         assert application.plugins.show(PLUGIN_ID).status == "active"
         result = await runtime.run("Inspect the environment")
-        context_command = await handle_command(
-            "/context full",
-            runtime,
-            result.session.session_id,
-        )
+        context = runtime.sessions.context(result.session.session_id)
 
     prompt = system_prompts[0]
     assert "Always validate the final result." in prompt
@@ -313,9 +308,9 @@ async def test_default_builtin_injects_instructions_then_runtime_facts_without_p
     assert not any(
         message.metadata.get("kind") == "context_provider" for message in snapshot.messages
     )
-    assert context_command.output.startswith("Context: ctx_")
-    assert "<ouro-agent-instructions>" in context_command.output
-    assert "<ouro-system-information>" in context_command.output
+    assert context is not None
+    assert "<ouro-agent-instructions>" in context.provider_context.system_prompt
+    assert "<ouro-system-information>" in context.provider_context.system_prompt
 
 
 def _context_call(*, workspace: str | None = None) -> sdk.ContextCall:

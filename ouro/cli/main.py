@@ -5,7 +5,6 @@ import asyncio
 import json
 import sys
 from collections.abc import Sequence
-from typing import cast
 
 from ouro.cli.agent_commands import run_agent_command
 from ouro.cli.approval_commands import (
@@ -26,7 +25,6 @@ from ouro.cli.config_commands import (
     show_tool_execution_config,
 )
 from ouro.cli.errors import error_exit_code
-from ouro.cli.interactive import run_interactive
 from ouro.cli.mcp_commands import (
     check_mcp_connection,
     list_mcp_configs,
@@ -101,7 +99,6 @@ from ouro.cli.usage_commands import (
     show_usage_entry,
     summarize_usage,
 )
-from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import ConfigError, OuroError
 from ouro.core.reasoning import ReasoningRequest
 from ouro.deployment import SessionBackend
@@ -131,13 +128,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _dispatch(args: argparse.Namespace) -> int:
     if args.command is not None and (
-        args.resume_session_id is not None
-        or args.interactive_afk
-        or args.interactive_approval_mode != "inherit"
+        args.resume_session_id is not None or args.tui_afk or args.tui_approval_mode != "inherit"
     ):
         raise ConfigError(
             "--session, --approval-mode, and --afk before a command are TUI options; "
-            "place interactive Host options after 'ouro interactive'"
+            "use 'ouro COMMAND --help' for command-specific options"
         )
     if args.command is None:
         from ouro.tui.entry import run_tui
@@ -147,22 +142,9 @@ def _dispatch(args: argparse.Namespace) -> int:
             system_prompt=args.system_prompt,
             session_backend=args.session_backend,
             task_backend=args.task_backend,
-            approval_mode="auto" if args.interactive_afk else args.interactive_approval_mode,
-            interaction_mode="unattended" if args.interactive_afk else "interactive",
+            approval_mode="auto" if args.tui_afk else args.tui_approval_mode,
+            interaction_mode="unattended" if args.tui_afk else "interactive",
             resume_session_id=args.resume_session_id,
-        )
-    if args.command == "interactive":
-        afk = args.command_afk
-        approval_mode = cast(SessionApprovalMode, args.command_approval_mode or "inherit")
-        return asyncio.run(
-            run_interactive(
-                home=args.interactive_home or args.home,
-                system_prompt=args.interactive_system_prompt or args.system_prompt,
-                approval_mode="auto" if afk else approval_mode,
-                interaction_mode="unattended" if afk else "interactive",
-                session_backend=args.interactive_session_backend or args.session_backend,
-                task_backend=args.interactive_task_backend or args.task_backend,
-            )
         )
     if args.command == "run":
         return _run_command(args)

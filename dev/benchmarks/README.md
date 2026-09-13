@@ -1,123 +1,57 @@
-# 会话与 TUI 响应性基准
+# 本地性能测量
 
-`session_pipeline.py` 使用临时目录和合成会话，不访问网络模型、个人 OURO home 或真实会话内容。
+基准使用临时目录、合成会话和 Provider，不访问网络模型或个人 OURO 数据。使用锁定依赖，独立运行，
+不要与 pytest 或其他基准争用资源。输出为 JSON Lines，包含环境、原始样本和统计量；需要保存时写入本地忽略目录。
+基准结果只适用于测量环境，不能替代真实终端和网络 Provider 验证，也不作为 CI 的固定时间断言。
+
+## 会话管线与 TUI
 
 ```powershell
 uv run --frozen python -m dev.benchmarks.session_pipeline --repeat 3
 uv run --frozen python -m dev.benchmarks.session_pipeline --mode tui --store-delay-ms 5 --repeat 3
 ```
 
-支持 `--mode runtime|tui|activity|all`、`--backend files|sqlite|all`。输出为 JSON Lines。
-`--deltas-per-round` 默认 40；可增加到 400 复核长流和动画尾延迟，比较时两版必须使用相同值。
-比较不同版本时，把相同脚本复制到各版本 checkout，使用同一 Python 环境，顺序运行，避免同时运行测试。
+每个 Session 包含 120 条历史消息；两轮模型响应各含 40 个间隔 5 ms 的文本 delta，并执行一个约 32 KiB 的工具。
+`--mode runtime|tui|activity|all` 选择场景，`--backend files|sqlite|all` 选择后端。`--deltas-per-round` 控制流长度。
+TUI 使用 Textual `run_test(size=(120, 40))`，记录 1 ms ticker 的 loop lag、按键到 Composer 更新、动画 tick 间隔、
+GC、慢回调和 Store 线程归属。Store 计数包含嵌套公共调用，不等于物理 IO；注入延迟不代表特定硬件。
+探针在退出时恢复，不修改生产 GC、动画频率、流式窗口和背压。
 
-- 每个 Session 预置 120 条历史消息，每条约 840 字符。
-- 两轮模型响应，每轮 40 个间隔 5 ms 的文本 delta，中间执行一次约 32 KiB 返回内容的只读工具。
-- TUI 使用 Textual `run_test(size=(120, 40))`，打开已有 Session，再提交一次请求；测量覆盖打开、运行与末尾刷新。
-- 1 ms ticker 测量事件循环调度延迟；运行期间每隔至少 30 ms 注入一个 Key，直到 Composer 文本改变。
-- 记录 ActivityIndicator 实际 `_tick` 调用间隔，空闲状态清除间隔起点；这不是终端像素呈现时间。
-- Store 调用计数包括公共方法的嵌套调用，表示主循环上命中的同步边界次数，不是物理磁盘操作数或事务数。
-- 可选延迟在读写类 Store 方法上注入，嵌套方法也计入；用于暴露阻塞，不能等同于特定硬件的磁盘性能。
-- `activity` 分项比较四个工具各 5,000 条合成结果的快照，其 sequence 改变但数据没有改变。
-- 脚本临时包装 Store、history renderer、spinner、asyncio callback，并记录 GC 时长，退出时恢复。
-  仅在 callback 超过 16 ms 时提取其名称，不在每个 tick 检查 frame locals，以免诊断改变对象分配。
-  包装仅存在于独立诊断脚本中；正常 OURO 运行没有新增遥测开销。
-- 不禁用 GC、不调整计时精度、不修改流式窗口或动画频率。分位数是每次运行的样本分布，短样本优先看最大值。
-
-此基准适合发现同步阻塞与验证边界，不代表 Windows/POSIX 真实终端验收，也不覆盖真实 Provider 网络延迟、
-大规模子树或万条消息的首屏成本。性能数值不作为 CI 的固定时间断言；CI 使用线程归属、顺序、取消及过时结果测试。
-
-2026-09-05 的原始对照数据见 `results/2026-09-05/`，解释见
-[本次审计报告](../../docs/OURO_会话与TUI性能审计_2026-09-05.md)。
-
-## Run 资源生命周期
+## Run 资源与状态读取
 
 ```powershell
-uv run --frozen python -m dev.benchmarks.run_resources --label before --source C:/path/to/before
-uv run --frozen python -m dev.benchmarks.run_resources --label after
+uv run --frozen python -m dev.benchmarks.run_resources
+uv run --frozen python -m dev.benchmarks.session_harness_reads
 ```
 
-相同脚本依次比较各版本的正常终结、等待/恢复、排队租约转移和带等待 Run 关闭；每种场景默认 100/1,000 个
-Run，重复三次。使用真实 Runtime、工具协调器和 Catalog lease，仅 Catalog 查找替换为内存返回，不加载插件。
-计时与 tracemalloc 分开运行，记录租约峰值、关闭前后数量，以及 Runtime 对象仍在时通过弱引用观察到的协调器
-残留数。内存场景预先创建 RunRecord，保留结果和弱引用本身也有成本，不能把所有 traced current 都归为泄漏。
-另用 files/SQLite 的真实 `run_prepared` 路径核对委派约束解码次数、终态和消息摘要；计数与耗时分开。
-运行耗时在一次预热后记录十个独立 Session 的执行与事件收尾，创建会话和 reserve 不计入。
+资源基准覆盖正常终结、等待/恢复、排队租约转移和关闭；每场景使用 100/1,000 个 Run。计时与 tracemalloc 分开，
+通过真实租约和弱引用检查资源收尾。读取基准使用 0/8/64 个控制关系，预热后测量 Session、Harness 与控制投影。
+这些场景测量局部生命周期与读取成本，不覆盖插件启动、磁盘吞吐或终端绘制。
 
-此脚本不测真实插件热更新、磁盘吞吐或 TUI paint。运行/流式/按键响应复用 `session_pipeline.py`；插件代次、
-取消与请求重新绑定通过行为测试验证。R3 的原始数据和完整边界见
-[2026-09-13 R3 验收记录](results/2026-09-13-r3/README.md)。
-
-## Harness 状态与撤销成本
+## Harness 状态与撤销
 
 ```powershell
-uv run --frozen python -m dev.benchmarks.harness_lifecycle --label m5 --repeat 3
-uv run --frozen python -m dev.benchmarks.harness_lifecycle --label m4 --source C:/path/to/m4 --repeat 3
+uv run --frozen python -m dev.benchmarks.harness_lifecycle --repeat 3
 ```
 
-同一脚本、Python 环境依次运行两个 revision，不与 pytest 并行。每个后端覆盖 100/10,000 条保留消息、
-固定 2 条撤回后缀、1 × 1 KiB / 8 × 8 KiB / 8 × 64 KiB owner 数据，各 3 次。先写入另一份状态，
-再撤销并验证恢复原值；单独测量首次状态提交、整阶段状态读取、并发只读与无变化回调。
-整阶段读取直接调用 Application 的 `capture_harness`，不在基准内复制状态捕获流程。
-夹具创建、文件索引首次建立和检查点计数不计入耗时，因此不代表冷启动万条消息的首屏成本。
+覆盖两后端、100/10,000 条保留消息、固定短撤回后缀以及不同 owner 状态规模；记录状态版本、原生同步次数、
+进程 IO、耗时和内存。夹具创建与首次索引建立不计时。Windows 通过 SQLite VFS 观察 `FlushFileBuffers`，Linux
+通过 strace 观察同步调用；观测不可用时明确失败。调用原函数且保留返回值，不改变 fsync/WAL 策略。
+同步探针校准见 `tests/benchmarks/test_sqlite_sync.py`；计数不等于绕过操作系统缓存的物理介质写入。
 
-记录进程 I/O 调用与字节、Python fsync 调用和新增版本数。Windows 使用 GetProcessIoCounters，
-Linux 使用 `/proc/self/io`；这些是操作系统进程计数，不能等同于绕过文件缓存的物理介质读写量。
-SQLite 同步单独计数：Windows 通过 [VFS 系统调用接口](https://www.sqlite.org/c3ref/vfs.html) 观察
-`FlushFileBuffers`，继续执行原函数并保留返回值及系统错误；测量结束或异常时恢复原函数。
-Linux 的 Unix VFS 不提供同步调用钩子，使用 strace 附加当前诊断进程，观察 `fsync`/`fdatasync`。
-附加、退出和读取 trace 在计时与 I/O 采样之外；计时仍包含系统调用被跟踪的开销，两个 revision 使用同一方式。
-Linux 需安装 strace 并具备附加本进程的权限。观测不可用会明确失败，不报告伪造的零值。
-每阶段的 `sqlite_sync_calls` 记录实际调用；不修改 OURO 或 SQLite 实现，保持 WAL/FULL 原有策略及缓存上限。
-`tests/benchmarks/test_sqlite_sync.py` 校准持久提交、只读和异常清理。
-
-2026-09-11 的原始数据与收尾复核见 [Windows / POSIX 成本对照](results/harness-platform-comparison-2026-09-12.md)。
-
-## Session / Harness 读取与控制投影
+## Worker 响应与插件命令
 
 ```powershell
-uv run --frozen python -m dev.benchmarks.session_harness_reads --label before --source C:/path/to/baseline
-uv run --frozen python -m dev.benchmarks.session_harness_reads --label after
-```
-
-同一脚本、解释器和机器依次比较两个版本。files/SQLite 分别构造 0、8、64 个合成控制关系，
-轮流调用 Session 单记录、Application 阶段捕获和当前 Harness 查询；每项预热 5 次，记录随后 200 次
-原始毫秒样本及中位数。状态创建在测量之外，不修改个人数据、不访问网络、不禁用 GC，也不使用耗时作为 CI 断言。
-该场景用于区分减少检查点读取的收益与投影复制的成本，不能替代端到端或真实终端验收。
-
-2026-09-13 的读取减负结果、原始数据和验证边界见
-[R1 验收记录](results/2026-09-13-r1/README.md)。
-
-## Worker 返回值解码成本
-
-```powershell
-uv run --frozen python -m dev.benchmarks.worker_results --label before --source C:/path/to/baseline
-uv run --frozen python -m dev.benchmarks.worker_results --label after
-```
-
-同一脚本顺序比较两个实现。使用合成的 Context、Command、Tool、Continuation 与 Compaction 返回值，
-通过真实 worker handler 测量 1、64、512 项响应。`decoded` 从 JSON 解析后开始，`json` 包含 JSON 解析；
-模拟 transport 不启动插件进程，不访问网络或个人数据。每场景预热 10 次，默认采样 60 组，每组调用 5 次，
-记录每次调用的组内平均耗时。另行测量构造次数与 3 次 tracemalloc 峰值，避免探针影响耗时。
-输出保留原始样本及最终 SDK 输出摘要用于核对语义等价；峰值内存不等于累计分配量。
-
-该基准只覆盖 Host 对响应的处理成本，不代表进程启动、IPC、插件执行或 TUI 端到端性能。
-R2 的结果与功能验证见 [验收记录](results/2026-09-13-r2/README.md)。
-
-## 插件命令与 Host 响应
-
-```powershell
-uv run --frozen python dev/benchmarks/plugin_commands.py --source C:/path/to/baseline --label before --repeat 3
-uv run --frozen python dev/benchmarks/plugin_commands.py --label after --repeat 3
+uv run --frozen python -m dev.benchmarks.worker_results
+uv run --frozen python dev/benchmarks/plugin_commands.py --repeat 3
 uv run --frozen python dev/benchmarks/plugin_commands.py --mode tui --store-delay-ms 5 --repeat 3
 ```
 
-临时安装真实 SDK 插件，分别测无会话查询、必须预建会话、输出后创建会话、带 120 条历史的已有会话；输出包含
-一个两条输入的原子批次，经合成 Provider 流式响应和工具结果完成。覆盖 files/SQLite、交互 CLI 的命令处理与
-消费边界以及 headless TUI 工作流，复用现有管线探针记录 IO 线程归属、loop lag、按键和动画间隔。
-旧版 CLI 的消费分支仅保留在基准适配中，使同一脚本可对照旧源码；不进入生产代码。
+Worker 基准通过真实 handler 测量合成响应解码、构造次数及独立内存峰值；transport 不启动插件进程，
+因此不代表 IPC 或插件执行成本。
 
-安装、启动和已有历史准备不计时；命令提交、首段文本与完整消费分别记录，核对消息摘要及 Run 终态。
-CLI 样本不包含终端输入线程和交互提示；headless TUI 不代表真实终端 paint。低样本分位数与 GC/桌面负载波动
-须保留，不能替代跨平台端到端保证。插件命令重构的最终结果及验证局限见
-[测量记录](results/2026-09-13-r5/README.md)。
+命令基准临时安装真实 SDK 插件，覆盖查询、预建会话、输出后创建会话及已有 120 条历史的会话。
+`--mode application|tui|all` 分别测 Application 命令用例与 headless TUI；输入批次由合成 Provider 和工具完成。
+输出包含提交、首段文本、完整消费、消息摘要、Run 终态和响应性指标；安装、启动与初始历史准备不计时。
+首个模型 delta 不等于终端 paint，TUI 帧、按键和网络性能须按[性能规划](../plans/OURO_性能优化规划_2026-09-02.md)
+单独验证。

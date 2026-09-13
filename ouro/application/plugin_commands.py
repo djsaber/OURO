@@ -61,7 +61,6 @@ async def submit_plugin_command(
     approval_mode: SessionApprovalMode = "inherit",
     interaction_mode: SessionInteractionMode = "interactive",
     on_session_created: Callable[[str], None] | None = None,
-    input_title: Callable[[str], str] | None = None,
 ) -> PluginCommandSubmission | None:
     """Resolve and execute a command, preserving its target before input consumption.
 
@@ -122,7 +121,7 @@ async def submit_plugin_command(
             if execution.session_inputs
             else execution.session_input_batches[0].inputs[0]
         )
-        await create_session(first.title or (input_title(first.prompt) if input_title else title))
+        await create_session(first.title or title)
     return PluginCommandSubmission(session_id=session_id, execution=execution)
 
 

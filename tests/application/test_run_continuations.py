@@ -8,15 +8,17 @@ from dataclasses import replace
 import pytest
 
 from ouro.application.harness import capture_harness
-from ouro.application.plugin_commands import consume_plugin_command
+from ouro.application.plugin_commands import (
+    AmbiguousPluginCommandError,
+    consume_plugin_command,
+    submit_plugin_command,
+)
 from ouro.application.plugin_models import PluginCommandView
 from ouro.application.queued_inputs import QueuedInputQueue
 from ouro.application.run_continuations import RunContinuationService
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_controls import SessionControlCoordinator
-from ouro.cli.interactive import run_interactive
-from ouro.cli.interactive_commands import handle_command
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.continuations import (
     ContinuationDecision,
@@ -124,23 +126,6 @@ class CountingProvider:
             model_id=model.model_id,
             ok=True,
         )
-
-
-class GatedProvider(CountingProvider):
-    def __init__(self) -> None:
-        super().__init__()
-        self.started = threading.Event()
-        self.release = threading.Event()
-
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
-        del model, system_prompt, tools
-        self.calls += 1
-        self.contexts.append(list(messages))
-        if self.calls == 1:
-            self.started.set()
-            await asyncio.to_thread(self.release.wait)
-        yield ProviderStreamEvent(type="text_delta", text=f"answer-{self.calls}")
-        yield ProviderStreamEvent(type="done")
 
 
 def _write_goal_plugin(source) -> None:
@@ -320,36 +305,36 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
     await application.start()
     assert (await application.plugins.enable(TEST_GOAL_PLUGIN_ID)).status == "active"
 
-    alias = await handle_command(
-        f"/{TEST_GOAL_PLUGIN_ID}:goal inspect the feature",
+    alias = await submit_plugin_command(
+        application.plugins,
         runtime,
-        None,
-        plugins=application.plugins,
+        f"{TEST_GOAL_PLUGIN_ID}:goal",
+        "inspect the feature",
+        session_id=None,
     )
-    assert alias.output == "Goal started."
+    assert alias.execution.output == "Goal started."
     assert alias.session_id is not None
-    assert alias.plugin_command is not None
-    assert alias.plugin_command.execution.session_inputs[0].prompt == "Work on: inspect the feature"
+    assert alias.execution.session_inputs[0].prompt == "Work on: inspect the feature"
     assert store.load_runs(alias.session_id) == []
 
-    command = await handle_command(
-        f"/{TEST_GOAL_PLUGIN_ID}:goal ship the feature",
+    command = await submit_plugin_command(
+        application.plugins,
         runtime,
-        None,
-        plugins=application.plugins,
+        f"{TEST_GOAL_PLUGIN_ID}:goal",
+        "ship the feature",
+        session_id=None,
     )
-    assert command.output == "Goal started."
+    assert command.execution.output == "Goal started."
     assert command.session_id is not None
-    assert command.plugin_command is not None
     assert command.session_id != alias.session_id
     assert store.load_runs(command.session_id) == []
-    assert len(command.plugin_command.execution.session_inputs) == 1
-    attributed = command.plugin_command.execution.session_inputs[0]
+    assert len(command.execution.session_inputs) == 1
+    attributed = command.execution.session_inputs[0]
     assert attributed.plugin_id == TEST_GOAL_PLUGIN_ID
     assert attributed.contribution_id == "goal"
     assert attributed.generation_id
 
-    (result,) = [result async for result in consume_plugin_command(runtime, command.plugin_command)]
+    (result,) = [result async for result in consume_plugin_command(runtime, command)]
     assert result.session.session_id == command.session_id
     snapshot = store.load_runtime_session(result.session.session_id)
     assert len(snapshot.runs) == 1
@@ -358,59 +343,6 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
     assert snapshot.messages[0].text_content == "Work on: ship the feature"
     assert inspected_prompts == []
 
-    await application.close()
-
-
-@pytest.mark.asyncio
-async def test_interactive_plugin_run_accepts_commands_while_model_is_running(tmp_path) -> None:
-    home = tmp_path / "home"
-    store = LocalSessionStore(home)
-    store.initialize()
-    provider = GatedProvider()
-    runtime = RuntimeService(
-        store=store,
-        adapter=RuntimeAdapter(
-            provider,
-            ModelMetadata(model_id="interactive", provider_id=provider.provider_id),
-        ),
-        tools=ToolRegistry(),
-        environment=RuntimeEnvironment(home=home),
-    )
-    application = LocalApplication.from_runtime(runtime, home=home)
-    source = tmp_path / "goal-plugin"
-    source.mkdir()
-    _write_goal_plugin(source)
-    assert application.plugins is not None
-    application.plugins.install(source)
-    await application.start()
-    assert (await application.plugins.enable(TEST_GOAL_PLUGIN_ID)).status == "active"
-    commands = iter(
-        [
-            f"/{TEST_GOAL_PLUGIN_ID}:goal target",
-            f"/{TEST_GOAL_PLUGIN_ID}:goal guide",
-            "/quit",
-        ]
-    )
-
-    def input_func(_prompt: str) -> str:
-        command = next(commands)
-        if command == f"/{TEST_GOAL_PLUGIN_ID}:goal guide":
-            assert provider.started.wait(timeout=2)
-        if command == "/quit":
-            provider.release.set()
-        return command
-
-    code = await run_interactive(
-        runtime=runtime,
-        plugins=application.plugins,
-        input_func=input_func,
-        output_func=lambda _text: None,
-    )
-
-    assert code == 0
-    session = store.list_sessions()[0]
-    events, _ = store.load_events_page(session.session_id, limit=100)
-    assert any(event.event_type == "follow_up_input_queued" for event in events)
     await application.close()
 
 
@@ -1301,11 +1233,10 @@ async def test_plugin_command_short_alias_reports_ambiguity(tmp_path) -> None:
                 ),
             ]
 
-    result = await handle_command("/goal target", runtime, None, plugins=Commands())
-
-    assert result.session_id is None
+    with pytest.raises(AmbiguousPluginCommandError) as exc_info:
+        await submit_plugin_command(Commands(), runtime, "goal", "target", session_id=None)
     assert store.list_sessions() == []
-    assert result.output == (
+    assert str(exc_info.value) == (
         "Ambiguous plugin command /goal; use one of: /dev.ouro.first:goal, /dev.ouro.second:goal"
     )
     await runtime.close()

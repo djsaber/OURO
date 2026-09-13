@@ -8,12 +8,11 @@ from pathlib import Path
 import pytest
 
 from ouro.application.harness import capture_harness
+from ouro.application.plugin_commands import submit_plugin_command
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.builtin_plugins.plan import PLAN_PLUGIN
-from ouro.cli.interactive import run_interactive
-from ouro.cli.interactive_commands import handle_command
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.interactions import AnswerResolution
 from ouro.core.messages import ModelMessage
@@ -271,7 +270,7 @@ async def _enable_plan_mode(application: LocalApplication) -> None:
 
 
 @pytest.mark.asyncio
-async def test_plan_cli_first_command_creates_and_binds_a_session(tmp_path) -> None:
+async def test_plan_command_creates_and_binds_a_session(tmp_path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -280,11 +279,12 @@ async def test_plan_cli_first_command_creates_and_binds_a_session(tmp_path) -> N
     await _enable_plan_mode(application)
     assert application.plugins is not None
 
-    activated = await handle_command(
-        "/plan",
+    activated = await submit_plugin_command(
+        application.plugins,
         runtime,
-        None,
-        plugins=application.plugins,
+        "plan",
+        "",
+        session_id=None,
     )
 
     assert activated.session_id is not None
@@ -294,13 +294,14 @@ async def test_plan_cli_first_command_creates_and_binds_a_session(tmp_path) -> N
     assert len(record.controls.activations) == 1
     assert store.load_runtime_session(session_id).runs == []
 
-    deactivated = await handle_command(
-        "/plan off",
+    deactivated = await submit_plugin_command(
+        application.plugins,
         runtime,
-        session_id,
-        plugins=application.plugins,
+        "plan",
+        "off",
+        session_id=session_id,
     )
-    assert "deactivated" in deactivated.output.lower()
+    assert "deactivated" in deactivated.execution.output.lower()
     assert store.load_session_record(session_id).controls.activations == []
     await application.close()
 
@@ -441,50 +442,6 @@ async def test_plan_mode_exit_uses_unattended_resolution_in_afk_mode(tmp_path) -
     )
     assert resolved_event.payload["resolution"]["kind"] == "unattended"
     assert not store.load_session_record(completed.session.session_id).controls.activations
-    await application.close()
-
-
-@pytest.mark.asyncio
-async def test_interactive_cli_collects_builtin_plan_approval_as_structured_answer(
-    tmp_path,
-) -> None:
-    home = tmp_path / "home"
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    provider = PlanBuildProvider()
-    runtime, store = _runtime(home, workspace, provider)
-    application = LocalApplication.from_runtime(runtime, home=home)
-    await _enable_plan_mode(application)
-    inputs = iter(["Design the implementation", "accept", "/quit"])
-    prompts: list[str] = []
-    outputs: list[str] = []
-
-    def read_input(prompt: str) -> str:
-        prompts.append(prompt)
-        return next(inputs)
-
-    code = await run_interactive(
-        runtime=runtime,
-        approval_mode="auto",
-        input_func=read_input,
-        output_func=outputs.append,
-    )
-
-    assert code == 0
-    assert "Plan decision [accept/revise/reject]: " in prompts
-    assert not any(prompt.startswith("Select plan option") for prompt in prompts)
-    assert any(output.startswith("Plan approval requested.") for output in outputs)
-    assert not any(output.startswith("Question: {") for output in outputs)
-    assert "Plan approved; ready to implement." in outputs
-    session = store.list_sessions()[0]
-    snapshot = store.load_runtime_session(session.session_id)
-    exit_result = next(
-        message
-        for message in snapshot.messages
-        if message.tool_result is not None and message.tool_result.tool_call_id == "call_exit"
-    )
-    assert "Selected option: Direct implementation" in exit_result.text_content
-    assert not store.load_session_record(session.session_id).controls.activations
     await application.close()
 
 
@@ -737,7 +694,7 @@ async def test_plan_off_releases_controller_without_creating_run_or_deleting_art
 
 
 @pytest.mark.asyncio
-async def test_host_control_command_lists_and_releases_plan_without_business_rules(
+async def test_runtime_lists_and_releases_plan_through_controller(
     tmp_path,
 ) -> None:
     home = tmp_path / "home"
@@ -755,22 +712,15 @@ async def test_host_control_command_lists_and_releases_plan_without_business_rul
         workspace=str(workspace),
     )
 
-    status = await handle_command(
-        "/control status",
-        runtime,
-        session.session_id,
-        plugins=application.plugins,
-    )
-    assert f"{PLUGIN_ID}/session_controllers/mode" in status.output
+    (activation,) = runtime.session_control_activations(session.session_id)
+    assert activation.plugin_id == PLUGIN_ID
     activation_id = (
         store.load_session_record(session.session_id).controls.activations[0].activation_id
     )
 
-    released = await handle_command(
-        f"/control release {activation_id}",
-        runtime,
-        session.session_id,
-        plugins=application.plugins,
+    released = await runtime.release_session_control(
+        session_id=session.session_id,
+        activation_id=activation_id,
     )
 
     assert "Plan mode deactivated" in released.output

@@ -63,18 +63,3 @@ def test_tui_forwards_task_backend_to_application_composition(monkeypatch):
     assert main(["--task-backend", "sqlite", "--session-backend", "files"]) == 0
     assert captured["task_backend"] == "sqlite"
     assert captured["session_backend"] == "files"
-
-
-def test_interactive_forwards_scoped_task_backend(monkeypatch):
-    import importlib
-
-    entry = importlib.import_module("ouro.cli.main")
-    captured = {}
-
-    async def run_interactive(**kwargs):
-        captured.update(kwargs)
-        return 0
-
-    monkeypatch.setattr(entry, "run_interactive", run_interactive)
-    assert main(["--task-backend", "sqlite", "interactive", "--task-backend", "files"]) == 0
-    assert captured["task_backend"] == "files"

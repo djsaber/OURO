@@ -69,7 +69,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog="""Getting started:
   ouro
-  ouro interactive
   ouro provider templates
   ouro provider add openai --type openai --api-key-env OPENAI_API_KEY --default
   ouro run "Explain this repository"
@@ -81,17 +80,17 @@ Use 'ouro COMMAND --help' to inspect a workflow and its examples.""",
     _add_task_backend_arg(parser, dest="task_backend")
     parser.add_argument("--system-prompt", help="Override the default system prompt")
     parser.add_argument("--session", dest="resume_session_id", help="Resume a durable Session")
-    interactive_policy = parser.add_mutually_exclusive_group()
-    interactive_policy.add_argument(
+    tui_policy = parser.add_mutually_exclusive_group()
+    tui_policy.add_argument(
         "--approval-mode",
-        dest="interactive_approval_mode",
+        dest="tui_approval_mode",
         choices=SESSION_APPROVAL_MODES,
         default="inherit",
         help="Initial approval mode for a new TUI Session",
     )
-    interactive_policy.add_argument(
+    tui_policy.add_argument(
         "--afk",
-        dest="interactive_afk",
+        dest="tui_afk",
         action="store_true",
         help="Start new TUI Sessions in unattended AFK mode",
     )
@@ -104,7 +103,6 @@ Use 'ouro COMMAND --help' to inspect a workflow and its examples.""",
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    _add_interactive_parser(subparsers)
     _add_run_parser(subparsers)
     _add_agent_parser(subparsers)
     _add_session_parser(subparsers)
@@ -118,41 +116,6 @@ Use 'ouro COMMAND --help' to inspect a workflow and its examples.""",
     _add_usage_parser(subparsers)
 
     return parser
-
-
-def _add_interactive_parser(subparsers: argparse._SubParsersAction) -> None:
-    interactive = subparsers.add_parser(
-        "interactive",
-        help="Start the stdin/stdout interactive Host",
-        description="Start OURO's line-oriented stdin/stdout Host.",
-    )
-    interactive.add_argument(
-        "--home",
-        dest="interactive_home",
-        metavar="HOME",
-        help="Override OURO_HOME",
-    )
-    _add_session_backend_arg(interactive, dest="interactive_session_backend")
-    _add_task_backend_arg(interactive, dest="interactive_task_backend")
-    interactive.add_argument(
-        "--system-prompt",
-        dest="interactive_system_prompt",
-        help="Override the default system prompt",
-    )
-    policy = interactive.add_mutually_exclusive_group()
-    policy.add_argument(
-        "--approval-mode",
-        dest="command_approval_mode",
-        choices=SESSION_APPROVAL_MODES,
-        default=None,
-        help="Initial approval mode for a new interactive Session",
-    )
-    policy.add_argument(
-        "--afk",
-        dest="command_afk",
-        action="store_true",
-        help="Start new interactive Sessions in unattended AFK mode",
-    )
 
 
 def _add_agent_parser(subparsers: argparse._SubParsersAction) -> None:

@@ -16,7 +16,7 @@ def test_root_help_explains_tui_default_and_getting_started() -> None:
     help_text = build_parser().format_help()
 
     assert "Run without a command to start the full-screen TUI" in help_text
-    assert "ouro interactive" in help_text
+    assert "ouro run" in help_text
     assert "Getting started:" in help_text
     assert "ouro provider templates" in help_text
     assert "ouro COMMAND --help" in help_text

@@ -157,19 +157,6 @@ def test_invalid_environment_backend_is_reported_as_configuration_error(
     assert "OURO_SESSION_BACKEND" in payload["error"]
 
 
-def test_interactive_host_receives_selected_backend(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    async def fake_interactive(**kwargs) -> int:
-        captured.update(kwargs)
-        return 0
-
-    monkeypatch.setattr("ouro.cli.main.run_interactive", fake_interactive)
-
-    assert main(["interactive", "--session-backend", "sqlite"]) == 0
-    assert captured["session_backend"] == "sqlite"
-
-
 def test_approval_host_receives_selected_backend(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

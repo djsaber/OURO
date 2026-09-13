@@ -153,29 +153,15 @@ async def test_queries_and_unknown_or_ambiguous_names_do_not_create_sessions(sys
 
 @pytest.mark.parametrize("kind", ["single", "multiple", "batch"])
 @pytest.mark.parametrize("existing", [False, True])
-@pytest.mark.parametrize("host", ["application", "cli"])
-async def test_command_inputs_keep_fifo_batch_boundaries_and_attribution(
-    system, kind, existing, host
-):
+async def test_command_inputs_keep_fifo_batch_boundaries_and_attribution(system, kind, existing):
     session_id = system.runtime.create_session(title="existing").session_id if existing else None
-    if host == "application":
-        submitted = await submit_plugin_command(
-            system.plugins(kind),
-            system.runtime,
-            "example",
-            "command title",
-            session_id=session_id,
-        )
-    else:
-        from ouro.cli.interactive_commands import handle_command
-
-        command = await handle_command(
-            "/example command title",
-            system.runtime,
-            session_id,
-            plugins=system.plugins(kind),
-        )
-        submitted = command.plugin_command
+    submitted = await submit_plugin_command(
+        system.plugins(kind),
+        system.runtime,
+        "example",
+        "command title",
+        session_id=session_id,
+    )
     assert submitted.has_inputs
     assert bool(submitted.execution.accepted_inputs) == existing
     assert system.calls[0].session_id == session_id
@@ -439,83 +425,6 @@ async def test_failed_acceptance_does_not_publish_receipts_or_retry_command(syst
     )
 
 
-@pytest.mark.parametrize("second_command", ["query", "steer"])
-async def test_cli_accepts_commands_while_plugin_input_runs(system, monkeypatch, second_command):
-    from ouro.cli.interactive import run_interactive
-
-    loop = asyncio.get_running_loop()
-    entered, finished = threading.Event(), threading.Event()
-    release = asyncio.Event()
-
-    async def held_stream(**kwargs):
-        entered.set()
-        await release.wait()
-        yield ProviderStreamEvent(type="text_delta", text="done")
-        yield ProviderStreamEvent(type="done")
-
-    async def completed(event):
-        if event.event_type == "run_completed":
-            finished.set()
-
-    def command(call):
-        if call.argument == "query":
-            assert entered.is_set() and not finished.is_set()
-            loop.call_soon_threadsafe(release.set)
-            return "query response"
-        return PluginCommandResult(
-            command_id=call.command_id,
-            session_inputs=[
-                SessionInputRequest(
-                    prompt=call.argument,
-                    mode="steer" if call.argument == "steer" else "follow_up",
-                )
-            ],
-        )
-
-    commit = system.store.commit_session
-
-    def committed(request):
-        result = commit(request)
-        if any(event.event_type == "steering_input_queued" for event in request.events):
-            assert entered.is_set() and not finished.is_set()
-            loop.call_soon_threadsafe(release.set)
-        return result
-
-    prompts = 0
-
-    def read_line(_prompt):
-        nonlocal prompts
-        prompts += 1
-        if prompts == 1:
-            return "/example start"
-        if prompts == 2:
-            assert entered.wait(5)
-            return f"/example {second_command}"
-        assert finished.wait(5)
-        return "/quit"
-
-    monkeypatch.setattr(system.runtime.adapter.provider, "stream", held_stream)
-    monkeypatch.setattr(system.store, "commit_session", committed)
-    system.runtime.add_event_sink(completed)
-    output = []
-    try:
-        code = await asyncio.wait_for(
-            run_interactive(
-                runtime=system.runtime,
-                plugins=system.plugins(handler=command),
-                input_func=read_line,
-                output_func=output.append,
-            ),
-            15,
-        )
-    finally:
-        release.set()
-    assert code == 0 and len(system.calls) == 2
-    assert finished.is_set()
-    if second_command == "query":
-        assert "query response" in output
-
-
 def test_plugin_command_application_runs_with_host_imports_blocked(tmp_path):
     script = textwrap.dedent("""
         import asyncio, importlib.abc, sys
@@ -573,13 +482,10 @@ def test_plugin_command_application_runs_with_host_imports_blocked(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-async def test_cli_does_not_retain_prior_plugin_run_results(system, monkeypatch):
-    from ouro.cli.interactive import run_interactive
-
+async def test_command_consumption_does_not_retain_prior_run_results(system, monkeypatch):
     submit = system.runtime.submit_plugin_input
     references = []
     retained = []
-    finished = threading.Event()
 
     async def observed_submit(*args, **kwargs):
         if len(references) == 2:
@@ -587,8 +493,6 @@ async def test_cli_does_not_retain_prior_plugin_run_results(system, monkeypatch)
             retained.append(references[0]() is not None)
         result = await submit(*args, **kwargs)
         references.append(weakref.ref(result))
-        if len(references) == 3:
-            finished.set()
         return result
 
     def command(call):
@@ -597,21 +501,15 @@ async def test_cli_does_not_retain_prior_plugin_run_results(system, monkeypatch)
             session_inputs=[SessionInputRequest(prompt=f"input {index}") for index in range(3)],
         )
 
-    def read_line(_prompt):
-        if not system.calls:
-            return "/example run"
-        assert finished.wait(10)
-        return "/quit"
-
     monkeypatch.setattr(system.runtime, "submit_plugin_input", observed_submit)
-    code = await asyncio.wait_for(
-        run_interactive(
-            runtime=system.runtime,
-            plugins=system.plugins(handler=command),
-            input_func=read_line,
-            output_func=lambda _text: None,
-        ),
-        15,
+    submission = await submit_plugin_command(
+        system.plugins(handler=command),
+        system.runtime,
+        "example",
+        "run",
+        session_id=None,
     )
-    assert code == 0 and len(references) == 3
+    async for result in consume_plugin_command(system.runtime, submission):
+        assert result.run.status == "completed"
+    assert len(references) == 3
     assert retained == [False]

@@ -5,7 +5,7 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 
 ## 当前能力
 
-- 默认 Textual 全屏 TUI、独立的 stdin/stdout 交互模式，以及 `run --print`、`run --json` 两种非交互模式。
+- 默认 Textual 全屏 TUI，以及 `run --print`、`run --json` 两种单次运行模式。
 - 基于 `provider/endpoint` 的模型配置、主流厂商模板、连接检查和会话级模型选择，以及共享安全重试契约的 OpenAI-compatible / Anthropic-compatible 适配。
 - 多轮模型/工具循环，支持顺序或并行工具批次、审批、结构化用户输入请求、协作式中止，以及 run 级 follow-up / turn 级 steer 排队输入。
 - 会话级 AFK 预设：自动批准可批准的工具，并以 provenance-bearing 无人值守 resolution 处理工具提问，不伪造用户回答。
@@ -63,11 +63,6 @@ uv run ouro --home ./.ouro-dev
 uv run ouro --home ./.ouro-dev --approval-mode auto
 uv run ouro --home ./.ouro-dev --afk
 uv run ouro --home ./.ouro-dev --session <session_id>
-
-# 行式 stdin/stdout 交互模式
-uv run ouro interactive --home ./.ouro-dev
-uv run ouro interactive --home ./.ouro-dev --approval-mode auto
-uv run ouro interactive --home ./.ouro-dev --afk
 
 # 单次运行
 uv run ouro run --print --home ./.ouro-dev "hello"
@@ -167,7 +162,7 @@ Plugin MCP 启用即连接：required 失败不发布候选，optional 失败进
 工具结构冻结到该代 Catalog。Python in-process 的 canonical owned module 是 `<namespace>_plugin`，每代实际加载到
 `_ouro_plugin_<generation_id>`；bundled dependency 必须位于该 package 并使用相对 import，独立依赖环境使用 worker。
 
-Interactive 会把插件 command 映射为 slash command：`/<plugin_id>:<name>` 是稳定全名，只有 local name
+TUI 将插件 command 映射为 slash command：`/<plugin_id>:<name>` 是稳定全名，只有 local name
 唯一时才允许 `/<name>`。builtin 始终优先。获得 `sessions.write` 与 `background.run` 的插件 command 可返回
 类型化会话输入；producer provenance、`system | user | assistant | tool_result` model role、`scaffold` 和可选
 `semantic_tag` 是彼此独立的维度，由输入提供方定义并由框架原样持久化。role 不改变完整 execution-contract
@@ -307,7 +302,7 @@ effort 的 Endpoint 使用显式 `default_effort` 解析未带等级的 `enabled
 
 ## 会话与运行控制
 
-TUI 与交互 CLI 的 `/undo` 撤回最近一条直接用户输入；有待消费的排队输入时，优先取消最新一条。
+TUI 的 `/undo` 撤回最近一条直接用户输入；有待消费的排队输入时，优先取消最新一条。
 已进入历史的输入连同其后的消息被撤销，会话 Harness 状态恢复到该消息之前。正文、附件引用和技能调用
 返回编辑草稿，编辑后可重新提交；连续撤销可逐次回溯。原生状态和插件状态遵守同一规则。
 
@@ -360,32 +355,22 @@ depends on deserializing historical Run or Delegation records.
 模型附件当前支持有大小上限的 UTF-8 文本/JSON/XML，以及 vision Endpoint 上的 PNG、JPEG、GIF、WebP。
 PDF 可存储和导出，但在接入专用解析 adapter 前不能直接投影给模型。
 
-Interactive 可直接把本地资源组合到下一条用户消息，不需要手工复制 resource id：
+资源通过 `resource import` 导入会话，再由 `run --resource <resource_id>` 附加到输入。TUI 可以恢复撤销消息的
+资源引用；手动选择新附件的 Composer 界面尚未提供。
 
-```text
-ouro> /attach "C:\design\reference.png"
-ouro [1]> 基于这张图片反推一份可复现其构图、光线、材质和镜头语言的生成提示词。
-```
-
-使用 `/attachments` 查看下一条消息的附件，使用 `/detach <number|all>` 取消。待发送附件严格绑定
-当前 Session；切换 Session 会清空 draft。若当前 Endpoint 未声明 vision，提交会明确失败并保留附件，
-可通过 `/model provider/endpoint` 切换后重试。图片内容仍只在请求级物化，canonical message 只保存
-resource id。
-
-Interactive 中普通输入默认按 follow-up 提交；使用 `/follow <prompt>` 或 `/steer <prompt>` 可显式选择排队
-交付模式。`/context` 显示最近一次真实 Provider 请求的长度，`/context full` 显示该请求实际使用的完整 system
-prompt、messages 和 tools。follow-up 在当前 Run 结束后进入后续 Run，steer 在当前完整 model turn 结束后进入同一
-Run。
+`run --queue-mode follow-up|steer` 选择排队交付边界。follow-up 在当前 Run 结束后进入后续 Run，steer 在当前
+完整 model turn 结束后进入同一 Run。TUI 在 Composer 中提供同一输入交付模式。
+`session context [--content]` 读取最近一次真实 Provider 请求的指标或完整 system prompt、messages 和 tools；
+TUI 可从 Actions 查看相同的上下文快照。
 
 批准模式是会话状态，不是工具配置：对于默认 `permission_control="host"` 的工具，`inherit` 沿用工具定义和
 `config permissions` 的结果，`auto` 自动执行，`approval` 要求审批，`deny` 拒绝调用（`AskUser` 在可执行时
 仍按用户问答流程处理，而不是转成普通工具审批）。单次运行可使用
-`--approval-mode` 创建或更新空闲会话；Interactive 可在首条消息前或会话中使用
-`/approval <inherit|auto|approval|deny>`，TUI 也可在活动 Run 中通过命令或审批选择器切换；已经产生的
+`--approval-mode` 创建或更新空闲会话；TUI 可通过 `/approval` 或审批选择器切换，活动 Run 也可使用。已经产生的
 审批保持原状态，下一次工具审批边界读取新模式。会话分支继承源会话的批准模式。
 
 AFK 是应用层预设，不是新的权限枚举：`AFK = approval_mode:auto + interaction_mode:unattended`。可用
-`--afk`、Interactive `/afk on|off` 或 `session afk <session_id> on|off` 原子切换。无人值守模式不会让 Run
+`--afk`、TUI `/approval afk` 或 `session afk <session_id> on|off` 原子切换。无人值守模式不会让 Run
 停在 `waiting_user`：支持该能力的 resumable tool 收到显式 `UnattendedResolution`；其他工具得到可反馈给模型的
 `UserInputUnavailable` 结果。AFK 只自动批准可批准的调用，不覆盖 Tool Policy `deny`、工具硬拒绝、schema、路径、
 执行契约或取消边界。会话分支同时继承 interaction mode。
@@ -634,4 +619,4 @@ TUI 的 `Actions > Skill sources` 提供相同的总开关与逐源开关，并�
 - [开发架构](docs/OURO_开发架构_2026-09-02.md)：模块职责、依赖方向和关键不变量。
 - [规格索引](dev/specs/README.md)：领域契约、失败/恢复语义和验收证据。
 - [规划索引](dev/plans/README.md)：仅列尚需执行或验证的工作。
-- [贡献指南](CONTRIBUTING.md)、[安全策略](SECURITY.md)、[变更记录](CHANGELOG.md)与[发布流程](RELEASING.md)。
+- [贡献指南](CONTRIBUTING.md)、[安全策略](SECURITY.md)、[版本能力摘要](CHANGELOG.md)与[发布流程](RELEASING.md)。

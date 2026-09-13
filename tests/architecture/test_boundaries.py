@@ -281,10 +281,9 @@ def test_cli_application_commands_use_local_composition_boundary() -> None:
         assert not any(module.startswith(forbidden) for module in modules)
 
 
-def test_interactive_cli_does_not_reach_through_runtime_to_session_store() -> None:
+def test_cli_does_not_reach_through_runtime_to_session_store() -> None:
     violations: list[str] = []
-    for filename in ("interactive.py", "interactive_commands.py", "interactive_io.py"):
-        path = PROJECT_ROOT / "ouro" / "cli" / filename
+    for path in (PROJECT_ROOT / "ouro" / "cli").glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if _attribute_path(node) in {"runtime.store", "self._runtime.store"}:
@@ -318,7 +317,6 @@ def test_session_backend_selection_is_owned_by_deployment_composition() -> None:
     forbidden = ("ouro.sessions", "ouro.resources")
     for filename in (
         "approval_commands.py",
-        "interactive.py",
         "main.py",
         "resource_commands.py",
         "run.py",

@@ -7,8 +7,6 @@ import pytest
 import ouro.application.compaction as compaction_module
 from ouro.application.compaction import LLMSummaryCompactionStrategy
 from ouro.application.runtime import RuntimeService
-from ouro.cli.context_output import NO_PREPARED_CONTEXT
-from ouro.cli.interactive import run_interactive
 from ouro.config.compaction import CompactionConfig, CompactionModelConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.compaction import (
@@ -1175,37 +1173,3 @@ async def test_manual_compaction_failure_leaves_session_usable(tmp_path) -> None
     assert snapshot.runs[-1].kind == "compaction"
     assert snapshot.runs[-1].status == "failed"
     assert any(event.event_type == "compaction_failed" for event in snapshot.events)
-
-
-@pytest.mark.asyncio
-async def test_interactive_compact_command_displays_progress_and_completion(tmp_path) -> None:
-    store = LocalSessionStore(tmp_path)
-    store.initialize()
-    session = SessionRecord(title="Interactive summary")
-    store.create_session(session)
-    _append_turns(store, session.session_id, 3)
-    strategy = RecordingStrategy()
-    runtime = _runtime(store, RecordingProvider(), strategy, strategy_id=strategy.strategy_id)
-    inputs = iter(
-        [
-            f"/open {session.session_id}",
-            "/context",
-            "/compact",
-            "/context",
-            "/context full",
-            "/quit",
-        ]
-    )
-    outputs: list[str] = []
-
-    code = await run_interactive(
-        runtime=runtime,
-        input_func=lambda _prompt: next(inputs),
-        output_func=outputs.append,
-    )
-
-    assert code == 0
-    assert any("Compacting context · manual" in output for output in outputs)
-    assert any("Context compaction completed" in output for output in outputs)
-    assert any(output.startswith("Active compaction: cmp_") for output in outputs)
-    assert outputs.count(NO_PREPARED_CONTEXT) == 3

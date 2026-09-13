@@ -1,6 +1,6 @@
-"""Offline plugin-command acceptance and Host responsiveness comparison.
+"""Offline plugin-command acceptance and TUI responsiveness measurement.
 
-Run the same script against --source checkouts. Only disposable SDK plugins,
+Only disposable SDK plugins,
 local stores and a synthetic streaming provider are used.
 """
 
@@ -82,7 +82,7 @@ def create_plugin(context): return Plugin()
 
 async def run_one(backend, mode, scenario, delay_ms):
     from dev.benchmarks.session_pipeline import Probe, application
-    from ouro.cli.interactive_commands import handle_command
+    from ouro.application.plugin_commands import consume_plugin_command, submit_plugin_command
     from ouro.core.messages import MessageRecord
     from ouro.core.state import SessionRecord
     from ouro.tui.app import OuroTuiApp
@@ -179,50 +179,18 @@ async def run_one(backend, mode, scenario, delay_ms):
                 tasks = [asyncio.create_task(probe.tick())]
                 await asyncio.sleep(0.01)
                 started = time.perf_counter()
-                command = await handle_command(
-                    f"/{selector} command title",
+                submission = await submit_plugin_command(
+                    app.plugins,
                     app.runtime,
-                    session_id,
-                    plugins=app.plugins,
+                    selector,
+                    "command title",
+                    session_id=session_id,
                 )
-                session_id = command.session_id
-                # The older CLI returned protocol parts; reproduce only its dispatch
-                # here so the exact same measuring script can run on that checkout.
-                if hasattr(command, "plugin_command"):
-                    from ouro.application.plugin_commands import consume_plugin_command
-
-                    submitted_ms = (time.perf_counter() - started) * 1000
-                    if command.plugin_command is not None:
-                        async for _result in consume_plugin_command(
-                            app.runtime, command.plugin_command
-                        ):
-                            pass
-                else:
-                    from ouro.cli.interactive import _consume_command_inputs, _submit_plugin_inputs
-
-                    if session_id is None and (
-                        command.session_inputs or command.session_input_batches
-                    ):
-                        first = (
-                            command.session_inputs[0]
-                            if command.session_inputs
-                            else command.session_input_batches[0].inputs[0]
-                        )
-                        session_id = app.runtime.create_session(
-                            title=first.title
-                            or " ".join(first.prompt.split())[:60]
-                            or "New session",
-                        ).session_id
-                    submitted_ms = (time.perf_counter() - started) * 1000
-                    if command.accepted_inputs:
-                        await _consume_command_inputs(app.runtime, command.accepted_inputs)
-                    elif command.session_inputs or command.session_input_batches:
-                        await _submit_plugin_inputs(
-                            app.runtime,
-                            command.session_inputs,
-                            command.session_input_batches,
-                            session_id,
-                        )
+                assert submission is not None
+                session_id = submission.session_id
+                submitted_ms = (time.perf_counter() - started) * 1000
+                async for _result in consume_plugin_command(app.runtime, submission):
+                    pass
                 await app.runtime.drain_events()
                 elapsed_ms = (time.perf_counter() - started) * 1000
                 probe.running = False
@@ -276,7 +244,7 @@ async def main():
     parser.add_argument("--label", default="working")
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--backend", choices=["files", "sqlite", "all"], default="all")
-    parser.add_argument("--mode", choices=["cli", "tui", "all"], default="all")
+    parser.add_argument("--mode", choices=["application", "tui", "all"], default="all")
     parser.add_argument(
         "--scenario", choices=["query", "required", "deferred", "existing", "all"], default="all"
     )
@@ -297,7 +265,7 @@ async def main():
     )
     for _ in range(args.repeat):
         for backend in ("files", "sqlite") if args.backend == "all" else (args.backend,):
-            for mode in ("cli", "tui") if args.mode == "all" else (args.mode,):
+            for mode in ("application", "tui") if args.mode == "all" else (args.mode,):
                 for scenario in (
                     ("query", "required", "deferred", "existing")
                     if args.scenario == "all"
