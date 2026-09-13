@@ -1,4 +1,4 @@
-"""Offline M5 probe; run the same file against M4 and M5 using --source.
+"""Offline Harness probe; compare revisions with the same script using --source.
 
 Fixture creation, index warmup and checkpoint counts are outside measured sections.
 Process I/O includes SQLite's native calls. Its VFS sync calls are counted separately
@@ -94,8 +94,9 @@ def checkpoint_count(store, session_id, backend):
 
 def probe(store, backend, prefix, owners, owner_bytes):
     # Import after --source selection so both revisions run this exact workload.
+    from ouro.application.harness import capture_harness
     from ouro.core.harness import HarnessState
-    from ouro.core.harness_calls import HarnessCallSnapshot, HarnessInvocation
+    from ouro.core.harness_calls import HarnessInvocation
     from ouro.core.messages import MessageRecord
     from ouro.core.session_commits import SessionCommit, SessionCommitStep
     from ouro.core.session_extensions import SessionExtensionStateRecord
@@ -153,18 +154,9 @@ def probe(store, backend, prefix, owners, owner_bytes):
     assert store.load_harness(session.session_id).state == state
 
     # One phase captures one state; all owner views are served from that snapshot.
-    def capture():
-        with store.session_mutation(session.session_id):
-            current = store.load_session_record(session.session_id)
-            return HarnessCallSnapshot(
-                session_id=session.session_id,
-                harness_version=current.harness_version,
-                history_epoch=current.history_epoch,
-                last_message_id=current.last_message_id,
-                state=store.load_harness(session.session_id).state,
-            )
-
-    snapshot, read = measure(capture, sqlite=backend == "sqlite")
+    snapshot, read = measure(
+        lambda: capture_harness(store, session.session_id), sqlite=backend == "sqlite"
+    )
 
     def callback(owner, writable):
         for _ in range(20):
@@ -210,7 +202,7 @@ def main():
     parser.add_argument("--label", required=True)
     args = parser.parse_args()
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    # The probe helpers always come from this script's checkout, including M4 runs.
+    # The probe helpers always come from this script's checkout.
     from dev.benchmarks.sqlite_sync import sqlite_sync_calls  # noqa: F401
 
     sys.path.insert(0, str(args.source.resolve()))

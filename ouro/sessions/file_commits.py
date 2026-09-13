@@ -42,7 +42,7 @@ class FileSessionCommits:
         self.directory = directory
         self.queries = queries
 
-    def load_session(self, session_id: str) -> SessionRecord:
+    def load_session_harness(self, session_id: str) -> tuple[SessionRecord, HarnessVersion]:
         session = decode_versioned_record_json(
             SessionRecord,
             read_text_atomic(self.directory(session_id) / "session.json"),
@@ -51,8 +51,9 @@ class FileSessionCommits:
         if session.session_id != session_id:
             raise PersistenceError("Session record has a foreign identity")
         version = self.load_harness(session_id, session.harness_version)
-        session.controls = version.state.controls.model_copy(deep=True)
-        return session
+        # Internal read-only pair; the repository isolates controls when exposing both.
+        session.controls = version.state.controls
+        return session, version
 
     def load_harness(self, session_id: str, version_id: str) -> HarnessVersion:
         path = self._version_path(session_id, version_id)
@@ -86,8 +87,7 @@ class FileSessionCommits:
                 raise SessionCommitConflict("operation identity was reused for different effects")
             return previous
         directory = self.directory(session_id)
-        current = self.load_session(session_id)
-        harness = self.load_harness(session_id, current.harness_version)
+        current, harness = self.load_session_harness(session_id)
         message_path = directory / "messages.jsonl"
         event_path = directory / "events.jsonl"
         message_offset = message_path.stat().st_size

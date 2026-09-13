@@ -1,6 +1,6 @@
 # OURO 规划索引
 
-> 索引基线：2026-09-12
+> 索引基线：2026-09-13
 
 本目录只保存尚需执行或验证的规划。已实现行为直接写入现行规格，发布变化写入 `CHANGELOG.md`；
 不为已完成工作保留与规格重复的 checklist、逐步实施记录或“旧方案改为新方案”说明。
@@ -9,6 +9,7 @@
 
 | 规划 | 范围 | 关键前置 |
 |---|---|---|
+| [设计减负重构](OURO_设计减负重构计划_2026-09-13.md) | R1 读取复用已完成；后续推进插件、资源所有权与 Host 边界减负 | 代码证据、行为等价与性能对照基线 |
 | [桌面 Host](OURO_桌面Host规划_2026-09-02.md) | 本地桌面会话、运行、资源、diff、设置与发布 | Application services/DTO、RuntimeSupervisor、ResourceService |
 | [高级智能体能力](OURO_高级智能体能力规划_2026-09-02.md) | 长期记忆、Durable Task/Workflow 及其与 Goal/Delegation 的组合 | 当前 Session/Run、Context、资源、子智能体和 Host 控制面 |
 | [性能优化](OURO_性能优化规划_2026-09-02.md) | 真实终端验收、长历史分页、Context/Compaction 与资源投影 | 当前性能规格与可重复测量证据 |

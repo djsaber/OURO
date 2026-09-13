@@ -1,23 +1,28 @@
 from __future__ import annotations
 
+import json
+import sqlite3
+from contextlib import closing
 from datetime import timedelta
 
 import pytest
 
+from ouro.application.harness import capture_session_harness
 from ouro.core.context import ContextBuilder
 from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
 from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
-from ouro.core.harness import HarnessState
+from ouro.core.harness import HarnessState, HarnessVersion
 from ouro.core.messages import MessageRecord
 from ouro.core.session_commits import (
     SessionCommit,
     SessionCommitConflict,
     SessionCommitStep,
 )
+from ouro.core.session_controls import SessionControlActivation, SessionControlState
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions import LocalSessionStore, SQLiteSessionStore, file_commits, sqlite_commits
 
 
 @pytest.fixture(params=["files", "sqlite"])
@@ -376,7 +381,11 @@ def test_file_recovery_finishes_a_partially_applied_decision(tmp_path, monkeypat
         with pytest.raises(PersistenceError, match="injected"):
             store.commit_session(request)
 
-    # Any canonical entry point must finish the decision before returning.
+    # A paired read must recover before exposing either part of the decision.
+    current, harness = reader.load_session_harness(session.session_id)
+    assert current.harness_version == harness.version_id
+    assert harness.state.states[0].payload == 1
+    # Other canonical entry points observe the same recovered state.
     assert reader.load_resource_references(session.session_id) == []
     assert not (store.sessions_dir / session.session_id / "commit.json").exists()
     snapshot = reader.load_session(session.session_id)
@@ -398,7 +407,7 @@ def test_sqlite_session_snapshot_uses_one_harness_version(tmp_path, monkeypatch)
     session = SessionRecord()
     store.create_session(session)
     writer = SQLiteSessionStore(store.database)
-    original = SQLiteSessionCommits.load_session
+    original = SQLiteSessionCommits.load_session_harness
     changed = False
 
     def advance_after_session_read(commits, session_id):
@@ -408,14 +417,201 @@ def test_sqlite_session_snapshot_uses_one_harness_version(tmp_path, monkeypatch)
             changed = True
             writer.commit_session(
                 SessionCommit(
-                    before=result,
+                    before=result[0],
                     steps=(SessionCommitStep(harness=state(session_id, 1)),),
                 )
             )
         return result
 
-    monkeypatch.setattr(SQLiteSessionCommits, "load_session", advance_after_session_read)
+    monkeypatch.setattr(SQLiteSessionCommits, "load_session_harness", advance_after_session_read)
     snapshot = store.load_session(session.session_id)
     assert snapshot.session.harness_version == session.harness_version
     assert snapshot.extension_states == []
     assert store.load_harness(session.session_id).state.states[0].payload == 1
+
+
+@pytest.mark.parametrize("query", ["record", "current_harness", "pair", "capture"])
+def test_session_reads_decode_the_referenced_checkpoint_once(store, monkeypatch, query):
+    session = SessionRecord()
+    store.create_session(session)
+    expected = state(session.session_id, {"items": [1]})
+    session = store.commit_session(
+        SessionCommit(before=session, steps=(SessionCommitStep(harness=expected),))
+    ).session
+    module = file_commits if isinstance(store, LocalSessionStore) else sqlite_commits
+    decode = module.decode_versioned_record_json
+    decoded = []
+
+    def count_checkpoint(model, payload, **kwargs):
+        result = decode(model, payload, **kwargs)
+        if model is HarnessVersion:
+            decoded.append(result.version_id)
+        return result
+
+    monkeypatch.setattr(module, "decode_versioned_record_json", count_checkpoint)
+    if query == "record":
+        assert store.load_session_record(session.session_id) == session
+    elif query == "current_harness":
+        version = store.load_harness(session.session_id)
+        assert version.version_id == session.harness_version
+        assert version.state == expected
+    elif query == "pair":
+        current, version = store.load_session_harness(session.session_id)
+        assert current == session
+        assert version.version_id == session.harness_version
+        assert version.state == expected
+    else:
+        current, snapshot = capture_session_harness(store, session.session_id)
+        assert current == session
+        assert snapshot.harness_version == session.harness_version
+        assert snapshot.state == expected
+    assert decoded == [session.harness_version]
+
+
+def test_noop_commit_does_not_decode_checkpoint_twice_during_preparation(store, monkeypatch):
+    session = SessionRecord()
+    store.create_session(session)
+    module = file_commits if isinstance(store, LocalSessionStore) else sqlite_commits
+    decode = module.decode_versioned_record_json
+    decoded = []
+
+    def count_checkpoint(model, payload, **kwargs):
+        result = decode(model, payload, **kwargs)
+        if model is HarnessVersion:
+            decoded.append(result.version_id)
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "decode_versioned_record_json", count_checkpoint)
+        result = store.commit_session(SessionCommit(before=session))
+    # Files independently verify the durable checkpoint when finishing the decision.
+    expected_reads = 2 if isinstance(store, LocalSessionStore) else 1
+    assert decoded == [session.harness_version] * expected_reads
+    assert result.session.harness_version == session.harness_version
+    assert store.load_session(session.session_id).harness_versions == [
+        store.load_harness(session.session_id)
+    ]
+
+
+@pytest.mark.parametrize("capture", [False, True])
+def test_paired_session_controls_are_isolated_from_harness_and_future_reads(store, capture):
+    session = SessionRecord()
+    store.create_session(session)
+    expected = state(session.session_id, {"items": [1]})
+    expected.controls = SessionControlState(
+        revision=1,
+        activations=[
+            SessionControlActivation(
+                controller_id="example.state/session_controllers/mode",
+                plugin_id="example.state",
+                controller_local_id="mode",
+                plugin_class="user",
+                release_id="release",
+                generation_id="generation",
+                execution_contract_hash="contract",
+                data={"items": [1]},
+            )
+        ],
+    )
+    session = store.commit_session(
+        SessionCommit(before=session, steps=(SessionCommitStep(harness=expected),))
+    ).session
+    current, snapshot = (
+        capture_session_harness(store, session.session_id)
+        if capture
+        else store.load_session_harness(session.session_id)
+    )
+    assert current.controls == snapshot.state.controls == expected.controls
+    current.controls.activations[0].data["items"].append(2)
+    assert snapshot.state.controls == expected.controls
+    snapshot.state.controls.revision = 7
+    snapshot.state.states[0].payload["items"].append(3)
+    assert current.controls.revision == 1
+    fresh, version = store.load_session_harness(session.session_id)
+    assert fresh == session
+    assert version.state == expected
+
+
+@pytest.mark.parametrize("damage", ["missing", "foreign_session", "foreign_version", "malformed"])
+def test_paired_read_and_commit_reject_invalid_checkpoint_without_effects(store, damage):
+    session = SessionRecord()
+    store.create_session(session)
+    version = store.load_harness(session.session_id)
+    original = version.model_dump_json()
+    payload = version.model_dump(mode="json")
+    if damage == "foreign_session":
+        payload["session_id"] = "another_session"
+    elif damage == "foreign_version":
+        payload["version_id"] = "another_version"
+    corrupted = (
+        None if damage == "missing" else "{" if damage == "malformed" else json.dumps(payload)
+    )
+
+    def replace_checkpoint(value):
+        if isinstance(store, LocalSessionStore):
+            path = (
+                store.sessions_dir / session.session_id / "harness" / f"{version.version_id}.json"
+            )
+            if value is None:
+                path.unlink()
+            else:
+                path.write_text(value, encoding="utf-8")
+        else:
+            with closing(sqlite3.connect(store.database)) as connection:
+                connection.execute(
+                    "DELETE FROM harness_versions WHERE session_id = ? AND version_id = ?",
+                    (session.session_id, version.version_id),
+                )
+                if value is not None:
+                    connection.execute(
+                        "INSERT INTO harness_versions(session_id, version_id, payload) "
+                        "VALUES(?, ?, ?)",
+                        (session.session_id, version.version_id, value),
+                    )
+                connection.commit()
+
+    request = SessionCommit(
+        before=session, steps=(SessionCommitStep(message=message(session.session_id, "rejected")),)
+    )
+    replace_checkpoint(corrupted)
+    try:
+        with pytest.raises(PersistenceError):
+            store.load_session_harness(session.session_id)
+        with pytest.raises(PersistenceError):
+            capture_session_harness(store, session.session_id)
+        with pytest.raises(PersistenceError):
+            store.commit_session(request)
+        assert store.load_commit(session.session_id, request.operation_id) is None
+    finally:
+        replace_checkpoint(original)
+    assert store.load_session_record(session.session_id) == session
+    assert store.load_messages_tail(session.session_id) == []
+
+
+def test_file_paired_read_keeps_recovery_checkpoint_verification(tmp_path, monkeypatch):
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord()
+    store.create_session(session)
+    request = SessionCommit(before=session)
+
+    def interrupt(directory, value):
+        raise OSError("interrupted before session publication")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store._commits, "save_session_record", interrupt)
+        with pytest.raises(PersistenceError, match="interrupted"):
+            store.commit_session(request)
+    directory = store.sessions_dir / session.session_id
+    checkpoint = directory / "harness" / f"{session.harness_version}.json"
+    original = checkpoint.read_bytes()
+    checkpoint.unlink()
+    reader = LocalSessionStore(tmp_path)
+    with pytest.raises(PersistenceError, match="checkpoint not found"):
+        reader.load_session_harness(session.session_id)
+    assert (directory / "commit.json").exists()
+    checkpoint.write_bytes(original)
+    current, version = reader.load_session_harness(session.session_id)
+    assert current.harness_version == version.version_id == session.harness_version
+    assert reader.commit_session(request).session == current
+    assert not (directory / "commit.json").exists()

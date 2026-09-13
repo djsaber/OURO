@@ -109,13 +109,13 @@ async def test_session_control_persistence_phases_run_outside_the_event_loop(
     coordinator = SessionControlCoordinator(store)
     event_loop_thread = get_ident()
     reader_threads: list[int] = []
-    load_session = store.load_session_record
+    load_session_harness = store.load_session_harness
 
-    def recording_load_session(session_id: str):
+    def recording_load_session_harness(session_id: str):
         reader_threads.append(get_ident())
-        return load_session(session_id)
+        return load_session_harness(session_id)
 
-    monkeypatch.setattr(store, "load_session_record", recording_load_session)
+    monkeypatch.setattr(store, "load_session_harness", recording_load_session_harness)
 
     acquired = await coordinator.apply(
         _transition(

@@ -1,0 +1,8 @@
+{"backend": "files", "operation": "record", "harness_decodes": 1, "unique_versions": 1}
+{"backend": "files", "operation": "capture", "harness_decodes": 2, "unique_versions": 1}
+{"backend": "files", "operation": "latest", "harness_decodes": 2, "unique_versions": 1}
+{"backend": "files", "operation": "commit", "harness_decodes": 3, "unique_versions": 1}
+{"backend": "sqlite", "operation": "record", "harness_decodes": 1, "unique_versions": 1}
+{"backend": "sqlite", "operation": "capture", "harness_decodes": 2, "unique_versions": 1}
+{"backend": "sqlite", "operation": "latest", "harness_decodes": 2, "unique_versions": 1}
+{"backend": "sqlite", "operation": "commit", "harness_decodes": 2, "unique_versions": 1}

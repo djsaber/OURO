@@ -34,6 +34,7 @@ from ouro.core.session_commits import (
     SessionCommitResult,
     SessionCommitStep,
 )
+from ouro.core.session_controls import SessionControlState
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.local_locks import is_lock_held
@@ -591,7 +592,7 @@ class SQLiteSessionStore:
         with self._read_connection() as connection:
             commits = SQLiteSessionCommits(connection)
             if version_id is None:
-                version_id = commits.load_session(session_id).harness_version
+                return commits.load_session_harness(session_id)[1]
             return commits.load_harness(session_id, version_id)
 
     def load_commit(self, session_id: str, operation_id: str) -> SessionCommitResult | None:
@@ -815,6 +816,12 @@ class SQLiteSessionStore:
     def load_session_record(self, session_id: str) -> SessionRecord:
         with self._read_connection() as connection:
             return self._load_session_record(connection, session_id)
+
+    def load_session_harness(self, session_id: str) -> tuple[SessionRecord, HarnessVersion]:
+        with self._read_connection() as connection:
+            session, version = SQLiteSessionCommits(connection).load_session_harness(session_id)
+            session.controls = SessionControlState.model_validate(session.controls.model_dump())
+            return session, version
 
     def load_active_compaction(self, session_id: str) -> CompactionRecord | None:
         session = self.load_session_record(session_id)
@@ -1322,7 +1329,7 @@ class SQLiteSessionStore:
     def _load_session_record(
         self, connection: sqlite3.Connection, session_id: str
     ) -> SessionRecord:
-        return SQLiteSessionCommits(connection).load_session(session_id)
+        return SQLiteSessionCommits(connection).load_session_harness(session_id)[0]
 
     def _load_models(
         self,

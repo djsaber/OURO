@@ -39,6 +39,7 @@ uv run --frozen python -m dev.benchmarks.harness_lifecycle --label m4 --source C
 同一脚本、Python 环境依次运行两个 revision，不与 pytest 并行。每个后端覆盖 100/10,000 条保留消息、
 固定 2 条撤回后缀、1 × 1 KiB / 8 × 8 KiB / 8 × 64 KiB owner 数据，各 3 次。先写入另一份状态，
 再撤销并验证恢复原值；单独测量首次状态提交、整阶段状态读取、并发只读与无变化回调。
+整阶段读取直接调用 Application 的 `capture_harness`，不在基准内复制状态捕获流程。
 夹具创建、文件索引首次建立和检查点计数不计入耗时，因此不代表冷启动万条消息的首屏成本。
 
 记录进程 I/O 调用与字节、Python fsync 调用和新增版本数。Windows 使用 GetProcessIoCounters，
@@ -52,3 +53,18 @@ Linux 需安装 strace 并具备附加本进程的权限。观测不可用会明
 `tests/benchmarks/test_sqlite_sync.py` 校准持久提交、只读和异常清理。
 
 2026-09-11 的原始数据与收尾复核见 [Windows / POSIX 成本对照](results/harness-platform-comparison-2026-09-12.md)。
+
+## Session / Harness 读取与控制投影
+
+```powershell
+uv run --frozen python -m dev.benchmarks.session_harness_reads --label before --source C:/path/to/baseline
+uv run --frozen python -m dev.benchmarks.session_harness_reads --label after
+```
+
+同一脚本、解释器和机器依次比较两个版本。files/SQLite 分别构造 0、8、64 个合成控制关系，
+轮流调用 Session 单记录、Application 阶段捕获和当前 Harness 查询；每项预热 5 次，记录随后 200 次
+原始毫秒样本及中位数。状态创建在测量之外，不修改个人数据、不访问网络、不禁用 GC，也不使用耗时作为 CI 断言。
+该场景用于区分减少检查点读取的收益与投影复制的成本，不能替代端到端或真实终端验收。
+
+2026-09-13 的读取减负结果、原始数据和验证边界见
+[R1 验收记录](results/2026-09-13-r1/README.md)。

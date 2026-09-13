@@ -6,6 +6,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- SessionRepository exposes `load_session_harness` for a consistent Session/checkpoint pair.
+  File and SQLite commit preparation, current-Harness reads, and application stage snapshots
+  reuse the decoded checkpoint. Session controls remain isolated from Harness state; persistence
+  formats, conflict checks, and file-decision recovery verification are unchanged.
 - TUI welcome-page spacing adapts to terminal height while keeping the composer centered.
   Gaps above USAGE/TIPS and SYSTEM shrink to one row, expand to their two- and three-row
   limits, and reserve a row for the version footer.

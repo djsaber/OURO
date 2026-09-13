@@ -24,7 +24,7 @@ class SQLiteSessionCommits:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.connection = connection
 
-    def load_session(self, session_id: str) -> SessionRecord:
+    def load_session_harness(self, session_id: str) -> tuple[SessionRecord, HarnessVersion]:
         row = self.connection.execute(
             "SELECT payload FROM sessions WHERE session_id = ?", (session_id,)
         ).fetchone()
@@ -33,8 +33,10 @@ class SQLiteSessionCommits:
         session = decode_versioned_record_json(SessionRecord, row[0], label="Session")
         if session.session_id != session_id:
             raise PersistenceError("Session record has a foreign identity")
-        session.controls = self.load_harness(session_id, session.harness_version).state.controls
-        return session
+        version = self.load_harness(session_id, session.harness_version)
+        # Internal read-only pair; the repository isolates controls when exposing both.
+        session.controls = version.state.controls
+        return session, version
 
     def load_harness(self, session_id: str, version_id: str) -> HarnessVersion:
         row = self.connection.execute(
@@ -89,8 +91,7 @@ class SQLiteSessionCommits:
                 raise SessionCommitConflict("operation identity was reused for different effects")
             return previous
         connection = self.connection
-        current = self.load_session(session_id)
-        harness = self.load_harness(session_id, current.harness_version)
+        current, harness = self.load_session_harness(session_id)
         event_sequence = int(
             connection.execute(
                 "SELECT COALESCE(MAX(sequence), 0) FROM events WHERE session_id = ?", (session_id,)

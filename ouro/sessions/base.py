@@ -161,6 +161,13 @@ class SessionRepository(Protocol):
 
     def load_session_record(self, session_id: str) -> SessionRecord: ...
 
+    def load_session_harness(self, session_id: str) -> tuple[SessionRecord, HarnessVersion]:
+        """Read a Session and its referenced Harness at one consistency boundary.
+
+        The mutable Session controls projection is isolated from the checkpoint.
+        """
+        ...
+
     def load_session_observation(self, session_id: str) -> SessionObservationState: ...
 
     def load_active_compaction(self, session_id: str) -> CompactionRecord | None: ...

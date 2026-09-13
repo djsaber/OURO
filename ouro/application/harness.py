@@ -28,10 +28,9 @@ def capture_session_harness(
     """Read the Session preconditions and callback snapshot at the same boundary."""
 
     with store.session_mutation(session_id):
-        session = store.load_session_record(session_id)
+        session, version = store.load_session_harness(session_id)
         if run is not None and run.history_epoch != session.history_epoch:
             raise SessionCommitConflict("Run belongs to withdrawn Session history")
-        version = store.load_harness(session_id, session.harness_version)
         return session, HarnessCallSnapshot(
             session_id=session_id,
             harness_version=version.version_id,

@@ -36,6 +36,7 @@ from ouro.core.session_commits import (
     SessionCommitResult,
     SessionCommitStep,
 )
+from ouro.core.session_controls import SessionControlState
 from ouro.core.session_extensions import (
     SessionExtensionStateRecord,
 )
@@ -474,7 +475,7 @@ class LocalSessionStore:
     def load_harness(self, session_id: str, version_id: str | None = None) -> HarnessVersion:
         with self.session_mutation(session_id):
             if version_id is None:
-                version_id = self.load_session_record(session_id).harness_version
+                return self._commits.load_session_harness(session_id)[1]
             return self._commits.load_harness(session_id, version_id)
 
     def load_commit(self, session_id: str, operation_id: str) -> SessionCommitResult | None:
@@ -770,7 +771,13 @@ class LocalSessionStore:
 
     def load_session_record(self, session_id: str) -> SessionRecord:
         with self.session_mutation(session_id):
-            return self._commits.load_session(session_id)
+            return self._commits.load_session_harness(session_id)[0]
+
+    def load_session_harness(self, session_id: str) -> tuple[SessionRecord, HarnessVersion]:
+        with self.session_mutation(session_id):
+            session, version = self._commits.load_session_harness(session_id)
+            session.controls = SessionControlState.model_validate(session.controls.model_dump())
+            return session, version
 
     def load_messages_page(
         self,
