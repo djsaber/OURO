@@ -44,7 +44,7 @@ def set_terminal_title(title: str, *, stream: TextIO | None = None) -> bool:
         safe_title = "".join(character for character in title if character.isprintable())
         output.write(_TITLE_ESCAPE.format(title=safe_title))
         output.flush()
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
     return True
 
@@ -84,7 +84,7 @@ def _write_tui_reset(stream: TextIO | None) -> bool:
             return False
         stream.write(_TUI_RESET_ESCAPE)
         stream.flush()
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
     return True
 
@@ -116,7 +116,7 @@ def _windows_console_handle_and_mode(stream: TextIO | None) -> tuple[int | None,
         get_console_mode.restype = wintypes.BOOL
         if not get_console_mode(handle, ctypes.byref(mode)):
             return None, None
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None, None
     return handle, mode.value
 
@@ -149,7 +149,7 @@ def _set_windows_console_mode(handle: int, mode: int) -> bool:
         set_console_mode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
         set_console_mode.restype = wintypes.BOOL
         return bool(set_console_mode(handle, mode))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
 
 
@@ -160,7 +160,7 @@ def _flush_windows_console_input(handle: int) -> bool:
         flush_console_input.argtypes = [wintypes.HANDLE]
         flush_console_input.restype = wintypes.BOOL
         return bool(flush_console_input(handle))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
 
 

@@ -158,6 +158,6 @@ def _bounded_header(value: str) -> str:
 def _json_preview(value: object) -> str:
     try:
         rendered = json.dumps(value, ensure_ascii=False, indent=2)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         rendered = str(value)
     return rendered if len(rendered) <= 600 else rendered[:599] + "…"

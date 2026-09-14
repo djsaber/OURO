@@ -103,7 +103,7 @@ class SDKMCPClientFactory:
         diagnostic: MCPDiagnosticHandler,
         tools_changed: MCPToolsChangedHandler,
         connection_lost: MCPConnectionLostHandler,
-    ) -> AsyncGenerator[SDKMCPClientSession, None]:
+    ) -> AsyncGenerator[SDKMCPClientSession]:
         secrets = _resolve_secrets(config, resolve_credential)
 
         async def logging_callback(params: types.LoggingMessageNotificationParams) -> None:
@@ -205,7 +205,7 @@ async def _client_session(
     config: MCPServerConfig,
     logging_callback: Any,
     message_handler: Any,
-) -> AsyncGenerator[ClientSession, None]:
+) -> AsyncGenerator[ClientSession]:
     session = ClientSession(
         streams[0],
         streams[1],
@@ -301,7 +301,7 @@ def _safe_text(value: object) -> str:
         return value
     try:
         return json.dumps(value, ensure_ascii=False, default=str)
-    except (TypeError, ValueError):  # pragma: no cover - json default handles normal objects.
+    except TypeError, ValueError:  # pragma: no cover - json default handles normal objects.
         return str(value)
 
 

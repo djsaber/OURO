@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager, nullcontext, redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -291,7 +291,7 @@ async def _remove_command(
 
 
 @asynccontextmanager
-async def _plugin_session(home: Path, *, quiet: bool) -> AsyncIterator[PluginService]:
+async def _plugin_session(home: Path, *, quiet: bool) -> AsyncGenerator[PluginService]:
     """Keep plugin stdout out of the CLI's machine-readable JSON channel."""
 
     output = redirect_stdout(StringIO()) if quiet else nullcontext()

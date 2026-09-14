@@ -1553,7 +1553,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                         self._sync_subagent_navigation_panel(
                             root_session_id=subscription.root_session_id
                         )
-        except (StopAsyncIteration, asyncio.CancelledError):
+        except StopAsyncIteration, asyncio.CancelledError:
             return
         finally:
             subscription.close()
@@ -3480,7 +3480,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 loaded,
                 subscription=subscription,
             )
-        except (Exception, asyncio.CancelledError):
+        except Exception, asyncio.CancelledError:
             if subscription is not None:
                 subscription.close()
             if previous_projection is None:
@@ -3616,7 +3616,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 observation.loaded,
                 subscription=observation.subscription,
             )
-        except (Exception, asyncio.CancelledError):
+        except Exception, asyncio.CancelledError:
             observation.subscription.close()
             raise
 
@@ -3630,7 +3630,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 observation.loaded,
                 subscription=observation.subscription,
             )
-        except (Exception, asyncio.CancelledError):
+        except Exception, asyncio.CancelledError:
             observation.subscription.close()
             raise
 

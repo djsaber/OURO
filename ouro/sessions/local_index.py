@@ -267,7 +267,7 @@ class LocalSessionIndex:
         path = self.sessions_dir / session_id / "resources" / "index.json"
         try:
             raw = json.loads(path.read_text("utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             return 0, True
         resources = raw.get("resources") if isinstance(raw, dict) else None
         if not isinstance(resources, list):

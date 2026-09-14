@@ -1025,7 +1025,7 @@ async def _terminate_process_tree(
             # terminator needs its own small cleanup budget: abandoning it can
             # leave descendants holding the worker pipe handles open.
             await asyncio.wait_for(killer.wait(), timeout=2.0)
-        except (OSError, TimeoutError):
+        except OSError, TimeoutError:
             if killer is not None and killer.returncode is None:
                 with suppress(ProcessLookupError):
                     killer.kill()

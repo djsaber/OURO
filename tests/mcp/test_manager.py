@@ -81,7 +81,7 @@ class FakeFactory:
         self.connection_lost = lambda _error: None
 
     @asynccontextmanager
-    async def open(self, config, **callbacks) -> AsyncGenerator[FakeSession, None]:
+    async def open(self, config, **callbacks) -> AsyncGenerator[FakeSession]:
         self.open_count += 1
         self.opened_configs.append(config)
         self.tools_changed = callbacks["tools_changed"]

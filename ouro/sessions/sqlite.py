@@ -1055,7 +1055,7 @@ class SQLiteSessionStore:
             except (ValidationError, ValueError, TypeError) as exc:
                 try:
                     raw_entry = json.loads(payload)
-                except (json.JSONDecodeError, TypeError):
+                except json.JSONDecodeError, TypeError:
                     raw_entry = None
                 entry = invalid_session_index_entry(
                     raw_entry,

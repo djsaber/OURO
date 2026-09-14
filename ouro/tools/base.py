@@ -396,7 +396,7 @@ async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
                 killer.wait(),
                 timeout=_PROCESS_SHUTDOWN_TIMEOUT_SECONDS,
             )
-        except (OSError, TimeoutError):
+        except OSError, TimeoutError:
             if killer is not None:
                 with suppress(ProcessLookupError):
                     killer.kill()
@@ -461,7 +461,7 @@ def _handler_arguments(
 ) -> tuple[tuple[object, ...], dict[str, object]]:
     try:
         parameters = tuple(signature(handler).parameters.values())
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return (invocation,), {}
 
     if any(parameter.kind == Parameter.VAR_KEYWORD for parameter in parameters):
@@ -489,7 +489,7 @@ def _resume_handler_arguments(
 ) -> tuple[tuple[object, ...], dict[str, object]]:
     try:
         parameters = tuple(signature(handler).parameters.values())
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return (invocation, resolution, request), {}
 
     keyword_arguments: dict[str, object] = {}

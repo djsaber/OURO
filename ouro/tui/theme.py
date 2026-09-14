@@ -421,7 +421,7 @@ def theme_for(node: object) -> TuiTheme:
     initial = getattr(node, "_initial_tui_theme", None)
     try:
         theme = getattr(cast(Any, node).app, "tui_theme", None)
-    except (AttributeError, RuntimeError):
+    except AttributeError, RuntimeError:
         return initial if isinstance(initial, TuiTheme) else DEFAULT_TUI_THEME
     if isinstance(theme, TuiTheme):
         return theme

@@ -100,7 +100,7 @@ class AgentRecoveryService:
                 relation.parent_session_id,
                 relation.parent_run_id,
             )
-        except (FileNotFoundError, PersistenceError):
+        except FileNotFoundError, PersistenceError:
             return False
         return (
             self._catalog_mismatch(relation, parent_run) is None

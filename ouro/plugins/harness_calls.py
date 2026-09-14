@@ -138,7 +138,7 @@ def callback_arguments(
         return (call,), {}
     try:
         parameters = tuple(inspect.signature(handler).parameters.values())
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return (call,), {}
     if any(
         parameter.kind == inspect.Parameter.VAR_KEYWORD or parameter.name == "context"

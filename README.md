@@ -43,7 +43,7 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 
 ## 开发环境
 
-要求 Python 3.12 或更高版本。
+要求 Python 3.14 或更高版本。
 
 ```bash
 uv sync --all-groups

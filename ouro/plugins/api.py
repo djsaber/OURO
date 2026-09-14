@@ -273,7 +273,7 @@ class RedactedPluginLogger:
     def _log(self, level: int, message: str, args: tuple[object, ...]) -> None:
         try:
             rendered = message % args if args else message
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             rendered = " ".join((message, *(str(item) for item in args)))
         self._logger.log(level, self._redactor.redact(rendered))
 

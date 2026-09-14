@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -362,7 +362,7 @@ async def open_local_plugins(
     home: str | Path | None = None,
     *,
     session_backend: SessionBackend | None = None,
-) -> AsyncIterator[PluginService]:
+) -> AsyncGenerator[PluginService]:
     root = resolve_local_home(home)
     session_services = build_local_session_services(root, session_backend=session_backend)
     runtime, service = _build_local_plugin_runtime(
@@ -390,7 +390,7 @@ async def open_local_agent_definitions(
     home: str | Path | None = None,
     *,
     session_backend: SessionBackend | None = None,
-) -> AsyncIterator[LocalAgentDefinitionServices]:
+) -> AsyncGenerator[LocalAgentDefinitionServices]:
     """Open definition CRUD without requiring a configured model provider."""
 
     root = resolve_local_home(home)

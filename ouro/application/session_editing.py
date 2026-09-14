@@ -183,7 +183,7 @@ def _direct_user_message(message: MessageRecord) -> bool:
 def _commit_undo(store: SessionStore, request: SessionCommit) -> SessionCommitResult:
     try:
         return store.commit_session(request)
-    except (OSError, PersistenceError):
+    except OSError, PersistenceError:
         committed = store.load_commit(request.before.session_id, request.operation_id)
         if committed is None:
             raise

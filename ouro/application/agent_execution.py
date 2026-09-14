@@ -125,7 +125,7 @@ class AgentExecutionTasks:
                 error = f"{type(exc).__name__}: {redact_text(str(exc))}"[:4_000]
                 try:
                     await run_blocking(self._retain_error, relation, error)
-                except (OSError, PersistenceError):
+                except OSError, PersistenceError:
                     # The failed dependency may be the same store used for
                     # diagnostics. Still spend only the bounded retry budget.
                     if retryable and attempt < 3:

@@ -1135,7 +1135,7 @@ class LocalSessionStore:
                 ):
                     self._event_run_offset_cache[key] = offset
                     return offset
-            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            except OSError, KeyError, TypeError, ValueError, json.JSONDecodeError:
                 # This is a derived accelerator. Rebuild it from the canonical
                 # append-only journal instead of making the Session unreadable.
                 pass
@@ -1219,7 +1219,7 @@ class LocalSessionStore:
                 json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
-        except (OSError, TypeError, ValueError):
+        except OSError, TypeError, ValueError:
             # This index is disposable. The in-memory offset remains valid for
             # this Store; a reopened Store can rebuild it from events.jsonl.
             return
@@ -1249,7 +1249,7 @@ class LocalSessionStore:
             with journal.open("rb") as file:
                 file.seek(offset)
                 payload = json.loads(file.readline())
-        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        except OSError, TypeError, ValueError, json.JSONDecodeError:
             return False
         return (
             isinstance(payload, dict)
@@ -1320,7 +1320,7 @@ class LocalSessionStore:
             index_path.parent.mkdir(parents=True, exist_ok=True)
             with index_path.open("wb" if previous is None else "ab") as file:
                 file.write(_EVENT_SEQUENCE_INDEX_RECORD.pack(sequence, journal_size))
-        except (OSError, struct.error):
+        except OSError, struct.error:
             # Checkpoints are query accelerators, not part of event durability.
             # Retry at the next sparse boundary without blocking this append.
             self._event_sequence_index_cache[session_id] = (sequence, journal_size)
@@ -1350,7 +1350,7 @@ class LocalSessionStore:
             if not _is_record_boundary(journal, offset, journal_size):
                 return None
             return sequence, offset
-        except (OSError, struct.error):
+        except OSError, struct.error:
             return None
 
     def _event_offset_after_sequence(

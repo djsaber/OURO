@@ -1,6 +1,6 @@
 # Contributing to OURO
 
-OURO targets Python 3.12 or newer and uses `uv` for its locked development environment.
+OURO targets Python 3.14 or newer and uses `uv` for its locked development environment.
 
 Use the fast architecture/core gate while iterating:
 

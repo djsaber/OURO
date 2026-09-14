@@ -1417,7 +1417,7 @@ class AgentService:
                     relation.parent_session_id,
                     relation.parent_run_id,
                 )
-            except (FileNotFoundError, PersistenceError):
+            except FileNotFoundError, PersistenceError:
                 continue
             parent_session = await run_blocking(
                 self.store.load_session_record, relation.parent_session_id
@@ -1465,7 +1465,7 @@ class AgentService:
                 run = await run_blocking(
                     self.store.load_run, session.session_id, session.active_run_id
                 )
-            except (FileNotFoundError, PersistenceError):
+            except FileNotFoundError, PersistenceError:
                 run = None
             if run is not None:
                 batch = run.active_tool_batch

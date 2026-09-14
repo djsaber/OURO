@@ -18,7 +18,7 @@ async def test_sse_adapter_owns_liveness_and_reports_reader_disconnect(monkeypat
     observed_timeouts: list[float] = []
 
     @asynccontextmanager
-    async def fake_sse_transport(*_args, **kwargs) -> AsyncGenerator[tuple[object, object], None]:
+    async def fake_sse_transport(*_args, **kwargs) -> AsyncGenerator[tuple[object, object]]:
         observed_clients.append(kwargs["client"])
         observed_timeouts.append(kwargs["timeout_seconds"])
         yield read_stream, write_stream

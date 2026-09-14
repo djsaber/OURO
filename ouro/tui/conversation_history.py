@@ -986,16 +986,10 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             self.app.open_url(event.style.link)
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
-        if (
-            event.button != 3
-            or event.style is None
-            or self.screen.get_selected_text() is not None
-        ):
+        if event.button != 3 or event.style is None or self.screen.get_selected_text() is not None:
             return
         user_entry_index = event.style.meta.get(_USER_MESSAGE_META)
-        if not isinstance(user_entry_index, int) or not 0 <= user_entry_index < len(
-            self._entries
-        ):
+        if not isinstance(user_entry_index, int) or not 0 <= user_entry_index < len(self._entries):
             return
         entry = self._entries[user_entry_index]
         if entry.kind != "user":

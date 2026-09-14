@@ -5,7 +5,7 @@ import hashlib
 import inspect
 import json
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
@@ -107,7 +107,7 @@ class GenerationGate:
         await self._drained.wait()
 
     @asynccontextmanager
-    async def invocation(self):
+    async def invocation(self) -> AsyncGenerator[None]:
         with self._lock:
             if not self._open:
                 raise PluginGenerationUnavailableError(

@@ -75,7 +75,7 @@ class AgentTreeProjector:
         root_budget = self._run_budget(root_run)
         try:
             root_activity = self.runtime.activity(root_session_id)
-        except (FileNotFoundError, KeyError, SessionNotFoundError):
+        except FileNotFoundError, KeyError, SessionNotFoundError:
             root_activity = None
         relations = self.store.list_delegations(root_session_id)
         nodes: list[AgentTreeNode] = []
@@ -110,7 +110,7 @@ class AgentTreeProjector:
                     root_usage[key] = root_usage.get(key, 0) + value
             try:
                 activity = self.runtime.activity(relation.child_session_id)
-            except (FileNotFoundError, KeyError, SessionNotFoundError):
+            except FileNotFoundError, KeyError, SessionNotFoundError:
                 activity = None
             nodes.append(
                 AgentTreeNode(
@@ -444,7 +444,7 @@ class AgentTreeSubscription(AsyncIterator[AgentTreeNotification]):
                     self._offer(AgentTreeNotification(kind="snapshot", snapshot=snapshot))
                 if session_id not in self._subscriptions:
                     return
-        except (StopAsyncIteration, asyncio.CancelledError):
+        except StopAsyncIteration, asyncio.CancelledError:
             return
         except Exception as exc:  # noqa: BLE001 - isolate each child subscription.
             self._offer_diagnostic(

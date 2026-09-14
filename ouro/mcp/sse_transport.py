@@ -24,7 +24,7 @@ async def legacy_sse_transport(
     *,
     client: httpx.AsyncClient,
     timeout_seconds: float,
-) -> AsyncGenerator[SSEStreams, None]:
+) -> AsyncGenerator[SSEStreams]:
     """Expose legacy MCP-over-SSE as SDK-compatible message streams.
 
     Legacy SSE uses one long-lived GET stream and a session-specific POST

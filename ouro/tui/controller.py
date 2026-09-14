@@ -829,7 +829,7 @@ class TuiController:
         def read() -> str | None:
             try:
                 return runtime.current_model(session_id).key
-            except (ConfigError, PersistenceError, FileNotFoundError):
+            except ConfigError, PersistenceError, FileNotFoundError:
                 # Inheriting a route is optional. An invalid route or unreadable
                 # previous Session must not prevent navigation to a fresh draft.
                 return None
@@ -2278,7 +2278,7 @@ class TuiController:
             return cached
         try:
             session = self._runtime().sessions.open(session_id, recover=False).session
-        except (FileNotFoundError, PersistenceError, SessionNotFoundError):
+        except FileNotFoundError, PersistenceError, SessionNotFoundError:
             return None
         root_session_id = session.agent_root_session_id
         self._event_root_sessions[session_id] = root_session_id
