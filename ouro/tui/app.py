@@ -77,6 +77,7 @@ from ouro.tui.conversation_history import (
     ConversationHistory,
     ConversationHistoryState,
     ToolNavigationRequested,
+    UserMessageCopyRequested,
 )
 from ouro.tui.input_drafts import TuiInputDrafts, TuiInputDraftStore
 from ouro.tui.menu_labels import MODEL_THINKING_LABEL, THINKING_LABELS, TOOL_APPROVAL_LABEL
@@ -256,13 +257,21 @@ class _OuroHostScreen(Screen):
             return
         event.prevent_default()
         event.stop()
+        if await self._copy_to_clipboard(selected_text):
+            self.clear_selection()
+
+    async def on_user_message_copy_requested(self, message: UserMessageCopyRequested) -> None:
+        message.stop()
+        await self._copy_to_clipboard(message.text)
+
+    async def _copy_to_clipboard(self, text: str) -> bool:
         try:
-            await asyncio.to_thread(self._clipboard_writer, selected_text)
+            await asyncio.to_thread(self._clipboard_writer, text)
         except ClipboardWriteError as exc:
             self.notify(str(exc), severity="error", markup=False)
-            return
-        self.clear_selection()
+            return False
         self.notify("Copied to clipboard", markup=False)
+        return True
 
     async def on_prune(self, event: Prune) -> None:
         self._on_host_prune()

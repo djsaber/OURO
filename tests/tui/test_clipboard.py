@@ -25,7 +25,7 @@ from ouro.tui.conversation_history import (
     ConversationHistory,
     TranscriptEntry,
 )
-from ouro.tui.theme import TuiTheme
+from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
 from ouro.tui.widgets import Composer, ConversationView
 
 
@@ -191,6 +191,66 @@ async def test_history_right_click_copies_only_the_dragged_text() -> None:
         await pilot.mouse_down(history, offset=(7, 0), button=3)
         await pilot.pause()
         assert copied == ["only"]
+        assert app.screen.get_selected_text() is None
+
+
+@pytest.mark.asyncio
+async def test_user_message_hover_and_right_click_copy_preserve_selection_priority() -> None:
+    copied: list[str] = []
+    app = HistorySelectionApp(copied.append)
+    source = "copy this exact\nuser message"
+
+    async with app.run_test(size=(40, 10), notifications=True) as pilot:
+        history = app.query_one(ConversationHistory)
+        history.replace((TranscriptEntry(kind="user", text=source),))
+        await history.wait_until_rendered()
+        await pilot.pause()
+
+        message_y = next(
+            y for y, line in enumerate(history.lines) if "copy this exact" in line.text
+        )
+        message_x = history.lines[message_y].text.index("copy this exact")
+        before = next(
+            segment
+            for segment in history.render_line(message_y)
+            if "copy this exact" in segment.text
+        )
+        assert before.style is not None and before.style.bgcolor is not None
+        assert before.style.bgcolor.triplet.hex == DEFAULT_TUI_THEME.panel
+
+        await pilot.hover(history, offset=(message_x, message_y))
+        await pilot.pause()
+
+        hovered = next(
+            segment
+            for segment in history.render_line(message_y)
+            if "copy this exact" in segment.text
+        )
+        assert hovered.style is not None and hovered.style.bgcolor is not None
+        assert hovered.style.bgcolor.triplet.hex == DEFAULT_TUI_THEME.highlight
+
+        await pilot.click(history, offset=(message_x, message_y))
+        await pilot.pause()
+        assert copied == []
+
+        await pilot.click(history, offset=(message_x, message_y), button=3)
+        await pilot.pause()
+
+        assert copied == [source]
+        toast = app.screen.query_one("#textual-toastrack").query_one("Toast")
+        assert "Copied to clipboard" in toast.render().plain
+
+        selection_x = message_x + len("copy this ")
+        await pilot.mouse_down(history, offset=(selection_x, message_y))
+        await pilot.hover(history, offset=(selection_x + len("exact") - 1, message_y))
+        await pilot.mouse_up(history, offset=(selection_x + len("exact") - 1, message_y))
+        await pilot.pause()
+        assert app.screen.get_selected_text() == "exact"
+
+        await pilot.mouse_down(history, offset=(selection_x, message_y), button=3)
+        await pilot.pause()
+
+        assert copied == [source, "exact"]
         assert app.screen.get_selected_text() is None
 
 
