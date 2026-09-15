@@ -5,6 +5,7 @@ from collections.abc import Callable
 import pyperclip
 import pytest
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.geometry import Offset
 from textual.screen import Screen
@@ -108,6 +109,41 @@ async def test_composer_right_click_pastes_system_clipboard_at_cursor() -> None:
         assert composer.text == "before pasted\non two linesafter"
         assert composer.cursor_location == (1, 12)
         assert composer.has_focus is True
+
+
+@pytest.mark.asyncio
+async def test_composer_right_click_merges_native_paste_event() -> None:
+    reads = 0
+
+    def read_clipboard() -> str:
+        nonlocal reads
+        reads += 1
+        return "once"
+
+    app = ComposerApp(read_clipboard)
+
+    async with app.run_test(size=(80, 12)) as pilot:
+        composer = app.query_one(Composer)
+
+        await pilot.mouse_down(composer, offset=(0, 0), button=3)
+        composer.post_message(events.Paste("once"))
+        composer.post_message(events.Paste("once"))
+        composer.post_message(events.Click(composer, 0, 0, 0, 0, 3, False, False, False))
+        await pilot.pause()
+
+        assert reads == 0
+        assert composer.text == "once"
+
+        composer.post_message(events.Paste("once"))
+        await pilot.pause()
+
+        assert composer.text == "onceonce"
+
+        await pilot.click(composer, offset=(0, 0), button=3)
+        await pilot.pause()
+
+        assert reads == 1
+        assert composer.text == "onceonceonce"
 
 
 @pytest.mark.asyncio

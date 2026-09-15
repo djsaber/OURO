@@ -3249,6 +3249,9 @@ class Composer(TuiTextArea):
         self._suggestion_resolver: Callable[[], str] | None = None
         self._placeholder_parts: tuple[_PlaceholderPart, ...] = ()
         self._placeholder_kind: Literal["active_run", "subagent"] | None = None
+        # Some terminals emit Paste alongside the right-click mouse event.
+        self._right_click_paste_pending = False
+        self._right_click_paste_handled = False
 
     def set_suggestion_resolver(self, resolver: Callable[[], str]) -> None:
         """Resolve inline suggestions synchronously with text edits."""
@@ -3427,8 +3430,30 @@ class Composer(TuiTextArea):
             return
         event.prevent_default()
         event.stop()
+        self._right_click_paste_pending = True
+        self._right_click_paste_handled = False
         self.focus()
-        self._paste_system_clipboard()
+
+    def on_click(self, event: events.Click) -> None:
+        if event.button != 3:
+            return
+        event.prevent_default()
+        event.stop()
+        if not self._right_click_paste_pending:
+            return
+        handled = self._right_click_paste_handled
+        self._right_click_paste_pending = False
+        if not handled:
+            self._paste_system_clipboard()
+
+    def on_paste(self, event: events.Paste) -> None:
+        event.prevent_default()
+        event.stop()
+        if self._right_click_paste_pending:
+            if self._right_click_paste_handled:
+                return
+            self._right_click_paste_handled = True
+        self._insert_paste(event.text)
 
     @work(group="composer-clipboard")
     async def _paste_system_clipboard(self) -> None:
@@ -3437,6 +3462,9 @@ class Composer(TuiTextArea):
         except ClipboardReadError as exc:
             self.notify(str(exc), severity="warning", markup=False)
             return
+        self._insert_paste(text)
+
+    def _insert_paste(self, text: str) -> None:
         if not text or self.read_only:
             return
         result = self.replace(
