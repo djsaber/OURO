@@ -838,7 +838,7 @@ _OURO_TUI_CSS = """
         /* Exactly one visible menu owns the focus backdrop. Parent menu panels
            become fully transparent while a child page is active, preventing
            nested darkening without losing the menu's visual focus. */
-        background: $ouro-background 45%;
+        background: $ouro-background 65%;
     }
 
     /* All modal menus share one flat chrome with the composer and command

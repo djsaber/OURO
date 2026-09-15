@@ -6750,7 +6750,7 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         )
         assert action_screen.query_one("#choice-panel", Vertical).display is False
         assert action_screen.styles.background.a == 0
-        assert rename_screen.styles.background.a == 0.45
+        assert rename_screen.styles.background.a == 0.65
         assert [choice.value for choice in rename_screen._choices] == [active.session_id]
         assert {choice.group for choice in rename_screen._choices} == {"Today"}
         assert rename_screen._choices[0].marker == DEFAULT_TUI_THEME.selected_choice_marker
@@ -6822,7 +6822,7 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is action_screen
         assert action_screen.query_one("#choice-panel", Vertical).display is True
-        assert action_screen.styles.background.a == 0.45
+        assert action_screen.styles.background.a == 0.65
 
 
 @pytest.mark.asyncio
@@ -9658,7 +9658,7 @@ async def test_configuration_editor_restores_retained_action_menu(tmp_path: Path
         assert action_screen.query_one("#choice-panel", Vertical).display is False
         assert action_screen.styles.background.a == 0
         assert app.screen is not action_screen
-        assert app.screen.styles.background.a == 0.45
+        assert app.screen.styles.background.a == 0.65
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is action_screen
@@ -9694,7 +9694,7 @@ async def test_action_choice_submenus_reuse_the_action_screen_without_flash(
 
             assert app.screen is action_screen
             assert len(app.screen_stack) == 2
-            assert action_screen.styles.background.a == 0.45
+            assert action_screen.styles.background.a == 0.65
 
             await pilot.press("escape")
             await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -9793,7 +9793,7 @@ async def test_configuration_editors_replace_visible_parent_at_every_depth(
         compaction_screen = app.screen
         assert action_screen.query_one("#choice-panel", Vertical).display is False
         assert action_screen.styles.background.a == 0
-        assert compaction_screen.styles.background.a == 0.45
+        assert compaction_screen.styles.background.a == 0.65
 
         compaction_screen.query_one(
             "#choice-list", OptionList
@@ -9805,19 +9805,19 @@ async def test_configuration_editors_replace_visible_parent_at_every_depth(
 
         assert compaction_screen.query_one("#choice-panel", Vertical).display is False
         assert compaction_screen.styles.background.a == 0
-        assert app.screen.styles.background.a == 0.45
+        assert app.screen.styles.background.a == 0.65
 
         await pilot.press("escape")
         await _wait_for_screen(app, CompactionConfigurationScreen, title="CONTEXT COMPACTION")
         assert app.screen is compaction_screen
         assert compaction_screen.query_one("#choice-panel", Vertical).display is True
-        assert compaction_screen.styles.background.a == 0.45
+        assert compaction_screen.styles.background.a == 0.65
 
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is action_screen
         assert action_screen.query_one("#choice-panel", Vertical).display is True
-        assert action_screen.styles.background.a == 0.45
+        assert action_screen.styles.background.a == 0.65
 
 
 @pytest.mark.asyncio
