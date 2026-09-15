@@ -10786,7 +10786,7 @@ async def test_workspace_command_selects_paths_only_before_session_and_keeps_cle
         assert [argument.display_label for argument in popup._arguments] == [
             str(tmp_path.resolve()),
             str(historical.resolve()),
-            "Clear",
+            "clear",
         ]
         assert all(not argument.description for argument in popup._arguments)
         assert popup._arguments[-1].accent == DEFAULT_TUI_THEME.danger
@@ -10794,7 +10794,7 @@ async def test_workspace_command_selects_paths_only_before_session_and_keeps_cle
         assert isinstance(workspace_menu, Content)
         assert "Current workspace" not in workspace_menu.plain
         assert "Recent workspace" not in workspace_menu.plain
-        clear_style = workspace_menu.get_style_at_offset(workspace_menu.plain.index("Clear"))
+        clear_style = workspace_menu.get_style_at_offset(workspace_menu.plain.index("clear"))
         assert clear_style.foreground == Color.parse(DEFAULT_TUI_THEME.danger)
 
         await pilot.press("down", "enter")
@@ -11634,6 +11634,8 @@ async def test_parallel_approvals_advance_one_at_a_time_without_stalling(tmp_pat
         assert [
             interaction.tool_call_id for interaction in app._projection.pending_interactions
         ] == ["call_write_1", "call_write_2"]
+        title = app.query_one("#interaction-title", Static)
+        assert title.render().plain == "APPROVAL  1/2"
 
         await pilot.press("enter")
         await _wait_until(
@@ -11649,6 +11651,7 @@ async def test_parallel_approvals_advance_one_at_a_time_without_stalling(tmp_pat
         assert app._projection.pending_interaction is not None
         assert app._projection.pending_interaction.tool_call_id == "call_write_2"
         assert app.query_one(InteractionBar).has_focus is True
+        assert title.render().plain == "APPROVAL  2/2"
         assert first.exists() is False
         assert second.exists() is False
 

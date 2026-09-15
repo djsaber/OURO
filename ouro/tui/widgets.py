@@ -2336,6 +2336,9 @@ class InteractionBar(ApprovalPanel):
         self.disabled = True
         self._interaction: PendingInteraction | None = None
         self._identity: tuple[str, str] | None = None
+        self._sequence_owner: tuple[str | None, str] | None = None
+        self._sequence_position = 0
+        self._sequence_total = 0
 
     def compose(self) -> ComposeResult:
         yield self._title
@@ -2346,21 +2349,51 @@ class InteractionBar(ApprovalPanel):
     def selected_approved(self) -> bool:
         return self._cursor == 0
 
-    def show_interaction(self, interaction: PendingInteraction | None) -> None:
+    def show_interaction(
+        self,
+        interaction: PendingInteraction | None,
+        *,
+        pending_count: int = 1,
+    ) -> None:
         with self.app.batch_update():
             if interaction is None or interaction.kind != "approval":
                 self.display = False
                 self._interaction = None
                 self._identity = None
+                self._sequence_owner = None
+                self._sequence_position = 0
+                self._sequence_total = 0
                 self._cursor = 0
                 return
             identity = (interaction.run_id, interaction.request_id or interaction.tool_call_id)
             if identity != self._identity:
                 self._cursor = 0
+                owner = (interaction.session_id, interaction.run_id)
+                if self._identity is None or owner != self._sequence_owner:
+                    self._sequence_owner = owner
+                    self._sequence_position = 1
+                    self._sequence_total = max(1, pending_count)
+                else:
+                    self._sequence_position += 1
+                    self._sequence_total = max(
+                        self._sequence_total,
+                        self._sequence_position + max(1, pending_count) - 1,
+                    )
             self._interaction = interaction
             self._identity = identity
             self.disabled = False
             self.display = True
+            self._render_approval()
+
+    def update_pending_count(self, pending_count: int) -> None:
+        if self._interaction is None:
+            return
+        total = max(
+            self._sequence_total,
+            self._sequence_position + max(1, pending_count) - 1,
+        )
+        if total != self._sequence_total:
+            self._sequence_total = total
             self._render_approval()
 
     def resume(self) -> None:
@@ -2396,7 +2429,12 @@ class InteractionBar(ApprovalPanel):
         if interaction is None:
             return
         theme = theme_for(self)
-        self._render_approval_title("APPROVAL")
+        title = (
+            f"APPROVAL  {self._sequence_position}/{self._sequence_total}"
+            if self._sequence_total > 1
+            else "APPROVAL"
+        )
+        self._render_approval_title(title)
         summary = Text()
         if interaction.is_subagent:
             summary.append(
@@ -2433,6 +2471,8 @@ class AskUserPanel(Static):
     BINDINGS = [
         Binding("up", "previous_option", show=False),
         Binding("down", "next_option", show=False),
+        Binding("left", "previous_question", show=False),
+        Binding("right", "next_question", show=False),
         Binding("space", "toggle_option", show=False),
         Binding("enter", "accept", show=False),
         Binding("1", "choose(0)", show=False),
@@ -2477,10 +2517,7 @@ class AskUserPanel(Static):
             self._awaiting_freeform = False
             self.disabled = False
             self.display = True
-            self._render_question()
-            self.focus()
-            if not self._question.options:
-                self._request_freeform()
+            self._show_question(0)
 
     def hide_panel(self) -> None:
         with self.app.batch_update():
@@ -2513,6 +2550,12 @@ class AskUserPanel(Static):
 
     def action_next_option(self) -> None:
         self._move_cursor(1)
+
+    def action_previous_question(self) -> None:
+        self._move_question(-1)
+
+    def action_next_question(self) -> None:
+        self._move_question(1)
 
     def action_toggle_option(self) -> None:
         request = self._request
@@ -2572,18 +2615,48 @@ class AskUserPanel(Static):
         self._answers[question.question_id] = answers
         assert self._request is not None
         if self._question_index + 1 < len(self._request.questions):
-            self._question_index += 1
-            self._cursor = 0
-            self._selected.clear()
-            self._awaiting_freeform = False
-            self._render_question()
-            self.focus()
-            if not self._question.options:
-                self._request_freeform()
+            self._show_question(self._question_index + 1)
             return
         answer = self._request.encode(self._answers)
         self.disabled = True
         self.post_message(self.Completed(answer))
+
+    def _move_question(self, offset: int) -> None:
+        request = self._request
+        if request is None or self._awaiting_freeform:
+            return
+        target = self._question_index + offset
+        if not 0 <= target < len(request.questions):
+            return
+        if offset > 0 and self._question.question_id not in self._answers:
+            return
+        self._show_question(target)
+
+    def _show_question(self, index: int) -> None:
+        assert self._request is not None
+        self._question_index = index
+        self._cursor = 0
+        self._selected.clear()
+        self._awaiting_freeform = False
+        question = self._question
+        answers = self._answers.get(question.question_id, ())
+        option_indexes = {
+            option.label: option_index for option_index, option in enumerate(question.options)
+        }
+        self._selected.update(
+            option_indexes[answer] for answer in answers if answer in option_indexes
+        )
+        unmatched_answer = any(answer not in option_indexes for answer in answers)
+        if unmatched_answer:
+            self._cursor = len(question.options)
+        elif question.multi_select and self._selected:
+            self._cursor = min(self._selected)
+        elif answers:
+            self._cursor = option_indexes.get(answers[0], 0)
+        self._render_question()
+        self.focus()
+        if not question.options:
+            self._request_freeform()
 
     def _render_question(self) -> None:
         request = self._request
@@ -2624,11 +2697,13 @@ class AskUserPanel(Static):
             f"{other_index + 1}. Other…",
             style=(f"bold {theme.accent_bright}" if other_active else f"bold {theme.text_primary}"),
         )
-        hint = (
-            "\n\n" + theme.inline_separator.join(("↑/↓ move", "Space toggle", "Enter continue"))
+        navigation = ("←/→ questions",) if total > 1 else ()
+        controls = (
+            (*navigation, "↑/↓ move", "Space toggle", "Enter continue")
             if question.multi_select
-            else "\n\n" + theme.inline_separator.join(("↑/↓ move", "Enter choose"))
+            else (*navigation, "↑/↓ move", "Enter choose")
         )
+        hint = "\n\n" + theme.inline_separator.join(controls)
         content.append(hint, style=theme.text_lowlight)
         self.update(content)
 

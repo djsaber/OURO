@@ -2459,8 +2459,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._interaction = interaction
             self._sync_interaction(interaction)
         else:
+            if interaction is not None and interaction.kind == "approval":
+                self.query_one(InteractionBar).update_pending_count(
+                    self._pending_approval_count(interaction)
+                )
             self._sync_interaction_focus(interaction)
         return interaction
+
+    def _pending_approval_count(self, interaction: PendingInteraction) -> int:
+        projection = self._projection
+        if projection is None:
+            return 1
+        pending = tuple(item for item in projection.pending_interactions if item.kind == "approval")
+        return len(pending) if interaction in pending else 1
 
     def _sync_interaction(self, interaction: PendingInteraction | None) -> None:
         if self._host_closing or not self.query(InteractionBar):
@@ -2485,7 +2496,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 return
             ask_user.hide_panel()
             plan_panel.hide_panel()
-            interaction_bar.show_interaction(interaction)
+            interaction_bar.show_interaction(
+                interaction,
+                pending_count=(
+                    self._pending_approval_count(interaction)
+                    if interaction is not None and interaction.kind == "approval"
+                    else 1
+                ),
+            )
             self._sync_composer_placeholder()
             self._sync_interaction_focus(interaction)
 
@@ -2773,7 +2791,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             TuiCommandArgument(
                 _CLEAR_WORKSPACE_HISTORY_ARGUMENT,
                 "",
-                label="Clear",
+                label="clear",
                 accent=self._tui_theme.danger,
             ),
         )
