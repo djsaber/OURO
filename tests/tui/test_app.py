@@ -6277,7 +6277,12 @@ async def test_session_picker_restores_history_after_returning_to_welcome(
     tmp_path: Path,
 ) -> None:
     application = _application(tmp_path)
-    session = application.runtime.sessions.create(title="Reusable session").session
+    workspace = tmp_path / "reusable-workspace"
+    workspace.mkdir()
+    session = application.runtime.sessions.create(
+        title="Reusable session",
+        workspace=str(workspace),
+    ).session
     application.runtime.store.append_message(
         MessageRecord.text(
             session_id=session.session_id,
@@ -6302,6 +6307,8 @@ async def test_session_picker_restores_history_after_returning_to_welcome(
             pilot,
             description="new-session welcome page",
         )
+        assert app._controller.draft_workspace == str(workspace.resolve())
+        assert app._active_workspace == str(workspace.resolve())
         await pilot.press("ctrl+s")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         await pilot.press("enter")

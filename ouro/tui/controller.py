@@ -768,17 +768,18 @@ class TuiController:
     async def new_session(self) -> AvailableModel:
         """Reset the visible Session and return the next Session's model.
 
-        A new Session keeps the most recently used route so the welcome page
-        label and the first request agree. Leaving no Session preserves an
-        explicit welcome-page selection; a route that no longer resolves falls
-        back to the Runtime default.
+        A new Session keeps the most recently used route and, when leaving an
+        existing Session, its workspace so the welcome page and first request
+        agree. Leaving no Session preserves an explicit welcome-page model
+        selection; unreadable or unavailable settings fall back to the Runtime
+        defaults.
         """
 
         runtime = self._runtime()
-        previous_route = await self._leaving_session_route()
+        previous_route, previous_workspace = await self._leaving_session_defaults()
         self._session_id = None
         self._session_archived = False
-        self._draft_workspace = runtime.default_workspace
+        self._draft_workspace = previous_workspace or runtime.default_workspace
         if previous_route is not None:
             self._initial_model = previous_route
         self._approval_mode = self._default_approval_mode
@@ -820,19 +821,20 @@ class TuiController:
         self._draft_workspace = workspace
         return workspace
 
-    async def _leaving_session_route(self) -> str | None:
+    async def _leaving_session_defaults(self) -> tuple[str | None, str | None]:
         session_id = self._session_id
         if session_id is None:
-            return None
+            return None, None
         runtime = self._runtime()
 
-        def read() -> str | None:
+        def read() -> tuple[str | None, str | None]:
             try:
-                return runtime.current_model(session_id).key
-            except ConfigError, PersistenceError, FileNotFoundError:
-                # Inheriting a route is optional. An invalid route or unreadable
-                # previous Session must not prevent navigation to a fresh draft.
-                return None
+                session = runtime.sessions.open(session_id, recover=False).session
+            except PersistenceError, SessionNotFoundError, FileNotFoundError:
+                # Inheriting defaults is optional. An unreadable previous
+                # Session must not prevent navigation to a fresh draft.
+                return None, None
+            return session.current_model, session.workspace
 
         return await asyncio.to_thread(read)
 

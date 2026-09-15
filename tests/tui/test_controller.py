@@ -168,7 +168,7 @@ async def test_controller_detaches_event_sink_when_shared_application_stays_open
 
 
 @pytest.mark.asyncio
-async def test_controller_stages_workspace_only_for_the_next_session(tmp_path: Path) -> None:
+async def test_controller_new_session_reuses_previous_session_workspace(tmp_path: Path) -> None:
     application = two_route_application(tmp_path)
     controller = TuiController(
         lambda _event: None,
@@ -193,7 +193,10 @@ async def test_controller_stages_workspace_only_for_the_next_session(tmp_path: P
             await controller.set_workspace(str(tmp_path))
 
         await controller.new_session()
-        assert controller.draft_workspace == str(tmp_path.resolve())
+        assert controller.draft_workspace == str(selected.resolve())
+
+        inherited = await controller.submit("reuse selected workspace")
+        assert inherited.session.workspace == str(selected.resolve())
     finally:
         await controller.close()
 
@@ -300,6 +303,7 @@ async def test_controller_new_session_ignores_unreadable_previous_session(
 
         assert controller.session_id is None
         assert draft.key == "faux/default"
+        assert controller.draft_workspace == str(tmp_path.resolve())
     finally:
         await controller.close()
 
