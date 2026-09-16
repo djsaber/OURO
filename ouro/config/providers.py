@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from copy import deepcopy
 from pathlib import Path
+from threading import Event
 from typing import Any, Literal
 
 from pydantic import ValidationError
@@ -43,6 +45,15 @@ class ProviderConfigManager:
         self._file = JsonConfigFile(root)
         self.root = self._file.root
         self.config_path = self._file.path
+
+    def mutation(
+        self, *, timeout: float = 10.0, cancel_event: Event | None = None
+    ) -> AbstractContextManager[None]:
+        """Hold a short synchronous transaction over Provider configuration.
+
+        Enter, read/check, and exit in the same thread; never hold across await.
+        """
+        return self._file.mutation(timeout=timeout, cancel_event=cancel_event)
 
     def snapshot(self, *, include_builtin: bool = True) -> ProviderConfigSnapshot:
         raw = self.load_raw()

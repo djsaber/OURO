@@ -27,6 +27,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
     "__init__": frozenset(),
     "application": frozenset(
         {
+            "auth",
             "automation",
             "billing",
             "config",
@@ -238,6 +239,24 @@ def test_authorization_attempt_does_not_own_credential_storage_or_commit() -> No
         module.startswith(("ouro.auth.credentials", "ouro.auth.store", "ouro.config"))
         for module in imports
     )
+
+
+def test_application_auth_only_uses_injected_drivers_and_credential_service() -> None:
+    for path in APPLICATION_DIR.glob("provider_auth*.py"):
+        imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+        assert not any(
+            module.startswith(
+                (
+                    "ouro.auth.store",
+                    "ouro.auth.file_permissions",
+                    "ouro.auth.drivers",
+                    "ouro.auth.authorization",
+                    "ouro.providers",
+                    "ouro.local_application",
+                )
+            )
+            for module in imports
+        )
 
 
 def test_lower_layers_do_not_depend_on_application_or_cli() -> None:

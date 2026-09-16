@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -409,21 +410,32 @@ async def test_binding_guard_encloses_save_and_is_entered_after_credential_lock(
     inside_guard = False
     write = store.write
 
-    @asynccontextmanager
-    async def guard():
+    thread_id = None
+
+    @contextmanager
+    def guard(*, timeout, cancel_event):
         nonlocal inside_guard
-        with pytest.raises(AuthError) as failure:
+        nonlocal thread_id
+        thread_id = threading.get_ident()
+        assert thread_id != threading.main_thread().ident
+
+        async def check_lock():
             async with store.lock(credential_id, timeout=0.02):
                 pytest.fail("credential lock must already be held")
+
+        with pytest.raises(AuthError) as failure:
+            asyncio.run(check_lock())
         assert failure.value.code == "credential_lock_timeout"
         inside_guard = True
         try:
             yield
         finally:
+            assert threading.get_ident() == thread_id
             inside_guard = False
 
     def checked_write(record):
         assert inside_guard
+        assert threading.get_ident() == thread_id
         write(record)
 
     monkeypatch.setattr(store, "write", checked_write)
@@ -439,11 +451,12 @@ async def test_binding_guard_conflict_or_timeout_preserves_existing_credential(t
     original, record = await initialized(tmp_path)
     service = CredentialService(FileCredentialStore(tmp_path), lock_timeout=0.04)
 
-    @asynccontextmanager
-    async def guard():
+    @contextmanager
+    def guard(*, timeout, cancel_event):
         if conflict:
             raise AuthError("credential_conflict")
-        await asyncio.Event().wait()
+        cancel_event.wait(timeout)
+        raise AuthError("credential_lock_timeout")
         yield
 
     with pytest.raises(AuthError) as failure:
@@ -458,3 +471,99 @@ async def test_binding_guard_conflict_or_timeout_preserves_existing_credential(t
     assert await original.read(record.credential_id) == record
     await service.close()
     await original.close()
+
+
+async def test_cancel_during_commit_read_waits_for_worker_and_prevents_write(tmp_path, monkeypatch):
+    store = FileCredentialStore(tmp_path)
+    service = CredentialService(store)
+    entered, release = threading.Event(), threading.Event()
+    original_read = store.read
+
+    def read(credential_id):
+        entered.set()
+        assert release.wait(5)
+        return original_read(credential_id)
+
+    monkeypatch.setattr(store, "read", read)
+    credential_id = new_id("cred")
+    task = asyncio.create_task(
+        service.commit(credential_id, "test-driver", grant(), expected_revision=0)
+    )
+    assert await asyncio.to_thread(entered.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    with pytest.raises(AuthError):
+        async with store.lock(credential_id, timeout=0.02):
+            pytest.fail("cancelled worker must still own the credential lock")
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert original_read(credential_id) is None
+    await service.close()
+
+
+@pytest.mark.parametrize("stop", ["cancel", "close", "deadline"])
+async def test_queued_commit_worker_cannot_write_after_cancellation_or_deadline(
+    tmp_path, monkeypatch, stop
+):
+    store = FileCredentialStore(tmp_path)
+    service = CredentialService(store, lock_timeout=0.05)
+    loop = asyncio.get_running_loop()
+    acquired = asyncio.Event()
+    busy, release = threading.Event(), threading.Event()
+    original_lock = store.lock
+
+    @asynccontextmanager
+    async def observed_lock(credential_id, *, timeout):
+        async with original_lock(credential_id, timeout=timeout):
+            acquired.set()
+            yield
+
+    def occupy_worker():
+        busy.set()
+        assert release.wait(5)
+
+    def must_not_write(record):
+        pytest.fail("a queued commit must recheck admission before writing")
+
+    monkeypatch.setattr(store, "lock", observed_lock)
+    monkeypatch.setattr(store, "write", must_not_write)
+    executor = ThreadPoolExecutor(max_workers=1)
+    loop.set_default_executor(executor)
+    occupied = loop.run_in_executor(None, occupy_worker)
+    assert busy.wait(5)
+    credential_id = new_id("cred")
+    task = asyncio.create_task(
+        service.commit(
+            credential_id,
+            "test-driver",
+            grant(),
+            expected_revision=0,
+        )
+    )
+    closing = None
+    try:
+        await acquired.wait()
+        if stop == "cancel":
+            task.cancel()
+        elif stop == "close":
+            closing = asyncio.create_task(service.close())
+        else:
+            await asyncio.sleep(0.07)
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        release.set()
+    await occupied
+    if stop == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        with pytest.raises(AuthError) as error:
+            await task
+        assert error.value.code == ("auth_closed" if stop == "close" else "credential_lock_timeout")
+    if closing is not None:
+        await closing
+    assert store.read(credential_id) is None
+    await service.close()

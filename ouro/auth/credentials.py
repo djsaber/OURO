@@ -4,8 +4,10 @@ import asyncio
 import math
 from collections.abc import Coroutine
 from contextlib import nullcontext
+from time import monotonic
 from typing import Any
 
+from ouro.auth.commit import CommitAdmission
 from ouro.auth.contracts import (
     AuthError,
     CommitGuard,
@@ -35,6 +37,7 @@ class CredentialService:
         self._operations: set[asyncio.Task[object]] = set()
         self._close_task: asyncio.Task[None] | None = None
         self._closed = False
+        self._commits: set[CommitAdmission] = set()
 
     async def read(self, credential_id: str) -> CredentialRecord | None:
         """Internal material boundary. Hosts must use status/list_credentials."""
@@ -77,24 +80,64 @@ class CredentialService:
         expected_revision: int,
         binding_guard: CommitGuard | None,
     ) -> CredentialRecord:
+        admission = CommitAdmission(monotonic() + self._lock_timeout)
+        async with self._store.lock(credential_id, timeout=admission.check()):
+            self._require_open()
+            self._commits.add(admission)
+            worker = asyncio.create_task(
+                asyncio.to_thread(
+                    self._commit_sync,
+                    credential_id,
+                    driver_id,
+                    grant,
+                    expected_revision,
+                    binding_guard,
+                    admission,
+                )
+            )
+            try:
+                while True:
+                    try:
+                        return await asyncio.shield(worker)
+                    except asyncio.CancelledError:
+                        admission.cancel()
+                        # A queued/running worker must finish before its credential
+                        # lock is released, even when cancellation wins admission.
+                        if worker.done():
+                            return worker.result()
+            finally:
+                self._commits.discard(admission)
+
+    def _commit_sync(
+        self,
+        credential_id: str,
+        driver_id: str,
+        grant: CredentialGrant,
+        expected_revision: int,
+        binding_guard: CommitGuard | None,
+        admission: CommitAdmission,
+    ) -> CredentialRecord:
+        boundary = (
+            binding_guard(timeout=admission.check(), cancel_event=admission.cancel_event)
+            if binding_guard is not None
+            else nullcontext()
+        )
         try:
-            async with asyncio.timeout(self._lock_timeout):
-                async with self._store.lock(credential_id, timeout=self._lock_timeout):
-                    self._require_open()
-                    boundary = binding_guard() if binding_guard is not None else nullcontext()
-                    async with boundary:
-                        current = await asyncio.to_thread(self._store.read, credential_id)
-                        self._require_open()
-                        revision = current.revision if current is not None else 0
-                        if revision != expected_revision or (
-                            current is not None and current.driver_id != driver_id
-                        ):
-                            raise AuthError("credential_conflict")
-                        record = self._record(credential_id, driver_id, revision + 1, grant)
-                        await self._save(record)
-                        return record
-        except TimeoutError:
-            raise AuthError("credential_lock_timeout") from None
+            with boundary:
+                admission.check()
+                current = self._store.read(credential_id)
+                revision = current.revision if current is not None else 0
+                if revision != expected_revision or (
+                    current is not None and current.driver_id != driver_id
+                ):
+                    raise AuthError("credential_conflict")
+                record = self._record(credential_id, driver_id, revision + 1, grant)
+                admission.start()
+                self._store.write(record)
+                return record
+        except InterruptedError:
+            admission.check()
+            raise
 
     async def logout(self, credential_id: str, driver_id: str) -> CredentialSummary:
         """Also used by forget: a tombstone prevents an older login resurrecting secrets."""
@@ -178,6 +221,8 @@ class CredentialService:
     async def close(self) -> None:
         """Stop admission, then finish or cancel bounded owned exchanges."""
         self._closed = True
+        for admission in self._commits:
+            admission.cancel("auth_closed")
         if self._close_task is None:
             self._close_task = asyncio.create_task(self._close())
         while True:

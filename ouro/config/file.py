@@ -14,6 +14,10 @@ from ouro.core.errors import ConfigError
 from ouro.local_locks import FileMutationLock
 
 
+class ConfigMutationTimeout(ConfigError):
+    """The bounded configuration transaction could not acquire its lock."""
+
+
 class JsonConfigFile:
     """Read and atomically replace one of Ouro's JSON configuration files."""
 
@@ -52,7 +56,7 @@ class JsonConfigFile:
         """
         lock = FileMutationLock(self._lock_path)
         if not lock.acquire(timeout=timeout, cancel_event=cancel_event):
-            raise ConfigError("timed out waiting for configuration mutation")
+            raise ConfigMutationTimeout("timed out waiting for configuration mutation")
         try:
             yield
         finally:

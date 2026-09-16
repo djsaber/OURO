@@ -23,6 +23,7 @@
 | [会话撤销、Harness 状态与插件交互](OURO_会话撤销与Harness状态规格_2026-09-08.md) | 原生状态版本、精确撤销、插件调用/提交、队列竞争、恢复与验收证据 | `ouro/core/harness.py`、`ouro/sessions`、`ouro/application`、`ouro/plugins/harness_calls.py` |
 | [Provider 与配置](OURO_Provider配置规格_2026-09-02.md) | Provider/Endpoint、静态及受管理认证引用、模板绑定、运行参数与覆盖规则 | `ouro/config`、`ouro/providers` |
 | [受管理凭据核心](OURO_凭据核心规格_2026-09-16.md) | 受限文件存储、revision、刷新/注销/取消与跨进程互斥；尚未接入订阅产品 | `ouro/auth` |
+| [Provider 认证用例](OURO_Provider认证用例规格_2026-09-16.md) | 通用登录操作、安全状态、凭据管理和配置条件提交；Host/生产驱动尚未接线 | `ouro/application/provider_auth*.py` |
 | [认证驱动与单次授权](OURO_认证驱动与授权规格_2026-09-16.md) | 受管理驱动端口、封闭 challenge、单次授权与资源清理；尚无生产驱动和 Host 接线 | `ouro/auth/driver_contracts.py`、`ouro/auth/authorization.py` |
 | [Provider 模板](OURO_Provider模板规格_2026-09-02.md) | 本地模板、版本、修改感知、内容更新与严格版本边界 | `ouro/config/provider_template_store.py`、`ouro/config/provider_templates.py` |
 | [Provider 类型与协议](OURO_Provider类型与协议规格_2026-09-02.md) | 实例 id、产品配置类型、线协议与冲突策略 | `ouro/config`、`ouro/providers`、`ouro/cli` |

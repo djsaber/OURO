@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, AbstractContextManager
+from threading import Event
 from typing import Literal, Protocol, Self
 
 from pydantic import AwareDatetime, ConfigDict, Field, JsonValue, field_validator, model_validator
@@ -25,12 +26,15 @@ AuthErrorCode = Literal[
     "authorization_expired",
     "authorization_cancelled",
     "authorization_cleanup_failed",
+    "authorization_configuration_error",
+    "authorization_operation_missing",
+    "authorization_operation_limit",
 ]
 _ERROR_MESSAGES: dict[AuthErrorCode, str] = {
     "authentication_required": "Credential requires login.",
     "credential_conflict": "Credential changed during this operation.",
     "credential_store_error": "Credential storage is unavailable or invalid.",
-    "credential_lock_timeout": "Timed out waiting for the credential lock.",
+    "credential_lock_timeout": "Timed out waiting to commit credential state.",
     "credential_refresh_failed": "Credential refresh did not complete; retry or log in again.",
     "auth_closed": "Credential service is closed.",
     "authorization_unsupported": "The authorization method is not supported.",
@@ -39,6 +43,13 @@ _ERROR_MESSAGES: dict[AuthErrorCode, str] = {
     "authorization_expired": "Authorization expired; start a new login.",
     "authorization_cancelled": "Authorization was cancelled.",
     "authorization_cleanup_failed": "Authorization resources could not be closed cleanly.",
+    "authorization_configuration_error": (
+        "Provider authentication configuration is unavailable or changed."
+    ),
+    "authorization_operation_missing": "Authorization operation is unknown or no longer retained.",
+    "authorization_operation_limit": (
+        "Too many pending authorization operations; cancel one before starting another."
+    ),
 }
 
 
@@ -138,6 +149,13 @@ class CredentialStore(Protocol):
 # outside the service; the grant must include any refresh token retained by a driver.
 RefreshCredential = Callable[[CredentialRecord], Awaitable[CredentialGrant]]
 
-# Application supplies its configuration lock and binding check. The credential
-# service only owns the ordering and keeps the guard alive through atomic save.
-CommitGuard = Callable[[], AbstractAsyncContextManager[None]]
+
+class CommitGuard(Protocol):
+    """Synchronous binding transaction, entered and released in the save worker.
+
+    Acquisition must honor the remaining timeout and cancellation signal. The
+    guard must not await or acquire credential locks, and exit must only release
+    its resources; it cannot suppress a save failure or perform another write.
+    """
+
+    def __call__(self, *, timeout: float, cancel_event: Event) -> AbstractContextManager[None]: ...
