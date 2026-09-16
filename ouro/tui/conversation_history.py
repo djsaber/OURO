@@ -334,7 +334,7 @@ def _format_user_message_timestamp(
     created_at: datetime,
     *,
     now: datetime | None = None,
-    separator: str = " • ",
+    separator: str = DEFAULT_TUI_THEME.inline_separator,
 ) -> str:
     """Format a message instant in the viewer's local time zone."""
 
