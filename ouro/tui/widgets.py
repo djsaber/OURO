@@ -88,11 +88,21 @@ COMMAND_POPUP_MAX_HEIGHT = 14
 INTERACTION_PANEL_MIN_HEIGHT = 6
 INTERACTION_PANEL_MAX_HEIGHT = 10
 
-# The regular surface always retains the Host header, one conversation row,
-# the fixed input separator/navigation row, the composer, and the status line.
+# The composer grows with its wrapped document between these text bounds. The
+# blank row above and below the text is the composer's frame, so the widget's
+# outer height is always the visible text rows plus that frame.
+COMPOSER_TEXT_MIN_HEIGHT = 1
+COMPOSER_TEXT_MAX_HEIGHT = 3
+COMPOSER_FRAME_HEIGHT = 2
+COMPOSER_MIN_HEIGHT = COMPOSER_TEXT_MIN_HEIGHT + COMPOSER_FRAME_HEIGHT
+COMPOSER_MAX_HEIGHT = COMPOSER_TEXT_MAX_HEIGHT + COMPOSER_FRAME_HEIGHT
+
+# The regular surface always retains the Host header, one conversation row, the
+# fixed input separator/navigation row, and the status line around the composer.
 # Welcome mode instead splits the rows around its centered composer/status pair.
-_REGULAR_SURFACE_RESERVED_HEIGHT = 7
-_WELCOME_CENTER_HEIGHT = 4
+# Both exclude the composer, which contributes its own current height.
+_REGULAR_SURFACE_CHROME_HEIGHT = 4
+_WELCOME_CENTER_CHROME_HEIGHT = 1
 _BUSY_ACTIVITIES = {
     "starting",
     "loading_session",
@@ -1461,6 +1471,15 @@ class WelcomePanel(Vertical):
 
     def on_mount(self) -> None:
         self.set_viewport_size(self.app.screen.size)
+        # The composer owns its own auto height; its wrapped document height is
+        # the single source both Textual's box model and these sibling bounds
+        # resolve from, so growth and re-bounding stay in one layout pass.
+        self.watch(
+            self._composer,
+            "virtual_size",
+            self._apply_viewport_constraints,
+            init=False,
+        )
         self.refresh_theme()
 
     def set_welcome_mode(self, enabled: bool) -> None:
@@ -1482,10 +1501,11 @@ class WelcomePanel(Vertical):
             return
         welcome_mode = self.has_class("welcome-page")
         self.styles.max_width = min(WELCOME_MAX_WIDTH, size.width) if welcome_mode else "100%"
+        composer_height = self._composer.projected_height
         available_height = (
-            max(1, (size.height - _WELCOME_CENTER_HEIGHT) // 2)
+            max(1, (size.height - _WELCOME_CENTER_CHROME_HEIGHT - composer_height) // 2)
             if welcome_mode
-            else max(1, size.height - _REGULAR_SURFACE_RESERVED_HEIGHT)
+            else max(1, size.height - _REGULAR_SURFACE_CHROME_HEIGHT - composer_height)
         )
         self._command_popup.styles.max_height = min(
             COMMAND_POPUP_MAX_HEIGHT,
@@ -1495,7 +1515,10 @@ class WelcomePanel(Vertical):
             COMMAND_POPUP_MIN_HEIGHT,
             available_height,
         )
-        interaction_height = max(1, size.height - _REGULAR_SURFACE_RESERVED_HEIGHT)
+        interaction_height = max(
+            1,
+            size.height - _REGULAR_SURFACE_CHROME_HEIGHT - composer_height,
+        )
         self._interaction_bar.styles.max_height = min(
             INTERACTION_PANEL_MAX_HEIGHT,
             interaction_height,
@@ -3252,6 +3275,22 @@ class Composer(TuiTextArea):
         # Some terminals emit Paste alongside the right-click mouse event.
         self._right_click_paste_pending = False
         self._right_click_paste_handled = False
+
+    @property
+    def projected_height(self) -> int:
+        """The outer height Textual resolves for the current wrapped document.
+
+        ``height: auto`` on a ``ScrollView`` resolves through the virtual size,
+        so the wrapped document height bounded by the composer's text limits is
+        the same value the box model arrives at. Reading it here lets adjacent
+        panels re-bound in the layout pass that grows the composer.
+        """
+
+        text_height = min(
+            COMPOSER_TEXT_MAX_HEIGHT,
+            max(COMPOSER_TEXT_MIN_HEIGHT, self.wrapped_document.height),
+        )
+        return text_height + COMPOSER_FRAME_HEIGHT
 
     def set_suggestion_resolver(self, resolver: Callable[[], str]) -> None:
         """Resolve inline suggestions synchronously with text edits."""

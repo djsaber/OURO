@@ -118,6 +118,8 @@ from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES, TuiTheme
 from ouro.tui.widgets import (
     COMMAND_POPUP_MAX_HEIGHT,
     COMMAND_POPUP_MIN_HEIGHT,
+    COMPOSER_MAX_HEIGHT,
+    COMPOSER_MIN_HEIGHT,
     INTERACTION_PANEL_MAX_HEIGHT,
     INTERACTION_PANEL_MIN_HEIGHT,
     WELCOME_MAX_WIDTH,
@@ -766,8 +768,15 @@ _OURO_TUI_CSS = """
         height: auto;
     }
 
+    /* The composer grows with its wrapped document. `height: auto` on a
+       TextArea resolves through its virtual size, so Textual measures the
+       text itself; the bounds below (border-box, so inclusive of the blank
+       frame row above and below) cap it at three text rows and keep one row
+       when empty. Past the cap the widget scrolls instead of growing. */
     #composer {
-        height: 3;
+        height: auto;
+        min-height: $composer-min-height;
+        max-height: $composer-max-height;
         margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         padding: 1 2;
         color: $ouro-text-highlight;
@@ -1154,6 +1163,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             "command-popup-max-height": str(COMMAND_POPUP_MAX_HEIGHT),
             "interaction-panel-min-height": str(INTERACTION_PANEL_MIN_HEIGHT),
             "interaction-panel-max-height": str(INTERACTION_PANEL_MAX_HEIGHT),
+            "composer-min-height": str(COMPOSER_MIN_HEIGHT),
+            "composer-max-height": str(COMPOSER_MAX_HEIGHT),
         }
 
     def compose(self) -> ComposeResult:

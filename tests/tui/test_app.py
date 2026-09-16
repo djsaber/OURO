@@ -149,6 +149,12 @@ from ouro.tui.state import (
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
 from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
 from ouro.tui.widgets import (
+    COMMAND_POPUP_MAX_HEIGHT,
+    COMPOSER_FRAME_HEIGHT,
+    COMPOSER_MAX_HEIGHT,
+    COMPOSER_MIN_HEIGHT,
+    COMPOSER_TEXT_MAX_HEIGHT,
+    INTERACTION_PANEL_MAX_HEIGHT,
     ActivityIndicator,
     AskUserPanel,
     AssistantTurn,
@@ -5831,6 +5837,144 @@ async def test_composer_uses_shift_enter_for_newline(tmp_path: Path) -> None:
         await pilot.press("a", "shift+enter", "b")
 
         assert app.query_one(Composer).text == "a\nb"
+
+
+@pytest.mark.asyncio
+async def test_composer_grows_with_its_document_between_one_and_three_text_rows(
+    tmp_path: Path,
+) -> None:
+    """The composer is a textarea bounded to three text rows, then scrolls."""
+
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with run_ready_app(app, size=(100, 32)) as pilot:
+        await pilot.pause()
+        await pilot.click("#composer")
+        composer = app.query_one(Composer)
+        status = app.query_one(StatusLine)
+
+        # Empty and single-line documents both keep the minimum single text row.
+        assert composer.outer_size.height == COMPOSER_MIN_HEIGHT
+        assert composer.size.height == 1
+        await pilot.press("a")
+        await pilot.pause()
+        assert composer.outer_size.height == COMPOSER_MIN_HEIGHT
+
+        for text_rows in (2, 3):
+            await pilot.press("shift+enter", "a")
+            await pilot.pause()
+            assert composer.size.height == text_rows
+            assert composer.outer_size.height == text_rows + COMPOSER_FRAME_HEIGHT
+            # The blank frame row above and below the text survives every step.
+            assert composer.content_region.y - composer.region.y == 1
+            assert composer.region.bottom - composer.content_region.bottom == 1
+            # The status line stays docked directly beneath the grown composer.
+            assert status.region.y == composer.region.bottom
+
+        # Past the cap the document scrolls inside a stable widget height.
+        await pilot.press("shift+enter", "a")
+        await pilot.pause()
+        assert composer.text.count("\n") == 3
+        assert composer.size.height == COMPOSER_TEXT_MAX_HEIGHT
+        assert composer.outer_size.height == COMPOSER_MAX_HEIGHT
+        assert composer.virtual_size.height == 4
+        assert composer.cursor_screen_offset.y == composer.content_region.bottom - 1
+
+        # Removing rows releases the height again, back to the single-row floor.
+        composer.load_text("")
+        await pilot.pause()
+        assert composer.outer_size.height == COMPOSER_MIN_HEIGHT
+        assert status.region.y == composer.region.bottom
+
+
+@pytest.mark.asyncio
+async def test_composer_growth_is_driven_by_soft_wrapped_width(tmp_path: Path) -> None:
+    """Wrapping is the library's measurement, so narrowing alone grows the box."""
+
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with run_ready_app(app, size=(100, 32)) as pilot:
+        await pilot.pause()
+        composer = app.query_one(Composer)
+        composer.load_text("w " * 30)
+        await pilot.pause()
+        assert composer.outer_size.height == COMPOSER_MIN_HEIGHT
+
+        await pilot.resize_terminal(30, 32)
+        await pilot.pause()
+        assert composer.size.height > 1
+        assert composer.outer_size.height == composer.size.height + COMPOSER_FRAME_HEIGHT
+        assert composer.outer_size.height <= COMPOSER_MAX_HEIGHT
+        assert app.query_one(StatusLine).region.y == composer.region.bottom
+
+
+@pytest.mark.asyncio
+async def test_growing_composer_rebounds_adjacent_panels_and_conversation(
+    tmp_path: Path,
+) -> None:
+    """Sibling chrome keeps its bounds relative to the composer's live height."""
+
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    # A short viewport keeps both panels bound by the available height rather
+    # than by their own caps, so the composer's growth is the only variable.
+    async with run_ready_app(app, size=(100, 15)) as pilot:
+        await pilot.pause()
+        # Leave the centered welcome page for the regular conversation surface.
+        app._set_welcome_mode(False)
+        await pilot.pause()
+        composer = app.query_one(Composer)
+        popup = app.query_one(CommandPopup)
+        interaction_bar = app.query_one(InteractionBar)
+        conversation = app.query_one(ConversationView)
+
+        def bounds() -> tuple[int, int, int]:
+            return (
+                popup.styles.max_height.cells,
+                interaction_bar.styles.max_height.cells,
+                conversation.region.height,
+            )
+
+        popup_before, interaction_before, conversation_before = bounds()
+        assert popup_before < COMMAND_POPUP_MAX_HEIGHT
+        assert interaction_before < INTERACTION_PANEL_MAX_HEIGHT
+
+        composer.load_text("a\nb\nc")
+        await pilot.pause()
+        assert composer.outer_size.height == COMPOSER_MAX_HEIGHT
+
+        popup_after, interaction_after, conversation_after = bounds()
+        grown = COMPOSER_MAX_HEIGHT - COMPOSER_MIN_HEIGHT
+        assert popup_after == popup_before - grown
+        assert interaction_after == interaction_before - grown
+        # The conversation absorbs the growth, so the surface never overflows.
+        assert conversation_after == conversation_before - grown
+        # The fixed navigation row still separates conversation from composer.
+        navigation = app.query_one(SubagentNavigationPanel)
+        assert navigation.region.y == conversation.region.bottom
+        assert composer.region.y == navigation.region.bottom
+
+        composer.load_text("")
+        await pilot.pause()
+        assert bounds() == (popup_before, interaction_before, conversation_before)
+
+
+@pytest.mark.asyncio
+async def test_welcome_mode_keeps_growing_composer_centered(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with run_ready_app(app, size=(100, 40)) as pilot:
+        welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
+        composer = app.query_one(Composer)
+
+        for text in ("", "a\nb", "a\nb\nc"):
+            composer.load_text(text)
+            await pilot.pause()
+
+            assert composer.region.y == welcome._top.region.bottom
+            assert abs(welcome._top.region.height - welcome._bottom.region.height) <= 1
+            assert app.query_one(StatusLine).region.y == composer.region.bottom
+            assert welcome._system.region.bottom <= welcome._bottom.region.bottom
 
 
 @pytest.mark.asyncio
