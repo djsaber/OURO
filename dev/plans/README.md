@@ -1,6 +1,6 @@
 # OURO 规划索引
 
-> 索引基线：2026-09-13
+> 索引基线：2026-09-16
 
 本目录只保存待实施或验证的规划，定义目标、前置条件和验收要求。当前行为以
 [规格索引](../specs/README.md)为准；版本能力摘要见 [CHANGELOG.md](../../CHANGELOG.md)。
@@ -9,6 +9,7 @@
 
 | 规划 | 范围 | 关键前置 |
 |---|---|---|
+| [模型订阅认证实施计划](OURO_模型订阅认证实施计划_2026-09-16.md) | 接入验证、认证基础、协议适配、Host 闭环与发布验收 | [目标设计](../../docs/OURO_模型订阅认证扩展设计_2026-09-16.md)、[未来规格](../specs/OURO_模型订阅认证规格_2026-09-16.md) |
 | [桌面 Host](OURO_桌面Host规划_2026-09-02.md) | 本地桌面会话、运行、资源、diff、设置与发布 | Application services/DTO、RuntimeSupervisor、ResourceService |
 | [高级智能体能力](OURO_高级智能体能力规划_2026-09-02.md) | 长期记忆、Durable Task/Workflow 及其与 Goal/Delegation 的组合 | 当前 Session/Run、Context、资源、子智能体和 Host 控制面 |
 | [性能优化](OURO_性能优化规划_2026-09-02.md) | 真实终端验收、长历史分页、Context/Compaction 与资源投影 | 当前性能规格与可重复测量证据 |
