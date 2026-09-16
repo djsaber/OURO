@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
 from collections.abc import Callable
+from dataclasses import replace
+from threading import Lock
 from typing import Protocol
 
-from pydantic import Field
+from pydantic import Field, TypeAdapter
 
 from ouro.config.provider_models import ProviderRuntimeOptions
 from ouro.config.providers import ProviderConfigManager
@@ -16,6 +19,7 @@ from ouro.core.provider import ModelMetadata
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 
 AdapterBuilder = Callable[[ProviderRuntimeOptions], RuntimeAdapter]
+_OPTIONS_CODEC = TypeAdapter(ProviderRuntimeOptions)
 
 
 class AvailableModel(OuroModel):
@@ -91,12 +95,39 @@ class ConfiguredModelCatalog:
         default_adapter: RuntimeAdapter,
         *,
         adapter_builder: AdapterBuilder,
+        default_overrides: ProviderRuntimeOptions | None = None,
+        default_options: ProviderRuntimeOptions | None = None,
     ) -> None:
         self._configs = configs
         self._default_adapter = default_adapter
         self._adapter_builder = adapter_builder
         self._configured_adapters: dict[str, tuple[str, RuntimeAdapter]] = {}
         self._retired_adapters: list[RuntimeAdapter] = []
+        self._adapter_lock = Lock()
+        self._closed = False
+        self._default_overrides = default_overrides or ProviderRuntimeOptions()
+        default = default_adapter.model
+        provider = configs.get_provider(default.provider_id)
+        self._default_is_configured = (
+            provider is not None
+            and provider.endpoint(default.endpoint_id or default.model_id) is not None
+        )
+        if default_options is not None:
+            # A removal after the startup snapshot must not turn a configured
+            # route into an ad-hoc adapter that bypasses subsequent validation.
+            self._default_is_configured = (
+                default_options.endpoint_id is not None
+                and default_options.provider_id == default.provider_id
+                and default_options.endpoint_id == (default.endpoint_id or default.model_id)
+            )
+        if self._default_is_configured:
+            options = default_options or self._options_for(
+                default.provider_id, default.endpoint_id or default.model_id
+            )
+            self._configured_adapters[model_route_key(default)] = (
+                _options_fingerprint(options),
+                default_adapter,
+            )
         # A startup composition for a route outside the configured default
         # (CLI provider/endpoint flags) owns the process default; otherwise the
         # configured default route stays live so default-route changes apply to
@@ -168,8 +199,18 @@ class ConfiguredModelCatalog:
         raise ConfigError(f"model not found: {selector}")
 
     def adapter_for(self, selector: str) -> RuntimeAdapter:
+        # Session request preparation can run on different worker threads. Publish
+        # a single owned adapter per fingerprint so no losing build leaks a client.
+        with self._adapter_lock:
+            if self._closed:
+                raise RuntimeError("model catalog is closed")
+            return self._adapter_for(selector)
+
+    def _adapter_for(self, selector: str) -> RuntimeAdapter:
         model = self.resolve(selector)
-        if model.key == model_route_key(self._default_adapter.model):
+        if not self._default_is_configured and model.key == model_route_key(
+            self._default_adapter.model
+        ):
             return self._default_adapter
         provider = self._configs.get_provider(model.provider_id)
         endpoint = (
@@ -179,13 +220,8 @@ class ConfiguredModelCatalog:
         )
         if endpoint is None:
             raise ConfigError(f"model endpoint is unavailable: {model.key}")
-        options = self._configs.resolve_runtime_options(
-            ProviderRuntimeOptions(
-                provider_id=model.provider_id,
-                endpoint_id=model.endpoint_id,
-            )
-        )
-        fingerprint = hashlib.sha256(repr(options).encode("utf-8")).hexdigest()
+        options = self._options_for(model.provider_id, model.endpoint_id)
+        fingerprint = _options_fingerprint(options)
         cached = self._configured_adapters.get(model.key)
         if cached is not None and cached[0] == fingerprint:
             return cached[1]
@@ -195,16 +231,29 @@ class ConfiguredModelCatalog:
         self._configured_adapters[model.key] = (fingerprint, adapter)
         return adapter
 
+    def _options_for(self, provider_id: str, endpoint_id: str) -> ProviderRuntimeOptions:
+        overrides = (
+            self._default_overrides
+            if f"{provider_id}/{endpoint_id}" == model_route_key(self._default_adapter.model)
+            else ProviderRuntimeOptions()
+        )
+        return self._configs.resolve_runtime_options(
+            replace(overrides, provider_id=provider_id, endpoint_id=endpoint_id)
+        )
+
     async def close(self) -> None:
-        await close_runtime_adapters(
-            (
+        with self._adapter_lock:
+            if self._closed:
+                return
+            self._closed = True
+            adapters = (
                 self._default_adapter,
                 *(adapter for _, adapter in self._configured_adapters.values()),
                 *self._retired_adapters,
             )
-        )
-        self._configured_adapters.clear()
-        self._retired_adapters.clear()
+            self._configured_adapters.clear()
+            self._retired_adapters.clear()
+        await close_runtime_adapters(adapters)
 
 
 def model_route_key(model: ModelMetadata) -> str:
@@ -212,6 +261,15 @@ def model_route_key(model: ModelMetadata) -> str:
 
     endpoint_id = model.endpoint_id or model.model_id
     return f"{model.provider_id}/{endpoint_id}"
+
+
+def _options_fingerprint(options: ProviderRuntimeOptions) -> str:
+    # repr intentionally hides inline credentials. Hash canonical data instead;
+    # neither the serialized material nor the fingerprint is exposed to Hosts.
+    payload = json.dumps(
+        _OPTIONS_CODEC.dump_python(options, mode="json"), sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _available_model(model: ModelMetadata) -> AvailableModel:

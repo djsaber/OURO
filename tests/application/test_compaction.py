@@ -693,6 +693,36 @@ async def test_compaction_provider_error_retries_with_session_model_parameters()
     ]
 
 
+@pytest.mark.parametrize(
+    "code",
+    [
+        "authentication_required",
+        "access_denied",
+        "quota_exhausted",
+        "provider_request_failed",
+        "provider_response_failed",
+    ],
+)
+async def test_compaction_classified_service_failure_does_not_switch_accounts(code):
+    class DeniedProvider(SummaryRouteProvider):
+        async def stream(self, **kwargs):
+            yield ProviderStreamEvent(type="error", error="Request denied.", error_code=code)
+
+    fallback = SummaryRouteProvider()
+    strategy = LLMSummaryCompactionStrategy(
+        _summary_adapter(fallback, provider_id="runtime", endpoint_id="chat"),
+        configured_adapter=_summary_adapter(
+            DeniedProvider(), provider_id="subscription", endpoint_id="summary"
+        ),
+        model_config=CompactionModelConfig(provider_id="subscription", endpoint_id="summary"),
+    )
+    with pytest.raises(CompactionStrategyError) as failure:
+        await strategy.compact(_summary_request())
+    assert failure.value.terminal
+    assert fallback.models == []
+    assert len(failure.value.model_outputs) == 1
+
+
 @pytest.mark.asyncio
 async def test_compaction_context_overflow_and_resolution_error_fall_back_to_runtime() -> None:
     too_small_provider = SummaryRouteProvider()

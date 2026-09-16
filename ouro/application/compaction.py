@@ -48,6 +48,7 @@ from ouro.core.context_providers import (
 from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
 from ouro.core.errors import (
     CompactionError,
+    ConfigError,
     ContextBlockedError,
     ContextOverflowError,
     PersistenceError,
@@ -197,6 +198,7 @@ class LLMSummaryCompactionStrategy:
         *,
         configured_adapter: RuntimeAdapter | None = None,
         configured_adapter_error: str | None = None,
+        configured_adapter_resolver: Callable[[], RuntimeAdapter] | None = None,
         model_config: CompactionModelConfig | None = None,
         runtime_adapter_resolver: Callable[[str], RuntimeAdapter] | None = None,
         usage_recorder: CompactionUsageRecorder | None = None,
@@ -205,6 +207,7 @@ class LLMSummaryCompactionStrategy:
         self.runtime_adapter_resolver = runtime_adapter_resolver
         self.configured_adapter = configured_adapter
         self.configured_adapter_error = configured_adapter_error
+        self.configured_adapter_resolver = configured_adapter_resolver
         self.model_config = model_config or CompactionModelConfig()
         self.usage_recorder = usage_recorder
         self.prompt = prompt
@@ -274,10 +277,18 @@ class LLMSummaryCompactionStrategy:
 
     def _adapter_routes(self, session_id: str) -> list[_CompactionAdapterRoute]:
         routes: list[_CompactionAdapterRoute] = []
-        if self.configured_adapter is not None:
+        try:
+            configured = (
+                self.configured_adapter_resolver()
+                if self.configured_adapter_resolver is not None
+                else self.configured_adapter
+            )
+        except ConfigError as exc:
+            raise CompactionStrategyError(str(exc), terminal=True) from exc
+        if configured is not None:
             routes.append(
                 _CompactionAdapterRoute(
-                    adapter=self.configured_adapter,
+                    adapter=configured,
                     route="configured",
                 )
             )
@@ -1464,7 +1475,12 @@ def _consume_summary_event(
     elif event.type == "tool_call_delta":
         raise CompactionError("summary provider attempted to call a tool")
     elif event.type == "error":
-        raise CompactionError(event.error or "summary provider returned an error")
+        raise CompactionStrategyError(
+            event.error or "summary provider returned an error",
+            # A classified authentication/access/quota failure must not silently
+            # switch accounts or billing sources through the compaction fallback.
+            terminal=event.error_code is not None,
+        )
     elif event.type == "done":
         saw_done = True
     return text_parts, usage, saw_done
@@ -1533,6 +1549,7 @@ def _summary_output_error(
 ) -> CompactionStrategyError:
     return CompactionStrategyError(
         str(error),
+        terminal=isinstance(error, CompactionStrategyError) and error.terminal,
         model_outputs=(
             _compaction_model_output(
                 adapter=adapter,

@@ -78,11 +78,15 @@ class RuntimeConfigurationResolver:
         default_adapter: RuntimeAdapter,
         *,
         adapter_builder: AdapterBuilder,
+        default_overrides: ProviderRuntimeOptions | None = None,
+        default_options: ProviderRuntimeOptions | None = None,
     ) -> ConfiguredModelCatalog:
         return ConfiguredModelCatalog(
             self._providers,
             default_adapter,
             adapter_builder=adapter_builder,
+            default_overrides=default_overrides,
+            default_options=default_options,
         )
 
     def compaction_provider_options(

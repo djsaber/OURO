@@ -299,6 +299,27 @@ async def test_in_band_error_body_cannot_leak_secrets(tmp_path, provider, stream
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             events = await collect(build(provider, auth, client), streaming)
             assert events[-1].type == "error"
+            assert events[-1].error_code == "provider_response_failed"
+            assert "fixture-access" not in repr(events)
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+async def test_managed_network_failure_remains_classified_after_budget_exhaustion(
+    tmp_path, provider
+):
+    service, _, auth = await authenticated(tmp_path)
+
+    def handler(request):
+        raise httpx.ConnectError("fixture-access", request=request)
+
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            adapter = build(provider, auth, client)
+            adapter.retry_policy.max_attempts = 1
+            events = await collect(adapter)
+            assert events[-1].error_code == "provider_request_failed"
             assert "fixture-access" not in repr(events)
     finally:
         await service.close()

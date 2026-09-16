@@ -121,7 +121,7 @@ logout/forget 只清除本地秘密，不撤销远端会话；共享引用和无
 
 Application 状态与条件提交的权威契约见[Provider 认证用例规格](OURO_Provider认证用例规格_2026-09-16.md)。
 证据见 `tests/cli/test_provider_auth_commands.py`、`tests/application/test_local_provider_auth.py` 及架构依赖测试。
-TUI、生产驱动与 Runtime 共享认证装配仍待实施；现有模型协议的请求认证见[请求认证规格](OURO_请求认证规格_2026-09-17.md)。
+Runtime 共享认证装配已实现；TUI 和生产驱动仍待实施；现有模型协议的请求认证见[请求认证规格](OURO_请求认证规格_2026-09-17.md)。
 模型请求的安全错误码由 run_failed.payload.error_code 传入 run --json 的 events；Host 无需解析错误文本推断认证原因。
 
 ## Agent 控制面

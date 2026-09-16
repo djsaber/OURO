@@ -39,7 +39,7 @@ def request_failure(
     managed: bool,
     recovery: Callable[[], Awaitable[bool]] | None = None,
 ) -> ProviderRequestError:
-    code = None
+    code = "provider_request_failed" if managed else None
     message = (
         f"Model service returned HTTP {error.status_code}."
         if managed and error.status_code is not None
@@ -111,7 +111,7 @@ async def request_authentication(
     except Exception:
         if snapshot.revision is not None:
             raise ProviderRequestError(
-                "Model response could not be processed.", error_code=None
+                "Model response could not be processed.", error_code="provider_response_failed"
             ) from None
         raise
 
@@ -123,6 +123,9 @@ def safe_response_event(
         # Wire error strings may echo credentials. Only classified safe facts may
         # leave a managed request; successful content remains the codec's output.
         return event.model_copy(
-            update={"error": "Model service returned an invalid or failed response."}
+            update={
+                "error": "Model service returned an invalid or failed response.",
+                "error_code": event.error_code or "provider_response_failed",
+            }
         )
     return event

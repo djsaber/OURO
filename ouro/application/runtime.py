@@ -28,6 +28,7 @@ from ouro.application.models import (
     RuntimeAdapterCatalog,
     close_runtime_adapters,
 )
+from ouro.application.provider_auth import ProviderAuthService
 from ouro.application.queued_inputs import (
     QueuedInput,
     QueuedInputMode,
@@ -61,6 +62,7 @@ from ouro.application.skill_activations import SkillActivationService, SkillInvo
 from ouro.application.supervisor_models import HostInputReceipt
 from ouro.application.tool_calls import ToolCallCoordinator
 from ouro.application.usage import UsageService
+from ouro.auth.credentials import CredentialService
 from ouro.config.compaction import CompactionConfig
 from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.config.tool_execution import ToolExecutionConfig
@@ -210,6 +212,7 @@ class RuntimeService:
         compaction_strategies: CompactionStrategyRegistry | None = None,
         compaction_adapter: RuntimeAdapter | None = None,
         compaction_adapter_error: str | None = None,
+        compaction_adapter_resolver: Callable[[], RuntimeAdapter] | None = None,
         continuations: RunContinuationRegistry | None = None,
         prompt_policies: PromptPolicyRegistry | None = None,
         tool_policies: ToolPolicyRegistry | None = None,
@@ -221,7 +224,15 @@ class RuntimeService:
         default_workspace: str | Path | None = None,
         environment: RuntimeEnvironment | None = None,
         owned_auxiliary_adapters: tuple[RuntimeAdapter, ...] = (),
+        provider_auth: ProviderAuthService | None = None,
+        credential_service: CredentialService | None = None,
     ) -> None:
+        if (provider_auth is None) != (credential_service is None):
+            raise ValueError(
+                "runtime authentication requires both application and credential services"
+            )
+        self.provider_auth = provider_auth
+        self._credential_service = credential_service
         self.store = store
         self.environment = environment or RuntimeEnvironment()
         self.resources = resources
@@ -235,6 +246,7 @@ class RuntimeService:
         self.models = model_catalog or FixedRuntimeAdapterCatalog(adapter)
         self._owned_auxiliary_adapters = owned_auxiliary_adapters
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
         self.tools = tools
         self.skills = tuple(skill.model_copy(deep=True) for skill in skills)
         self.skill_activations = SkillActivationService()
@@ -294,6 +306,7 @@ class RuntimeService:
                     adapter,
                     configured_adapter=compaction_adapter,
                     configured_adapter_error=configured_adapter_error,
+                    configured_adapter_resolver=compaction_adapter_resolver,
                     model_config=self.compaction_config.model,
                     runtime_adapter_resolver=self._adapter_for_session_id,
                     usage_recorder=self.run_lifecycle.record_usage_for_run,
@@ -773,10 +786,19 @@ class RuntimeService:
         await self.close()
 
     async def close(self) -> None:
-        if self._closed:
-            return
         self._closed = True
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close())
+        await settle_owned_tasks(self._close_task)
+        self._close_task.result()
+
+    async def _close(self) -> None:
         errors: list[Exception] = []
+        if self.provider_auth is not None:
+            try:
+                await self.provider_auth.close()
+            except Exception as exc:
+                errors.append(exc)
         run_ids = {run_id for resources in self._run_resource_maps() for run_id in resources}
         for run_id in run_ids:
             try:
@@ -800,6 +822,11 @@ class RuntimeService:
             await close_runtime_adapters(self._owned_auxiliary_adapters)
         except Exception as exc:  # noqa: BLE001 - close every owned resource.
             errors.append(exc)
+        if self._credential_service is not None:
+            try:
+                await self._credential_service.close()
+            except Exception as exc:
+                errors.append(exc)
         if errors:
             raise ExceptionGroup("runtime shutdown failed", errors)
 

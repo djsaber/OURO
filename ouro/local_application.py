@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncGenerator, Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
@@ -12,6 +13,7 @@ from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import MCPRuntimeServerView
 from ouro.application.dto import ApplicationStartupReport, Diagnostic
 from ouro.application.events import RuntimeEventSink
+from ouro.application.models import AdapterBuilder
 from ouro.application.plugins import PluginService
 from ouro.application.provider_auth import ProviderAuthService
 from ouro.application.resources import ResourceService
@@ -29,6 +31,7 @@ from ouro.application.tasks import TaskService
 from ouro.application.usage import UsageService
 from ouro.auth.credentials import CredentialService
 from ouro.auth.driver_contracts import AuthDriver
+from ouro.auth.managed_requests import ManagedRequestAuthenticator, RequestTarget
 from ouro.auth.store import FileCredentialStore
 from ouro.automation.local_files import LocalTaskRepository
 from ouro.automation.sqlite import SQLiteTaskRepository
@@ -36,13 +39,15 @@ from ouro.billing import LocalUsageLedger
 from ouro.builtin_plugins import LOCAL_BUILTIN_PLUGINS
 from ouro.config import CompactionConfig, CredentialRef, CredentialResolver
 from ouro.config.agents import AgentDefinitionsConfigManager
+from ouro.config.provider_models import SUPPORTED_PROVIDER_TYPES, provider_type_spec
 from ouro.config.providers import ProviderConfigManager
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.cancellation import settle_owned_tasks
 from ouro.core.compaction import CompactionStrategyRegistry
 from ouro.core.context import ContextBuilder
 from ouro.core.context_providers import ContextProviderRegistry
 from ouro.core.continuations import RunContinuationRegistry
-from ouro.core.errors import OuroError
+from ouro.core.errors import ConfigError, OuroError
 from ouro.core.observers import ObserverRegistry
 from ouro.core.prompt_policies import PromptPolicyRegistry
 from ouro.core.tool_policies import ToolPolicyRegistry
@@ -59,6 +64,7 @@ from ouro.plugins.registry import PluginCommandRegistry
 from ouro.plugins.runtime import PluginRuntimeResource
 from ouro.plugins.store import PluginPackageStore
 from ouro.providers import build_runtime_adapter
+from ouro.providers.authentication import ProviderRequestPolicy
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore, SessionStore, SQLiteSessionStore
 from ouro.skills import SkillMetadata
@@ -93,6 +99,19 @@ class LocalAgentDefinitionServices:
     tools: ToolRegistry
 
 
+@dataclass(frozen=True)
+class ProviderServicePolicy:
+    """Trusted service registration, never loaded from user request_options."""
+
+    policy_id: str
+    targets: tuple[RequestTarget, ...]
+    requests: ProviderRequestPolicy = ProviderRequestPolicy()
+
+    def __post_init__(self) -> None:
+        if not self.policy_id or not self.targets:
+            raise ValueError("service registration requires an id and allowed targets")
+
+
 class LocalApplication:
     """Own one local OURO runtime and all process-scoped resources around it."""
 
@@ -110,6 +129,7 @@ class LocalApplication:
         task_scheduler: TaskScheduler | None = None,
     ) -> None:
         self.runtime = runtime
+        self.provider_auth = runtime.provider_auth
         self.mcp = mcp
         self.plugin_runtime = plugin_runtime
         self.plugins = plugins
@@ -123,6 +143,7 @@ class LocalApplication:
         self._agent_startup_diagnostics: tuple[Diagnostic, ...] = ()
         self._started = False
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
 
     @property
     def startup_report(self) -> ApplicationStartupReport:
@@ -138,6 +159,8 @@ class LocalApplication:
         event_sink: RuntimeEventSink | None = None,
         session_backend: SessionBackend | None = None,
         task_backend: TaskBackend | None = None,
+        auth_drivers: tuple[AuthDriver, ...] = (),
+        service_policies: tuple[ProviderServicePolicy, ...] = (),
     ) -> LocalApplication:
         task_backend = resolve_task_backend(task_backend)
         runtime = build_local_runtime(
@@ -146,6 +169,8 @@ class LocalApplication:
             system_prompt=system_prompt,
             event_sink=event_sink,
             session_backend=session_backend,
+            auth_drivers=auth_drivers,
+            service_policies=service_policies,
         )
         return cls.from_runtime(runtime, task_backend=task_backend)
 
@@ -255,20 +280,10 @@ class LocalApplication:
             if self.task_scheduler is not None:
                 await self.task_scheduler.start()
         except BaseException:
-            if self.task_scheduler is not None:
-                with suppress(Exception):
-                    await self.task_scheduler.stop()
+            # Startup failure uses the same ownership order and cancellation-safe
+            # cleanup as ordinary shutdown; preserve the original startup error.
             with suppress(Exception):
-                await self.mcp.close()
-            if self.plugin_runtime is not None:
-                with suppress(Exception):
-                    await self.plugin_runtime.close()
-            with suppress(Exception):
-                await self.supervisor.shutdown()
-            if self.task_scheduler is not None:
-                with suppress(Exception):
-                    await self.task_scheduler.close()
-            self._closed = True
+                await self.close()
             raise
         self._startup_report = self._collect_startup_report()
         self._started = True
@@ -323,10 +338,19 @@ class LocalApplication:
         return self.runtime.available_skills()
 
     async def close(self) -> None:
-        if self._closed:
-            return
         self._closed = True
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close())
+        await settle_owned_tasks(self._close_task)
+        self._close_task.result()
+
+    async def _close(self) -> None:
         errors: list[Exception] = []
+        if self.provider_auth is not None:
+            try:
+                await self.provider_auth.close()
+            except Exception as exc:
+                errors.append(exc)
         if self.task_scheduler is not None:
             try:
                 await self.task_scheduler.stop()
@@ -463,6 +487,8 @@ def build_local_runtime(
     system_prompt: str | None = None,
     event_sink: RuntimeEventSink | None = None,
     session_backend: SessionBackend | None = None,
+    auth_drivers: tuple[AuthDriver, ...] = (),
+    service_policies: tuple[ProviderServicePolicy, ...] = (),
 ) -> RuntimeService:
     root = resolve_local_home(home)
     session_services = build_local_session_services(root, session_backend=session_backend)
@@ -478,15 +504,23 @@ def build_local_runtime(
         provider_options=provider_options,
         system_prompt=system_prompt,
     )
-    adapter = build_runtime_adapter(resolved.provider_options)
+    credentials = CredentialService(FileCredentialStore(root))
+    auth = ProviderAuthService(ProviderConfigManager(root), credentials, auth_drivers)
+    adapter_builder = _authenticated_adapter_builder(credentials, auth_drivers, service_policies)
+    adapter = adapter_builder(resolved.provider_options)
     model_catalog = configuration.model_catalog(
         adapter,
-        adapter_builder=build_runtime_adapter,
+        adapter_builder=adapter_builder,
+        default_overrides=provider_options,
+        default_options=resolved.provider_options,
     )
     context_builder = ContextBuilder()
     compaction_adapter, compaction_adapter_error = _configured_compaction_adapter(
         configuration,
         resolved.compaction,
+        adapter_builder=lambda options: model_catalog.adapter_for(
+            f"{options.provider_id}/{options.endpoint_id}"
+        ),
     )
     return RuntimeService(
         store=store,
@@ -503,13 +537,21 @@ def build_local_runtime(
         compaction_config=resolved.compaction,
         compaction_adapter=compaction_adapter,
         compaction_adapter_error=compaction_adapter_error,
+        compaction_adapter_resolver=(
+            lambda: model_catalog.adapter_for(
+                f"{resolved.compaction.model.provider_id}/{resolved.compaction.model.endpoint_id}"
+            )
+        )
+        if compaction_adapter is not None
+        else None,
         queued_input_config=resolved.queued_inputs,
         skills=resolved.skills,
         resources=session_services.resources,
         usage_service=usage,
         default_workspace=Path.cwd(),
         environment=RuntimeEnvironment.local(root, session_data_dir),
-        owned_auxiliary_adapters=((compaction_adapter,) if compaction_adapter is not None else ()),
+        provider_auth=auth,
+        credential_service=credentials,
     )
 
 
@@ -657,18 +699,70 @@ def _build_local_plugin_runtime(
 def _configured_compaction_adapter(
     configuration: RuntimeConfigurationResolver,
     config: CompactionConfig,
+    *,
+    adapter_builder: AdapterBuilder,
 ) -> tuple[RuntimeAdapter | None, str | None]:
     if not config.model.has_dedicated_endpoint:
         return None, None
     try:
         options = configuration.compaction_provider_options(config)
         assert options is not None
-        return build_runtime_adapter(options), None
+        return adapter_builder(options), None
     except Exception as exc:  # noqa: BLE001 - optional route degrades to the runtime route.
         return (
             None,
             f"configured endpoint unavailable: {type(exc).__name__}: {exc}",
         )
+
+
+def _authenticated_adapter_builder(
+    credentials: CredentialService,
+    drivers: tuple[AuthDriver, ...],
+    policies: tuple[ProviderServicePolicy, ...],
+) -> AdapterBuilder:
+    driver_by_id = {driver.descriptor.driver_id: driver for driver in drivers}
+    policy_by_id = {policy.policy_id: policy for policy in policies}
+    if len(driver_by_id) != len(drivers) or len(policy_by_id) != len(policies):
+        raise ConfigError("authentication and service registrations must have unique ids")
+    for provider_type in SUPPORTED_PROVIDER_TYPES:
+        spec = provider_type_spec(provider_type)
+        for connection in (spec.default_connection, *spec.alternative_connections):
+            if connection.auth_driver != "static" and connection.auth_driver not in driver_by_id:
+                raise ConfigError(
+                    f"authentication driver is not registered: {connection.auth_driver}"
+                )
+            if (
+                connection.service_policy is not None
+                and connection.service_policy not in policy_by_id
+            ):
+                raise ConfigError(
+                    f"provider service policy is not registered: {connection.service_policy}"
+                )
+
+    def build(options: RuntimeProviderOptions) -> RuntimeAdapter:
+        policy = policy_by_id.get(options.service_policy or "")
+        if options.service_policy is not None and policy is None:
+            raise ConfigError("provider service registration is unavailable")
+        if options.auth_driver in (None, "static"):
+            return (
+                build_runtime_adapter(options, request_policy=policy.requests)
+                if policy is not None
+                else build_runtime_adapter(options)
+            )
+        driver = driver_by_id.get(options.auth_driver)
+        if driver is None or policy is None:
+            raise ConfigError("managed authentication registration is unavailable")
+        ref = options.credential_ref
+        if ref is None or ref.type != "managed" or ref.name is None:
+            raise ConfigError("managed authentication requires a credential reference")
+        authenticator = ManagedRequestAuthenticator(
+            credentials, ref.name, driver, service_id=policy.policy_id, targets=policy.targets
+        )
+        return build_runtime_adapter(
+            options, authenticator=authenticator, request_policy=policy.requests
+        )
+
+    return build
 
 
 def _mcp_runtime_server_view(record: MCPServerRecord) -> MCPRuntimeServerView:
