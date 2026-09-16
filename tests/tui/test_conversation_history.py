@@ -1,6 +1,7 @@
 import asyncio
 import threading
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from rich.console import Console
@@ -18,6 +19,7 @@ from ouro.tui.conversation_history import (
     ToolNavigationRequested,
     TranscriptEntry,
     _compaction_summary,
+    _format_user_message_timestamp,
     _reasoning_label_text,
     _run_summary,
     _UserMessageContent,
@@ -83,6 +85,54 @@ def test_reasoning_label_uses_regular_title_and_lowlight_timing() -> None:
     assert duration_style.color is not None
     assert duration_style.color.triplet is not None
     assert duration_style.color.triplet.hex == DEFAULT_TUI_THEME.text_faint
+
+
+def test_user_message_timestamp_uses_local_date_only_before_today() -> None:
+    local_zone = timezone(timedelta(hours=8))
+    now = datetime(2026, 9, 16, 16, 20, tzinfo=local_zone)
+
+    assert (
+        _format_user_message_timestamp(
+            datetime(2026, 9, 16, 8, 17, tzinfo=UTC),
+            now=now,
+        )
+        == "16：17"
+    )
+    assert (
+        _format_user_message_timestamp(
+            datetime(2026, 9, 15, 8, 17, tzinfo=UTC),
+            now=now,
+        )
+        == "2026/9/15 • 16：17"
+    )
+
+
+def test_user_message_timestamp_is_a_separate_faint_line() -> None:
+    theme = DEFAULT_TUI_THEME
+    console = Console(force_terminal=True, color_system="truecolor", width=60)
+    rendered_lines = console.render_lines(
+        _UserMessageContent(
+            "user message",
+            theme,
+            created_at=datetime.now().astimezone(),
+        ),
+        console.options.update_width(60),
+        pad=False,
+    )
+    message_line = next(
+        line
+        for line in rendered_lines
+        if "user message" in "".join(segment.text for segment in line)
+    )
+    timestamp_line = next(
+        line for line in rendered_lines if "：" in "".join(segment.text for segment in line)
+    )
+    timestamp_segment = next(segment for segment in timestamp_line if "：" in segment.text)
+
+    assert message_line is not timestamp_line
+    assert timestamp_segment.style is not None
+    assert timestamp_segment.style.color is not None
+    assert timestamp_segment.style.color.triplet.hex == theme.text_faint
 
 
 def test_assistant_markdown_and_user_message_share_custom_theme_tokens() -> None:

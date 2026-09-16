@@ -289,9 +289,9 @@ _OURO_TUI_CSS = """
        from its complete TuiTheme so CSS and Rich rendering share one source. */
     $conversation-left-gutter: 2;
     $conversation-right-gutter: 1;
-    $welcome-width: 72%;
+    $welcome-width: 90%;
     $welcome-min-width: 48;
-    $welcome-inline-padding: 2;
+    $welcome-inline-padding: 1;
     $welcome-logo-gap: 2;
     $welcome-section-gap: 2;
     $welcome-system-gap: 3;

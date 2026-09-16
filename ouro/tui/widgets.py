@@ -1657,7 +1657,13 @@ def _project_transcript_entries(
         if message.role == "user":
             text = user_message_text(message)
             if text:
-                entries.append(TranscriptEntry(kind="user", text=text))
+                entries.append(
+                    TranscriptEntry(
+                        kind="user",
+                        text=text,
+                        created_at=message.created_at,
+                    )
+                )
             continue
         if message.role != "assistant":
             continue
@@ -2003,12 +2009,18 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         if self._showing_welcome:
             self._set_showing_welcome(False)
 
-    async def add_user(self, text: str) -> None:
+    async def add_user(self, text: str, *, created_at: datetime | None = None) -> None:
         await self._dismiss_welcome()
         # A new user turn closes the preceding model round. Persist the live
         # assistant before appending the next chronological history boundary.
         await self.finish_assistant()
-        self._history.append(TranscriptEntry(kind="user", text=text))
+        self._history.append(
+            TranscriptEntry(
+                kind="user",
+                text=text,
+                created_at=created_at or datetime.now().astimezone(),
+            )
+        )
         await self._history.wait_until_rendered()
 
     async def add_user_message(self, message: MessageRecord) -> None:
@@ -2016,7 +2028,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             return
         text = user_message_text(message)
         if text:
-            await self.add_user(text)
+            await self.add_user(text, created_at=message.created_at)
 
     def _presents_message(self, message: MessageRecord) -> bool:
         return _presents_message(

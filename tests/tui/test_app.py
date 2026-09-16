@@ -2144,11 +2144,11 @@ async def test_welcome_layout_stays_centered_across_terminal_width_bounds(
 
         await pilot.resize_terminal(64, 24)
         await pilot.pause()
-        assert welcome.region.width == 48
+        assert welcome.region.width == 57
         assert version.region.bottom == app.screen.region.bottom
         assert version.region.right == app.screen.region.right
-        assert welcome.region.x == app.screen.region.width - welcome.region.right
-        assert composer.region.x == app.screen.region.width - composer.region.right
+        assert abs(welcome.region.x - (app.screen.region.width - welcome.region.right)) <= 1
+        assert abs(composer.region.x - (app.screen.region.width - composer.region.right)) <= 1
 
         await pilot.resize_terminal(40, 16)
         await pilot.pause()
@@ -5479,6 +5479,10 @@ async def test_child_history_presents_only_its_own_delegated_user_inputs(
         assert [(entry.kind, entry.text) for entry in entries] == [
             ("user", "Inspect the delegated target"),
             ("user", "Check one more file"),
+        ]
+        assert [entry.created_at for entry in entries] == [
+            delegated.created_at,
+            follow_up.created_at,
         ]
 
 

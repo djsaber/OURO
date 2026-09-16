@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
+from datetime import datetime
 from itertools import pairwise
 from typing import Literal, Protocol
 
@@ -255,6 +256,7 @@ class TranscriptEntry:
 
     kind: TranscriptEntryKind
     text: str = ""
+    created_at: datetime | None = None
     reasoning: str = ""
     run_id: str | None = None
     reasoning_seconds: float | None = None
@@ -271,6 +273,7 @@ class _UserMessageContent:
 
     text: str
     theme: TuiTheme
+    created_at: datetime | None = None
     entry_index: int = -1
     highlighted: bool = False
 
@@ -294,6 +297,15 @@ class _UserMessageContent:
         )
         content = Text(self.text, style=self.theme.text_highlight)
         lines = console.render_lines(content, content_options, pad=False)
+        if self.created_at is not None:
+            timestamp = Text(
+                _format_user_message_timestamp(
+                    self.created_at,
+                    separator=self.theme.inline_separator,
+                ),
+                style=self.theme.text_faint,
+            )
+            lines.extend(console.render_lines(timestamp, content_options, pad=False))
         border = Segment("│", Style(color=self.theme.accent) + interaction_style)
 
         def framed_line(line: list[Segment]) -> RenderResult:
@@ -316,6 +328,25 @@ class _UserMessageContent:
             yield from framed_line(line)
         for _ in range(bottom):
             yield from framed_line(empty_line)
+
+
+def _format_user_message_timestamp(
+    created_at: datetime,
+    *,
+    now: datetime | None = None,
+    separator: str = " • ",
+) -> str:
+    """Format a message instant in the viewer's local time zone."""
+
+    local_now = now or datetime.now().astimezone()
+    local_created_at = created_at.astimezone(local_now.tzinfo)
+    time_label = f"{local_created_at.hour:02d}：{local_created_at.minute:02d}"
+    if local_created_at.date() == local_now.date():
+        return time_label
+    date_label = (
+        f"{local_created_at.year}/{local_created_at.month}/{local_created_at.day}"
+    )
+    return f"{date_label}{separator}{time_label}"
 
 
 @dataclass(frozen=True)
@@ -755,6 +786,7 @@ def _entry_renderables(
                     _UserMessageContent(
                         entry.text,
                         theme,
+                        created_at=entry.created_at,
                         entry_index=request.entry_index,
                         highlighted=request.user_highlighted,
                     ),
