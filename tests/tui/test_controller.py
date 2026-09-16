@@ -834,7 +834,7 @@ async def test_controller_rejects_overrides_for_contract_controlled_plugin_tools
 
 
 @pytest.mark.asyncio
-async def test_controller_tool_catalog_includes_toolkit_as_host_builtins(
+async def test_controller_tool_catalog_includes_search_and_todolist_as_host_builtins(
     tmp_path: Path,
 ) -> None:
     application = _reasoning_application(tmp_path)

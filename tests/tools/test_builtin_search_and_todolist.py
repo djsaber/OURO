@@ -93,7 +93,7 @@ def context(workspace: Path) -> _ExecutionContext:
 # ---------------------------------------------------------------------------
 
 
-def test_toolkit_tools_are_assembled_as_host_builtins() -> None:
+def test_search_and_todolist_tools_are_assembled_as_host_builtins() -> None:
     tools = _tools()
 
     assert {"Glob", "Grep", "TodoList"} <= tools.keys()
@@ -103,7 +103,7 @@ def test_toolkit_tools_are_assembled_as_host_builtins() -> None:
     )
 
 
-async def test_toolkit_contracts_guide_model_decisions_and_describe_fields() -> None:
+async def test_search_and_todolist_contracts_guide_model_decisions_and_describe_fields() -> None:
     tools = _tools()
 
     glob = tools["Glob"]

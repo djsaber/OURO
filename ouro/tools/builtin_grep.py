@@ -1,63 +1,54 @@
-"""Built-in Glob, Grep, and TodoList tool definitions."""
+"""Built-in Grep tool definition and content search."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import re
+from bisect import bisect_right
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from ouro.core.base import utc_now
-from ouro.core.harness_calls import HarnessInvocation, HarnessStateChange
-from ouro.tools.base import (
-    Tool,
-    ToolDefinition,
-    ToolExecutionContext,
-    ToolInvocation,
-    ToolResult,
-)
-from ouro.tools.builtin_todos import TodoItem, TodoListRepository
-from ouro.tools.builtin_toolkit_ignore import is_sensitive_file
-from ouro.tools.builtin_toolkit_search import (
-    FileEntry,
-    GrepResult,
-    MatchedLine,
-    compile_name_glob,
-    compile_type_filter,
-    grep_single_file,
-    search_glob,
-    search_grep,
-)
+from ouro.tools.base import Tool, ToolDefinition, ToolExecutionContext, ToolInvocation, ToolResult
+from ouro.tools.builtin_common import _boolean_arg, _string_arg, _tool_result
+from ouro.tools.builtin_ignore import is_sensitive_file
+from ouro.tools.builtin_search import FileEntry, _matches_any, _translate, iter_files
 
-_GLOB_MAX_RESULTS = 100
 _DEFAULT_HEAD_LIMIT = 250
-_TODOLIST_STATE_OWNER = "ouro.host"
 
-GLOB_DESCRIPTION = """Use this tool to discover files when you know a filename, extension, or \
-directory pattern but not the exact path. Prefer Grep when you need to locate file content and \
-Read when you already know the file path. Do not use this tool to list directories or search \
-inside files. Results are sorted by modification time (most recent first).
 
-Respects `.gitignore`, `.ignore`, and `.rgignore` by default — set `include_ignored` to also \
-match ignored files (e.g. build outputs, `node_modules`). Sensitive files (such as `.env`) are \
-always filtered out. Matches are files only — directories themselves are never listed; to find \
-a directory, glob for a file inside it (e.g. `**/fixtures/**`). Good patterns:
+_BINARY_SNIFF_BYTES = 8 * 1_024
 
-- `*.ts` — all files matching an extension, at any depth below the search root (a bare pattern \
-without `/` matches recursively)
-- `src/*.ts` — files directly inside `src/` (one level, not recursive)
-- `src/**/*.ts` — recursive walk with a subdirectory anchor and extension
-- `**/*.py` — recursive walk from the search root for an extension
-- `*.{ts,tsx}` — brace expansion is supported
-- `{src,test}/**/*.ts` — cartesian brace expansion is supported too
 
-Results are capped at the first 100 matching paths. If a search would return more, a truncation \
-marker is appended. Refine the pattern (extension, subdirectory) when 100 is not enough, or \
-call again with a narrower anchor.
+_MAX_SEARCHABLE_FILE_BYTES = 32 * 1_024 * 1_024
 
-Large-directory caveat — avoid recursing into dependency / build output even with an anchor, \
-especially when `include_ignored` is set: `node_modules/**/*.js`, `.venv/**/*.py`, \
-`__pycache__/**`, `target/**` can produce thousands of results that truncate at the match cap \
-and waste context. Prefer specific subpaths like `node_modules/react/src/**/*.js`."""
+
+# Bound content-mode result memory; counting continues for an exact match total.
+_MAX_COLLECTED_MATCHES = 20_000
+
+
+# Small ripgrep-style file type table for the Grep `type` filter.
+_FILE_TYPES: dict[str, tuple[str, ...]] = {
+    "c": ("*.c", "*.h"),
+    "cpp": ("*.cpp", "*.cc", "*.cxx", "*.hpp", "*.hh", "*.hxx"),
+    "css": ("*.css",),
+    "go": ("*.go",),
+    "html": ("*.html", "*.htm"),
+    "java": ("*.java",),
+    "js": ("*.js", "*.jsx", "*.mjs", "*.cjs"),
+    "json": ("*.json",),
+    "md": ("*.md", "*.markdown"),
+    "py": ("*.py", "*.pyi"),
+    "rust": ("*.rs",),
+    "sh": ("*.sh", "*.bash", "*.zsh"),
+    "sql": ("*.sql",),
+    "toml": ("*.toml",),
+    "ts": ("*.ts", "*.tsx", "*.mts", "*.cts"),
+    "txt": ("*.txt",),
+    "xml": ("*.xml",),
+    "yaml": ("*.yaml", "*.yml"),
+}
+
 
 GREP_DESCRIPTION = """Use this tool to locate regular-expression matches when the relevant \
 content or file location is unknown. Prefer Glob when you only need filenames and Read when you \
@@ -72,90 +63,6 @@ To also search files excluded by `.gitignore` (such as `node_modules` or build o
 `include_ignored` to `true`. Sensitive files (such as `.env`) are always skipped for safety, \
 even when `include_ignored` is `true`."""
 
-TODOLIST_DESCRIPTION = """\
-Use this tool to create, inspect, or update a structured TODO list for a multi-step task. Use \
-it when progress tracking helps the current work. This is especially \
-useful in long-running investigations and implementation tasks with several tool calls; in \
-plan mode, write the plan to the plan file rather than tracking it here.
-
-When to use:
-
-- Multi-step tasks that span several tool calls
-- Tracking investigation progress across a large codebase search
-- Planning a sequence of edits before making them
-- After receiving new multi-step instructions, capture the requirements as todos
-- Before starting a tracked task, mark exactly one item as `in_progress`
-- Immediately after finishing a tracked task, mark it `done`; do not batch completions at the end
-
-When NOT to use:
-
-- Single-shot answers that complete in one or two tool calls
-- Trivial requests where tracking adds no clarity
-- Purely conversational or informational replies
-
-Avoid churn:
-
-- Do not re-call this tool when nothing meaningful has changed since the last call — update the \
-list only after real progress.
-- When unsure of the current state, call query mode first (omit `todos`) to check the list \
-before deciding what to update.
-- If no available tool can move any task forward, tell the user where you are stuck instead of \
-repeatedly re-ordering the same todos.
-
-How to use:
-
-- Call with `todos: [...]` to replace the full list. Statuses: pending / in_progress / done.
-- Call with no `todos` argument to retrieve the current list without changing it.
-- Call with `todos: []` to clear the list.
-- Keep titles short and actionable (e.g. "Read session-control.ts", "Add planMode flag to \
-TurnManager").
-- Update statuses as you make progress.
-- When work is underway, keep exactly one task `in_progress`.
-- Only mark a task `done` when it is fully accomplished.
-- Never mark a task `done` if tests are failing, implementation is partial, unresolved errors \
-remain, or required files/dependencies could not be found.
-- If you encounter a blocker, keep the blocked task `in_progress` or add a new pending task \
-describing what must be resolved."""
-
-_TODOLIST_GUIDANCE = (
-    "Ensure that you continue to use the todo list to track progress. Mark tasks done "
-    "immediately after finishing them, and keep exactly one task in_progress when work is "
-    "underway."
-)
-
-_GLOB_SCHEMA: Mapping[str, object] = {
-    "type": "object",
-    "properties": {
-        "pattern": {
-            "type": "string",
-            "minLength": 1,
-            "description": (
-                "Glob pattern selecting the files you need. A bare filename pattern such as "
-                "`*.py` matches recursively; include `/` to anchor the pattern to subpaths."
-            ),
-        },
-        "path": {
-            "type": "string",
-            "description": (
-                "Root directory below which to match files. Use an absolute path or a path "
-                "relative to the current working directory. Omit to use the current working "
-                "directory."
-            ),
-        },
-        "include_ignored": {
-            "type": "boolean",
-            "description": (
-                "Set to true only when you specifically need files excluded by `.gitignore`, "
-                "`.ignore`, or `.rgignore`, such as a dependency or build output. Sensitive "
-                "files (such as `.env`) remain filtered out for safety. VCS metadata "
-                "directories (`.git` and similar) are always skipped, even when this is true. "
-                "Defaults to false."
-            ),
-        },
-    },
-    "required": ["pattern"],
-    "additionalProperties": False,
-}
 
 _GREP_SCHEMA: Mapping[str, object] = {
     "type": "object",
@@ -282,118 +189,17 @@ _GREP_SCHEMA: Mapping[str, object] = {
     "additionalProperties": False,
 }
 
-_TODOLIST_SCHEMA: Mapping[str, object] = {
-    "type": "object",
-    "properties": {
-        "todos": {
-            "type": "array",
-            "description": (
-                "Complete replacement for the current todo list. Omit this field to read the "
-                "list without changing it; pass an empty array to clear it."
-            ),
-            "items": {
-                "type": "object",
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": (
-                            "Short, imperative action describing one verifiable unit of work."
-                        ),
-                    },
-                    "status": {
-                        "type": "string",
-                        "enum": ["pending", "in_progress", "done"],
-                        "description": (
-                            "Use `pending` before work starts, `in_progress` for the single "
-                            "active item, and `done` only after the item is fully complete."
-                        ),
-                    },
-                },
-                "required": ["title", "status"],
-                "additionalProperties": False,
-            },
-        }
-    },
-    "additionalProperties": False,
-}
 
-_MISSING = object()
-
-
-def builtin_toolkit_tools() -> list[Tool]:
-    return [
-        Tool(
-            definition=ToolDefinition(
-                name="Glob",
-                description=GLOB_DESCRIPTION,
-                parameters_schema=dict(_GLOB_SCHEMA),
-                permission_mode="auto",
-                effect="read_only",
-            ),
-            handler=_glob,
+def builtin_grep_tool() -> Tool:
+    return Tool(
+        definition=ToolDefinition(
+            name="Grep",
+            description=GREP_DESCRIPTION,
+            parameters_schema=dict(_GREP_SCHEMA),
+            permission_mode="auto",
+            effect="read_only",
         ),
-        Tool(
-            definition=ToolDefinition(
-                name="Grep",
-                description=GREP_DESCRIPTION,
-                parameters_schema=dict(_GREP_SCHEMA),
-                permission_mode="auto",
-                effect="read_only",
-            ),
-            handler=_grep,
-        ),
-        Tool(
-            definition=ToolDefinition(
-                name="TodoList",
-                description=TODOLIST_DESCRIPTION,
-                parameters_schema=dict(_TODOLIST_SCHEMA),
-                permission_mode="auto",
-                effect="state_changing",
-                batch_behavior="exclusive",
-            ),
-            handler=_todolist,
-        ),
-    ]
-
-
-def _glob(
-    invocation: ToolInvocation,
-    context: ToolExecutionContext,
-) -> ToolResult:
-    pattern = _string_arg(invocation.arguments, "pattern")
-    include_ignored = _boolean_arg(invocation.arguments, "include_ignored", default=False)
-    root = _directory_arg(invocation.arguments, context)
-    result = search_glob(
-        root,
-        pattern,
-        include_ignored=include_ignored,
-        limit=_GLOB_MAX_RESULTS,
-        check_cancelled=context.raise_if_aborted,
-    )
-    paths = [entry.relative for entry in result.matches]
-    if not paths:
-        content = "No files found."
-    else:
-        lines: list[str] = []
-        if result.total > _GLOB_MAX_RESULTS:
-            lines.append(
-                f"[Truncated at {_GLOB_MAX_RESULTS} matches — use a more specific pattern]"
-            )
-            lines.append(f"Only the first {_GLOB_MAX_RESULTS} matches are returned.")
-        lines.extend(paths)
-        content = "\n".join(lines)
-    return _tool_result(
-        invocation,
-        content=content,
-        structured={
-            "kind": "glob",
-            "root": str(root),
-            "pattern": pattern,
-            "matches": paths,
-            "total": result.total,
-            "truncated": result.total > _GLOB_MAX_RESULTS,
-        },
+        handler=_grep,
     )
 
 
@@ -467,61 +273,6 @@ def _grep(
         head_limit=head_limit,
         offset=offset,
     )
-
-
-def _todolist(
-    invocation: ToolInvocation,
-    context: ToolExecutionContext,
-) -> ToolResult:
-    if context.harness is None:
-        raise RuntimeError("TodoList requires an active Session state")
-    state = HarnessInvocation(
-        context.harness,
-        _TODOLIST_STATE_OWNER,
-        writable=True,
-        signal=context.signal,
-    )
-    try:
-        repository = TodoListRepository(
-            state,
-            session_id=invocation.session_id,
-            owner_id=_TODOLIST_STATE_OWNER,
-        )
-        raw = invocation.arguments.get("todos", _MISSING)
-        if raw is _MISSING:
-            todos = repository.load()
-            content = _render_todos(todos) if todos else "Todo list is empty."
-            return _tool_result(
-                invocation,
-                content=content,
-                structured={"todos": [item.to_json() for item in todos]},
-                harness_change=state.finish(),
-            )
-        if not isinstance(raw, list):
-            raise ValueError("tool argument 'todos' must be a list")
-        todos = tuple(TodoItem.from_json(item) for item in raw)
-        if not todos:
-            repository.clear()
-            return _tool_result(
-                invocation,
-                content="Todo list cleared.",
-                structured={"todos": []},
-                harness_change=state.finish(),
-            )
-        repository.save(todos)
-        return _tool_result(
-            invocation,
-            content=f"Todo list updated.\n{_render_todos(todos)}\n\n{_TODOLIST_GUIDANCE}",
-            structured={"todos": [item.to_json() for item in todos]},
-            harness_change=state.finish(),
-        )
-    finally:
-        state.close()
-
-
-def _render_todos(todos: tuple[TodoItem, ...]) -> str:
-    lines = "\n".join(f"  [{item.status}] {item.title}" for item in todos)
-    return f"Current todo list:\n{lines}"
 
 
 def _render_grep(
@@ -695,45 +446,12 @@ def _page(items, *, head_limit: int, offset: int):
     return tuple(selected)
 
 
-def _tool_result(
-    invocation: ToolInvocation,
-    *,
-    content: str,
-    structured: dict[str, object] | None = None,
-    is_error: bool = False,
-    harness_change: HarnessStateChange | None = None,
-) -> ToolResult:
-    return ToolResult(
-        tool_call_id=invocation.tool_call_id,
-        tool_name=invocation.tool_name,
-        content=content,
-        structured=structured or {},
-        is_error=is_error,
-        harness_change=harness_change,
-        ended_at=utc_now(),
-    )
-
-
-def _string_arg(arguments: Mapping[str, object], name: str) -> str:
-    value = arguments.get(name)
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"tool argument '{name}' must be a non-empty string")
-    return value
-
-
 def _optional_string_arg(arguments: Mapping[str, object], name: str) -> str | None:
     value = arguments.get(name)
     if value is None:
         return None
     if not isinstance(value, str) or not value:
         raise ValueError(f"tool argument '{name}' must be a non-empty string")
-    return value
-
-
-def _boolean_arg(arguments: Mapping[str, object], name: str, *, default: bool) -> bool:
-    value = arguments.get(name, default)
-    if not isinstance(value, bool):
-        raise ValueError(f"tool argument '{name}' must be a boolean")
     return value
 
 
@@ -765,20 +483,6 @@ def _output_mode_arg(
     return cast("Literal['content', 'files_with_matches', 'count_matches']", value)
 
 
-def _directory_arg(arguments: Mapping[str, object], context: ToolExecutionContext) -> Path:
-    raw = arguments.get("path")
-    if raw is None:
-        resolved = context.resolve_working_directory(None)
-        root = Path(resolved) if resolved is not None else Path.cwd()
-    else:
-        if not isinstance(raw, str) or not raw:
-            raise ValueError("tool argument 'path' must be a non-empty string")
-        root = Path(context.resolve_path(raw))
-    if not root.is_dir():
-        raise ValueError(f"search root is not a directory: {root}")
-    return root
-
-
 def _path_arg(arguments: Mapping[str, object], context: ToolExecutionContext) -> Path:
     raw = arguments.get("path")
     if raw is None:
@@ -791,9 +495,236 @@ def _path_arg(arguments: Mapping[str, object], context: ToolExecutionContext) ->
     return Path(context.resolve_path(raw))
 
 
-__all__ = [
-    "GLOB_DESCRIPTION",
-    "GREP_DESCRIPTION",
-    "TODOLIST_DESCRIPTION",
-    "builtin_toolkit_tools",
-]
+@dataclass(frozen=True)
+class MatchedLine:
+    entry: FileEntry
+    number: int  # 1-based line number
+    text: str
+    before: tuple[tuple[int, str], ...] = ()
+    after: tuple[tuple[int, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class FileMatchCount:
+    entry: FileEntry
+    count: int
+
+
+@dataclass(frozen=True)
+class GrepResult:
+    matches: tuple[MatchedLine, ...]  # deterministic walk order, bounded by the safety valve
+    total: int  # exact matched-line count across all searched files
+    collection_capped: bool
+    file_counts: tuple[FileMatchCount, ...]  # only files with at least one match
+
+
+@dataclass(frozen=True)
+class NameGlob:
+    """Compiled ripgrep-style ``--glob`` filter.
+
+    A pattern without a path separator matches only the file basename; a
+    pattern containing one is matched against the file's full POSIX path.
+    """
+
+    matchers: tuple[re.Pattern[str], ...]
+    anchored: bool
+
+    def matches(self, entry: FileEntry) -> bool:
+        subject = entry.path.as_posix() if self.anchored else entry.path.name
+        return _matches_any(self.matchers, subject)
+
+
+def compile_name_glob(pattern: str) -> NameGlob:
+    return NameGlob(matchers=_translate(pattern), anchored="/" in pattern)
+
+
+def supported_file_types() -> tuple[str, ...]:
+    return tuple(sorted(_FILE_TYPES))
+
+
+def compile_type_filter(file_type: str) -> tuple[re.Pattern[str], ...]:
+    patterns = _FILE_TYPES.get(file_type)
+    if patterns is None:
+        supported = ", ".join(supported_file_types())
+        raise ValueError(f"unsupported file type '{file_type}' (supported: {supported})")
+    compiled: list[re.Pattern[str]] = []
+    for pattern in patterns:
+        compiled.extend(_translate(pattern))
+    return tuple(compiled)
+
+
+def search_grep(
+    root: Path,
+    pattern: str,
+    *,
+    ignore_case: bool,
+    multiline: bool,
+    name_filter: NameGlob | None,
+    type_filter: tuple[re.Pattern[str], ...] | None,
+    include_ignored: bool,
+    context_before: int,
+    context_after: int,
+    check_cancelled: Callable[[], None] | None = None,
+) -> GrepResult:
+    regex = _compile_search_regex(pattern, ignore_case=ignore_case, multiline=multiline)
+    matches: list[MatchedLine] = []
+    file_counts: list[FileMatchCount] = []
+    total = 0
+    collection_capped = False
+    for entry in iter_files(
+        root,
+        include_ignored=include_ignored,
+        check_cancelled=check_cancelled,
+    ):
+        if name_filter is not None and not name_filter.matches(entry):
+            continue
+        if type_filter is not None and not _matches_any(type_filter, entry.path.name):
+            continue
+        text = _read_searchable_text(entry.path)
+        if text is None:
+            continue
+        lines = text.splitlines()
+        matched_numbers = _matched_line_numbers(lines, regex, multiline=multiline)
+        if not matched_numbers:
+            continue
+        file_counts.append(FileMatchCount(entry=entry, count=len(matched_numbers)))
+        total += len(matched_numbers)
+        for number in matched_numbers:
+            if len(matches) >= _MAX_COLLECTED_MATCHES:
+                collection_capped = True
+                break
+            matches.append(
+                MatchedLine(
+                    entry=entry,
+                    number=number,
+                    text=lines[number - 1],
+                    before=_context(lines, number, -context_before),
+                    after=_context(lines, number, context_after),
+                )
+            )
+    return GrepResult(
+        matches=tuple(matches),
+        total=total,
+        collection_capped=collection_capped,
+        file_counts=tuple(file_counts),
+    )
+
+
+def grep_single_file(
+    path: Path,
+    pattern: str,
+    *,
+    ignore_case: bool,
+    multiline: bool,
+    context_before: int,
+    context_after: int,
+    check_cancelled: Callable[[], None] | None = None,
+) -> GrepResult:
+    """Search one explicitly named file; ignore rules and glob filters do not apply."""
+
+    if check_cancelled is not None:
+        check_cancelled()
+    regex = _compile_search_regex(pattern, ignore_case=ignore_case, multiline=multiline)
+    try:
+        stat = path.stat()
+    except OSError:
+        stat = None
+    entry = FileEntry(
+        path=path,
+        relative=path.name,
+        mtime=stat.st_mtime if stat is not None else 0.0,
+    )
+    text = _read_searchable_text(path)
+    if check_cancelled is not None:
+        check_cancelled()
+    if text is None:
+        return GrepResult(matches=(), total=0, collection_capped=False, file_counts=())
+    lines = text.splitlines()
+    matched_numbers = _matched_line_numbers(lines, regex, multiline=multiline)
+    matches = tuple(
+        MatchedLine(
+            entry=entry,
+            number=number,
+            text=lines[number - 1],
+            before=_context(lines, number, -context_before),
+            after=_context(lines, number, context_after),
+        )
+        for number in matched_numbers[:_MAX_COLLECTED_MATCHES]
+    )
+    file_counts = (
+        (FileMatchCount(entry=entry, count=len(matched_numbers)),) if matched_numbers else ()
+    )
+    return GrepResult(
+        matches=matches,
+        total=len(matched_numbers),
+        collection_capped=len(matched_numbers) > _MAX_COLLECTED_MATCHES,
+        file_counts=file_counts,
+    )
+
+
+def _compile_search_regex(pattern: str, *, ignore_case: bool, multiline: bool) -> re.Pattern[str]:
+    flags = re.IGNORECASE if ignore_case else 0
+    if multiline:
+        flags |= re.MULTILINE | re.DOTALL
+    try:
+        return re.compile(pattern, flags)
+    except re.error as exc:
+        raise ValueError(f"invalid regular expression: {exc}") from exc
+
+
+def _matched_line_numbers(
+    lines: list[str],
+    regex: re.Pattern[str],
+    *,
+    multiline: bool,
+) -> list[int]:
+    if not multiline:
+        return [index + 1 for index, line in enumerate(lines) if regex.search(line) is not None]
+    offsets = _line_start_offsets(lines)
+    matched: set[int] = set()
+    text = "\n".join(lines)
+    for hit in regex.finditer(text):
+        first = bisect_right(offsets, hit.start())
+        last = bisect_right(offsets, max(hit.start(), hit.end() - 1))
+        matched.update(range(first, last + 1))
+    return sorted(matched)
+
+
+def _line_start_offsets(lines: list[str]) -> list[int]:
+    offsets: list[int] = []
+    position = 0
+    for line in lines:
+        offsets.append(position)
+        position += len(line) + 1
+    return offsets
+
+
+def _context(lines: list[str], number: int, span: int) -> tuple[tuple[int, str], ...]:
+    if span == 0:
+        return ()
+    if span < 0:
+        start = max(1, number + span)
+        stop = number
+    else:
+        start = number + 1
+        stop = min(len(lines), number + span) + 1
+    return tuple((index, lines[index - 1]) for index in range(start, stop))
+
+
+def _read_searchable_text(path: Path) -> str | None:
+    """Decode a file as UTF-8 text, returning ``None`` for binary or unreadable files."""
+
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(_BINARY_SNIFF_BYTES)
+            if b"\x00" in head:
+                return None
+            rest = stream.read(_MAX_SEARCHABLE_FILE_BYTES + 1 - len(head))
+            if len(rest) + len(head) > _MAX_SEARCHABLE_FILE_BYTES:
+                return None
+        return (head + rest).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+__all__ = ["GREP_DESCRIPTION", "builtin_grep_tool"]
