@@ -10,6 +10,7 @@ from ouro.core.base import OuroModel
 from ouro.core.errors import CredentialError
 
 CREDENTIAL_ID_PATTERN = r"^cred_[0-9a-f]{32}$"
+AUTH_ID_PATTERN = r"^[a-z][a-z0-9-]*$"
 CredentialState = Literal["active", "reauth_required", "logged_out"]
 AuthErrorCode = Literal[
     "authentication_required",
@@ -18,6 +19,12 @@ AuthErrorCode = Literal[
     "credential_lock_timeout",
     "credential_refresh_failed",
     "auth_closed",
+    "authorization_unsupported",
+    "authorization_failed",
+    "authorization_denied",
+    "authorization_expired",
+    "authorization_cancelled",
+    "authorization_cleanup_failed",
 ]
 _ERROR_MESSAGES: dict[AuthErrorCode, str] = {
     "authentication_required": "Credential requires login.",
@@ -26,6 +33,12 @@ _ERROR_MESSAGES: dict[AuthErrorCode, str] = {
     "credential_lock_timeout": "Timed out waiting for the credential lock.",
     "credential_refresh_failed": "Credential refresh did not complete; retry or log in again.",
     "auth_closed": "Credential service is closed.",
+    "authorization_unsupported": "The authorization method is not supported.",
+    "authorization_failed": "Authorization did not complete; start a new login.",
+    "authorization_denied": "Authorization was denied.",
+    "authorization_expired": "Authorization expired; start a new login.",
+    "authorization_cancelled": "Authorization was cancelled.",
+    "authorization_cleanup_failed": "Authorization resources could not be closed cleanly.",
 }
 
 
@@ -60,7 +73,7 @@ class CredentialGrant(AuthModel):
 class CredentialRecord(AuthModel):
     format_version: Literal[1] = 1
     credential_id: str = Field(pattern=CREDENTIAL_ID_PATTERN)
-    driver_id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9-]*$")
+    driver_id: str = Field(min_length=1, pattern=AUTH_ID_PATTERN)
     revision: int = Field(ge=1, strict=True)
     state: CredentialState
     expires_at: AwareDatetime | None = None

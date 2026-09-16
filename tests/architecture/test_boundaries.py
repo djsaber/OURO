@@ -214,17 +214,28 @@ def test_provider_configuration_does_not_depend_on_cli_or_provider_implementatio
 
 
 def test_auth_contracts_do_not_load_concrete_storage_or_lifecycle() -> None:
-    path = PROJECT_ROOT / "ouro" / "auth" / "contracts.py"
+    for filename in ("contracts.py", "driver_contracts.py"):
+        path = PROJECT_ROOT / "ouro" / "auth" / filename
+        imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+        assert not any(
+            module.startswith(
+                (
+                    "ouro.auth.store",
+                    "ouro.auth.file_permissions",
+                    "ouro.auth.credentials",
+                    "ouro.auth.authorization",
+                    "ouro.auth.drivers",
+                )
+            )
+            for module in imports
+        )
+
+
+def test_authorization_attempt_does_not_own_credential_storage_or_commit() -> None:
+    path = PROJECT_ROOT / "ouro" / "auth" / "authorization.py"
     imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
     assert not any(
-        module.startswith(
-            (
-                "ouro.auth.store",
-                "ouro.auth.file_permissions",
-                "ouro.auth.credentials",
-                "ouro.auth.drivers",
-            )
-        )
+        module.startswith(("ouro.auth.credentials", "ouro.auth.store", "ouro.config"))
         for module in imports
     )
 
