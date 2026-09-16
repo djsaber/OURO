@@ -3,10 +3,13 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
 from ouro.config.file import JsonConfigFile
 from ouro.config.permissions import PermissionConfigManager
 from ouro.config.prompts import PromptConfigManager
 from ouro.config.queued_inputs import QueuedInputConfigManager
+from ouro.core.errors import ConfigError
 
 
 def test_config_commands_preserve_concurrent_section_updates(tmp_path) -> None:
@@ -66,3 +69,64 @@ def test_permission_config_preserves_tool_and_plugin_overrides_independently(tmp
     snapshot = permissions.snapshot()
     assert snapshot.plugins == {"dev.ouro.deploy": "deny"}
     assert snapshot.tools == {}
+
+
+def test_config_lock_timeout_preserves_data_and_allows_later_update(tmp_path) -> None:
+    config = JsonConfigFile(tmp_path)
+    config.write({"existing": True})
+
+    def update() -> None:
+        with config.mutation(timeout=0.03):
+            config.write({"late": True})
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with config.mutation():
+            future = executor.submit(update)
+            with pytest.raises(ConfigError, match="timed out"):
+                future.result(timeout=2)
+    assert config.read() == {"existing": True}
+    config.write({"next": True})
+    assert config.read() == {"next": True}
+
+
+def test_cancelled_config_waiter_never_runs_transaction(tmp_path) -> None:
+    config = JsonConfigFile(tmp_path)
+    config.write({"existing": True})
+    cancelled = threading.Event()
+    waiting = threading.Event()
+
+    def update() -> None:
+        waiting.set()
+        with config.mutation(cancel_event=cancelled):
+            config.write({"late": True})
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with config.mutation():
+            future = executor.submit(update)
+            assert waiting.wait(5)
+            cancelled.set()
+            with pytest.raises(InterruptedError):
+                future.result(timeout=2)
+    assert config.read() == {"existing": True}
+    config.write({"next": True})
+    assert config.read() == {"next": True}
+
+
+def test_started_config_transaction_finishes_despite_acquisition_cancellation(tmp_path) -> None:
+    config = JsonConfigFile(tmp_path)
+    cancelled = threading.Event()
+    with config.mutation(cancel_event=cancelled):
+        cancelled.set()
+        config.write({"committed": True})
+    assert config.read() == {"committed": True}
+
+
+def test_failed_transaction_releases_config_lock_without_reclassifying_error(tmp_path) -> None:
+    config = JsonConfigFile(tmp_path)
+    with pytest.raises(TimeoutError, match="operation timeout"):
+        with config.mutation():
+            raise TimeoutError("operation timeout")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        executor.submit(config.write, {"next": True}).result(timeout=2)
+    assert config.read() == {"next": True}

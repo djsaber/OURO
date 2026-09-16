@@ -127,6 +127,23 @@ Host 通过 application `ConfigurationFacade` 查询和修改配置。Facade 返
 configured/missing 状态；每次 mutation 返回变更项和生效范围。CLI、Desktop 等 Host 不直接依赖各 config
 manager。Provider retry 的关联字段作为一个原子 mutation 提交，不能留下部分更新。
 
+## 配置事务与锁等待
+
+`JsonConfigFile.mutation` 覆盖完整的同步读、校验和原子替换；同线程嵌套配置命令复用同一事务。
+获取锁默认最多等待 10 秒，可显式指定非负、有限的 `timeout`；0 表示只尝试立即获取。
+线程内互斥和跨进程文件锁共用一次等待预算，不为第二层锁重新计时。竞争超时返回 `ConfigError`，
+不进入事务、不修改配置。等待预算约束锁竞争，不承诺阻塞文件系统调用或已开始事务的硬截止时间。
+
+调用方可传入 `threading.Event` 作为 `cancel_event`。获取期间观察到取消时抛出 `InterruptedError`，
+释放已获取的资源；没有脱离调用方生命周期、以后还能进入事务的后台锁等待者。
+事务已经开始后，取消获取的信号不回滚写入，调用方必须完成事务并释放锁。
+
+这是线程可重入的同步边界，不能跨 `await` 持有，也不能在一个线程获取后由另一个线程释放。
+异步用例接入时应让完整同步事务在同一 worker 内收尾，显式协调取消与开始提交的先后，不能仅取消外层等待。
+订阅登录的绑定检查及异步提交接线仍按[订阅认证规格](OURO_模型订阅认证规格_2026-09-16.md)单独验收。
+线程/进程竞争、取消、嵌套、异常释放和配置保留的证据见 `tests/test_local_locks.py` 与
+`tests/config/test_atomic_config.py`。
+
 ## 内置模板
 
 `config/provider_templates.py` 保存经过核验的只读模板目录。模板是配置域数据，不是新的 adapter 类型；多个

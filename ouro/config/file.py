@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from functools import wraps
@@ -40,11 +41,22 @@ class JsonConfigFile:
             self._write_unlocked(raw)
 
     @contextmanager
-    def mutation(self) -> Iterator[None]:
-        """Hold the cross-process transaction boundary for one read-modify-write."""
+    def mutation(
+        self, *, timeout: float = 10.0, cancel_event: threading.Event | None = None
+    ) -> Iterator[None]:
+        """Bound acquisition, then finish one synchronous read-modify-write.
 
-        with FileMutationLock(self._lock_path):
+        Async callers must run the entire transaction in one worker, never hold
+        this thread-reentrant lock across an await. Cancelling acquisition does
+        not roll back a transaction that has already started.
+        """
+        lock = FileMutationLock(self._lock_path)
+        if not lock.acquire(timeout=timeout, cancel_event=cancel_event):
+            raise ConfigError("timed out waiting for configuration mutation")
+        try:
             yield
+        finally:
+            lock.release()
 
     def _write_unlocked(self, raw: Mapping[str, Any]) -> None:
         temp_path: Path | None = None

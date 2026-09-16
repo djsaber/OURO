@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import importlib
 import json
+import math
 import os
 import threading
 import time
@@ -92,33 +93,53 @@ class FileMutationLock:
         self._acquired = False
         self._outermost = False
 
-    def acquire(self) -> bool:
+    def acquire(
+        self,
+        *,
+        timeout: float | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> bool:
+        """Acquire within one wait budget; cancellation never leaves a queued owner.
+
+        Cancellation applies only to acquisition. Once the caller enters its
+        synchronous transaction it must finish and release the lock normally.
+        """
+        if timeout is not None and (not math.isfinite(timeout) or timeout < 0):
+            raise ValueError("lock timeout must be finite and non-negative")
         if self._acquired:
             return True
-        self._local_lock.acquire()
+        deadline = None if timeout is None else time.monotonic() + timeout
+        _check_lock_cancellation(cancel_event)
+        while not self._local_lock.acquire(blocking=False):
+            if not _wait_for_mutation_lock(deadline, cancel_event):
+                return False
         depths = _mutation_depths()
         depth = depths.get(self._key, 0)
-        if depth:
-            depths[self._key] = depth + 1
-            self._acquired = True
-            return True
-
         descriptor: int | None = None
         try:
+            _check_lock_cancellation(cancel_event)
+            if depth:
+                depths[self._key] = depth + 1
+                self._acquired = True
+                return True
             self.path.parent.mkdir(parents=True, exist_ok=True)
             descriptor = os.open(self.path, os.O_CREAT | os.O_RDWR)
             while not try_lock_descriptor(descriptor):
-                time.sleep(0.005)
+                if not _wait_for_mutation_lock(deadline, cancel_event):
+                    return False
+            # A cancellation observed after the OS acquisition must still release
+            # the descriptor instead of admitting a transaction that was abandoned.
+            _check_lock_cancellation(cancel_event)
             depths[self._key] = 1
             self._descriptor = descriptor
             self._outermost = True
             self._acquired = True
             return True
-        except Exception:
-            if descriptor is not None:
-                os.close(descriptor)
-            self._local_lock.release()
-            raise
+        finally:
+            if not self._acquired:
+                if descriptor is not None:
+                    os.close(descriptor)
+                self._local_lock.release()
 
     def release(self) -> None:
         if not self._acquired:
@@ -224,3 +245,22 @@ def _mutation_depths() -> dict[str, int]:
         depths = {}
         _MUTATION_DEPTHS.values = depths
     return depths
+
+
+def _check_lock_cancellation(cancel_event: threading.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise InterruptedError("file mutation lock acquisition cancelled")
+
+
+def _wait_for_mutation_lock(deadline: float | None, cancel_event: threading.Event | None) -> bool:
+    _check_lock_cancellation(cancel_event)
+    remaining = None if deadline is None else deadline - time.monotonic()
+    if remaining is not None and remaining <= 0:
+        return False
+    delay = 0.005 if remaining is None else min(0.005, remaining)
+    if cancel_event is None:
+        time.sleep(delay)
+    else:
+        cancel_event.wait(delay)
+    _check_lock_cancellation(cancel_event)
+    return deadline is None or time.monotonic() < deadline
