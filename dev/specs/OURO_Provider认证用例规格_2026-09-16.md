@@ -2,7 +2,7 @@
 
 > 文档类型：现行规格
 > 代码基线：2026-09-16
-> 范围：可注入驱动的 Application 登录与凭据管理；生产驱动、组合根、CLI/TUI 和模型请求尚未接线。
+> 范围：可注入驱动的 Application 登录与凭据管理，已接入轻量本地组合与 CLI；生产驱动、TUI 和模型请求尚未接线。
 
 `application/provider_auth.py` 编排认证用例，`provider_auth_models.py` 定义公开 DTO，`provider_auth_bindings.py` 拥有配置绑定快照与提交检查。持久化及 revision 以[凭据核心规格](OURO_凭据核心规格_2026-09-16.md)为准；网络授权以[认证驱动与授权规格](OURO_认证驱动与授权规格_2026-09-16.md)为准。剩余接入工作见[实施计划](../plans/OURO_模型订阅认证实施计划_2026-09-16.md)。
 
@@ -12,7 +12,7 @@ ProviderAuthService 接收 ProviderConfigManager、CredentialService、具有唯
 
 Application 依赖 auth 的公开契约和通用 CredentialService，不导入具体驱动、文件 store、权限实现或 providers。config 不依赖 auth；auth 不解释 Provider 配置。static 不伪装成可交互 driver，生产产品注册仍不包含未验证的订阅组合。
 
-服务拥有内存登录任务，借用凭据服务与驱动。组合方先关闭 ProviderAuthService，再关闭共享 CredentialService；本阶段尚未在 LocalApplication 装配这条生命周期。
+服务拥有内存登录任务，借用凭据服务与驱动。`local_application.open_local_provider_auth` 独立装配同一 home 的配置、受限 store、凭据服务和认证用例，先关闭 ProviderAuthService，再关闭 CredentialService，清理失败不跳过后者。CLI 使用这个轻量边界；Runtime 尚未装配共享认证服务。CLI 参数、输出与退出码见[CLI 与 Host 规格](OURO_CLI与Host规格_2026-09-02.md#provider-认证命令)。
 
 ## 用例与公开结果
 
@@ -78,4 +78,4 @@ Provider 管理只取得配置锁；refresh/logout/forget 只取得凭据锁。�
 
 实际配置锁和凭据文件验证线程所有权、剩余预算、锁等待取消、提交先行时的真实结果及取消返回后无迟到写入。凭据核心另覆盖双进程互斥、同步读/写期间取消和关闭。架构测试限定 Application 只使用公开认证契约和通用服务。
 
-这些证据不表示真实 OAuth、CLI/TUI、模型 adapter 或生产订阅产品已验收；无需真实账户即可重复执行。
+轻量组合与 CLI 闭环证据见 CLI 与 Host 规格。这些证据不表示真实 OAuth、TUI、模型 adapter 或生产订阅产品已验收；无需真实账户即可重复执行。

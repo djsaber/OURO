@@ -28,6 +28,23 @@ Desktop Host 等长期规划的总体顺序和跨能力边界见[开发路线图
 
 ## 全局质量门槛
 
+阶段推进先执行新增行为的针对性测试、受影响模块与架构边界回归；测试范围依据调用链和依赖变化确定。
+全量测试及全仓覆盖率留给里程碑整合、发布验收或影响范围无法可靠界定的变更，不要求每一步重复执行。
+提交与交付说明实际测试范围及未执行项，不能把定向测试描述为全量通过。
+
+阶段检查：
+
+```bash
+uv run --frozen pytest <targeted-tests-and-affected-modules>
+uv run --frozen ruff check ouro tests
+uv run --frozen ruff format --check <changed-python-files>
+uv run --frozen mypy ouro
+uv run --frozen python -m compileall -q ouro
+git diff --check
+```
+
+整合与发布检查：
+
 ```bash
 uv run --frozen pytest --cov=ouro --cov-report=term-missing
 uv run --frozen ruff check ouro tests

@@ -65,6 +65,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
     "deployment": frozenset({"core"}),
     "local_application": frozenset(
         {
+            "auth",
             "automation",
             "application",
             "billing",
@@ -327,6 +328,15 @@ def test_cli_application_commands_use_local_composition_boundary() -> None:
         modules = _imported_modules(tree)
         assert "ouro.local_application" in modules
         assert not any(module.startswith(forbidden) for module in modules)
+
+
+def test_auth_cli_only_uses_application_and_local_composition() -> None:
+    path = PROJECT_ROOT / "ouro" / "cli" / "provider_auth_commands.py"
+    imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+    assert "ouro.local_application" in imports
+    assert not any(
+        module.startswith(("ouro.auth", "ouro.config", "ouro.providers")) for module in imports
+    )
 
 
 def test_cli_does_not_reach_through_runtime_to_session_store() -> None:

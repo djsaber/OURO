@@ -1023,6 +1023,7 @@ then create its model route with 'ouro provider endpoint set'.""",
         dest="provider_command",
         required=True,
     )
+    _add_provider_auth_parser(provider_subparsers)
 
     provider_list_parser = provider_subparsers.add_parser("list", help="List providers")
     provider_list_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
@@ -1273,6 +1274,48 @@ contracts are rejected before configuration is written.""",
     endpoint_remove_parser.add_argument("endpoint_id", help="Endpoint id")
     endpoint_remove_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     endpoint_remove_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+
+def _add_provider_auth_parser(subparsers: argparse._SubParsersAction) -> None:
+    auth = subparsers.add_parser(
+        "auth",
+        help="Inspect authentication and manage local account credentials",
+        description=(
+            "List login methods, authorize a configured Provider, or manage local credentials.\n"
+            "Login waits for a saved result; Ctrl+C cancels and cleans up.\n"
+            "Logout/forget clear local credentials, not the remote account session.\n"
+            "Subscription login is not available in this build."
+        ),
+    )
+    commands = auth.add_subparsers(dest="auth_command", required=True)
+    for command, help_text in (
+        ("methods", "List available login methods for a Provider"),
+        ("login", "Authorize a Provider and wait for its credentials to be saved"),
+        ("status", "Read local authentication state without contacting the service"),
+        ("logout", "Clear the local credential referenced by a Provider"),
+        ("list", "List local credential summaries and their Provider references"),
+        ("forget", "Clear a local credential, affecting all Providers that reference it"),
+    ):
+        parser = commands.add_parser(command, help=help_text, description=help_text)
+        if command == "forget":
+            parser.add_argument("credential_id", help="Credential id from 'provider auth list'")
+        elif command != "list":
+            parser.add_argument("provider_id", help="Configured Provider id")
+        parser.add_argument("--home", default=argparse.SUPPRESS, help="Override OURO_HOME")
+        parser.add_argument("--json", action="store_true", help="One final JSON result on stdout")
+        if command == "login":
+            parser.add_argument(
+                "--method", help="Stable method id; required when several are available"
+            )
+            parser.add_argument(
+                "--open-browser",
+                action="store_true",
+                help="Open the authorization URL in the system browser",
+            )
+            parser.epilog = (
+                "Authorization URL/code are shown on stderr, including with --json.\n"
+                "Use 'provider auth methods PROVIDER' to discover supported method ids."
+            )
 
 
 def _add_provider_identity_args(parser: argparse.ArgumentParser) -> None:

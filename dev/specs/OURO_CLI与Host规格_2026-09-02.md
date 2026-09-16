@@ -1,7 +1,7 @@
 # CLI 与 Host 规格
 
 > 文档类型：现行规格
-> 代码基线：2026-09-13
+> 代码基线：2026-09-16
 
 ## 目标与范围
 
@@ -66,6 +66,7 @@ TUI 经 `TuiController` 调用 Application，使用 Runtime 事件与 Session ob
   同一 application 用例，不在 Host 重写合并规则；
 - `provider endpoint list/show/set/use/remove` 管理具体 Endpoint；`set` 通过互斥的 `--reasoning-preset` 或
   `--reasoning-config` 声明思考契约；
+- `provider auth methods/login/status/logout/list/forget` 使用轻量认证用例，见下节；
 - `session ...` 管理持久化会话；
 - `resource import/list/show/export/remove` 管理 Session 可达的内容寻址资源；
 - `agent definition ...` 管理 builtin/user AgentDefinition 与工具兼容性；
@@ -84,6 +85,43 @@ Provider check 的 provider id 使用唯一位置参数；运行时覆盖使用 
 `run` 与 `config compaction` 使用统一的 `--thinking-mode`、`--thinking-effort` 输入。Host 只构造
 `ReasoningRequest`；能力判断、默认解析和厂商参数编码不进入 CLI。非法的 `disabled + effort` 由统一错误边界
 返回配置退出码 `2`，不得输出 traceback。
+
+## Provider 认证命令
+
+认证命令通过 `open_local_provider_auth` 装配同一 home 下的 ProviderAuthService、CredentialService 和文件 store。
+不构造模型 adapter、Session、Runtime、Agent、插件或 MCP；CLI 不导入 auth/config 实现或访问秘密文件。
+生产订阅驱动尚未注册：static 的 methods 为空，login 明确不支持；通用闭环以两种注入测试驱动验收。
+
+```text
+ouro provider auth methods <provider_id> [--json]
+ouro provider auth login <provider_id> [--method <method_id>] [--open-browser] [--json]
+ouro provider auth status <provider_id> [--json]
+ouro provider auth logout <provider_id> [--json]
+ouro provider auth list [--json]
+ouro provider auth forget <credential_id> [--json]
+```
+
+各叶命令接受 `--home`，覆盖顶层 home；未指定时沿用已有解析顺序。login 不提供后台模式或跨进程 operation 查询：
+命令必须等待已保存的终态再退出。只有一种方法时自动选择；多种方法要求显式 `--method`，使用驱动的稳定 id，
+不按厂商或菜单序号分派。默认只显示授权信息，`--open-browser` 显式打开 challenge 的 URL；打开失败保留手动路径，
+不取消授权，不回显浏览器异常原文。没有 GUI 或 stdin 非交互不影响 URL/设备码展示。
+
+登录 challenge 的 URL/code、有效期和说明只写入本次发起进程的 stderr；这是交互材料，不进入普通状态、Session 或日志。
+包括 login 在内的 `--json` 始终只向 stdout 写一个最终 JSON 对象。普通管理结果以 `status=ok` 标识查询/修改完成：
+methods 返回 methods；status 返回 authentication；list 返回 credentials；logout/forget 返回 credential 摘要及 bound_provider_ids。
+login 返回 operation（含终态及安全错误码）。begin 尚未交付 challenge 就失败/取消时，返回安全 error/error_type/error_code，
+不伪造 operation。JSON 失败仍写 stdout，普通文本错误写 stderr。
+
+Ctrl+C 取消本次登录并等待 Application 的资源和提交线程收尾。取消先行返回退出码 5；保存先行则以实际保存结果决定成功或失败，
+不能已保存却显示取消。退出时先关闭认证用例，再收尾凭据服务，即使前者清理失败也必须关闭后者。登录不自动执行模型检查。
+
+status 是本地查询：missing、logged_out、reauth_required 等可读取状态返回 0，不宣称远端可用；unavailable 返回 3。
+认证失败、存储问题和不支持的认证操作返回 3；方法选择等 CLI 参数错误返回 2；取消返回 5。
+logout/forget 只清除本地秘密，不撤销远端会话；共享引用和无绑定记录直接展示，不引入额外确认或配置删除。
+
+Application 状态与条件提交的权威契约见[Provider 认证用例规格](OURO_Provider认证用例规格_2026-09-16.md)。
+证据见 `tests/cli/test_provider_auth_commands.py`、`tests/application/test_local_provider_auth.py` 及架构依赖测试。
+TUI、生产驱动与模型请求接线仍待实施。
 
 ## Agent 控制面
 
@@ -137,7 +175,7 @@ application 的类型值。消费批量由配置决定。
 
 - `0`：成功；
 - `2`：配置或参数错误；
-- `3`：Provider connection check 失败；
+- `3`：Provider connection check 或认证操作失败、认证状态不可读取；
 - `4`：等待审批/用户输入；
 - `5`：运行中止；
 - `6`：工具相关失败；

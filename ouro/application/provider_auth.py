@@ -15,7 +15,8 @@ from ouro.application.provider_auth_models import (
     ProviderAuthState,
     ProviderAuthStatus,
 )
-from ouro.auth.contracts import AuthError, CredentialSummary
+from ouro.auth.contracts import AuthError as AuthError
+from ouro.auth.contracts import CredentialSummary
 from ouro.auth.credentials import CredentialService
 from ouro.auth.driver_contracts import AuthDriver, AuthorizationAttempt, AuthorizationMethod
 from ouro.config.providers import ProviderConfigManager

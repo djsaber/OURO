@@ -34,6 +34,7 @@ from ouro.cli.mcp_commands import (
 )
 from ouro.cli.parser import build_parser
 from ouro.cli.plugin_commands import run_plugin_command
+from ouro.cli.provider_auth_commands import run_provider_auth_command
 from ouro.cli.provider_commands import (
     check_provider_connection,
     list_provider_configs,
@@ -529,6 +530,8 @@ def _config_command(args: argparse.Namespace) -> int:
 
 def _provider_command(args: argparse.Namespace) -> int:
     home = args.home
+    if args.provider_command == "auth":
+        return asyncio.run(run_provider_auth_command(args))
     if args.provider_command == "endpoint":
         return _provider_endpoint_command(args, home=home)
     if args.provider_command == "list":

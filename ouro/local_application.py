@@ -13,6 +13,7 @@ from ouro.application.configuration_models import MCPRuntimeServerView
 from ouro.application.dto import ApplicationStartupReport, Diagnostic
 from ouro.application.events import RuntimeEventSink
 from ouro.application.plugins import PluginService
+from ouro.application.provider_auth import ProviderAuthService
 from ouro.application.resources import ResourceService
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_configuration import (
@@ -26,12 +27,16 @@ from ouro.application.task_execution import TaskExecutionCoordinator
 from ouro.application.task_scheduler import TaskScheduler
 from ouro.application.tasks import TaskService
 from ouro.application.usage import UsageService
+from ouro.auth.credentials import CredentialService
+from ouro.auth.driver_contracts import AuthDriver
+from ouro.auth.store import FileCredentialStore
 from ouro.automation.local_files import LocalTaskRepository
 from ouro.automation.sqlite import SQLiteTaskRepository
 from ouro.billing import LocalUsageLedger
 from ouro.builtin_plugins import LOCAL_BUILTIN_PLUGINS
 from ouro.config import CompactionConfig, CredentialRef, CredentialResolver
 from ouro.config.agents import AgentDefinitionsConfigManager
+from ouro.config.providers import ProviderConfigManager
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.compaction import CompactionStrategyRegistry
 from ouro.core.context import ContextBuilder
@@ -355,6 +360,26 @@ class LocalApplication:
             errors.append(exc)
         if errors:
             raise ExceptionGroup("local application shutdown failed", errors)
+
+
+@asynccontextmanager
+async def open_local_provider_auth(
+    home: str | Path | None = None,
+    *,
+    drivers: tuple[AuthDriver, ...] = (),
+) -> AsyncGenerator[ProviderAuthService]:
+    """Own authentication alone; production managed drivers are not yet registered."""
+    root = resolve_local_home(home)
+    credentials = CredentialService(FileCredentialStore(root))
+    try:
+        service = ProviderAuthService(ProviderConfigManager(root), credentials, drivers)
+        try:
+            yield service
+        finally:
+            await service.close()
+    finally:
+        # A failed authorization cleanup must not skip credential writes/locks.
+        await credentials.close()
 
 
 @asynccontextmanager
