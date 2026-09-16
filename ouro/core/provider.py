@@ -111,6 +111,7 @@ class ProviderCheckResult(OuroModel):
     ok: bool
     model_id: str | None = None
     message: str = ""
+    error_code: str | None = None
     metadata: Metadata = MetadataField
 
 
@@ -159,6 +160,7 @@ class ProviderStreamEvent(OuroModel):
     completion: ProviderCompletion | None = None
     retry: ProviderRetryNotice | None = None
     error: str | None = None
+    error_code: str | None = None
 
     @classmethod
     def from_tool_call(
@@ -196,6 +198,8 @@ class ProviderStreamEvent(OuroModel):
         }
         if self.type in required_payloads and required_payloads[self.type] is None:
             raise ValueError(f"provider stream event {self.type!r} is missing its payload")
+        if self.type != "error" and self.error_code is not None:
+            raise ValueError("provider error code may only be emitted on an error event")
         if self.type == "done" and any(
             value is not None
             for value in (

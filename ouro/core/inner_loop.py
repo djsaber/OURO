@@ -566,6 +566,7 @@ class InnerAgentLoop:
                         round_state.turn_id,
                         model_response=round_state.model_response,
                         provider_continuation=round_state.continuation,
+                        error_code=provider_event.error_code,
                     )
                 elif provider_event.type == "done":
                     completion = provider_event.completion or ProviderCompletion()
@@ -789,6 +790,7 @@ class InnerAgentLoop:
         turn_id: str | None = None,
         model_response: ModelResponseRecord | None = None,
         provider_continuation: ProviderContinuationArtifact | None = None,
+        error_code: str | None = None,
     ) -> RunResult:
         return await self.ports.runs.fail(
             state.emitted,
@@ -796,6 +798,7 @@ class InnerAgentLoop:
             session=state.session,
             run=state.run,
             error=error,
+            error_code=error_code,
             final_text=state.final_text(round_parts),
             reasoning_content="".join(round_reasoning_parts or []),
             model_response=model_response,

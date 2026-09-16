@@ -14,6 +14,7 @@ CREDENTIAL_ID_PATTERN = r"^cred_[0-9a-f]{32}$"
 AUTH_ID_PATTERN = r"^[a-z][a-z0-9-]*$"
 CredentialState = Literal["active", "reauth_required", "logged_out"]
 AuthErrorCode = Literal[
+    "authentication_target_rejected",
     "authentication_required",
     "credential_conflict",
     "credential_store_error",
@@ -31,6 +32,7 @@ AuthErrorCode = Literal[
     "authorization_operation_limit",
 ]
 _ERROR_MESSAGES: dict[AuthErrorCode, str] = {
+    "authentication_target_rejected": "Model request target is not allowed for this credential.",
     "authentication_required": "Credential requires login.",
     "credential_conflict": "Credential changed during this operation.",
     "credential_store_error": "Credential storage is unavailable or invalid.",

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import AsyncIterator, Mapping
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 from urllib.request import getproxies
 
@@ -24,10 +27,14 @@ class ProviderTransportError(RuntimeError):
         *,
         retryable: bool,
         status_code: int | None = None,
+        retry_after: float | None = None,
+        service_error_code: str | None = None,
     ) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.status_code = status_code
+        self.retry_after = retry_after
+        self.service_error_code = service_error_code
 
 
 class ProviderHTTPTransport(Protocol):
@@ -120,6 +127,7 @@ class HttpxProviderHTTPTransport:
                     headers=dict(request_headers),
                     json=dict(payload),
                     timeout=timeout,
+                    follow_redirects=False,
                 )
                 response.raise_for_status()
                 break
@@ -129,6 +137,8 @@ class HttpxProviderHTTPTransport:
                     f"provider HTTP {status_code}: {_compact_body(exc.response.text)}",
                     retryable=status_code in _RETRYABLE_STATUS_CODES,
                     status_code=status_code,
+                    retry_after=_retry_after(exc.response),
+                    service_error_code=_service_error_code(exc.response),
                 ) from exc
             except httpx.RequestError as exc:
                 failures.append((route, exc))
@@ -184,6 +194,7 @@ class HttpxProviderHTTPTransport:
                     headers=dict(request_headers),
                     json=dict(payload),
                     timeout=stream_timeout,
+                    follow_redirects=False,
                 ) as response:
                     async for item in _stream_sse_json(response):
                         emitted_item = True
@@ -249,12 +260,14 @@ def _profile_has_http_proxy(profile: _ProxyProfile) -> bool:
 
 
 async def _stream_sse_json(response: httpx.Response) -> AsyncIterator[Mapping[str, Any]]:
-    if response.status_code >= 400:
+    if response.status_code >= 300:
         body = (await response.aread()).decode(errors="replace")
         raise ProviderTransportError(
             f"provider HTTP {response.status_code}: {_compact_body(body)}",
             retryable=response.status_code in _RETRYABLE_STATUS_CODES,
             status_code=response.status_code,
+            retry_after=_retry_after(response),
+            service_error_code=_service_error_code(response),
         )
 
     data_lines: list[str] = []
@@ -294,3 +307,30 @@ def _parse_sse_data(data: str) -> Mapping[str, Any] | None:
             retryable=False,
         )
     return parsed
+
+
+def _retry_after(response: httpx.Response) -> float | None:
+    value = response.headers.get("retry-after")
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            seconds = (parsedate_to_datetime(value) - datetime.now(UTC)).total_seconds()
+        except ValueError, TypeError, OverflowError:
+            return None
+    return max(0.0, seconds) if math.isfinite(seconds) else None
+
+
+def _service_error_code(response: httpx.Response) -> str | None:
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    error = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(error, dict):
+        return None
+    code = error.get("code") or error.get("type")
+    # Internal comparison only: never copy a supplier's arbitrary code into a DTO.
+    return code if isinstance(code, str) and len(code) <= 128 else None

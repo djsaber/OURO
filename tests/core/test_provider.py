@@ -10,6 +10,16 @@ from ouro.core.provider import (
 )
 
 
+def test_provider_error_code_is_optional_and_only_valid_on_error_events():
+    event = ProviderStreamEvent(
+        type="error", error="Login required", error_code="authentication_required"
+    )
+    assert event.model_dump()["error_code"] == "authentication_required"
+    assert ProviderStreamEvent(type="error", error="Unknown failure").error_code is None
+    with pytest.raises(ValueError, match="only be emitted on an error"):
+        ProviderStreamEvent(type="text_delta", text="ok", error_code="authentication_required")
+
+
 def test_tool_call_delta_requires_at_least_one_fragment() -> None:
     with pytest.raises(ValueError, match="at least one fragment"):
         ToolCallDelta(index=0)

@@ -87,7 +87,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
     "mcp": frozenset({"config", "core", "tools"}),
     "plugins": frozenset({"core", "local_locks", "mcp", "sdk", "sessions", "skills", "tools"}),
     "prompts": frozenset(),
-    "providers": frozenset({"config", "core"}),
+    "providers": frozenset({"auth", "config", "core"}),
     "resources": frozenset({"core", "local_io", "local_locks"}),
     "sdk": frozenset(),
     "sessions": frozenset({"core", "local_io", "local_locks"}),
@@ -436,3 +436,12 @@ def _attribute_path(node: ast.AST) -> str | None:
         parts.append(current.id)
         return ".".join(reversed(parts))
     return None
+
+
+def test_providers_borrow_only_the_request_authentication_port():
+    violations = []
+    for path in (PROJECT_ROOT / "ouro" / "providers").glob("*.py"):
+        for module in _imported_modules(ast.parse(path.read_text(encoding="utf-8"))):
+            if module.startswith("ouro.auth") and module != "ouro.auth.request_auth":
+                violations.append(f"{path.name}: {module}")
+    assert violations == []

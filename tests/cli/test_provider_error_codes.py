@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+import json
+
+from ouro.application.runtime import RuntimeService
+from ouro.cli.run import run_json
+from ouro.core.adapter import RuntimeAdapter
+from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.providers.faux import FauxProvider
+from ouro.sessions import LocalSessionStore
+from ouro.tools import ToolRegistry
+
+
+async def test_provider_error_code_survives_runtime_persistence_and_cli_json(
+    tmp_path, monkeypatch, capsys
+):
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                event_batches=[
+                    [
+                        ProviderStreamEvent(
+                            type="error",
+                            error="Login required.",
+                            error_code="authentication_required",
+                        ),
+                    ]
+                ]
+            ),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=ToolRegistry(),
+        default_workspace=tmp_path,
+    )
+    monkeypatch.setattr("ouro.cli.run.build_default_runtime", lambda *args, **kwargs: runtime)
+    assert await run_json("hello", home=tmp_path) == 1
+    result = json.loads(capsys.readouterr().out)
+    failure = next(event for event in result["events"] if event["event_type"] == "run_failed")
+    assert failure["payload"] == {
+        "error": "Login required.",
+        "error_code": "authentication_required",
+    }
+    persisted = store.load_session(result["session_id"])
+    assert persisted.events[-1].payload == failure["payload"]

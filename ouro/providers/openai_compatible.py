@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
+from ouro.auth.request_auth import RequestAuthenticator, StaticRequestAuthenticator
 from ouro.core.messages import ModelMessage, ProviderContinuationArtifact
 from ouro.core.provider import (
     ModelMetadata,
@@ -12,6 +13,11 @@ from ouro.core.provider import (
     ProviderRetryPolicy,
     ProviderStreamEvent,
     Usage,
+)
+from ouro.providers.authentication import (
+    ProviderRequestPolicy,
+    request_authentication,
+    safe_response_event,
 )
 from ouro.providers.http_transport import (
     HttpxProviderHTTPTransport,
@@ -42,6 +48,8 @@ class OpenAICompatibleProvider:
         *,
         base_url: str,
         api_key: str | None = None,
+        authenticator: RequestAuthenticator | None = None,
+        request_policy: ProviderRequestPolicy | None = None,
         provider_id: str | None = None,
         endpoint: str = "/chat/completions",
         timeout: float = 60.0,
@@ -54,7 +62,13 @@ class OpenAICompatibleProvider:
         self.provider_id = provider_id or self.provider_id
         self.base_url = base_url.rstrip("/")
         self.endpoint = endpoint if endpoint.startswith("/") else f"/{endpoint}"
+        if authenticator is not None and api_key is not None:
+            raise ValueError("provide either an API Key or a request authenticator")
         self.api_key = api_key
+        self.authenticator = authenticator or StaticRequestAuthenticator(
+            {"authorization": f"Bearer {api_key}"} if api_key else {}
+        )
+        self.request_policy = request_policy or ProviderRequestPolicy()
         self.timeout = timeout
         self.transport = transport or HttpxProviderHTTPTransport()
         self.default_headers = dict(default_headers or {})
@@ -94,6 +108,30 @@ class OpenAICompatibleProvider:
         messages: list[ModelMessage],
         tools: list[dict[str, Any]] | None,
     ) -> AsyncIterator[ProviderStreamEvent]:
+        async with request_authentication(
+            self.authenticator,
+            url=f"{self.base_url}{self.endpoint}",
+            headers=self._headers(),
+            policy=self.request_policy,
+        ) as snapshot:
+            async for event in self._stream_response(
+                model=model,
+                system_prompt=system_prompt,
+                messages=messages,
+                tools=tools,
+                headers=snapshot.headers,
+            ):
+                yield safe_response_event(event, snapshot)
+
+    async def _stream_response(
+        self,
+        *,
+        headers: Mapping[str, str],
+        model: ModelMetadata,
+        system_prompt: str,
+        messages: list[ModelMessage],
+        tools: list[dict[str, Any]] | None,
+    ) -> AsyncIterator[ProviderStreamEvent]:
         stream_json = getattr(self.transport, "stream_json", None)
         if model.supports_streaming and callable(stream_json):
             payload = self._chat_completion_payload(
@@ -105,7 +143,7 @@ class OpenAICompatibleProvider:
             )
             chunks = stream_json(
                 url=f"{self.base_url}{self.endpoint}",
-                headers=self._headers(),
+                headers=headers,
                 payload=payload,
                 timeout=self.timeout,
             )
@@ -118,6 +156,7 @@ class OpenAICompatibleProvider:
             return
 
         response = await self._post_chat_completion(
+            headers=headers,
             model=model,
             system_prompt=system_prompt,
             messages=messages,
@@ -132,34 +171,19 @@ class OpenAICompatibleProvider:
             yield event
 
     async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
-        try:
-            response = await self._post_chat_completion(
-                model=model,
-                system_prompt="",
-                messages=[
-                    ModelMessage.text(
-                        role="user",
-                        text="ping",
-                    )
-                ],
-                tools=None,
-                extra_payload={"stream": False, "max_tokens": 1},
-            )
-            async for event in self._events_from_response(
-                response,
-                model=model,
-                supports_tools=model.supports_tools,
-            ):
-                if event.type == "error":
-                    raise RuntimeError(event.error or "provider connection check failed")
-        except Exception as exc:  # noqa: BLE001 - expose check status without crashing callers.
-            return ProviderCheckResult(
-                provider_id=self.provider_id,
-                ok=False,
-                model_id=model.model_id,
-                message=str(exc),
-                metadata={"endpoint_id": model.endpoint_id} if model.endpoint_id else {},
-            )
+        check_model = model.model_copy(update={"supports_streaming": False, "max_output_tokens": 1})
+        async for event in self.stream(
+            model=check_model, messages=[ModelMessage.text(role="user", text="ping")]
+        ):
+            if event.type == "error":
+                return ProviderCheckResult(
+                    provider_id=self.provider_id,
+                    ok=False,
+                    model_id=model.model_id,
+                    message=event.error or "provider connection check failed",
+                    error_code=event.error_code,
+                    metadata={"endpoint_id": model.endpoint_id} if model.endpoint_id else {},
+                )
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,
@@ -171,6 +195,7 @@ class OpenAICompatibleProvider:
     async def _post_chat_completion(
         self,
         *,
+        headers: Mapping[str, str],
         model: ModelMetadata,
         system_prompt: str,
         messages: list[ModelMessage],
@@ -186,7 +211,7 @@ class OpenAICompatibleProvider:
         )
         return await self.transport.post_json(
             url=f"{self.base_url}{self.endpoint}",
-            headers=self._headers(),
+            headers=headers,
             payload=payload,
             timeout=self.timeout,
         )
@@ -227,10 +252,7 @@ class OpenAICompatibleProvider:
         return payload
 
     def _headers(self) -> dict[str, str]:
-        headers = dict(self.default_headers)
-        if self.api_key:
-            headers["authorization"] = f"Bearer {self.api_key}"
-        return headers
+        return dict(self.default_headers)
 
     async def _events_from_response(
         self,

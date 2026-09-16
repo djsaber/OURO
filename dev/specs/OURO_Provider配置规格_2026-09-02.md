@@ -275,7 +275,7 @@ API Key/API Key 环境变量覆盖并用；无产品绑定的 ad-hoc managed 请
 ProviderAuthService 提供，配置视图不读取 store 或触发刷新。
 
 当前内建产品仍只声明 static 组合。受管理配置、模板及运行参数边界通过测试产品声明验收；尚未注册生产驱动、服务规则
-或订阅产品。factory 对尚未接线的 managed 认证明确失败，不尝试解析为 API Key。登录、请求认证和 Host 启动验收仍见
+或订阅产品。factory 要求组合根注入 managed RequestAuthenticator，构造时不读取秘密；未注入时明确失败，不尝试解析为 API Key。现有协议接线见[请求认证规格](OURO_请求认证规格_2026-09-17.md)，生产装配和 Host 启动验收仍见
 [订阅认证规格](OURO_模型订阅认证规格_2026-09-16.md)。配置证据见 `tests/config/test_provider_auth_config.py`。
 
 ## Provider adapter

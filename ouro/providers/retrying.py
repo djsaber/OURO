@@ -3,11 +3,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable
 
-from ouro.core.provider import (
-    ProviderRetryNotice,
-    ProviderRetryPolicy,
-    ProviderStreamEvent,
-)
+from ouro.auth.request_auth import AuthError
+from ouro.core.provider import ProviderRetryNotice, ProviderRetryPolicy, ProviderStreamEvent
+from ouro.providers.authentication import ProviderRequestError
 from ouro.providers.http_transport import ProviderTransportError
 
 ProviderStreamFactory = Callable[[], AsyncIterator[ProviderStreamEvent]]
@@ -17,9 +15,9 @@ async def stream_with_retries(
     stream_once: ProviderStreamFactory,
     retry_policy: ProviderRetryPolicy,
 ) -> AsyncIterator[ProviderStreamEvent]:
-    """Apply the shared pre-output retry contract to one provider request."""
-
+    """One model-attempt budget, with at most one pre-output authentication recovery."""
     attempt = 1
+    recovered = False
     while True:
         emitted_response_event = False
         try:
@@ -29,15 +27,37 @@ async def stream_with_retries(
             return
         except Exception as exc:  # noqa: BLE001 - provider failures are normalized events.
             next_attempt = attempt + 1
-            if not _can_retry(
-                exc,
-                next_attempt=next_attempt,
-                emitted_response_event=emitted_response_event,
-                retry_policy=retry_policy,
-            ):
-                yield ProviderStreamEvent(type="error", error=str(exc) or type(exc).__name__)
+            retry = False
+            delay = 0.0
+            if not emitted_response_event and next_attempt <= retry_policy.max_attempts:
+                if isinstance(exc, ProviderRequestError) and exc.recovery is not None:
+                    if not recovered:
+                        recovered = True
+                        try:
+                            retry = await exc.recovery()
+                        except AuthError as recovery_error:
+                            exc = recovery_error
+                        except Exception:
+                            exc = AuthError("credential_refresh_failed")
+                elif isinstance(exc, ProviderTransportError):
+                    retry = exc.retryable
+                    delay = retry_policy.delay_before_attempt(next_attempt)
+                    if exc.retry_after is not None:
+                        # Do not retry earlier than requested or wait without bound.
+                        retry = retry and exc.retry_after <= retry_policy.max_backoff_seconds
+                        delay = max(delay, exc.retry_after)
+            if not retry:
+                code = (
+                    exc.code
+                    if isinstance(exc, AuthError)
+                    else exc.error_code
+                    if isinstance(exc, ProviderRequestError)
+                    else None
+                )
+                yield ProviderStreamEvent(
+                    type="error", error=str(exc) or type(exc).__name__, error_code=code
+                )
                 return
-            delay = retry_policy.delay_before_attempt(next_attempt)
             yield ProviderStreamEvent(
                 type="retry_scheduled",
                 retry=ProviderRetryNotice(
@@ -50,18 +70,3 @@ async def stream_with_retries(
             if delay:
                 await asyncio.sleep(delay)
             attempt = next_attempt
-
-
-def _can_retry(
-    exc: Exception,
-    *,
-    next_attempt: int,
-    emitted_response_event: bool,
-    retry_policy: ProviderRetryPolicy,
-) -> bool:
-    return (
-        isinstance(exc, ProviderTransportError)
-        and exc.retryable
-        and not emitted_response_event
-        and next_attempt <= retry_policy.max_attempts
-    )

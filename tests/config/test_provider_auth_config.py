@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_views import provider_view
-from ouro.auth.contracts import CredentialRecord
+from ouro.auth.contracts import AuthError, CredentialRecord
 from ouro.config import provider_models
 from ouro.config.credentials import CredentialRef, CredentialResolver
 from ouro.config.provider_codec import provider_config_from_mapping, provider_config_to_public_dict
@@ -260,10 +260,42 @@ def test_factory_rejects_unwired_managed_auth_without_resolving_secrets(tmp_path
         def resolve(self, ref):
             pytest.fail("factory must not resolve managed material as an API Key")
 
-    with pytest.raises(ConfigError, match="not connected"):
+    with pytest.raises(ConfigError, match="must be supplied"):
         build_runtime_adapter(
             manager.resolve_runtime_options(ProviderRuntimeOptions()), credentials=MustNotResolve()
         )
+
+
+async def test_factory_builds_unlogged_managed_adapter_without_reading_material(
+    tmp_path, fixture_product
+):
+    manager, _ = managed_provider(tmp_path)
+
+    class UnloggedAuthenticator:
+        targets = []
+
+        async def acquire(self, url):
+            self.targets.append(url)
+            raise AuthError("authentication_required")
+
+        async def recover(self, snapshot):
+            pytest.fail("missing credentials cannot recover an HTTP request")
+
+    class MustNotResolve(CredentialResolver):
+        def resolve(self, ref):
+            pytest.fail("managed factory construction must not resolve static material")
+
+    auth = UnloggedAuthenticator()
+    adapter = build_runtime_adapter(
+        manager.resolve_runtime_options(ProviderRuntimeOptions()),
+        credentials=MustNotResolve(),
+        authenticator=auth,
+    )
+    assert auth.targets == []
+    result = await adapter.provider.check_connection(adapter.model)
+    assert result.error_code == "authentication_required"
+    assert auth.targets == ["https://fixture.test/v1/chat/completions"]
+    await adapter.provider.close()
 
 
 def test_ad_hoc_managed_auth_is_rejected(tmp_path):

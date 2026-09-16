@@ -30,6 +30,7 @@ class AuthDriverDescriptor(AuthModel):
     driver_id: str = Field(pattern=AUTH_ID_PATTERN)
     label: str = Field(min_length=1)
     methods: tuple[AuthorizationMethod, ...] = Field(min_length=1)
+    refresh_leeway_seconds: float = Field(default=60, ge=0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_methods(self) -> Self:
@@ -88,6 +89,8 @@ class RequestAuthMaterial:
     account_scope: tuple[str, ...]
 
     def __post_init__(self) -> None:
+        if not self.account_scope or any(not item for item in self.account_scope):
+            raise ValueError("request material requires a stable account or authorization scope")
         # Freeze a copy so a driver cannot mutate a previous attempt's headers.
         object.__setattr__(self, "headers", MappingProxyType(dict(self.headers)))
 

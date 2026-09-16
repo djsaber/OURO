@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from ouro.auth.request_auth import RequestAuthenticator
 from ouro.config.credentials import CredentialRef, CredentialResolver
 from ouro.config.provider_models import (
     SUPPORTED_PROVIDER_PROTOCOLS,
@@ -20,6 +21,7 @@ from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata
 from ouro.core.reasoning import ReasoningRequest
 from ouro.providers.anthropic_compatible import AnthropicCompatibleProvider
+from ouro.providers.authentication import ProviderRequestPolicy
 from ouro.providers.faux import FauxProvider
 from ouro.providers.openai_compatible import OpenAICompatibleProvider
 from ouro.providers.reasoning import ReasoningPayloadEncoder
@@ -33,6 +35,8 @@ class _AdapterBuildContext:
     base_url: str | None
     api_key: str | None
     timeout: float
+    authenticator: RequestAuthenticator | None
+    request_policy: ProviderRequestPolicy | None
 
 
 AdapterBuilder = Callable[[_AdapterBuildContext], RuntimeAdapter]
@@ -42,12 +46,14 @@ def build_runtime_adapter(
     options: ProviderRuntimeOptions,
     *,
     credentials: CredentialResolver | None = None,
+    authenticator: RequestAuthenticator | None = None,
+    request_policy: ProviderRequestPolicy | None = None,
 ) -> RuntimeAdapter:
     """Build the provider boundary from fully resolved runtime options."""
 
     validate_runtime_auth(options)
-    if options.auth_driver not in (None, "static"):
-        raise ConfigError("managed request authentication is not connected to adapters yet")
+    if options.auth_driver not in (None, "static") and authenticator is None:
+        raise ConfigError("managed request authenticator must be supplied by composition")
     protocol = options.protocol or "faux"
     if protocol not in SUPPORTED_PROVIDER_PROTOCOLS:
         raise ConfigError(f"unsupported provider protocol: {protocol}")
@@ -75,7 +81,7 @@ def build_runtime_adapter(
         raise ConfigError("timeout must be greater than 0")
 
     api_key = None
-    if protocol != "faux":
+    if protocol != "faux" and authenticator is None:
         resolver = credentials or CredentialResolver()
         api_key = resolver.resolve(_credential_ref(options))
     context = _AdapterBuildContext(
@@ -90,6 +96,8 @@ def build_runtime_adapter(
         base_url=base_url,
         api_key=api_key,
         timeout=timeout,
+        authenticator=authenticator,
+        request_policy=request_policy,
     )
     builder = _ADAPTER_BUILDERS.get(protocol)
     if builder is None:
@@ -108,6 +116,8 @@ def _build_openai_compatible(context: _AdapterBuildContext) -> RuntimeAdapter:
     provider = OpenAICompatibleProvider(
         base_url=context.base_url,
         api_key=context.api_key,
+        authenticator=context.authenticator,
+        request_policy=context.request_policy,
         provider_id=context.provider_id,
         endpoint=endpoint,
         timeout=context.timeout,
@@ -127,6 +137,8 @@ def _build_anthropic_compatible(context: _AdapterBuildContext) -> RuntimeAdapter
     provider = AnthropicCompatibleProvider(
         base_url=context.base_url,
         api_key=context.api_key,
+        authenticator=context.authenticator,
+        request_policy=context.request_policy,
         provider_id=context.provider_id,
         endpoint=endpoint,
         timeout=context.timeout,

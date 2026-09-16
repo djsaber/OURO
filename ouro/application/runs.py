@@ -737,6 +737,7 @@ class RunLifecycle:
         session: SessionRecord,
         run: RunRecord,
         error: str,
+        error_code: str | None = None,
         final_text: str,
         reasoning_content: str = "",
         model_response: ModelResponseRecord | None = None,
@@ -766,7 +767,7 @@ class RunLifecycle:
             session_id=failed_session.session_id,
             run_id=failed_run.run_id,
             event_type="run_failed",
-            payload={"error": error},
+            payload={"error": error, **({"error_code": error_code} if error_code else {})},
         )
         return RunResult(
             session=failed_session,
