@@ -1,4 +1,4 @@
-"""Builtin toolkit plugin: Glob, Grep, and TodoList tool contributions."""
+"""Built-in Glob, Grep, and TodoList tool definitions."""
 
 from __future__ import annotations
 
@@ -6,17 +6,18 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, cast
 
-from ouro.sdk.plugins.v2 import (
-    ContributionSet,
-    PluginContext,
-    ToolCall,
-    ToolContribution,
+from ouro.core.base import utc_now
+from ouro.core.harness_calls import HarnessInvocation, HarnessStateChange
+from ouro.tools.base import (
+    Tool,
+    ToolDefinition,
     ToolExecutionContext,
-    ToolOutput,
+    ToolInvocation,
+    ToolResult,
 )
-
-from .ignore import is_sensitive_file
-from .search import (
+from ouro.tools.builtin_todos import TodoItem, TodoListRepository
+from ouro.tools.builtin_toolkit_ignore import is_sensitive_file
+from ouro.tools.builtin_toolkit_search import (
     FileEntry,
     GrepResult,
     MatchedLine,
@@ -26,10 +27,10 @@ from .search import (
     search_glob,
     search_grep,
 )
-from .todos import TodoItem, TodoListRepository
 
 _GLOB_MAX_RESULTS = 100
 _DEFAULT_HEAD_LIMIT = 250
+_TODOLIST_STATE_OWNER = "ouro.host"
 
 GLOB_DESCRIPTION = """Use this tool to discover files when you know a filename, extension, or \
 directory pattern but not the exact path. Prefer Grep when you need to locate file content and \
@@ -320,172 +321,202 @@ _TODOLIST_SCHEMA: Mapping[str, object] = {
 _MISSING = object()
 
 
-class ToolkitPlugin:
-    def __init__(self, context: PluginContext) -> None:
-        del context
+def builtin_toolkit_tools() -> list[Tool]:
+    return [
+        Tool(
+            definition=ToolDefinition(
+                name="Glob",
+                description=GLOB_DESCRIPTION,
+                parameters_schema=dict(_GLOB_SCHEMA),
+                permission_mode="auto",
+                effect="read_only",
+            ),
+            handler=_glob,
+        ),
+        Tool(
+            definition=ToolDefinition(
+                name="Grep",
+                description=GREP_DESCRIPTION,
+                parameters_schema=dict(_GREP_SCHEMA),
+                permission_mode="auto",
+                effect="read_only",
+            ),
+            handler=_grep,
+        ),
+        Tool(
+            definition=ToolDefinition(
+                name="TodoList",
+                description=TODOLIST_DESCRIPTION,
+                parameters_schema=dict(_TODOLIST_SCHEMA),
+                permission_mode="auto",
+                effect="state_changing",
+                batch_behavior="exclusive",
+            ),
+            handler=_todolist,
+        ),
+    ]
 
-    async def prepare(self) -> ContributionSet:
-        return ContributionSet(
-            tools=[
-                ToolContribution(
-                    id="glob",
-                    exposed_name="Glob",
-                    description=GLOB_DESCRIPTION,
-                    handler=self.glob,
-                    parameters_schema=_GLOB_SCHEMA,
-                    permission_mode="auto",
-                    effect="read_only",
-                ),
-                ToolContribution(
-                    id="grep",
-                    exposed_name="Grep",
-                    description=GREP_DESCRIPTION,
-                    handler=self.grep,
-                    parameters_schema=_GREP_SCHEMA,
-                    permission_mode="auto",
-                    effect="read_only",
-                ),
-                ToolContribution(
-                    id="todolist",
-                    exposed_name="TodoList",
-                    description=TODOLIST_DESCRIPTION,
-                    handler=self.todolist,
-                    parameters_schema=_TODOLIST_SCHEMA,
-                    permission_mode="auto",
-                    effect="state_changing",
-                    batch_behavior="exclusive",
-                ),
-            ]
-        )
 
-    async def start(self) -> None:
-        return None
+def _glob(
+    invocation: ToolInvocation,
+    context: ToolExecutionContext,
+) -> ToolResult:
+    pattern = _string_arg(invocation.arguments, "pattern")
+    include_ignored = _boolean_arg(invocation.arguments, "include_ignored", default=False)
+    root = _directory_arg(invocation.arguments, context)
+    result = search_glob(
+        root,
+        pattern,
+        include_ignored=include_ignored,
+        limit=_GLOB_MAX_RESULTS,
+        check_cancelled=context.raise_if_aborted,
+    )
+    paths = [entry.relative for entry in result.matches]
+    if not paths:
+        content = "No files found."
+    else:
+        lines: list[str] = []
+        if result.total > _GLOB_MAX_RESULTS:
+            lines.append(
+                f"[Truncated at {_GLOB_MAX_RESULTS} matches — use a more specific pattern]"
+            )
+            lines.append(f"Only the first {_GLOB_MAX_RESULTS} matches are returned.")
+        lines.extend(paths)
+        content = "\n".join(lines)
+    return _tool_result(
+        invocation,
+        content=content,
+        structured={
+            "kind": "glob",
+            "root": str(root),
+            "pattern": pattern,
+            "matches": paths,
+            "total": result.total,
+            "truncated": result.total > _GLOB_MAX_RESULTS,
+        },
+    )
 
-    async def stop(self, reason, deadline) -> None:
-        del reason, deadline
 
-    def glob(self, call: ToolCall, context: ToolExecutionContext) -> ToolOutput:
-        pattern = _string_arg(call.arguments, "pattern")
-        include_ignored = _boolean_arg(call.arguments, "include_ignored", default=False)
-        root = _directory_arg(call.arguments, context)
-        result = search_glob(
-            root,
+def _grep(
+    invocation: ToolInvocation,
+    context: ToolExecutionContext,
+) -> ToolResult:
+    arguments = invocation.arguments
+    pattern = _string_arg(arguments, "pattern")
+    context_span = _optional_int_arg(arguments, "-C")
+    context_before = (
+        context_span if context_span is not None else _optional_int_arg(arguments, "-B") or 0
+    )
+    context_after = (
+        context_span if context_span is not None else _optional_int_arg(arguments, "-A") or 0
+    )
+    ignore_case = _boolean_arg(arguments, "-i", default=False)
+    show_numbers = _boolean_arg(arguments, "-n", default=True)
+    multiline = _boolean_arg(arguments, "multiline", default=False)
+    include_ignored = _boolean_arg(arguments, "include_ignored", default=False)
+    output_mode = _output_mode_arg(arguments)
+    head_limit = _int_arg(arguments, "head_limit", default=_DEFAULT_HEAD_LIMIT)
+    offset = _int_arg(arguments, "offset", default=0)
+
+    name_filter = None
+    raw_glob = _optional_string_arg(arguments, "glob")
+    if raw_glob is not None:
+        name_filter = compile_name_glob(raw_glob)
+    type_filter = None
+    raw_type = _optional_string_arg(arguments, "type")
+    if raw_type is not None:
+        type_filter = compile_type_filter(raw_type)
+
+    target = _path_arg(arguments, context)
+    if target.is_file():
+        if is_sensitive_file(target.name):
+            return _tool_result(
+                invocation,
+                content="Grep does not search sensitive files such as .env.",
+                is_error=True,
+            )
+        result = grep_single_file(
+            target,
             pattern,
-            include_ignored=include_ignored,
-            limit=_GLOB_MAX_RESULTS,
+            ignore_case=ignore_case,
+            multiline=multiline,
+            context_before=context_before,
+            context_after=context_after,
             check_cancelled=context.raise_if_aborted,
         )
-        paths = [entry.relative for entry in result.matches]
-        if not paths:
-            content = "No files found."
-        else:
-            lines: list[str] = []
-            if result.total > _GLOB_MAX_RESULTS:
-                lines.append(
-                    f"[Truncated at {_GLOB_MAX_RESULTS} matches — use a more specific pattern]"
-                )
-                lines.append(f"Only the first {_GLOB_MAX_RESULTS} matches are returned.")
-            lines.extend(paths)
-            content = "\n".join(lines)
-        return ToolOutput(
-            content=content,
-            structured={
-                "kind": "glob",
-                "root": str(root),
-                "pattern": pattern,
-                "matches": paths,
-                "total": result.total,
-                "truncated": result.total > _GLOB_MAX_RESULTS,
-            },
+    else:
+        if not target.is_dir():
+            raise ValueError(f"search path is not a file or directory: {target}")
+        result = search_grep(
+            target,
+            pattern,
+            ignore_case=ignore_case,
+            multiline=multiline,
+            name_filter=name_filter,
+            type_filter=type_filter,
+            include_ignored=include_ignored,
+            context_before=context_before,
+            context_after=context_after,
+            check_cancelled=context.raise_if_aborted,
         )
+    return _render_grep(
+        invocation,
+        result,
+        output_mode=output_mode,
+        show_numbers=show_numbers,
+        head_limit=head_limit,
+        offset=offset,
+    )
 
-    def grep(self, call: ToolCall, context: ToolExecutionContext) -> ToolOutput:
-        arguments = call.arguments
-        pattern = _string_arg(arguments, "pattern")
-        context_span = _optional_int_arg(arguments, "-C")
-        context_before = (
-            context_span if context_span is not None else _optional_int_arg(arguments, "-B") or 0
+
+def _todolist(
+    invocation: ToolInvocation,
+    context: ToolExecutionContext,
+) -> ToolResult:
+    if context.harness is None:
+        raise RuntimeError("TodoList requires an active Session state")
+    state = HarnessInvocation(
+        context.harness,
+        _TODOLIST_STATE_OWNER,
+        writable=True,
+        signal=context.signal,
+    )
+    try:
+        repository = TodoListRepository(
+            state,
+            session_id=invocation.session_id,
+            owner_id=_TODOLIST_STATE_OWNER,
         )
-        context_after = (
-            context_span if context_span is not None else _optional_int_arg(arguments, "-A") or 0
-        )
-        ignore_case = _boolean_arg(arguments, "-i", default=False)
-        show_numbers = _boolean_arg(arguments, "-n", default=True)
-        multiline = _boolean_arg(arguments, "multiline", default=False)
-        include_ignored = _boolean_arg(arguments, "include_ignored", default=False)
-        output_mode = _output_mode_arg(arguments)
-        head_limit = _int_arg(arguments, "head_limit", default=_DEFAULT_HEAD_LIMIT)
-        offset = _int_arg(arguments, "offset", default=0)
-
-        name_filter = None
-        raw_glob = _optional_string_arg(arguments, "glob")
-        if raw_glob is not None:
-            name_filter = compile_name_glob(raw_glob)
-        type_filter = None
-        raw_type = _optional_string_arg(arguments, "type")
-        if raw_type is not None:
-            type_filter = compile_type_filter(raw_type)
-
-        target = _path_arg(arguments, context)
-        if target.is_file():
-            if is_sensitive_file(target.name):
-                return ToolOutput(
-                    content="Grep does not search sensitive files such as .env.",
-                    is_error=True,
-                )
-            result = grep_single_file(
-                target,
-                pattern,
-                ignore_case=ignore_case,
-                multiline=multiline,
-                context_before=context_before,
-                context_after=context_after,
-                check_cancelled=context.raise_if_aborted,
-            )
-        else:
-            if not target.is_dir():
-                raise ValueError(f"search path is not a file or directory: {target}")
-            result = search_grep(
-                target,
-                pattern,
-                ignore_case=ignore_case,
-                multiline=multiline,
-                name_filter=name_filter,
-                type_filter=type_filter,
-                include_ignored=include_ignored,
-                context_before=context_before,
-                context_after=context_after,
-                check_cancelled=context.raise_if_aborted,
-            )
-        return _render_grep(
-            result,
-            output_mode=output_mode,
-            show_numbers=show_numbers,
-            head_limit=head_limit,
-            offset=offset,
-        )
-
-    def todolist(self, call: ToolCall) -> ToolOutput:
-        repository = TodoListRepository(call.session_state)
-        raw = call.arguments.get("todos", _MISSING)
+        raw = invocation.arguments.get("todos", _MISSING)
         if raw is _MISSING:
             todos = repository.load()
             content = _render_todos(todos) if todos else "Todo list is empty."
-            return ToolOutput(
+            return _tool_result(
+                invocation,
                 content=content,
                 structured={"todos": [item.to_json() for item in todos]},
+                harness_change=state.finish(),
             )
         if not isinstance(raw, list):
             raise ValueError("tool argument 'todos' must be a list")
         todos = tuple(TodoItem.from_json(item) for item in raw)
         if not todos:
             repository.clear()
-            return ToolOutput(content="Todo list cleared.", structured={"todos": []})
+            return _tool_result(
+                invocation,
+                content="Todo list cleared.",
+                structured={"todos": []},
+                harness_change=state.finish(),
+            )
         repository.save(todos)
-        return ToolOutput(
+        return _tool_result(
+            invocation,
             content=f"Todo list updated.\n{_render_todos(todos)}\n\n{_TODOLIST_GUIDANCE}",
             structured={"todos": [item.to_json() for item in todos]},
+            harness_change=state.finish(),
         )
+    finally:
+        state.close()
 
 
 def _render_todos(todos: tuple[TodoItem, ...]) -> str:
@@ -494,23 +525,36 @@ def _render_todos(todos: tuple[TodoItem, ...]) -> str:
 
 
 def _render_grep(
+    invocation: ToolInvocation,
     result: GrepResult,
     *,
     output_mode: Literal["content", "files_with_matches", "count_matches"],
     show_numbers: bool,
     head_limit: int,
     offset: int,
-) -> ToolOutput:
+) -> ToolResult:
     if result.total == 0:
-        return ToolOutput(
+        return _tool_result(
+            invocation,
             content="No matches found.",
             structured={"kind": "grep", "mode": output_mode, "total": 0},
         )
     if output_mode == "files_with_matches":
-        return _render_files_with_matches(result, head_limit=head_limit, offset=offset)
+        return _render_files_with_matches(
+            invocation,
+            result,
+            head_limit=head_limit,
+            offset=offset,
+        )
     if output_mode == "count_matches":
-        return _render_count_matches(result, head_limit=head_limit, offset=offset)
+        return _render_count_matches(
+            invocation,
+            result,
+            head_limit=head_limit,
+            offset=offset,
+        )
     return _render_content(
+        invocation,
         result,
         show_numbers=show_numbers,
         head_limit=head_limit,
@@ -519,18 +563,20 @@ def _render_grep(
 
 
 def _render_files_with_matches(
+    invocation: ToolInvocation,
     result: GrepResult,
     *,
     head_limit: int,
     offset: int,
-) -> ToolOutput:
+) -> ToolResult:
     ranked = sorted(
         result.file_counts,
         key=lambda item: (-item.entry.mtime, item.entry.relative),
     )
     page = _page(ranked, head_limit=head_limit, offset=offset)
     content = "\n".join(item.entry.relative for item in page)
-    return ToolOutput(
+    return _tool_result(
+        invocation,
         content=content,
         structured={
             "kind": "grep",
@@ -542,16 +588,18 @@ def _render_files_with_matches(
 
 
 def _render_count_matches(
+    invocation: ToolInvocation,
     result: GrepResult,
     *,
     head_limit: int,
     offset: int,
-) -> ToolOutput:
+) -> ToolResult:
     counts = sorted(result.file_counts, key=lambda item: item.entry.relative)
     page = _page(counts, head_limit=head_limit, offset=offset)
     lines = [f"Found {result.total} matches in {len(counts)} files."]
     lines.extend(f"{item.entry.relative}:{item.count}" for item in page)
-    return ToolOutput(
+    return _tool_result(
+        invocation,
         content="\n".join(lines),
         structured={
             "kind": "grep",
@@ -563,12 +611,13 @@ def _render_count_matches(
 
 
 def _render_content(
+    invocation: ToolInvocation,
     result: GrepResult,
     *,
     show_numbers: bool,
     head_limit: int,
     offset: int,
-) -> ToolOutput:
+) -> ToolResult:
     page = _page(result.matches, head_limit=head_limit, offset=offset)
     lines: list[str] = []
     for entry_matches in _group_by_file(page):
@@ -582,7 +631,8 @@ def _render_content(
         )
     if result.collection_capped:
         lines.append("Result collection stopped early; refine the pattern to narrow the search.")
-    return ToolOutput(
+    return _tool_result(
+        invocation,
         content="\n".join(lines),
         structured={
             "kind": "grep",
@@ -643,6 +693,25 @@ def _page(items, *, head_limit: int, offset: int):
     if head_limit > 0:
         selected = selected[:head_limit]
     return tuple(selected)
+
+
+def _tool_result(
+    invocation: ToolInvocation,
+    *,
+    content: str,
+    structured: dict[str, object] | None = None,
+    is_error: bool = False,
+    harness_change: HarnessStateChange | None = None,
+) -> ToolResult:
+    return ToolResult(
+        tool_call_id=invocation.tool_call_id,
+        tool_name=invocation.tool_name,
+        content=content,
+        structured=structured or {},
+        is_error=is_error,
+        harness_change=harness_change,
+        ended_at=utc_now(),
+    )
 
 
 def _string_arg(arguments: Mapping[str, object], name: str) -> str:
@@ -722,8 +791,9 @@ def _path_arg(arguments: Mapping[str, object], context: ToolExecutionContext) ->
     return Path(context.resolve_path(raw))
 
 
-def create_plugin(context: PluginContext) -> ToolkitPlugin:
-    return ToolkitPlugin(context)
-
-
-__all__ = ["ToolkitPlugin", "create_plugin"]
+__all__ = [
+    "GLOB_DESCRIPTION",
+    "GREP_DESCRIPTION",
+    "TODOLIST_DESCRIPTION",
+    "builtin_toolkit_tools",
+]

@@ -1,6 +1,6 @@
-"""Git-style ignore rule evaluation for workspace search.
+"""Git-style ignore rule evaluation for built-in workspace search.
 
-This module is the only one that imports ``pathspec``: the rest of the plugin
+This module is the only one that imports ``pathspec``: the rest of the tools
 consumes the small :class:`IgnoreRules` interface so the third-party
 dependency stays isolated at the infrastructure edge.
 """

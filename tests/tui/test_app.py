@@ -8710,17 +8710,17 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         assert list(dict.fromkeys(choice.group for choice in plugin_screen._choices)) == [
             "Built-in"
         ]
-        toolkit = next(
-            choice for choice in plugin_screen._choices if choice.value == "dev.ouro.toolkit"
+        agent_context = next(
+            choice for choice in plugin_screen._choices if choice.value == "dev.ouro.agent_context"
         )
-        assert toolkit.label == "Toolkit"
-        assert toolkit.trailing == "v1.0.0 • active"
-        assert toolkit.marker == ""
+        assert agent_context.label == "Agent Context"
+        assert agent_context.trailing == "v1.0.0 • active"
+        assert agent_context.marker == ""
 
-        plugin_screen.query_one("#choice-filter", Input).value = "Toolkit"
+        plugin_screen.query_one("#choice-filter", Input).value = "Agent Context"
         await pilot.pause()
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Toolkit")
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Agent Context")
         assert app.screen is plugin_screen
         assert [choice.label for choice in plugin_screen._choices] == [
             "Disable",
@@ -8733,24 +8733,24 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         )
 
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Toolkit")
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Agent Context")
         assert app.screen is plugin_screen
         lifecycle = {choice.value: choice for choice in plugin_screen._choices}
         assert lifecycle["enable"].trailing == "disabled"
         assert lifecycle["restart"].disabled is True
-        assert "Toolkit" not in app._system_status.plugin_active_names
+        assert "Agent Context" not in app._system_status.plugin_active_names
 
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGINS")
         refreshed = next(
-            choice for choice in plugin_screen._choices if choice.value == "dev.ouro.toolkit"
+            choice for choice in plugin_screen._choices if choice.value == "dev.ouro.agent_context"
         )
         assert refreshed.trailing == "v1.0.0 • disabled"
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Toolkit")
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Agent Context")
         options = plugin_screen.query_one("#choice-list", OptionList)
         await pilot.click(options, offset=(4, 1))
-        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Toolkit")
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Agent Context")
         assert (
             next(choice for choice in plugin_screen._choices if choice.value == "disable").trailing
             == "active"
@@ -8767,7 +8767,7 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGINS")
         refreshed = next(
-            choice for choice in plugin_screen._choices if choice.value == "dev.ouro.toolkit"
+            choice for choice in plugin_screen._choices if choice.value == "dev.ouro.agent_context"
         )
         assert refreshed.marker == ""
         assert refreshed.trailing == "v1.0.0 • active"
@@ -8829,7 +8829,7 @@ async def test_alt_navigation_shortcuts_preempt_all_focused_text_inputs(
 
         assert {choice.value for choice in app.screen._choices} >= {
             "dev.ouro.agent_context",
-            "dev.ouro.toolkit",
+            "dev.ouro.plan",
         }
         assert composer.text == "draft"
 

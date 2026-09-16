@@ -5,20 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from ouro.builtin_plugins import LOCAL_BUILTIN_PLUGINS
-from ouro.builtin_plugins.toolkit import TOOLKIT_PLUGIN
-from ouro.builtin_plugins.toolkit.toolkit_plugin import ToolkitPlugin
 from ouro.core.harness import HarnessState
 from ouro.core.harness_calls import HarnessCallSnapshot, accept_state_changes
-from ouro.plugins.api import ScopedPluginDataStore
-from ouro.plugins.harness_calls import invoke_plugin_callback
-from ouro.sdk.plugins import v2 as sdk
-
-PLUGIN_ID = "dev.ouro.toolkit"
+from ouro.tools import Tool, ToolExecutionContext, ToolInvocation, builtin_tools
 
 
 class _ExecutionContext:
-    """Minimal SDK ToolExecutionContext double rooted at the test workspace."""
+    """Minimal tool execution context rooted at the test workspace."""
 
     def __init__(self, workspace: Path) -> None:
         self._workspace = workspace.resolve()
@@ -57,40 +50,12 @@ class _ExecutionContext:
         return str(self._workspace)
 
 
-def _make_plugin(data_root: Path) -> ToolkitPlugin:
-    context = sdk.PluginContext(
-        identity=sdk.PluginIdentity(
-            plugin_id=PLUGIN_ID,
-            version="1.0.0",
-            plugin_class="builtin",
-            release_id="test-release",
-            package_digest=None,
-            builtin_contract_hash="test-hash",
-            generation_id="test-generation",
-        ),
-        provenance=sdk.PluginProvenanceSummary(
-            source_kind="builtin",
-            public_source="builtin",
-        ),
-        configuration={},
-        data=ScopedPluginDataStore(data_root),
-        credentials=None,  # type: ignore[arg-type]
-        tasks=None,  # type: ignore[arg-type]
-        logger=None,  # type: ignore[arg-type]
-        diagnostics=None,  # type: ignore[arg-type]
-    )
-    plugin = TOOLKIT_PLUGIN.factory(context)
-    assert isinstance(plugin, ToolkitPlugin)
-    return plugin
+def _tools() -> dict[str, Tool]:
+    return {tool.definition.name: tool for tool in builtin_tools()}
 
 
-async def _tools(plugin: ToolkitPlugin) -> dict[str, object]:
-    contributions = await plugin.prepare()
-    return {tool.exposed_name: tool for tool in contributions.tools}
-
-
-def _call(name: str, arguments: dict[str, object], *, session_id: str = "s1") -> sdk.ToolCall:
-    return sdk.ToolCall(
+def _call(name: str, arguments: dict[str, object], *, session_id: str = "s1") -> ToolInvocation:
+    return ToolInvocation(
         tool_call_id="call-1",
         session_id=session_id,
         run_id="run-1",
@@ -128,36 +93,38 @@ def context(workspace: Path) -> _ExecutionContext:
 # ---------------------------------------------------------------------------
 
 
-def test_toolkit_is_assembled_in_local_builtin_registry() -> None:
-    assert PLUGIN_ID in LOCAL_BUILTIN_PLUGINS.plugin_ids
-    assert {"Glob", "Grep", "TodoList"} <= LOCAL_BUILTIN_PLUGINS.exposed_tool_names
-    assert all(definition.default_enabled for definition in LOCAL_BUILTIN_PLUGINS.list())
-    definition = LOCAL_BUILTIN_PLUGINS.require(PLUGIN_ID)
-    assert definition.default_enabled is True
+def test_toolkit_tools_are_assembled_as_host_builtins() -> None:
+    tools = _tools()
+
+    assert {"Glob", "Grep", "TodoList"} <= tools.keys()
+    assert all(tools[name].definition.source == "builtin" for name in ("Glob", "Grep", "TodoList"))
+    assert all(
+        "plugin_id" not in tools[name].definition.metadata for name in ("Glob", "Grep", "TodoList")
+    )
 
 
-async def test_toolkit_contracts_guide_model_decisions_and_describe_fields(
-    tmp_path: Path,
-) -> None:
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+async def test_toolkit_contracts_guide_model_decisions_and_describe_fields() -> None:
+    tools = _tools()
 
     glob = tools["Glob"]
     grep = tools["Grep"]
     todos = tools["TodoList"]
 
-    assert glob.description.startswith("Use this tool to discover")
-    assert "Prefer Grep" in glob.description
-    assert "Do not use this tool" in glob.description
-    assert grep.description.startswith("Use this tool to locate")
-    assert "Prefer Glob" in grep.description
-    assert todos.description.startswith("Use this tool to create")
-    assert "When NOT to use" in todos.description
+    assert glob.definition.description.startswith("Use this tool to discover")
+    assert "Prefer Grep" in glob.definition.description
+    assert "Do not use this tool" in glob.definition.description
+    assert grep.definition.description.startswith("Use this tool to locate")
+    assert "Prefer Glob" in grep.definition.description
+    assert todos.definition.description.startswith("Use this tool to create")
+    assert "When NOT to use" in todos.definition.description
 
     for tool in (glob, grep, todos):
-        properties = tool.parameters_schema["properties"]
+        properties = tool.definition.parameters_schema["properties"]
         assert all("description" in schema for schema in properties.values())
 
-    todo_item_properties = todos.parameters_schema["properties"]["todos"]["items"]["properties"]
+    todo_item_properties = todos.definition.parameters_schema["properties"]["todos"]["items"][
+        "properties"
+    ]
     assert all("description" in schema for schema in todo_item_properties.values())
 
 
@@ -169,12 +136,11 @@ async def test_toolkit_contracts_guide_model_decisions_and_describe_fields(
 async def test_glob_bare_pattern_matches_recursively_sorted_by_mtime(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     old = _write(workspace, "src/old.py", "old", mtime=1_000)
     new = _write(workspace, "new.py", "new", mtime=2_000)
     _write(workspace, "src/readme.md", "doc", mtime=3_000)
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     output = tools["Glob"].handler(_call("Glob", {"pattern": "*.py"}), context)
 
@@ -186,11 +152,10 @@ async def test_glob_bare_pattern_matches_recursively_sorted_by_mtime(
 async def test_glob_anchored_pattern_matches_one_level(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(workspace, "src/top.py", "a")
     _write(workspace, "src/pkg/nested.py", "b")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     output = tools["Glob"].handler(_call("Glob", {"pattern": "src/*.py"}), context)
 
@@ -200,12 +165,11 @@ async def test_glob_anchored_pattern_matches_one_level(
 async def test_glob_brace_expansion(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(workspace, "a/main.ts", "a")
     _write(workspace, "b/main.tsx", "b")
     _write(workspace, "c/main.js", "c")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     output = tools["Glob"].handler(_call("Glob", {"pattern": "*.{ts,tsx}"}), context)
 
@@ -215,12 +179,11 @@ async def test_glob_brace_expansion(
 async def test_glob_respects_gitignore_and_include_ignored(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(workspace, ".gitignore", "build/\n")
     _write(workspace, "src/app.py", "a")
     _write(workspace, "build/out.py", "b")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     default = tools["Glob"].handler(_call("Glob", {"pattern": "*.py"}), context)
     included = tools["Glob"].handler(
@@ -235,12 +198,11 @@ async def test_glob_respects_gitignore_and_include_ignored(
 async def test_glob_respects_nested_gitignore(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(workspace, "src/.gitignore", "generated/\n")
     _write(workspace, "src/kept.py", "a")
     _write(workspace, "src/generated/skip.py", "b")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     output = tools["Glob"].handler(_call("Glob", {"pattern": "*.py"}), context)
 
@@ -250,13 +212,12 @@ async def test_glob_respects_nested_gitignore(
 async def test_glob_always_excludes_sensitive_files_and_vcs_metadata(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(workspace, ".env", "SECRET=1")
     _write(workspace, ".env.local", "SECRET=2")
     _write(workspace, ".git/config", "vcs")
     _write(workspace, "visible.txt", "ok")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     output = tools["Glob"].handler(
         _call("Glob", {"pattern": "**/*", "include_ignored": True}),
@@ -269,11 +230,10 @@ async def test_glob_always_excludes_sensitive_files_and_vcs_metadata(
 async def test_glob_truncates_at_hundred_matches(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     for index in range(105):
         _write(workspace, f"files/file_{index:03}.txt", "x")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     output = tools["Glob"].handler(_call("Glob", {"pattern": "files/*.txt"}), context)
 
@@ -288,10 +248,9 @@ async def test_glob_truncates_at_hundred_matches(
 async def test_glob_reports_empty_result_and_rejects_file_root(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     target = _write(workspace, "plain.txt", "x")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     empty = tools["Glob"].handler(_call("Glob", {"pattern": "*.rs"}), context)
     assert empty.content == "No files found."
@@ -311,10 +270,9 @@ async def test_glob_reports_empty_result_and_rejects_file_root(
 async def test_grep_content_mode_formats_path_line_and_text(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(workspace, "src/main.py", "def main():\n    return 1\n")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     output = tools["Grep"].handler(
         _call("Grep", {"pattern": "return", "output_mode": "content"}),
@@ -328,10 +286,9 @@ async def test_grep_content_mode_formats_path_line_and_text(
 async def test_grep_case_insensitive_and_without_line_numbers(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(workspace, "notes.txt", "Hello World\n")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     output = tools["Grep"].handler(
         _call(
@@ -347,14 +304,13 @@ async def test_grep_case_insensitive_and_without_line_numbers(
 async def test_grep_context_lines_merge_and_separate_blocks(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(
         workspace,
         "log.txt",
         "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n",
     )
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     output = tools["Grep"].handler(
         _call("Grep", {"pattern": "two|nine", "output_mode": "content", "-C": 1}),
@@ -375,11 +331,10 @@ async def test_grep_context_lines_merge_and_separate_blocks(
 async def test_grep_glob_filter_matches_basename_and_anchored_path(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(workspace, "src/main.py", "needle\n")
     _write(workspace, "docs/guide.md", "needle\n")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     basename = tools["Grep"].handler(
         _call("Grep", {"pattern": "needle", "glob": "*.py"}),
@@ -397,11 +352,10 @@ async def test_grep_glob_filter_matches_basename_and_anchored_path(
 async def test_grep_type_filter_and_unknown_type(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(workspace, "src/main.py", "needle\n")
     _write(workspace, "src/main.ts", "needle\n")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     output = tools["Grep"].handler(
         _call("Grep", {"pattern": "needle", "type": "py"}),
@@ -416,11 +370,10 @@ async def test_grep_type_filter_and_unknown_type(
 async def test_grep_files_with_matches_sorted_by_mtime(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(workspace, "old.py", "needle\n", mtime=1_000)
     _write(workspace, "new.py", "needle\n", mtime=2_000)
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     output = tools["Grep"].handler(_call("Grep", {"pattern": "needle"}), context)
 
@@ -430,11 +383,10 @@ async def test_grep_files_with_matches_sorted_by_mtime(
 async def test_grep_count_matches_reports_aggregate_and_per_file_counts(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(workspace, "a.py", "needle\nneedle\n")
     _write(workspace, "b.py", "needle\n")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     output = tools["Grep"].handler(
         _call("Grep", {"pattern": "needle", "output_mode": "count_matches"}),
@@ -447,10 +399,9 @@ async def test_grep_count_matches_reports_aggregate_and_per_file_counts(
 async def test_grep_head_limit_and_offset_paginate_content(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(workspace, "big.txt", "".join(f"hit {index}\n" for index in range(10)))
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     first = tools["Grep"].handler(
         _call("Grep", {"pattern": "hit", "output_mode": "content", "head_limit": 3}),
@@ -477,10 +428,9 @@ async def test_grep_head_limit_and_offset_paginate_content(
 async def test_grep_invalid_regex_is_a_clear_error(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(workspace, "a.txt", "x\n")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     with pytest.raises(ValueError, match="invalid regular expression"):
         tools["Grep"].handler(_call("Grep", {"pattern": "([unclosed"}), context)
@@ -489,12 +439,11 @@ async def test_grep_invalid_regex_is_a_clear_error(
 async def test_grep_skips_binary_and_sensitive_files(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(workspace, "binary.bin", b"needle\x00needle\n")
     _write(workspace, ".env", "needle\n")
     _write(workspace, "text.txt", "needle\n")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     output = tools["Grep"].handler(
         _call("Grep", {"pattern": "needle", "include_ignored": True}),
@@ -507,10 +456,9 @@ async def test_grep_skips_binary_and_sensitive_files(
 async def test_grep_multiline_pattern_spans_lines(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(workspace, "code.py", "def f():\n    pass\n")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     output = tools["Grep"].handler(
         _call(
@@ -526,10 +474,9 @@ async def test_grep_multiline_pattern_spans_lines(
 async def test_grep_searches_hidden_files_by_default(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(workspace, ".github/workflows/ci.yml", "needle\n")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     output = tools["Grep"].handler(_call("Grep", {"pattern": "needle"}), context)
 
@@ -539,11 +486,10 @@ async def test_grep_searches_hidden_files_by_default(
 async def test_grep_explicit_file_path_and_sensitive_refusal(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     target = _write(workspace, "one.txt", "needle\n")
     env = _write(workspace, ".env", "needle\n")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     output = tools["Grep"].handler(
         _call("Grep", {"pattern": "needle", "path": str(target), "output_mode": "content"}),
@@ -562,10 +508,9 @@ async def test_grep_explicit_file_path_and_sensitive_refusal(
 async def test_grep_reports_no_matches(
     workspace: Path,
     context: _ExecutionContext,
-    tmp_path: Path,
 ) -> None:
     _write(workspace, "a.txt", "x\n")
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+    tools = _tools()
 
     output = tools["Grep"].handler(_call("Grep", {"pattern": "absent"}), context)
 
@@ -584,18 +529,16 @@ async def _todo(tool, arguments, state=None, *, session_id="s1"):
         history_epoch=0,
         state=HarnessState(),
     )
-    output, change = await invoke_plugin_callback(
-        tool.handler,
+    output = await tool.execute(
         _call("TodoList", arguments, session_id=session_id),
-        snapshot=snapshot,
-        owner_id=PLUGIN_ID,
-        writable=True,
+        context=ToolExecutionContext(harness=snapshot),
     )
+    change = output.harness_change
     return output, accept_state_changes(snapshot, [change] if change else [])
 
 
-async def test_todolist_update_query_and_clear_cycle(tmp_path: Path) -> None:
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+async def test_todolist_update_query_and_clear_cycle() -> None:
+    tools = _tools()
     tool = tools["TodoList"]
     todos = [
         {"title": "任务 A - 新建待处理", "status": "pending"},
@@ -629,18 +572,18 @@ async def test_todolist_update_query_and_clear_cycle(tmp_path: Path) -> None:
     assert not state.state.states
 
 
-async def test_todolist_state_belongs_to_the_call_not_the_plugin_instance(tmp_path: Path) -> None:
-    first = await _tools(_make_plugin(tmp_path / "data"))
+async def test_todolist_state_belongs_to_the_call_not_the_tool_instance() -> None:
+    first = _tools()
     _, state = await _todo(first["TodoList"], {"todos": [{"title": "kept", "status": "pending"}]})
-    second = await _tools(_make_plugin(tmp_path / "data"))
+    second = _tools()
     queried, _ = await _todo(second["TodoList"], {}, state)
     assert queried.content == "Current todo list:\n  [pending] kept"
     other, _ = await _todo(first["TodoList"], {}, session_id="s2")
     assert other.content == "Todo list is empty."
 
 
-async def test_todolist_rejects_invalid_items(tmp_path: Path) -> None:
-    tools = await _tools(_make_plugin(tmp_path / "data"))
+async def test_todolist_rejects_invalid_items() -> None:
+    tools = _tools()
     with pytest.raises(ValueError, match="status"):
         await _todo(tools["TodoList"], {"todos": [{"title": "x", "status": "doing"}]})
     with pytest.raises(ValueError, match="title"):

@@ -1,11 +1,14 @@
-"""Session-scoped TODO list state for the builtin toolkit plugin."""
+"""Session-scoped state model for the built-in TodoList tool."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal, cast
 
-from ouro.sdk.plugins.v2 import JsonValue, PluginSessionStateView
+from pydantic import JsonValue
+
+from ouro.core.harness_calls import HarnessInvocation
+from ouro.core.session_extensions import SessionExtensionStateRecord
 
 _STATE_SCHEMA_VERSION = 1
 
@@ -37,10 +40,16 @@ class TodoItem:
 class TodoListRepository:
     """Read and stage the calling Session's TODO list through its owner view."""
 
-    def __init__(self, state: PluginSessionStateView | None) -> None:
-        if state is None:
-            raise RuntimeError("Session state requires an active plugin invocation")
+    def __init__(
+        self,
+        state: HarnessInvocation,
+        *,
+        session_id: str,
+        owner_id: str,
+    ) -> None:
         self._state = state
+        self._session_id = session_id
+        self._owner_id = owner_id
 
     def load(self) -> tuple[TodoItem, ...]:
         persisted = self._state.read()
@@ -61,9 +70,13 @@ class TodoListRepository:
             self.clear()
             return
         self._state.replace(
-            state_schema_version=_STATE_SCHEMA_VERSION,
-            payload=cast(JsonValue, {"todos": [item.to_json() for item in todos]}),
-            branch_policy="reset",
+            SessionExtensionStateRecord(
+                session_id=self._session_id,
+                owner_id=self._owner_id,
+                state_schema_version=_STATE_SCHEMA_VERSION,
+                payload=cast(JsonValue, {"todos": [item.to_json() for item in todos]}),
+                branch_policy="reset",
+            )
         )
 
     def clear(self) -> None:

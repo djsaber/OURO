@@ -834,7 +834,7 @@ async def test_controller_rejects_overrides_for_contract_controlled_plugin_tools
 
 
 @pytest.mark.asyncio
-async def test_controller_tool_catalog_follows_plugin_activation_without_restart(
+async def test_controller_tool_catalog_includes_toolkit_as_host_builtins(
     tmp_path: Path,
 ) -> None:
     application = _reasoning_application(tmp_path)
@@ -847,28 +847,11 @@ async def test_controller_tool_catalog_follows_plugin_activation_without_restart
     await controller.start()
 
     try:
-        assert application.plugins is not None
-        assert (await application.plugins.disable("dev.ouro.toolkit")).status == "disabled"
-
         tools = {item.name: item for item in await controller.tool_configurations()}
-        assert "Glob" not in tools
-
-        assert (await application.plugins.enable("dev.ouro.toolkit")).status == "active"
-
-        tools = {item.name: item for item in await controller.tool_configurations()}
-
-        assert tools["Glob"].plugin_id == "dev.ouro.toolkit"
-        assert tools["Glob"].plugin_name == "Toolkit"
-        assert {name for name, tool in tools.items() if tool.plugin_id == "dev.ouro.toolkit"} == {
-            "Glob",
-            "Grep",
-            "TodoList",
-        }
-
-        assert (await application.plugins.disable("dev.ouro.toolkit")).status == "disabled"
-
-        tools = {item.name: item for item in await controller.tool_configurations()}
-        assert "Glob" not in tools
+        for name in ("Glob", "Grep", "TodoList"):
+            assert tools[name].source == "builtin"
+            assert tools[name].plugin_id is None
+            assert tools[name].plugin_name is None
     finally:
         await controller.close()
 
@@ -888,20 +871,20 @@ async def test_controller_manages_plugins_through_local_application_boundary(
 
     try:
         plugins = {item.plugin_id: item for item in controller.plugins()}
-        assert plugins["dev.ouro.toolkit"].plugin_class == "builtin"
-        assert plugins["dev.ouro.toolkit"].status == "active"
+        assert plugins["dev.ouro.agent_context"].plugin_class == "builtin"
+        assert plugins["dev.ouro.agent_context"].status == "active"
 
-        disabled = await controller.disable_plugin("dev.ouro.toolkit")
+        disabled = await controller.disable_plugin("dev.ouro.agent_context")
         assert disabled.status == "disabled"
-        assert controller.plugin("dev.ouro.toolkit").desired_enabled is False
+        assert controller.plugin("dev.ouro.agent_context").desired_enabled is False
 
-        enabled = await controller.enable_plugin("dev.ouro.toolkit")
+        enabled = await controller.enable_plugin("dev.ouro.agent_context")
         assert enabled.status == "active"
-        detail = controller.plugin("dev.ouro.toolkit")
+        detail = controller.plugin("dev.ouro.agent_context")
         assert detail.desired_enabled is True
         assert detail.configuration_supported is False
 
-        checked = await controller.check_plugin("dev.ouro.toolkit")
+        checked = await controller.check_plugin("dev.ouro.agent_context")
         assert checked.status == "active"
 
         with pytest.raises(Exception, match="does not exist|not found|No such file"):

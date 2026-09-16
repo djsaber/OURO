@@ -8,7 +8,6 @@ import pytest
 
 from ouro.application.harness import capture_harness
 from ouro.application.runtime import RuntimeService
-from ouro.builtin_plugins.toolkit.toolkit_plugin import ToolkitPlugin
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import PersistenceError
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
@@ -23,7 +22,7 @@ from ouro.providers import FauxProvider
 from ouro.sdk.plugins import v2 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.file_commits import FileSessionCommits
-from ouro.tools import ToolExecutionContext, ToolExecutor, ToolRegistry
+from ouro.tools import ToolExecutionContext, ToolExecutor, ToolRegistry, builtin_tools
 from tests.harness_state import replace_harness_state
 
 
@@ -41,15 +40,14 @@ def store(tmp_path, request):
 @pytest.fixture(params=["inprocess", "worker"])
 async def state_tool(tmp_path, request):
     if request.param == "inprocess":
-        contributions = await ToolkitPlugin(None).prepare()
-        todo = next(tool for tool in contributions.tools if tool.exposed_name == "TodoList")
-        owner = "dev.ouro.toolkit"
+        todo = next(tool for tool in builtin_tools() if tool.definition.name == "TodoList")
+        owner = "ouro.host"
         arguments = {"todos": [{"title": "verify", "status": "pending"}]}
         yield (
-            adapt_sdk_contributions(sdk.ContributionSet(tools=[todo]), owner_id=owner).tools[0],
+            todo,
             owner,
             arguments,
-            arguments,
+            {"todos": arguments["todos"]},
         )
         return
     package = Path(__file__).parents[2] / "examples" / "plugins" / "worker-tool"

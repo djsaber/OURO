@@ -1,4 +1,4 @@
-"""Filesystem search primitives backing the toolkit plugin's Glob and Grep tools.
+"""Filesystem search primitives backing the built-in Glob and Grep tools.
 
 Traversal is shared by both tools: a single top-down walk that prunes ignored
 and VCS directories before descending, never follows symlinks, and skips
@@ -17,7 +17,11 @@ from pathlib import Path
 
 from wcmatch import glob as wcglob
 
-from .ignore import IgnoreRules, is_sensitive_file, is_vcs_directory
+from ouro.tools.builtin_toolkit_ignore import (
+    IgnoreRules,
+    is_sensitive_file,
+    is_vcs_directory,
+)
 
 # CASE pins ripgrep-style case-sensitive matching on every platform; DOTGLOB
 # lets wildcards match dotfiles, which the tools include by default.

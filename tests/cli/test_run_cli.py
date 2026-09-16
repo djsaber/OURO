@@ -25,7 +25,7 @@ MCP_ECHO_SERVER = Path(__file__).parents[1] / "mcp" / "fixtures" / "echo_server.
 
 def _expected_builtin_tool_names() -> list[str]:
     shell = detect_command_shell()
-    names = ["AskUser", "Edit", "Read", "Write"]
+    names = ["AskUser", "Edit", "Glob", "Grep", "Read", "TodoList", "Write"]
     if shell is not None:
         names.append(shell.tool_name)
     return sorted(names)

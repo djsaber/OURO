@@ -96,15 +96,7 @@ async def test_local_application_composes_and_closes_sqlite_runtime(tmp_path) ->
     assert (tmp_path / "sessions.sqlite3").is_file()
 
 
-async def test_local_agent_definition_catalog_includes_active_plugin_tools(tmp_path) -> None:
-    application = LocalApplication.build(tmp_path)
-    await application.start()
-    try:
-        assert application.plugins is not None
-        assert (await application.plugins.enable("dev.ouro.toolkit")).status == "active"
-    finally:
-        await application.close()
-
+async def test_local_agent_definition_catalog_includes_builtin_tools(tmp_path) -> None:
     async with open_local_agent_definitions(tmp_path) as services:
         assert {"Glob", "Grep", "TodoList"} <= set(services.tools.names())
 
