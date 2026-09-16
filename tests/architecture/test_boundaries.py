@@ -10,6 +10,7 @@ APPLICATION_DIR = PROJECT_ROOT / "ouro" / "application"
 SDK_DIR = PROJECT_ROOT / "ouro" / "sdk"
 ALLOWED_CORE_PREFIX = "ouro.core"
 LOWER_LAYER_DIRS = (
+    "auth",
     "automation",
     "billing",
     "config",
@@ -40,6 +41,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
         }
     ),
     "billing": frozenset({"core", "local_io", "local_locks"}),
+    "auth": frozenset({"core", "local_io", "local_locks"}),
     "automation": frozenset({"core", "local_io", "local_locks"}),
     "builtin_plugins": frozenset({"core", "plugins", "sdk", "sessions"}),
     "cli": frozenset(
@@ -209,6 +211,22 @@ def test_provider_configuration_does_not_depend_on_cli_or_provider_implementatio
                 violations.append(f"{path.relative_to(PROJECT_ROOT)} imports {module}")
 
     assert violations == []
+
+
+def test_auth_contracts_do_not_load_concrete_storage_or_lifecycle() -> None:
+    path = PROJECT_ROOT / "ouro" / "auth" / "contracts.py"
+    imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+    assert not any(
+        module.startswith(
+            (
+                "ouro.auth.store",
+                "ouro.auth.file_permissions",
+                "ouro.auth.credentials",
+                "ouro.auth.drivers",
+            )
+        )
+        for module in imports
+    )
 
 
 def test_lower_layers_do_not_depend_on_application_or_cli() -> None:

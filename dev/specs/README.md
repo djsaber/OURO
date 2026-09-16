@@ -22,6 +22,7 @@
 | [会话与持久化](OURO_会话持久化规格_2026-09-02.md) | SessionRepository、文件/SQLite、索引、锁、恢复、分支与回收站 | `ouro/sessions`、`ouro/application/sessions.py` |
 | [会话撤销、Harness 状态与插件交互](OURO_会话撤销与Harness状态规格_2026-09-08.md) | 原生状态版本、精确撤销、插件调用/提交、队列竞争、恢复与验收证据 | `ouro/core/harness.py`、`ouro/sessions`、`ouro/application`、`ouro/plugins/harness_calls.py` |
 | [Provider 与配置](OURO_Provider配置规格_2026-09-02.md) | Provider/Endpoint、模型路由、凭据、配置结构与覆盖规则 | `ouro/config`、`ouro/providers` |
+| [受管理凭据核心](OURO_凭据核心规格_2026-09-16.md) | 受限文件存储、revision、刷新/注销/取消与跨进程互斥；尚未接入订阅产品 | `ouro/auth` |
 | [Provider 模板](OURO_Provider模板规格_2026-09-02.md) | 本地模板、版本、修改感知、内容更新与严格版本边界 | `ouro/config/provider_template_store.py`、`ouro/config/provider_templates.py` |
 | [Provider 类型与协议](OURO_Provider类型与协议规格_2026-09-02.md) | 实例 id、产品配置类型、线协议与冲突策略 | `ouro/config`、`ouro/providers`、`ouro/cli` |
 | [工具与人机协同](OURO_工具与人机协同规格_2026-09-02.md) | 工具契约、权限、批执行、审批、AskUser、AFK 与取消 | `ouro/tools`、`ouro/application/tool_calls.py` |
@@ -41,7 +42,7 @@
 
 | 规格 | 目标能力 |
 |---|---|
-| [模型订阅认证](OURO_模型订阅认证规格_2026-09-16.md) | 多厂商认证端口、凭据与登录契约、Responses、OpenAI 订阅和验收矩阵；尚未实现 |
+| [模型订阅认证](OURO_模型订阅认证规格_2026-09-16.md) | 多厂商认证端口、登录契约、Responses、OpenAI 订阅和验收矩阵；完整接入待实施，凭据核心另见现行规格 |
 | [个人智能体平台](OURO_未来平台规格_2026-09-02.md) | Desktop、长期记忆、Durable Task/Workflow 与产品化边界 |
 
 ## 规格完成标准
