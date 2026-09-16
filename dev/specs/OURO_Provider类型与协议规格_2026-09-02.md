@@ -5,7 +5,7 @@
 
 ## 目标
 
-Provider 配置把用户实例、产品配置和线协议表达为三个独立概念，避免厂商品牌、配置入口和 adapter dispatch
+Provider 配置分别表达用户实例、产品配置、线协议和认证选择，避免厂商品牌、配置入口和 adapter dispatch
 共用同一个枚举：
 
 | 字段 | 语义 | 示例 |
@@ -13,6 +13,7 @@ Provider 配置把用户实例、产品配置和线协议表达为三个独立�
 | `provider_id` | 用户拥有的配置实例 id，也是模型路由第一段 | `work-kimi` |
 | `provider_type` | 产品层供应商档案或通用配置入口 | `kimi`、`openai-compatible` |
 | `protocol` | adapter 使用的已注册线协议 | `openai-chat-completions`、`anthropic-messages` |
+| `auth_driver` | 认证方式的稳定标识；省略为 static | `static` |
 
 `provider_id` 不参与协议推断；相同厂商可以有多个用户实例，多个厂商也可以复用同一个协议 adapter。
 Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它只在选定协议内声明该模型的真实控制能力和
@@ -21,7 +22,10 @@ Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它�
 ## 产品类型与协议
 
 集成厂商类型包括 `openai`、`anthropic`、`gemini`、`deepseek`、`qwen`、`kimi`、`glm`、`grok`、
-`openrouter` 和 `mistral`。它们提供已核验的模板，并由 `ProviderTypeSpec` 定义默认和允许的协议。
+`openrouter` 和 `mistral`。它们提供已核验的模板。`ProviderTypeSpec` 保存一个默认连接组合和明确的备选组合；
+每个 `ProviderConnectionSpec` 包含 protocol、auth_driver 及可选服务规则引用，managed 组合必须声明服务规则引用。
+默认组合自然属于允许集合；组合不能重复，也不能将两组独立允许列表作笛卡尔积。创建时省略的协议/认证选择取各自
+默认值，再验证完整组合。持久化读取中省略 auth_driver 固定表示 static，不根据产品猜测其他认证。
 
 通用配置入口包括：
 
@@ -55,7 +59,7 @@ continuation：OpenAI Chat Completions 支持 `none/text`，Anthropic Messages �
 - `ouro/config/provider_models.py` 定义类型、协议档案、组合校验和持久化领域模型；
 - `ouro/config/provider_templates.py` 提供厂商产品档案的连接和 Endpoint 默认值；
 - `ouro/providers/factory.py` 只按 `ProviderProtocol` 注册表选择 adapter，不读取 `provider_type`；
-- `ouro/application` 暴露同时包含 `provider_type` 与 `protocol` 的类型化 DTO，并编排配置用例；
+- `ouro/application` 暴露包含 `provider_type`、`protocol` 与 `auth_driver` 的类型化 DTO，并编排配置用例；
 - CLI 只解析创建、更新或替换意图并格式化结果，冲突规则由配置/application 层执行。
 
 厂商模板不会产生一厂商一个 adapter。Gemini、DeepSeek、Qwen、KIMI、GLM、Grok、OpenRouter 和 Mistral 当前都
@@ -85,9 +89,9 @@ type/protocol 组合仍必须合法。所有冲突与校验在一次写盘前完
 
 ## 验收
 
-- 公开 Provider/Template DTO 同时展示产品类型和协议；
+- 公开 Provider/Template DTO 展示产品类型、协议和认证选择；
 - 持久化配置缺失协议会失败，不从旧类型或 id 推导；
 - 产品类型与协议的不合法组合会失败；
-- runtime options 和 adapter registry 只携带/读取协议；
+- runtime options 携带认证引用和产品服务规则标识，adapter registry 仍只按协议分派；
 - 相同 `provider_id` 的创建不会静默修改既有配置；
 - 更新与替换具有不同、原子且经过 CLI 集成测试保护的状态变化。

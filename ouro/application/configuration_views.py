@@ -63,6 +63,7 @@ def provider_view(provider: ProviderConfig, *, is_default: bool) -> ProviderView
         provider_id=provider.provider_id,
         provider_type=provider.provider_type,
         protocol=provider.protocol,
+        auth_driver=provider.auth_driver,
         credential=credential_status(provider),
         enabled=provider.enabled,
         timeout=provider.timeout_seconds,
@@ -137,6 +138,7 @@ def provider_template_view(
         provider_id=template.provider_id,
         provider_type=template.provider_type,
         protocol=template.protocol,
+        auth_driver=template.auth_driver,
         credential_env=template.credential_env,
         base_url=template.base_url,
         api_path=template.api_path,
@@ -153,6 +155,10 @@ def provider_template_view(
 
 def credential_status(provider: ProviderConfig) -> CredentialStatus:
     reference = provider.credential_ref.display()
+    if provider.credential_ref.type == "managed":
+        return CredentialStatus(
+            reference=reference, state="managed", configured=True, available=None
+        )
     if provider.protocol == "faux":
         return CredentialStatus(
             reference=reference,

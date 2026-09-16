@@ -13,6 +13,7 @@ from ouro.config.provider_models import (
     validate_reasoning_protocol_compatibility,
     validate_request_options,
 )
+from ouro.config.provider_runtime import validate_runtime_auth
 from ouro.config.reasoning import EndpointReasoningConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError
@@ -44,6 +45,9 @@ def build_runtime_adapter(
 ) -> RuntimeAdapter:
     """Build the provider boundary from fully resolved runtime options."""
 
+    validate_runtime_auth(options)
+    if options.auth_driver not in (None, "static"):
+        raise ConfigError("managed request authentication is not connected to adapters yet")
     protocol = options.protocol or "faux"
     if protocol not in SUPPORTED_PROVIDER_PROTOCOLS:
         raise ConfigError(f"unsupported provider protocol: {protocol}")

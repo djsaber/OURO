@@ -6,7 +6,7 @@ from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.config.provider_models import (
     ProviderProtocol,
     ProviderType,
-    resolve_provider_protocol,
+    resolve_provider_connection,
 )
 from ouro.config.reasoning import (
     mapped_reasoning,
@@ -29,7 +29,8 @@ class ProviderTemplate(OuroModel):
     provider_id: str
     provider_type: ProviderType
     protocol: ProviderProtocol
-    credential_env: str
+    auth_driver: str = "static"
+    credential_env: str | None = None
     base_url: str
     api_path: str
     default_endpoint: str
@@ -38,7 +39,7 @@ class ProviderTemplate(OuroModel):
     verified_on: str
     revision: int = Field(default=1, ge=1)
 
-    @field_validator("template_id", "provider_id", "credential_env", "default_endpoint")
+    @field_validator("template_id", "provider_id", "default_endpoint")
     @classmethod
     def _require_identifier(cls, value: str) -> str:
         normalized = value.strip()
@@ -46,9 +47,18 @@ class ProviderTemplate(OuroModel):
             raise ValueError("must not be empty")
         return normalized
 
+    @field_validator("credential_env")
+    @classmethod
+    def _validate_credential_env(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return cls._require_identifier(value)
+
     @model_validator(mode="after")
     def _validate_endpoint_registry(self) -> ProviderTemplate:
-        resolve_provider_protocol(self.provider_type, self.protocol)
+        resolve_provider_connection(self.provider_type, self.protocol, self.auth_driver)
+        if self.auth_driver != "static" and self.credential_env is not None:
+            raise ValueError("managed templates cannot declare credential_env")
         endpoint_ids = [endpoint.endpoint_id for endpoint in self.endpoints]
         if not endpoint_ids:
             raise ValueError("provider template must contain at least one endpoint")

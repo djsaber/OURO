@@ -29,6 +29,7 @@ _PROVIDER_FIELDS = frozenset(
     {
         "provider_type",
         "protocol",
+        "auth_driver",
         "provider_id",
         "credential_ref",
         "default_endpoint",
@@ -55,6 +56,7 @@ def provider_config_to_public_dict(
         "provider_id": provider.provider_id,
         "provider_type": provider.provider_type,
         "protocol": provider.protocol,
+        "auth_driver": provider.auth_driver,
         "credential": provider.credential_ref.display(),
         "enabled": provider.enabled,
         "timeout": provider.timeout_seconds,
@@ -105,6 +107,7 @@ def provider_config_from_mapping(
             provider_id=configured_provider_id,
             provider_type=_provider_type(raw.get("provider_type")),
             protocol=_provider_protocol(raw.get("protocol")),
+            auth_driver=raw.get("auth_driver", "static"),
             credential_ref=_credential_ref_from_mapping(raw),
             default_endpoint=_optional_str(raw.get("default_endpoint")),
             endpoints=_endpoints_from_mapping(raw),
@@ -138,6 +141,8 @@ def provider_config_to_raw(provider: ProviderConfig) -> dict[str, Any]:
     }
     if provider.credential_ref.type != "none":
         raw["credential_ref"] = _credential_ref_to_raw(provider.credential_ref)
+    if provider.auth_driver != "static":
+        raw["auth_driver"] = provider.auth_driver
     if provider.base_url:
         raw["base_url"] = provider.base_url
     if provider.api_path:
@@ -185,6 +190,9 @@ def _credential_ref_to_raw(ref: CredentialRef) -> str | dict[str, str]:
         return f"env:{ref.name}"
     if ref.type == "inline":
         return {"type": "inline", "value": ref.value or ""}
+    if ref.type == "managed":
+        assert ref.name is not None
+        return {"type": "managed", "name": ref.name}
     return "none"
 
 

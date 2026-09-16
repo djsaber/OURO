@@ -27,13 +27,14 @@
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "templates": {
     "openai": {
       "template_id": "openai",
       "display_name": "OpenAI",
       "provider_type": "openai",
       "protocol": "openai-chat-completions",
+      "auth_driver": "static",
       "credential_env": "OPENAI_API_KEY",
       "base_url": "https://api.openai.com/v1",
       "default_endpoint": "gpt-5.6",
@@ -66,6 +67,11 @@
 用户手改 `baseline_fingerprint` 的最坏后果是模板被判未修改而被后续升级覆盖。
 
 ## 版本模型
+
+当前结构版本为 2。模板 auth_driver 默认 static；credential_env 可省略，managed 模板必须省略或置为 null。
+静态模板缺少 credential_env 时创建 none 引用，可在创建时显式提供 API Key。模板不提供 credential id 或账户材料；
+managed 引用属于实例，创建/显式替换时生成。模板业务指纹包含认证默认值，实例模板绑定保存其基线；普通模板更新
+保留实例认证选择与 managed 引用，不因模板默认值改变而换绑。详细合并语义见 Provider 配置规格。
 
 版本为两个独立维度，不可混用：
 

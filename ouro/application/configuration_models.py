@@ -30,7 +30,7 @@ ConfigurationSection = Literal[
     "agents",
 ]
 ConfigurationEffectiveFrom = Literal["next_request", "next_runtime"]
-CredentialState = Literal["not_required", "configured", "missing"]
+CredentialState = Literal["not_required", "configured", "missing", "managed"]
 MCPConnectionStatus = Literal[
     "configured",
     "starting",
@@ -56,7 +56,7 @@ class CredentialStatus(ApplicationDTO):
     reference: str
     state: CredentialState
     configured: bool
-    available: bool
+    available: bool | None
 
 
 class ProviderEndpointView(ApplicationDTO):
@@ -81,6 +81,7 @@ class ProviderView(ApplicationDTO):
     provider_id: str
     provider_type: ProviderType
     protocol: ProviderProtocol
+    auth_driver: str = "static"
     credential: CredentialStatus
     enabled: bool
     timeout: float
@@ -136,7 +137,8 @@ class ProviderTemplateView(ApplicationDTO):
     provider_id: str
     provider_type: ProviderType
     protocol: ProviderProtocol
-    credential_env: str
+    auth_driver: str = "static"
+    credential_env: str | None = None
     base_url: str
     api_path: str
     default_endpoint: str

@@ -15,6 +15,7 @@ Provider 表示供应商级连接和默认值：
 - `provider_id`：用户拥有的配置实例 id；
 - `provider_type`：集成厂商产品档案，或 `openai-compatible`、`anthropic-compatible` 通用入口；
 - `protocol`：`faux`、`openai-chat-completions` 或 `anthropic-messages`，只负责线协议 adapter 选择；
+- `auth_driver`：认证选择，省略时为 `static`；
 - `credential_ref`；
 - `base_url`、`api_path`、timeout 和 retry policy；
 - enabled、default endpoint 和 endpoint registry。
@@ -123,8 +124,8 @@ Preset 是显式配置，不代表 OURO 自动探测了自定义模型。模型�
 `disabled` 提供精确原生片段。
 运行和压缩模型统一接受 `--thinking-mode` 与 `--thinking-effort`；Endpoint 不支持请求意图时立即失败。
 
-Host 通过 application `ConfigurationFacade` 查询和修改配置。Facade 返回类型化、不可变 DTO，并只公开凭据的
-configured/missing 状态；每次 mutation 返回变更项和生效范围。CLI、Desktop 等 Host 不直接依赖各 config
+Host 通过 application `ConfigurationFacade` 查询和修改配置。Facade 返回类型化、不可变 DTO，并只公开凭据引用和
+可安全查询的状态；每次 mutation 返回变更项和生效范围。CLI、Desktop 等 Host 不直接依赖各 config
 manager。Provider retry 的关联字段作为一个原子 mutation 提交，不能留下部分更新。
 
 ## 配置事务与锁等待
@@ -196,8 +197,10 @@ Provider 级模板值，以及每个模板 Endpoint 到配置 Endpoint 的 id �
 | 最新模板移除已修改或被用户选为默认的 Endpoint | 保留并解除模板管理 |
 | 配置中的未知 Endpoint | 始终保留 |
 
-Provider 级 `base_url`、`api_path`、模板凭据环境变量和默认 Endpoint 采用同样的旧值比较：当前值仍等于旧模板值
+Provider 级 `base_url`、`api_path`、静态模板凭据环境变量和默认 Endpoint 采用同样的旧值比较：当前值仍等于旧模板值
 才跟随新模板，否则保留用户值。`enabled`、timeout、retry、provider options 和 Provider id 始终归用户管理。
+实例 `auth_driver` 和 managed 引用始终保留；模板认证默认值改变时不自动切换实例认证。只有实例、旧基线和新模板
+均使用 static 时，才合并环境变量变化。创建或显式替换可选择允许的认证组合；managed 每次生成新的 credential id。
 Endpoint id/model、连接和凭据等本次 CLI 显式参数在合并后应用，并作为用户覆盖留待后续合并识别。
 
 没有 `template` 绑定的 Provider 无法执行模板更新，不根据类型或端点名称接管已有配置。
@@ -253,10 +256,27 @@ Endpoint 显式 base URL/API path 优先于 Provider 默认值。API path 默认
 ## 凭据
 
 - 首选 `env:VARIABLE`；支持显式 inline 值，但 CLI 必须提示其存储风险。
-- Provider factory 是凭据解析边界。
+- Provider factory 是静态凭据解析边界；`CredentialResolver` 明确拒绝 managed 引用。
 - 公开 DTO/JSON 只显示引用或脱敏值。
 - `request_options` 和 metadata 中常见敏感 key 递归脱敏。
 - 日志、事件和错误不得包含密钥值。
+
+受管理引用采用对象 `{ "type": "managed", "name": "cred_<32 位小写十六进制字符>" }`。
+name 是创建用例通过 `new_id("cred")` 生成的标识，不是文件路径；managed 不接受 value，凭据引用对象拒绝未知字段。
+static 只能绑定 env/inline/none，其他 driver 必须绑定 managed；协议/认证组合同时受产品档案约束。
+读取配置不查找或创建秘密文件，不要求已经登录。普通 update 保留身份引用，replace 创建新引用；remove 只删配置。
+
+RuntimeOptions 携带 `auth_driver`、引用及由产品声明解析的 `service_policy` 标识；后者不能写入用户 Provider 配置或
+由本次参数覆盖。已配置 Provider 的认证驱动不能在单次请求中替换，managed 引用不能在单次请求中换绑，也不能与
+API Key/API Key 环境变量覆盖并用；无产品绑定的 ad-hoc managed 请求失败。静态 API Key 覆盖语义保持。
+
+公开 Provider/Template DTO 显示 auth_driver。配置视图中的 managed 凭据显示 `state="managed"`、
+`configured=true`、`available=null`，只说明已有引用，不能据此推断已经登录、已过期或可调用。实际认证状态由后续
+ProviderAuthService 提供，配置视图不读取 store 或触发刷新。
+
+当前内建产品仍只声明 static 组合。受管理配置、模板及运行参数边界通过测试产品声明验收；尚未注册生产驱动、服务规则
+或订阅产品。factory 对尚未接线的 managed 认证明确失败，不尝试解析为 API Key。登录、请求认证和 Host 启动验收仍见
+[订阅认证规格](OURO_模型订阅认证规格_2026-09-16.md)。配置证据见 `tests/config/test_provider_auth_config.py`。
 
 ## Provider adapter
 

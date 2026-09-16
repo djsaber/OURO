@@ -28,11 +28,12 @@ from ouro.config.provider_models import (
     ProviderTemplateUpdateResult,
     ProviderType,
     builtin_faux_provider,
-    resolve_provider_protocol,
+    resolve_provider_connection,
 )
 from ouro.config.provider_runtime import merge_runtime_options, runtime_options_from_config
 from ouro.config.provider_templates import ProviderTemplate
 from ouro.config.reasoning import EndpointReasoningConfig
+from ouro.core.base import new_id
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ProviderRetryPolicy
 
@@ -126,6 +127,8 @@ class ProviderConfigManager:
             and runtime_options.protocol != selected.protocol
         )
         if ad_hoc_provider:
+            if runtime_options.auth_driver not in (None, "static"):
+                raise ConfigError("managed authentication requires a configured provider")
             if runtime_options.endpoint_id is not None:
                 raise ConfigError("--endpoint requires a configured provider")
             base_options = ProviderRuntimeOptions(protocol=runtime_options.protocol)
@@ -145,6 +148,7 @@ class ProviderConfigManager:
         *,
         provider_type: ProviderType,
         protocol: ProviderProtocol | None = None,
+        auth_driver: str | None = None,
         base_url: str | None = None,
         api_path: str | None = None,
         api_key: str | None = None,
@@ -165,12 +169,16 @@ class ProviderConfigManager:
                 f"provider already exists: {provider_id}; use provider update or provider replace"
             )
         try:
+            connection = resolve_provider_connection(provider_type, protocol, auth_driver)
             provider = ProviderConfig(
                 provider_id=provider_id,
                 provider_type=provider_type,
-                protocol=resolve_provider_protocol(provider_type, protocol),
+                protocol=connection.protocol,
+                auth_driver=connection.auth_driver,
                 credential_ref=self._updated_credential(
-                    CredentialRef(), api_key=api_key, api_key_env=api_key_env
+                    self._initial_credential(connection.auth_driver),
+                    api_key=api_key,
+                    api_key_env=api_key_env,
                 ),
                 base_url=base_url,
                 api_path=api_path,
@@ -247,6 +255,7 @@ class ProviderConfigManager:
         *,
         provider_type: ProviderType,
         protocol: ProviderProtocol | None = None,
+        auth_driver: str | None = None,
         base_url: str | None = None,
         api_path: str | None = None,
         api_key: str | None = None,
@@ -265,12 +274,16 @@ class ProviderConfigManager:
         if provider_id not in configured:
             raise ConfigError(f"provider not found: {provider_id}")
         try:
+            connection = resolve_provider_connection(provider_type, protocol, auth_driver)
             provider = ProviderConfig(
                 provider_id=provider_id,
                 provider_type=provider_type,
-                protocol=resolve_provider_protocol(provider_type, protocol),
+                protocol=connection.protocol,
+                auth_driver=connection.auth_driver,
                 credential_ref=self._updated_credential(
-                    CredentialRef(), api_key=api_key, api_key_env=api_key_env
+                    self._initial_credential(connection.auth_driver),
+                    api_key=api_key,
+                    api_key_env=api_key_env,
                 ),
                 base_url=base_url,
                 api_path=api_path,
@@ -290,6 +303,7 @@ class ProviderConfigManager:
         template: ProviderTemplate,
         *,
         template_origin: ProviderTemplateOrigin = "inline",
+        auth_driver: str | None = None,
         provider_id: str | None = None,
         endpoint_id: str | None = None,
         model_id: str | None = None,
@@ -307,6 +321,7 @@ class ProviderConfigManager:
             template,
             template_origin=template_origin,
             operation="create",
+            auth_driver=auth_driver,
             provider_id=provider_id,
             endpoint_id=endpoint_id,
             model_id=model_id,
@@ -363,6 +378,7 @@ class ProviderConfigManager:
         template: ProviderTemplate,
         *,
         template_origin: ProviderTemplateOrigin = "inline",
+        auth_driver: str | None = None,
         provider_id: str | None = None,
         endpoint_id: str | None = None,
         model_id: str | None = None,
@@ -380,6 +396,7 @@ class ProviderConfigManager:
             template,
             template_origin=template_origin,
             operation="replace",
+            auth_driver=auth_driver,
             provider_id=provider_id,
             endpoint_id=endpoint_id,
             model_id=model_id,
@@ -543,10 +560,19 @@ class ProviderConfigManager:
             preserved_fields.append("default_endpoint")
 
         next_credential = current.credential_ref
-        if previous.credential_env != template.credential_env:
-            old_credential = CredentialRef.parse(f"env:{previous.credential_env}")
+        if previous.auth_driver != template.auth_driver:
+            preserved_fields.append("auth_driver")
+        if (
+            current.auth_driver == previous.auth_driver == template.auth_driver == "static"
+            and previous.credential_env != template.credential_env
+        ):
+            old_credential = CredentialRef.parse(
+                f"env:{previous.credential_env}" if previous.credential_env else None
+            )
             if current.credential_ref == old_credential:
-                next_credential = CredentialRef.parse(f"env:{template.credential_env}")
+                next_credential = CredentialRef.parse(
+                    f"env:{template.credential_env}" if template.credential_env else None
+                )
                 updated_fields.append("credential")
             else:
                 preserved_fields.append("credential")
@@ -631,6 +657,7 @@ class ProviderConfigManager:
                 provider_id=target_provider_id,
                 provider_type=current.provider_type,
                 protocol=current.protocol,
+                auth_driver=current.auth_driver,
                 credential_ref=next_credential,
                 default_endpoint=next_default,
                 endpoints=tuple(next_endpoints[key] for key in sorted(next_endpoints)),
@@ -673,6 +700,7 @@ class ProviderConfigManager:
         *,
         template_origin: ProviderTemplateOrigin,
         operation: Literal["create", "replace"],
+        auth_driver: str | None = None,
         provider_id: str | None = None,
         endpoint_id: str | None = None,
         model_id: str | None = None,
@@ -718,11 +746,12 @@ class ProviderConfigManager:
         if operation == "replace" and current is None:
             raise ConfigError(f"provider not found: {target_provider_id}")
 
-        credential_ref = CredentialRef()
+        selected_driver = auth_driver if auth_driver is not None else template.auth_driver
+        credential_ref = self._initial_credential(selected_driver)
         credential_ref = self._updated_credential(
             credential_ref, api_key=api_key, api_key_env=api_key_env
         )
-        if credential_ref.type == "none":
+        if credential_ref.type == "none" and template.credential_env is not None:
             credential_ref = CredentialRef.parse(f"env:{template.credential_env}")
 
         try:
@@ -749,6 +778,7 @@ class ProviderConfigManager:
                 provider_id=target_provider_id,
                 provider_type=template.provider_type,
                 protocol=template.protocol,
+                auth_driver=selected_driver,
                 credential_ref=credential_ref,
                 default_endpoint=target_endpoint_id,
                 endpoints=tuple(endpoints[key] for key in sorted(endpoints)),
@@ -984,12 +1014,20 @@ class ProviderConfigManager:
             raise ConfigError("provider type is reserved for the built-in Faux provider: faux")
 
     @staticmethod
+    def _initial_credential(auth_driver: str) -> CredentialRef:
+        if auth_driver == "static":
+            return CredentialRef()
+        return CredentialRef(type="managed", name=new_id("cred"))
+
+    @staticmethod
     def _updated_credential(
         current: CredentialRef,
         *,
         api_key: str | None,
         api_key_env: str | None,
     ) -> CredentialRef:
+        if current.type == "managed" and (api_key is not None or api_key_env is not None):
+            raise ConfigError("API Key overrides cannot be combined with managed authentication")
         if api_key is not None and api_key_env is not None:
             raise ConfigError("api_key and api_key_env cannot be combined")
         if api_key_env is not None:
@@ -1141,6 +1179,7 @@ def _provider_template_binding(
         template_id=template.template_id,
         origin=origin,
         revision=template.revision,
+        auth_driver=template.auth_driver,
         credential_env=template.credential_env,
         base_url=template.base_url,
         api_path=template.api_path,

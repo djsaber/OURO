@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ouro.config.credentials import CredentialRef
 from ouro.config.endpoints import ProviderEndpointConfig
@@ -65,12 +65,29 @@ BUILTIN_FAUX_PROVIDER_ID = "faux"
 
 
 @dataclass(frozen=True)
+class ProviderConnectionSpec:
+    """One supported protocol/authentication pair and its trusted service rules."""
+
+    protocol: ProviderProtocol
+    auth_driver: str = "static"
+    service_policy: str | None = None
+
+
+@dataclass(frozen=True)
 class ProviderTypeSpec:
-    """Product-level provider profile and its supported wire protocols."""
+    """The default connection is supported, along with explicit alternatives."""
 
     provider_type: ProviderType
-    default_protocol: ProviderProtocol | None
-    allowed_protocols: tuple[ProviderProtocol, ...]
+    default_connection: ProviderConnectionSpec
+    alternative_connections: tuple[ProviderConnectionSpec, ...] = ()
+
+    def __post_init__(self) -> None:
+        connections = (self.default_connection, *self.alternative_connections)
+        pairs = [(item.protocol, item.auth_driver) for item in connections]
+        if len(set(pairs)) != len(pairs):
+            raise ValueError("provider connection pairs must be unique")
+        if any(item.auth_driver != "static" and not item.service_policy for item in connections):
+            raise ValueError("managed provider connections require a service policy")
 
 
 @dataclass(frozen=True)
@@ -83,31 +100,23 @@ class ProviderProtocolSpec:
     reasoning_continuations: tuple[ReasoningContinuation, ...]
 
 
-_OPENAI_PROTOCOL: tuple[ProviderProtocol, ...] = ("openai-chat-completions",)
-_ANTHROPIC_PROTOCOL: tuple[ProviderProtocol, ...] = ("anthropic-messages",)
+_OPENAI_STATIC = ProviderConnectionSpec("openai-chat-completions")
+_ANTHROPIC_STATIC = ProviderConnectionSpec("anthropic-messages")
 
 _PROVIDER_TYPE_SPECS: dict[ProviderType, ProviderTypeSpec] = {
-    "faux": ProviderTypeSpec("faux", "faux", ("faux",)),
-    "openai": ProviderTypeSpec("openai", "openai-chat-completions", _OPENAI_PROTOCOL),
-    "anthropic": ProviderTypeSpec("anthropic", "anthropic-messages", _ANTHROPIC_PROTOCOL),
-    "gemini": ProviderTypeSpec("gemini", "openai-chat-completions", _OPENAI_PROTOCOL),
-    "deepseek": ProviderTypeSpec("deepseek", "openai-chat-completions", _OPENAI_PROTOCOL),
-    "qwen": ProviderTypeSpec("qwen", "openai-chat-completions", _OPENAI_PROTOCOL),
-    "kimi": ProviderTypeSpec("kimi", "openai-chat-completions", _OPENAI_PROTOCOL),
-    "glm": ProviderTypeSpec("glm", "openai-chat-completions", _OPENAI_PROTOCOL),
-    "grok": ProviderTypeSpec("grok", "openai-chat-completions", _OPENAI_PROTOCOL),
-    "openrouter": ProviderTypeSpec("openrouter", "openai-chat-completions", _OPENAI_PROTOCOL),
-    "mistral": ProviderTypeSpec("mistral", "openai-chat-completions", _OPENAI_PROTOCOL),
-    "openai-compatible": ProviderTypeSpec(
-        "openai-compatible",
-        "openai-chat-completions",
-        _OPENAI_PROTOCOL,
-    ),
-    "anthropic-compatible": ProviderTypeSpec(
-        "anthropic-compatible",
-        "anthropic-messages",
-        _ANTHROPIC_PROTOCOL,
-    ),
+    "faux": ProviderTypeSpec("faux", ProviderConnectionSpec("faux")),
+    "openai": ProviderTypeSpec("openai", _OPENAI_STATIC),
+    "anthropic": ProviderTypeSpec("anthropic", _ANTHROPIC_STATIC),
+    "gemini": ProviderTypeSpec("gemini", _OPENAI_STATIC),
+    "deepseek": ProviderTypeSpec("deepseek", _OPENAI_STATIC),
+    "qwen": ProviderTypeSpec("qwen", _OPENAI_STATIC),
+    "kimi": ProviderTypeSpec("kimi", _OPENAI_STATIC),
+    "glm": ProviderTypeSpec("glm", _OPENAI_STATIC),
+    "grok": ProviderTypeSpec("grok", _OPENAI_STATIC),
+    "openrouter": ProviderTypeSpec("openrouter", _OPENAI_STATIC),
+    "mistral": ProviderTypeSpec("mistral", _OPENAI_STATIC),
+    "openai-compatible": ProviderTypeSpec("openai-compatible", _OPENAI_STATIC),
+    "anthropic-compatible": ProviderTypeSpec("anthropic-compatible", _ANTHROPIC_STATIC),
 }
 
 _PROVIDER_PROTOCOL_SPECS: dict[ProviderProtocol, ProviderProtocolSpec] = {
@@ -168,21 +177,30 @@ def provider_protocol_spec(protocol: ProviderProtocol) -> ProviderProtocolSpec:
     return _PROVIDER_PROTOCOL_SPECS[protocol]
 
 
-def resolve_provider_protocol(
+def resolve_provider_connection(
     provider_type: ProviderType,
-    protocol: ProviderProtocol | None,
-) -> ProviderProtocol:
-    """Resolve a profile default and reject unsupported type/protocol pairs."""
-
+    protocol: ProviderProtocol | None = None,
+    auth_driver: str | None = None,
+) -> ProviderConnectionSpec:
+    """Resolve defaults, then validate the pair without a Cartesian product."""
     spec = provider_type_spec(provider_type)
-    selected = protocol or spec.default_protocol
-    if selected is None:
-        raise ValueError(f"protocol is required for provider type: {provider_type}")
-    if selected not in spec.allowed_protocols:
-        raise ValueError(
-            f"protocol {selected!r} is not supported by provider type {provider_type!r}"
-        )
-    return selected
+    selected_protocol = protocol if protocol is not None else spec.default_connection.protocol
+    selected_driver = (
+        auth_driver if auth_driver is not None else spec.default_connection.auth_driver
+    )
+    for connection in (spec.default_connection, *spec.alternative_connections):
+        if (connection.protocol, connection.auth_driver) == (selected_protocol, selected_driver):
+            return connection
+    raise ValueError(
+        f"protocol/auth_driver combination is not supported by provider type {provider_type!r}"
+    )
+
+
+def validate_credential_binding(auth_driver: str, ref: CredentialRef) -> None:
+    if auth_driver == "static" and ref.type == "managed":
+        raise ValueError("static authentication cannot use a managed credential")
+    if auth_driver != "static" and ref.type != "managed":
+        raise ValueError("managed authentication requires a managed credential")
 
 
 def default_api_path(protocol: ProviderProtocol) -> str | None:
@@ -251,19 +269,27 @@ class ProviderTemplateBinding(OuroModel):
     template_id: str
     origin: ProviderTemplateOrigin
     revision: int = Field(ge=1)
-    credential_env: str
+    auth_driver: str = "static"
+    credential_env: str | None = None
     base_url: str
     api_path: str
     default_endpoint: str
     endpoints: tuple[ProviderTemplateEndpointBinding, ...] = Field(default_factory=tuple)
 
-    @field_validator("template_id", "credential_env", "base_url", "api_path", "default_endpoint")
+    @field_validator("template_id", "auth_driver", "base_url", "api_path", "default_endpoint")
     @classmethod
     def _require_template_value(cls, value: str) -> str:
         normalized = value.strip()
         if not normalized:
             raise ValueError("template binding values must not be empty")
         return normalized
+
+    @field_validator("credential_env")
+    @classmethod
+    def _validate_credential_env(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return cls._require_template_value(value)
 
     @model_validator(mode="after")
     def _validate_endpoint_bindings(self) -> ProviderTemplateBinding:
@@ -288,9 +314,12 @@ class ProviderTemplateBinding(OuroModel):
 class ProviderConfig(OuroModel):
     """Supplier-level product identity, protocol, connection, and endpoints."""
 
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     provider_id: str
     provider_type: ProviderType
     protocol: ProviderProtocol
+    auth_driver: str = "static"
     credential_ref: CredentialRef = Field(default_factory=CredentialRef)
     default_endpoint: str | None = None
     endpoints: tuple[ProviderEndpointConfig, ...] = Field(default_factory=tuple)
@@ -337,7 +366,8 @@ class ProviderConfig(OuroModel):
 
     @model_validator(mode="after")
     def _validate_provider(self) -> ProviderConfig:
-        resolve_provider_protocol(self.provider_type, self.protocol)
+        resolve_provider_connection(self.provider_type, self.protocol, self.auth_driver)
+        validate_credential_binding(self.auth_driver, self.credential_ref)
         validate_request_options(self.protocol, self.extra)
         for endpoint in self.endpoints:
             validate_reasoning_protocol_compatibility(self.protocol, endpoint.reasoning)
@@ -398,6 +428,8 @@ class ProviderTemplateUpdateResult(OuroModel):
 @dataclass(frozen=True)
 class ProviderRuntimeOptions:
     protocol: ProviderProtocol | None = None
+    auth_driver: str | None = None
+    service_policy: str | None = None
     provider_id: str | None = None
     endpoint_id: str | None = None
     model: str | None = None

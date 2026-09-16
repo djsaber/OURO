@@ -265,6 +265,7 @@ class ConfigurationFacade:
         provider_id: str,
         *,
         provider_type: ProviderType,
+        auth_driver: str | None = None,
         endpoint_id: str | None = None,
         model: str | None = None,
         base_url: str | None = None,
@@ -294,6 +295,7 @@ class ConfigurationFacade:
             entry = self.provider_templates.get_entry(provider_type)
             self.providers.create_from_template(
                 entry.template,
+                auth_driver=auth_driver,
                 template_origin=entry.origin,
                 provider_id=provider_id,
                 endpoint_id=endpoint_id,
@@ -317,6 +319,7 @@ class ConfigurationFacade:
             )
             self.providers.create_provider(
                 provider_id,
+                auth_driver=auth_driver,
                 provider_type=provider_type,
                 base_url=base_url,
                 api_path=api_path,
@@ -453,6 +456,7 @@ class ConfigurationFacade:
         provider_id: str,
         *,
         provider_type: ProviderType,
+        auth_driver: str | None = None,
         endpoint_id: str | None = None,
         model: str | None = None,
         base_url: str | None = None,
@@ -482,6 +486,7 @@ class ConfigurationFacade:
             entry = self.provider_templates.get_entry(provider_type)
             self.providers.replace_from_template(
                 entry.template,
+                auth_driver=auth_driver,
                 template_origin=entry.origin,
                 provider_id=provider_id,
                 endpoint_id=endpoint_id,
@@ -505,6 +510,7 @@ class ConfigurationFacade:
             )
             self.providers.replace_provider(
                 provider_id,
+                auth_driver=auth_driver,
                 provider_type=provider_type,
                 base_url=base_url,
                 api_path=api_path,

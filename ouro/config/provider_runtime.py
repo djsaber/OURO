@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from ouro.config.credentials import CredentialRef
 from ouro.config.provider_models import (
     ProviderConfig,
     ProviderRuntimeOptions,
     default_api_path,
+    resolve_provider_connection,
+    validate_credential_binding,
 )
 from ouro.core.errors import ConfigError
 
@@ -23,6 +26,10 @@ def runtime_options_from_config(
         raise ConfigError(f"endpoint not found: {provider.provider_id}/{target}")
     return ProviderRuntimeOptions(
         protocol=provider.protocol,
+        auth_driver=provider.auth_driver,
+        service_policy=resolve_provider_connection(
+            provider.provider_type, provider.protocol, provider.auth_driver
+        ).service_policy,
         provider_id=provider.provider_id,
         endpoint_id=endpoint.endpoint_id,
         model=endpoint.model_id,
@@ -49,8 +56,24 @@ def merge_runtime_options(
 ) -> ProviderRuntimeOptions:
     """Apply explicit runtime options over the selected configured endpoint."""
 
-    return ProviderRuntimeOptions(
+    if (
+        base.auth_driver is not None
+        and override.auth_driver is not None
+        and override.auth_driver != base.auth_driver
+    ):
+        raise ConfigError("runtime options cannot change a configured authentication driver")
+    if (
+        base.auth_driver not in (None, "static")
+        and override.credential_ref is not None
+        and override.credential_ref != base.credential_ref
+    ):
+        raise ConfigError("runtime options cannot change a managed credential binding")
+    if override.service_policy is not None and override.service_policy != base.service_policy:
+        raise ConfigError("runtime options cannot override the product service policy")
+    merged = ProviderRuntimeOptions(
         protocol=override.protocol if override.protocol is not None else base.protocol,
+        auth_driver=override.auth_driver or base.auth_driver or "static",
+        service_policy=base.service_policy,
         provider_id=override.provider_id if override.provider_id is not None else base.provider_id,
         endpoint_id=override.endpoint_id if override.endpoint_id is not None else base.endpoint_id,
         model=override.model if override.model is not None else base.model,
@@ -100,6 +123,22 @@ def merge_runtime_options(
         ),
         extra=_merge_extra(base.extra, override.extra),
     )
+    validate_runtime_auth(merged)
+    return merged
+
+
+def validate_runtime_auth(options: ProviderRuntimeOptions) -> None:
+    """Validate final authentication options, including direct factory callers."""
+    driver = options.auth_driver if options.auth_driver is not None else "static"
+    try:
+        validate_credential_binding(driver, options.credential_ref or CredentialRef())
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from None
+    if driver != "static":
+        if options.api_key is not None or options.api_key_env is not None:
+            raise ConfigError("API Key overrides cannot be combined with managed authentication")
+        if not options.service_policy:
+            raise ConfigError("managed authentication requires a product service policy")
 
 
 def _merge_extra(

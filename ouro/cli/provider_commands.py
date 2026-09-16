@@ -140,12 +140,19 @@ def list_provider_templates(
     for template in public:
         models = ",".join(endpoint["model_id"] for endpoint in template["endpoints"])
         deprecated = " deprecated" if template.get("deprecated") else ""
+        credential = (
+            f"env:{template['credential_env']}"
+            if template["credential_env"] is not None
+            else "none"
+            if template["auth_driver"] == "static"
+            else "managed"
+        )
         lines.append(
             f"- {template['template_id']} ({template['display_name']}){deprecated} "
             f"type={template['provider_type']} protocol={template['protocol']} "
             f"default={template['default_endpoint']} "
             f"endpoints={len(template['endpoints'])} models={models} "
-            f"credential=env:{template['credential_env']}"
+            f"credential={credential}"
         )
     lines.extend(f"! {notice}" for notice in catalog.notices)
     print("\n".join(lines))
