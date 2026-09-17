@@ -339,6 +339,16 @@ def test_auth_cli_only_uses_application_and_local_composition() -> None:
     )
 
 
+def test_auth_tui_only_uses_application_contracts() -> None:
+    path = PROJECT_ROOT / "ouro" / "tui" / "provider_auth_screens.py"
+    imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+    assert "ouro.application.provider_auth" in imports
+    assert not any(
+        module.startswith(("ouro.auth", "ouro.config", "ouro.providers", "ouro.local_io"))
+        for module in imports
+    )
+
+
 def test_cli_does_not_reach_through_runtime_to_session_store() -> None:
     violations: list[str] = []
     for path in (PROJECT_ROOT / "ouro" / "cli").glob("*.py"):

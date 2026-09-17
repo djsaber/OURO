@@ -53,6 +53,7 @@ from ouro.application.plugin_models import (
     PluginDetail,
     PluginSummary,
 )
+from ouro.application.provider_auth import ProviderAuthService
 from ouro.application.queued_inputs import QueuedInputMode, QueuedUserInputView
 from ouro.application.runtime import RuntimeService
 from ouro.application.session_models import (
@@ -280,6 +281,7 @@ class TuiProviderConfiguration:
     provider_options: dict[str, object] | None = None
     enabled: bool = True
     make_default: bool = False
+    auth_driver: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1041,6 +1043,15 @@ class TuiController:
         configuration = self._require_configuration()
         return await asyncio.to_thread(configuration.provider_catalog)
 
+    def provider_auth(self) -> ProviderAuthService:
+        """Borrow the application's authentication use cases without owning their lifetime."""
+        self._runtime()
+        assert self._application is not None
+        service = self._application.provider_auth
+        if service is None:
+            raise ConfigError("authentication management is unavailable for this Runtime")
+        return service
+
     async def provider_templates(self) -> tuple[ProviderTemplateView, ...]:
         configuration = self._require_configuration()
         catalog = await asyncio.to_thread(configuration.provider_template_catalog)
@@ -1054,6 +1065,7 @@ class TuiController:
         catalog = configuration.add_provider(
             draft.provider_id,
             provider_type=draft.provider_type,
+            auth_driver=draft.auth_driver,
             base_url=draft.base_url,
             api_path=draft.api_path,
             api_key=draft.api_key,

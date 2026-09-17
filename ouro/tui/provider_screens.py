@@ -42,6 +42,7 @@ class ProviderSetupProfile:
     credential_env: str | None
     endpoint_count: int
     preset: bool
+    auth_driver: str = "static"
 
     @classmethod
     def from_template(cls, template: ProviderTemplateView) -> ProviderSetupProfile:
@@ -55,6 +56,7 @@ class ProviderSetupProfile:
             credential_env=template.credential_env,
             endpoint_count=template.endpoint_count,
             preset=True,
+            auth_driver=template.auth_driver,
         )
 
 
@@ -97,6 +99,7 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
         self._initial_tui_theme = theme
         self._profile = profile
         self._existing = existing
+        self._auth_driver = existing.auth_driver if existing is not None else profile.auth_driver
         provider_options = _json_text(existing.provider_options if existing is not None else {})
         self._values = {
             "provider-api-key": "",
@@ -185,6 +188,7 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
             ),
             enabled=self._existing.enabled if self._existing is not None else True,
             make_default=False,
+            auth_driver=self._auth_driver,
         )
 
     def _validation_error(self) -> str:
@@ -208,21 +212,37 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
             else "Not set"
         )
         error = self._validation_error()
+        credential_choices = (
+            (
+                Choice(
+                    "provider-api-key",
+                    "API key",
+                    trailing=api_key_display,
+                    group="CREDENTIALS",
+                    edit_value=api_key,
+                ),
+                Choice(
+                    "provider-api-key-env",
+                    "Environment variable",
+                    trailing=self._values["provider-api-key-env"] or "Not set",
+                    group="CREDENTIALS",
+                    edit_value=self._values["provider-api-key-env"],
+                ),
+            )
+            if self._auth_driver == "static"
+            else (
+                Choice(
+                    "provider-authentication",
+                    "Managed sign-in",
+                    trailing=self._auth_driver,
+                    description="Save this provider, then open Authentication to sign in.",
+                    group="CREDENTIALS",
+                    disabled=True,
+                ),
+            )
+        )
         return (
-            Choice(
-                "provider-api-key",
-                "API key",
-                trailing=api_key_display,
-                group="CREDENTIALS",
-                edit_value=api_key,
-            ),
-            Choice(
-                "provider-api-key-env",
-                "Environment variable",
-                trailing=self._values["provider-api-key-env"] or "Not set",
-                group="CREDENTIALS",
-                edit_value=self._values["provider-api-key-env"],
-            ),
+            *credential_choices,
             Choice(
                 "provider-id",
                 "Provider ID",
@@ -606,6 +626,8 @@ def _credential_environment(
     profile: ProviderSetupProfile,
     existing: ProviderView | None,
 ) -> str:
+    if (existing.auth_driver if existing is not None else profile.auth_driver) != "static":
+        return ""
     if existing is not None:
         reference = existing.credential.reference
         if reference.startswith("env:"):

@@ -226,6 +226,10 @@ CLI 更新会在文本或 `--json` 输出中给出 added/updated/removed/preserv
 Provider 回车后，通过 `Update from preset` 执行同一更新逻辑。模板已删除、禁用或来源发生替换时，更新失败且
 Provider 保持不变。
 
+受管理 Provider 可在 TUI 的 `Manage providers → Provider → Authentication` 中登录、查看状态和注销，
+或通过 `Manage local credentials` 清理共享及未绑定的本地凭据。登录方法由已注册驱动提供；浏览器只在选择
+`Open browser` 时打开，也可复制授权链接手动操作。通用管理已实现，生产 OAuth 与订阅产品尚未注册。
+
 需要完全自定义时，Provider 的创建、更新、替换分别使用 `add`、`update`、`replace`，Endpoint 仍由独立命令
 管理，不会隐式创建另一层对象：
 

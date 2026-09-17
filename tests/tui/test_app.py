@@ -8046,7 +8046,7 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
         await pilot.press("enter")
         await pilot.pause()
         options = app.screen.query_one("#choice-list", OptionList)
-        await pilot.click(options, offset=(4, 1))
+        await pilot.click(options, offset=(4, options.get_option_index("toggle")))
         await pilot.pause()
         assert ConfigurationFacade(tmp_path).provider("secondary").enabled is False
         assert (

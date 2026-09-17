@@ -14,6 +14,7 @@ from ouro.tui.controller import (
     TuiEndpointConfiguration,
     TuiProviderConfiguration,
 )
+from ouro.tui.provider_auth_screens import ProviderAuthenticationScreen
 from ouro.tui.provider_screens import (
     COMPATIBLE_PROVIDER_PROFILES,
     EndpointConfigurationScreen,
@@ -327,7 +328,9 @@ class ProviderConfigurationWorkflows(App[int]):
 
             async def select_action(selected: str) -> tuple[Choice, ...] | None:
                 nonlocal provider
-                if selected == "edit":
+                if selected == "authentication":
+                    await self._manage_provider_authentication(provider, menu=menu)
+                elif selected == "edit":
                     await self._edit_provider(provider, menu=menu)
                 elif selected == "update-template":
                     saved = await self._update_provider_template(provider)
@@ -383,7 +386,9 @@ class ProviderConfigurationWorkflows(App[int]):
                 choices=choices,
             )
         )
-        if selected == "edit":
+        if selected == "authentication":
+            await self._manage_provider_authentication(provider)
+        elif selected == "edit":
             await self._edit_provider(provider)
         elif selected == "update-template":
             await self._update_provider_template(provider)
@@ -395,6 +400,23 @@ class ProviderConfigurationWorkflows(App[int]):
             await self._edit_endpoint(provider, None)
         elif selected == "remove":
             await self._remove_provider(provider.provider_id)
+
+    async def _manage_provider_authentication(
+        self,
+        provider: ProviderView,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
+        try:
+            service = self._controller.provider_auth()
+        except Exception as exc:  # noqa: BLE001 - injected runtimes may omit authentication.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        screen = ProviderAuthenticationScreen(service, provider.provider_id, theme=theme_for(self))
+        if menu is not None:
+            await menu.open_child(screen)
+        else:
+            await self.push_screen_wait(screen)
 
     async def _edit_provider(
         self,
@@ -971,7 +993,7 @@ def _provider_management_choices(
     *,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[Choice, ...]:
-    choices = [Choice("edit", "Edit provider")]
+    choices = [Choice("edit", "Edit provider"), Choice("authentication", "Authentication")]
     if provider.template_id is not None:
         template_version = (
             f"{provider.template_id} r{provider.template_revision}"
