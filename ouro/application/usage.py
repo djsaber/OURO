@@ -15,7 +15,7 @@ from ouro.application.usage_models import (
 )
 from ouro.billing import UsageLedger
 from ouro.core.base import utc_now
-from ouro.core.billing import ProviderUsageEntry, UsageFilter, UsagePurpose
+from ouro.core.billing import BillingMode, ProviderUsageEntry, UsageFilter, UsagePurpose
 from ouro.core.errors import PersistenceError
 from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.state import RunRecord
@@ -57,6 +57,10 @@ class UsageService:
         except KeyError:
             pass
         else:
+            if existing.billing_mode != model.billing_mode:
+                raise PersistenceError(
+                    f"provider usage billing mode conflicts with ledger entry: {entry_id}"
+                )
             expected = (
                 run.session_id,
                 run.run_id,
@@ -94,7 +98,10 @@ class UsageService:
         for binding in run.control_bindings:
             if binding.usage_scope is not None:
                 scopes.setdefault(binding.owner_id, set()).add(binding.usage_scope)
-        metadata: dict[str, object] = {"token_source": "provider_response"}
+        metadata: dict[str, object] = {
+            "token_source": "provider_response",
+            "billing_mode": model.billing_mode,
+        }
         if scopes:
             metadata["harness_scopes"] = {owner: sorted(values) for owner, values in scopes.items()}
         entry = ProviderUsageEntry(
@@ -275,7 +282,9 @@ def usage_totals(entries: Iterable[ProviderUsageEntry]) -> UsageTotals:
     cache_write_tokens = 0
     estimated_cost = 0.0
     priced_request_count = 0
+    billing_modes: set[BillingMode] = set()
     for entry in entries:
+        billing_modes.add(entry.billing_mode)
         request_count += 1
         input_tokens += entry.input_tokens
         output_tokens += entry.output_tokens
@@ -294,6 +303,7 @@ def usage_totals(entries: Iterable[ProviderUsageEntry]) -> UsageTotals:
         estimated_cost=estimated_cost,
         priced_request_count=priced_request_count,
         unpriced_request_count=request_count - priced_request_count,
+        billing_modes=tuple(sorted(billing_modes)),
     )
 
 
@@ -306,4 +316,6 @@ def _group_key(entry: ProviderUsageEntry, group_by: UsageGroupBy) -> str:
         return entry.endpoint_id or "<none>"
     if group_by == "model":
         return entry.model_id
+    if group_by == "billing_mode":
+        return entry.billing_mode
     return entry.purpose

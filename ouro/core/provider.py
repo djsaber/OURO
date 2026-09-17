@@ -7,6 +7,7 @@ from typing import Any, Literal, Protocol
 from pydantic import Field, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
+from ouro.core.billing import BillingMode
 from ouro.core.messages import ModelMessage, ProviderContinuationArtifact
 from ouro.core.reasoning import (
     ReasoningCapability,
@@ -48,6 +49,7 @@ class ModelMetadata(OuroModel):
     reasoning: ReasoningCapability = Field(default_factory=ReasoningCapability)
     reasoning_request: ReasoningRequest = Field(default_factory=ReasoningRequest)
     cost: ModelCost | None = None
+    billing_mode: BillingMode = "unknown"
     metadata: Metadata = MetadataField
 
     @model_validator(mode="after")

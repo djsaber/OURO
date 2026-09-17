@@ -80,7 +80,7 @@ from ouro.core.approvals import (
     ToolPermissionControl,
 )
 from ouro.core.base import Metadata
-from ouro.core.billing import UsageFilter
+from ouro.core.billing import BillingMode, UsageFilter
 from ouro.core.compaction import CompactionCommandResult, CompactionRecord
 from ouro.core.context import ContextMetrics
 from ouro.core.errors import ConfigError, PersistenceError, SessionNotFoundError
@@ -130,6 +130,8 @@ class TuiDailyUsage:
     cache_read_tokens: int = 0
     estimated_cost: float = 0.0
     priced_request_count: int = 0
+    unpriced_request_count: int = 0
+    billing_modes: tuple[BillingMode, ...] = ()
 
     @property
     def total_tokens(self) -> int:
@@ -158,6 +160,8 @@ class TuiSystemStatus:
     usage_cache_read_tokens: int = 0
     usage_estimated_cost: float = 0.0
     usage_priced_request_count: int = 0
+    usage_unpriced_request_count: int = 0
+    usage_billing_modes: tuple[BillingMode, ...] = ()
     usage_daily: tuple[TuiDailyUsage, ...] = ()
     task_counts: TaskCounts = field(default_factory=TaskCounts)
     task_error: str | None = None
@@ -178,6 +182,8 @@ def project_usage_system_status(
         usage_cache_read_tokens=totals.cache_read_tokens,
         usage_estimated_cost=totals.estimated_cost,
         usage_priced_request_count=totals.priced_request_count,
+        usage_unpriced_request_count=totals.unpriced_request_count,
+        usage_billing_modes=totals.billing_modes,
         usage_daily=tuple(
             TuiDailyUsage(
                 date=group.key,
@@ -187,6 +193,8 @@ def project_usage_system_status(
                 cache_read_tokens=group.totals.cache_read_tokens,
                 estimated_cost=group.totals.estimated_cost,
                 priced_request_count=group.totals.priced_request_count,
+                unpriced_request_count=group.totals.unpriced_request_count,
+                billing_modes=group.totals.billing_modes,
             )
             for group in usage.groups[-10:]
         ),

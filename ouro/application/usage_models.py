@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import Literal
 
 from ouro.application.dto import ApplicationDTO
-from ouro.core.billing import ProviderUsageEntry, UsageFilter, UsageLedgerEvent
+from ouro.core.billing import BillingMode, ProviderUsageEntry, UsageFilter, UsageLedgerEvent
 
-UsageGroupBy = Literal["date", "provider", "endpoint", "model", "purpose"]
+UsageGroupBy = Literal["date", "provider", "endpoint", "model", "purpose", "billing_mode"]
 
 
 class UsageTotals(ApplicationDTO):
@@ -18,6 +18,7 @@ class UsageTotals(ApplicationDTO):
     estimated_cost: float = 0.0
     priced_request_count: int = 0
     unpriced_request_count: int = 0
+    billing_modes: tuple[BillingMode, ...] = ()
 
 
 class UsageSummaryGroup(ApplicationDTO):

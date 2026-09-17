@@ -5,11 +5,41 @@ from datetime import UTC, datetime
 
 import pytest
 
+from ouro.application.usage import UsageService
 from ouro.billing import LocalUsageLedger
 from ouro.cli.main import main
 from ouro.cli.run import build_default_runtime
 from ouro.core.billing import ProviderUsageEntry
 from ouro.core.errors import CompactionError
+from tests.application.test_billing_attribution import record
+
+
+@pytest.mark.parametrize(
+    "costs,expected",
+    [
+        ([None], "Estimated cost (USD): -"),
+        ([None, 0.2], "Estimated cost (USD): 0.20000000 (partial)"),
+        ([0.0], "Estimated cost (USD): 0.00000000"),
+    ],
+)
+def test_cli_unknown_cost_count_and_recorded_billing_modes(tmp_path, capsys, costs, expected):
+    ledger = LocalUsageLedger(tmp_path)
+    ledger.initialize()
+    service = UsageService(ledger)
+    for index, cost in enumerate(costs):
+        record(service, str(index), "subscription" if cost is None else "usage_based", cost)
+    args = ["--home", str(tmp_path)]
+    assert main(["usage", "summary", *args]) == 0
+    text = capsys.readouterr().out
+    assert expected in text
+    assert f"Unpriced requests: {costs.count(None)}" in text
+    assert "Billing modes:" in text
+    assert main(["usage", "summary", "--group-by", "billing_mode", "--json", *args]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["totals"]["unpriced_request_count"] == costs.count(None)
+    assert {group["key"] for group in result["groups"]} == set(result["totals"]["billing_modes"])
+    assert main(["usage", "list", *args]) == 0
+    assert "billing_mode=" in capsys.readouterr().out
 
 
 @pytest.mark.asyncio

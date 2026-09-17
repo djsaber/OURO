@@ -360,7 +360,7 @@ def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
     _add_usage_filter_args(summary)
     summary.add_argument(
         "--group-by",
-        choices=("date", "provider", "endpoint", "model", "purpose"),
+        choices=("date", "provider", "endpoint", "model", "purpose", "billing_mode"),
     )
     _add_usage_output_args(summary)
 

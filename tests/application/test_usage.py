@@ -115,7 +115,7 @@ def test_usage_service_records_only_supplied_provider_usage(tmp_path) -> None:
     assert repeated == first
     assert first.input_tokens == 7
     assert first.output_tokens == 3
-    assert first.metadata == {"token_source": "provider_response"}
+    assert first.metadata == {"token_source": "provider_response", "billing_mode": "unknown"}
     assert len(ledger.list_events()) == 1
 
     with pytest.raises(PersistenceError, match="conflicts"):

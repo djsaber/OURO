@@ -78,6 +78,7 @@ TUI 经 `TuiController` 调用 Application，使用 Runtime 事件与 Session ob
   管理插件包、运行状态和命令；
 - `skills list/show/roots/prompt/validate/install/update/remove/enable/disable` 管理 Agent Skills；
 - `usage summary/list/show/modify/reset/audit` 查询并审计 Provider 返回的 Token 用量；
+- `usage summary --group-by billing_mode` 按请求时的服务声明分组；summary 展示未知金额请求数及计费模式，list 输出原始归属，未知与部分金额语义见[用量与计费规格](OURO_用量与计费规格_2026-09-17.md)；
 - `approve/reject/abort` 恢复或终止 active Run。
 
 Provider check 的 provider id 使用唯一位置参数；运行时覆盖使用 endpoint 和参数 flags。Provider 创建、更新、

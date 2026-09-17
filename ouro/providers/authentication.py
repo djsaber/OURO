@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from ouro.auth.request_auth import AuthError, RequestAuthenticator, RequestAuthSnapshot
+from ouro.core.billing import BillingMode
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ProviderStreamEvent
 from ouro.providers.http_transport import ProviderTransportError
@@ -12,9 +13,10 @@ from ouro.providers.http_transport import ProviderTransportError
 
 @dataclass(frozen=True)
 class ProviderRequestPolicy:
-    """Service-specific error facts, supplied by composition rather than wire codecs."""
+    """Service facts supplied by trusted composition rather than wire codecs or login type."""
 
     quota_error_codes: frozenset[str] = frozenset()
+    billing_mode: BillingMode = "unknown"
 
 
 class ProviderRequestError(ProviderTransportError):

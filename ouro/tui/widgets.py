@@ -1282,6 +1282,7 @@ class _WelcomeUsageBlock(Vertical):
         self._status = status or TuiSystemStatus()
         self._chart = Static(classes="welcome-usage-line")
         self._requests = Static(classes="welcome-usage-line")
+        self._billing = Static(classes="welcome-usage-line")
         self._tokens = Static(classes="welcome-usage-line")
         self._hovered_date: str | None = None
         self._render_values()
@@ -1290,6 +1291,7 @@ class _WelcomeUsageBlock(Vertical):
         yield Static("USAGE", classes="welcome-title")
         yield self._chart
         yield self._requests
+        yield self._billing
         yield self._tokens
 
     def on_mount(self) -> None:
@@ -1369,6 +1371,14 @@ class _WelcomeUsageBlock(Vertical):
             if selected is not None
             else status.usage_priced_request_count
         )
+        unpriced_request_count = (
+            selected.unpriced_request_count
+            if selected is not None
+            else status.usage_unpriced_request_count
+        )
+        billing_modes = (
+            selected.billing_modes if selected is not None else status.usage_billing_modes
+        )
         requests = Text(
             f"{request_count} request(s)",
             style=theme.text_muted,
@@ -1376,7 +1386,27 @@ class _WelcomeUsageBlock(Vertical):
         if priced_request_count:
             requests.append(theme.section_separator, style=theme.separator_tone)
             requests.append(f"${estimated_cost:.4f}", style=theme.text_faint)
+            if unpriced_request_count:
+                requests.append(" (partial)", style=theme.text_faint)
+        elif unpriced_request_count:
+            requests.append(theme.section_separator, style=theme.separator_tone)
+            requests.append("cost unknown", style=theme.text_faint)
+        if unpriced_request_count:
+            requests.append(theme.section_separator, style=theme.separator_tone)
+            requests.append(f"{unpriced_request_count} unpriced", style=theme.text_faint)
         self._requests.update(requests)
+        billing_labels = {
+            "unknown": "unknown",
+            "usage_based": "usage-based",
+            "subscription": "subscription",
+        }
+        self._billing.display = bool(billing_modes)
+        self._billing.update(
+            Text(
+                "Billing: " + ", ".join(billing_labels[mode] for mode in billing_modes),
+                style=theme.text_faint,
+            )
+        )
         input_tokens = selected.input_tokens if selected is not None else status.usage_input_tokens
         output_tokens = (
             selected.output_tokens if selected is not None else status.usage_output_tokens

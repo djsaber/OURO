@@ -78,7 +78,8 @@ def list_usage(
         print(
             f"{entry.entry_id} {entry.occurred_at.isoformat()} {entry.purpose} {route} "
             f"in={entry.input_tokens} out={entry.output_tokens} "
-            f"cache_read={entry.cache_read_tokens} cache_write={entry.cache_write_tokens}"
+            f"cache_read={entry.cache_read_tokens} cache_write={entry.cache_write_tokens} "
+            f"billing_mode={entry.billing_mode}"
         )
     if result.truncated:
         print(f"Showing {len(result.entries)} of {result.total_matching} matching entries.")
@@ -243,6 +244,8 @@ def _usage(home: str | Path | None) -> UsageService:
 
 def _print_totals(totals: UsageTotals, *, prefix: str = "") -> None:
     print(f"{prefix}Requests: {totals.request_count}")
+    print(f"{prefix}Unpriced requests: {totals.unpriced_request_count}")
+    print(f"{prefix}Billing modes: {', '.join(totals.billing_modes) or '-'}")
     print(f"{prefix}Input tokens: {totals.input_tokens}")
     print(f"{prefix}Output tokens: {totals.output_tokens}")
     print(f"{prefix}Total tokens: {totals.total_tokens}")

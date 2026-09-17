@@ -22,6 +22,7 @@
 | [会话与持久化](OURO_会话持久化规格_2026-09-02.md) | SessionRepository、文件/SQLite、索引、锁、恢复、分支与回收站 | `ouro/sessions`、`ouro/application/sessions.py` |
 | [会话撤销、Harness 状态与插件交互](OURO_会话撤销与Harness状态规格_2026-09-08.md) | 原生状态版本、精确撤销、插件调用/提交、队列竞争、恢复与验收证据 | `ouro/core/harness.py`、`ouro/sessions`、`ouro/application`、`ouro/plugins/harness_calls.py` |
 | [Provider 与配置](OURO_Provider配置规格_2026-09-02.md) | Provider/Endpoint、静态及受管理认证引用、模板绑定、运行参数与覆盖规则 | `ouro/config`、`ouro/providers` |
+| [用量与计费](OURO_用量与计费规格_2026-09-17.md) | 请求时计费归属、实际 token、未知/部分金额、账本审计与 CLI/TUI 呈现 | `ouro/core/billing.py`、`ouro/application/usage.py`、`ouro/billing` |
 | [受管理凭据核心](OURO_凭据核心规格_2026-09-16.md) | 受限文件存储、revision、刷新/注销/取消与跨进程互斥；尚未接入订阅产品 | `ouro/auth` |
 | [Provider 认证用例](OURO_Provider认证用例规格_2026-09-16.md) | 通用登录、安全状态、凭据管理与配置条件提交；轻量 CLI 与通用 TUI 已接线，生产驱动待验证 | `ouro/application/provider_auth*.py` |
 | [认证驱动与单次授权](OURO_认证驱动与授权规格_2026-09-16.md) | 受管理驱动端口、封闭 challenge、单次授权与资源清理；尚无生产驱动；CLI/TUI 通过通用用例接入 | `ouro/auth/driver_contracts.py`、`ouro/auth/authorization.py` |

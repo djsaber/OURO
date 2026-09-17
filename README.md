@@ -390,6 +390,10 @@ Harness 编排工具可声明 `permission_control="tool"`，此时工具定义�
 缺失值的回退来源。`estimated_cost` 的框架契约固定为 USD；只有 adapter 能保证该语义时才可自动填入，
 否则保持未定价状态，可按账单手动修订。
 
+计费模式随请求记入账本，不从登录方式或当前 Provider 配置推断。CLI/TUI 显示未知金额请求数，混合汇总的金额
+标记为部分金额；订阅调用没有单次金额时保持未知，不记为零。可使用 `usage summary --group-by billing_mode`
+按 `usage_based`、`subscription`、`unknown` 汇总，具体行为见[用量与计费规格](dev/specs/OURO_用量与计费规格_2026-09-17.md)。
+
 ```bash
 # 全局汇总；裸日期按 UTC 自然日处理，--until 裸日期包含当天
 uv run ouro usage summary --home ./.ouro-dev

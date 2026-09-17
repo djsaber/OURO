@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import datetime
-from typing import Literal, Self
+from typing import Literal, Self, cast
 
 from pydantic import Field, TypeAdapter, field_validator, model_validator
 
@@ -10,8 +10,10 @@ from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroMode
 
 UsagePurpose = Literal["agent", "compaction"]
 UsageLedgerEventType = Literal["record", "replace", "reset"]
+BillingMode = Literal["unknown", "usage_based", "subscription"]
 
 _HARNESS_SCOPES = TypeAdapter(dict[str, tuple[str, ...]])
+_BILLING_MODE: TypeAdapter[BillingMode] = TypeAdapter(BillingMode)
 
 
 class ProviderUsageEntry(VersionedOuroModel):
@@ -45,6 +47,17 @@ class ProviderUsageEntry(VersionedOuroModel):
     modified_at: datetime | None = None
     modification_note: str | None = None
     metadata: Metadata = MetadataField
+
+    @field_validator("metadata")
+    @classmethod
+    def _validate_billing_mode(cls, value: Metadata) -> Metadata:
+        _BILLING_MODE.validate_python(value.get("billing_mode", "unknown"))
+        return value
+
+    @property
+    def billing_mode(self) -> BillingMode:
+        """Request-time service attribution; absent declarations remain unknown."""
+        return cast(BillingMode, self.metadata.get("billing_mode", "unknown"))
 
     @field_validator(
         "entry_id",

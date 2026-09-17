@@ -17,6 +17,7 @@ from ouro.config.provider_models import (
 from ouro.config.provider_runtime import validate_runtime_auth
 from ouro.config.reasoning import EndpointReasoningConfig
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.billing import BillingMode
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata
 from ouro.core.reasoning import ReasoningRequest
@@ -91,6 +92,7 @@ def build_runtime_adapter(
             protocol=protocol,
             provider_id=provider_id,
             model_id=model_id,
+            billing_mode=request_policy.billing_mode if request_policy is not None else "unknown",
         ),
         provider_id=provider_id,
         base_url=base_url,
@@ -164,6 +166,7 @@ def _model_metadata(
     protocol: ProviderProtocol,
     provider_id: str,
     model_id: str,
+    billing_mode: BillingMode,
 ) -> ModelMetadata:
     context_window = 128_000 if options.context_window is None else options.context_window
     max_output_tokens = 8192 if options.max_output_tokens is None else options.max_output_tokens
@@ -192,6 +195,7 @@ def _model_metadata(
     try:
         return ModelMetadata(
             model_id=model_id,
+            billing_mode=billing_mode,
             provider_id=provider_id,
             endpoint_id=options.endpoint_id,
             display_name=model_id,
@@ -208,7 +212,7 @@ def _model_metadata(
             reasoning_request=options.reasoning_request or ReasoningRequest(),
         )
     except ValueError as exc:
-        raise ConfigError(f"invalid model reasoning request: {exc}") from exc
+        raise ConfigError(f"invalid model metadata: {exc}") from exc
 
 
 def _credential_ref(options: ProviderRuntimeOptions) -> CredentialRef:

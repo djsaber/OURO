@@ -20,6 +20,28 @@ from ouro.providers import (
     OpenAICompatibleProvider,
     build_runtime_adapter,
 )
+from ouro.providers.authentication import ProviderRequestPolicy
+
+
+@pytest.mark.parametrize("protocol", ["openai-chat-completions", "anthropic-messages"])
+async def test_billing_mode_comes_from_service_declaration_not_static_key(protocol):
+    options = ProviderRuntimeOptions(
+        protocol=protocol,
+        provider_id="custom",
+        model="model",
+        base_url="https://fixture.invalid",
+        api_key="fixture-key",
+    )
+    unknown = build_runtime_adapter(options)
+    declared = build_runtime_adapter(
+        options, request_policy=ProviderRequestPolicy(billing_mode="usage_based")
+    )
+    try:
+        assert unknown.model.billing_mode == "unknown"
+        assert declared.model.billing_mode == "usage_based"
+    finally:
+        await unknown.provider.close()
+        await declared.provider.close()
 
 
 class CapturingTransport:
