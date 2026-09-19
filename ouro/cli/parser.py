@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ouro import __version__
-from ouro.config.provider_models import CONFIGURABLE_PROVIDER_TYPES
+from ouro.config.provider_models import CONFIGURABLE_PROVIDER_TYPES, SUPPORTED_PROVIDER_PROTOCOLS
 from ouro.config.reasoning import (
     REASONING_PRESETS,
     EndpointReasoningConfig,
@@ -1071,6 +1071,8 @@ then create its model route with 'ouro provider endpoint set'.""",
   ouro provider add openai --type openai --api-key-env OPENAI_API_KEY --default
   ouro provider add private --type openai-compatible \\
     --base-url https://models.example.com/v1 --api-key-env PRIVATE_API_KEY
+  ouro provider add responses --type openai-compatible --protocol openai-responses \\
+    --base-url https://models.example.com/v1 --api-key-env PRIVATE_API_KEY
 
 Provider ids are unique. Use 'provider update' for an existing Provider or 'provider replace'
 when its type and complete template-owned configuration must change.""",
@@ -1319,6 +1321,14 @@ def _add_provider_auth_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _add_provider_identity_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--protocol",
+        choices=tuple(protocol for protocol in SUPPORTED_PROVIDER_PROTOCOLS if protocol != "faux"),
+        help=(
+            "Wire protocol for a compatible Provider; defaults to its type's protocol. "
+            "Integrated types require their template protocol"
+        ),
+    )
     parser.add_argument(
         "--type",
         dest="provider_type",

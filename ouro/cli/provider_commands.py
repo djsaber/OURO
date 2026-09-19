@@ -15,7 +15,7 @@ from ouro.application.configuration_models import (
 )
 from ouro.cli.errors import error_exit_code
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime
-from ouro.config import EndpointReasoningConfig, ProviderType
+from ouro.config import EndpointReasoningConfig, ProviderProtocol, ProviderType
 from ouro.core.errors import OuroError
 
 
@@ -244,6 +244,7 @@ def mutate_provider_config(
     *,
     home: str | Path | None = None,
     provider_type: ProviderType | None = None,
+    protocol: ProviderProtocol | None = None,
     endpoint_id: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
@@ -288,6 +289,7 @@ def mutate_provider_config(
                 catalog = facade.add_provider(
                     provider_id,
                     provider_type=provider_type,
+                    protocol=protocol,
                     endpoint_id=endpoint_id,
                     model=model,
                     base_url=base_url,
@@ -307,6 +309,7 @@ def mutate_provider_config(
                 catalog = facade.replace_provider(
                     provider_id,
                     provider_type=provider_type,
+                    protocol=protocol,
                     endpoint_id=endpoint_id,
                     model=model,
                     base_url=base_url,

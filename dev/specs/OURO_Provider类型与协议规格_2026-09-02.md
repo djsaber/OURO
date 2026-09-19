@@ -73,6 +73,13 @@ continuation：OpenAI Chat Completions 支持 `none/text`，Responses 与 Anthro
 
 ## 创建、更新与替换
 
+CLI 的 `provider add/replace --protocol` 将显式协议传递到共享 Application 配置用例；省略时 compatible 类型
+采用默认连接，集成类型使用模板协议。显式协议与模板不一致时拒绝写盘，用户应使用 compatible 类型配置自定义连接。
+TUI 的 Provider 设置复用 `EditableChoiceScreen` 和 `ChoiceScreen`，从类型连接档案中筛选当前认证驱动支持的协议。
+新建自定义供应商可选择协议；仅有一种协议、模板供应商及已有供应商显示只读协议。切换协议时，仍为旧协议默认值的
+API 路径跟随新协议默认值，用户自定义路径保持不变。协议选择经 `TuiProviderConfiguration` 传入 Application，
+不增加 Responses 专属供应商类型，也不在界面层复制连接组合校验。
+
 Provider mutation 使用三个明确操作：
 
 - `provider add`：唯一创建入口；根据 type 为集成厂商原子装载模板，或为 compatible 类型创建空 Provider；

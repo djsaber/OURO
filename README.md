@@ -246,6 +246,18 @@ uv run ouro provider add glm \
 # update 不允许改变 provider type/protocol
 uv run ouro provider update glm --home ./.ouro-dev --timeout 90
 
+# Responses 自定义供应商复用 openai-compatible 类型
+uv run ouro provider add responses-gateway \
+  --home ./.ouro-dev \
+  --type openai-compatible \
+  --protocol openai-responses \
+  --base-url https://models.example.com/v1 \
+  --api-key-env GATEWAY_API_KEY
+
+uv run ouro provider endpoint set responses-gateway chat \
+  --home ./.ouro-dev \
+  --model model-name --tools --streaming --default
+
 # 非内置厂商直接选择兼容协议类型
 uv run ouro provider add private-model \
   --home ./.ouro-dev \
@@ -280,6 +292,12 @@ uv run ouro provider check glm --endpoint reasoning --home ./.ouro-dev
 uv run ouro provider list --home ./.ouro-dev
 uv run ouro provider endpoint list glm --home ./.ouro-dev
 ```
+
+`provider add/replace --protocol` 显式选择自定义供应商的线协议；省略时使用类型默认值。
+`openai-compatible` 默认 Chat Completions，也可选择 Responses，默认 API 路径分别为 `/chat/completions`
+和 `/responses`，可通过 `--api-path` 覆盖。内置供应商使用模板协议，不能通过该参数改写模板契约。
+TUI 在 `Add provider → OpenAI-compatible → Protocol` 中选择协议，复用分组菜单与子选择页；切换协议时
+同步默认 API 路径，保留自定义路径。已有供应商的协议只读，普通编辑保留协议和 Endpoint。
 
 `--reasoning-preset` 提供 `none`、`openai-effort`、`reasoning-content-effort`、
 `thinking-toggle`、`enable-thinking-toggle` 和 `anthropic-adaptive-effort`。Preset 是用户对目标模型协议能力的

@@ -548,6 +548,7 @@ def _provider_command(args: argparse.Namespace) -> int:
             args.provider_id,
             home=home,
             provider_type=getattr(args, "provider_type", None),
+            protocol=getattr(args, "protocol", None),
             endpoint_id=args.endpoint_id,
             model=args.model,
             base_url=args.base_url,

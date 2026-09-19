@@ -72,7 +72,12 @@ from ouro.application.supervisor_models import RunHandle
 from ouro.application.tasks import TaskService
 from ouro.application.usage_models import UsageSummary, UsageTotals
 from ouro.automation.models import TaskConfiguration, TaskCounts, TaskExecution, TaskRecord
-from ouro.config import EndpointReasoningConfig, ProviderType, QueuedInputConsumptionMode
+from ouro.config import (
+    EndpointReasoningConfig,
+    ProviderProtocol,
+    ProviderType,
+    QueuedInputConsumptionMode,
+)
 from ouro.core.agents import ExecutionMode, ToolSelection
 from ouro.core.approvals import (
     SESSION_APPROVAL_MODES,
@@ -290,6 +295,7 @@ class TuiProviderConfiguration:
     enabled: bool = True
     make_default: bool = False
     auth_driver: str | None = None
+    protocol: ProviderProtocol | None = None
 
 
 @dataclass(frozen=True)
@@ -1073,6 +1079,7 @@ class TuiController:
         catalog = configuration.add_provider(
             draft.provider_id,
             provider_type=draft.provider_type,
+            protocol=draft.protocol,
             auth_driver=draft.auth_driver,
             base_url=draft.base_url,
             api_path=draft.api_path,
@@ -1101,6 +1108,11 @@ class TuiController:
             raise ConfigError(
                 "provider type cannot be changed by editing settings: "
                 f"{current.provider_type} != {draft.provider_type}"
+            )
+        if draft.protocol is not None and current.protocol != draft.protocol:
+            raise ConfigError(
+                "provider protocol cannot be changed by editing settings: "
+                f"{current.protocol} != {draft.protocol}"
             )
         catalog = configuration.update_provider_settings(
             draft.provider_id,

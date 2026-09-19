@@ -64,6 +64,7 @@ from ouro.config import (
     PromptConfigManager,
     ProviderConfig,
     ProviderConfigManager,
+    ProviderProtocol,
     ProviderTemplateEntry,
     ProviderTemplateStore,
     ProviderType,
@@ -265,6 +266,7 @@ class ConfigurationFacade:
         provider_id: str,
         *,
         provider_type: ProviderType,
+        protocol: ProviderProtocol | None = None,
         auth_driver: str | None = None,
         endpoint_id: str | None = None,
         model: str | None = None,
@@ -293,6 +295,7 @@ class ConfigurationFacade:
         )
         if provider_type in INTEGRATED_PROVIDER_TYPES:
             entry = self.provider_templates.get_entry(provider_type)
+            self._validate_template_protocol(entry, protocol)
             self.providers.create_from_template(
                 entry.template,
                 auth_driver=auth_driver,
@@ -319,6 +322,7 @@ class ConfigurationFacade:
             )
             self.providers.create_provider(
                 provider_id,
+                protocol=protocol,
                 auth_driver=auth_driver,
                 provider_type=provider_type,
                 base_url=base_url,
@@ -456,6 +460,7 @@ class ConfigurationFacade:
         provider_id: str,
         *,
         provider_type: ProviderType,
+        protocol: ProviderProtocol | None = None,
         auth_driver: str | None = None,
         endpoint_id: str | None = None,
         model: str | None = None,
@@ -484,6 +489,7 @@ class ConfigurationFacade:
         )
         if provider_type in INTEGRATED_PROVIDER_TYPES:
             entry = self.provider_templates.get_entry(provider_type)
+            self._validate_template_protocol(entry, protocol)
             self.providers.replace_from_template(
                 entry.template,
                 auth_driver=auth_driver,
@@ -510,6 +516,7 @@ class ConfigurationFacade:
             )
             self.providers.replace_provider(
                 provider_id,
+                protocol=protocol,
                 auth_driver=auth_driver,
                 provider_type=provider_type,
                 base_url=base_url,
@@ -524,6 +531,18 @@ class ConfigurationFacade:
         return self.provider_catalog(
             change=configuration_change("providers", "replaced", "next_request")
         )
+
+    @staticmethod
+    def _validate_template_protocol(
+        entry: ProviderTemplateEntry,
+        protocol: ProviderProtocol | None,
+    ) -> None:
+        if protocol is not None and protocol != entry.template.protocol:
+            raise ConfigError(
+                f"protocol does not match template {entry.template.template_id}: "
+                f"{protocol} != {entry.template.protocol}; "
+                "use a compatible provider type for a custom connection"
+            )
 
     def _resolve_provider_retry_policy(
         self,

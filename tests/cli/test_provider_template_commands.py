@@ -192,25 +192,13 @@ def test_provider_update_json_exposes_safe_template_merge_report(tmp_path, capsy
     }
 
 
-def test_removed_configure_custom_and_protocol_are_not_parseable() -> None:
+def test_removed_configure_and_custom_type_are_not_parseable() -> None:
     parser = build_parser()
 
     with pytest.raises(SystemExit):
         parser.parse_args(["provider", "configure", "openai"])
     with pytest.raises(SystemExit):
         parser.parse_args(["provider", "add", "local", "--type", "custom"])
-    with pytest.raises(SystemExit):
-        parser.parse_args(
-            [
-                "provider",
-                "add",
-                "local",
-                "--type",
-                "openai-compatible",
-                "--protocol",
-                "openai-chat-completions",
-            ]
-        )
 
 
 def test_integrated_type_conflict_prompts_update_or_replace(tmp_path, capsys) -> None:

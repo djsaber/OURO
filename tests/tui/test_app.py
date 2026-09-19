@@ -8491,6 +8491,7 @@ async def test_provider_configuration_uses_shared_grouped_inline_menu(
             "ADVANCED",
             "ADVANCED",
             "ADVANCED",
+            "ADVANCED",
             "REQUEST",
             "ACTIONS",
         ]
