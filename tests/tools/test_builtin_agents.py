@@ -117,7 +117,7 @@ def test_plugin_and_mcp_cannot_spoof_reserved_agent_control_tools(source) -> Non
         registry.register(spoofed)
 
 
-def test_spawn_description_lists_available_subagents() -> None:
+def test_spawn_schema_lists_available_subagents_without_duplicate_description() -> None:
     catalog = AgentCatalogSnapshot(
         entries=(
             AgentCatalogEntry(
@@ -149,11 +149,13 @@ def test_spawn_description_lists_available_subagents() -> None:
         tool for tool in agent_control_tools(catalog) if tool.definition.name == "SpawnAgent"
     )
 
-    description = spawn.definition.description
-    assert "Available subagents" in description
-    assert "- id: general, name: General, description: General child." in description
-    assert "- id: researcher, name: Researcher, description: Researches topics." in description
-    assert "broken" not in description
+    options = spawn.definition.parameters_schema["properties"]["agent_id"]["oneOf"]
+    assert options == [
+        {"const": "general", "title": "General", "description": "General child."},
+        {"const": "researcher", "title": "Researcher", "description": "Researches topics."},
+    ]
+    assert "agent_id" in spawn.definition.description
+    assert all(option["description"] not in spawn.definition.description for option in options)
 
 
 def test_agent_control_contracts_guide_model_decisions_and_describe_fields() -> None:
@@ -174,13 +176,17 @@ def test_agent_control_contracts_guide_model_decisions_and_describe_fields() -> 
     send = definitions["SendAgentMessage"]
     interrupt = definitions["InterruptAgent"]
 
-    assert spawn.description.startswith("Use this tool to delegate")
-    assert "Do not spawn" in spawn.description
-    assert "does not inherit this conversation" in spawn.description
-    assert send.description.startswith("Use this tool to give")
-    assert "Use mode='steer'" in send.description
-    assert "Use mode='follow_up' only" in send.description
-    assert interrupt.description.startswith("Use this tool to stop")
+    assert "Delegate a bounded task" in spawn.description
+    assert "Avoid trivial tasks" in spawn.description
+    assert (
+        "does not inherit this conversation"
+        in spawn.parameters_schema["properties"]["task"]["description"]
+    )
+    assert "existing subagent" in send.description
+    mode_description = send.parameters_schema["properties"]["mode"]["description"]
+    assert "'steer' only to guide an actively working subagent" in mode_description
+    assert "'follow_up' continues it only after" in mode_description
+    assert "Stop an active subagent" in interrupt.description
     assert "Do not interrupt" in interrupt.description
 
     for definition in definitions.values():

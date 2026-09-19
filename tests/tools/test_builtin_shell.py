@@ -176,7 +176,7 @@ def test_builtin_tool_list_exposes_exactly_the_detected_shell() -> None:
             (
                 "PowerShell syntax only",
                 "full cmdlet names",
-                "pipelines carry objects",
+                "Pipelines carry objects",
                 "-LiteralPath",
                 "$LASTEXITCODE",
                 "Get-Command",
@@ -206,9 +206,9 @@ def test_shell_contract_exposes_dialect_specific_pitfalls(
     assert definition.name == shell.tool_name
     assert definition.display_name == shell.display_name
     assert definition.metadata["shell_kind"] == shell.kind
-    assert definition.description.startswith("Use this tool to run a non-interactive")
-    assert "Do not call interactive programs" in definition.description
-    assert "Prefer dedicated" in definition.description
+    assert "non-interactive" in definition.description
+    assert "variables and directory changes do not persist" in definition.description
+    assert "Prefer Read/Write/Edit/Glob/Grep" in definition.description
     assert all(text in definition.description for text in required_guidance)
     assert all(
         "description" in schema for schema in definition.parameters_schema["properties"].values()

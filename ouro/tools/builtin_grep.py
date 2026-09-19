@@ -50,18 +50,11 @@ _FILE_TYPES: dict[str, tuple[str, ...]] = {
 }
 
 
-GREP_DESCRIPTION = """Use this tool to locate regular-expression matches when the relevant \
-content or file location is unknown. Prefer Glob when you only need filenames and Read when you \
-already know the exact file and range. Do not read whole files into context when a targeted \
-search can locate the relevant lines.
-
-Write patterns in ripgrep regex syntax, which differs from POSIX `grep` syntax. For example, \
-braces are special, so escape them as `\\{` to match a literal `{`.
-
-Hidden files (dotfiles such as `.gitlab-ci.yml` or `.eslintrc.json`) are searched by default. \
-To also search files excluded by `.gitignore` (such as `node_modules` or build outputs), set \
-`include_ignored` to `true`. Sensitive files (such as `.env`) are always skipped for safety, \
-even when `include_ignored` is `true`."""
+GREP_DESCRIPTION = """\
+Search file contents by regex to locate relevant files or lines. Use Glob for filenames and
+Read for a known file range. Includes hidden files; skips .env, .env.*, binary or unreadable
+files, and files over 32 MiB. Directory searches also skip version-control metadata and
+symlinks. Narrow the search if results are truncated."""
 
 
 _GREP_SCHEMA: Mapping[str, object] = {
@@ -71,118 +64,88 @@ _GREP_SCHEMA: Mapping[str, object] = {
             "type": "string",
             "minLength": 1,
             "description": (
-                "Ripgrep-compatible regular expression to find. Escape regex metacharacters "
-                "when you intend to match them literally."
+                "Python regular expression; escape metacharacters to match them literally."
             ),
         },
         "path": {
             "type": "string",
             "description": (
-                "Exact file or root directory to search. Use an absolute path or a path "
-                "relative to the current working directory. Omit to search the current "
-                "working directory."
+                "File or root directory, absolute or workspace-relative. Defaults to the "
+                "workspace; required if none is configured. An explicit file bypasses ignore "
+                "rules and glob/type filters."
             ),
         },
         "glob": {
             "type": "string",
             "description": (
-                "Optional glob restricting which files are searched, for example `*.ts`. It "
-                "is matched against each file's full absolute path, so a path-anchored "
-                "pattern like "
-                "`src/**/*.ts` silently matches nothing — use a basename pattern (`*.ts`), "
-                "or anchor with `**/` (`**/src/**/*.ts`). To scope the search to a "
-                "directory, use `path` instead."
+                "Case-sensitive file filter: '*.ts' matches basenames; patterns with / match "
+                "absolute paths, so use '**/src/**/*.ts', not 'src/**/*.ts'. Use path to "
+                "scope a directory."
             ),
         },
         "type": {
             "type": "string",
             "description": (
-                "Optional ripgrep file type, such as `ts` or `py`. Prefer this over `glob` when "
-                "filtering by language or file kind: it is more efficient and less "
-                "error-prone than an equivalent glob pattern."
+                "File type filter; prefer over glob for languages. Supported: c, cpp, css, "
+                "go, html, java, js, json, md, py, rust, sh, sql, toml, ts, txt, xml, yaml."
             ),
         },
         "output_mode": {
             "type": "string",
             "enum": ["content", "files_with_matches", "count_matches"],
             "description": (
-                "Choose `files_with_matches` for file discovery, `content` for matching lines "
-                "and context, or `count_matches` for per-file counts. `content` honors `-A`, `-B`, "
-                "`-C`, `-n`, and `head_limit`; `files_with_matches` shows only the paths of "
-                "files that contain a match, most-recently-modified first (honors "
-                "`head_limit`); `count_matches` shows per-file match counts as `path:count` "
-                "lines, preceded by an aggregate total line. Defaults to "
-                "`files_with_matches`."
+                "'files_with_matches' (default): paths, newest modified first. 'content': "
+                "matching lines and context. 'count_matches': matching-line counts as "
+                "path:count plus totals, not individual regex occurrence counts."
             ),
         },
         "-A": {
             "type": "integer",
             "minimum": 0,
-            "description": (
-                "Number of lines to show after each match. Applies only when `output_mode` "
-                "is `content`."
-            ),
+            "description": "Context lines after each match; content mode only. Default 0.",
         },
         "-B": {
             "type": "integer",
             "minimum": 0,
-            "description": (
-                "Number of lines to show before each match. Applies only when `output_mode` "
-                "is `content`."
-            ),
+            "description": "Context lines before each match; content mode only. Default 0.",
         },
         "-C": {
             "type": "integer",
             "minimum": 0,
-            "description": (
-                "Number of lines to show before and after each match. Applies only when "
-                "`output_mode` is `content`; takes precedence over `-A` and `-B`."
-            ),
+            "description": "Context lines on both sides; content mode only. Overrides -A and -B.",
         },
         "-i": {
             "type": "boolean",
-            "description": "Perform a case-insensitive search. Defaults to false.",
+            "description": "Ignore case in content matching. Default false.",
         },
         "-n": {
             "type": "boolean",
-            "description": (
-                "Prefix each matching line with its line number. Applies only when "
-                "`output_mode` is `content`. Defaults to true."
-            ),
+            "description": "Show line numbers in content mode. Default true.",
         },
         "head_limit": {
             "type": "integer",
             "minimum": 0,
             "description": (
-                "Limit output to the first N lines/entries after offset. Defaults to 250. "
-                "Pass 0 for unlimited."
+                "Maximum entries after offset: matching lines in content mode (excluding "
+                "context), files otherwise. Default 250; 0 removes the page limit. Content "
+                "collection is capped at 20,000 matching lines."
             ),
         },
         "offset": {
             "type": "integer",
             "minimum": 0,
-            "description": (
-                "Number of leading lines/entries to skip before applying `head_limit`. Use "
-                "it together with `head_limit` to page through large result sets. Defaults "
-                "to 0."
-            ),
+            "description": "Entries to skip before head_limit; use for pagination. Default 0.",
         },
         "include_ignored": {
             "type": "boolean",
             "description": (
-                "Also search files excluded by ignore files such as `.gitignore`, `.ignore`, "
-                "and `.rgignore` (for example `node_modules` or build outputs). Sensitive "
-                "files (such as `.env`) are always skipped for safety, even when "
-                "`include_ignored` is `true`. VCS metadata directories (`.git` and similar) "
-                "are always skipped, even when this is true. Defaults to false."
+                "Bypass .gitignore, .ignore, and .rgignore when ignored files are needed. "
+                "Default false; other exclusions still apply."
             ),
         },
         "multiline": {
             "type": "boolean",
-            "description": (
-                "Enable multiline matching, where the pattern can span line boundaries and "
-                "`.` also matches newlines. Defaults to false."
-            ),
+            "description": "Allow matches across lines and let . match newlines. Default false.",
         },
     },
     "required": ["pattern"],

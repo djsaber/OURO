@@ -110,13 +110,17 @@ async def test_search_and_todolist_contracts_guide_model_decisions_and_describe_
     grep = tools["Grep"]
     todos = tools["TodoList"]
 
-    assert glob.definition.description.startswith("Use this tool to discover")
-    assert "Prefer Grep" in glob.definition.description
-    assert "Do not use this tool" in glob.definition.description
-    assert grep.definition.description.startswith("Use this tool to locate")
-    assert "Prefer Glob" in grep.definition.description
-    assert todos.definition.description.startswith("Use this tool to create")
-    assert "When NOT to use" in todos.definition.description
+    assert "Find files by name or path pattern" in glob.definition.description
+    assert "Grep for content" in glob.definition.description
+    assert "never lists directories" in " ".join(glob.definition.description.split())
+    assert "Search file contents by regex" in grep.definition.description
+    assert "Glob for filenames" in grep.definition.description
+    assert (
+        "Python regular expression"
+        in grep.definition.parameters_schema["properties"]["pattern"]["description"]
+    )
+    assert "Track multi-step work" in todos.definition.description
+    assert "Skip trivial tasks" in todos.definition.description
 
     for tool in (glob, grep, todos):
         properties = tool.definition.parameters_schema["properties"]

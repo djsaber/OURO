@@ -45,14 +45,10 @@ def builtin_file_tools() -> list[Tool]:
             definition=ToolDefinition(
                 name="Read",
                 description=(
-                    "Use this tool to inspect a known UTF-8 text file. Call it when you know "
-                    "the file path and need its contents or a specific line range. Prefer Glob "
-                    "to discover paths and Grep to locate text across files; do not use Read "
-                    "for directory listing, cross-file search, binary files, or non-UTF-8 "
-                    "content. Results use '<line number>\\t<content>' format. Use offset and "
-                    "limit to page through large files, continuing from next_offset when the "
-                    "result is truncated. Directories are rejected. Each call returns at most "
-                    "1,000 lines or 100,000 UTF-8 bytes."
+                    "Read a known UTF-8 text file with line numbers. Use Glob to find paths "
+                    "or Grep to search content. Directories, binary files, and non-UTF-8 files "
+                    "are unsupported. Returns '<line number>\\t<content>', capped at 1,000 "
+                    "lines or 100,000 UTF-8 bytes per call."
                 ),
                 parameters_schema={
                     "type": "object",
@@ -60,18 +56,15 @@ def builtin_file_tools() -> list[Tool]:
                         "path": {
                             "type": "string",
                             "minLength": 1,
-                            "description": (
-                                "Absolute path or workspace-relative path of the UTF-8 text "
-                                "file to inspect. Pass a file, not a directory."
-                            ),
+                            "description": "Absolute or workspace-relative file path.",
                         },
                         "offset": {
                             "type": "integer",
                             "minimum": 1,
                             "default": 1,
                             "description": (
-                                "1-based line number to read from. Omit to start at line 1; use "
-                                "a prior result's next_offset to continue paging."
+                                "1-based starting line; use next_offset from a previous result "
+                                "to continue reading."
                             ),
                         },
                         "limit": {
@@ -80,8 +73,7 @@ def builtin_file_tools() -> list[Tool]:
                             "maximum": _MAX_READ_LINES,
                             "default": _MAX_READ_LINES,
                             "description": (
-                                "Maximum number of lines to return, from 1 to 1,000. Omit for "
-                                "1,000. The 100,000-byte cap may end the page earlier."
+                                "Maximum lines to return; the byte cap may shorten the page."
                             ),
                         },
                     },
@@ -97,13 +89,9 @@ def builtin_file_tools() -> list[Tool]:
             definition=ToolDefinition(
                 name="Write",
                 description=(
-                    "Use this tool to create a UTF-8 text file, replace a file's complete "
-                    "contents, or append text at its end. Use overwrite only when you intend to "
-                    "supply the entire final file; use append only when preserving all existing "
-                    "content is required. Prefer Edit for focused changes to an existing file. "
-                    "Do not overwrite a file whose current contents matter until you have read "
-                    "or otherwise verified it. Missing parent directories are created "
-                    "automatically, and no extra text or newline is added."
+                    "Create, overwrite, or append to a UTF-8 text file. Prefer Edit for "
+                    "targeted changes. Read or verify existing content before overwriting "
+                    "a file whose contents matter. Creates missing parent directories."
                 ),
                 parameters_schema={
                     "type": "object",
@@ -112,25 +100,20 @@ def builtin_file_tools() -> list[Tool]:
                             "type": "string",
                             "minLength": 1,
                             "description": (
-                                "Absolute or workspace-relative destination file path. Missing "
-                                "parent directories are created automatically."
+                                "Absolute or workspace-relative destination file path."
                             ),
                         },
                         "content": {
                             "type": "string",
-                            "description": (
-                                "Exact UTF-8 text to write. Include every intended newline; the "
-                                "tool adds nothing implicitly."
-                            ),
+                            "description": "Exact text to write; no text or newlines are added.",
                         },
                         "mode": {
                             "type": "string",
                             "enum": ["overwrite", "append"],
                             "default": "overwrite",
                             "description": (
-                                "Use 'overwrite' to replace the complete file, or 'append' to "
-                                "add content at the current end. Both modes create a missing "
-                                "file. Omit for 'overwrite'."
+                                "'overwrite' replaces the entire file; 'append' adds to its end. "
+                                "Both create a missing file."
                             ),
                         },
                     },
@@ -146,14 +129,10 @@ def builtin_file_tools() -> list[Tool]:
             definition=ToolDefinition(
                 name="Edit",
                 description=(
-                    "Use this tool to make a focused, deterministic change in a known UTF-8 "
-                    "text file by replacing exact literal text. Read the relevant section first "
-                    "when you need the current text or enough surrounding context to identify "
-                    "the intended occurrence. Prefer Write only for new files or deliberate "
-                    "full-file rewrites. Do not set replace_all unless every occurrence should "
-                    "change. By default only the first occurrence is replaced; if old is not "
-                    "found, the file is left unchanged. Matching normalizes line endings to LF, "
-                    "while a CRLF file retains CRLF when written back."
+                    "Replace exact literal text in an existing UTF-8 file. Read the relevant "
+                    "section first to identify the target; use Write for new files or full "
+                    "rewrites. If old is absent, returns an error without changes. Matching "
+                    "normalizes line endings to LF; CRLF files retain CRLF."
                 ),
                 parameters_schema={
                     "type": "object",
@@ -162,32 +141,27 @@ def builtin_file_tools() -> list[Tool]:
                             "type": "string",
                             "minLength": 1,
                             "description": (
-                                "Absolute or workspace-relative path of the existing UTF-8 text "
-                                "file to modify."
+                                "Absolute or workspace-relative path of the existing file."
                             ),
                         },
                         "old": {
                             "type": "string",
                             "minLength": 1,
                             "description": (
-                                "Exact literal text to replace; this is not a regular expression. "
-                                "Include enough surrounding text to target the intended first "
-                                "occurrence when the fragment may repeat."
+                                "Literal text to match, not regex. Include context to distinguish "
+                                "repeated occurrences."
                             ),
                         },
                         "new": {
                             "type": "string",
-                            "description": (
-                                "Exact replacement text. Use an empty string to delete the "
-                                "matched text."
-                            ),
+                            "description": "Replacement text; an empty string deletes the match.",
                         },
                         "replace_all": {
                             "type": "boolean",
                             "default": False,
                             "description": (
-                                "Set true only when every occurrence of old must be replaced. "
-                                "Omit or set false to replace the first occurrence only."
+                                "Set true only to replace every occurrence; false replaces "
+                                "only the first."
                             ),
                         },
                     },
