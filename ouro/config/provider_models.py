@@ -110,7 +110,18 @@ _ANTHROPIC_STATIC = ProviderConnectionSpec("anthropic-messages")
 
 _PROVIDER_TYPE_SPECS: dict[ProviderType, ProviderTypeSpec] = {
     "faux": ProviderTypeSpec("faux", ProviderConnectionSpec("faux")),
-    "openai": ProviderTypeSpec("openai", _OPENAI_STATIC),
+    "openai": ProviderTypeSpec(
+        "openai",
+        ProviderConnectionSpec(
+            "openai-responses",
+            notice=(
+                "Responses image input is not yet supported by OURO. "
+                "Persisted Responses state cannot be replayed after restarting this API Key "
+                "client; start a new conversation."
+            ),
+        ),
+        alternative_connections=(_OPENAI_STATIC,),
+    ),
     "openai-codex": ProviderTypeSpec(
         "openai-codex",
         ProviderConnectionSpec(

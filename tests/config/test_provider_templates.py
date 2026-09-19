@@ -11,8 +11,14 @@ from ouro.config import (
 from ouro.core.errors import ConfigError
 
 _EXPECTED_ENDPOINTS = {
-    "openai-codex": ("gpt-5.5", {"gpt-5.5"}),
-    "openai": ("gpt-5.6", {"gpt-5.6", "gpt-5.6-terra", "gpt-5.6-luna"}),
+    "openai-codex": (
+        "gpt-5.6-sol",
+        {"gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"},
+    ),
+    "openai": (
+        "gpt-5.6-sol",
+        {"gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"},
+    ),
     "anthropic": (
         "claude-sonnet-5",
         {"claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5"},
@@ -41,6 +47,7 @@ _EXPECTED_ENDPOINTS = {
 
 # Templates re-verified against provider docs after the shared review date.
 _EXPECTED_VERIFIED_ON = {
+    "openai": "2026-09-19",
     "openai-codex": "2026-09-19",
     "deepseek": "2026-08-27",
     "kimi": "2026-07-17",
@@ -103,8 +110,8 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     assert openai.capability.default_effort == "medium"
     assert openai.capability.output == "none"
     assert openai.profile is not None
-    assert openai.profile.variants["enabled"] == {"reasoning_effort": "medium"}
-    assert openai.profile.variants["disabled"] == {"reasoning_effort": "none"}
+    assert openai.profile.variants["enabled"] == {"reasoning": {"effort": "medium"}}
+    assert openai.profile.variants["disabled"] == {"reasoning": {"effort": "none"}}
 
     anthropic = templates["anthropic"]
     assert anthropic.endpoint("claude-sonnet-5").reasoning.capability.default.effort == "high"

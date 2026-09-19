@@ -23,6 +23,7 @@
 | [Goal 插件](OURO_Goal插件_2026-09-02.md) | Goal 状态、命令、工具、预算、自动继续、恢复和安全不变量 |
 | [AFK 模式](OURO_AFK模式_2026-09-02.md) | 无人值守审批、输入 resolution、Plan 组合和持久化语义 |
 | [订阅支持使用指南](OURO_订阅支持使用指南_ZH_2026-09-19.md) | 浏览器订阅登录、持久凭据、调用续接、注销及验收边界 |
+| [OpenAI 预制配置](OURO_OpenAI预制配置说明_ZH_2026-09-19.md) | API 与订阅模型清单、官方依据、推理等级及更新边界 |
 | [中文编码准则](OURO_编码准则_ZH_2026-09-02.md) | 实现、测试、重构与评审规范 |
 | [English development principles](OURO_编码准则_EN_2026-09-02.md) | English version of the development standard |
 

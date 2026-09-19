@@ -410,14 +410,16 @@ def test_provider_template_reapply_preserves_other_endpoints_and_credential(tmp_
 
     assert provider.credential.reference == "env:CUSTOM_OPENAI_KEY"
     assert provider.enabled is False
-    assert provider.default_endpoint == "gpt-5.6"
+    assert provider.default_endpoint == "gpt-5.6-sol"
     assert {endpoint.endpoint_id for endpoint in provider.endpoints} == {
-        "gpt-5.6",
+        "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-6-astra",
         "legacy",
     }
-    assert facade.endpoint("primary", "gpt-5.6").model_id == "gpt-custom"
+    assert facade.endpoint("primary", "gpt-5.6-sol").model_id == "gpt-custom"
 
 
 def test_provider_update_returns_template_merge_report_and_tracking_state(tmp_path) -> None:
@@ -428,7 +430,7 @@ def test_provider_update_returns_template_merge_report_and_tracking_state(tmp_pa
     template = root["templates"]["openai"]
     from_revision = template["revision"]
     template["revision"] = from_revision + 1
-    endpoint = next(item for item in template["endpoints"] if item["endpoint_id"] == "gpt-5.6")
+    endpoint = next(item for item in template["endpoints"] if item["endpoint_id"] == "gpt-5.6-sol")
     endpoint["context_window"] = 2_000_000
     template_path.write_text(json.dumps(root), encoding="utf-8")
 
@@ -439,11 +441,11 @@ def test_provider_update_returns_template_merge_report_and_tracking_state(tmp_pa
     assert updated.template_update.template_id == "openai"
     assert updated.template_update.from_revision == from_revision
     assert updated.template_update.to_revision == from_revision + 1
-    assert updated.template_update.updated_endpoints == ["gpt-5.6"]
+    assert updated.template_update.updated_endpoints == ["gpt-5.6-sol"]
     assert provider.template_id == "openai"
     assert provider.template_origin == "inline"
     assert provider.template_revision == from_revision + 1
-    assert facade.endpoint("primary", "gpt-5.6").context_window == 2_000_000
+    assert facade.endpoint("primary", "gpt-5.6-sol").context_window == 2_000_000
 
 
 def test_removed_provider_template_rejects_update_without_changing_provider(
@@ -566,6 +568,8 @@ def test_provider_template_default_endpoint_override_keeps_other_template_endpoi
         "primary",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-6-astra",
     }
     assert facade.endpoint("openai", "primary").model_id == "gpt-custom"
 
@@ -608,11 +612,13 @@ def test_provider_create_conflict_and_explicit_replace_are_atomic(tmp_path) -> N
     replaced = facade.replace_provider("primary", provider_type="openai")
     provider = next(item for item in replaced.providers if item.provider_id == "primary")
     assert provider.provider_type == "openai"
-    assert provider.protocol == "openai-chat-completions"
+    assert provider.protocol == "openai-responses"
     assert {endpoint.endpoint_id for endpoint in provider.endpoints} == {
-        "gpt-5.6",
+        "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-6-astra",
     }
 
 

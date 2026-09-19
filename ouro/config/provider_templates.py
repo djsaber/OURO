@@ -9,14 +9,14 @@ from ouro.config.provider_models import (
     resolve_provider_connection,
 )
 from ouro.config.reasoning import (
-    EndpointReasoningConfig,
     mapped_reasoning,
     openai_effort_reasoning,
+    responses_effort_reasoning,
     toggle_reasoning,
 )
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
-from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
+from ouro.core.reasoning import ReasoningRequest
 
 
 class ProviderTemplate(OuroModel):
@@ -83,7 +83,18 @@ class ProviderTemplate(OuroModel):
 _VERIFIED_ON = "2026-07-14"
 
 
-_OPENAI_REASONING = openai_effort_reasoning(
+_OPENAI_55_REASONING = responses_effort_reasoning(
+    supported_efforts=("low", "medium", "high", "xhigh"),
+)
+_OPENAI_56_REASONING = responses_effort_reasoning(
+    supported_efforts=("low", "medium", "high", "xhigh", "max"),
+)
+_CODEX_55_REASONING = responses_effort_reasoning(
+    activation="always_on",
+    supported_efforts=("low", "medium", "high", "xhigh"),
+)
+_OPENAI_ALWAYS_ON_REASONING = responses_effort_reasoning(
+    activation="always_on",
     supported_efforts=("low", "medium", "high", "xhigh", "max"),
 )
 _GEMINI_FLASH_REASONING = openai_effort_reasoning(
@@ -292,10 +303,12 @@ _PROVIDER_TEMPLATES = (
         template_id="openai-codex",
         display_name="OpenAI Codex (ChatGPT subscription)",
         description=(
-            "Browser subscription login; verified text and tools with GPT-5.5. "
-            "No request output limit. Context window 128000 is a local planning setting, "
-            "not a verified service maximum. Reasoning controls, images and structured output "
-            "are not declared supported."
+            "Browser subscription login with the documented Codex model catalog. "
+            "Availability depends on the account and rollout; "
+            "OURO live verification covers GPT-5.5. "
+            "GPT-5.5 retires from Codex on 2026-10-14. "
+            "No request output limit; context 128000 and output 8192 are local planning budgets. "
+            "Images and structured output are not declared supported by this integration."
         ),
         provider_id="openai-codex",
         provider_type="openai-codex",
@@ -303,72 +316,68 @@ _PROVIDER_TEMPLATES = (
         auth_driver="openai-codex",
         base_url="https://chatgpt.com/backend-api/codex",
         api_path="/responses",
-        default_endpoint="gpt-5.5",
-        endpoints=(
+        default_endpoint="gpt-5.6-sol",
+        endpoints=tuple(
             ProviderEndpointConfig(
-                endpoint_id="gpt-5.5",
-                model_id="gpt-5.5",
+                endpoint_id=model_id,
+                model_id=model_id,
                 context_window=128_000,
                 max_output_tokens=8192,
                 supports_tools=True,
                 supports_streaming=True,
-                reasoning=EndpointReasoningConfig(
-                    capability=ReasoningCapability(continuation="opaque"),
-                ),
-            ),
+                reasoning=reasoning,
+            )
+            for model_id, reasoning in (
+                ("gpt-6-astra", _OPENAI_ALWAYS_ON_REASONING),
+                ("gpt-5.6-sol", _OPENAI_ALWAYS_ON_REASONING),
+                ("gpt-5.6-terra", _OPENAI_ALWAYS_ON_REASONING),
+                ("gpt-5.6-luna", _OPENAI_ALWAYS_ON_REASONING),
+                ("gpt-5.5", _CODEX_55_REASONING),
+            )
         ),
-        documentation_url="https://developers.openai.com/codex/auth/",
+        documentation_url="https://learn.chatgpt.com/docs/models",
         verified_on="2026-09-19",
+        revision=2,
     ),
     ProviderTemplate(
         template_id="openai",
         display_name="OpenAI",
-        description="OpenAI Chat Completions with current GPT-5.6 quality tiers.",
+        description=(
+            "OpenAI Responses API with GPT-5.5, GPT-5.6 Luna/Terra/Sol and GPT-6 Astra. "
+            "Documented context 1050000 and output maximum 128000; "
+            "the preset requests an output budget of 32768. Astra tool calling requires Responses. "
+            "Image input is not yet implemented by the OURO Responses adapter."
+        ),
         provider_id="openai",
         provider_type="openai",
-        protocol="openai-chat-completions",
+        protocol="openai-responses",
         credential_env="OPENAI_API_KEY",
         base_url="https://api.openai.com/v1",
-        api_path="/chat/completions",
-        default_endpoint="gpt-5.6",
-        endpoints=(
+        api_path="/responses",
+        default_endpoint="gpt-5.6-sol",
+        endpoints=tuple(
             ProviderEndpointConfig(
-                endpoint_id="gpt-5.6",
-                model_id="gpt-5.6",
+                endpoint_id=model_id,
+                model_id=model_id,
                 context_window=1_050_000,
                 max_output_tokens=32_768,
                 supports_tools=True,
-                supports_vision=True,
+                supports_vision=False,
                 supports_streaming=True,
                 supports_structured_output=True,
-                reasoning=_OPENAI_REASONING,
-            ),
-            ProviderEndpointConfig(
-                endpoint_id="gpt-5.6-terra",
-                model_id="gpt-5.6-terra",
-                context_window=1_050_000,
-                max_output_tokens=32_768,
-                supports_tools=True,
-                supports_vision=True,
-                supports_streaming=True,
-                supports_structured_output=True,
-                reasoning=_OPENAI_REASONING,
-            ),
-            ProviderEndpointConfig(
-                endpoint_id="gpt-5.6-luna",
-                model_id="gpt-5.6-luna",
-                context_window=1_050_000,
-                max_output_tokens=32_768,
-                supports_tools=True,
-                supports_vision=True,
-                supports_streaming=True,
-                supports_structured_output=True,
-                reasoning=_OPENAI_REASONING,
-            ),
+                reasoning=reasoning,
+            )
+            for model_id, reasoning in (
+                ("gpt-5.6-sol", _OPENAI_56_REASONING),
+                ("gpt-6-astra", _OPENAI_ALWAYS_ON_REASONING),
+                ("gpt-5.6-terra", _OPENAI_56_REASONING),
+                ("gpt-5.6-luna", _OPENAI_56_REASONING),
+                ("gpt-5.5", _OPENAI_55_REASONING),
+            )
         ),
         documentation_url="https://developers.openai.com/api/docs/models",
-        verified_on=_VERIFIED_ON,
-        revision=2,
+        verified_on="2026-09-19",
+        revision=3,
     ),
     ProviderTemplate(
         template_id="anthropic",

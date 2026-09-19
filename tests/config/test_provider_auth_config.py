@@ -10,6 +10,7 @@ from ouro.application.configuration_views import provider_view
 from ouro.auth.contracts import AuthError, CredentialRecord
 from ouro.config import provider_models
 from ouro.config.credentials import CredentialRef, CredentialResolver
+from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.config.provider_codec import provider_config_from_mapping, provider_config_to_public_dict
 from ouro.config.provider_models import (
     ProviderConnectionSpec,
@@ -332,6 +333,10 @@ def subscription_template(**overrides) -> ProviderTemplate:
             **get_provider_template("openai").model_dump(),
             "provider_type": "openai-compatible",
             "auth_driver": "browser-fixture",
+            "protocol": "openai-chat-completions",
+            "api_path": "/chat/completions",
+            "endpoints": (ProviderEndpointConfig(endpoint_id="fixture", model_id="fixture"),),
+            "default_endpoint": "fixture",
             "credential_env": None,
             **overrides,
         }

@@ -11,6 +11,10 @@
 [Provider 类型与协议](OURO_Provider类型与协议规格_2026-09-02.md)定义。内联模板目录继续由
 `ouro/config/provider_templates.py` 维护。
 
+当前 OpenAI API 模板修订 3、Codex 订阅模板修订 2；模型清单、能力依据与协议更新边界见
+[OpenAI 预制配置说明](../../docs/OURO_OpenAI预制配置说明_ZH_2026-09-19.md)。verified_on 表示文档核对日期，
+真实调用的验收范围在使用指南中单独记录。
+
 ## 总体模型
 
 内联供应商模板配置是唯一数据真源；本地模板文件是内联配置的物化副本，叠加用户覆盖层。文件层面
@@ -33,13 +37,13 @@
       "template_id": "openai",
       "display_name": "OpenAI",
       "provider_type": "openai",
-      "protocol": "openai-chat-completions",
+      "protocol": "openai-responses",
       "auth_driver": "static",
       "credential_env": "OPENAI_API_KEY",
       "base_url": "https://api.openai.com/v1",
-      "default_endpoint": "gpt-5.6",
+      "default_endpoint": "gpt-5.6-sol",
       "endpoints": {
-        "gpt-5.6": {"model_id": "gpt-5.6"}
+        "gpt-5.6-sol": {"model_id": "gpt-5.6-sol"}
       },
       "meta": {
         "origin": "inline",

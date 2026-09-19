@@ -589,11 +589,11 @@ async def test_controller_configures_preset_and_compatible_providers(
             )
         )
         assert preset.default is True
-        assert preset.endpoint_count == 3
+        assert preset.endpoint_count == 5
         assert preset.credential.reference == "env:PRIVATE_OPENAI_KEY"
         assert preset.provider_options == {"service_tier": "flex"}
 
-        target = next(item for item in preset.endpoints if item.endpoint_id == "gpt-5.6")
+        target = next(item for item in preset.endpoints if item.endpoint_id == "gpt-5.6-sol")
         untouched_reasoning = configuration.endpoint(
             "primary",
             "gpt-5.6-terra",

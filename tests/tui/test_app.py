@@ -8070,8 +8070,8 @@ async def test_provider_submenu_updates_from_latest_preset_in_place(tmp_path: Pa
     root = json.loads(template_path.read_text(encoding="utf-8"))
     template = root["templates"]["openai"]
     initial_revision = template["revision"]
-    template["revision"] = 3
-    endpoint = next(item for item in template["endpoints"] if item["endpoint_id"] == "gpt-5.6")
+    template["revision"] = initial_revision + 1
+    endpoint = next(item for item in template["endpoints"] if item["endpoint_id"] == "gpt-5.6-sol")
     endpoint["context_window"] = 2_000_000
     template_path.write_text(json.dumps(root), encoding="utf-8")
     app = OuroTuiApp(application=_application(tmp_path))
@@ -8099,12 +8099,13 @@ async def test_provider_submenu_updates_from_latest_preset_in_place(tmp_path: Pa
         await pilot.pause()
 
         assert (
-            ConfigurationFacade(tmp_path).endpoint("primary", "gpt-5.6").context_window == 2_000_000
+            ConfigurationFacade(tmp_path).endpoint("primary", "gpt-5.6-sol").context_window
+            == 2_000_000
         )
         refreshed = next(
             choice for choice in app.screen._choices if choice.value == "update-template"
         )
-        assert refreshed.trailing == "openai r3"
+        assert refreshed.trailing == f"openai r{initial_revision + 1}"
 
 
 @pytest.mark.asyncio

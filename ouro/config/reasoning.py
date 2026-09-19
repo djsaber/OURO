@@ -193,6 +193,28 @@ def openai_effort_reasoning(
     )
 
 
+def responses_effort_reasoning(
+    *,
+    supported_efforts: tuple[ReasoningEffort, ...],
+    activation: ReasoningActivation = "toggle",
+) -> EndpointReasoningConfig:
+    """Declare native Responses effort controls and preserve opaque reasoning."""
+    variants: dict[ReasoningVariant, Mapping[str, object]] = {
+        "enabled": {"reasoning": {"effort": "medium"}},
+        **{effort: {"reasoning": {"effort": effort}} for effort in supported_efforts},
+    }
+    if activation == "toggle":
+        variants["disabled"] = {"reasoning": {"effort": "none"}}
+    return mapped_reasoning(
+        name="responses-effort",
+        activation=activation,
+        supported_efforts=supported_efforts,
+        default_effort="medium",
+        continuation="opaque",
+        variants=variants,
+    )
+
+
 def toggle_reasoning(
     *,
     name: str,

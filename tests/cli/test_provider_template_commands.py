@@ -264,7 +264,7 @@ def test_integrated_type_conflict_prompts_update_or_replace(tmp_path, capsys) ->
     assert code == 0
     assert payload["operation"] == "replace"
     assert payload["provider"]["provider_type"] == "openai"
-    assert payload["provider"]["endpoint_count"] == 3
+    assert payload["provider"]["endpoint_count"] == 5
 
 
 def test_compatible_add_update_and_replace_infer_protocol(tmp_path, capsys) -> None:

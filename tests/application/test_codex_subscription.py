@@ -64,7 +64,8 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
         payload = json.loads(request.content)
         model_requests.append((payload, dict(request.headers)))
         assert "max_output_tokens" not in payload and "truncation" not in payload
-        assert "reasoning" not in payload and "temperature" not in payload
+        assert payload["reasoning"] == {"effort": "medium"}
+        assert "temperature" not in payload
         assert payload["stream"] is True and payload["store"] is False
         reply = replies.popleft()
         if isinstance(reply, int):

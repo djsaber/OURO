@@ -214,7 +214,10 @@ def test_template_update_keeps_configured_endpoint_id_mapping(tmp_path) -> None:
 def test_update_requires_template_provenance_without_rewriting_provider(tmp_path) -> None:
     manager = ProviderConfigManager(tmp_path)
     manager.create_provider(
-        "manual", provider_type="openai", base_url="https://gateway.example.test/v1"
+        "manual",
+        provider_type="openai",
+        protocol="openai-chat-completions",
+        base_url="https://gateway.example.test/v1",
     )
     manager.upsert_endpoint("manual", "primary", model_id="user-model", make_default=True)
     path = tmp_path / "config" / "config.json"

@@ -25,9 +25,11 @@ Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它�
 `openrouter` 和 `mistral`。它们提供已核验的模板。`ProviderTypeSpec` 保存一个默认连接组合和明确的备选组合；
 每个 `ProviderConnectionSpec` 包含 protocol、auth_driver 及可选服务规则引用，managed 组合必须声明服务规则引用。
 连接声明可携带只读 notice，由 Application 投影到 Provider/Template DTO 并交给 CLI/TUI 展示；不写入用户配置，也不由 Host 判断厂商。
-`openai-codex` 仅声明 Responses + 同名浏览器认证驱动及服务策略；同名模板使用已实测的 gpt-5.5，
-保留服务默认 reasoning 与 opaque 续接，不声明未测的等级、图像或结构化输出。模板上下文是本地规划设置，
-max_output_tokens 仅为本地预算；服务限制通过连接 notice 和模板描述披露。
+`openai` 默认使用 Responses + static，保留 Chat Completions + static 备选组合，已有配置不自动改协议。
+`openai-codex` 仅声明 Responses + 同名浏览器认证驱动及服务策略。两套模板提供 GPT-5.5、GPT-5.6 Luna/Terra/Sol
+与 GPT-6 Astra，默认 Sol；模型等级与各自后端能力按官方文档分别声明，详见
+[预制配置说明](../../docs/OURO_OpenAI预制配置说明_ZH_2026-09-19.md)。订阅上下文和 max_output_tokens 为本地预算，
+服务限制通过连接 notice 和模板描述披露；图像能力仍受 Responses adapter 当前实现约束。
 默认组合自然属于允许集合；组合不能重复，也不能将两组独立允许列表作笛卡尔积。创建时省略的协议/认证选择取各自
 默认值，再验证完整组合。持久化读取中省略 auth_driver 固定表示 static，不根据产品猜测其他认证。
 
