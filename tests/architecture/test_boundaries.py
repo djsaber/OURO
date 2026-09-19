@@ -260,6 +260,32 @@ def test_application_auth_only_uses_injected_drivers_and_credential_service() ->
         )
 
 
+def test_auth_drivers_do_not_own_storage_configuration_or_host_interaction() -> None:
+    for path in (PROJECT_ROOT / "ouro" / "auth" / "drivers").rglob("*.py"):
+        imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+        assert not any(
+            module.startswith(
+                (
+                    "ouro.auth.store",
+                    "ouro.auth.credentials",
+                    "ouro.auth.managed_requests",
+                    "ouro.auth.file_permissions",
+                    "ouro.local_io",
+                    "ouro.local_locks",
+                    "ouro.config",
+                    "ouro.application",
+                    "ouro.providers",
+                    "ouro.local_application",
+                    "ouro.cli",
+                    "ouro.tui",
+                    "dev",
+                    "webbrowser",
+                )
+            )
+            for module in imports
+        ), str(path)
+
+
 def test_lower_layers_do_not_depend_on_application_or_cli() -> None:
     violations: list[str] = []
     for directory in LOWER_LAYER_DIRS:
@@ -455,3 +481,27 @@ def test_providers_borrow_only_the_request_authentication_port():
             if module.startswith("ouro.auth") and module != "ouro.auth.request_auth":
                 violations.append(f"{path.name}: {module}")
     assert violations == []
+
+
+def test_responses_codec_is_independent_of_authentication_transport_and_experiments():
+    for name in (
+        "responses_codec.py",
+        "responses_items.py",
+        "responses_stream.py",
+        "responses_errors.py",
+    ):
+        path = PROJECT_ROOT / "ouro" / "providers" / name
+        modules = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+        assert not any(
+            module.startswith(
+                (
+                    "ouro.auth",
+                    "ouro.config",
+                    "ouro.application",
+                    "dev",
+                    "httpx",
+                    "ouro.providers.http_transport",
+                )
+            )
+            for module in modules
+        ), name

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any, cast
 
+import httpx
 import pytest
 
 from ouro.config import (
@@ -21,9 +23,87 @@ from ouro.providers import (
     build_runtime_adapter,
 )
 from ouro.providers.authentication import ProviderRequestPolicy
+from ouro.providers.http_transport import HttpxProviderHTTPTransport
+from tests.providers.responses_fixtures import message, terminal
 
 
-@pytest.mark.parametrize("protocol", ["openai-chat-completions", "anthropic-messages"])
+@pytest.mark.parametrize(
+    ("protocol", "module", "limit_field"),
+    [
+        ("openai-responses", "openai_responses", "max_output_tokens"),
+        ("openai-chat-completions", "openai_compatible", "max_tokens"),
+    ],
+)
+@pytest.mark.parametrize("supports_limit", [False, True])
+@pytest.mark.parametrize("billing_mode", ["subscription", "usage_based"])
+async def test_output_limit_follows_service_capability_not_billing_or_auth(
+    monkeypatch, protocol, module, limit_field, supports_limit, billing_mode
+):
+    payloads = []
+
+    def respond(request):
+        payloads.append(json.loads(request.content))
+        assert request.headers["authorization"] == "Bearer fixture-key"
+        return httpx.Response(
+            200,
+            json=terminal([message()])["response"]
+            if protocol == "openai-responses"
+            else {"choices": [{"message": {"role": "assistant", "content": "hello"}}]},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        monkeypatch.setattr(
+            f"ouro.providers.{module}.HttpxProviderHTTPTransport",
+            lambda: HttpxProviderHTTPTransport(client),
+        )
+        adapter = build_runtime_adapter(
+            ProviderRuntimeOptions(
+                protocol=protocol,
+                model="fixture",
+                base_url="https://fixture.invalid",
+                api_key="fixture-key",
+                supports_streaming=False,
+                max_output_tokens=1024,
+            ),
+            request_policy=ProviderRequestPolicy(
+                billing_mode=billing_mode, supports_output_limit=supports_limit
+            ),
+        )
+        try:
+            for override in (None, 512):
+                events = [
+                    event
+                    async for event in adapter.stream(
+                        ContextView(model_messages=[ModelMessage.text(role="user", text="hello")]),
+                        max_output_tokens=override,
+                    )
+                ]
+                assert events[-1].type == "done"
+                assert not any(event.type == "error" for event in events)
+                if supports_limit:
+                    assert payloads[-1][limit_field] == (1024 if override is None else override)
+                else:
+                    assert limit_field not in payloads[-1]
+                assert adapter.model.max_output_tokens == 1024
+        finally:
+            await adapter.provider.close()
+
+
+def test_messages_rejects_service_without_its_required_output_limit():
+    with pytest.raises(ValueError, match="Messages protocol requires a request output limit"):
+        build_runtime_adapter(
+            ProviderRuntimeOptions(
+                protocol="anthropic-messages",
+                model="fixture",
+                base_url="https://fixture.invalid",
+            ),
+            request_policy=ProviderRequestPolicy(supports_output_limit=False),
+        )
+
+
+@pytest.mark.parametrize(
+    "protocol", ["openai-chat-completions", "anthropic-messages", "openai-responses"]
+)
 async def test_billing_mode_comes_from_service_declaration_not_static_key(protocol):
     options = ProviderRuntimeOptions(
         protocol=protocol,

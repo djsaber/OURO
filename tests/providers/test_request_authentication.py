@@ -10,14 +10,20 @@ from ouro.providers.anthropic_compatible import AnthropicCompatibleProvider
 from ouro.providers.authentication import ProviderRequestPolicy
 from ouro.providers.http_transport import HttpxProviderHTTPTransport, ProviderTransportError
 from ouro.providers.openai_compatible import OpenAICompatibleProvider
+from ouro.providers.openai_responses import OpenAIResponsesProvider
 from tests.auth.test_driver_contracts import BrowserFixtureDriver, DeviceFixtureDriver
 from tests.auth.test_request_auth import authenticated
+from tests.providers.responses_fixtures import delta, message, terminal
 
-PROVIDERS = [OpenAICompatibleProvider, AnthropicCompatibleProvider]
+PROVIDERS = [OpenAICompatibleProvider, AnthropicCompatibleProvider, OpenAIResponsesProvider]
 
 
 def response(provider, streaming):
-    if provider is OpenAICompatibleProvider:
+    if provider is OpenAIResponsesProvider:
+        completed = terminal([message("ok")])
+        body = completed["response"]
+        chunks = [completed]
+    elif provider is OpenAICompatibleProvider:
         body = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
         chunks = [{"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}]
     else:
@@ -76,7 +82,12 @@ async def test_each_protocol_uses_each_driver_and_rechecks_logout(
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             adapter = build(provider, auth, client)
             events = await collect(adapter, streaming)
-            assert [event.type for event in events] == ["text_delta", "done"]
+            expected = (
+                ["text_delta", "continuation", "done"]
+                if provider is OpenAIResponsesProvider
+                else ["text_delta", "done"]
+            )
+            assert [event.type for event in events] == expected
             for name, value in driver.encode(record).headers.items():
                 assert requests[0].headers[name] == value
             await adapter.close()
@@ -236,7 +247,9 @@ async def test_partial_output_is_never_replayed_or_refreshed(tmp_path, provider)
 
         async def stream_json(self, **kwargs):
             self.calls += 1
-            if provider is OpenAICompatibleProvider:
+            if provider is OpenAIResponsesProvider:
+                yield delta("response.output_text.delta", 0, "msg", "partial", content_index=0)
+            elif provider is OpenAICompatibleProvider:
                 yield {"choices": [{"delta": {"content": "partial"}}]}
             else:
                 yield {
@@ -270,7 +283,11 @@ async def test_check_uses_same_recovery_and_safe_error_boundary(tmp_path, provid
 
     def handler(request):
         requests.append(request)
-        assert json.loads(request.content)["max_tokens"] == 1
+        payload = json.loads(request.content)
+        if provider is OpenAIResponsesProvider:
+            assert payload["max_output_tokens"] == 8192
+        else:
+            assert payload["max_tokens"] == 1
         return httpx.Response(401, text="fixture-access")
 
     try:
@@ -299,7 +316,12 @@ async def test_in_band_error_body_cannot_leak_secrets(tmp_path, provider, stream
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             events = await collect(build(provider, auth, client), streaming)
             assert events[-1].type == "error"
-            assert events[-1].error_code == "provider_response_failed"
+            expected = (
+                ("response_failed" if streaming else "invalid_terminal")
+                if provider is OpenAIResponsesProvider
+                else "provider_response_failed"
+            )
+            assert events[-1].error_code == expected
             assert "fixture-access" not in repr(events)
     finally:
         await service.close()

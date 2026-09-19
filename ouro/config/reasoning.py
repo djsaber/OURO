@@ -27,6 +27,15 @@ REASONING_PRESETS: tuple[str, ...] = (
 
 _RESERVED_REQUEST_FIELDS = frozenset(
     {
+        "input",
+        "instructions",
+        "max_output_tokens",
+        "store",
+        "include",
+        "truncation",
+        "previous_response_id",
+        "conversation",
+        "background",
         "max_completion_tokens",
         "max_tokens",
         "messages",

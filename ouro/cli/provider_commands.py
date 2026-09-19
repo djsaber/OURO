@@ -142,7 +142,7 @@ def list_provider_templates(
         deprecated = " deprecated" if template.get("deprecated") else ""
         credential = (
             f"env:{template['credential_env']}"
-            if template["credential_env"] is not None
+            if template.get("credential_env") is not None
             else "none"
             if template["auth_driver"] == "static"
             else "managed"
@@ -154,6 +154,8 @@ def list_provider_templates(
             f"endpoints={len(template['endpoints'])} models={models} "
             f"credential={credential}"
         )
+        if template.get("notice"):
+            lines.append(f"  {template['notice']}")
     lines.extend(f"! {notice}" for notice in catalog.notices)
     print("\n".join(lines))
     return 0
@@ -229,6 +231,7 @@ def show_provider_config(
                 f"Default endpoint: {public['default_endpoint'] or '-'}",
                 f"Endpoints: {public['endpoint_count']}",
                 f"Config: {facade.config_path}",
+                *([public["notice"]] if public.get("notice") else []),
             ]
         )
     )
@@ -347,6 +350,8 @@ def mutate_provider_config(
     suffix = " and set as default" if public["default"] else ""
     action = {"add": "added", "update": "updated", "replace": "replaced"}[operation]
     print(f"Provider {action}: {provider.provider_id}{suffix}")
+    if provider.notice:
+        print(provider.notice)
     if catalog.template_update is not None:
         print(_template_update_summary(catalog.template_update))
     return 0
@@ -616,6 +621,8 @@ def _provider_to_public(provider: ProviderView) -> dict[str, Any]:
         "provider_id": provider.provider_id,
         "provider_type": provider.provider_type,
         "protocol": provider.protocol,
+        "auth_driver": provider.auth_driver,
+        "notice": provider.notice,
         "credential": provider.credential.reference,
         "enabled": provider.enabled,
         "timeout": provider.timeout,

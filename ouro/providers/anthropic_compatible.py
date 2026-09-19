@@ -65,6 +65,8 @@ class AnthropicCompatibleProvider:
             {"x-api-key": api_key} if api_key else {}
         )
         self.request_policy = request_policy or ProviderRequestPolicy()
+        if not self.request_policy.supports_output_limit:
+            raise ValueError("Messages protocol requires a request output limit")
         self.timeout = timeout
         self.transport = transport or HttpxProviderHTTPTransport()
         self.default_headers = dict(default_headers or {})

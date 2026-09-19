@@ -82,6 +82,7 @@ class ProviderView(ApplicationDTO):
     provider_type: ProviderType
     protocol: ProviderProtocol
     auth_driver: str = "static"
+    notice: str | None = None
     credential: CredentialStatus
     enabled: bool
     timeout: float
@@ -138,6 +139,7 @@ class ProviderTemplateView(ApplicationDTO):
     provider_type: ProviderType
     protocol: ProviderProtocol
     auth_driver: str = "static"
+    notice: str | None = None
     credential_env: str | None = None
     base_url: str
     api_path: str

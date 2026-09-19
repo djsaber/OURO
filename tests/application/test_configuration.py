@@ -361,6 +361,7 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
 
     templates = facade.provider_template_catalog()
     assert [template.template_id for template in templates.templates] == [
+        "openai-codex",
         "openai",
         "anthropic",
         "gemini",

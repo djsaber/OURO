@@ -43,6 +43,7 @@ class ProviderSetupProfile:
     endpoint_count: int
     preset: bool
     auth_driver: str = "static"
+    notice: str | None = None
 
     @classmethod
     def from_template(cls, template: ProviderTemplateView) -> ProviderSetupProfile:
@@ -57,6 +58,7 @@ class ProviderSetupProfile:
             endpoint_count=template.endpoint_count,
             preset=True,
             auth_driver=template.auth_driver,
+            notice=template.notice,
         )
 
 
@@ -243,6 +245,9 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
         )
         return (
             *credential_choices,
+            *_service_notice_choices(
+                self._existing.notice if self._existing is not None else self._profile.notice
+            ),
             Choice(
                 "provider-id",
                 "Provider ID",
@@ -509,6 +514,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             return "Enabled" if self._capabilities[field] else "Disabled"
 
         return (
+            *_service_notice_choices(self._provider.notice),
             Choice(
                 "endpoint-id",
                 "Endpoint ID",
@@ -699,6 +705,16 @@ def _reasoning_capability_summary(
         activation
         if not effort_count
         else theme.inline_separator.join((activation, f"{effort_count} efforts"))
+    )
+
+
+def _service_notice_choices(notice: str | None) -> tuple[Choice, ...]:
+    if notice is None:
+        return ()
+    return (
+        Choice(
+            "service-notice", "Service limits", description=notice, group="DETAILS", disabled=True
+        ),
     )
 
 

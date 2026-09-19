@@ -242,7 +242,10 @@ class OpenAICompatibleProvider:
             payload["temperature"] = model.temperature
         else:
             payload.pop("temperature", None)
-        payload["max_tokens"] = model.max_output_tokens
+        if self.request_policy.supports_output_limit:
+            payload["max_tokens"] = model.max_output_tokens
+        else:
+            payload.pop("max_tokens", None)
         self.reasoning_encoder.apply(payload, model)
         if tools and model.supports_tools:
             payload["tools"] = [_tool_to_openai(tool) for tool in tools]

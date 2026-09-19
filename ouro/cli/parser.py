@@ -1284,7 +1284,7 @@ def _add_provider_auth_parser(subparsers: argparse._SubParsersAction) -> None:
             "List login methods, authorize a configured Provider, or manage local credentials.\n"
             "Login waits for a saved result; Ctrl+C cancels and cleans up.\n"
             "Logout/forget clear local credentials, not the remote account session.\n"
-            "Subscription login is not available in this build."
+            "Use 'methods PROVIDER' to discover its registered login methods."
         ),
     )
     commands = auth.add_subparsers(dest="auth_command", required=True)

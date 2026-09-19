@@ -12,7 +12,7 @@ Provider 配置分别表达用户实例、产品配置、线协议和认证选�
 |---|---|---|
 | `provider_id` | 用户拥有的配置实例 id，也是模型路由第一段 | `work-kimi` |
 | `provider_type` | 产品层供应商档案或通用配置入口 | `kimi`、`openai-compatible` |
-| `protocol` | adapter 使用的已注册线协议 | `openai-chat-completions`、`anthropic-messages` |
+| `protocol` | adapter 使用的已注册线协议 | `openai-chat-completions`、`openai-responses`、`anthropic-messages` |
 | `auth_driver` | 认证方式的稳定标识；省略为 static | `static` |
 
 `provider_id` 不参与协议推断；相同厂商可以有多个用户实例，多个厂商也可以复用同一个协议 adapter。
@@ -21,23 +21,27 @@ Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它�
 
 ## 产品类型与协议
 
-集成厂商类型包括 `openai`、`anthropic`、`gemini`、`deepseek`、`qwen`、`kimi`、`glm`、`grok`、
+集成厂商类型包括 `openai`、`openai-codex`、`anthropic`、`gemini`、`deepseek`、`qwen`、`kimi`、`glm`、`grok`、
 `openrouter` 和 `mistral`。它们提供已核验的模板。`ProviderTypeSpec` 保存一个默认连接组合和明确的备选组合；
 每个 `ProviderConnectionSpec` 包含 protocol、auth_driver 及可选服务规则引用，managed 组合必须声明服务规则引用。
+连接声明可携带只读 notice，由 Application 投影到 Provider/Template DTO 并交给 CLI/TUI 展示；不写入用户配置，也不由 Host 判断厂商。
+`openai-codex` 仅声明 Responses + 同名浏览器认证驱动及服务策略；同名模板使用已实测的 gpt-5.5，
+保留服务默认 reasoning 与 opaque 续接，不声明未测的等级、图像或结构化输出。模板上下文是本地规划设置，
+max_output_tokens 仅为本地预算；服务限制通过连接 notice 和模板描述披露。
 默认组合自然属于允许集合；组合不能重复，也不能将两组独立允许列表作笛卡尔积。创建时省略的协议/认证选择取各自
 默认值，再验证完整组合。持久化读取中省略 auth_driver 固定表示 static，不根据产品猜测其他认证。
 
 通用配置入口包括：
 
-- `openai-compatible`：固定使用 `openai-chat-completions`；
+- `openai-compatible`：默认使用 `openai-chat-completions`，可显式选择 `openai-responses`；两者均为 static 组合；
 - `anthropic-compatible`：固定使用 `anthropic-messages`。
 
 两种 compatible 类型都允许用户为自定义 Endpoint 声明思考配置。协议档案同时限制 adapter 能忠实保存的
-continuation：OpenAI Chat Completions 支持 `none/text`，Anthropic Messages 支持 `none/opaque`。不兼容的
+continuation：OpenAI Chat Completions 支持 `none/text`，Responses 与 Anthropic Messages 支持 `none/opaque`。不兼容的
 声明在配置或 adapter 构造时失败，不能接受后再丢弃。
 
 `faux` 类型和协议只保留给内部安全运行时与测试，不属于用户可配置类型，也不出现在用户 Provider 目录中。当前注册协议是 `faux`、
-`openai-chat-completions` 和 `anthropic-messages`。不接受任意协议字符串，也不通过 provider id 猜测厂商。
+`openai-chat-completions`、`openai-responses` 和 `anthropic-messages`。不接受任意协议字符串，也不通过 provider id 猜测厂商。Responses 注册不代表订阅产品已开放；其参数和 static 续接范围见[Responses 规格](OURO_Responses编解码规格_2026-09-19.md)。
 
 持久化配置必须同时写入类型和协议：
 

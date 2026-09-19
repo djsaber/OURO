@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Protocol
+from uuid import uuid4
 
 from ouro.auth.contracts import AuthError as AuthError
 
@@ -34,7 +35,9 @@ class StaticRequestAuthenticator:
     """Use already resolved static material, preserving custom endpoint semantics."""
 
     def __init__(self, headers: Mapping[str, str]) -> None:
-        self._snapshot = RequestAuthSnapshot(headers)
+        # Static credentials cannot prove an account identity across lifetimes.
+        # Bind opaque state to this instance without deriving anything from secrets.
+        self._snapshot = RequestAuthSnapshot(headers, scope=("static-binding", uuid4().hex))
 
     async def acquire(self, url: str) -> RequestAuthSnapshot:
         return self._snapshot

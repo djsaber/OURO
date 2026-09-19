@@ -23,10 +23,11 @@
 | [会话撤销、Harness 状态与插件交互](OURO_会话撤销与Harness状态规格_2026-09-08.md) | 原生状态版本、精确撤销、插件调用/提交、队列竞争、恢复与验收证据 | `ouro/core/harness.py`、`ouro/sessions`、`ouro/application`、`ouro/plugins/harness_calls.py` |
 | [Provider 与配置](OURO_Provider配置规格_2026-09-02.md) | Provider/Endpoint、静态及受管理认证引用、模板绑定、运行参数与覆盖规则 | `ouro/config`、`ouro/providers` |
 | [用量与计费](OURO_用量与计费规格_2026-09-17.md) | 请求时计费归属、实际 token、未知/部分金额、账本审计与 CLI/TUI 呈现 | `ouro/core/billing.py`、`ouro/application/usage.py`、`ouro/billing` |
-| [受管理凭据核心](OURO_凭据核心规格_2026-09-16.md) | 受限文件存储、revision、刷新/注销/取消与跨进程互斥；尚未接入订阅产品 | `ouro/auth` |
-| [Provider 认证用例](OURO_Provider认证用例规格_2026-09-16.md) | 通用登录、安全状态、凭据管理与配置条件提交；轻量 CLI 与通用 TUI 已接线，生产驱动待验证 | `ouro/application/provider_auth*.py` |
-| [认证驱动与单次授权](OURO_认证驱动与授权规格_2026-09-16.md) | 受管理驱动端口、封闭 challenge、单次授权与资源清理；尚无生产驱动；CLI/TUI 通过通用用例接入 | `ouro/auth/driver_contracts.py`、`ouro/auth/authorization.py` |
-| [模型请求认证](OURO_请求认证规格_2026-09-17.md) | 逐次认证快照、最终目标、统一重试及错误码；现有两种协议、共享 Runtime 和路由重绑定已接线，生产驱动待实施 | `ouro/auth/request_auth.py`、`ouro/auth/managed_requests.py`、`ouro/providers` |
+| [受管理凭据核心](OURO_凭据核心规格_2026-09-16.md) | 受限文件存储、revision、刷新/注销/取消与跨进程互斥；内建浏览器订阅产品复用 | `ouro/auth` |
+| [Provider 认证用例](OURO_Provider认证用例规格_2026-09-16.md) | 通用登录、安全状态、凭据管理与配置条件提交；轻量 CLI、通用 TUI 与内建浏览器驱动已接线 | `ouro/application/provider_auth*.py` |
+| [认证驱动与单次授权](OURO_认证驱动与授权规格_2026-09-16.md) | 受管理驱动端口、单次授权与资源清理、内建 OpenAI 浏览器订阅驱动；CLI/TUI 通过通用用例接入 | `ouro/auth/driver_contracts.py`、`ouro/auth/authorization.py`、`ouro/auth/drivers` |
+| [Responses 编解码](OURO_Responses编解码规格_2026-09-19.md) | 协议 adapter/注册、同次认证、SSE 投影与完整 scope/envelope；浏览器订阅产品已接线，真实持久凭据 CLI 闭环已验收 | `ouro/providers/openai_responses.py`、`responses_*.py` |
+| [模型请求认证](OURO_请求认证规格_2026-09-17.md) | 逐次认证快照、最终目标、统一重试及错误码；三种协议、共享 Runtime、路由重绑定与内建浏览器驱动已接线 | `ouro/auth/request_auth.py`、`ouro/auth/managed_requests.py`、`ouro/providers` |
 | [Provider 模板](OURO_Provider模板规格_2026-09-02.md) | 本地模板、版本、修改感知、内容更新与严格版本边界 | `ouro/config/provider_template_store.py`、`ouro/config/provider_templates.py` |
 | [Provider 类型与协议](OURO_Provider类型与协议规格_2026-09-02.md) | 实例 id、产品配置类型、线协议与冲突策略 | `ouro/config`、`ouro/providers`、`ouro/cli` |
 | [工具与人机协同](OURO_工具与人机协同规格_2026-09-02.md) | 工具契约、权限、批执行、审批、AskUser、AFK 与取消 | `ouro/tools`、`ouro/application/tool_calls.py` |
@@ -46,7 +47,7 @@
 
 | 规格 | 目标能力 |
 |---|---|
-| [模型订阅认证](OURO_模型订阅认证规格_2026-09-16.md) | 多厂商认证端口、登录契约、Responses、OpenAI 订阅和验收矩阵；完整接入待实施，凭据核心另见现行规格 |
+| [模型订阅认证](OURO_模型订阅认证规格_2026-09-16.md) | 多厂商认证端口、登录契约、Responses、OpenAI 订阅和验收矩阵；浏览器集成及真实持久凭据 CLI 闭环已验收；设备码、其余能力和平台仍为未来范围 |
 | [个人智能体平台](OURO_未来平台规格_2026-09-02.md) | Desktop、长期记忆、Durable Task/Workflow 与产品化边界 |
 
 ## 规格完成标准

@@ -35,6 +35,7 @@ from ouro.config import (
     endpoint_config_to_public_dict,
 )
 from ouro.config.endpoints import redact_sensitive_mapping
+from ouro.config.provider_models import resolve_provider_connection
 from ouro.core.errors import CredentialError
 from ouro.mcp import MCPServerConfig, mcp_config_to_public_dict
 from ouro.skills import LoadedSkill, SkillDiagnostic, SkillManagementResult, SkillMetadata
@@ -64,6 +65,9 @@ def provider_view(provider: ProviderConfig, *, is_default: bool) -> ProviderView
         provider_type=provider.provider_type,
         protocol=provider.protocol,
         auth_driver=provider.auth_driver,
+        notice=resolve_provider_connection(
+            provider.provider_type, provider.protocol, provider.auth_driver
+        ).notice,
         credential=credential_status(provider),
         enabled=provider.enabled,
         timeout=provider.timeout_seconds,
@@ -139,6 +143,9 @@ def provider_template_view(
         provider_type=template.provider_type,
         protocol=template.protocol,
         auth_driver=template.auth_driver,
+        notice=resolve_provider_connection(
+            template.provider_type, template.protocol, template.auth_driver
+        ).notice,
         credential_env=template.credential_env,
         base_url=template.base_url,
         api_path=template.api_path,

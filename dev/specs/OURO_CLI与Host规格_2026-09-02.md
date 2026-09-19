@@ -91,7 +91,7 @@ Provider check 的 provider id 使用唯一位置参数；运行时覆盖使用 
 
 认证命令通过 `open_local_provider_auth` 装配同一 home 下的 ProviderAuthService、CredentialService 和文件 store。
 不构造模型 adapter、Session、Runtime、Agent、插件或 MCP；CLI 不导入 auth/config 实现或访问秘密文件。
-生产订阅驱动尚未注册：static 的 methods 为空，login 明确不支持；通用闭环以两种注入测试驱动验收。
+内建 openai-codex 浏览器订阅驱动已注册；static 的 methods 为空，login 明确不支持。Provider/Template 的只读 notice 由通用 CLI 展示，包含订阅服务没有请求输出上限的限制；不依据产品名推断能力。正式命令及人工验收见[订阅使用指南](../../docs/OURO_订阅支持使用指南_ZH_2026-09-19.md)。
 
 ```text
 ouro provider auth methods <provider_id> [--json]
@@ -122,7 +122,7 @@ logout/forget 只清除本地秘密，不撤销远端会话；共享引用和无
 
 Application 状态与条件提交的权威契约见[Provider 认证用例规格](OURO_Provider认证用例规格_2026-09-16.md)。
 证据见 `tests/cli/test_provider_auth_commands.py`、`tests/application/test_local_provider_auth.py` 及架构依赖测试。
-Runtime 共享认证装配已实现；TUI 和生产驱动仍待实施；现有模型协议的请求认证见[请求认证规格](OURO_请求认证规格_2026-09-17.md)。
+Runtime 共享认证、通用 TUI 管理及内建浏览器订阅驱动均已接线；现有模型协议的请求认证见[请求认证规格](OURO_请求认证规格_2026-09-17.md)。
 模型请求的安全错误码由 run_failed.payload.error_code 传入 run --json 的 events；Host 无需解析错误文本推断认证原因。
 
 ## Agent 控制面

@@ -17,6 +17,8 @@ class ProviderRequestPolicy:
 
     quota_error_codes: frozenset[str] = frozenset()
     billing_mode: BillingMode = "unknown"
+    # False means max_output_tokens remains a local planning budget only.
+    supports_output_limit: bool = True
 
 
 class ProviderRequestError(ProviderTransportError):

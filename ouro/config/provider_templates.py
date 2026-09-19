@@ -9,13 +9,14 @@ from ouro.config.provider_models import (
     resolve_provider_connection,
 )
 from ouro.config.reasoning import (
+    EndpointReasoningConfig,
     mapped_reasoning,
     openai_effort_reasoning,
     toggle_reasoning,
 )
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
-from ouro.core.reasoning import ReasoningRequest
+from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 
 
 class ProviderTemplate(OuroModel):
@@ -287,6 +288,38 @@ _ANTHROPIC_MANUAL_REASONING = toggle_reasoning(
 
 
 _PROVIDER_TEMPLATES = (
+    ProviderTemplate(
+        template_id="openai-codex",
+        display_name="OpenAI Codex (ChatGPT subscription)",
+        description=(
+            "Browser subscription login; verified text and tools with GPT-5.5. "
+            "No request output limit. Context window 128000 is a local planning setting, "
+            "not a verified service maximum. Reasoning controls, images and structured output "
+            "are not declared supported."
+        ),
+        provider_id="openai-codex",
+        provider_type="openai-codex",
+        protocol="openai-responses",
+        auth_driver="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_path="/responses",
+        default_endpoint="gpt-5.5",
+        endpoints=(
+            ProviderEndpointConfig(
+                endpoint_id="gpt-5.5",
+                model_id="gpt-5.5",
+                context_window=128_000,
+                max_output_tokens=8192,
+                supports_tools=True,
+                supports_streaming=True,
+                reasoning=EndpointReasoningConfig(
+                    capability=ReasoningCapability(continuation="opaque"),
+                ),
+            ),
+        ),
+        documentation_url="https://developers.openai.com/codex/auth/",
+        verified_on="2026-09-19",
+    ),
     ProviderTemplate(
         template_id="openai",
         display_name="OpenAI",

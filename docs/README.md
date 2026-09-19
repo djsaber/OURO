@@ -22,6 +22,7 @@
 | [插件开发指南](OURO_插件开发指南_2026-09-02.md) | 插件形态、Manifest、运行时、开发/安装/更新流程和示例 |
 | [Goal 插件](OURO_Goal插件_2026-09-02.md) | Goal 状态、命令、工具、预算、自动继续、恢复和安全不变量 |
 | [AFK 模式](OURO_AFK模式_2026-09-02.md) | 无人值守审批、输入 resolution、Plan 组合和持久化语义 |
+| [订阅支持使用指南](OURO_订阅支持使用指南_ZH_2026-09-19.md) | 浏览器订阅登录、持久凭据、调用续接、注销及验收边界 |
 | [中文编码准则](OURO_编码准则_ZH_2026-09-02.md) | 实现、测试、重构与评审规范 |
 | [English development principles](OURO_编码准则_EN_2026-09-02.md) | English version of the development standard |
 
@@ -41,7 +42,7 @@
 
 | 设计 | 范围 |
 |---|---|
-| [模型订阅认证扩展设计](OURO_模型订阅认证扩展设计_2026-09-16.md) | 订阅接入目标设计；认证核心、配置/模板、通用登录与轻量 CLI 已实现，现有协议请求认证已接线，Runtime 共享认证及路由重绑定已完成，通用 TUI 认证管理已完成，生产认证与 Responses 待实施 |
+| [模型订阅认证扩展设计](OURO_模型订阅认证扩展设计_2026-09-16.md) | 订阅接入目标设计；认证核心、配置/模板、通用登录、CLI/TUI 与 Runtime 接线已完成；OpenAI 浏览器订阅已内建注册；Responses 内核、adapter 与通用认证已实现；正式 adapter 真实续接与持久凭据真实 CLI 闭环已通过，设备码及其他能力待验收 |
 | [TUI 视觉样式与 Markdown 渲染设计](OURO_TUI视觉样式与Markdown渲染设计_2026-09-02.md) | 完整 TuiTheme Token 注入、Markdown/Rich 适配、标识符、动画与验收约束 |
 
 ## 文件命名

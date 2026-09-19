@@ -994,6 +994,10 @@ def _provider_management_choices(
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[Choice, ...]:
     choices = [Choice("edit", "Edit provider"), Choice("authentication", "Authentication")]
+    if provider.notice:
+        choices.append(
+            Choice("service-notice", "Service limits", description=provider.notice, disabled=True)
+        )
     if provider.template_id is not None:
         template_version = (
             f"{provider.template_id} r{provider.template_revision}"

@@ -25,6 +25,7 @@ from ouro.providers.anthropic_compatible import AnthropicCompatibleProvider
 from ouro.providers.authentication import ProviderRequestPolicy
 from ouro.providers.faux import FauxProvider
 from ouro.providers.openai_compatible import OpenAICompatibleProvider
+from ouro.providers.openai_responses import OpenAIResponsesProvider
 from ouro.providers.reasoning import ReasoningPayloadEncoder
 
 
@@ -153,9 +154,31 @@ def _build_anthropic_compatible(context: _AdapterBuildContext) -> RuntimeAdapter
     return RuntimeAdapter(provider, context.model)
 
 
+def _build_openai_responses(context: _AdapterBuildContext) -> RuntimeAdapter:
+    assert context.base_url is not None
+    endpoint = context.options.api_path or default_api_path("openai-responses")
+    assert endpoint is not None
+    provider = OpenAIResponsesProvider(
+        base_url=context.base_url,
+        api_key=context.api_key,
+        authenticator=context.authenticator,
+        request_policy=context.request_policy,
+        provider_id=context.provider_id,
+        endpoint=endpoint,
+        timeout=context.timeout,
+        request_options=context.options.extra,
+        reasoning_encoder=ReasoningPayloadEncoder(
+            context.options.reasoning.profile if context.options.reasoning is not None else None
+        ),
+        retry_policy=context.options.retry_policy,
+    )
+    return RuntimeAdapter(provider, context.model)
+
+
 _ADAPTER_BUILDERS: dict[ProviderProtocol, AdapterBuilder] = {
     "faux": _build_faux,
     "openai-chat-completions": _build_openai_compatible,
+    "openai-responses": _build_openai_responses,
     "anthropic-messages": _build_anthropic_compatible,
 }
 

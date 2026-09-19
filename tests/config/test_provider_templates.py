@@ -11,6 +11,7 @@ from ouro.config import (
 from ouro.core.errors import ConfigError
 
 _EXPECTED_ENDPOINTS = {
+    "openai-codex": ("gpt-5.5", {"gpt-5.5"}),
     "openai": ("gpt-5.6", {"gpt-5.6", "gpt-5.6-terra", "gpt-5.6-luna"}),
     "anthropic": (
         "claude-sonnet-5",
@@ -40,6 +41,7 @@ _EXPECTED_ENDPOINTS = {
 
 # Templates re-verified against provider docs after the shared review date.
 _EXPECTED_VERIFIED_ON = {
+    "openai-codex": "2026-09-19",
     "deepseek": "2026-08-27",
     "kimi": "2026-07-17",
     "glm": "2026-08-27",
@@ -77,7 +79,11 @@ def test_builtin_provider_templates_expose_reviewed_endpoint_sets() -> None:
         template = templates[template_id]
         assert template.default_endpoint == default_endpoint
         assert template.provider_type == template_id
-        assert template.protocol in {"openai-chat-completions", "anthropic-messages"}
+        assert template.protocol in {
+            "openai-chat-completions",
+            "anthropic-messages",
+            "openai-responses",
+        }
         assert {endpoint.endpoint_id for endpoint in template.endpoints} == endpoint_ids
         expected_verified_on = _EXPECTED_VERIFIED_ON.get(template_id, "2026-07-14")
         assert template.verified_on == expected_verified_on

@@ -68,6 +68,32 @@ class AuthApp(App):
         self.push_screen(self.initial)
 
 
+async def test_builtin_subscription_starts_without_login_and_shows_service_limits(tmp_path):
+    facade = ConfigurationFacade(tmp_path)
+    facade.add_provider("personal", provider_type="openai-codex", make_default=True)
+    application = LocalApplication.build(tmp_path)
+    app = OuroTuiApp(application=application)
+    async with run_ready_app(app) as pilot:
+        await pilot.press("ctrl+p")
+        await choose(app, pilot, "Manage providers")
+        await choose(app, pilot, "personal")
+        assert "local planning budget" in choices(app.screen)["service-notice"].description
+        await choose(app, pilot, "Authentication")
+        assert isinstance(app.screen, ProviderAuthenticationScreen)
+        await eventually(lambda: "status" in choices(app.screen))
+        assert choices(app.screen)["status"].trailing == "missing"
+        assert any(choice.label == "Browser" for choice in choices(app.screen).values())
+        provider = facade.provider("personal")
+        profile = profile_for_provider(provider, facade.provider_template_catalog().templates)
+        editor = ProviderConfigurationScreen(profile, existing=provider)
+        assert "local planning budget" in next(
+            choice.description
+            for choice in editor._provider_choices()
+            if choice.value == "service-notice"
+        )
+        assert all(choice.value != "provider-api-key" for choice in editor._provider_choices())
+
+
 async def eventually(predicate):
     async with asyncio.timeout(5):
         while not predicate():

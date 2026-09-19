@@ -31,6 +31,7 @@ from ouro.application.tasks import TaskService
 from ouro.application.usage import UsageService
 from ouro.auth.credentials import CredentialService
 from ouro.auth.driver_contracts import AuthDriver
+from ouro.auth.drivers.openai_codex import OpenAICodexDriver
 from ouro.auth.managed_requests import ManagedRequestAuthenticator, RequestTarget
 from ouro.auth.store import FileCredentialStore
 from ouro.automation.local_files import LocalTaskRepository
@@ -110,6 +111,21 @@ class ProviderServicePolicy:
     def __post_init__(self) -> None:
         if not self.policy_id or not self.targets:
             raise ValueError("service registration requires an id and allowed targets")
+
+
+_BUILTIN_SERVICE_POLICIES = (
+    ProviderServicePolicy(
+        "openai-codex",
+        (RequestTarget("https://chatgpt.com", "/backend-api/codex/responses"),),
+        ProviderRequestPolicy(billing_mode="subscription", supports_output_limit=False),
+    ),
+)
+
+
+def _local_auth_drivers(additional: tuple[AuthDriver, ...]) -> tuple[AuthDriver, ...]:
+    # Public client used by the verified upstream Codex compatibility flow.
+    # No clients, secrets or account entitlement are resolved at construction.
+    return (OpenAICodexDriver(client_id="app_EMoamEEZ73f0CkXaXp7hrann"), *additional)
 
 
 class LocalApplication:
@@ -392,11 +408,13 @@ async def open_local_provider_auth(
     *,
     drivers: tuple[AuthDriver, ...] = (),
 ) -> AsyncGenerator[ProviderAuthService]:
-    """Own authentication alone; production managed drivers are not yet registered."""
+    """Own authentication alone, using the same built-in drivers as Runtime."""
     root = resolve_local_home(home)
     credentials = CredentialService(FileCredentialStore(root))
     try:
-        service = ProviderAuthService(ProviderConfigManager(root), credentials, drivers)
+        service = ProviderAuthService(
+            ProviderConfigManager(root), credentials, _local_auth_drivers(drivers)
+        )
         try:
             yield service
         finally:
@@ -505,6 +523,8 @@ def build_local_runtime(
         system_prompt=system_prompt,
     )
     credentials = CredentialService(FileCredentialStore(root))
+    auth_drivers = _local_auth_drivers(auth_drivers)
+    service_policies = (*_BUILTIN_SERVICE_POLICIES, *service_policies)
     auth = ProviderAuthService(ProviderConfigManager(root), credentials, auth_drivers)
     adapter_builder = _authenticated_adapter_builder(credentials, auth_drivers, service_policies)
     adapter = adapter_builder(resolved.provider_options)

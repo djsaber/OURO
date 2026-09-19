@@ -14,7 +14,7 @@ Provider 表示供应商级连接和默认值：
 
 - `provider_id`：用户拥有的配置实例 id；
 - `provider_type`：集成厂商产品档案，或 `openai-compatible`、`anthropic-compatible` 通用入口；
-- `protocol`：`faux`、`openai-chat-completions` 或 `anthropic-messages`，只负责线协议 adapter 选择；
+- `protocol`：`faux`、`openai-chat-completions`、`openai-responses` 或 `anthropic-messages`，只负责线协议 adapter 选择；
 - `auth_driver`：认证选择，省略时为 `static`；
 - `credential_ref`；
 - `base_url`、`api_path`、timeout 和 retry policy；
@@ -29,7 +29,7 @@ Endpoint 表示一个具体可调用模型：
 - 类型化 reasoning capability 与声明式原生参数 profile；
 - request options 与展示 metadata。
 
-Endpoint 的输出上限不能超过 context window。思考能力、原生编码和运行时意图使用下文的统一契约；
+Endpoint 使用单一正整数 `max_output_tokens` 定义输出预算，同时用于本地上下文预算预留；该值不能超过 context window。默认服务将其发送为请求输出上限；受信服务声明不支持输出上限时不发送该字段，仅保留本地预算语义，实际输出可能超过该值，使用入口必须明确标注这一限制。服务能力通过 ProviderRequestPolicy 注入，不由认证方式推断，也不增加 Endpoint 预留参数或 nullable/server-default 模式。思考能力、原生编码和运行时意图使用下文的统一契约；
 `request_options` 不能同时拥有 reasoning profile 已管理的顶层字段。
 
 ## 权威配置结构
@@ -250,7 +250,7 @@ Mistral 模板暂不声明 reasoning capability。其 reasoning 响应使用嵌�
 4. 本次命令覆盖。
 
 Endpoint 显式 base URL/API path 优先于 Provider 默认值。API path 默认值由协议档案提供：
-`openai-chat-completions` 使用 `/chat/completions`，`anthropic-messages` 使用 `/v1/messages`。数值 `0`
+`openai-chat-completions` 使用 `/chat/completions`，`openai-responses` 使用 `/responses`，`anthropic-messages` 使用 `/v1/messages`。数值 `0`
 等合法显式值不能被 truthy 合并误替换。
 
 ## 凭据
@@ -274,8 +274,9 @@ API Key/API Key 环境变量覆盖并用；无产品绑定的 ad-hoc managed 请
 `configured=true`、`available=null`，只说明已有引用，不能据此推断已经登录、已过期或可调用。实际认证状态由后续
 ProviderAuthService 提供，配置视图不读取 store 或触发刷新。
 
-当前内建产品仍只声明 static 组合。受管理配置、模板及运行参数边界通过测试产品声明验收；尚未注册生产驱动、服务规则
-或订阅产品。factory 要求组合根注入 managed RequestAuthenticator，构造时不读取秘密；未注入时明确失败，不尝试解析为 API Key。现有协议接线见[请求认证规格](OURO_请求认证规格_2026-09-17.md)，生产装配和 Host 启动验收仍见
+内建 openai-codex 产品声明 Responses + 同名浏览器驱动，服务策略由组合根解析；其他既有产品保持 static。
+Provider/Template DTO 携带连接声明的只读 notice，用于 Host 披露服务限制，不写入用户配置。
+factory 要求组合根注入 managed RequestAuthenticator，构造时不读取秘密；未注入时明确失败，不尝试解析为 API Key。现有协议接线见[请求认证规格](OURO_请求认证规格_2026-09-17.md)，生产装配和 Host 启动验收见
 [订阅认证规格](OURO_模型订阅认证规格_2026-09-16.md)。配置证据见 `tests/config/test_provider_auth_config.py`。
 
 ## Provider adapter

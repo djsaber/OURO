@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 
 from ouro.auth.request_auth import AuthError
 from ouro.core.provider import ProviderRetryNotice, ProviderRetryPolicy, ProviderStreamEvent
@@ -14,16 +14,22 @@ ProviderStreamFactory = Callable[[], AsyncIterator[ProviderStreamEvent]]
 async def stream_with_retries(
     stream_once: ProviderStreamFactory,
     retry_policy: ProviderRetryPolicy,
-) -> AsyncIterator[ProviderStreamEvent]:
+) -> AsyncGenerator[ProviderStreamEvent]:
     """One model-attempt budget, with at most one pre-output authentication recovery."""
     attempt = 1
     recovered = False
     while True:
         emitted_response_event = False
         try:
-            async for event in stream_once():
-                emitted_response_event = True
-                yield event
+            events = stream_once()
+            try:
+                async for event in events:
+                    emitted_response_event = True
+                    yield event
+            finally:
+                close = getattr(events, "aclose", None)
+                if close is not None:
+                    await close()
             return
         except Exception as exc:  # noqa: BLE001 - provider failures are normalized events.
             next_attempt = attempt + 1

@@ -8,7 +8,7 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ouro.config.credentials import CredentialRef
 from ouro.config.endpoints import ProviderEndpointConfig
-from ouro.config.reasoning import EndpointReasoningConfig
+from ouro.config.reasoning import EndpointReasoningConfig, ReasoningProfileConfig
 from ouro.core.base import Metadata, MetadataField, OuroModel
 from ouro.core.provider import ProviderRetryPolicy
 from ouro.core.reasoning import ReasoningContinuation, ReasoningRequest
@@ -16,6 +16,7 @@ from ouro.core.reasoning import ReasoningContinuation, ReasoningRequest
 ProviderType = Literal[
     "faux",
     "openai",
+    "openai-codex",
     "anthropic",
     "gemini",
     "deepseek",
@@ -31,12 +32,14 @@ ProviderType = Literal[
 ProviderProtocol = Literal[
     "faux",
     "openai-chat-completions",
+    "openai-responses",
     "anthropic-messages",
 ]
 ProviderTemplateOrigin = Literal["inline", "custom"]
 
 INTEGRATED_PROVIDER_TYPES: tuple[ProviderType, ...] = (
     "openai",
+    "openai-codex",
     "anthropic",
     "gemini",
     "deepseek",
@@ -59,6 +62,7 @@ SUPPORTED_PROVIDER_TYPES: tuple[ProviderType, ...] = (
 SUPPORTED_PROVIDER_PROTOCOLS: tuple[ProviderProtocol, ...] = (
     "faux",
     "openai-chat-completions",
+    "openai-responses",
     "anthropic-messages",
 )
 BUILTIN_FAUX_PROVIDER_ID = "faux"
@@ -71,6 +75,7 @@ class ProviderConnectionSpec:
     protocol: ProviderProtocol
     auth_driver: str = "static"
     service_policy: str | None = None
+    notice: str | None = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +111,19 @@ _ANTHROPIC_STATIC = ProviderConnectionSpec("anthropic-messages")
 _PROVIDER_TYPE_SPECS: dict[ProviderType, ProviderTypeSpec] = {
     "faux": ProviderTypeSpec("faux", ProviderConnectionSpec("faux")),
     "openai": ProviderTypeSpec("openai", _OPENAI_STATIC),
+    "openai-codex": ProviderTypeSpec(
+        "openai-codex",
+        ProviderConnectionSpec(
+            "openai-responses",
+            "openai-codex",
+            "openai-codex",
+            notice=(
+                "ChatGPT subscription compatibility integration; browser login required. "
+                "max_output_tokens is a local planning budget, not a request output limit. "
+                "Actual output may exceed this budget."
+            ),
+        ),
+    ),
     "anthropic": ProviderTypeSpec("anthropic", _ANTHROPIC_STATIC),
     "gemini": ProviderTypeSpec("gemini", _OPENAI_STATIC),
     "deepseek": ProviderTypeSpec("deepseek", _OPENAI_STATIC),
@@ -115,11 +133,21 @@ _PROVIDER_TYPE_SPECS: dict[ProviderType, ProviderTypeSpec] = {
     "grok": ProviderTypeSpec("grok", _OPENAI_STATIC),
     "openrouter": ProviderTypeSpec("openrouter", _OPENAI_STATIC),
     "mistral": ProviderTypeSpec("mistral", _OPENAI_STATIC),
-    "openai-compatible": ProviderTypeSpec("openai-compatible", _OPENAI_STATIC),
+    "openai-compatible": ProviderTypeSpec(
+        "openai-compatible",
+        _OPENAI_STATIC,
+        alternative_connections=(ProviderConnectionSpec("openai-responses"),),
+    ),
     "anthropic-compatible": ProviderTypeSpec("anthropic-compatible", _ANTHROPIC_STATIC),
 }
 
 _PROVIDER_PROTOCOL_SPECS: dict[ProviderProtocol, ProviderProtocolSpec] = {
+    "openai-responses": ProviderProtocolSpec(
+        protocol="openai-responses",
+        default_api_path="/responses",
+        requires_base_url=True,
+        reasoning_continuations=("none", "opaque"),
+    ),
     "faux": ProviderProtocolSpec(
         protocol="faux",
         default_api_path=None,
@@ -141,6 +169,23 @@ _PROVIDER_PROTOCOL_SPECS: dict[ProviderProtocol, ProviderProtocolSpec] = {
 }
 
 _PROTOCOL_OWNED_REQUEST_FIELDS: dict[ProviderProtocol, frozenset[str]] = {
+    "openai-responses": frozenset(
+        {
+            "model",
+            "input",
+            "instructions",
+            "tools",
+            "stream",
+            "store",
+            "include",
+            "temperature",
+            "max_output_tokens",
+            "previous_response_id",
+            "conversation",
+            "truncation",
+            "background",
+        }
+    ),
     "faux": frozenset(),
     "openai-chat-completions": frozenset(
         {
@@ -228,6 +273,12 @@ def validate_request_options(
         and "response_format" in request_options
     ):
         raise ValueError("response_format requires an endpoint with structured output support")
+    if protocol == "openai-responses":
+        text = request_options.get("text")
+        if text is not None and not isinstance(text, dict):
+            raise ValueError("Responses text options must be an object")
+        if isinstance(text, dict) and "format" in text and supports_structured_output is False:
+            raise ValueError("text.format requires an endpoint with structured output support")
 
 
 def validate_reasoning_protocol_compatibility(
@@ -245,6 +296,19 @@ def validate_reasoning_protocol_compatibility(
         )
     if protocol == "faux" and capability.activation != "unsupported":
         raise ValueError("faux protocol does not support reasoning controls")
+    if protocol == "openai-responses" and reasoning.profile is not None:
+        validate_responses_reasoning_profile(reasoning.profile)
+
+
+def validate_responses_reasoning_profile(profile: ReasoningProfileConfig) -> None:
+    """Responses controls use one native object, never Chat Completions fields."""
+    if not profile.owned_fields <= {"reasoning"}:
+        raise ValueError("Responses reasoning profiles must use the reasoning object")
+    if any(
+        not isinstance(fragment.get("reasoning", {}), dict)
+        for fragment in profile.variants.values()
+    ):
+        raise ValueError("Responses reasoning controls must be an object")
 
 
 class ProviderTemplateEndpointBinding(OuroModel):
