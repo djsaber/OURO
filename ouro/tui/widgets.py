@@ -870,7 +870,7 @@ def _tool_activity_text(
             f"{theme.spinner_frames[frame % len(theme.spinner_frames)]} ",
             style=theme.accent,
         )
-        text.append(tool.tool_name, style=theme.text_faint)
+        text.append(tool.tool_name, style=theme.text_lowlight)
         if tool.argument_stream_tail is not None:
             text.append(
                 theme.inline_separator,
@@ -899,7 +899,7 @@ def _tool_activity_text(
         )
     text.append(
         title,
-        style=theme.failure if failed else theme.text_primary,
+        style=theme.failure if failed else theme.text_lowlight,
     )
     if presentation.summary:
         text.append(
@@ -2265,6 +2265,16 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         # partial answer keeps presentation order identical to event order.
         await self.finish_assistant()
         self._history.append(TranscriptEntry(kind="notice", text=message, error=error))
+        await self._history.wait_until_rendered()
+
+    async def add_command_output(self, output: str) -> None:
+        """Present short feedback as a notice and multiline content as literal code."""
+        if len(output.splitlines()) <= 1:
+            await self.add_notice(output)
+            return
+        await self._dismiss_welcome()
+        await self.finish_assistant()
+        self._history.append(TranscriptEntry(kind="command", text=output))
         await self._history.wait_until_rendered()
 
     async def add_compaction(

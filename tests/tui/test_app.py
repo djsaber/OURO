@@ -2977,6 +2977,12 @@ async def test_reasoning_stream_lines_match_whole_block_rendering(tmp_path: Path
         assert body.rendered_text.splitlines() == whole_block
         assert body.rendered_text.splitlines()[0] == "│ first thought"
         assert any("word39" in line for line in body.rendered_text.splitlines())
+        for strip in (*body._line_strips, *body._pending_strips):
+            for segment in strip:
+                if segment.text.strip() and segment.text != "│":
+                    assert segment.style is not None
+                    assert segment.style.color == Style(color=app.tui_theme.text_lowlight).color
+                    assert not segment.style.dim
 
 
 @pytest.mark.asyncio
@@ -10718,9 +10724,21 @@ async def test_compaction_uses_shared_grouped_inline_menu_and_returns_typed_draf
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("output", "data", "expected_kind", "visible_text"),
+    (
+        ("hello", {}, "notice", "▣ hello"),
+        ("Goal: active\n```\n**literal objective**\n```", {}, "command", "**literal objective**"),
+        ("", {"objective": "检查命令内容"}, "command", '"objective": "检查命令内容"'),
+    ),
+)
 async def test_plugin_commands_complete_and_execute_through_controller_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    output: str,
+    data: dict[str, str],
+    expected_kind: str,
+    visible_text: str,
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
     executed: list[tuple[str, str]] = []
@@ -10728,7 +10746,9 @@ async def test_plugin_commands_complete_and_execute_through_controller_boundary(
     async def execute(selector: str, argument: str) -> TuiPluginCommandExecution:
         executed.append((selector, argument))
         return TuiPluginCommandExecution(
-            execution=PluginCommandExecutionView(command_id="dev.ouro.demo:hello", output="hello")
+            execution=PluginCommandExecutionView(
+                command_id="dev.ouro.demo:hello", output=output, data=data
+            )
         )
 
     async with run_ready_app(app, size=(100, 34)) as pilot:
@@ -10758,12 +10778,22 @@ async def test_plugin_commands_complete_and_execute_through_controller_boundary(
         await pilot.pause()
 
         assert executed == [("hello", "world")]
-        notices = "\n".join(
-            entry.text
-            for entry in app.query_one(ConversationHistory).entries
-            if entry.kind == "notice"
+        history = app.query_one(ConversationHistory)
+        assert history.entries[-1].kind == expected_kind
+        assert history.entries[-1].text == (
+            output or json.dumps(data, ensure_ascii=False, indent=2)
         )
-        assert "hello" in notices
+        assert visible_text in "\n".join(line.text for line in history.lines)
+        content_segment = next(
+            segment
+            for line in history.lines
+            for segment in line
+            if visible_text.removeprefix("▣ ") in segment.text
+        )
+        assert content_segment.style is not None
+        assert not content_segment.style.bold
+        if expected_kind == "command":
+            assert content_segment.style.bgcolor == Style(bgcolor=app.tui_theme.panel).bgcolor
 
 
 @pytest.mark.asyncio
@@ -11649,6 +11679,9 @@ async def test_plan_status_keeps_its_conversation_notice(tmp_path: Path) -> None
             if entry.kind == "notice"
         )
         assert notices == ("Plan mode phase: inactive.",)
+        assert "▣ Plan mode phase: inactive." in "\n".join(
+            line.text for line in app.query_one(ConversationHistory).lines
+        )
         assert app.query_one(ConversationView).showing_welcome is False
 
 

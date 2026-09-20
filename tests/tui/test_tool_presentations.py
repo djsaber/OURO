@@ -255,7 +255,7 @@ def test_spawn_agent_first_frame_uses_request_for_complete_preview(
 @pytest.mark.parametrize(
     ("status", "expected_color"),
     (
-        ("completed", DEFAULT_TUI_THEME.text_primary),
+        ("completed", DEFAULT_TUI_THEME.text_lowlight),
         ("failed", DEFAULT_TUI_THEME.failure),
         ("rejected", DEFAULT_TUI_THEME.failure),
         ("aborted", DEFAULT_TUI_THEME.failure),
@@ -326,10 +326,11 @@ def test_streaming_tool_uses_lowlight_left_filled_window_without_execution_detai
     assert cell_len(window) == 48
     tool_style = rendered_text.get_style_at_offset(Console(), rendered.index("Write"))
     preview_style = rendered_text.get_style_at_offset(Console(), rendered.index(preview))
-    assert tool_style.color == preview_style.color
+    assert preview_style.color is not None
+    assert preview_style.color.get_truecolor().hex == DEFAULT_TUI_THEME.text_faint
     assert tool_style.color is not None
     assert tool_style.color.triplet is not None
-    assert tool_style.color.triplet.hex == DEFAULT_TUI_THEME.text_faint
+    assert tool_style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
 
 
 def test_streaming_tool_name_is_active_before_arguments_arrive() -> None:
@@ -490,7 +491,7 @@ def test_spawn_agent_uses_task_outcome_status(
     assert title_style.color is not None
     assert title_style.color.triplet is not None
     assert title_style.color.triplet.hex == (
-        DEFAULT_TUI_THEME.failure if expected == "failed" else DEFAULT_TUI_THEME.text_primary
+        DEFAULT_TUI_THEME.failure if expected == "failed" else DEFAULT_TUI_THEME.text_lowlight
     )
     assert not title_style.bold
 

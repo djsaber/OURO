@@ -615,13 +615,13 @@ _OURO_TUI_CSS = """
         height: auto;
         margin: 0 0 1 0;
         padding: 0;
-        color: $ouro-text-muted;
+        color: $ouro-text-lowlight;
         background: transparent;
     }
 
     .reasoning-label {
         height: 1;
-        color: $ouro-text-secondary;
+        color: $ouro-text-lowlight;
         text-style: none;
     }
 
@@ -632,7 +632,7 @@ _OURO_TUI_CSS = """
         height: auto;
         margin: 1 0 0 0;
         padding: 0 1 0 0;
-        color: $ouro-text-muted;
+        color: $ouro-text-lowlight;
         background: transparent;
     }
 
@@ -644,7 +644,7 @@ _OURO_TUI_CSS = """
     .tool-row {
         height: auto;
         margin: 0 2;
-        color: $ouro-text-secondary;
+        color: $ouro-text-lowlight;
         background: transparent;
     }
 
@@ -3004,9 +3004,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             ):
                 await self._open_session(self._controller.session_id)
             if command_output:
-                await self.query_one(ConversationView).add_notice(command_output)
+                await self.query_one(ConversationView).add_command_output(command_output)
             elif command_data:
-                await self.query_one(ConversationView).add_notice(
+                await self.query_one(ConversationView).add_command_output(
                     json.dumps(command_data, ensure_ascii=False, indent=2)
                 )
             for run_result in result.run_results:

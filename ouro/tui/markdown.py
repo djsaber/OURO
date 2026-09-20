@@ -1,4 +1,4 @@
-"""Theme-aware assistant Markdown rendering for the OURO TUI."""
+"""Theme-aware Markdown and literal code blocks for the OURO TUI."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.markdown import Markdown as RichMarkdown
+from rich.syntax import Syntax
 from rich.text import Text
 
 from ouro.tui.theme import TuiTheme
@@ -46,4 +47,10 @@ def assistant_markdown(text: str, theme: TuiTheme) -> _AssistantMarkdown:
     return _AssistantMarkdown(text, theme)
 
 
-__all__ = ["assistant_markdown"]
+def plain_code_block(text: str, theme: TuiTheme) -> Syntax:
+    """Render literal command output with the same surface as Markdown code blocks."""
+
+    return Syntax(text.rstrip(), "text", theme=theme.syntax_theme(), word_wrap=True, padding=1)
+
+
+__all__ = ["assistant_markdown", "plain_code_block"]

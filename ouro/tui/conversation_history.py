@@ -24,7 +24,7 @@ from textual.widgets import RichLog
 
 from ouro.application.agent_models import AgentTreeNode
 from ouro.application.supervisor_models import RuntimeToolCallActivity
-from ouro.tui.markdown import assistant_markdown
+from ouro.tui.markdown import assistant_markdown, plain_code_block
 from ouro.tui.selection import RangeSelectionOnly
 from ouro.tui.state import (
     RunPresentation,
@@ -46,7 +46,7 @@ class ToolActivityRenderer(Protocol):
     ) -> Text: ...
 
 
-TranscriptEntryKind = Literal["user", "assistant", "tool", "notice", "compaction", "run"]
+TranscriptEntryKind = Literal["user", "assistant", "tool", "notice", "command", "compaction", "run"]
 
 _REASONING_ENTRY_META = "ouro_reasoning_entry"
 _TOOL_NAVIGATION_META = "ouro_tool_navigation"
@@ -233,7 +233,7 @@ def _reasoning_label_text(
         expanded=expanded,
         theme=theme,
     )
-    text = Text(title, style=Style(color=theme.text_secondary))
+    text = Text(title, style=Style(color=theme.text_lowlight))
     if duration is not None:
         text.append(
             theme.inline_separator,
@@ -343,9 +343,7 @@ def _format_user_message_timestamp(
     time_label = f"{local_created_at.hour:02d}：{local_created_at.minute:02d}"
     if local_created_at.date() == local_now.date():
         return time_label
-    date_label = (
-        f"{local_created_at.year}/{local_created_at.month}/{local_created_at.day}"
-    )
+    date_label = f"{local_created_at.year}/{local_created_at.month}/{local_created_at.day}"
     return f"{date_label}{separator}{time_label}"
 
 
@@ -368,7 +366,7 @@ class _ReasoningContent:
     ) -> RenderResult:
         prefix_width = 2
         content_options = options.update_width(max(1, options.max_width - prefix_width))
-        content = Text(self.text, style=f"dim italic {self.theme.text_muted}")
+        content = Text(self.text, style=f"italic {self.theme.text_lowlight}")
         lines = console.render_lines(content, content_options, pad=False)
         border = Segment("│", Style(color=self.theme.border))
         gap = Segment(" ")
@@ -670,13 +668,10 @@ def _summary_line(
     marker_tone: str,
     details: Iterable[tuple[str, str]],
     theme: TuiTheme,
-    emphasized: bool = True,
 ) -> Text:
     summary = Text()
-    marker_style = f"bold {marker_tone}" if emphasized else marker_tone
-    title_style = f"bold {theme.text_secondary}" if emphasized else theme.text_secondary
-    summary.append(f"{theme.brand_mark} ", style=marker_style)
-    summary.append(title, style=title_style)
+    summary.append(f"{theme.brand_mark} ", style=marker_tone)
+    summary.append(title, style=theme.text_secondary)
     for value, tone in details:
         summary.append(theme.section_separator, style=theme.separator_tone)
         summary.append(value, style=tone)
@@ -733,7 +728,6 @@ def _run_summary(run: RunPresentation, theme: TuiTheme) -> Text:
         marker_tone=marker_tone,
         details=details,
         theme=theme,
-        emphasized=False,
     )
 
 
@@ -810,9 +804,14 @@ def _entry_renderables(
             rendered.stylize(interaction_style, 0, len(rendered))
         return [(Padding(rendered, (0, 2, 0, 2)), "body")]
     if entry.kind == "notice":
-        tone = theme.critical if entry.error else theme.accent
         top = 1 if request.previous_kind == "tool" else 0
-        return [(Padding(Text(entry.text, style=tone), (top, 1, 1, 1)), "body")]
+        summary = _summary_line(entry.text, marker_tone=theme.accent, details=(), theme=theme)
+        if entry.error:
+            summary.stylize(theme.critical)
+        return [(Padding(summary, (top, 1, 1, 2)), "body")]
+    if entry.kind == "command":
+        top = 1 if request.previous_kind == "tool" else 0
+        return [(Padding(plain_code_block(entry.text, theme), (top, 2, 1, 2)), "body")]
     if entry.kind == "compaction":
         assert entry.compaction is not None
         top = 1 if request.previous_kind == "tool" else 0

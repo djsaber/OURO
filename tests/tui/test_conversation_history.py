@@ -71,7 +71,7 @@ def test_single_tool_entry_uses_background_rendering() -> None:
     assert ConversationHistory._requires_background_render((entry,))
 
 
-def test_reasoning_label_uses_regular_title_and_lowlight_timing() -> None:
+def test_reasoning_label_uses_lowlight_title_and_faint_timing() -> None:
     label = _reasoning_label_text("Thought", 2.5, expanded=False)
 
     assert label.plain == "+ Thought • 2.5s"
@@ -81,7 +81,7 @@ def test_reasoning_label_uses_regular_title_and_lowlight_timing() -> None:
     assert not duration_style.bold
     assert title_style.color is not None
     assert title_style.color.triplet is not None
-    assert title_style.color.triplet.hex == DEFAULT_TUI_THEME.text_secondary
+    assert title_style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
     assert duration_style.color is not None
     assert duration_style.color.triplet is not None
     assert duration_style.color.triplet.hex == DEFAULT_TUI_THEME.text_faint
@@ -760,7 +760,8 @@ def test_compaction_and_run_summaries_share_visual_structure_and_failure_semanti
     assert failed.plain == (
         "▣ deepseek-v4-flash • 5m 16.4s • provider returned an empty assistant message"
     )
-    assert _style_at(compaction, "Context compacted").bold is True
+    assert not _style_at(compaction, "Context compacted").bold
+    assert not _style_at(compaction, DEFAULT_TUI_THEME.brand_mark).bold
     assert not _style_at(failed, "deepseek-v4-flash").bold
     assert not _style_at(failed, DEFAULT_TUI_THEME.brand_mark).bold
     assert _style_at(compaction, "Context compacted").color is not None

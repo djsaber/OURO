@@ -116,6 +116,11 @@ TranscriptEntry + TuiTheme + render width
 每个字段使用组件无关的语义名称。组件专用名称、特定语言 token 和渲染器实现名称不进入 TuiTheme。
 `accent` 用于操作、链接、inline code 和活动状态，`accent_bright` 用于焦点和高亮操作。
 
+会话栏中的思考标记、思考正文和普通工具名称统一使用 `text_lowlight`；思考正文保留 italic，不叠加 dim。
+模型正文使用 `text_primary`，Markdown 内容保留各自的语义样式。失败状态继续使用错误色，悬浮高亮与点击语义保持一致。
+压缩摘要与运行摘要使用常规字重。短命令反馈复用 `brand_mark` 加消息文本的提醒结构；多行命令内容使用纯文本代码块，
+复用 Markdown 代码块的 SyntaxTheme、panel 背景、换行与内边距，内容中的 Markdown 标记按原文显示。
+
 颜色只接受规范化 `#RRGGBB`。透明度、ANSI 名称、渐变和任意 Rich style string 不属于主题契约。bold、italic、
 underline、dim 等渲染样式由 OURO 根据主题语义建立，不作为可执行字符串存入主题。
 
