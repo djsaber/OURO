@@ -16,7 +16,7 @@ def test_compaction_model_config_persists_without_replacing_other_sections(tmp_p
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     path = config_dir / "config.json"
-    path.write_text(json.dumps({"providers": {"default": "faux"}}), encoding="utf-8")
+    path.write_text(json.dumps({"prompts": {"system": "keep"}}), encoding="utf-8")
     manager = CompactionConfigManager(tmp_path)
 
     saved = manager.set_model(
@@ -35,7 +35,7 @@ def test_compaction_model_config_persists_without_replacing_other_sections(tmp_p
     assert restored.model.provider_id == "glm"
     assert restored.model.endpoint_id == "summary"
     assert restored.model.reasoning == ReasoningRequest(mode="disabled")
-    assert raw["providers"] == {"default": "faux"}
+    assert raw["prompts"] == {"system": "keep"}
     assert raw["compaction"]["model"]["max_output_tokens"] == 4096
 
 

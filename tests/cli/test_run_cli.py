@@ -461,7 +461,7 @@ def test_build_runtime_reads_local_config_file(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OURO_TEST_KEY", "secret")
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "config.json").write_text(
+    (config_dir / "providers.json").write_text(
         json.dumps(
             {
                 "providers": {
@@ -1422,16 +1422,9 @@ def test_run_print_mode_shows_reasoning_deltas_in_dim_italics(
 def test_runtime_composes_configured_compaction_endpoint(tmp_path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "config.json").write_text(
+    (config_dir / "providers.json").write_text(
         json.dumps(
             {
-                "compaction": {
-                    "model": {
-                        "provider_id": "glm",
-                        "endpoint_id": "summary",
-                        "temperature": 0.1,
-                    }
-                },
                 "providers": {
                     "default": "faux",
                     "items": {
@@ -1449,6 +1442,21 @@ def test_runtime_composes_configured_compaction_endpoint(tmp_path) -> None:
                         }
                     },
                 },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    (config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "compaction": {
+                    "model": {
+                        "provider_id": "glm",
+                        "endpoint_id": "summary",
+                        "temperature": 0.1,
+                    }
+                }
             }
         ),
         encoding="utf-8",

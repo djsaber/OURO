@@ -13,6 +13,12 @@ from typing import Any
 from ouro.core.errors import ConfigError
 from ouro.local_locks import FileMutationLock
 
+DOMAIN_CONFIG_FILES = {
+    "providers": "providers.json",
+    "mcp": "mcp.json",
+    "agents": "agents.json",
+}
+
 
 class ConfigMutationTimeout(ConfigError):
     """The bounded configuration transaction could not acquire its lock."""
@@ -28,16 +34,29 @@ class JsonConfigFile:
         self._lock_path = self.root / "locks" / f"{Path(name).stem}-mutations.lock"
 
     def read(self) -> dict[str, Any]:
+        if self.path.name in DOMAIN_CONFIG_FILES.values():
+            # Reject an obsolete shared layout even when a domain is read alone.
+            JsonConfigFile(self.root).read()
         if not self.path.exists():
             return {}
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise ConfigError(f"invalid config file {self.path}: {exc}") from exc
+        except UnicodeError as exc:
+            raise ConfigError(f"config file is not valid UTF-8: {self.path}") from exc
         except OSError as exc:
             raise ConfigError(f"could not read config file {self.path}: {exc}") from exc
         if not isinstance(raw, dict):
             raise ConfigError(f"invalid config file {self.path}: expected object")
+        if self.path.name == "config.json":
+            obsolete = sorted(raw.keys() & DOMAIN_CONFIG_FILES.keys())
+            if obsolete:
+                locations = ", ".join(DOMAIN_CONFIG_FILES[key] for key in obsolete)
+                raise ConfigError(
+                    f"unsupported shared config sections: {', '.join(obsolete)}; "
+                    f"use {locations} in a new home or remove the obsolete configuration"
+                )
         return raw
 
     def write(self, raw: Mapping[str, Any]) -> None:

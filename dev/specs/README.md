@@ -22,6 +22,7 @@
 | [会话与持久化](OURO_会话持久化规格_2026-09-02.md) | SessionRepository、文件/SQLite、索引、锁、恢复、分支与回收站 | `ouro/sessions`、`ouro/application/sessions.py` |
 | [会话撤销、Harness 状态与插件交互](OURO_会话撤销与Harness状态规格_2026-09-08.md) | 原生状态版本、精确撤销、插件调用/提交、队列竞争、恢复与验收证据 | `ouro/core/harness.py`、`ouro/sessions`、`ouro/application`、`ouro/plugins/harness_calls.py` |
 | [Provider 与配置](OURO_Provider配置规格_2026-09-02.md) | Provider/Endpoint、静态及受管理认证引用、模板绑定、运行参数与覆盖规则 | `ouro/config`、`ouro/providers` |
+| [配置与数据传输](OURO_配置与数据传输规格_2026-09-21.md) | 配置分域、统一导入导出、会话树与附件、技能目录、未知依赖与失败边界 | `ouro/application/data_transfer.py`、`ouro/transfer`、`ouro/sessions/portable.py` |
 | [用量与计费](OURO_用量与计费规格_2026-09-17.md) | 请求时计费归属、实际 token、未知/部分金额、账本审计与 CLI/TUI 呈现 | `ouro/core/billing.py`、`ouro/application/usage.py`、`ouro/billing` |
 | [受管理凭据核心](OURO_凭据核心规格_2026-09-16.md) | 受限文件存储、revision、刷新/注销/取消与跨进程互斥；内建浏览器订阅产品复用 | `ouro/auth` |
 | [Provider 认证用例](OURO_Provider认证用例规格_2026-09-16.md) | 通用登录、安全状态、凭据管理与配置条件提交；轻量 CLI、通用 TUI 与内建浏览器驱动已接线 | `ouro/application/provider_auth*.py` |

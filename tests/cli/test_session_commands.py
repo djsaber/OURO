@@ -26,6 +26,7 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.local_application import build_local_session_services
 from ouro.sessions import LocalSessionStore, SessionStore
 from ouro.tools import ToolRegistry
+from ouro.transfer.archive import read_archive
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -41,9 +42,14 @@ def test_export_contains_canonical_harness_checkpoints_and_receipts(tmp_path, ca
     assert (
         main(
             [
-                "session",
+                "data",
                 "export",
+                "--kind",
+                "sessions",
+                "--id",
                 session.session_id,
+                "--path",
+                str(tmp_path / "session.zip"),
                 "--home",
                 str(tmp_path),
                 "--session-backend",
@@ -53,7 +59,10 @@ def test_export_contains_canonical_harness_checkpoints_and_receipts(tmp_path, ca
         )
         == 0
     )
-    payload = json.loads(capsys.readouterr().out)
+    assert json.loads(capsys.readouterr().out)["status"] == "ok"
+    payload = read_archive(tmp_path / "session.zip", "sessions").manifest.data["bundle"][
+        "sessions"
+    ][0]["snapshot"]
     assert payload["session"]["history_epoch"] == 0
     assert payload["session"]["harness_version"] == session.harness_version
     assert payload["harness_versions"][0]["version_id"] == session.harness_version
@@ -318,43 +327,34 @@ def test_session_branch_and_replay_commands_use_application_facade(tmp_path, cap
     assert replay_payload["frames"][0]["event"]["event_type"] == "run_started"
 
 
-def test_session_export_to_stdout(tmp_path, capsys) -> None:
-    run_code = main(["run", "--json", "--home", str(tmp_path), "hello"])
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_session_data_export_to_archive(tmp_path, capsys, json_mode) -> None:
+    assert main(["run", "--json", "--home", str(tmp_path), "hello"]) == 0
     run_payload = json.loads(capsys.readouterr().out)
-    assert run_code == 0
-
-    code = main(["session", "export", run_payload["session_id"], "--home", str(tmp_path)])
-    payload = json.loads(capsys.readouterr().out)
-
-    assert code == 0
-    assert payload["status"] == "ok"
+    output = tmp_path / "export.zip"
+    args = [
+        "data",
+        "export",
+        "--kind",
+        "sessions",
+        "--id",
+        run_payload["session_id"],
+        "--home",
+        str(tmp_path),
+        "--path",
+        str(output),
+    ]
+    if json_mode:
+        args.append("--json")
+    assert main(args) == 0
+    captured = capsys.readouterr()
+    if json_mode:
+        assert json.loads(captured.out)["status"] == "ok"
+    else:
+        assert "Exported sessions" in captured.out
+    payload = read_archive(output, "sessions").manifest.data["bundle"]["sessions"][0]["snapshot"]
     assert payload["session"]["session_id"] == run_payload["session_id"]
     assert any(event["event_type"] == "run_completed" for event in payload["events"])
-
-
-def test_session_export_to_file(tmp_path, capsys) -> None:
-    run_code = main(["run", "--json", "--home", str(tmp_path), "hello"])
-    run_payload = json.loads(capsys.readouterr().out)
-    assert run_code == 0
-
-    output = tmp_path / "export.json"
-    code = main(
-        [
-            "session",
-            "export",
-            run_payload["session_id"],
-            "--home",
-            str(tmp_path),
-            "--output",
-            str(output),
-        ]
-    )
-    captured = capsys.readouterr()
-
-    assert code == 0
-    assert "Exported session" in captured.out
-    payload = json.loads(output.read_text(encoding="utf-8"))
-    assert payload["session"]["session_id"] == run_payload["session_id"]
 
 
 def test_session_messages_and_events(tmp_path, capsys) -> None:

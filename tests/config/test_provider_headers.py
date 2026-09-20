@@ -105,7 +105,7 @@ def test_configuration_round_trip_preserve_replace_clear_and_public_redaction(
         facade.save_endpoint("service", "chat", model="model")
     provider = configs.get_provider("service")
     assert provider.headers["x-private"].value == "private-value"
-    assert "private-value" in facade.config_path.read_text(encoding="utf-8")
+    assert "private-value" in configs.config_path.read_text(encoding="utf-8")
     assert "private-value" not in facade.provider("service").model_dump_json()
     options = configs.resolve_runtime_options(ProviderRuntimeOptions(provider_id="service"))
     assert options.headers == provider.headers
@@ -114,12 +114,12 @@ def test_configuration_round_trip_preserve_replace_clear_and_public_redaction(
     # This includes the integrated provider's explicit template synchronization path.
     facade.update_provider("service", timeout=23)
     assert configs.get_provider("service").headers == provider.headers
-    before = facade.config_path.read_bytes()
+    before = configs.config_path.read_bytes()
     with pytest.raises(ConfigError):
         facade.update_provider(
             "service", headers={"X-Bad": {"source": "literal", "value": "secret\n"}}
         )
-    assert facade.config_path.read_bytes() == before
+    assert configs.config_path.read_bytes() == before
     facade.update_provider_settings(
         "service", headers={"X-New": {"source": "literal", "value": "new"}}
     )
@@ -127,7 +127,8 @@ def test_configuration_round_trip_preserve_replace_clear_and_public_redaction(
     facade.update_provider("service", headers={})
     assert configs.get_provider("service").headers == {}
     assert (
-        "headers" not in json.loads(facade.config_path.read_text())["providers"]["items"]["service"]
+        "headers"
+        not in json.loads(configs.config_path.read_text())["providers"]["items"]["service"]
     )
 
 

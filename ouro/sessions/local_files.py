@@ -9,6 +9,7 @@ from collections import OrderedDict
 from collections.abc import Iterator, Sequence
 from contextlib import ExitStack, closing, suppress
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Lock
 from typing import Self, TypeVar
 
@@ -60,6 +61,7 @@ from ouro.sessions.local_index import LocalSessionIndex
 from ouro.sessions.locks import SessionMutationLock, SessionRunLock
 from ouro.sessions.message_index import MessageJournalQueries
 from ouro.sessions.message_journal import reverse_jsonl
+from ouro.sessions.portable import SessionBundle, populate_sessions
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _JournalRecord = TypeVar("_JournalRecord", MessageRecord, EventRecord)
@@ -100,6 +102,29 @@ class LocalSessionStore:
 
     def create_session(self, session: SessionRecord) -> None:
         self.create_session_snapshot(session, [])
+
+    def import_bundle(self, bundle: SessionBundle) -> None:
+        with TemporaryDirectory(prefix=".session-import-", dir=self.root) as directory:
+            staged = LocalSessionStore(directory)
+            staged.initialize()
+            populate_sessions(staged, bundle)
+            identities = sorted(item.snapshot.session.session_id for item in bundle.sessions)
+            published: list[str] = []
+            with ExitStack() as locks:
+                for identity in identities:
+                    locks.enter_context(self.session_mutation(identity))
+                    if self._session_dir(identity).exists():
+                        raise PersistenceError(f"session already exists: {identity}")
+                try:
+                    for identity in identities:
+                        staged._session_dir(identity).rename(self._session_dir(identity))
+                        published.append(identity)
+                except BaseException:
+                    for identity in reversed(published):
+                        self._session_dir(identity).rename(staged._session_dir(identity))
+                    raise
+            for identity in identities:
+                self.refresh_catalog(identity)
 
     def create_delegation(self, delegation: DelegationRecord) -> DelegationRecord:
         root_id = delegation.root_session_id

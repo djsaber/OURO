@@ -104,7 +104,7 @@ def test_custom_provider_creation_update_and_replacement(
 def test_custom_provider_requires_explicit_protocol_without_writing(tmp_path, capsys, operation):
     facade = ConfigurationFacade(tmp_path)
     facade.add_provider("existing", provider_type="anthropic")
-    before = facade.config_path.read_bytes()
+    before = facade.providers.config_path.read_bytes()
     assert (
         main(
             [
@@ -121,7 +121,7 @@ def test_custom_provider_requires_explicit_protocol_without_writing(tmp_path, ca
         == 2
     )
     assert "protocol is required" in json.loads(capsys.readouterr().out)["error"]
-    assert facade.config_path.read_bytes() == before
+    assert facade.providers.config_path.read_bytes() == before
 
 
 @pytest.mark.parametrize("operation", ["add", "replace"])
@@ -134,7 +134,7 @@ def test_rejected_protocol_selection_preserves_configuration(
 ):
     facade = ConfigurationFacade(tmp_path)
     facade.add_provider("existing", provider_type="anthropic")
-    before = facade.config_path.read_bytes()
+    before = facade.providers.config_path.read_bytes()
     protocol = "openai-responses" if provider_type == "anthropic" else "openai-chat-completions"
     assert (
         main(
@@ -156,7 +156,7 @@ def test_rejected_protocol_selection_preserves_configuration(
         == 2
     )
     assert "protocol" in json.loads(capsys.readouterr().out)["error"]
-    assert facade.config_path.read_bytes() == before
+    assert facade.providers.config_path.read_bytes() == before
 
 
 def test_replace_custom_provider_with_responses(tmp_path, capsys):

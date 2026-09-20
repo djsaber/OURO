@@ -42,6 +42,12 @@ from ouro.application.configuration_models import (
     SkillView,
     ToolExecutionConfigView,
 )
+from ouro.application.data_transfer import (
+    DataKind,
+    DataTransferItem,
+    DataTransferRequest,
+    DataTransferResult,
+)
 from ouro.application.dto import ApplicationStartupReport
 from ouro.application.events import RuntimeEventSinkRegistration
 from ouro.application.models import AvailableModel, ModelReasoningState
@@ -1592,6 +1598,21 @@ class TuiController:
         assert self._application is not None
         record = await self._application.refresh_mcp_server_tools(server_id)
         return self._mcp_status(record)
+
+    async def transfer_data(self, request: DataTransferRequest) -> DataTransferResult:
+        self._runtime()
+        assert self._application is not None
+        return await asyncio.to_thread(self._application.transfer_data, request)
+
+    async def data_archive_kind(self, path: Path) -> DataKind:
+        assert self._application is not None
+        return await asyncio.to_thread(self._application.data_archive_kind, path)
+
+    async def data_transfer_items(
+        self, request: DataTransferRequest
+    ) -> tuple[DataTransferItem, ...]:
+        assert self._application is not None
+        return await asyncio.to_thread(self._application.data_transfer_items, request)
 
     async def skill_catalog(self) -> SkillCatalogView:
         configuration = self._require_configuration()

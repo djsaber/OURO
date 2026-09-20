@@ -425,7 +425,7 @@ async def test_forget_reports_shared_references_and_removal_does_not_erase_secre
     raw = config.load_raw()
     raw["providers"]["items"]["shared"] = dict(raw["providers"]["items"]["subscription"])
     raw["providers"]["items"]["shared"]["provider_id"] = "shared"
-    JsonConfigFile(config.root).write(raw)
+    JsonConfigFile(config.root, name="providers.json").write(raw)
     assert (await service.status("subscription")).bound_provider_ids == ("shared", "subscription")
     config.remove_provider("subscription")
     assert store.read(credential.credential_id).state == "active"

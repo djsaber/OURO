@@ -147,7 +147,7 @@ async def test_create_custom_provider_through_protocol_entry_and_preserve_on_edi
         assert updated.protocol == protocol
         assert updated.api_path == api_path
         assert updated.timeout == 15
-        before = facade.config_path.read_bytes()
+        before = facade.providers.config_path.read_bytes()
         with pytest.raises(ConfigError, match="protocol cannot be changed"):
             await app._controller.update_provider(
                 replace(
@@ -159,7 +159,7 @@ async def test_create_custom_provider_through_protocol_entry_and_preserve_on_edi
                     ),
                 )
             )
-        assert facade.config_path.read_bytes() == before
+        assert facade.providers.config_path.read_bytes() == before
 
 
 @pytest.mark.parametrize("api_path", ["/chat/completions", "/custom/path", ""])

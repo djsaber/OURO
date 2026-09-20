@@ -12,6 +12,8 @@ class BlobStore(Protocol):
 
     def infer_media_type(self, path: Path) -> str: ...
 
+    def import_content(self, record: ResourceRecord, content: bytes) -> None: ...
+
     def import_file(
         self,
         source_path: Path,

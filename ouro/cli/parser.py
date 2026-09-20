@@ -14,6 +14,7 @@ from ouro.config.reasoning import (
 )
 from ouro.config.skills import SKILL_DISCOVERY_SOURCE_IDS
 from ouro.core.approvals import SESSION_APPROVAL_MODES
+from ouro.data_commands import add_data_arguments
 from ouro.deployment import SESSION_BACKENDS, TASK_BACKENDS
 
 
@@ -114,6 +115,22 @@ Use 'ouro COMMAND --help' to inspect a workflow and its examples.""",
     _add_plugin_parser(subparsers)
     _add_skills_parser(subparsers)
     _add_usage_parser(subparsers)
+    data = subparsers.add_parser(
+        "data",
+        help="Import or export OURO configuration and data",
+        description="Transfer one configuration domain, Session trees, or native skill files.",
+        epilog=(
+            "Examples:\n"
+            "  ouro data export --kind providers --path providers.zip\n"
+            "  ouro data export --kind sessions --path all-sessions.zip\n"
+            "  ouro data import --kind sessions --path all-sessions.zip --id ses_example\n"
+            "  ouro data import --kind skills --path skills.zip --replace"
+        ),
+    )
+    add_data_arguments(data)
+    data.add_argument("--home", help="Override OURO_HOME")
+    _add_session_backend_arg(data)
+    data.add_argument("--json", action="store_true", help="Print JSON")
 
     return parser
 
@@ -703,16 +720,6 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
     _add_session_backend_arg(remove_parser)
     remove_parser.add_argument("--force", action="store_true", help="Skip confirmation")
     remove_parser.add_argument("--json", action="store_true", help="Print JSON")
-
-    export_parser = session_subparsers.add_parser("export", help="Export session data")
-    export_parser.add_argument("session_id", help="Session id")
-    export_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
-    _add_session_backend_arg(export_parser)
-    export_parser.add_argument(
-        "--output",
-        help="Write export to a file instead of stdout",
-    )
-    export_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     messages_parser = session_subparsers.add_parser("messages", help="Show session messages")
     messages_parser.add_argument("session_id", help="Session id")

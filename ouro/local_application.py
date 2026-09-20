@@ -11,6 +11,13 @@ from ouro.application.agent_definitions import AgentDefinitionService
 from ouro.application.agents import AgentService
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import MCPRuntimeServerView
+from ouro.application.data_transfer import (
+    DataKind,
+    DataTransferItem,
+    DataTransferRequest,
+    DataTransferResult,
+    DataTransferService,
+)
 from ouro.application.dto import ApplicationStartupReport, Diagnostic
 from ouro.application.events import RuntimeEventSink
 from ouro.application.models import AdapterBuilder
@@ -23,6 +30,7 @@ from ouro.application.runtime_configuration import (
     RuntimeProviderOptions,
 )
 from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.session_transfer import SessionTransferService
 from ouro.application.sessions import SessionService
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.application.task_execution import TaskExecutionCoordinator
@@ -164,6 +172,21 @@ class LocalApplication:
     @property
     def startup_report(self) -> ApplicationStartupReport:
         return self._startup_report
+
+    def transfer_data(self, request: DataTransferRequest) -> DataTransferResult:
+        return self._data_transfer_service().transfer(request)
+
+    def data_archive_kind(self, path: Path) -> DataKind:
+        return self._data_transfer_service().archive_kind(path)
+
+    def data_transfer_items(self, request: DataTransferRequest) -> tuple[DataTransferItem, ...]:
+        return self._data_transfer_service().selection_items(request)
+
+    def _data_transfer_service(self) -> DataTransferService:
+        home = self.runtime.environment.home
+        if home is None:
+            raise OuroError("runtime has no configured deployment home")
+        return build_local_data_transfer_service(home, session_store=self.runtime.store)
 
     @classmethod
     def build(
@@ -626,6 +649,25 @@ def build_local_usage_service(home: str | Path | None = None) -> UsageService:
     usage_ledger = LocalUsageLedger(root)
     usage_ledger.initialize()
     return UsageService(usage_ledger)
+
+
+def build_local_data_transfer_service(
+    home: str | Path | None = None,
+    *,
+    session_backend: SessionBackend | None = None,
+    session_store: SessionStore | None = None,
+) -> DataTransferService:
+    root = resolve_local_home(home)
+
+    def session_transfer() -> SessionTransferService:
+        store = session_store
+        if store is None:
+            store = build_local_session_services(root, session_backend=session_backend)._store
+        resources = LocalResourceStore(root)
+        resources.initialize()
+        return SessionTransferService(store, resources)
+
+    return DataTransferService(root, sessions=session_transfer)
 
 
 def build_local_plugin_service(

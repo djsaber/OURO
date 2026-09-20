@@ -51,6 +51,7 @@ from ouro.sessions.catalog import (
 )
 from ouro.sessions.index import SessionIndex, SessionIndexEntry, invalid_session_index_entry
 from ouro.sessions.locks import SessionRunLock
+from ouro.sessions.portable import SessionBundle, populate_sessions
 from ouro.sessions.sqlite_commits import SQLiteSessionCommits
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
@@ -64,6 +65,12 @@ class SQLiteSessionStore:
         self.database = Path(database).expanduser().resolve()
         self._locks_dir = self.database.parent / f".{self.database.name}.locks"
         self._transaction_state = threading.local()
+
+    def import_bundle(self, bundle: SessionBundle) -> None:
+        with self.session_mutation("data-import"):
+            populate_sessions(self, bundle)
+            for item in bundle.sessions:
+                self.refresh_catalog(item.snapshot.session.session_id)
 
     def initialize(self) -> None:
         self.database.parent.mkdir(parents=True, exist_ok=True)

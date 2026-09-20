@@ -469,7 +469,7 @@ Session 中保存的原始 Run usage。
 
 ## MCP Server
 
-MCP server 配置保存在 `OURO_HOME/config/config.json` 的 `mcp.servers`。启用且 `auto_start` 的 server 会随
+MCP server 配置保存在 `OURO_HOME/config/mcp.json` 的 `mcp.servers`。启用且 `auto_start` 的 server 会随
 Host 启动在后台连接，不阻塞交互模式、`run` 或工具审批恢复。连接成功后，发现的工具会原子地以
 `<server_id>__<tool_name>` 加入当前工具注册表；连接前或连接失败时其他 Agent 功能保持可用，Host 退出时统一关闭。
 server 必须显式设置 `auto_start: true` 才会进入默认 Host，MCP 工具权限默认为 `approval`。
@@ -577,7 +577,20 @@ TUI 的 `Actions > Skill sources` 提供相同的总开关与逐源开关，并�
 
 ## 配置示例
 
-`OURO_HOME/config/config.json` 使用分区结构：
+配置按职责保存在 `OURO_HOME/config/`，每个分区只有一个权威文件：
+
+| 文件 | 内容 |
+|---|---|
+| `config.json` | 提示词、权限、工具执行、运行预算、排队输入、压缩和 Skills 发现策略 |
+| `providers.json` | `providers.default`、`providers.items` 及各 Provider 的 Endpoint |
+| `mcp.json` | `mcp.servers` |
+| `agents.json` | `agents.revision`、`agents.definitions`、`agents.runtime` |
+| `provider-templates.json` | Provider 模板及本地覆盖元数据 |
+
+各文件独立加锁并原子写入。当前开发阶段只接受现行结构：主文件中出现 `providers`、`mcp` 或 `agents`
+会明确报错，不自动迁移；使用新 home 或清理失效配置后重新配置。托管凭据继续保存在独立的 `credentials/`。
+
+`config.json` 示例：
 
 ```json
 {
@@ -599,8 +612,12 @@ TUI 的 `Actions > Skill sources` 提供相同的总开关与逐源开关，并�
   },
   "skills": {
     "enabled": true,
-    "disabled": ["unsafe-community-skill"],
-    "disabled_sources": ["claude.user"],
+    "disabled": [
+      "unsafe-community-skill"
+    ],
+    "disabled_sources": [
+      "claude.user"
+    ],
     "paths": [
       {
         "path": "shared-skills",
@@ -608,10 +625,14 @@ TUI 的 `Actions > Skill sources` 提供相同的总开关与逐源开关，并�
         "enabled": true
       }
     ]
-  },
-  "mcp": {
-    "servers": {}
-  },
+  }
+}
+```
+
+`providers.json` 示例：
+
+```json
+{
   "providers": {
     "default": "glm",
     "items": {
@@ -642,15 +663,26 @@ TUI 的 `Actions > Skill sources` 提供相同的总开关与逐源开关，并�
               "capability": {
                 "activation": "toggle",
                 "supported_efforts": [],
-                "default": {"mode": "enabled", "effort": null},
+                "default": {
+                  "mode": "enabled",
+                  "effort": null
+                },
                 "output": "text",
                 "continuation": "text"
               },
               "profile": {
                 "name": "thinking-object-toggle",
                 "variants": {
-                  "enabled": {"thinking": {"type": "enabled"}},
-                  "disabled": {"thinking": {"type": "disabled"}}
+                  "enabled": {
+                    "thinking": {
+                      "type": "enabled"
+                    }
+                  },
+                  "disabled": {
+                    "thinking": {
+                      "type": "disabled"
+                    }
+                  }
                 }
               }
             }
@@ -664,7 +696,62 @@ TUI 的 `Actions > Skill sources` 提供相同的总开关与逐源开关，并�
 }
 ```
 
+`mcp.json` 示例：
+
+```json
+{
+  "mcp": {
+    "servers": {}
+  }
+}
+```
+
 凭据优先使用 `env:VARIABLE_NAME` 引用。CLI 和公开 JSON 输出不会回显凭据值。
+
+## 数据导入导出
+
+CLI 统一使用 `ouro data`。TUI 命令 `/export` 仅导出当前会话，不接受参数；未打开会话时提示先打开会话。
+其他操作通过 Actions → Manage data 分页菜单进入；导出选择数据类型，导入选择归档后自动识别类型。
+菜单提供文件浏览、全部或指定会话/技能选择，以及适用的覆盖选项；导出提供默认文件名，无需填写命令参数或会话 ID。
+执行时菜单保留，使用加载动画显示后台传输状态，成功或失败都在菜单内展示，不向对话栏插入消息。
+传输期间可以继续操作或关闭菜单，重新打开可查看状态；同一时间只提交一项传输。
+操作结果使用同一文本格式；CLI 的 `--json` 额外提供结构化结果与诊断。
+
+```bash
+ouro data export --kind providers --path providers.zip
+ouro data import --kind providers --path providers.zip --replace
+ouro data export --kind provider-templates --path templates.zip
+ouro data export --kind mcp --path mcp.zip
+ouro data export --kind agents --path agents.zip
+ouro data export --kind skills --path skills.zip
+
+# 不指定 --id 时，导出全部会话；导入归档内全部会话
+ouro data export --kind sessions --path all-sessions.zip
+ouro data import --kind sessions --path all-sessions.zip --home ./restored
+
+# --id 可重复指定；导入时也可以从全量归档中筛选
+ouro data export --kind sessions --id ses_one --id ses_two --path selected.zip
+ouro data import --kind sessions --id ses_one --path all-sessions.zip --home ./restored
+ouro data import --kind sessions --path all-sessions.zip --home ./restored-sqlite --session-backend sqlite
+```
+
+- 每次操作处理一种数据。配置按整个领域导入；已有非空配置需要 `--replace`，不会混合两份配置。
+- 会话可指定一个、多个或全量。选择子会话会包含其所属主会话、所有子会话、Delegation 和附件；普通 fork 的历史来源不要求同时导入。
+  会话保留 ID，目标 ID 冲突时整批拒绝，不支持 `--replace`。文件与 SQLite 后端可以互相传输。
+- 导出要求会话树没有运行中的任务或未完成的 Run。归档包含消息、事件、运行记录、压缩、Harness 检查点、提交记录、
+  插件状态、最近请求上下文及资源内容；不包含外部工作区文件、插件安装包、自动任务或独立计费账本。
+- 未知插件、工具、模型以及插件私有状态版本不会阻止导入历史。引用及 opaque 状态原样保留，结果提供外部引用诊断；
+  实际继续会话时仍由 Runtime 校验所需契约。导入不安装扩展、不执行工具、不自动恢复任务。
+- `skills` 导入导出 `OURO_HOME/skills` 下完整原生技能目录，包括脚本和资源；导出可用 `--id <技能名>` 筛选。
+  不复制发现开关、第三方 Host 技能目录或插件贡献技能。导入按同名技能冲突检查，`--replace` 替换同名目录；
+  被替换技能的旧安装来源记录会清除，其他发现策略不变。
+- 归档采用带类型和版本的 ZIP，校验不通过时明确拒绝；拒绝路径穿越、链接、重复路径、超限归档和损坏附件。
+  上限为 10,000 个归档条目和 512 MiB 解压后数据。导出目的地不能覆盖 OURO 管理的数据目录。
+- 配置归档包含配置中原有的字面量值，可能包含内联密钥、请求头或环境配置；按私密备份保管。
+  `credentials/` 中的托管凭据不导出，跨机器后需重新登录或补齐环境变量。会话归档同样可能包含私密对话。
+- 配置和技能导入只更新持久数据；已运行的 Host 重启后加载导入结果。
+
+失败语义和存储边界见[配置与数据传输规格](dev/specs/OURO_配置与数据传输规格_2026-09-21.md)。
 
 ## 项目文档
 

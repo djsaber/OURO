@@ -34,9 +34,9 @@ from ouro.tui.controller import (
     TuiToolExecutionConfiguration,
     project_mcp_system_status,
 )
+from ouro.tui.data_transfer import DataTransferWorkflows
 from ouro.tui.menu_labels import PERMISSION_LABELS
 from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
-from ouro.tui.task_workflows import TaskManagementWorkflows
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 from ouro.tui.widgets import ConversationView
 
@@ -57,6 +57,7 @@ SYSTEM_SETTING_ACTIONS = (
     SystemSettingAction("tasks.refresh", "Update status", "Task"),
     SystemSettingAction("queued_inputs.delivery", "Queued messages", "Settings"),
     SystemSettingAction("compaction.policy", "Context compaction", "Settings"),
+    SystemSettingAction("data.transfer", "Manage data", "Settings"),
     SystemSettingAction("providers.list", "Manage providers", "Providers"),
     SystemSettingAction("providers.add", "Add provider", "Providers"),
     SystemSettingAction("providers.edit", "Edit provider", "Providers"),
@@ -119,7 +120,7 @@ _TOOL_SOURCE_GROUPS = {
 _TOOL_SOURCE_ORDER = {source: index for index, source in enumerate(_TOOL_SOURCE_GROUPS)}
 
 
-class ConfigurationWorkflowsApp(TaskManagementWorkflows):
+class ConfigurationWorkflowsApp(DataTransferWorkflows):
     """Own the keyboard-first TUI workflows for durable configuration."""
 
     _controller: TuiController
@@ -145,6 +146,8 @@ class ConfigurationWorkflowsApp(TaskManagementWorkflows):
                 severity="error" if self._system_status.task_error else "information",
                 markup=False,
             )
+        elif action_id == "data.transfer":
+            self._choose_data_transfer(menu=menu)
         elif action_id == "tools.permissions":
             self._choose_tools(menu=menu)
         elif action_id == "tools.execution":

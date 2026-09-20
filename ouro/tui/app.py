@@ -2703,6 +2703,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self.notify("Usage: /summary", severity="warning")
             else:
                 self._show_session_summaries()
+        elif command.name == "/export":
+            if argument:
+                self.notify("Usage: /export", severity="warning")
+            else:
+                self._export_current_session(self._visible_session_id())
         elif command.name == "/skill":
             await self._submit_skill(argument)
         elif command.name == "/unqueue":

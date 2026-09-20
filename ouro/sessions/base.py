@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from pydantic import Field
 
@@ -18,6 +18,9 @@ from ouro.core.session_commits import SessionCommit, SessionCommitResult
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions.index import SessionIndex
+
+if TYPE_CHECKING:
+    from ouro.sessions.portable import SessionBundle
 
 
 class RuntimeSessionSnapshot(OuroModel):
@@ -257,3 +260,7 @@ class SessionCatalogStore(Protocol):
 
 class SessionStore(SessionRepository, SessionCatalogStore, Protocol):
     """Complete in-process store composed from canonical and catalog ports."""
+
+    def import_bundle(self, bundle: SessionBundle) -> None:
+        """Publish a validated bundle, rejecting collisions and rolling back failures."""
+        ...

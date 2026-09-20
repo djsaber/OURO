@@ -113,7 +113,7 @@ class ConfigurationFacade:
         self.skills = SkillManager(root)
         self._skill_policy = self.skills.config
         self.root = self.providers.root
-        self.config_path = self.providers.config_path
+        self.config_path = self.root / "config" / "config.json"
 
     def overview(self) -> ConfigurationOverview:
         return ConfigurationOverview(

@@ -56,7 +56,7 @@ def test_agent_definition_config_rejects_builtin_override_and_ignores_unknown_fi
     with pytest.raises(ConfigError, match="reserved"):
         manager.create(_definition("general"), expected_revision=0)
 
-    path = tmp_path / "config" / "config.json"
+    path = tmp_path / "config" / "agents.json"
     path.parent.mkdir(parents=True)
     path.write_text(
         json.dumps(
@@ -76,7 +76,7 @@ def test_agent_definition_config_rejects_builtin_override_and_ignores_unknown_fi
 
 
 def test_agent_definition_mutation_preserves_other_config_sections(tmp_path) -> None:
-    path = tmp_path / "config" / "config.json"
+    path = tmp_path / "config" / "agents.json"
     path.parent.mkdir(parents=True)
     path.write_text('{"prompts":{"system":"keep"}}', encoding="utf-8")
 
@@ -126,7 +126,7 @@ def test_agent_runtime_config_defaults_and_update_preserve_definitions(tmp_path)
 
 def test_agent_runtime_config_rejects_unsupported_first_release_modes(tmp_path) -> None:
     manager = AgentDefinitionsConfigManager(tmp_path)
-    path = tmp_path / "config" / "config.json"
+    path = tmp_path / "config" / "agents.json"
     path.parent.mkdir(parents=True)
 
     for runtime in (

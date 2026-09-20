@@ -133,7 +133,7 @@ def test_provider_options_are_replaceable_defaults_with_owned_field_validation(
 def test_provider_config_manager_resolves_configured_default(tmp_path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "config.json").write_text(
+    (config_dir / "providers.json").write_text(
         json.dumps(
             {
                 "providers": {
@@ -207,7 +207,7 @@ def test_prompt_config_rejects_root_system_prompt_field(tmp_path) -> None:
 def test_provider_config_manager_selects_configured_provider_by_id(tmp_path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "config.json").write_text(
+    (config_dir / "providers.json").write_text(
         json.dumps(
             {
                 "providers": {
@@ -245,7 +245,7 @@ def test_provider_config_manager_selects_configured_provider_by_id(tmp_path) -> 
 def test_provider_config_manager_rejects_provider_id_mismatch(tmp_path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "config.json").write_text(
+    (config_dir / "providers.json").write_text(
         json.dumps(
             {
                 "providers": {
@@ -271,7 +271,7 @@ def test_provider_config_manager_rejects_provider_id_mismatch(tmp_path) -> None:
 def test_provider_config_rejects_noncanonical_provider_type(tmp_path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "config.json").write_text(
+    (config_dir / "providers.json").write_text(
         json.dumps(
             {
                 "providers": {
@@ -295,7 +295,7 @@ def test_provider_config_rejects_noncanonical_provider_type(tmp_path) -> None:
 def test_provider_config_requires_explicit_protocol_without_legacy_inference(tmp_path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "config.json").write_text(
+    (config_dir / "providers.json").write_text(
         json.dumps(
             {
                 "providers": {
@@ -366,7 +366,7 @@ def test_endpoint_config_rejects_noncanonical_fields(field) -> None:
 def test_provider_config_rejects_noncanonical_shapes(tmp_path, raw) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "config.json").write_text(json.dumps(raw), encoding="utf-8")
+    (config_dir / "providers.json").write_text(json.dumps(raw), encoding="utf-8")
 
     with pytest.raises(ConfigError, match="unsupported|must be an object"):
         ProviderConfigManager(tmp_path).snapshot()
@@ -379,7 +379,7 @@ def test_provider_config_resolves_endpoint_capabilities(tmp_path) -> None:
     )
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "config.json").write_text(
+    (config_dir / "providers.json").write_text(
         json.dumps(
             {
                 "providers": {
@@ -473,7 +473,7 @@ def test_provider_endpoint_writes_reasoning_profile_and_rejects_option_conflicts
     )
 
     assert endpoint.endpoint_id == "reasoning"
-    raw = json.loads((tmp_path / "config" / "config.json").read_text(encoding="utf-8"))
+    raw = json.loads((tmp_path / "config" / "providers.json").read_text(encoding="utf-8"))
     provider_raw = raw["providers"]["items"]["glm"]
     assert "default_model" not in provider_raw
     assert "base_url" not in provider_raw
@@ -557,7 +557,7 @@ def test_runtime_resolution_distinguishes_configured_and_ad_hoc_providers(tmp_pa
 def test_raw_provider_timeout_zero_is_rejected_and_enabled_is_typed(tmp_path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    config_path = config_dir / "config.json"
+    config_path = config_dir / "providers.json"
     config_path.write_text(
         json.dumps(
             {
@@ -621,7 +621,7 @@ def test_provider_mutations_keep_default_provider_runnable(tmp_path) -> None:
 def test_invalid_provider_registry_shapes_fail_visibly(tmp_path, providers_section) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "config.json").write_text(
+    (config_dir / "providers.json").write_text(
         json.dumps({"providers": providers_section}),
         encoding="utf-8",
     )
@@ -633,7 +633,7 @@ def test_invalid_provider_registry_shapes_fail_visibly(tmp_path, providers_secti
 def test_unknown_explicit_default_provider_fails_visibly(tmp_path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "config.json").write_text(
+    (config_dir / "providers.json").write_text(
         json.dumps({"providers": {"default": "missing", "items": {}}}),
         encoding="utf-8",
     )
@@ -679,7 +679,7 @@ def test_endpoint_api_path_is_optional_and_normalized() -> None:
 def test_provider_level_base_url_and_api_path_inherited_by_endpoint(tmp_path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "config.json").write_text(
+    (config_dir / "providers.json").write_text(
         json.dumps(
             {
                 "providers": {
@@ -716,7 +716,7 @@ def test_endpoint_explicit_base_url_and_api_path_override_provider_defaults(
 ) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "config.json").write_text(
+    (config_dir / "providers.json").write_text(
         json.dumps(
             {
                 "providers": {
@@ -755,7 +755,7 @@ def test_endpoint_explicit_base_url_and_api_path_override_provider_defaults(
 def test_endpoint_api_path_falls_back_to_protocol_default(tmp_path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "config.json").write_text(
+    (config_dir / "providers.json").write_text(
         json.dumps(
             {
                 "providers": {
@@ -790,7 +790,7 @@ def test_openai_chat_completions_endpoint_requires_base_url_at_provider_or_endpo
 ) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "config.json").write_text(
+    (config_dir / "providers.json").write_text(
         json.dumps(
             {
                 "providers": {
@@ -915,7 +915,7 @@ def test_provider_retry_policy_round_trips_into_runtime_options(tmp_path) -> Non
 
     assert restored is not None and restored.retry_policy == policy
     assert options.retry_policy == policy
-    raw = json.loads((tmp_path / "config" / "config.json").read_text(encoding="utf-8"))
+    raw = json.loads((tmp_path / "config" / "providers.json").read_text(encoding="utf-8"))
     assert raw["providers"]["items"]["glm"]["retry_policy"]["max_attempts"] == 3
 
 
@@ -932,7 +932,7 @@ def test_provider_retry_opt_out_survives_round_trip(tmp_path) -> None:
     )
     manager.upsert_endpoint("glm", "chat", model_id="glm-chat", make_default=True)
 
-    raw = json.loads((tmp_path / "config" / "config.json").read_text(encoding="utf-8"))
+    raw = json.loads((tmp_path / "config" / "providers.json").read_text(encoding="utf-8"))
     assert raw["providers"]["items"]["glm"]["retry_policy"]["max_attempts"] == 1
 
     restored = ProviderConfigManager(tmp_path).get_provider("glm")
@@ -940,7 +940,7 @@ def test_provider_retry_opt_out_survives_round_trip(tmp_path) -> None:
 
 
 def test_invalid_provider_retry_policy_is_rejected_without_rewriting_config(tmp_path) -> None:
-    config_path = tmp_path / "config" / "config.json"
+    config_path = tmp_path / "config" / "providers.json"
     config_path.parent.mkdir(parents=True)
     raw = {
         "providers": {

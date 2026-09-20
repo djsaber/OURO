@@ -47,7 +47,7 @@ class MCPConfigStore:
     """Persist the canonical ``mcp.servers`` configuration section atomically."""
 
     def __init__(self, root: str | Path | None = None) -> None:
-        self._file = JsonConfigFile(root)
+        self._file = JsonConfigFile(root, name="mcp.json")
 
     @property
     def config_path(self) -> Path:

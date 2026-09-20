@@ -108,6 +108,27 @@ class LocalResourceStore:
             self._verify_blob(record)
         return record
 
+    def import_content(self, record: ResourceRecord, content: bytes) -> None:
+        """Publish verified portable content while preserving canonical metadata."""
+        if (
+            f"sha256:{hashlib.sha256(content).hexdigest()}" != record.digest
+            or len(content) != record.size
+        ):
+            raise ResourceIntegrityError(f"resource integrity mismatch: {record.resource_id}")
+        staged = self.staging_dir / f"{new_id('resource')}.blob"
+        try:
+            staged.write_bytes(content)
+            with self._catalog_lock():
+                existing = self._load_optional_record(record.resource_id)
+                if existing is not None:
+                    self._verify_record_compatibility(existing, record)
+                    self._verify_blob(existing)
+                else:
+                    self._publish_blob_and_record(staged, record)
+                self._try_update_index_or_mark_dirty()
+        finally:
+            staged.unlink(missing_ok=True)
+
     def load_content(
         self,
         resource_id: str,

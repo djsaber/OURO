@@ -1418,10 +1418,11 @@ class MultiChoiceScreen(ChoiceScreen):
         unselected_marker: str = "",
         confirm_label: str = "Confirm",
         destructive: bool = False,
+        selected_values: tuple[str, ...] = (),
     ) -> None:
         super().__init__(title=title, placeholder=placeholder, choices=choices)
         self._on_confirm = on_confirm
-        self._selected: set[str] = set()
+        self._selected = set(selected_values).intersection(choice.value for choice in choices)
         self._selected_marker = selected_marker
         self._unselected_marker = unselected_marker
         self._confirm_label = confirm_label

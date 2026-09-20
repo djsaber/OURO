@@ -43,7 +43,7 @@ from ouro.core.provider import ProviderRetryPolicy
 
 class ProviderConfigManager:
     def __init__(self, root: str | Path | None = None) -> None:
-        self._file = JsonConfigFile(root)
+        self._file = JsonConfigFile(root, name="providers.json")
         self.root = self._file.root
         self.config_path = self._file.path
 

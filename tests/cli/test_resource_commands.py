@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import json
 
+from ouro.application.sessions import SessionService
 from ouro.cli.main import main
 from ouro.sessions import LocalSessionStore
+from ouro.transfer.archive import read_archive
 
 
 def test_resource_cli_round_trip_and_session_export_manifest(tmp_path, capsys) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    from ouro.application.sessions import SessionService
-
     session = SessionService(store).create(title="CLI resources").session
     source = tmp_path / "source.txt"
     source.write_text("resource body", encoding="utf-8")
@@ -69,12 +69,18 @@ def test_resource_cli_round_trip_and_session_export_manifest(tmp_path, capsys) -
     capsys.readouterr()
     assert destination.read_text("utf-8") == "resource body"
 
+    archive = tmp_path / "session.zip"
     assert (
         main(
             [
-                "session",
+                "data",
                 "export",
+                "--kind",
+                "sessions",
+                "--id",
                 session.session_id,
+                "--path",
+                str(archive),
                 "--home",
                 str(tmp_path),
                 "--json",
@@ -82,7 +88,8 @@ def test_resource_cli_round_trip_and_session_export_manifest(tmp_path, capsys) -
         )
         == 0
     )
-    exported_session = json.loads(capsys.readouterr().out)
+    assert json.loads(capsys.readouterr().out)["status"] == "ok"
+    exported_session = read_archive(archive, "sessions").manifest.data
     assert exported_session["resources"][0]["resource_id"] == resource_id
     assert "path" not in exported_session["resources"][0]["source"]
 

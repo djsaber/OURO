@@ -23,6 +23,7 @@ ouro mcp
 ouro plugin
 ouro skills
 ouro usage
+ouro data
 ```
 
 顶层命令名只有当前权威形式，不保留同义 alias。TUI slash command 可保留与正式名互不构成前缀关系的
@@ -208,3 +209,12 @@ CLI 不提供历史数据或 Harness 状态迁移命令；不支持的数据格�
 - `tests/cli/test_queued_inputs_cli.py`
 - `tests/cli/test_agent_commands.py`
 - `tests/application/test_agents.py`
+
+## 数据传输
+
+`ouro data export|import --kind <kind> --path <archive>` 是配置及数据归档的统一命令。
+kind 为 `providers`、`provider-templates`、`mcp`、`agents`、`sessions`、`skills`。
+会话两种操作均支持重复 `--id` 筛选，省略则全量；技能导出支持按名称筛选。
+`--replace` 仅用于导出文件、领域配置及同名技能，不能覆盖会话。
+CLI 不读取具体配置文件或解释会话记录；通过组合根装配 `DataTransferService`，输出其类型化结果。
+具体边界见[配置与数据传输](OURO_配置与数据传输规格_2026-09-21.md)。

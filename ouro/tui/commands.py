@@ -92,6 +92,7 @@ class TuiCommand:
 
 
 TUI_COMMANDS: tuple[TuiCommand, ...] = (
+    TuiCommand("/export", "Export current session", "Save the current session and attachments"),
     TuiCommand("/new", "New session", "Start a clean conversation"),
     TuiCommand("/continue", "Continue task", "Resume an interrupted task"),
     TuiCommand("/undo", "Undo message", "Withdraw the latest user message and edit it again"),

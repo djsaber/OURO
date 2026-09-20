@@ -342,4 +342,4 @@ def test_custom_add_rejects_template_only_route_options(tmp_path, capsys) -> Non
     payload = json.loads(capsys.readouterr().out)
     assert code == 2
     assert "explicit endpoint commands" in payload["error"]
-    assert not (tmp_path / "config" / "config.json").exists()
+    assert not (tmp_path / "config" / "providers.json").exists()

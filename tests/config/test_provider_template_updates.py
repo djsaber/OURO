@@ -57,7 +57,7 @@ def test_template_update_merges_managed_values_and_preserves_user_ownership(
         _endpoint("removed-custom"),
     )
     manager.create_from_template(original, provider_id="account")
-    raw = json.loads((tmp_path / "config" / "config.json").read_text(encoding="utf-8"))
+    raw = json.loads((tmp_path / "config" / "providers.json").read_text(encoding="utf-8"))
     binding = raw["providers"]["items"]["account"]["template"]
     assert binding["template_id"] == "openai"
     assert set(binding["endpoints"][0]) == {
@@ -220,7 +220,7 @@ def test_update_requires_template_provenance_without_rewriting_provider(tmp_path
         base_url="https://gateway.example.test/v1",
     )
     manager.upsert_endpoint("manual", "primary", model_id="user-model", make_default=True)
-    path = tmp_path / "config" / "config.json"
+    path = tmp_path / "config" / "providers.json"
     before = path.read_bytes()
 
     with pytest.raises(ConfigError, match="no template provenance"):
@@ -239,7 +239,7 @@ def test_template_source_change_is_rejected_without_rewriting_provider(tmp_path)
         template_origin="inline",
         provider_id="account",
     )
-    path = tmp_path / "config" / "config.json"
+    path = tmp_path / "config" / "providers.json"
     before = json.loads(path.read_text(encoding="utf-8"))
 
     with pytest.raises(ConfigError, match="template source changed"):

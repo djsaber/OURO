@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory, mkdtemp
 from urllib.parse import unquote, urlsplit, urlunsplit
 from uuid import uuid4
 
+from ouro.config.file import JsonConfigFile
 from ouro.config.skills import (
     ManagedSkillRecord,
     SkillConfigManager,
@@ -112,31 +113,34 @@ class SkillManager:
             loader = SkillLoader(resolved.root)
             catalog = loader.load_catalog()
             selected = self._select_skills(catalog.skills, selector, install_all)
-            deployments = self._prepare_deployments(selected, scope=scope, force=force)
-            records = {
-                item.metadata.name: ManagedSkillRecord(
-                    source=resolved.source,
-                    scope=scope,
-                    target=str(item.target),
-                    selector=item.metadata.name if len(catalog.skills) > 1 or selector else None,
-                    ref=ref,
-                )
-                for item in deployments
-            }
-            self._commit_deployments(deployments, records)
-            return SkillManagementResult(
-                action="installed",
-                skills=tuple(
-                    ManagedSkillResult(
-                        name=item.metadata.name,
+            with JsonConfigFile(self.home).mutation():
+                deployments = self._prepare_deployments(selected, scope=scope, force=force)
+                records = {
+                    item.metadata.name: ManagedSkillRecord(
                         source=resolved.source,
-                        target=item.target,
                         scope=scope,
+                        target=str(item.target),
+                        selector=item.metadata.name
+                        if len(catalog.skills) > 1 or selector
+                        else None,
+                        ref=ref,
                     )
                     for item in deployments
-                ),
-                diagnostics=tuple(catalog.diagnostics),
-            )
+                }
+                self._commit_deployments(deployments, records)
+                return SkillManagementResult(
+                    action="installed",
+                    skills=tuple(
+                        ManagedSkillResult(
+                            name=item.metadata.name,
+                            source=resolved.source,
+                            target=item.target,
+                            scope=scope,
+                        )
+                        for item in deployments
+                    ),
+                    diagnostics=tuple(catalog.diagnostics),
+                )
 
     def update(self, name: str, *, force: bool = True) -> SkillManagementResult:
         record = self.config.snapshot().config.installed.get(name)
@@ -156,40 +160,43 @@ class SkillManager:
         )
 
     def remove(self, name: str, *, force: bool = False) -> SkillManagementResult:
-        snapshot = self.config.snapshot()
-        record = snapshot.config.installed.get(name)
-        target = Path(record.target).resolve() if record else self._unmanaged_native_target(name)
-        if target is None:
-            raise SkillManagementError(f"skill is not managed by Ouro: {name}")
-        if record is None and not force:
-            raise SkillManagementError(
-                f"skill has no Ouro install record: {name}; use --force for native directories"
+        with JsonConfigFile(self.home).mutation():
+            snapshot = self.config.snapshot()
+            record = snapshot.config.installed.get(name)
+            target = (
+                Path(record.target).resolve() if record else self._unmanaged_native_target(name)
             )
-        self._assert_managed_target(target)
-        if not target.exists():
-            self.config.forget_install(name)
-            return SkillManagementResult(action="removed")
+            if target is None:
+                raise SkillManagementError(f"skill is not managed by Ouro: {name}")
+            if record is None and not force:
+                raise SkillManagementError(
+                    f"skill has no Ouro install record: {name}; use --force for native directories"
+                )
+            self._assert_managed_target(target)
+            if not target.exists():
+                self.config.forget_install(name)
+                return SkillManagementResult(action="removed")
 
-        trash = target.parent / f".{target.name}.remove-{uuid4().hex}"
-        target.replace(trash)
-        try:
-            self.config.forget_install(name)
-        except Exception:
-            trash.replace(target)
-            raise
-        shutil.rmtree(trash)
-        scope: SkillInstallScope = record.scope if record else self._scope_for_target(target)
-        return SkillManagementResult(
-            action="removed",
-            skills=(
-                ManagedSkillResult(
-                    name=name,
-                    source=record.source if record else str(target),
-                    target=target,
-                    scope=scope,
+            trash = target.parent / f".{target.name}.remove-{uuid4().hex}"
+            target.replace(trash)
+            try:
+                self.config.forget_install(name)
+            except Exception:
+                trash.replace(target)
+                raise
+            shutil.rmtree(trash)
+            scope: SkillInstallScope = record.scope if record else self._scope_for_target(target)
+            return SkillManagementResult(
+                action="removed",
+                skills=(
+                    ManagedSkillResult(
+                        name=name,
+                        source=record.source if record else str(target),
+                        target=target,
+                        scope=scope,
+                    ),
                 ),
-            ),
-        )
+            )
 
     def set_enabled(self, name: str, *, enabled: bool) -> SkillManagementResult:
         catalog = discover_skill_catalog(

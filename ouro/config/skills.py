@@ -195,11 +195,20 @@ class SkillConfigManager:
 
     @atomic_config_update
     def forget_install(self, name: str) -> SkillConfigSnapshot:
+        return self.forget_installs((name,))
+
+    @atomic_config_update
+    def forget_installs(self, names: tuple[str, ...]) -> SkillConfigSnapshot:
+        """Forget replaced installation provenance while keeping discovery policy."""
+        current = self.snapshot()
+        if not set(names).intersection(current.config.installed):
+            return current
         raw = self.load_raw()
         skills = self._skills_section(raw)
         installed = skills.get("installed")
         if isinstance(installed, dict):
-            installed.pop(name, None)
+            for name in names:
+                installed.pop(name, None)
             if installed:
                 skills["installed"] = installed
             else:

@@ -50,7 +50,7 @@ class AgentDefinitionsConfig(OuroModel):
 
 class AgentDefinitionsConfigManager:
     def __init__(self, root: str | Path | None = None) -> None:
-        self._file = JsonConfigFile(root)
+        self._file = JsonConfigFile(root, name="agents.json")
 
     @property
     def file(self) -> JsonConfigFile:

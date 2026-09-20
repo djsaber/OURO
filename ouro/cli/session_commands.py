@@ -474,51 +474,6 @@ def remove_session(
     return 0
 
 
-def export_session(
-    session_id: str,
-    *,
-    home: str | Path | None = None,
-    output_path: str | None = None,
-    json_mode: bool = False,
-    session_backend: SessionBackend | None = None,
-) -> int:
-    try:
-        sessions, resource_service = _session_resources(home, session_backend)
-        snapshot = sessions.export(session_id)
-        resources = resource_service.list_resources(session_id)
-    except FileNotFoundError:
-        error_message = f"session not found: {session_id}"
-        _print_error(OuroError(error_message), json_mode=json_mode)
-        return 1
-    except OuroError as exc:
-        _print_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
-
-    payload: dict[str, Any] = {
-        "status": "ok",
-        **snapshot.model_dump(mode="json"),
-        "resources": [resource.model_dump(mode="json") for resource in resources.resources],
-    }
-    text = json.dumps(payload, ensure_ascii=False, indent=2)
-    if output_path is not None:
-        try:
-            Path(output_path).write_text(text + "\n", encoding="utf-8")
-        except OSError as exc:
-            _print_error(exc, json_mode=json_mode)
-            return 1
-        if json_mode:
-            print(json.dumps({"status": "ok", "path": output_path}, ensure_ascii=False))
-        else:
-            print(f"Exported session to: {output_path}")
-        return 0
-
-    if json_mode:
-        print(text)
-    else:
-        print(text)
-    return 0
-
-
 def list_session_messages(
     session_id: str,
     *,

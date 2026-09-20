@@ -22,11 +22,13 @@ LOWER_LAYER_DIRS = (
     "sessions",
     "skills",
     "tools",
+    "transfer",
 )
 OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
     "__init__": frozenset(),
     "application": frozenset(
         {
+            "transfer",
             "auth",
             "automation",
             "billing",
@@ -47,6 +49,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
     "builtin_plugins": frozenset({"core", "plugins", "sdk", "sessions"}),
     "cli": frozenset(
         {
+            "data_commands",
             "application",
             "builtin_plugins",
             "config",
@@ -63,6 +66,8 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
     "config": frozenset({"core", "local_io", "local_locks", "prompts"}),
     "core": frozenset(),
     "deployment": frozenset({"core"}),
+    "data_commands": frozenset({"application"}),
+    "transfer": frozenset({"core", "config", "skills"}),
     "local_application": frozenset(
         {
             "auth",
@@ -95,6 +100,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
     "tools": frozenset({"core"}),
     "tui": frozenset(
         {
+            "data_commands",
             "automation",
             "application",
             "builtin_plugins",

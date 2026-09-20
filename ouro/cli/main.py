@@ -24,6 +24,7 @@ from ouro.cli.config_commands import (
     show_system_prompt_config,
     show_tool_execution_config,
 )
+from ouro.cli.data_commands import run_data_command
 from ouro.cli.errors import error_exit_code
 from ouro.cli.mcp_commands import (
     check_mcp_connection,
@@ -66,7 +67,6 @@ from ouro.cli.session_commands import (
     archive_session,
     branch_session,
     compact_session,
-    export_session,
     list_session_events,
     list_session_messages,
     list_sessions,
@@ -170,6 +170,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _skills_command(args)
     if args.command == "usage":
         return _usage_command(args)
+    if args.command == "data":
+        return run_data_command(args)
     raise AssertionError(f"unknown command: {args.command}")
 
 
@@ -310,14 +312,6 @@ def _session_command(args: argparse.Namespace) -> int:
             args.session_id,
             home=home,
             force=args.force,
-            json_mode=args.json,
-            session_backend=session_backend,
-        )
-    if command == "export":
-        return export_session(
-            args.session_id,
-            home=home,
-            output_path=args.output,
             json_mode=args.json,
             session_backend=session_backend,
         )

@@ -55,6 +55,7 @@ def test_mcp_config_store_round_trips_without_overwriting_other_sections(tmp_pat
     assert snapshot.servers[0].server_id == "remote"
     raw = json.loads(config_path.read_text(encoding="utf-8"))
     assert raw["prompts"] == {"system": "keep"}
+    raw = json.loads(store.config_path.read_text(encoding="utf-8"))
     assert raw["mcp"]["servers"]["remote"]["url"] == "https://mcp.example.test/mcp"
 
     removed = store.remove("remote")
@@ -63,7 +64,7 @@ def test_mcp_config_store_round_trips_without_overwriting_other_sections(tmp_pat
 
 
 def test_mcp_config_store_rejects_noncanonical_shape(tmp_path) -> None:
-    config_path = tmp_path / "config" / "config.json"
+    config_path = tmp_path / "config" / "mcp.json"
     config_path.parent.mkdir()
     config_path.write_text(json.dumps({"mcp": {"servers": [], "legacy": True}}), encoding="utf-8")
 

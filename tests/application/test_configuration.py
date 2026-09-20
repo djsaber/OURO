@@ -292,7 +292,7 @@ def test_invalid_configuration_mutation_does_not_change_persisted_state(tmp_path
         protocol="openai-chat-completions",
         base_url="https://example.test/v1",
     )
-    config_path = tmp_path / "config" / "config.json"
+    config_path = tmp_path / "config" / "providers.json"
     before = json.loads(config_path.read_text(encoding="utf-8"))
 
     with pytest.raises(ConfigError):
@@ -461,7 +461,7 @@ def test_removed_provider_template_rejects_update_without_changing_provider(
 
     facade = ConfigurationFacade(tmp_path)
     facade.add_provider("primary", provider_type="openai")
-    config_path = tmp_path / "config" / "config.json"
+    config_path = tmp_path / "config" / "providers.json"
     before = json.loads(config_path.read_text(encoding="utf-8"))
     without_openai = tuple(
         template for template in provider_templates() if template.template_id != "openai"
@@ -590,7 +590,7 @@ def test_provider_template_rejects_default_endpoint_collision_before_write(tmp_p
             endpoint_id="gpt-5.6-terra",
         )
 
-    assert not (tmp_path / "config" / "config.json").exists()
+    assert not (tmp_path / "config" / "providers.json").exists()
 
 
 def test_integrated_provider_update_is_detected_from_persisted_type(tmp_path) -> None:
@@ -607,7 +607,7 @@ def test_integrated_provider_update_is_detected_from_persisted_type(tmp_path) ->
 def test_provider_create_conflict_and_explicit_replace_are_atomic(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
     facade.add_provider("primary", provider_type="anthropic")
-    config_path = tmp_path / "config" / "config.json"
+    config_path = tmp_path / "config" / "providers.json"
     before = config_path.read_text(encoding="utf-8")
 
     with pytest.raises(ConfigError, match="provider already exists"):

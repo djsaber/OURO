@@ -372,7 +372,8 @@ timeout/HTTP 状态执行有界退避；一旦已经向上游发出任何模型�
 
 ## 配置分区
 
-共享 `config/config.json` 还包含：`prompts`、`permissions`、`tool_execution`、`run_budget`、`compaction`、
+Provider/Endpoint 的唯一权威位置是 `config/providers.json`，保留 `providers.default/items` 结构。
+MCP 与 Agent 分别由 `config/mcp.json`、`config/agents.json` 管理。通用 `config/config.json` 包含：`prompts`、`permissions`、`tool_execution`、`run_budget`、`compaction`、
 `skills`。各 manager 只修改自己的分区并保留其他当前分区。
 
 ## 失败语义
