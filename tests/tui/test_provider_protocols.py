@@ -16,7 +16,7 @@ from ouro.tui.provider_screens import (
     ProviderSetupProfile,
     profile_for_provider,
 )
-from ouro.tui.screens import ChoiceScreen, EditableChoiceScreen
+from ouro.tui.screens import EditableChoiceScreen
 from tests.tui.helpers import run_ready_app, two_route_application
 
 
@@ -116,6 +116,7 @@ async def test_create_custom_provider_through_protocol_entry_and_preserve_on_edi
         await select_choice(app, pilot, f"custom:{protocol}")
         screen = app.screen
         assert isinstance(screen, EditableChoiceScreen)
+        assert all(choice.value != "provider-protocol" for choice in screen._choices)
         assert screen._values["provider-api-path"] == api_path
         for field, value in (
             ("provider-id", "gateway"),
@@ -162,7 +163,7 @@ async def test_create_custom_provider_through_protocol_entry_and_preserve_on_edi
 
 
 @pytest.mark.parametrize("api_path", ["/chat/completions", "/custom/path", ""])
-async def test_protocol_selection_cancellation_and_path_defaults(tmp_path, api_path):
+async def test_custom_provider_path_edit_keeps_the_chosen_protocol(tmp_path, api_path):
     profile = replace(
         CUSTOM_PROVIDER_PROFILES[0],
         base_url="https://gateway.test/v1",
@@ -173,26 +174,12 @@ async def test_protocol_selection_cancellation_and_path_defaults(tmp_path, api_p
         screen = ProviderConfigurationScreen(profile)
         app.push_screen(screen)
         await pilot.pause()
-        await select_choice(app, pilot, "provider-protocol")
-        assert isinstance(app.screen, ChoiceScreen)
-        assert {choice.value for choice in app.screen._choices} == {
-            "openai-chat-completions",
-            "openai-responses",
-            "anthropic-messages",
-        }
-        await pilot.press("escape")
+        assert all(choice.value != "provider-protocol" for choice in screen._choices)
+        await select_choice(app, pilot, "provider-api-path")
+        await pilot.press("ctrl+u", *"/gateway/chat", "enter")
         await pilot.pause()
-        assert screen._draft().protocol == "openai-chat-completions"
-        assert screen._values["provider-api-path"] == api_path
-        await select_choice(app, pilot, "provider-protocol")
-        await select_choice(app, pilot, "openai-responses")
-        assert screen._draft().protocol == "openai-responses"
-        assert screen._values["provider-api-path"] == (
-            "/responses" if api_path == "/chat/completions" else api_path
-        )
-        await select_choice(app, pilot, "provider-protocol")
-        await select_choice(app, pilot, "openai-chat-completions")
-        assert screen._values["provider-api-path"] == api_path
+        assert screen._draft().protocol == profile.protocol
+        assert screen._draft().api_path == "/gateway/chat"
 
 
 @pytest.mark.parametrize("provider_type", ["openai", "openai-codex", "anthropic"])
@@ -208,7 +195,6 @@ def test_template_protocol_is_visible_and_fixed(tmp_path, provider_type):
 @pytest.mark.parametrize("profile", CUSTOM_PROVIDER_PROFILES)
 def test_custom_connection_profile_selects_its_protocol_and_default_path(profile):
     screen = ProviderConfigurationScreen(replace(profile, base_url="https://gateway.test"))
-    choice = next(c for c in screen._choices if c.value == "provider-protocol")
-    assert not choice.disabled
+    assert all(choice.value != "provider-protocol" for choice in screen._choices)
     assert screen._draft().protocol == profile.protocol
     assert screen._draft().api_path == profile.api_path

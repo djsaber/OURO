@@ -18,7 +18,6 @@ from ouro.config import (
 from ouro.config.provider_headers import parse_provider_headers
 from ouro.config.provider_models import (
     default_api_path,
-    provider_type_spec,
     resolve_provider_connection,
     validate_reasoning_protocol_compatibility,
 )
@@ -117,16 +116,6 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
                 profile.provider_type, profile.protocol, self._auth_driver
             ).protocol
         )
-        spec = provider_type_spec(profile.provider_type)
-        self._protocols = (
-            (self._protocol,)
-            if existing is not None or profile.preset
-            else tuple(
-                connection.protocol
-                for connection in spec.connections
-                if connection.auth_driver == self._auth_driver
-            )
-        )
         provider_options = _json_text(existing.provider_options if existing is not None else {})
         self._values = {
             "provider-api-key": "",
@@ -150,44 +139,10 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
         )
 
     async def _select_choice(self, selected: str) -> None:
-        if selected == "provider-protocol" and self._editing_value is None:
-            await self._select_protocol()
-            return
         if selected == "provider-save" and self._editing_value is None:
             self._submit()
             return
         await super()._select_choice(selected)
-
-    async def _select_protocol(self) -> None:
-        if len(self._protocols) < 2:
-            return
-        selected = await self.open_child(
-            ChoiceScreen(
-                title="PROVIDER PROTOCOL",
-                placeholder="Search protocols…",
-                choices=tuple(
-                    Choice(
-                        protocol,
-                        _PROTOCOL_LABELS.get(protocol, protocol),
-                        trailing=protocol,
-                        marker=(
-                            theme_for(self).selected_choice_marker
-                            if protocol == self._protocol
-                            else ""
-                        ),
-                    )
-                    for protocol in self._protocols
-                ),
-                initial_value=self._protocol,
-            )
-        )
-        protocol = next((item for item in self._protocols if item == selected), None)
-        if protocol is None:
-            return
-        if self._values["provider-api-path"] == default_api_path(self._protocol):
-            self._values["provider-api-path"] = default_api_path(protocol) or ""
-        self._protocol = protocol
-        self._replace_choices(self._provider_choices(), selected="provider-protocol")
 
     async def _save_field(
         self,
@@ -322,12 +277,18 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
                 disabled=self._existing is not None,
                 edit_value=self._values["provider-id"],
             ),
-            Choice(
-                "provider-protocol",
-                "Protocol",
-                trailing=_PROTOCOL_LABELS.get(self._protocol, self._protocol),
-                group="ADVANCED",
-                disabled=len(self._protocols) < 2,
+            *(
+                (
+                    Choice(
+                        "provider-protocol",
+                        "Protocol",
+                        trailing=_PROTOCOL_LABELS.get(self._protocol, self._protocol),
+                        group="ADVANCED",
+                        disabled=True,
+                    ),
+                )
+                if self._existing is not None or self._profile.preset
+                else ()
             ),
             Choice(
                 "provider-base-url",

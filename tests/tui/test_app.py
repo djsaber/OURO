@@ -8316,16 +8316,13 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
             "secondary/shared",
         ]
         assert [choice.label for choice in app.screen._choices] == ["shared", "shared"]
-        assert [choice.marker for choice in app.screen._choices] == [
-            DEFAULT_TUI_THEME.selected_choice_marker,
-            "",
-        ]
+        assert all(choice.marker == "" for choice in app.screen._choices)
         assert [choice.group for choice in app.screen._choices] == [
             "primary",
             "secondary",
         ]
         assert all(choice.description == "" for choice in app.screen._choices)
-        assert all(choice.trailing == "" for choice in app.screen._choices)
+        assert all(choice.trailing == "default" for choice in app.screen._choices)
         assert [choice.group_trailing for choice in app.screen._choices] == [
             "",
             "unavailable",
@@ -8466,10 +8463,8 @@ async def test_setting_default_endpoint_also_switches_default_provider(tmp_path:
         assert choices["primary/primary-chat"].label == "primary-chat"
         assert choices["primary/primary-chat"].marker == ""
         assert choices["secondary/secondary-chat"].label == "secondary-chat"
-        assert (
-            choices["secondary/secondary-chat"].marker == DEFAULT_TUI_THEME.selected_choice_marker
-        )
-        assert all(choice.trailing == "" for choice in choices.values())
+        assert choices["secondary/secondary-chat"].marker == ""
+        assert all(choice.trailing == "default" for choice in choices.values())
         catalog = ConfigurationFacade(tmp_path).provider_catalog()
         assert catalog.default_provider_id == "secondary"
         assert ConfigurationFacade(tmp_path).provider("secondary").default_endpoint == (
@@ -8576,7 +8571,6 @@ async def test_provider_configuration_uses_shared_grouped_inline_menu(
             ("provider-api-key", "CREDENTIALS"),
             ("provider-api-key-env", "CREDENTIALS"),
             ("provider-id", "ADVANCED"),
-            ("provider-protocol", "ADVANCED"),
             ("provider-base-url", "ADVANCED"),
             ("provider-api-path", "ADVANCED"),
             ("provider-timeout", "ADVANCED"),

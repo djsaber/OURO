@@ -1055,6 +1055,27 @@ class TuiController:
         """Resolve the deployment default independently of the open Session or draft."""
         return await asyncio.to_thread(self._runtime().current_model)
 
+    async def selected_model_key(self) -> str | None:
+        """Read the Session or draft route; an unavailable default has no selection."""
+
+        runtime = self._runtime()
+        session_id, initial_model = self._session_id, self._initial_model
+
+        def read() -> str | None:
+            if session_id is not None:
+                selected = runtime.sessions.open(session_id, recover=False).session.current_model
+            else:
+                selected = initial_model
+            if selected is not None:
+                return selected
+            try:
+                return runtime.current_model().key
+            except ConfigError:
+                # Configuration menus remain available when no default can resolve.
+                return None
+
+        return await asyncio.to_thread(read)
+
     async def provider_catalog(self) -> ProviderCatalogView:
         configuration = self._require_configuration()
         return await asyncio.to_thread(configuration.provider_catalog)

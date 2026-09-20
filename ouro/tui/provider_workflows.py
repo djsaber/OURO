@@ -585,14 +585,22 @@ class ProviderConfigurationWorkflows(App[int]):
         }
         if not routes:
             return
+        try:
+            selected_model = await self._controller.selected_model_key()
+        except Exception as exc:  # noqa: BLE001 - selection errors are user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
         choices = tuple(
-            _endpoint_route_choice(provider, endpoint, theme=theme_for(self))
+            _endpoint_route_choice(
+                provider, endpoint, selected_model=selected_model, theme=theme_for(self)
+            )
             for provider, endpoint in routes.values()
         )
 
         async def refresh_routes() -> tuple[Choice, ...] | None:
             try:
                 refreshed = await self._controller.provider_catalog()
+                selected_model = await self._controller.selected_model_key()
             except Exception as exc:  # noqa: BLE001
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
@@ -605,7 +613,9 @@ class ProviderConfigurationWorkflows(App[int]):
                 }
             )
             return tuple(
-                _endpoint_route_choice(item, candidate, theme=theme_for(self))
+                _endpoint_route_choice(
+                    item, candidate, selected_model=selected_model, theme=theme_for(self)
+                )
                 for item, candidate in routes.values()
             )
 
@@ -615,26 +625,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 provider, endpoint = routes[route]
                 if not await self._use_endpoint(provider.provider_id, endpoint.endpoint_id):
                     return None
-                try:
-                    refreshed = await self._controller.provider_catalog()
-                except Exception as exc:  # noqa: BLE001
-                    await self.query_one(ConversationView).add_notice(
-                        str(exc),
-                        error=True,
-                    )
-                    return None
-                routes.clear()
-                routes.update(
-                    {
-                        f"{item.provider_id}/{candidate.endpoint_id}": (item, candidate)
-                        for item in refreshed.providers
-                        for candidate in item.endpoints
-                    }
-                )
-                return tuple(
-                    _endpoint_route_choice(item, candidate, theme=theme_for(self))
-                    for item, candidate in routes.values()
-                )
+                return await refresh_routes()
 
             if menu is not None:
                 menu.push_page(
@@ -642,6 +633,7 @@ class ProviderConfigurationWorkflows(App[int]):
                     placeholder="Filter endpoints…",
                     choices=choices,
                     on_select=set_default_route,
+                    on_refresh=refresh_routes,
                 )
             else:
                 await self.push_screen_wait(
@@ -650,6 +642,7 @@ class ProviderConfigurationWorkflows(App[int]):
                         placeholder="Filter endpoints…",
                         choices=choices,
                         on_select=set_default_route,
+                        on_refresh=refresh_routes,
                     )
                 )
             return
@@ -713,6 +706,7 @@ class ProviderConfigurationWorkflows(App[int]):
     ) -> None:
         try:
             catalog = await self._controller.provider_endpoints(provider.provider_id)
+            selected_model = await self._controller.selected_model_key()
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -725,7 +719,7 @@ class ProviderConfigurationWorkflows(App[int]):
             _endpoint_choice(
                 endpoint,
                 available=provider.enabled,
-                default=provider.default and endpoint.default,
+                selected=selected_model == f"{provider.provider_id}/{endpoint.endpoint_id}",
                 theme=theme_for(self),
             )
             for endpoint in candidates
@@ -737,6 +731,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 nonlocal provider
                 try:
                     refreshed = await self._controller.provider_catalog()
+                    selected_model = await self._controller.selected_model_key()
                 except Exception as exc:  # noqa: BLE001
                     await self.query_one(ConversationView).add_notice(str(exc), error=True)
                     return None
@@ -764,7 +759,7 @@ class ProviderConfigurationWorkflows(App[int]):
                     _endpoint_choice(
                         endpoint,
                         available=provider.enabled,
-                        default=provider.default and endpoint.default,
+                        selected=selected_model == f"{provider.provider_id}/{endpoint.endpoint_id}",
                         theme=theme_for(self),
                     )
                     for endpoint in refreshed_candidates
@@ -1043,13 +1038,14 @@ def _endpoint_choice(
     endpoint: ProviderEndpointView,
     *,
     available: bool,
-    default: bool = False,
+    selected: bool,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> Choice:
     return Choice(
         endpoint.endpoint_id,
         endpoint.endpoint_id,
-        marker=theme.selected_choice_marker if default else "",
+        marker=theme.selected_choice_marker if selected else "",
+        trailing="default" if endpoint.default else "",
         disabled=not available,
     )
 
@@ -1058,12 +1054,13 @@ def _endpoint_route_choice(
     provider: ProviderView,
     endpoint: ProviderEndpointView,
     *,
+    selected_model: str | None,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> Choice:
     choice = _endpoint_choice(
         endpoint,
         available=provider.enabled,
-        default=provider.default and endpoint.default,
+        selected=selected_model == f"{provider.provider_id}/{endpoint.endpoint_id}",
         theme=theme,
     )
     return Choice(

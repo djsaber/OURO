@@ -77,16 +77,16 @@ class StaticRouteCatalog:
         await close_runtime_adapters(tuple(self._adapters.values()))
 
 
-def two_route_application(tmp_path: Path) -> LocalApplication:
+def two_route_application(tmp_path: Path, *, provider_id: str = "faux") -> LocalApplication:
     """One faux runtime exposing a default and a separately selectable route."""
 
     default_adapter = RuntimeAdapter(
         FauxProvider(),
-        ModelMetadata(model_id="default-model", provider_id="faux", endpoint_id="default"),
+        ModelMetadata(model_id="default-model", provider_id=provider_id, endpoint_id="default"),
     )
     recent_adapter = RuntimeAdapter(
         FauxProvider(),
-        ModelMetadata(model_id="recent-model", provider_id="faux", endpoint_id="recent"),
+        ModelMetadata(model_id="recent-model", provider_id=provider_id, endpoint_id="recent"),
     )
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -95,10 +95,10 @@ def two_route_application(tmp_path: Path) -> LocalApplication:
         adapter=default_adapter,
         model_catalog=StaticRouteCatalog(
             {
-                "faux/default": default_adapter,
-                "faux/recent": recent_adapter,
+                f"{provider_id}/default": default_adapter,
+                f"{provider_id}/recent": recent_adapter,
             },
-            default_key="faux/default",
+            default_key=f"{provider_id}/default",
         ),
         tools=ToolRegistry(),
         default_workspace=tmp_path,
