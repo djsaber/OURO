@@ -168,22 +168,25 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(
 
     monkeypatch.setattr(runtime.store, "commit_session", capture_message_batch)
     planned_states: list[tuple[str, str, list[str]]] = []
+    append_event = runtime.store.append_ordered_event
 
-    def capture_planned_state(event) -> None:
-        if event.event_type != "tool_batch_planned":
-            return
-        assert event.run_id is not None
-        durable_run = runtime.store.load_run(event.session_id, event.run_id)
-        assert durable_run.active_tool_batch is not None
-        planned_states.append(
-            (
-                durable_run.phase,
-                durable_run.active_tool_batch.phase,
-                [call.status for call in durable_run.active_tool_batch.calls],
+    def capture_planned_state(event):
+        # Check the persisted state before its event is recorded. Asynchronous
+        # Host sinks may observe a later Run phase by the time they receive it.
+        if event.event_type == "tool_batch_planned":
+            assert event.run_id is not None
+            durable_run = runtime.store.load_run(event.session_id, event.run_id)
+            assert durable_run.active_tool_batch is not None
+            planned_states.append(
+                (
+                    durable_run.phase,
+                    durable_run.active_tool_batch.phase,
+                    [call.status for call in durable_run.active_tool_batch.calls],
+                )
             )
-        )
+        return append_event(event)
 
-    runtime.add_event_sink(capture_planned_state)
+    monkeypatch.setattr(runtime.store, "append_ordered_event", capture_planned_state)
 
     result = await runtime.run("run both")
     snapshot = runtime.store.load_session(result.session.session_id)

@@ -8,7 +8,8 @@ from ouro.config import ProviderConfigManager, ProviderRuntimeOptions
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata
-from ouro.providers import FauxProvider, OpenAICompatibleProvider, build_runtime_adapter
+from ouro.providers import FauxProvider, build_runtime_adapter
+from ouro.providers.openai_responses import OpenAIResponsesProvider
 
 
 async def test_header_declarations_invalidate_route_cache_and_preserve_inflight_adapter(tmp_path):
@@ -51,7 +52,12 @@ async def test_default_adapter_rebinds_connection_and_inline_credential_changes(
         configs.update_provider("service", api_key="second")
         second = catalog.adapter_for("service/chat")
         assert second is not default
-        assert second.provider.api_key == "second"
+        auth = await second.provider.authenticator.acquire("https://first.example/v1/responses")
+        assert auth.headers["authorization"] == "Bearer second"
+        original_auth = await default.provider.authenticator.acquire(
+            "https://first.example/v1/responses"
+        )
+        assert original_auth.headers["authorization"] == "Bearer first"
         configs.update_provider("service", base_url="https://second.example/v1")
         third = catalog.adapter_for("service/chat")
         assert third is not second
@@ -84,7 +90,9 @@ async def test_default_rebind_preserves_explicit_overrides_and_uses_actual_start
     try:
         current = catalog.adapter_for("service/chat")
         assert current is not default and current.model.model_id == "two"
-        assert current.model.temperature == 0.25 and current.provider.api_key == "override"
+        assert current.model.temperature == 0.25
+        auth = await current.provider.authenticator.acquire("https://first.example/v1/responses")
+        assert auth.headers["authorization"] == "Bearer override"
         configs.update_provider("service", enabled=False)
         with pytest.raises(ConfigError, match="unavailable"):
             catalog.adapter_for("service/chat")
@@ -104,7 +112,9 @@ async def test_nondefault_inline_key_change_rebuilds_adapter_despite_redacted_re
         initial = catalog.adapter_for("service/chat")
         configs.update_provider("service", api_key="second")
         latest = catalog.adapter_for("service/chat")
-        assert latest is not initial and latest.provider.api_key == "second"
+        assert latest is not initial
+        auth = await latest.provider.authenticator.acquire("https://first.example/v1/responses")
+        assert auth.headers["authorization"] == "Bearer second"
     finally:
         await catalog.close()
 
@@ -181,7 +191,8 @@ def test_configured_model_catalog_lists_enabled_endpoints_and_builds_adapter(
 
     adapter = catalog.adapter_for("openai/fast")
 
-    assert isinstance(adapter.provider, OpenAICompatibleProvider)
+    assert isinstance(adapter.provider, OpenAIResponsesProvider)
+    assert adapter.provider.endpoint == "/responses"
     assert adapter.model.provider_id == "openai"
     assert adapter.model.endpoint_id == "fast"
     assert adapter.model.model_id == "gpt-fast"

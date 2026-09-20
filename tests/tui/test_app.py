@@ -181,18 +181,52 @@ async def _wait_for_screen(
     title: str,
     timeout: float = 2.0,
 ) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while True:
-        screen = app.screen
-        if (
-            isinstance(screen, screen_type)
-            and screen._title == title
-            and len(screen.query("#choice-filter")) == 1
-        ):
-            return
-        if asyncio.get_running_loop().time() >= deadline:
-            raise AssertionError(f"Timed out waiting for {title}")
-        await asyncio.sleep(0.01)
+    try:
+        async with asyncio.timeout(timeout):
+            while True:
+                screen = app.screen
+                if (
+                    isinstance(screen, screen_type)
+                    and screen._title == title
+                    and screen.is_mounted
+                    and len(screen.query("#choice-filter")) == 1
+                ):
+                    # Composed children can exist before Mount initializes focus
+                    # and selection. Wait for those messages and the first frame.
+                    await screen.wait_for_refresh()
+                    if app.screen is screen:
+                        return
+                await asyncio.sleep(0.01)
+    except TimeoutError:
+        raise AssertionError(f"Timed out waiting for {title}") from None
+
+
+async def test_screen_wait_does_not_return_before_mount_finishes(tmp_path: Path) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class DeferredScreen(ChoiceScreen):
+        async def on_mount(self) -> None:
+            super().on_mount()
+            started.set()
+            await release.wait()
+
+    app = OuroTuiApp(application=_application(tmp_path))
+    async with run_ready_app(app):
+        screen = DeferredScreen(
+            title="DEFERRED", placeholder="Filter", choices=(Choice("ready", "Ready"),)
+        )
+        app.push_screen(screen)
+        await asyncio.wait_for(started.wait(), timeout=2)
+        waiter = asyncio.create_task(_wait_for_screen(app, ChoiceScreen, title="DEFERRED"))
+        try:
+            await asyncio.sleep(0)
+            assert not waiter.done()
+        finally:
+            release.set()
+            await waiter
+        assert screen.is_mounted
+        assert screen.query_one("#choice-list", OptionList).highlighted == 0
 
 
 def test_brand_header_renders_session_detail_as_lowlight_metadata() -> None:
@@ -3939,6 +3973,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             pilot,
             description="first child view",
         )
+        await _wait_for_worker_group(app, pilot, group="navigation")
         assert app._controller.session_id == root_session_id
         assert app._visible_read_only is True
         assert app.query_one(Composer).disabled is True
@@ -4129,6 +4164,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             pilot,
             description="reopened first child view",
         )
+        await _wait_for_worker_group(app, pilot, group="navigation")
         assert app.query_one(ConversationView).scroll_y == held_child_scroll_y
         # Live observation already rendered and cached the completed child's
         # summary, so reopening needs no additional history rendering.
@@ -4149,6 +4185,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             pilot,
             description="direct sibling child view",
         )
+        await _wait_for_worker_group(app, pilot, group="navigation")
         assert app._controller.session_id == root_session_id
         assert subagent_panel.current_session_id == second.session_id
         assert "Observe child 2" in subagent_panel.render_content(80).plain
@@ -4160,6 +4197,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             pilot,
             description="return from sibling child view",
         )
+        await _wait_for_worker_group(app, pilot, group="navigation")
         assert rendered_during_cached_switch == []
 
         app.post_message(
@@ -4173,6 +4211,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             pilot,
             description="second child view",
         )
+        await _wait_for_worker_group(app, pilot, group="navigation")
         assert app._controller.session_id == root_session_id
         assert app._projection is not None
         assert app._projection.assistant_text == provider.child_prefixes["second child task"]
@@ -4183,6 +4222,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             pilot,
             description="leave second child while it is streaming",
         )
+        await _wait_for_worker_group(app, pilot, group="navigation")
         provider.releases["second child task"].set()
         await _wait_until(
             lambda: any(
@@ -4207,6 +4247,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             pilot,
             description="reloaded completed second child",
         )
+        await _wait_for_worker_group(app, pilot, group="navigation")
         second_child_text = "\n".join(
             entry.text
             for entry in app.query_one(ConversationHistory).entries
@@ -8515,16 +8556,17 @@ async def test_provider_configuration_uses_shared_grouped_inline_menu(
         )
         options = screen.query_one("#choice-list", OptionList)
         assert options.styles.scrollbar_size_vertical == 0
-        assert [choice.group for choice in screen._choices] == [
-            "CREDENTIALS",
-            "CREDENTIALS",
-            "ADVANCED",
-            "ADVANCED",
-            "ADVANCED",
-            "ADVANCED",
-            "ADVANCED",
-            "REQUEST",
-            "ACTIONS",
+        assert [(choice.value, choice.group) for choice in screen._choices] == [
+            ("provider-api-key", "CREDENTIALS"),
+            ("provider-api-key-env", "CREDENTIALS"),
+            ("provider-id", "ADVANCED"),
+            ("provider-protocol", "ADVANCED"),
+            ("provider-base-url", "ADVANCED"),
+            ("provider-api-path", "ADVANCED"),
+            ("provider-timeout", "ADVANCED"),
+            ("provider-headers", "REQUEST"),
+            ("provider-options", "REQUEST"),
+            ("provider-save", "ACTIONS"),
         ]
         assert screen._values["provider-api-key-env"] == "GATEWAY_API_KEY"
         assert screen._values["provider-base-url"] == "https://gateway.example.invalid/v1"

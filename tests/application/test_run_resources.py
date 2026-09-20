@@ -101,7 +101,10 @@ async def runtime(tmp_path):
 
     source = SimpleNamespace(snapshot=catalog.acquire, snapshot_for=restore)
     yield app, catalog, source
-    await app.close()
+    # Explicit close tests own their shutdown result, including expected errors.
+    # Finish unstarted or pending shutdowns without replaying an observed failure.
+    if app._close_task is None or not app._close_task.done():
+        await app.close()
 
 
 def delegated_run(session_id="session", **updates):
@@ -307,8 +310,10 @@ async def test_close_finishes_other_resources_when_a_lease_callback_fails(runtim
             await app.close()
         assert len(failure.value.exceptions) == 1
         assert str(failure.value.exceptions[0]) == "release callback failed"
+        with pytest.raises(ExceptionGroup, match="runtime shutdown failed") as repeated:
+            await app.close()
+        assert repeated.value is failure.value
         close_models.assert_awaited_once()
-    await app.close()
     gc.collect()
     assert catalog.lease_count == 0
     assert reference() is None
