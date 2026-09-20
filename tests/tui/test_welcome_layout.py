@@ -24,10 +24,9 @@ async def test_welcome_sections_stay_within_available_width_when_resized(
                     workspace="C:/工作区/" + "long-directory/" * 12,
                     provider_ids=("provider-with-a-long-name",) * 3,
                     usage_request_count=123456,
-                    usage_priced_request_count=123450,
-                    usage_unpriced_request_count=6,
-                    usage_estimated_cost=1234.56,
-                    usage_billing_modes=("usage_based", "subscription", "unknown"),
+                    usage_input_tokens=123456789,
+                    usage_output_tokens=123456,
+                    usage_cache_read_tokens=12345678,
                 )
             )
         for width in (160, 80, 64, 48, 40, 64, 160):

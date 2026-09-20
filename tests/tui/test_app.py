@@ -2070,8 +2070,6 @@ async def test_welcome_usage_hover_selects_day_without_changing_color_and_previe
         usage_input_tokens=2_000,
         usage_output_tokens=500,
         usage_cache_read_tokens=500,
-        usage_estimated_cost=0.03,
-        usage_priced_request_count=3,
         usage_daily=(
             TuiDailyUsage(
                 date="2026-09-01",
@@ -2079,8 +2077,6 @@ async def test_welcome_usage_hover_selects_day_without_changing_color_and_previe
                 input_tokens=800,
                 output_tokens=200,
                 cache_read_tokens=100,
-                estimated_cost=0.01,
-                priced_request_count=1,
             ),
             TuiDailyUsage(
                 date="2026-09-02",
@@ -2088,8 +2084,6 @@ async def test_welcome_usage_hover_selects_day_without_changing_color_and_previe
                 input_tokens=1_200,
                 output_tokens=300,
                 cache_read_tokens=400,
-                estimated_cost=0.02,
-                priced_request_count=2,
             ),
         ),
     )
@@ -2103,7 +2097,7 @@ async def test_welcome_usage_hover_selects_day_without_changing_color_and_previe
         chart = usage._chart.render()
         initial_colors = [chart.get_style_at_offset(index).foreground for index in range(2)]
         assert chart.plain == "■■ • last 2 days"
-        assert usage._requests.render().plain == "3 request(s) • $0.0300"
+        assert usage._requests.render().plain == "3 request(s)"
         assert usage._tokens.render().plain == "2.0K in • 500 out • 25.00% cache"
 
         await pilot.hover(usage._chart, offset=(0, 0))
@@ -2113,7 +2107,7 @@ async def test_welcome_usage_hover_selects_day_without_changing_color_and_previe
         hovered_colors = [hovered_chart.get_style_at_offset(index).foreground for index in range(2)]
         assert hovered_chart.plain == "▣■ • 2026-09-01"
         assert hovered_colors == initial_colors
-        assert usage._requests.render().plain == "1 request(s) • $0.0100"
+        assert usage._requests.render().plain == "1 request(s)"
         assert usage._tokens.render().plain == "800 in • 200 out • 12.50% cache"
 
         await pilot.hover(None, offset=(0, 31))
