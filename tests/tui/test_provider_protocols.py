@@ -10,7 +10,7 @@ from ouro.config import reasoning_preset
 from ouro.core.errors import ConfigError
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.provider_screens import (
-    COMPATIBLE_PROVIDER_PROFILES,
+    CUSTOM_PROVIDER_PROFILES,
     EndpointConfigurationScreen,
     ProviderConfigurationScreen,
     ProviderSetupProfile,
@@ -25,7 +25,8 @@ async def test_header_editor_preserves_secrets_and_explicitly_replaces_or_clears
     facade = ConfigurationFacade(tmp_path)
     facade.add_provider(
         "gateway",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://model.test",
         headers={"X-Secret": {"source": "literal", "value": "private-value"}},
     )
@@ -63,13 +64,13 @@ async def select_choice(app, pilot, value):
     await pilot.pause()
 
 
-@pytest.mark.parametrize("preset", ["responses-effort", "responses-effort-summary"])
+@pytest.mark.parametrize("preset", ["openai-responses-effort", "openai-responses-effort-summary"])
 async def test_responses_endpoint_thinking_preset_can_be_selected_and_saved(tmp_path, preset):
     app = OuroTuiApp(application=two_route_application(tmp_path))
     facade = ConfigurationFacade(tmp_path)
     facade.add_provider(
         "gateway",
-        provider_type="openai-compatible",
+        provider_type="custom",
         protocol="openai-responses",
         base_url="https://gateway.test/v1",
     )
@@ -80,7 +81,7 @@ async def test_responses_endpoint_thinking_preset_can_be_selected_and_saved(tmp_
         await select_choice(app, pilot, "endpoint-reasoning-preset")
         options = app.screen.query_one("#choice-list", OptionList)
         assert not options.get_option(preset).disabled
-        assert options.get_option("openai-effort").disabled
+        assert options.get_option("openai-chat-completions-effort").disabled
         await select_choice(app, pilot, preset)
         assert app.screen is screen
         assert screen._reasoning_preset_name() == preset
@@ -94,7 +95,17 @@ async def test_responses_endpoint_thinking_preset_can_be_selected_and_saved(tmp_
         assert editor._reasoning_preset_name() == preset
 
 
-async def test_create_responses_provider_through_shared_menu_and_preserve_on_edit(tmp_path):
+@pytest.mark.parametrize(
+    ("protocol", "label", "api_path"),
+    [
+        ("openai-chat-completions", "OpenAI Chat Completions", "/chat/completions"),
+        ("openai-responses", "OpenAI Responses", "/responses"),
+        ("anthropic-messages", "Anthropic Messages", "/v1/messages"),
+    ],
+)
+async def test_create_custom_provider_through_protocol_entry_and_preserve_on_edit(
+    tmp_path, protocol, label, api_path
+):
     app = OuroTuiApp(application=two_route_application(tmp_path))
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.press("ctrl+p")
@@ -102,18 +113,10 @@ async def test_create_responses_provider_through_shared_menu_and_preserve_on_edi
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-        await select_choice(app, pilot, "compatible:openai-compatible")
+        await select_choice(app, pilot, f"custom:{protocol}")
         screen = app.screen
         assert isinstance(screen, EditableChoiceScreen)
-        await select_choice(app, pilot, "provider-protocol")
-        assert isinstance(app.screen, ChoiceScreen)
-        assert {choice.value for choice in app.screen._choices} == {
-            "openai-chat-completions",
-            "openai-responses",
-        }
-        await select_choice(app, pilot, "openai-responses")
-        assert app.screen is screen
-        assert screen._values["provider-api-path"] == "/responses"
+        assert screen._values["provider-api-path"] == api_path
         for field, value in (
             ("provider-id", "gateway"),
             ("provider-base-url", "https://gateway.test/v1"),
@@ -125,26 +128,35 @@ async def test_create_responses_provider_through_shared_menu_and_preserve_on_edi
         await select_choice(app, pilot, "provider-save")
         facade = ConfigurationFacade(tmp_path)
         provider = facade.provider("gateway")
-        assert provider.protocol == "openai-responses"
-        assert provider.api_path == "/responses"
+        assert provider.provider_type == "custom"
+        assert provider.protocol == protocol
+        assert provider.api_path == api_path
         assert provider.auth_driver == "static"
         assert provider.credential.reference == "env:GATEWAY_KEY"
         assert provider.endpoint_count == 0
 
         profile = profile_for_provider(provider, await app._controller.provider_templates())
+        assert profile.protocol == protocol
         editor = ProviderConfigurationScreen(profile, provider)
         protocol_choice = next(c for c in editor._choices if c.value == "provider-protocol")
         assert protocol_choice.disabled
-        assert protocol_choice.trailing == "OpenAI Responses"
+        assert protocol_choice.trailing == label
         draft = replace(editor._draft(), timeout=15)
         updated = await app._controller.update_provider(draft)
-        assert updated.protocol == "openai-responses"
-        assert updated.api_path == "/responses"
+        assert updated.protocol == protocol
+        assert updated.api_path == api_path
         assert updated.timeout == 15
         before = facade.config_path.read_bytes()
         with pytest.raises(ConfigError, match="protocol cannot be changed"):
             await app._controller.update_provider(
-                replace(draft, protocol="openai-chat-completions")
+                replace(
+                    draft,
+                    protocol=(
+                        "anthropic-messages"
+                        if protocol != "anthropic-messages"
+                        else "openai-chat-completions"
+                    ),
+                )
             )
         assert facade.config_path.read_bytes() == before
 
@@ -152,7 +164,7 @@ async def test_create_responses_provider_through_shared_menu_and_preserve_on_edi
 @pytest.mark.parametrize("api_path", ["/chat/completions", "/custom/path", ""])
 async def test_protocol_selection_cancellation_and_path_defaults(tmp_path, api_path):
     profile = replace(
-        COMPATIBLE_PROVIDER_PROFILES[0],
+        CUSTOM_PROVIDER_PROFILES[0],
         base_url="https://gateway.test/v1",
         api_path=api_path,
     )
@@ -162,6 +174,12 @@ async def test_protocol_selection_cancellation_and_path_defaults(tmp_path, api_p
         app.push_screen(screen)
         await pilot.pause()
         await select_choice(app, pilot, "provider-protocol")
+        assert isinstance(app.screen, ChoiceScreen)
+        assert {choice.value for choice in app.screen._choices} == {
+            "openai-chat-completions",
+            "openai-responses",
+            "anthropic-messages",
+        }
         await pilot.press("escape")
         await pilot.pause()
         assert screen._draft().protocol == "openai-chat-completions"
@@ -187,9 +205,10 @@ def test_template_protocol_is_visible_and_fixed(tmp_path, provider_type):
     assert screen._draft().auth_driver == template.auth_driver
 
 
-def test_anthropic_custom_connection_has_fixed_messages_protocol():
-    profile = replace(COMPATIBLE_PROVIDER_PROFILES[1], base_url="https://gateway.test")
-    screen = ProviderConfigurationScreen(profile)
+@pytest.mark.parametrize("profile", CUSTOM_PROVIDER_PROFILES)
+def test_custom_connection_profile_selects_its_protocol_and_default_path(profile):
+    screen = ProviderConfigurationScreen(replace(profile, base_url="https://gateway.test"))
     choice = next(c for c in screen._choices if c.value == "provider-protocol")
-    assert choice.disabled
-    assert screen._draft().protocol == "anthropic-messages"
+    assert not choice.disabled
+    assert screen._draft().protocol == profile.protocol
+    assert screen._draft().api_path == profile.api_path

@@ -16,7 +16,8 @@ async def test_header_declarations_invalidate_route_cache_and_preserve_inflight_
     configs = ProviderConfigManager(tmp_path)
     configs.create_provider(
         "service",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://model.test",
         headers={"X-Tenant": {"source": "literal", "value": "first"}},
     )
@@ -192,7 +193,7 @@ def test_configured_model_catalog_lists_enabled_endpoints_and_builds_adapter(
     adapter = catalog.adapter_for("openai/fast")
 
     assert isinstance(adapter.provider, OpenAIResponsesProvider)
-    assert adapter.provider.endpoint == "/responses"
+    assert adapter.provider.api_path == "/responses"
     assert adapter.model.provider_id == "openai"
     assert adapter.model.endpoint_id == "fast"
     assert adapter.model.model_id == "gpt-fast"
@@ -220,7 +221,8 @@ def test_configured_model_catalog_reflects_config_changes_without_restart(tmp_pa
 
     configs.create_provider(
         "local",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="http://localhost:1234/v1",
     )
     configs.upsert_endpoint("local", "coder", model_id="local-coder")

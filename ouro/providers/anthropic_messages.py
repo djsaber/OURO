@@ -17,13 +17,13 @@ from ouro.core.provider import (
     Usage,
 )
 from ouro.core.request_context import ProviderRequestContext
-from ouro.providers.anthropic_codec import (
+from ouro.providers.anthropic_messages_codec import (
     content_blocks_from_response,
     continuation_blocks_from_response,
     error_from_anthropic,
     merge_usage,
-    messages_to_anthropic,
-    tool_to_anthropic,
+    messages_to_anthropic_messages,
+    tool_to_anthropic_messages,
     usage_from_anthropic,
 )
 from ouro.providers.authentication import (
@@ -38,10 +38,10 @@ from ouro.providers.request_context import model_request_context
 from ouro.providers.retrying import stream_with_retries
 
 
-class AnthropicCompatibleProvider:
+class AnthropicMessagesProvider:
     """Adapter for Anthropic's Messages wire protocol and compatible gateways."""
 
-    provider_id = "anthropic-compatible"
+    provider_id = "anthropic-messages"
 
     def __init__(
         self,
@@ -51,7 +51,7 @@ class AnthropicCompatibleProvider:
         authenticator: RequestAuthenticator | None = None,
         request_policy: ProviderRequestPolicy | None = None,
         provider_id: str | None = None,
-        endpoint: str = "/v1/messages",
+        api_path: str = "/v1/messages",
         timeout: float = 60.0,
         transport: ProviderHTTPTransport | None = None,
         default_headers: Mapping[str, str] | None = None,
@@ -62,7 +62,7 @@ class AnthropicCompatibleProvider:
     ) -> None:
         self.provider_id = provider_id or self.provider_id
         self.base_url = base_url.rstrip("/")
-        self.endpoint = endpoint if endpoint.startswith("/") else f"/{endpoint}"
+        self.api_path = api_path if api_path.startswith("/") else f"/{api_path}"
         if authenticator is not None and api_key is not None:
             raise ValueError("provide either an API Key or a request authenticator")
         self.api_key = api_key
@@ -147,7 +147,7 @@ class AnthropicCompatibleProvider:
     ) -> AsyncIterator[ProviderStreamEvent]:
         async with request_authentication(
             self.authenticator,
-            url=f"{self.base_url}{self.endpoint}",
+            url=f"{self.base_url}{self.api_path}",
             headers=headers,
             redact_errors=self.redact_errors,
             policy=self.request_policy,
@@ -180,7 +180,7 @@ class AnthropicCompatibleProvider:
                 extra_payload={"stream": True},
             )
             chunks = stream_json(
-                url=f"{self.base_url}{self.endpoint}",
+                url=f"{self.base_url}{self.api_path}",
                 headers=headers,
                 payload=payload,
                 timeout=self.timeout,
@@ -219,7 +219,7 @@ class AnthropicCompatibleProvider:
         extra_payload: Mapping[str, Any],
     ) -> dict[str, Any]:
         return await self.transport.post_json(
-            url=f"{self.base_url}{self.endpoint}",
+            url=f"{self.base_url}{self.api_path}",
             headers=headers,
             payload=self._message_payload(
                 model=model,
@@ -240,7 +240,7 @@ class AnthropicCompatibleProvider:
         tools: list[dict[str, Any]] | None,
         extra_payload: Mapping[str, Any],
     ) -> dict[str, Any]:
-        system, converted_messages = messages_to_anthropic(
+        system, converted_messages = messages_to_anthropic_messages(
             messages,
             system_prompt=system_prompt,
             supports_vision=model.supports_vision,
@@ -266,7 +266,7 @@ class AnthropicCompatibleProvider:
             payload.pop("temperature", None)
         self.reasoning_encoder.apply(payload, model)
         if tools and model.supports_tools:
-            payload["tools"] = [tool_to_anthropic(tool) for tool in tools]
+            payload["tools"] = [tool_to_anthropic_messages(tool) for tool in tools]
         else:
             payload.pop("tools", None)
         payload.update(extra_payload)
@@ -324,7 +324,7 @@ class AnthropicCompatibleProvider:
         yield ProviderStreamEvent(
             type="done",
             usage=usage_from_anthropic(response.get("usage")),
-            completion=_anthropic_completion(response.get("stop_reason")),
+            completion=_anthropic_messages_completion(response.get("stop_reason")),
         )
 
     async def _events_from_stream(
@@ -464,7 +464,7 @@ class AnthropicCompatibleProvider:
                 yield ProviderStreamEvent(
                     type="done",
                     usage=usage,
-                    completion=_anthropic_completion(provider_finish_reason),
+                    completion=_anthropic_messages_completion(provider_finish_reason),
                 )
                 return
 
@@ -480,7 +480,7 @@ class AnthropicCompatibleProvider:
             )
 
 
-def _anthropic_completion(value: object) -> ProviderCompletion:
+def _anthropic_messages_completion(value: object) -> ProviderCompletion:
     provider_reason = value if isinstance(value, str) and value else None
     mapping: dict[str, ProviderFinishReason] = {
         "end_turn": "stop",

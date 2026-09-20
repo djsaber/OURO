@@ -1007,7 +1007,7 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Manage providers and model endpoints",
         description=(
             "Manage Provider identities, credentials, connection defaults, and model "
-            "Endpoints.\nIntegrated types install reviewed Endpoint templates; compatible "
+            "Endpoints.\nIntegrated types install reviewed Endpoint templates; custom "
             "types start empty."
         ),
         epilog="""Typical workflow:
@@ -1016,7 +1016,7 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
   ouro provider endpoint list openai
   ouro provider check openai
 
-For a private or gateway model, add an openai-compatible or anthropic-compatible Provider,
+For a private or gateway model, add a custom Provider with an explicit --protocol,
 then create its model route with 'ouro provider endpoint set'.""",
     )
     provider_subparsers = provider_parser.add_subparsers(
@@ -1065,13 +1065,13 @@ then create its model route with 'ouro provider endpoint set'.""",
         help="Add a provider; integrated types include preset endpoints",
         description=(
             "Create a new Provider. Integrated types install their reviewed Endpoint "
-            "catalog.\nCompatible types create an empty Provider for custom Endpoints."
+            "catalog.\nCustom types create an empty Provider for custom Endpoints."
         ),
         epilog="""Examples:
   ouro provider add openai --type openai --api-key-env OPENAI_API_KEY --default
-  ouro provider add private --type openai-compatible \\
+  ouro provider add private --type custom --protocol openai-chat-completions \\
     --base-url https://models.example.com/v1 --api-key-env PRIVATE_API_KEY
-  ouro provider add responses --type openai-compatible --protocol openai-responses \\
+  ouro provider add responses --type custom --protocol openai-responses \\
     --base-url https://models.example.com/v1 --api-key-env PRIVATE_API_KEY
 
 Provider ids are unique. Use 'provider update' for an existing Provider or 'provider replace'
@@ -1185,9 +1185,9 @@ Use 'ouro provider endpoint set --help' for custom capability and reasoning cont
   ouro provider endpoint set private reasoning --model reasoning-model \\
     --reasoning-preset reasoning-content-effort --default
   ouro provider endpoint set claude custom --model custom-claude \\
-    --reasoning-preset anthropic-adaptive-effort
+    --reasoning-preset anthropic-messages-adaptive-effort
   ouro provider endpoint set responses custom --model custom-model \\
-    --reasoning-preset responses-effort
+    --reasoning-preset openai-responses-effort
 
 Reasoning presets:
   {", ".join(REASONING_PRESETS)}
@@ -1196,11 +1196,12 @@ Presets are explicit declarations, not capability detection. Use --reasoning-con
 model supports different native fields or only a subset of efforts. Its JSON shape is:
   {{"capability": {{...}}, "profile": {{"name": "...", "variants": {{...}}}}}}
 
-Use responses-effort for openai-responses (reasoning.effort); openai-effort uses the
-Chat Completions reasoning_effort field. Responses default inherits the provider setting;
+Use openai-responses-effort for openai-responses (reasoning.effort).
+Use openai-chat-completions-effort for Chat Completions (reasoning_effort).
+Responses default inherits the provider setting;
 enabled without an effort selects medium, and disabled sends none.
-Both responses-effort and responses-effort-summary expose returned reasoning text.
-Only responses-effort-summary requests reasoning.summary=auto; use it when supported.
+Both openai-responses-effort and openai-responses-effort-summary expose returned reasoning text.
+Only openai-responses-effort-summary requests reasoning.summary=auto; use it when supported.
 
 Reasoning-owned fields must not also appear in --request-options. Invalid or incomplete
 contracts are rejected before configuration is written.""",
@@ -1333,7 +1334,7 @@ def _add_provider_identity_args(parser: argparse.ArgumentParser) -> None:
         "--protocol",
         choices=tuple(protocol for protocol in SUPPORTED_PROVIDER_PROTOCOLS if protocol != "faux"),
         help=(
-            "Wire protocol for a compatible Provider; defaults to its type's protocol. "
+            "Wire protocol; required for custom Providers. "
             "Integrated types require their template protocol"
         ),
     )
@@ -1343,7 +1344,7 @@ def _add_provider_identity_args(parser: argparse.ArgumentParser) -> None:
         choices=CONFIGURABLE_PROVIDER_TYPES,
         required=True,
         help=(
-            "Provider product type; integrated types install templates, compatible types "
+            "Provider product type; integrated types install templates, custom types "
             "start without Endpoints"
         ),
     )

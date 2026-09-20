@@ -271,7 +271,8 @@ async def test_new_task_uses_default_endpoint_independently_of_session_model(tmp
     for provider in ("alpha", "zeta"):
         configuration.add_provider(
             provider,
-            provider_type="openai-compatible",
+            provider_type="custom",
+            protocol="openai-chat-completions",
             base_url=f"https://{provider}.example.invalid/v1",
             api_key="test-key",
         )

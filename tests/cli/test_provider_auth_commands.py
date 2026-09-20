@@ -24,7 +24,7 @@ from tests.auth.test_driver_contracts import drivers
 @pytest.fixture
 def configured_auth(tmp_path, monkeypatch):
     spec = ProviderTypeSpec(
-        "openai-compatible",
+        "custom",
         ProviderConnectionSpec("openai-chat-completions"),
         (
             ProviderConnectionSpec("openai-chat-completions", "fixture-browser", "service-browser"),
@@ -41,7 +41,7 @@ def configured_auth(tmp_path, monkeypatch):
         config = ProviderConfigManager(tmp_path)
         config.create_provider(
             "account",
-            provider_type="openai-compatible",
+            provider_type="custom",
             protocol="anthropic-messages"
             if driver.descriptor.driver_id == "fixture-device"
             else "openai-chat-completions",

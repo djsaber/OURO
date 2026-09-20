@@ -462,17 +462,17 @@ async def test_welcome_providers_show_count_before_dimmed_names(tmp_path: Path) 
         welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
         welcome.set_system_status(
             TuiSystemStatus(
-                provider_ids=("anthropic-compatible", "deepseek", "glm", "openai", "other"),
+                provider_ids=("custom", "deepseek", "glm", "openai", "other"),
                 model_count=13,
             )
         )
         providers = welcome._system._providers.render()
-        assert providers.plain == "13 model(s) • anthropic-compatible, deepseek, glm, +2"
+        assert providers.plain == "13 model(s) • custom, deepseek, glm, +2"
         assert providers.get_style_at_offset(0).foreground == Color.parse(
             DEFAULT_TUI_THEME.text_muted
         )
         assert providers.get_style_at_offset(
-            providers.plain.index("anthropic")
+            providers.plain.index("custom")
         ).foreground == Color.parse(DEFAULT_TUI_THEME.text_faint)
         welcome.set_system_status(TuiSystemStatus())
         assert welcome._system._providers.render().plain == "0 model(s)"
@@ -7215,7 +7215,8 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
     configuration = ConfigurationFacade(tmp_path)
     configuration.add_provider(
         "custom",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://example.invalid/v1",
     )
     provider = configuration.provider("custom")
@@ -7297,9 +7298,11 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="THINKING PRESET")
         preset_options = app.screen.query_one("#choice-list", OptionList)
-        assert preset_options.get_option("anthropic-adaptive-effort").disabled is True
+        assert preset_options.get_option("anthropic-messages-adaptive-effort").disabled is True
         incompatible = next(
-            choice for choice in app.screen._choices if choice.value == "anthropic-adaptive-effort"
+            choice
+            for choice in app.screen._choices
+            if choice.value == "anthropic-messages-adaptive-effort"
         )
         assert incompatible.trailing == "Not supported by this provider"
         preset_options.highlighted = preset_options.get_option_index("thinking-toggle")
@@ -8046,7 +8049,8 @@ async def test_actions_opens_provider_scoped_endpoint_configuration(tmp_path: Pa
     configuration = ConfigurationFacade(tmp_path)
     configuration.add_provider(
         "custom",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://example.invalid/v1",
     )
     app = OuroTuiApp(application=_application(tmp_path))
@@ -8076,7 +8080,8 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
     configuration = ConfigurationFacade(tmp_path)
     configuration.add_provider(
         "secondary",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://secondary.example.invalid/v1",
         enabled=False,
     )
@@ -8189,7 +8194,8 @@ async def test_provider_catalog_refreshes_before_returning_from_submenu(
     configuration = ConfigurationFacade(tmp_path)
     configuration.add_provider(
         "custom",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://example.invalid/v1",
     )
     app = OuroTuiApp(application=_application(tmp_path))
@@ -8235,7 +8241,8 @@ async def test_default_provider_submenu_keeps_toggle_visible_but_disabled(
     configuration = ConfigurationFacade(tmp_path)
     configuration.add_provider(
         "primary",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://primary.example.invalid/v1",
     )
     configuration.save_endpoint("primary", "chat", model="primary-model")
@@ -8281,7 +8288,8 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
     for provider_id in ("primary", "secondary"):
         configuration.add_provider(
             provider_id,
-            provider_type="openai-compatible",
+            provider_type="custom",
+            protocol="openai-chat-completions",
             base_url=f"https://{provider_id}.example.invalid/v1",
             enabled=provider_id == "primary",
         )
@@ -8368,7 +8376,8 @@ async def test_provider_deletions_use_shared_menu_confirmation(
     configuration = ConfigurationFacade(tmp_path)
     configuration.add_provider(
         "custom",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://custom.example.invalid/v1",
     )
     configuration.save_endpoint("custom", "chat", model="custom-model")
@@ -8424,7 +8433,8 @@ async def test_setting_default_endpoint_also_switches_default_provider(tmp_path:
     for provider_id in ("primary", "secondary"):
         configuration.add_provider(
             provider_id,
-            provider_type="openai-compatible",
+            provider_type="custom",
+            protocol="openai-chat-completions",
             base_url=f"https://{provider_id}.example.invalid/v1",
         )
         configuration.save_endpoint(
@@ -8470,7 +8480,7 @@ async def test_setting_default_endpoint_also_switches_default_provider(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_add_provider_flow_integrates_presets_and_compatible_profiles(
+async def test_add_provider_flow_integrates_presets_and_custom_profiles(
     tmp_path: Path,
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
@@ -8487,9 +8497,12 @@ async def test_add_provider_flow_integrates_presets_and_compatible_profiles(
         assert {"Ready to use", "Custom connection"} == {
             choice.group for choice in app.screen._choices
         }
-        assert {"Google Gemini", "OpenAI-compatible", "Anthropic-compatible"} <= {
-            choice.label for choice in app.screen._choices
-        }
+        assert {
+            "Google Gemini",
+            "OpenAI Chat Completions",
+            "OpenAI Responses",
+            "Anthropic Messages",
+        } <= {choice.label for choice in app.screen._choices}
 
         app.screen.query_one("#choice-filter", Input).value = "Google Gemini"
         await pilot.pause()
@@ -8514,7 +8527,7 @@ async def test_add_provider_flow_integrates_presets_and_compatible_profiles(
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Anthropic-compatible"
+        app.screen.query_one("#choice-filter", Input).value = "Anthropic Messages"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
@@ -8531,7 +8544,8 @@ async def test_provider_configuration_uses_shared_grouped_inline_menu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     profile = ProviderSetupProfile(
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         default_provider_id="gateway",
         display_name="Gateway",
         description="Test gateway",
@@ -8627,7 +8641,8 @@ def test_provider_editors_preserve_redacted_request_options_when_unchanged(
     configuration = ConfigurationFacade(tmp_path)
     configuration.add_provider(
         "gateway",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://gateway.example.invalid/v1",
         provider_options={"api_key": "request-secret", "top_p": 0.8},
     )
@@ -8640,7 +8655,8 @@ def test_provider_editors_preserve_redacted_request_options_when_unchanged(
     provider = configuration.provider("gateway")
     endpoint = configuration.endpoint("gateway", "chat")
     profile = ProviderSetupProfile(
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         default_provider_id="gateway",
         display_name="Gateway",
         description="Test gateway",
@@ -8668,14 +8684,16 @@ async def test_provider_configuration_preserves_existing_enabled_state(
     configuration = ConfigurationFacade(tmp_path)
     configuration.add_provider(
         "disabled-gateway",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://gateway.example.invalid/v1",
         enabled=False,
     )
     profile = ProviderSetupProfile(
-        provider_type="openai-compatible",
-        default_provider_id="openai-compatible",
-        display_name="OpenAI-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        default_provider_id="custom",
+        display_name="OpenAI Chat Completions",
         description="Test gateway",
         base_url="",
         api_path="/chat/completions",
@@ -9950,7 +9968,8 @@ async def test_action_list_and_help_pages_render_once_on_the_shared_surface(
     configuration = ConfigurationFacade(tmp_path)
     configuration.add_provider(
         "custom",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://example.invalid/v1",
     )
     skill_dir = tmp_path / "skills" / "demo"
@@ -11272,7 +11291,8 @@ async def test_model_command_refreshes_endpoints_configured_after_tui_start(
         await app._controller.add_provider(
             TuiProviderConfiguration(
                 provider_id="hot-provider",
-                provider_type="openai-compatible",
+                provider_type="custom",
+                protocol="openai-chat-completions",
                 base_url="https://models.example.invalid/v1",
                 api_path="/chat/completions",
                 api_key=None,

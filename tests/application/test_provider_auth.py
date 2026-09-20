@@ -57,7 +57,7 @@ class ControlledDriver(BrowserFixtureDriver):
 @pytest.fixture
 async def auth_home(tmp_path, monkeypatch):
     spec = ProviderTypeSpec(
-        "openai-compatible",
+        "custom",
         ProviderConnectionSpec("openai-chat-completions"),
         (
             ProviderConnectionSpec("openai-chat-completions", "fixture-browser", "service-browser"),
@@ -79,7 +79,7 @@ async def auth_home(tmp_path, monkeypatch):
         if config.get_provider("subscription") is None:
             config.create_provider(
                 "subscription",
-                provider_type="openai-compatible",
+                provider_type="custom",
                 protocol=protocol,
                 auth_driver=driver_id,
                 base_url="https://fixture.invalid/v1",
@@ -216,7 +216,8 @@ async def test_binding_or_revision_change_rejects_old_login(auth_home, change):
     elif change == "replace":
         config.replace_provider(
             "subscription",
-            provider_type="openai-compatible",
+            provider_type="custom",
+            protocol="openai-chat-completions",
             auth_driver=driver.descriptor.driver_id,
             base_url="https://fixture.invalid/v1",
         )

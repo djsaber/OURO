@@ -4,7 +4,7 @@
 不启动 OURO Runtime，不读取其他客户端缓存，也不读写 OURO_HOME、配置或 Session。
 Token 和完整 Responses output 只保留在本进程内存中；退出后必须重新登录。
 浏览器授权和 Token 解码/交换/刷新复用 `ouro/auth/drivers` 的实现；公开上游 client id
-只由本实验显式注入。设备轮询和验证编排仍属于实验层；默认模式的完整 output item 收集复用正式 `providers/responses_items.py`，`--adapter` 模式直接使用正式 Responses adapter。
+只由本实验显式注入。设备轮询和验证编排仍属于实验层；默认模式的完整 output item 收集复用正式 `providers/openai_responses_items.py`，`--adapter` 模式直接使用正式 Responses adapter。
 
 ## 运行
 

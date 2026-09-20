@@ -21,10 +21,10 @@ from ouro.core.billing import BillingMode
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata
 from ouro.core.reasoning import ReasoningRequest
-from ouro.providers.anthropic_compatible import AnthropicCompatibleProvider
+from ouro.providers.anthropic_messages import AnthropicMessagesProvider
 from ouro.providers.authentication import ProviderRequestPolicy
 from ouro.providers.faux import FauxProvider
-from ouro.providers.openai_compatible import OpenAICompatibleProvider
+from ouro.providers.openai_chat_completions import OpenAIChatCompletionsProvider
 from ouro.providers.openai_responses import OpenAIResponsesProvider
 from ouro.providers.reasoning import ReasoningPayloadEncoder
 
@@ -114,17 +114,17 @@ def _build_faux(context: _AdapterBuildContext) -> RuntimeAdapter:
     return RuntimeAdapter(FauxProvider(), context.model)
 
 
-def _build_openai_compatible(context: _AdapterBuildContext) -> RuntimeAdapter:
+def _build_openai_chat_completions(context: _AdapterBuildContext) -> RuntimeAdapter:
     assert context.base_url is not None
-    endpoint = context.options.api_path or default_api_path("openai-chat-completions")
-    assert endpoint is not None
-    provider = OpenAICompatibleProvider(
+    api_path = context.options.api_path or default_api_path("openai-chat-completions")
+    assert api_path is not None
+    provider = OpenAIChatCompletionsProvider(
         base_url=context.base_url,
         api_key=context.api_key,
         authenticator=context.authenticator,
         request_policy=context.request_policy,
         provider_id=context.provider_id,
-        endpoint=endpoint,
+        api_path=api_path,
         timeout=context.timeout,
         headers=context.options.headers,
         request_options=context.options.extra,
@@ -136,17 +136,17 @@ def _build_openai_compatible(context: _AdapterBuildContext) -> RuntimeAdapter:
     return RuntimeAdapter(provider, context.model)
 
 
-def _build_anthropic_compatible(context: _AdapterBuildContext) -> RuntimeAdapter:
+def _build_anthropic_messages(context: _AdapterBuildContext) -> RuntimeAdapter:
     assert context.base_url is not None
-    endpoint = context.options.api_path or default_api_path("anthropic-messages")
-    assert endpoint is not None
-    provider = AnthropicCompatibleProvider(
+    api_path = context.options.api_path or default_api_path("anthropic-messages")
+    assert api_path is not None
+    provider = AnthropicMessagesProvider(
         base_url=context.base_url,
         api_key=context.api_key,
         authenticator=context.authenticator,
         request_policy=context.request_policy,
         provider_id=context.provider_id,
-        endpoint=endpoint,
+        api_path=api_path,
         timeout=context.timeout,
         headers=context.options.headers,
         request_options=context.options.extra,
@@ -160,15 +160,15 @@ def _build_anthropic_compatible(context: _AdapterBuildContext) -> RuntimeAdapter
 
 def _build_openai_responses(context: _AdapterBuildContext) -> RuntimeAdapter:
     assert context.base_url is not None
-    endpoint = context.options.api_path or default_api_path("openai-responses")
-    assert endpoint is not None
+    api_path = context.options.api_path or default_api_path("openai-responses")
+    assert api_path is not None
     provider = OpenAIResponsesProvider(
         base_url=context.base_url,
         api_key=context.api_key,
         authenticator=context.authenticator,
         request_policy=context.request_policy,
         provider_id=context.provider_id,
-        endpoint=endpoint,
+        api_path=api_path,
         timeout=context.timeout,
         headers=context.options.headers,
         request_options=context.options.extra,
@@ -182,9 +182,9 @@ def _build_openai_responses(context: _AdapterBuildContext) -> RuntimeAdapter:
 
 _ADAPTER_BUILDERS: dict[ProviderProtocol, AdapterBuilder] = {
     "faux": _build_faux,
-    "openai-chat-completions": _build_openai_compatible,
+    "openai-chat-completions": _build_openai_chat_completions,
     "openai-responses": _build_openai_responses,
-    "anthropic-messages": _build_anthropic_compatible,
+    "anthropic-messages": _build_anthropic_messages,
 }
 
 

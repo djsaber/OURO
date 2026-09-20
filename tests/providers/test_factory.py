@@ -10,7 +10,7 @@ import pytest
 from ouro.config import (
     ProviderConfigManager,
     ProviderRuntimeOptions,
-    openai_effort_reasoning,
+    openai_chat_completions_effort_reasoning,
     reasoning_preset,
 )
 from ouro.core.context import ContextView
@@ -18,8 +18,8 @@ from ouro.core.errors import ConfigError
 from ouro.core.messages import ModelMessage
 from ouro.core.reasoning import ReasoningRequest
 from ouro.providers import (
-    AnthropicCompatibleProvider,
-    OpenAICompatibleProvider,
+    AnthropicMessagesProvider,
+    OpenAIChatCompletionsProvider,
     build_runtime_adapter,
 )
 from ouro.providers.authentication import ProviderRequestPolicy
@@ -31,7 +31,7 @@ from tests.providers.responses_fixtures import message, terminal
     ("protocol", "module", "limit_field"),
     [
         ("openai-responses", "openai_responses", "max_output_tokens"),
-        ("openai-chat-completions", "openai_compatible", "max_tokens"),
+        ("openai-chat-completions", "openai_chat_completions", "max_tokens"),
     ],
 )
 @pytest.mark.parametrize("supports_limit", [False, True])
@@ -165,7 +165,7 @@ def test_factory_uses_ad_hoc_provider_identity_and_preserves_zero_temperature() 
 
     assert adapter.model.provider_id == "openai-chat-completions"
     assert adapter.model.temperature == 0
-    provider = cast(OpenAICompatibleProvider, adapter.provider)
+    provider = cast(OpenAIChatCompletionsProvider, adapter.provider)
     assert provider.base_url == "https://example.test/v1"
 
 
@@ -194,7 +194,8 @@ def test_runtime_credential_override_wins_over_configured_reference(
     manager = ProviderConfigManager(tmp_path)
     manager.create_provider(
         "glm",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://example.test/v1",
         api_key_env="CONFIGURED_KEY",
     )
@@ -205,7 +206,7 @@ def test_runtime_credential_override_wins_over_configured_reference(
     )
     adapter = build_runtime_adapter(options)
 
-    provider = cast(OpenAICompatibleProvider, adapter.provider)
+    provider = cast(OpenAIChatCompletionsProvider, adapter.provider)
     assert provider.api_key == "runtime"
 
 
@@ -214,7 +215,7 @@ def test_runtime_credential_override_wins_over_configured_reference(
     [
         ProviderRuntimeOptions(reasoning_request=ReasoningRequest(mode="enabled")),
         ProviderRuntimeOptions(
-            reasoning=openai_effort_reasoning(
+            reasoning=openai_chat_completions_effort_reasoning(
                 supported_efforts=("low",),
                 default_effort="low",
             ),
@@ -234,7 +235,8 @@ async def test_configured_endpoint_drives_model_metadata_and_provider_request(tm
     manager = ProviderConfigManager(tmp_path)
     manager.create_provider(
         "glm",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         provider_options={"seed": 1, "tool_choice": "none", "top_p": 0.8},
     )
     manager.upsert_endpoint(
@@ -250,7 +252,7 @@ async def test_configured_endpoint_drives_model_metadata_and_provider_request(tm
         supports_vision=True,
         supports_streaming=False,
         supports_structured_output=True,
-        reasoning=openai_effort_reasoning(
+        reasoning=openai_chat_completions_effort_reasoning(
             supported_efforts=("low", "high"),
             default_effort="high",
         ),
@@ -261,7 +263,7 @@ async def test_configured_endpoint_drives_model_metadata_and_provider_request(tm
         ProviderRuntimeOptions(provider_id="glm", endpoint_id="reasoning")
     )
     adapter = build_runtime_adapter(options)
-    provider = cast(OpenAICompatibleProvider, adapter.provider)
+    provider = cast(OpenAIChatCompletionsProvider, adapter.provider)
     transport = CapturingTransport()
     provider.transport = transport
 
@@ -320,7 +322,7 @@ def test_factory_rejects_request_fields_owned_by_protocol_adapter() -> None:
         ),
         (
             "anthropic-messages",
-            reasoning_preset("anthropic-adaptive-effort"),
+            reasoning_preset("anthropic-messages-adaptive-effort"),
             ReasoningRequest(mode="enabled", effort="xhigh"),
             {
                 "thinking": {"type": "adaptive"},
@@ -349,7 +351,7 @@ async def test_custom_compatible_endpoint_encodes_declared_reasoning_profile(
     provider = adapter.provider
     transport = (
         AnthropicCapturingTransport()
-        if isinstance(provider, AnthropicCompatibleProvider)
+        if isinstance(provider, AnthropicMessagesProvider)
         else CapturingTransport()
     )
     provider.transport = transport
@@ -368,7 +370,7 @@ async def test_custom_compatible_endpoint_encodes_declared_reasoning_profile(
 
 
 @pytest.mark.asyncio
-async def test_ad_hoc_openai_compatible_uses_protocol_default_api_path() -> None:
+async def test_ad_hoc_openai_chat_completions_uses_protocol_default_api_path() -> None:
     adapter = build_runtime_adapter(
         ProviderRuntimeOptions(
             protocol="openai-chat-completions",
@@ -377,12 +379,12 @@ async def test_ad_hoc_openai_compatible_uses_protocol_default_api_path() -> None
         )
     )
 
-    provider = cast(OpenAICompatibleProvider, adapter.provider)
-    assert provider.endpoint == "/chat/completions"
+    provider = cast(OpenAIChatCompletionsProvider, adapter.provider)
+    assert provider.api_path == "/chat/completions"
 
 
 @pytest.mark.asyncio
-async def test_ad_hoc_openai_compatible_respects_custom_api_path() -> None:
+async def test_ad_hoc_openai_chat_completions_respects_custom_api_path() -> None:
     adapter = build_runtime_adapter(
         ProviderRuntimeOptions(
             protocol="openai-chat-completions",
@@ -392,11 +394,11 @@ async def test_ad_hoc_openai_compatible_respects_custom_api_path() -> None:
         )
     )
 
-    provider = cast(OpenAICompatibleProvider, adapter.provider)
-    assert provider.endpoint == "/custom/path"
+    provider = cast(OpenAIChatCompletionsProvider, adapter.provider)
+    assert provider.api_path == "/custom/path"
 
 
-def test_factory_builds_anthropic_compatible_adapter_from_protocol_registry() -> None:
+def test_factory_builds_anthropic_messages_adapter_from_protocol_registry() -> None:
     adapter = build_runtime_adapter(
         ProviderRuntimeOptions(
             protocol="anthropic-messages",
@@ -406,7 +408,7 @@ def test_factory_builds_anthropic_compatible_adapter_from_protocol_registry() ->
         )
     )
 
-    provider = cast(AnthropicCompatibleProvider, adapter.provider)
+    provider = cast(AnthropicMessagesProvider, adapter.provider)
     assert provider.provider_id == "anthropic"
     assert provider.base_url == "https://api.example.test"
-    assert provider.endpoint == "/v1/messages"
+    assert provider.api_path == "/v1/messages"

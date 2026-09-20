@@ -26,7 +26,7 @@ from ouro.providers.http_transport import (
     HttpxProviderHTTPTransport,
     ProviderHTTPTransport,
 )
-from ouro.providers.openai_codec import (
+from ouro.providers.openai_chat_completions_codec import (
     _content_to_text,
     _error_from_response,
     _first_choice,
@@ -34,18 +34,18 @@ from ouro.providers.openai_codec import (
     _reasoning_field_value,
     _tool_call_deltas,
     _tool_calls_from_message,
-    _tool_to_openai,
+    _tool_to_chat_completions,
     _usage_from_response,
     _usage_from_response_or_none,
-    messages_to_openai,
+    messages_to_chat_completions,
 )
 from ouro.providers.reasoning import ReasoningPayloadEncoder
 from ouro.providers.request_context import model_request_context
 from ouro.providers.retrying import stream_with_retries
 
 
-class OpenAICompatibleProvider:
-    provider_id = "openai-compatible"
+class OpenAIChatCompletionsProvider:
+    provider_id = "openai-chat-completions"
 
     def __init__(
         self,
@@ -55,7 +55,7 @@ class OpenAICompatibleProvider:
         authenticator: RequestAuthenticator | None = None,
         request_policy: ProviderRequestPolicy | None = None,
         provider_id: str | None = None,
-        endpoint: str = "/chat/completions",
+        api_path: str = "/chat/completions",
         timeout: float = 60.0,
         transport: ProviderHTTPTransport | None = None,
         default_headers: Mapping[str, str] | None = None,
@@ -66,7 +66,7 @@ class OpenAICompatibleProvider:
     ) -> None:
         self.provider_id = provider_id or self.provider_id
         self.base_url = base_url.rstrip("/")
-        self.endpoint = endpoint if endpoint.startswith("/") else f"/{endpoint}"
+        self.api_path = api_path if api_path.startswith("/") else f"/{api_path}"
         if authenticator is not None and api_key is not None:
             raise ValueError("provide either an API Key or a request authenticator")
         self.api_key = api_key
@@ -122,7 +122,7 @@ class OpenAICompatibleProvider:
     ) -> AsyncIterator[ProviderStreamEvent]:
         async with request_authentication(
             self.authenticator,
-            url=f"{self.base_url}{self.endpoint}",
+            url=f"{self.base_url}{self.api_path}",
             headers=headers,
             redact_errors=self.redact_errors,
             policy=self.request_policy,
@@ -155,7 +155,7 @@ class OpenAICompatibleProvider:
                 extra_payload={"stream": True},
             )
             chunks = stream_json(
-                url=f"{self.base_url}{self.endpoint}",
+                url=f"{self.base_url}{self.api_path}",
                 headers=headers,
                 payload=payload,
                 timeout=self.timeout,
@@ -228,7 +228,7 @@ class OpenAICompatibleProvider:
             extra_payload=extra_payload,
         )
         return await self.transport.post_json(
-            url=f"{self.base_url}{self.endpoint}",
+            url=f"{self.base_url}{self.api_path}",
             headers=headers,
             payload=payload,
             timeout=self.timeout,
@@ -243,7 +243,7 @@ class OpenAICompatibleProvider:
         tools: list[dict[str, Any]] | None,
         extra_payload: Mapping[str, Any],
     ) -> dict[str, Any]:
-        converted_messages = messages_to_openai(
+        converted_messages = messages_to_chat_completions(
             messages,
             system_prompt=system_prompt,
             supports_vision=model.supports_vision,
@@ -266,7 +266,7 @@ class OpenAICompatibleProvider:
             payload.pop("max_tokens", None)
         self.reasoning_encoder.apply(payload, model)
         if tools and model.supports_tools:
-            payload["tools"] = [_tool_to_openai(tool) for tool in tools]
+            payload["tools"] = [_tool_to_chat_completions(tool) for tool in tools]
         else:
             payload.pop("tools", None)
         payload.update(extra_payload)
@@ -344,7 +344,7 @@ class OpenAICompatibleProvider:
         yield ProviderStreamEvent(
             type="done",
             usage=usage,
-            completion=_openai_completion(choice.get("finish_reason")),
+            completion=_chat_completions_completion(choice.get("finish_reason")),
         )
 
     async def _events_from_streaming_chunks(
@@ -433,11 +433,11 @@ class OpenAICompatibleProvider:
         yield ProviderStreamEvent(
             type="done",
             usage=usage,
-            completion=_openai_completion(provider_finish_reason),
+            completion=_chat_completions_completion(provider_finish_reason),
         )
 
 
-def _openai_completion(value: object) -> ProviderCompletion:
+def _chat_completions_completion(value: object) -> ProviderCompletion:
     provider_reason = value if isinstance(value, str) and value else None
     mapping: dict[str, ProviderFinishReason] = {
         "stop": "stop",

@@ -10,7 +10,11 @@ import pytest
 from ouro.auth.contracts import CredentialGrant
 from ouro.auth.request_auth import StaticRequestAuthenticator
 from ouro.config import ProviderConfigManager, ProviderRuntimeOptions
-from ouro.config.reasoning import mapped_reasoning, openai_effort_reasoning, reasoning_preset
+from ouro.config.reasoning import (
+    mapped_reasoning,
+    openai_chat_completions_effort_reasoning,
+    reasoning_preset,
+)
 from ouro.core.context import ContextView
 from ouro.core.errors import ConfigError
 from ouro.core.messages import ModelMessage
@@ -189,7 +193,7 @@ async def test_managed_refresh_keeps_scope_and_account_change_rejects_before_htt
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             provider = OpenAIResponsesProvider(
                 base_url="https://fixture.invalid",
-                endpoint="/api/responses",
+                api_path="/api/responses",
                 provider_id="fixture",
                 authenticator=auth,
                 transport=HttpxProviderHTTPTransport(client),
@@ -247,7 +251,7 @@ async def test_in_flight_account_replacement_does_not_relabel_response_scope(tmp
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             provider = OpenAIResponsesProvider(
                 base_url="https://fixture.invalid",
-                endpoint="/api/responses",
+                api_path="/api/responses",
                 authenticator=auth,
                 transport=HttpxProviderHTTPTransport(client),
             )
@@ -307,7 +311,7 @@ async def test_compatible_config_factory_encodes_native_reasoning_without_produc
     manager = ProviderConfigManager(tmp_path)
     manager.create_provider(
         "fixture",
-        provider_type="openai-compatible",
+        provider_type="custom",
         protocol="openai-responses",
         base_url="https://fixture.invalid/v1",
     )
@@ -360,7 +364,7 @@ def test_factory_rejects_chat_reasoning_profile_for_responses():
                 protocol="openai-responses",
                 model="model",
                 base_url="https://fixture.invalid",
-                reasoning=openai_effort_reasoning(),
+                reasoning=openai_chat_completions_effort_reasoning(),
                 reasoning_request=ReasoningRequest(mode="enabled"),
             )
         )
@@ -385,7 +389,7 @@ async def test_responses_preset_roundtrips_config_and_encodes_requested_effort(
     manager = ProviderConfigManager(tmp_path)
     manager.create_provider(
         "fixture",
-        provider_type="openai-compatible",
+        provider_type="custom",
         protocol="openai-responses",
         base_url="https://fixture.invalid/v1",
     )
@@ -393,7 +397,7 @@ async def test_responses_preset_roundtrips_config_and_encodes_requested_effort(
         "fixture",
         "main",
         model_id="custom-model",
-        reasoning=reasoning_preset("responses-effort"),
+        reasoning=reasoning_preset("openai-responses-effort"),
         supports_streaming=streaming,
         make_default=True,
     )
@@ -435,14 +439,14 @@ async def test_responses_preset_roundtrips_config_and_encodes_requested_effort(
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize("preset", ["responses-effort", "responses-effort-summary"])
+@pytest.mark.parametrize("preset", ["openai-responses-effort", "openai-responses-effort-summary"])
 async def test_responses_visible_reasoning_reaches_adapter_without_becoming_answer(
     tmp_path, monkeypatch, streaming, preset
 ):
     manager = ProviderConfigManager(tmp_path)
     manager.create_provider(
         "fixture",
-        provider_type="openai-compatible",
+        provider_type="custom",
         protocol="openai-responses",
         base_url="https://fixture.invalid/v1",
     )
@@ -498,7 +502,7 @@ async def test_responses_visible_reasoning_reaches_adapter_without_becoming_answ
     assert "".join(event.text or "" for event in events) == "hello"
     continuation = next(event.continuation for event in events if event.type == "continuation")
     assert continuation.blocks[0]["items"] == output
-    if preset == "responses-effort":
+    if preset == "openai-responses-effort":
         assert "reasoning" not in requests[0]
     else:
         assert requests[0]["reasoning"] == {"summary": "auto"}

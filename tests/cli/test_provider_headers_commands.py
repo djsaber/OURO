@@ -12,7 +12,14 @@ def test_provider_headers_cli_create_preserve_clear_replace_and_redact(tmp_path,
         "X-Model": {"source": "context", "key": "model.id"},
     }
     common = ["--home", str(tmp_path), "--json"]
-    connection = ["--type", "openai-compatible", "--base-url", "https://model.test"]
+    connection = [
+        "--type",
+        "custom",
+        "--protocol",
+        "openai-chat-completions",
+        "--base-url",
+        "https://model.test",
+    ]
     assert (
         main(["provider", "add", "gateway", *connection, "--headers", json.dumps(headers), *common])
         == 0
@@ -50,7 +57,21 @@ def test_provider_headers_cli_create_preserve_clear_replace_and_redact(tmp_path,
 
 def test_cli_header_validation_is_atomic_and_does_not_echo_secrets(tmp_path, capsys):
     common = ["--home", str(tmp_path), "--json"]
-    assert main(["provider", "add", "gateway", "--type", "openai-compatible", *common]) == 0
+    assert (
+        main(
+            [
+                "provider",
+                "add",
+                "gateway",
+                "--type",
+                "custom",
+                "--protocol",
+                "openai-chat-completions",
+                *common,
+            ]
+        )
+        == 0
+    )
     capsys.readouterr()
     path = ProviderConfigManager(tmp_path).config_path
     before = path.read_bytes()

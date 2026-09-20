@@ -19,13 +19,13 @@ from ouro.core.reasoning import (
 
 REASONING_PRESETS: tuple[str, ...] = (
     "none",
-    "openai-effort",
-    "responses-effort",
-    "responses-effort-summary",
+    "openai-chat-completions-effort",
+    "openai-responses-effort",
+    "openai-responses-effort-summary",
     "reasoning-content-effort",
     "thinking-toggle",
     "enable-thinking-toggle",
-    "anthropic-adaptive-effort",
+    "anthropic-messages-adaptive-effort",
 )
 
 _RESERVED_REQUEST_FIELDS = frozenset(
@@ -146,7 +146,7 @@ def mapped_reasoning(
     output: ReasoningOutput = "none",
     continuation: ReasoningContinuation = "none",
 ) -> EndpointReasoningConfig:
-    """Build a validated profile for templates and compatible endpoint config."""
+    """Build a validated profile for templates and custom endpoint config."""
 
     capability = ReasoningCapability.model_validate(
         {
@@ -167,7 +167,7 @@ def mapped_reasoning(
     return EndpointReasoningConfig(capability=capability, profile=profile)
 
 
-def openai_effort_reasoning(
+def openai_chat_completions_effort_reasoning(
     *,
     supported_efforts: tuple[ReasoningEffort, ...] = REASONING_EFFORTS,
     default_effort: ReasoningEffort = "medium",
@@ -185,7 +185,7 @@ def openai_effort_reasoning(
     if activation == "toggle":
         variants["disabled"] = {"reasoning_effort": "none"}
     return mapped_reasoning(
-        name="openai-effort",
+        name="openai-chat-completions-effort",
         activation=activation,
         supported_efforts=supported_efforts,
         default_effort=default_effort,
@@ -196,7 +196,7 @@ def openai_effort_reasoning(
     )
 
 
-def responses_effort_reasoning(
+def openai_responses_effort_reasoning(
     *,
     supported_efforts: tuple[ReasoningEffort, ...] = REASONING_EFFORTS,
     default_effort: ReasoningEffort = "medium",
@@ -220,7 +220,7 @@ def responses_effort_reasoning(
     if activation == "toggle":
         variants["disabled"] = {"reasoning": {"effort": "none"}}
     return mapped_reasoning(
-        name="responses-effort",
+        name="openai-responses-effort",
         activation=activation,
         supported_efforts=supported_efforts,
         default_effort=default_effort,
@@ -250,19 +250,19 @@ def toggle_reasoning(
 
 
 def reasoning_preset(name: str) -> EndpointReasoningConfig:
-    """Resolve a common native contract for CLI-created compatible endpoints."""
+    """Resolve a common native contract for CLI-created custom endpoints."""
 
     normalized = name.strip().casefold()
     if normalized == "none":
         return unsupported_reasoning()
-    if normalized == "openai-effort":
-        return openai_effort_reasoning()
-    if normalized == "responses-effort":
-        return responses_effort_reasoning(output="summary")
-    if normalized == "responses-effort-summary":
-        return responses_effort_reasoning(output="summary", summary="auto")
+    if normalized == "openai-chat-completions-effort":
+        return openai_chat_completions_effort_reasoning()
+    if normalized == "openai-responses-effort":
+        return openai_responses_effort_reasoning(output="summary")
+    if normalized == "openai-responses-effort-summary":
+        return openai_responses_effort_reasoning(output="summary", summary="auto")
     if normalized == "reasoning-content-effort":
-        return openai_effort_reasoning(output="text", continuation="text")
+        return openai_chat_completions_effort_reasoning(output="text", continuation="text")
     if normalized == "thinking-toggle":
         return toggle_reasoning(
             name="thinking-object-toggle",
@@ -275,10 +275,10 @@ def reasoning_preset(name: str) -> EndpointReasoningConfig:
             enabled={"enable_thinking": True},
             disabled={"enable_thinking": False},
         )
-    if normalized == "anthropic-adaptive-effort":
+    if normalized == "anthropic-messages-adaptive-effort":
         efforts: tuple[ReasoningEffort, ...] = ("low", "medium", "high", "xhigh", "max")
         return mapped_reasoning(
-            name="anthropic-adaptive-effort",
+            name="anthropic-messages-adaptive-effort",
             activation="toggle",
             supported_efforts=efforts,
             default_effort="high",

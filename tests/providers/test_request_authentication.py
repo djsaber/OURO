@@ -6,16 +6,16 @@ import httpx
 import pytest
 
 from ouro.core.provider import ModelMetadata, ProviderRetryPolicy
-from ouro.providers.anthropic_compatible import AnthropicCompatibleProvider
+from ouro.providers.anthropic_messages import AnthropicMessagesProvider
 from ouro.providers.authentication import ProviderRequestPolicy
 from ouro.providers.http_transport import HttpxProviderHTTPTransport, ProviderTransportError
-from ouro.providers.openai_compatible import OpenAICompatibleProvider
+from ouro.providers.openai_chat_completions import OpenAIChatCompletionsProvider
 from ouro.providers.openai_responses import OpenAIResponsesProvider
 from tests.auth.test_driver_contracts import BrowserFixtureDriver, DeviceFixtureDriver
 from tests.auth.test_request_auth import authenticated
 from tests.providers.responses_fixtures import delta, message, terminal
 
-PROVIDERS = [OpenAICompatibleProvider, AnthropicCompatibleProvider, OpenAIResponsesProvider]
+PROVIDERS = [OpenAIChatCompletionsProvider, AnthropicMessagesProvider, OpenAIResponsesProvider]
 
 
 def response(provider, streaming):
@@ -23,7 +23,7 @@ def response(provider, streaming):
         completed = terminal([message("ok")])
         body = completed["response"]
         chunks = [completed]
-    elif provider is OpenAICompatibleProvider:
+    elif provider is OpenAIChatCompletionsProvider:
         body = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
         chunks = [{"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}]
     else:
@@ -45,7 +45,7 @@ def response(provider, streaming):
 def build(provider, auth, client, **kwargs):
     return provider(
         base_url="https://fixture.invalid",
-        endpoint="/api/messages",
+        api_path="/api/messages",
         authenticator=auth,
         transport=HttpxProviderHTTPTransport(client),
         retry_policy=ProviderRetryPolicy(initial_backoff_seconds=0, max_backoff_seconds=0),
@@ -249,7 +249,7 @@ async def test_partial_output_is_never_replayed_or_refreshed(tmp_path, provider)
             self.calls += 1
             if provider is OpenAIResponsesProvider:
                 yield delta("response.output_text.delta", 0, "msg", "partial", content_index=0)
-            elif provider is OpenAICompatibleProvider:
+            elif provider is OpenAIChatCompletionsProvider:
                 yield {"choices": [{"delta": {"content": "partial"}}]}
             else:
                 yield {
@@ -262,7 +262,7 @@ async def test_partial_output_is_never_replayed_or_refreshed(tmp_path, provider)
     try:
         adapter = provider(
             base_url="https://fixture.invalid",
-            endpoint="/api/messages",
+            api_path="/api/messages",
             authenticator=auth,
             transport=transport,
         )
@@ -359,11 +359,11 @@ async def test_retry_after_is_honored_within_the_existing_backoff_bound(tmp_path
         requests.append(request)
         if len(requests) == 1:
             return httpx.Response(429, headers={"Retry-After": "3"})
-        return response(OpenAICompatibleProvider, False)
+        return response(OpenAIChatCompletionsProvider, False)
 
     try:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            adapter = build(OpenAICompatibleProvider, auth, client)
+            adapter = build(OpenAIChatCompletionsProvider, auth, client)
             adapter.retry_policy.max_backoff_seconds = 5
             monkeypatch.setattr("ouro.providers.retrying.asyncio.sleep", sleep)
             events = await collect(adapter)

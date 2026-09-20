@@ -16,7 +16,7 @@ from ouro.tui.controller import (
 )
 from ouro.tui.provider_auth_screens import ProviderAuthenticationScreen
 from ouro.tui.provider_screens import (
-    COMPATIBLE_PROVIDER_PROFILES,
+    CUSTOM_PROVIDER_PROFILES,
     EndpointConfigurationScreen,
     ProviderConfigurationScreen,
     ProviderSetupProfile,
@@ -91,10 +91,7 @@ class ProviderConfigurationWorkflows(App[int]):
             for template in templates
         }
         profiles.update(
-            {
-                f"compatible:{profile.provider_type}": profile
-                for profile in COMPATIBLE_PROVIDER_PROFILES
-            }
+            {f"custom:{profile.protocol}": profile for profile in CUSTOM_PROVIDER_PROFILES}
         )
         choices = (
             *(
@@ -108,12 +105,12 @@ class ProviderConfigurationWorkflows(App[int]):
             ),
             *(
                 Choice(
-                    f"compatible:{profile.provider_type}",
+                    f"custom:{profile.protocol}",
                     profile.display_name,
-                    trailing=profile.provider_type,
+                    trailing=profile.protocol,
                     group="Custom connection",
                 )
-                for profile in COMPATIBLE_PROVIDER_PROFILES
+                for profile in CUSTOM_PROVIDER_PROFILES
             ),
         )
         if menu is not None:

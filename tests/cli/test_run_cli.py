@@ -11,13 +11,13 @@ from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.cli.main import main
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime, run_json, run_print
-from ouro.config import openai_effort_reasoning
+from ouro.config import openai_chat_completions_effort_reasoning
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningRequest
 from ouro.mcp import MCPConfigStore, MCPServerConfig
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
-from ouro.providers import FauxProvider, OpenAICompatibleProvider
+from ouro.providers import FauxProvider, OpenAIChatCompletionsProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
 from ouro.tools.builtin_shell import detect_command_shell
@@ -430,7 +430,7 @@ def test_run_mode_rejects_effort_when_reasoning_is_disabled(tmp_path, capsys) ->
     assert "disabled reasoning cannot specify an effort" in payload["error"]
 
 
-def test_build_runtime_with_openai_compatible_provider_options(
+def test_build_runtime_with_openai_chat_completions_provider_options(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -449,7 +449,7 @@ def test_build_runtime_with_openai_compatible_provider_options(
     )
 
     provider = runtime.adapter.provider
-    assert isinstance(provider, OpenAICompatibleProvider)
+    assert isinstance(provider, OpenAIChatCompletionsProvider)
     assert runtime.adapter.model.model_id == "glm-test"
     assert runtime.adapter.model.provider_id == "glm"
     assert provider.base_url == "https://example.test/v1"
@@ -468,7 +468,7 @@ def test_build_runtime_reads_local_config_file(tmp_path, monkeypatch) -> None:
                     "default": "configured",
                     "items": {
                         "configured": {
-                            "provider_type": "openai-compatible",
+                            "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "provider_id": "configured",
                             "credential_ref": "env:OURO_TEST_KEY",
@@ -491,7 +491,7 @@ def test_build_runtime_reads_local_config_file(tmp_path, monkeypatch) -> None:
     runtime = build_default_runtime(tmp_path)
 
     provider = runtime.adapter.provider
-    assert isinstance(provider, OpenAICompatibleProvider)
+    assert isinstance(provider, OpenAIChatCompletionsProvider)
     assert runtime.adapter.model.model_id == "configured-model"
     assert runtime.adapter.model.provider_id == "configured"
     assert provider.base_url == "https://configured.test/v1"
@@ -696,7 +696,9 @@ def test_provider_commands_manage_config_and_runtime_default(
             "--home",
             str(tmp_path),
             "--type",
-            "openai-compatible",
+            "custom",
+            "--protocol",
+            "openai-chat-completions",
             "--base-url",
             "https://example.test/v1",
             "--api-key-env",
@@ -765,7 +767,7 @@ def test_provider_commands_manage_config_and_runtime_default(
     runtime = build_default_runtime(tmp_path)
 
     provider = runtime.adapter.provider
-    assert isinstance(provider, OpenAICompatibleProvider)
+    assert isinstance(provider, OpenAIChatCompletionsProvider)
     assert runtime.adapter.model.provider_id == "glm"
     assert runtime.adapter.model.model_id == "glm-test"
     assert provider.base_url == "https://example.test/v1"
@@ -795,7 +797,7 @@ def test_provider_commands_manage_config_and_runtime_default(
 
 
 def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, capsys) -> None:
-    reasoning = openai_effort_reasoning(
+    reasoning = openai_chat_completions_effort_reasoning(
         supported_efforts=("low", "high"),
         default_effort="high",
     )
@@ -809,7 +811,9 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
                 "--home",
                 str(tmp_path),
                 "--type",
-                "openai-compatible",
+                "custom",
+                "--protocol",
+                "openai-chat-completions",
                 "--api-key-env",
                 "OURO_TEST_KEY",
             ]
@@ -907,8 +911,8 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
     assert runtime.adapter.model.reasoning_resolution.effective == ReasoningRequest(
         mode="enabled", effort="high"
     )
-    provider = cast(OpenAICompatibleProvider, runtime.adapter.provider)
-    assert provider.endpoint == "/chat/completions"
+    provider = cast(OpenAIChatCompletionsProvider, runtime.adapter.provider)
+    assert provider.api_path == "/chat/completions"
     assert provider.request_options == {"seed": 7}
 
     remove_code = main(
@@ -933,10 +937,10 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
     ("protocol", "preset", "enabled_payload"),
     [
         ("openai-chat-completions", "thinking-toggle", {"thinking": {"type": "enabled"}}),
-        ("openai-responses", "responses-effort", {"reasoning": {"effort": "medium"}}),
+        ("openai-responses", "openai-responses-effort", {"reasoning": {"effort": "medium"}}),
         (
             "openai-responses",
-            "responses-effort-summary",
+            "openai-responses-effort-summary",
             {"reasoning": {"effort": "medium", "summary": "auto"}},
         ),
     ],
@@ -959,7 +963,7 @@ def test_provider_endpoint_reasoning_preset_configures_custom_model(
                 "--home",
                 str(tmp_path),
                 "--type",
-                "openai-compatible",
+                "custom",
                 "--api-key-env",
                 "CUSTOM_KEY",
                 "--protocol",
@@ -1077,7 +1081,9 @@ def test_provider_add_api_path_defaults_and_endpoint_inherits(
                 "--home",
                 str(tmp_path),
                 "--type",
-                "openai-compatible",
+                "custom",
+                "--protocol",
+                "openai-chat-completions",
                 "--base-url",
                 "https://example.test/v1",
                 "--api-path",
@@ -1133,8 +1139,8 @@ def test_provider_add_api_path_defaults_and_endpoint_inherits(
     assert main(["provider", "use", "glm", "--home", str(tmp_path)]) == 0
 
     runtime = build_default_runtime(tmp_path)
-    provider = cast(OpenAICompatibleProvider, runtime.adapter.provider)
-    assert provider.endpoint == "/responses/chat"
+    provider = cast(OpenAIChatCompletionsProvider, runtime.adapter.provider)
+    assert provider.api_path == "/responses/chat"
 
 
 def test_provider_endpoint_set_api_path_overrides_provider_default(
@@ -1152,7 +1158,9 @@ def test_provider_endpoint_set_api_path_overrides_provider_default(
                 "--home",
                 str(tmp_path),
                 "--type",
-                "openai-compatible",
+                "custom",
+                "--protocol",
+                "openai-chat-completions",
                 "--base-url",
                 "https://example.test/v1",
                 "--api-path",
@@ -1209,8 +1217,8 @@ def test_provider_endpoint_set_api_path_overrides_provider_default(
     assert main(["provider", "use", "glm", "--home", str(tmp_path)]) == 0
 
     runtime = build_default_runtime(tmp_path)
-    provider = cast(OpenAICompatibleProvider, runtime.adapter.provider)
-    assert provider.endpoint == "/chat/completions"
+    provider = cast(OpenAIChatCompletionsProvider, runtime.adapter.provider)
+    assert provider.api_path == "/chat/completions"
 
 
 def test_provider_add_base_url_without_model_creates_empty_provider(
@@ -1228,7 +1236,9 @@ def test_provider_add_base_url_without_model_creates_empty_provider(
             "--home",
             str(tmp_path),
             "--type",
-            "openai-compatible",
+            "custom",
+            "--protocol",
+            "openai-chat-completions",
             "--base-url",
             "https://example.test/v1",
             "--api-key-env",
@@ -1253,7 +1263,9 @@ def test_provider_add_and_update_configure_validated_retry_policy(tmp_path, caps
             "--home",
             str(tmp_path),
             "--type",
-            "openai-compatible",
+            "custom",
+            "--protocol",
+            "openai-chat-completions",
             "--base-url",
             "https://example.test/v1",
             "--retry-attempts",
@@ -1309,7 +1321,9 @@ def test_provider_endpoint_set_default_updates_existing_endpoint(
                 "--home",
                 str(tmp_path),
                 "--type",
-                "openai-compatible",
+                "custom",
+                "--protocol",
+                "openai-chat-completions",
                 "--api-key-env",
                 "OURO_TEST_KEY",
             ]
@@ -1359,7 +1373,7 @@ def test_provider_endpoint_set_default_updates_existing_endpoint(
 
     runtime = build_default_runtime(tmp_path)
     assert runtime.adapter.model.endpoint_id == "second"
-    provider = cast(OpenAICompatibleProvider, runtime.adapter.provider)
+    provider = cast(OpenAIChatCompletionsProvider, runtime.adapter.provider)
     assert provider.base_url == "https://second.example.test/v1"
 
 
@@ -1423,7 +1437,7 @@ def test_runtime_composes_configured_compaction_endpoint(tmp_path) -> None:
                     "items": {
                         "glm": {
                             "provider_id": "glm",
-                            "provider_type": "openai-compatible",
+                            "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "default_endpoint": "summary",
                             "endpoints": {

@@ -13,15 +13,15 @@ from ouro.core.messages import (
     model_visible_message,
 )
 from ouro.core.provider import Usage
-from ouro.providers.responses_errors import ResponsesError
-from ouro.providers.responses_items import ResponseItems
+from ouro.providers.openai_responses_errors import OpenAIResponsesError
+from ouro.providers.openai_responses_items import OpenAIResponsesItemAccumulator
 
 PROTOCOL = "openai-responses"
 
 
 def tool_arguments(value: object) -> dict[str, Any]:
     if not isinstance(value, str):
-        raise ResponsesError("invalid_tool_arguments")
+        raise OpenAIResponsesError("invalid_tool_arguments")
     try:
         # Reject non-JSON numeric constants rather than executing altered arguments.
         parsed = json.loads(
@@ -29,9 +29,9 @@ def tool_arguments(value: object) -> dict[str, Any]:
         )
         json.dumps(parsed, allow_nan=False)
     except ValueError:
-        raise ResponsesError("invalid_tool_arguments") from None
+        raise OpenAIResponsesError("invalid_tool_arguments") from None
     if not isinstance(parsed, dict):
-        raise ResponsesError("invalid_tool_arguments")
+        raise OpenAIResponsesError("invalid_tool_arguments")
     return parsed
 
 
@@ -51,17 +51,17 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def output_item(item: object) -> dict[str, Any]:
     """Validate supported semantics, retaining every original field for faithful replay."""
     if not isinstance(item, dict) or item.get("status") not in (None, "completed"):
-        raise ResponsesError("invalid_output_item")
+        raise OpenAIResponsesError("invalid_output_item")
     kind = item.get("type")
     if not isinstance(kind, str):
-        raise ResponsesError("invalid_output_item")
+        raise OpenAIResponsesError("invalid_output_item")
     if kind == "function_call":
         if any(not isinstance(item.get(key), str) or not item[key] for key in ("call_id", "name")):
-            raise ResponsesError("invalid_output_item")
+            raise OpenAIResponsesError("invalid_output_item")
         tool_arguments(item.get("arguments"))
     elif kind in {"message", "reasoning"}:
         if kind == "message" and item.get("role") != "assistant":
-            raise ResponsesError("invalid_output_item")
+            raise OpenAIResponsesError("invalid_output_item")
         fields = (
             (("content", {"output_text", "refusal"}),)
             if kind == "message"
@@ -72,27 +72,27 @@ def output_item(item: object) -> dict[str, Any]:
             if kind == "reasoning" and parts is None:
                 continue
             if not isinstance(parts, list):
-                raise ResponsesError("invalid_output_item")
+                raise OpenAIResponsesError("invalid_output_item")
             for part in parts:
                 if not isinstance(part, dict):
-                    raise ResponsesError("invalid_output_item")
+                    raise OpenAIResponsesError("invalid_output_item")
                 if not isinstance(part.get("type"), str) or part["type"] not in allowed:
-                    raise ResponsesError("unsupported_output_item")
+                    raise OpenAIResponsesError("unsupported_output_item")
                 key = "refusal" if part["type"] == "refusal" else "text"
                 if not isinstance(part.get(key), str):
-                    raise ResponsesError("invalid_output_item")
+                    raise OpenAIResponsesError("invalid_output_item")
         if kind == "reasoning" and item.get("encrypted_content") is not None:
             if not isinstance(item["encrypted_content"], str):
-                raise ResponsesError("invalid_output_item")
+                raise OpenAIResponsesError("invalid_output_item")
     else:
-        raise ResponsesError("unsupported_output_item")
+        raise OpenAIResponsesError("unsupported_output_item")
     # Function calls are correlated through call_id; their separate item id is
     # optional in Responses. Message/reasoning ids remain required for replay.
     item_id = item.get("id")
     if item_id is None and kind == "function_call":
         return item
     if not isinstance(item_id, str) or not item_id:
-        raise ResponsesError("invalid_output_item")
+        raise OpenAIResponsesError("invalid_output_item")
     return item
 
 
@@ -100,7 +100,7 @@ def continuation_from_output(
     items: list[dict[str, Any]], *, provider_id: str, model_id: str, scope: tuple[str, ...]
 ) -> ProviderContinuationArtifact:
     if not items or not scope or any(not item for item in scope):
-        raise ResponsesError("invalid_continuation")
+        raise OpenAIResponsesError("invalid_continuation")
     for item in items:
         output_item(item)
     return ProviderContinuationArtifact(
@@ -119,9 +119,9 @@ def _replay(
     scope: tuple[str, ...],
 ) -> list[dict[str, Any]]:
     if not artifact.matches(provider_id=provider_id, protocol=PROTOCOL, model_id=model_id):
-        raise ResponsesError("continuation_route_mismatch")
+        raise OpenAIResponsesError("continuation_route_mismatch")
     if len(artifact.blocks) != 1:
-        raise ResponsesError("invalid_continuation")
+        raise OpenAIResponsesError("invalid_continuation")
     envelope = artifact.blocks[0]
     if (
         set(envelope) != {"format_version", "scope", "items"}
@@ -133,10 +133,10 @@ def _replay(
         or not isinstance(envelope.get("items"), list)
         or not envelope["items"]
     ):
-        raise ResponsesError("invalid_continuation")
+        raise OpenAIResponsesError("invalid_continuation")
     if envelope["scope"] != list(scope):
-        raise ResponsesError("continuation_scope_mismatch")
-    items = ResponseItems().finish(envelope["items"])
+        raise OpenAIResponsesError("continuation_scope_mismatch")
+    items = OpenAIResponsesItemAccumulator().finish(envelope["items"])
     return [output_item(item) for item in items]
 
 
@@ -154,12 +154,12 @@ def responses_input(
     for original in messages:
         message = model_visible_message(original)
         if any(not isinstance(part, TextContent) for part in message.content):
-            raise ResponsesError("unsupported_input")
+            raise OpenAIResponsesError("unsupported_input")
         if message.role == "system":
             instructions.append(message.text_content)
         elif message.role == "tool_result":
             if message.tool_result is None or not message.tool_result.tool_call_id:
-                raise ResponsesError("unsupported_input")
+                raise OpenAIResponsesError("unsupported_input")
             items.append(
                 {
                     "type": "function_call_output",
@@ -180,9 +180,9 @@ def responses_input(
                 if item["type"] == "function_call"
             ]
             if calls != [(call.id, call.name, call.arguments) for call in message.tool_calls]:
-                raise ResponsesError("continuation_tool_mismatch")
+                raise OpenAIResponsesError("continuation_tool_mismatch")
             if len({call[0] for call in calls}) != len(calls):
-                raise ResponsesError("duplicate_tool_call")
+                raise OpenAIResponsesError("duplicate_tool_call")
             items.extend(replay)
         else:
             if message.content or not message.tool_calls:
@@ -206,7 +206,7 @@ def responses_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for tool in tools:
         name, parameters = tool.get("name"), tool.get("parameters_schema")
         if not isinstance(name, str) or not name or not isinstance(parameters, dict):
-            raise ResponsesError("invalid_tool_schema")
+            raise OpenAIResponsesError("invalid_tool_schema")
         # OURO schemas need not satisfy OpenAI strict-schema restrictions. Preserve
         # optional arguments and additionalProperties instead of rewriting tool contracts.
         result.append(
@@ -225,7 +225,7 @@ def responses_usage(raw: object) -> Usage | None:
     if raw is None:
         return None
     if not isinstance(raw, dict):
-        raise ResponsesError("invalid_usage")
+        raise OpenAIResponsesError("invalid_usage")
     input_tokens, output_tokens = raw.get("input_tokens"), raw.get("output_tokens")
     if (
         type(input_tokens) is not int
@@ -233,13 +233,13 @@ def responses_usage(raw: object) -> Usage | None:
         or type(output_tokens) is not int
         or output_tokens < 0
     ):
-        raise ResponsesError("invalid_usage")
+        raise OpenAIResponsesError("invalid_usage")
     details = raw.get("input_tokens_details")
     if details is None:
         details = {}
     if not isinstance(details, dict):
-        raise ResponsesError("invalid_usage")
+        raise OpenAIResponsesError("invalid_usage")
     cached = details.get("cached_tokens", 0)
     if type(cached) is not int or not 0 <= cached <= input_tokens:
-        raise ResponsesError("invalid_usage")
+        raise OpenAIResponsesError("invalid_usage")
     return Usage(input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cached)

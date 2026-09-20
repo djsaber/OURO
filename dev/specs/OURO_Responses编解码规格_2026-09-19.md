@@ -4,7 +4,7 @@
 > 代码基线：2026-09-19
 > 范围：Responses adapter、配置/工厂注册、请求认证、内容编码、SSE 事件投影与完整续接封装。浏览器订阅产品已内建注册；Windows/browser/gpt-5.5 真实持久凭据 CLI 闭环已验收。
 
-目标与剩余接线见[订阅目标规格](OURO_模型订阅认证规格_2026-09-16.md#s7-responses-与-continuation)和[实施计划](../plans/OURO_模型订阅认证实施计划_2026-09-16.md)。模块位于 `ouro/providers/responses_codec.py`、`responses_items.py`、`responses_stream.py` 与 `responses_errors.py`。它们只依赖 canonical 消息/事件和纯协议数据，不依赖 OAuth、配置、HTTP 客户端或实验目录。
+目标与剩余接线见[订阅目标规格](OURO_模型订阅认证规格_2026-09-16.md#s7-responses-与-continuation)和[实施计划](../plans/OURO_模型订阅认证实施计划_2026-09-16.md)。模块位于 `ouro/providers/openai_responses_codec.py`、`openai_responses_items.py`、`openai_responses_stream.py` 与 `openai_responses_errors.py`。它们只依赖 canonical 消息/事件和纯协议数据，不依赖 OAuth、配置、HTTP 客户端或实验目录。
 
 ## 请求内容
 
@@ -18,7 +18,7 @@ canonical tool calls 转成 function_call，其 call_id 来自 ToolCallRequest.i
 
 ## Adapter 与配置边界
 
-`OpenAIResponsesProvider` 只实现线协议，factory 仅按 `openai-responses` 选择构造器。`openai-compatible` 可显式选择该协议与 static 认证，默认仍为 Chat Completions；不据此注册 OpenAI 订阅产品或推断任何厂商能力。默认 API path 为 `/responses`。
+`OpenAIResponsesProvider` 只实现线协议，factory 仅按 `openai-responses` 选择构造器。`custom` 类型必须显式选择协议，支持 Responses + static 组合；不据此注册 OpenAI 订阅产品或推断任何厂商能力。默认 API path 为 `/responses`。
 
 adapter 借用 `RequestAuthenticator`，每次尝试重新 acquire；用同次快照的 headers 发送请求、scope 校验输入并封装输出。最终目标、刷新和账户身份仍由认证端口负责；额度分类与计费归属仍由注入的服务规则负责。adapter 不导入具体 OAuth driver，也不识别品牌、客户端 ID 或账户套餐。
 
@@ -92,8 +92,8 @@ usage 只采用供应商实际值，缺失时为 None；input_tokens 包含 cach
 
 ## 验收与证据边界
 
-- `tests/providers/test_responses_codec.py`：请求内容、工具 schema、两轮完整工具/reasoning 续接、MessageRecord JSON 保存/恢复、路由/scope 冲突、工具帧一致性及 usage。
-- `tests/providers/test_responses_stream.py`：item/最终快照的三种组合、交错工具、增量去重、拒绝/仅 reasoning/空输出、错误/截断/矛盾终态、共享 SSE transport 及关闭/取消。
+- `tests/providers/test_openai_responses_codec.py`：请求内容、工具 schema、两轮完整工具/reasoning 续接、MessageRecord JSON 保存/恢复、路由/scope 冲突、工具帧一致性及 usage。
+- `tests/providers/test_openai_responses_stream.py`：item/最终快照的三种组合、交错工具、增量去重、拒绝/仅 reasoning/空输出、错误/截断/矛盾终态、共享 SSE transport 及关闭/取消。
 - `tests/probes/test_codex_responses.py`：实验与正式收集器共用后的回归；架构测试保护纯协议边界。
 - `tests/probes/test_codex_adapter.py`：正式 adapter 的内存探针，合成 HTTP 验证登录材料首轮请求、跨刷新加密 reasoning 重放、两轮工具、服务声明省略输出上限及预算限制披露、HTTP 失败/取消清理及安全摘要；真实操作见[探针说明](../probes/README.md#正式-adapter-验证)。
 - `tests/providers/test_openai_responses.py`：配置/工厂到请求、原生 reasoning、静态绑定、managed 刷新续接/换账户、超时/取消/显式关闭、隐藏思考后的禁止重试。

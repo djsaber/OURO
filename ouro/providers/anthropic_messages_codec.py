@@ -10,7 +10,7 @@ from ouro.core.provider import Usage
 from ouro.core.tools import ToolCallRequest
 
 
-def messages_to_anthropic(
+def messages_to_anthropic_messages(
     messages: list[ModelMessage],
     *,
     system_prompt: str,
@@ -43,7 +43,7 @@ def messages_to_anthropic(
     return "\n\n".join(system_parts), converted
 
 
-def tool_to_anthropic(tool: Mapping[str, Any]) -> dict[str, Any]:
+def tool_to_anthropic_messages(tool: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "name": tool["name"],
         "description": tool.get("description") or "",

@@ -487,7 +487,8 @@ async def test_controller_configures_provider_endpoint_through_application_facad
     configuration = ConfigurationFacade(tmp_path)
     configuration.add_provider(
         "custom",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://example.invalid/v1",
         api_key="test-key",
     )
@@ -559,7 +560,7 @@ async def test_controller_configures_provider_endpoint_through_application_facad
 
 
 @pytest.mark.asyncio
-async def test_controller_configures_preset_and_compatible_providers(
+async def test_controller_configures_preset_and_custom_providers(
     tmp_path: Path,
 ) -> None:
     configuration = ConfigurationFacade(tmp_path)
@@ -621,10 +622,11 @@ async def test_controller_configures_preset_and_compatible_providers(
             == untouched_reasoning
         )
 
-        compatible = await controller.add_provider(
+        custom = await controller.add_provider(
             TuiProviderConfiguration(
                 provider_id="gateway",
-                provider_type="anthropic-compatible",
+                provider_type="custom",
+                protocol="anthropic-messages",
                 base_url="https://gateway.example.invalid",
                 api_path="/v1/messages",
                 api_key=None,
@@ -633,9 +635,9 @@ async def test_controller_configures_preset_and_compatible_providers(
                 provider_options={"tool_choice": "none", "top_p": 0.8},
             )
         )
-        assert compatible.endpoint_count == 0
-        assert compatible.protocol == "anthropic-messages"
-        assert compatible.provider_options == {"tool_choice": "none", "top_p": 0.8}
+        assert custom.endpoint_count == 0
+        assert custom.protocol == "anthropic-messages"
+        assert custom.provider_options == {"tool_choice": "none", "top_p": 0.8}
 
         disabled = await controller.set_provider_enabled("gateway", enabled=False)
         assert disabled.enabled is False

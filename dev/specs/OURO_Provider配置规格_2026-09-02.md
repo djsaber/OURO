@@ -13,7 +13,7 @@
 Provider 表示供应商级连接和默认值：
 
 - `provider_id`：用户拥有的配置实例 id；
-- `provider_type`：集成厂商产品档案，或 `openai-compatible`、`anthropic-compatible` 通用入口；
+- `provider_type`：集成厂商产品档案，或 `custom` 通用入口；
 - `protocol`：`faux`、`openai-chat-completions`、`openai-responses` 或 `anthropic-messages`，只负责线协议 adapter 选择；
 - `auth_driver`：认证选择，省略时为 `static`；
 - `credential_ref`；
@@ -41,7 +41,7 @@ Endpoint 使用单一正整数 `max_output_tokens` 定义输出预算，同时�
     "items": {
       "supplier": {
         "provider_id": "supplier",
-        "provider_type": "openai-compatible",
+        "provider_type": "custom",
         "protocol": "openai-chat-completions",
         "credential_ref": "env:API_KEY",
         "base_url": "https://example.test/v1",
@@ -165,23 +165,23 @@ Provider profile 只拥有 reasoning 相关顶层字段，禁止覆盖 `model`�
 
 ### 自定义模型
 
-`openai-compatible` 与 `anthropic-compatible` 创建空 Provider 后，用户可在任意 Endpoint 上使用
+`custom` 创建空 Provider 后，用户可在任意 Endpoint 上使用
 `--reasoning-preset` 声明常见契约，或使用 `--reasoning-config '<JSON>'` 提交完整的 capability/profile。
 Preset 包括：
 
 - `none`；
-- `openai-effort`、`responses-effort`、`responses-effort-summary`、`reasoning-content-effort`；
+- `openai-chat-completions-effort`、`openai-responses-effort`、`openai-responses-effort-summary`、`reasoning-content-effort`；
 - `thinking-toggle`、`enable-thinking-toggle`；
-- `anthropic-adaptive-effort`。
+- `anthropic-messages-adaptive-effort`。
 
-CLI 与 TUI 共用预设目录和协议兼容性校验。`responses-effort` 使用原生 `reasoning.effort`，
+CLI 与 TUI 共用预设目录和协议兼容性校验。`openai-responses-effort` 使用原生 `reasoning.effort`，
 声明 minimal、low、medium、high、xhigh、max 与 toggle 能力；默认意图沿用服务端默认值，
-显式 enabled 使用 medium，disabled 发送 none，续接为 opaque。`openai-effort` 使用
+显式 enabled 使用 medium，disabled 发送 none，续接为 opaque。`openai-chat-completions-effort` 使用
 Chat Completions 的顶层 `reasoning_effort`，不能用于 Responses。内置模型模板与自定义预设复用
-`responses_effort_reasoning`，该构造函数允许指定实际 `supported_efforts`、`default_effort` 与 `activation`。
+`openai_responses_effort_reasoning`，该构造函数允许指定实际 `supported_efforts`、`default_effort` 与 `activation`。
 
 Responses 的输出声明与摘要请求独立：两个 Responses 预设均以 `output=summary` 开放可见思考，
-`responses-effort` 不附加摘要请求；`responses-effort-summary` 在 default、enabled 和各 effort variant
+`openai-responses-effort` 不附加摘要请求；`openai-responses-effort-summary` 在 default、enabled 和各 effort variant
 中声明 `reasoning.summary=auto`，disabled 只发送 `effort=none`。构造函数的 `output` 默认为 none，
 `summary` 默认为不发送，可显式传入 auto、concise 或 detailed；模板必须按端点实际支持情况声明。
 用户配置的 output=none 仍过滤展示事件；服务端没有返回可见思考时，不从加密续接数据生成文本。
@@ -238,7 +238,7 @@ Endpoint 集合、连接地址、凭据环境变量、Endpoint capability、官�
 credential；覆盖不会丢弃同一模板中的其他 Endpoint。
 
 `provider add <id> --type <type>` 是唯一创建用例。application 根据 type 判断：集成厂商类型由配置 manager
-在一次校验和一次写盘中创建 Provider 与全部模板 Endpoint；compatible 类型只创建 Provider，Endpoint 由独立
+在一次校验和一次写盘中创建 Provider 与全部模板 Endpoint；`custom` 类型只创建 Provider，Endpoint 由独立
 命令管理。失败不得产生半配置。若 id 已存在，明确提示使用 `provider update` 或 `provider replace`。内置类型的
 update 按下述模板基线规则合并，replace 按所选类型完整替换。默认 Endpoint 的 id 或 model 覆盖与其他模板
 Endpoint 冲突时，在写盘前明确失败。
@@ -286,7 +286,7 @@ manual thinking 同时声明可展示摘要和 opaque continuation。始终思�
 不伪造 effort 等级。
 
 Mistral 模板暂不声明 reasoning capability。其 reasoning 响应使用嵌套 `ThinkChunk`，并要求续接时原样回放；
-当前 OpenAI-compatible continuation 只声明可验证的 `reasoning_content` 文本；Mistral 的嵌套
+当前 OpenAI Chat Completions continuation 只声明可验证的 `reasoning_content` 文本；Mistral 的嵌套
 `ThinkChunk` 尚未进入该协议契约，因此模板不会默认开启一个只能首轮工作、后续退化的能力。
 
 模板目录以本地文件形式提供：内联目录是唯一真源，首次使用时物化为
@@ -352,7 +352,7 @@ Core `Provider` 只暴露 `stream` 和 `check_connection`。Adapter factory 通�
 扩展，配置默认 API path 由对应协议档案提供；factory 不读取厂商类型或实例 id。HTTP JSON/SSE transport、transient
 错误分类和“仅首个输出前重试”策略由协议实现共享，HTTP/SSE 对象和异常不得进入 core/application。
 
-OpenAI-compatible 实现负责：
+OpenAI Chat Completions 实现负责：
 
 - system message、普通内容、vision、tool history 和声明式 reasoning profile 编码；
 - 普通 JSON 与 SSE transport；
@@ -362,7 +362,7 @@ OpenAI-compatible 实现负责：
 - 外部流缺失 tool index 时按块位置处理；
 - 不符合 Endpoint 能力的 image/tool response 明确报错。
 
-Anthropic-compatible 实现负责 Messages API 的顶层 system、content blocks、vision source、tool use/result、
+Anthropic Messages 实现负责 Messages API 的顶层 system、content blocks、vision source、tool use/result、
 usage/error 与 SSE event 映射，并在工具续接边界原样保存/重放同路由的签名 thinking blocks。协议差异留在
 各自 codec/adapter 中。
 
@@ -391,8 +391,8 @@ timeout/HTTP 状态执行有界退避；一旦已经向上游发出任何模型�
 - `tests/config/test_reasoning_config.py`
 - `tests/core/test_reasoning.py`
 - `tests/providers/test_factory.py`
-- `tests/providers/test_openai_compatible.py`
-- `tests/providers/test_anthropic_compatible.py`
+- `tests/providers/test_openai_chat_completions.py`
+- `tests/providers/test_anthropic_messages.py`
 - `tests/application/test_models.py`
 - `tests/application/test_configuration.py`
 - `tests/application/test_session_models.py`

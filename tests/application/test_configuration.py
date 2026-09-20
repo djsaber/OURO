@@ -6,7 +6,7 @@ import pytest
 
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import CompactionConfigInput
-from ouro.config import openai_effort_reasoning
+from ouro.config import openai_chat_completions_effort_reasoning
 from ouro.core.errors import ConfigError
 from ouro.core.reasoning import ReasoningRequest
 from ouro.local_application import LocalApplication
@@ -65,7 +65,8 @@ def test_provider_commands_return_safe_views_and_explicit_effect_scope(
 
     saved = facade.add_provider(
         "glm",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://example.test/v1",
         api_key_env="GLM_API_KEY",
     )
@@ -77,7 +78,7 @@ def test_provider_commands_return_safe_views_and_explicit_effect_scope(
         "glm",
         "reasoning",
         model="model-name",
-        reasoning=openai_effort_reasoning(
+        reasoning=openai_chat_completions_effort_reasoning(
             supported_efforts=("low", "high"),
             default_effort="high",
         ),
@@ -100,7 +101,8 @@ def test_inline_provider_credential_is_never_exposed(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
     facade.add_provider(
         "local",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://example.test/v1",
         api_key="inline-secret",
     )
@@ -193,7 +195,8 @@ def test_compaction_overrides_are_validated_against_fixed_endpoint_capabilities(
     facade = ConfigurationFacade(tmp_path)
     facade.add_provider(
         "glm",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://example.test/v1",
     )
     facade.save_endpoint(
@@ -202,7 +205,7 @@ def test_compaction_overrides_are_validated_against_fixed_endpoint_capabilities(
         model="summary-model",
         context_window=32_000,
         max_output_tokens=2048,
-        reasoning=openai_effort_reasoning(
+        reasoning=openai_chat_completions_effort_reasoning(
             supported_efforts=("low", "high"),
             default_effort="low",
         ),
@@ -285,7 +288,8 @@ def test_invalid_configuration_mutation_does_not_change_persisted_state(tmp_path
     facade = ConfigurationFacade(tmp_path)
     facade.add_provider(
         "glm",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://example.test/v1",
     )
     config_path = tmp_path / "config" / "config.json"
@@ -509,7 +513,8 @@ def test_using_endpoint_atomically_updates_the_default_provider_route(tmp_path) 
     for provider_id in ("primary", "secondary"):
         facade.add_provider(
             provider_id,
-            provider_type="openai-compatible",
+            provider_type="custom",
+            protocol="openai-chat-completions",
             base_url=f"https://{provider_id}.example.invalid/v1",
         )
         facade.save_endpoint(
@@ -534,7 +539,8 @@ def test_using_endpoint_rejects_disabled_provider_without_partial_update(tmp_pat
     facade.add_provider("primary", provider_type="openai", make_default=True)
     facade.add_provider(
         "disabled",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://disabled.example.invalid/v1",
         enabled=False,
     )

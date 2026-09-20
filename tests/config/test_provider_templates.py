@@ -64,7 +64,7 @@ def _template(**updates: object) -> ProviderTemplate:
         "display_name": "Example",
         "description": "Example provider template.",
         "provider_id": "example",
-        "provider_type": "openai-compatible",
+        "provider_type": "custom",
         "protocol": "openai-chat-completions",
         "credential_env": "EXAMPLE_API_KEY",
         "base_url": "https://example.test/v1",

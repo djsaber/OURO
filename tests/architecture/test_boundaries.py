@@ -483,12 +483,12 @@ def test_providers_borrow_only_the_request_authentication_port():
     assert violations == []
 
 
-def test_responses_codec_is_independent_of_authentication_transport_and_experiments():
+def test_openai_responses_codec_is_independent_of_authentication_transport_and_experiments():
     for name in (
-        "responses_codec.py",
-        "responses_items.py",
-        "responses_stream.py",
-        "responses_errors.py",
+        "openai_responses_codec.py",
+        "openai_responses_items.py",
+        "openai_responses_stream.py",
+        "openai_responses_errors.py",
     ):
         path = PROJECT_ROOT / "ouro" / "providers" / name
         modules = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))

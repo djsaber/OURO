@@ -30,11 +30,11 @@ from ouro.providers.http_transport import (
     ProviderHTTPTransport,
     ProviderTransportError,
 )
+from ouro.providers.openai_responses_codec import responses_input, responses_tools
+from ouro.providers.openai_responses_errors import OpenAIResponsesError
+from ouro.providers.openai_responses_stream import responses_events
 from ouro.providers.reasoning import ReasoningPayloadEncoder
 from ouro.providers.request_context import model_request_context
-from ouro.providers.responses_codec import responses_input, responses_tools
-from ouro.providers.responses_errors import ResponsesError
-from ouro.providers.responses_stream import responses_events
 from ouro.providers.retrying import stream_with_retries
 
 
@@ -49,7 +49,7 @@ class OpenAIResponsesProvider:
         authenticator: RequestAuthenticator | None = None,
         request_policy: ProviderRequestPolicy | None = None,
         provider_id: str | None = None,
-        endpoint: str = "/responses",
+        api_path: str = "/responses",
         timeout: float = 60,
         transport: ProviderHTTPTransport | None = None,
         default_headers: Mapping[str, str] | None = None,
@@ -64,7 +64,7 @@ class OpenAIResponsesProvider:
             raise ValueError("timeout must be positive and finite")
         self.provider_id = provider_id or self.provider_id
         self.base_url = base_url.rstrip("/")
-        self.endpoint = endpoint if endpoint.startswith("/") else "/" + endpoint
+        self.api_path = api_path if api_path.startswith("/") else "/" + api_path
         self.timeout = timeout
         self.authenticator = authenticator or StaticRequestAuthenticator(
             {"authorization": "Bearer " + api_key} if api_key else {},
@@ -126,7 +126,7 @@ class OpenAIResponsesProvider:
     ) -> AsyncGenerator[ProviderStreamEvent]:
         # Validate explicit controls before acquiring credentials or refreshing.
         payload = self._payload(model, tools)
-        url = self.base_url + self.endpoint
+        url = self.base_url + self.api_path
         async with request_authentication(
             self.authenticator,
             url=url,
@@ -162,9 +162,9 @@ class OpenAIResponsesProvider:
                         except StopAsyncIteration:
                             break
                         if event.type == "tool_call_delta" and not model.supports_tools:
-                            raise ResponsesError("unsupported_output_item")
+                            raise OpenAIResponsesError("unsupported_output_item")
                         yield event
-            except ResponsesError as error:
+            except OpenAIResponsesError as error:
                 # Codec errors are already fixed local facts, including actionable
                 # continuation mismatches; never replace them with raw service text.
                 yield ProviderStreamEvent(type="error", error=str(error), error_code=error.code)
@@ -198,7 +198,7 @@ class OpenAIResponsesProvider:
                 else None
             )
             if kind is None:
-                raise ResponsesError("invalid_terminal")
+                raise OpenAIResponsesError("invalid_terminal")
             yield {"type": kind, "response": response}
 
     def _payload(self, model: ModelMetadata, tools: list[dict[str, Any]] | None) -> dict[str, Any]:

@@ -746,7 +746,7 @@ def _authenticated_adapter_builder(
         raise ConfigError("authentication and service registrations must have unique ids")
     for provider_type in SUPPORTED_PROVIDER_TYPES:
         spec = provider_type_spec(provider_type)
-        for connection in (spec.default_connection, *spec.alternative_connections):
+        for connection in spec.connections:
             if connection.auth_driver != "static" and connection.auth_driver not in driver_by_id:
                 raise ConfigError(
                     f"authentication driver is not registered: {connection.auth_driver}"

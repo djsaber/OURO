@@ -22,11 +22,11 @@ def test_root_help_explains_tui_default_and_getting_started() -> None:
     assert "ouro COMMAND --help" in help_text
 
 
-def test_provider_help_explains_integrated_and_compatible_workflows(capsys) -> None:
+def test_provider_help_explains_integrated_and_custom_workflows(capsys) -> None:
     help_text = _subcommand_help(["provider"], capsys)
 
     assert "Integrated types install reviewed Endpoint templates" in help_text
-    assert "compatible types start empty" in help_text
+    assert "custom types start empty" in help_text
     assert "Typical workflow:" in help_text
     assert "provider endpoint set" in help_text
 
@@ -38,9 +38,9 @@ def test_endpoint_set_help_documents_reasoning_contract_choices(capsys) -> None:
     assert "endpoint capabilities:" in help_text
     assert "reasoning contract:" in help_text
     assert "reasoning-content-effort" in help_text
-    assert "responses-effort" in help_text
-    assert "responses-effort-summary" in help_text
-    assert "anthropic-adaptive-effort" in help_text
+    assert "openai-responses-effort" in help_text
+    assert "openai-responses-effort-summary" in help_text
+    assert "anthropic-messages-adaptive-effort" in help_text
     assert '{"capability": {...}, "profile":' in help_text
     assert "Presets are explicit declarations, not capability detection" in help_text
     assert "rejected before configuration is written" in help_text

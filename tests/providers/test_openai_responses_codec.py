@@ -12,14 +12,14 @@ from ouro.core.messages import (
     ToolResultReference,
 )
 from ouro.core.tools import ToolCallRequest
-from ouro.providers.responses_codec import (
+from ouro.providers.openai_responses_codec import (
     continuation_from_output,
     responses_input,
     responses_tools,
     responses_usage,
 )
-from ouro.providers.responses_errors import ResponsesError
-from ouro.providers.responses_stream import ResponsesStreamDecoder
+from ouro.providers.openai_responses_errors import OpenAIResponsesError
+from ouro.providers.openai_responses_stream import OpenAIResponsesStreamDecoder
 from tests.providers.responses_fixtures import SCOPE, call, message, reasoning, terminal
 
 
@@ -108,7 +108,7 @@ def test_two_tool_rounds_replay_reasoning_and_results_without_rebuilding_calls()
     expected = [{"role": "user", "content": "use echo twice"}]
     for number in (1, 2):
         output = [reasoning(id=f"rs-{number}"), call(number)]
-        stream = ResponsesStreamDecoder(provider_id="provider", model_id="model", scope=SCOPE)
+        stream = OpenAIResponsesStreamDecoder(provider_id="provider", model_id="model", scope=SCOPE)
         stream.feed(terminal(output))
         events = stream.finish()
         continuation = next(event.continuation for event in events if event.type == "continuation")
@@ -170,7 +170,7 @@ def test_function_call_without_optional_item_id_survives_persistence_and_replay(
 def test_unreadable_or_foreign_continuation_is_not_silently_dropped(field, value, code):
     msg = assistant()
     msg.provider_continuation.blocks[0][field] = value
-    with pytest.raises(ResponsesError) as failure:
+    with pytest.raises(OpenAIResponsesError) as failure:
         encode([msg])
     assert failure.value.code == code
     assert "opaque-ciphertext" not in str(failure.value)
@@ -180,7 +180,7 @@ def test_unreadable_or_foreign_continuation_is_not_silently_dropped(field, value
 def test_outer_route_mismatch_requires_restoring_route_or_starting_new_session(field):
     msg = assistant()
     msg.provider_continuation = msg.provider_continuation.model_copy(update={field: "different"})
-    with pytest.raises(ResponsesError, match="Restore the original") as failure:
+    with pytest.raises(OpenAIResponsesError, match="Restore the original") as failure:
         encode([msg])
     assert failure.value.code == "continuation_route_mismatch"
 
@@ -194,7 +194,7 @@ def test_outer_route_mismatch_requires_restoring_route_or_starting_new_session(f
     ],
 )
 def test_replay_must_agree_with_canonical_tool_frame(calls):
-    with pytest.raises(ResponsesError) as failure:
+    with pytest.raises(OpenAIResponsesError) as failure:
         encode([assistant().model_copy(update={"tool_calls": calls})])
     assert failure.value.code == "continuation_tool_mismatch"
 
@@ -215,7 +215,7 @@ def test_unsupported_images_and_missing_tool_reference_fail_instead_of_disappear
         ModelMessage(role="user", content=[ImageContent(uri="https://image.test/a")]),
         ModelMessage(role="tool_result", content=[TextContent(text="result")]),
     ]:
-        with pytest.raises(ResponsesError) as failure:
+        with pytest.raises(OpenAIResponsesError) as failure:
             encode([msg])
         assert failure.value.code == "unsupported_input"
 
@@ -270,5 +270,5 @@ def test_usage_counts_cached_and_reasoning_as_subsets_and_leaves_cost_unknown():
     ],
 )
 def test_invalid_usage_does_not_become_an_invented_zero(usage):
-    with pytest.raises(ResponsesError, match="invalid_usage"):
+    with pytest.raises(OpenAIResponsesError, match="invalid_usage"):
         responses_usage(usage)

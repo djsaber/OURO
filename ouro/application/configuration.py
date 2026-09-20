@@ -552,7 +552,7 @@ class ConfigurationFacade:
             raise ConfigError(
                 f"protocol does not match template {entry.template.template_id}: "
                 f"{protocol} != {entry.template.protocol}; "
-                "use a compatible provider type for a custom connection"
+                "use provider type custom with an explicit protocol"
             )
 
     def _resolve_provider_retry_policy(

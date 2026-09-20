@@ -7,9 +7,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ouro.core.provider import ProviderCompletion, ProviderStreamEvent, ToolCallDelta
-from ouro.providers.responses_codec import continuation_from_output, output_item, responses_usage
-from ouro.providers.responses_errors import ResponsesError
-from ouro.providers.responses_items import ResponseItems
+from ouro.providers.openai_responses_codec import (
+    continuation_from_output,
+    output_item,
+    responses_usage,
+)
+from ouro.providers.openai_responses_errors import OpenAIResponsesError
+from ouro.providers.openai_responses_items import OpenAIResponsesItemAccumulator
 
 
 @dataclass
@@ -19,16 +23,16 @@ class _Text:
 
     def delta(self, value: object) -> str:
         if self.complete or not isinstance(value, str):
-            raise ResponsesError("conflicting_delta")
+            raise OpenAIResponsesError("conflicting_delta")
         self.parts.append(value)
         return value
 
     def finish(self, value: object) -> str:
         if not isinstance(value, str):
-            raise ResponsesError("invalid_event")
+            raise OpenAIResponsesError("invalid_event")
         prefix = "".join(self.parts)
         if not value.startswith(prefix) or (self.complete and value != prefix):
-            raise ResponsesError("conflicting_delta")
+            raise OpenAIResponsesError("conflicting_delta")
         suffix = value[len(prefix) :]
         self.parts = [value]
         self.complete = True
@@ -43,14 +47,14 @@ class _Tool:
     arguments: _Text = field(default_factory=_Text)
 
 
-class ResponsesStreamDecoder:
+class OpenAIResponsesStreamDecoder:
     """One response. Native output indexes never become canonical tool ordinals."""
 
     def __init__(self, *, provider_id: str, model_id: str, scope: tuple[str, ...]) -> None:
         self._provider_id = provider_id
         self._model_id = model_id
         self._scope = scope
-        self._items = ResponseItems()
+        self._items = OpenAIResponsesItemAccumulator()
         self._text: dict[tuple[int, str, int], _Text] = {}
         self._tools: dict[int, _Tool] = {}
         self._call_ids: dict[str, int] = {}
@@ -60,17 +64,17 @@ class ResponsesStreamDecoder:
     def feed(self, event: dict[str, Any]) -> list[ProviderStreamEvent]:
         kind = event.get("type")
         if not isinstance(kind, str):
-            raise ResponsesError("invalid_event")
+            raise OpenAIResponsesError("invalid_event")
         if self._finished:
             self._require_open(kind)
         if kind == "response.incomplete":
             self._require_open(kind)
             # No successful done means Core cannot execute even syntactically complete
             # tool fragments from an unsuccessful response.
-            raise ResponsesError("response_incomplete")
+            raise OpenAIResponsesError("response_incomplete")
         if kind in {"response.failed", "error"}:
             self._require_open(kind)
-            raise ResponsesError("response_failed")
+            raise OpenAIResponsesError("response_failed")
         if kind == "response.completed":
             self._require_open(kind)
             response = event.get("response")
@@ -80,7 +84,7 @@ class ResponsesStreamDecoder:
                 or response.get("error") is not None
                 or response.get("incomplete_details") is not None
             ):
-                raise ResponsesError("invalid_terminal")
+                raise OpenAIResponsesError("invalid_terminal")
             self._terminal = response
             return []
         if kind in {"response.output_item.added", "response.output_item.done"}:
@@ -90,13 +94,13 @@ class ResponsesStreamDecoder:
             complete = kind == "response.output_item.done"
             self._items.observe(index, item, complete=complete)
             if not isinstance(item, dict):
-                raise ResponsesError("invalid_output_item")
+                raise OpenAIResponsesError("invalid_output_item")
             if complete:
                 return self._complete_item(index, output_item(item))
             if item["type"] == "function_call":
                 return self._tool_header(index, item)
             if item["type"] not in {"message", "reasoning"}:
-                raise ResponsesError("unsupported_output_item")
+                raise OpenAIResponsesError("unsupported_output_item")
             return []
         lanes = {
             "response.output_text": ("message", "output_text", "content_index", "text"),
@@ -152,15 +156,15 @@ class ResponsesStreamDecoder:
 
     def _require_open(self, kind: str) -> None:
         if self._terminal is not None or self._finished:
-            raise ResponsesError(
+            raise OpenAIResponsesError(
                 "duplicate_terminal" if kind == "response.completed" else "output_after_terminal"
             )
 
     def finish(self) -> list[ProviderStreamEvent]:
         if self._finished:
-            raise ResponsesError("duplicate_terminal")
+            raise OpenAIResponsesError("duplicate_terminal")
         if self._terminal is None:
-            raise ResponsesError("missing_terminal")
+            raise OpenAIResponsesError("missing_terminal")
         self._finished = True
         items = self._items.finish(self._terminal.get("output", []))
         events: list[ProviderStreamEvent] = []
@@ -169,7 +173,7 @@ class ResponsesStreamDecoder:
         if [self._tools[index].ordinal for index in sorted(self._tools)] != list(
             range(len(self._tools))
         ):
-            raise ResponsesError("conflicting_output_item")
+            raise OpenAIResponsesError("conflicting_output_item")
         usage = responses_usage(self._terminal.get("usage"))
         if items:
             events.append(
@@ -199,7 +203,7 @@ class ResponsesStreamDecoder:
         index = _index(event, "output_index")
         item_id = event.get("item_id")
         if not isinstance(item_id, str) or not item_id:
-            raise ResponsesError("invalid_event")
+            raise OpenAIResponsesError("invalid_event")
         self._items.observe(index, {"type": kind, "id": item_id}, complete=False)
         return index
 
@@ -212,11 +216,11 @@ class ResponsesStreamDecoder:
         tool = self._tool(index)
         call_id, name = item.get("call_id"), item.get("name")
         if not isinstance(call_id, str) or not call_id or not isinstance(name, str) or not name:
-            raise ResponsesError("invalid_output_item")
+            raise OpenAIResponsesError("invalid_output_item")
         if (tool.call_id and tool.call_id != call_id) or (tool.name and tool.name != name):
-            raise ResponsesError("conflicting_output_item")
+            raise OpenAIResponsesError("conflicting_output_item")
         if self._call_ids.get(call_id, index) != index:
-            raise ResponsesError("duplicate_tool_call")
+            raise OpenAIResponsesError("duplicate_tool_call")
         self._call_ids[call_id] = index
         events = _tool_delta(
             tool.ordinal, call_id="" if tool.call_id else call_id, name="" if tool.name else name
@@ -251,14 +255,14 @@ class ResponsesStreamDecoder:
         if item["type"] == "message" and any(
             key[0] == index and key not in keys for key in self._text
         ):
-            raise ResponsesError("conflicting_output_item")
+            raise OpenAIResponsesError("conflicting_output_item")
         return events
 
 
 def _index(event: dict[str, Any], key: str) -> int:
     value = event.get(key)
     if type(value) is not int or value < 0:
-        raise ResponsesError("invalid_event")
+        raise OpenAIResponsesError("invalid_event")
     return value
 
 
@@ -292,7 +296,7 @@ async def responses_events(
     model_id: str,
     scope: tuple[str, ...],
 ) -> AsyncGenerator[ProviderStreamEvent]:
-    decoder = ResponsesStreamDecoder(provider_id=provider_id, model_id=model_id, scope=scope)
+    decoder = OpenAIResponsesStreamDecoder(provider_id=provider_id, model_id=model_id, scope=scope)
     try:
         async for chunk in chunks:
             for event in decoder.feed(chunk):

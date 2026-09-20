@@ -10,8 +10,8 @@ from ouro.config.provider_models import (
 )
 from ouro.config.reasoning import (
     mapped_reasoning,
-    openai_effort_reasoning,
-    responses_effort_reasoning,
+    openai_chat_completions_effort_reasoning,
+    openai_responses_effort_reasoning,
     toggle_reasoning,
 )
 from ouro.core.base import OuroModel
@@ -83,31 +83,31 @@ class ProviderTemplate(OuroModel):
 _VERIFIED_ON = "2026-07-14"
 
 
-_OPENAI_55_REASONING = responses_effort_reasoning(
+_OPENAI_55_REASONING = openai_responses_effort_reasoning(
     supported_efforts=("low", "medium", "high", "xhigh"),
 )
-_OPENAI_56_REASONING = responses_effort_reasoning(
+_OPENAI_56_REASONING = openai_responses_effort_reasoning(
     supported_efforts=("low", "medium", "high", "xhigh", "max"),
 )
-_CODEX_55_REASONING = responses_effort_reasoning(
+_CODEX_55_REASONING = openai_responses_effort_reasoning(
     activation="always_on",
     supported_efforts=("low", "medium", "high", "xhigh"),
 )
-_OPENAI_ALWAYS_ON_REASONING = responses_effort_reasoning(
+_OPENAI_ALWAYS_ON_REASONING = openai_responses_effort_reasoning(
     activation="always_on",
     supported_efforts=("low", "medium", "high", "xhigh", "max"),
 )
-_GEMINI_FLASH_REASONING = openai_effort_reasoning(
+_GEMINI_FLASH_REASONING = openai_chat_completions_effort_reasoning(
     activation="always_on",
     supported_efforts=("minimal", "low", "medium", "high"),
     default_effort="medium",
 )
-_GEMINI_PRO_REASONING = openai_effort_reasoning(
+_GEMINI_PRO_REASONING = openai_chat_completions_effort_reasoning(
     activation="always_on",
     supported_efforts=("low", "medium", "high"),
     default_effort="high",
 )
-_GEMINI_FLASH_LITE_REASONING = openai_effort_reasoning(
+_GEMINI_FLASH_LITE_REASONING = openai_chat_completions_effort_reasoning(
     activation="always_on",
     supported_efforts=("minimal", "low", "medium", "high"),
     default_effort="minimal",
@@ -232,7 +232,7 @@ _GLM_53_FLASH_REASONING = mapped_reasoning(
         },
     },
 )
-_GROK_46_REASONING = openai_effort_reasoning(
+_GROK_46_REASONING = openai_chat_completions_effort_reasoning(
     activation="always_on",
     supported_efforts=("low", "medium", "high", "xhigh"),
     default_effort="high",
@@ -256,7 +256,7 @@ _ANTHROPIC_SONNET_REASONING = mapped_reasoning(
     },
 )
 _ANTHROPIC_ADAPTIVE_REASONING = mapped_reasoning(
-    name="anthropic-adaptive-effort",
+    name="anthropic-messages-adaptive-effort",
     activation="toggle",
     supported_efforts=("low", "medium", "high", "xhigh", "max"),
     default_effort="high",
@@ -432,7 +432,7 @@ _PROVIDER_TEMPLATES = (
     ProviderTemplate(
         template_id="gemini",
         display_name="Google Gemini",
-        description="Gemini through Google's official OpenAI-compatible endpoint.",
+        description="Gemini through Google's official OpenAI Chat Completions-compatible endpoint.",
         provider_id="gemini",
         provider_type="gemini",
         protocol="openai-chat-completions",
@@ -482,7 +482,7 @@ _PROVIDER_TEMPLATES = (
     ProviderTemplate(
         template_id="deepseek",
         display_name="DeepSeek",
-        description="DeepSeek's OpenAI-compatible API with current V4 models.",
+        description="DeepSeek's OpenAI Chat Completions-compatible API with current V4 models.",
         provider_id="deepseek",
         provider_type="deepseek",
         protocol="openai-chat-completions",
@@ -522,7 +522,7 @@ _PROVIDER_TEMPLATES = (
         template_id="qwen",
         display_name="Alibaba Cloud Qwen",
         description=(
-            "DashScope's OpenAI-compatible China endpoint with the Qwen3.8-Max "
+            "DashScope's OpenAI Chat Completions-compatible China endpoint with the Qwen3.8-Max "
             "flagship, Qwen3.8-Flash, and Qwen3.7-Plus multimodal models."
         ),
         provider_id="qwen",
@@ -574,7 +574,7 @@ _PROVIDER_TEMPLATES = (
     ProviderTemplate(
         template_id="kimi",
         display_name="Moonshot AI Kimi",
-        description="Kimi's OpenAI-compatible API with the K3 flagship and K2 Agent models.",
+        description="Kimi's Chat Completions API with the K3 flagship and K2 Agent models.",
         provider_id="kimi",
         provider_type="kimi",
         protocol="openai-chat-completions",
@@ -635,7 +635,7 @@ _PROVIDER_TEMPLATES = (
     ProviderTemplate(
         template_id="glm",
         display_name="Zhipu GLM",
-        description="Zhipu's OpenAI-compatible API with current text and multimodal models.",
+        description="Zhipu's Chat Completions API with current text and multimodal models.",
         provider_id="glm",
         provider_type="glm",
         protocol="openai-chat-completions",
@@ -707,7 +707,7 @@ _PROVIDER_TEMPLATES = (
     ProviderTemplate(
         template_id="grok",
         display_name="xAI Grok",
-        description="xAI's OpenAI-compatible API with the latest Grok frontier model.",
+        description="xAI's Chat Completions API with the latest Grok frontier model.",
         provider_id="grok",
         provider_type="grok",
         protocol="openai-chat-completions",

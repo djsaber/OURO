@@ -6,9 +6,9 @@ OURO 是本地优先的 Agent 框架，包含：
 
 - 可恢复的 Session/Run、files 与 SQLite 持久化、排队输入、撤销与分支。
 - Provider/Endpoint 配置、流式模型调用、工具权限、人工协同、资源与上下文压缩。
-- CLI/TUI 共用 `responses-effort` 思考预设，将端点等级与开关编码为 Responses 原生 `reasoning.effort`，沿用能力校验与 opaque 续接；配置构造函数支持端点自定义默认等级。
+- CLI/TUI 共用 `openai-responses-effort` 思考预设，将端点等级与开关编码为 Responses 原生 `reasoning.effort`，沿用能力校验与 opaque 续接；配置构造函数支持端点自定义默认等级。
 - Responses 思考展示支持标准 reasoning_text 与 reasoning_summary_text 的流式及完整输出；预设区分接收可见思考和显式请求摘要，允许终态省略已流出的思考文本，并保留原生续接与必要一致性校验。
-- CLI/TUI 可创建 Responses 协议的自定义供应商；CLI `add/replace --protocol` 和 TUI 共享菜单中的协议选择复用现有类型约束，保留自定义 API 路径与已有供应商协议。
+- 协议实现、编解码器与思考预设按 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 明确命名；自定义接入统一为 `custom`，CLI 必须显式指定协议，TUI 提供三个协议入口，保留自定义 API 路径与已有供应商协议。
 - Responses 流在完成事件前后均忽略未知扩展事件；已识别的输出与生命周期事件保留严格终态校验，兼容供应商附加元数据而不设置事件名称特例。
 - 请求时的服务计费归属与全局用量账本；CLI/TUI 区分未知、零金额和部分金额，并展示未定价请求数及计费模式。
 - 受管理认证基础：驱动契约、单次授权资源生命周期、受限凭据存储、跨进程刷新协调，以及 Provider/模板的认证引用与组合校验；通用 Application 登录、配置条件提交、安全状态与注销/凭据管理已接入轻量认证 CLI；现有协议已接入逐次请求认证、最终目标检查、共用重试和安全错误码；Runtime 已装配共享认证并支持默认/压缩路由绑定变化；TUI 已支持通用登录、状态、注销及本地凭据管理；首期 OpenAI 浏览器订阅已内建注册，完成持久登录、调用、重启续接与注销验收。

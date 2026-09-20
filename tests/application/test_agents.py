@@ -30,7 +30,7 @@ from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStrea
 from ouro.core.session_commits import SessionCommit
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolInvocation
-from ouro.providers.anthropic_codec import messages_to_anthropic
+from ouro.providers.anthropic_messages_codec import messages_to_anthropic_messages
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolInputRequest, ToolRegistry, ToolResult
@@ -819,7 +819,7 @@ async def test_spawn_runs_child_as_independent_session_with_frozen_tools(tmp_pat
     assert provider.tool_names == [["Read"]]
     assert provider.system_prompts[0].startswith("BASE INSTRUCTIONS")
     assert provider.system_prompts[0].endswith("CHILD READER INSTRUCTIONS")
-    anthropic_system, anthropic_messages = messages_to_anthropic(
+    anthropic_system, anthropic_messages = messages_to_anthropic_messages(
         provider.messages[0],
         system_prompt=provider.system_prompts[0],
         supports_vision=False,

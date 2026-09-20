@@ -12,7 +12,7 @@ from ouro.config import (
     ProviderRuntimeOptions,
     endpoint_config_to_public_dict,
     mapped_reasoning,
-    openai_effort_reasoning,
+    openai_chat_completions_effort_reasoning,
     provider_config_to_public_dict,
 )
 from ouro.config.endpoints import endpoint_config_from_mapping
@@ -73,7 +73,7 @@ def test_provider_options_are_redacted_in_public_output() -> None:
     public = provider_config_to_public_dict(
         ProviderConfig(
             provider_id="custom",
-            provider_type="openai-compatible",
+            provider_type="custom",
             protocol="openai-chat-completions",
             extra={
                 "api_key": "secret-value",
@@ -96,7 +96,8 @@ def test_provider_options_are_replaceable_defaults_with_owned_field_validation(
     manager = ProviderConfigManager(tmp_path)
     created = manager.create_provider(
         "custom",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://example.test/v1",
         provider_options={"tool_choice": "none", "top_p": 0.8},
     )
@@ -140,7 +141,7 @@ def test_provider_config_manager_resolves_configured_default(tmp_path) -> None:
                     "items": {
                         "glm": {
                             "provider_id": "glm",
-                            "provider_type": "openai-compatible",
+                            "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "credential_ref": "env:OURO_TEST_KEY",
                             "timeout_seconds": 7,
@@ -214,7 +215,7 @@ def test_provider_config_manager_selects_configured_provider_by_id(tmp_path) -> 
                     "items": {
                         "glm": {
                             "provider_id": "glm",
-                            "provider_type": "openai-compatible",
+                            "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "default_endpoint": "default",
                             "endpoints": {
@@ -252,7 +253,7 @@ def test_provider_config_manager_rejects_provider_id_mismatch(tmp_path) -> None:
                     "items": {
                         "local": {
                             "provider_id": "glm",
-                            "provider_type": "openai-compatible",
+                            "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "base_url": "https://example.test/v1",
                         }
@@ -277,7 +278,7 @@ def test_provider_config_rejects_noncanonical_provider_type(tmp_path) -> None:
                     "items": {
                         "local": {
                             "provider_id": "local",
-                            "provider_type": "openai_compatible",
+                            "provider_type": "openai_chat_completions",
                             "protocol": "openai-chat-completions",
                         }
                     }
@@ -301,7 +302,7 @@ def test_provider_config_requires_explicit_protocol_without_legacy_inference(tmp
                     "items": {
                         "local": {
                             "provider_id": "local",
-                            "provider_type": "openai-compatible",
+                            "provider_type": "custom",
                         }
                     }
                 }
@@ -353,7 +354,7 @@ def test_endpoint_config_rejects_noncanonical_fields(field) -> None:
                 "items": {
                     "local": {
                         "provider_id": "local",
-                        "provider_type": "openai-compatible",
+                        "provider_type": "custom",
                         "protocol": "openai-chat-completions",
                         "default_model": "model",
                     }
@@ -372,7 +373,7 @@ def test_provider_config_rejects_noncanonical_shapes(tmp_path, raw) -> None:
 
 
 def test_provider_config_resolves_endpoint_capabilities(tmp_path) -> None:
-    reasoning = openai_effort_reasoning(
+    reasoning = openai_chat_completions_effort_reasoning(
         supported_efforts=("low", "high"),
         default_effort="high",
     )
@@ -385,7 +386,7 @@ def test_provider_config_resolves_endpoint_capabilities(tmp_path) -> None:
                     "default": "glm",
                     "items": {
                         "glm": {
-                            "provider_type": "openai-compatible",
+                            "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "credential_ref": "env:OURO_TEST_KEY",
                             "provider_options": {"seed": 1, "top_p": 0.8},
@@ -453,11 +454,12 @@ def test_provider_endpoint_writes_reasoning_profile_and_rejects_option_conflicts
     manager = ProviderConfigManager(tmp_path)
     manager.create_provider(
         "glm",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         api_key_env="OURO_TEST_KEY",
     )
 
-    reasoning = openai_effort_reasoning(
+    reasoning = openai_chat_completions_effort_reasoning(
         supported_efforts=("low", "high"),
         default_effort="high",
     )
@@ -493,11 +495,12 @@ def test_provider_and_endpoint_mutations_translate_validation_errors(tmp_path) -
     with pytest.raises(ConfigError, match="timeout_seconds"):
         manager.create_provider(
             "glm",
-            provider_type="openai-compatible",
+            provider_type="custom",
+            protocol="openai-chat-completions",
             timeout_seconds=-1,
         )
 
-    manager.create_provider("glm", provider_type="openai-compatible")
+    manager.create_provider("glm", provider_type="custom", protocol="openai-chat-completions")
     with pytest.raises(ConfigError, match="model_id"):
         manager.upsert_endpoint(
             "glm",
@@ -519,7 +522,9 @@ def test_provider_and_endpoint_mutations_translate_validation_errors(tmp_path) -
 def test_incomplete_provider_does_not_replace_safe_default(tmp_path) -> None:
     manager = ProviderConfigManager(tmp_path)
 
-    provider = manager.create_provider("glm", provider_type="openai-compatible")
+    provider = manager.create_provider(
+        "glm", provider_type="custom", protocol="openai-chat-completions"
+    )
 
     assert provider.default_endpoint is None
     assert manager.snapshot().default_provider_id == "faux"
@@ -559,7 +564,7 @@ def test_raw_provider_timeout_zero_is_rejected_and_enabled_is_typed(tmp_path) ->
                 "providers": {
                     "items": {
                         "glm": {
-                            "provider_type": "openai-compatible",
+                            "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "enabled": "false",
                             "timeout_seconds": 10,
@@ -586,7 +591,8 @@ def test_provider_mutations_keep_default_provider_runnable(tmp_path) -> None:
     manager = ProviderConfigManager(tmp_path)
     manager.create_provider(
         "glm",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://example.test/v1",
     )
     manager.upsert_endpoint("glm", "default", model_id="glm-test", make_default=True)
@@ -680,7 +686,7 @@ def test_provider_level_base_url_and_api_path_inherited_by_endpoint(tmp_path) ->
                     "default": "glm",
                     "items": {
                         "glm": {
-                            "provider_type": "openai-compatible",
+                            "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "credential_ref": "env:OURO_TEST_KEY",
                             "base_url": "https://provider.example.test/v1",
@@ -717,7 +723,7 @@ def test_endpoint_explicit_base_url_and_api_path_override_provider_defaults(
                     "default": "glm",
                     "items": {
                         "glm": {
-                            "provider_type": "openai-compatible",
+                            "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "credential_ref": "env:OURO_TEST_KEY",
                             "base_url": "https://provider.example.test/v1",
@@ -756,7 +762,7 @@ def test_endpoint_api_path_falls_back_to_protocol_default(tmp_path) -> None:
                     "default": "glm",
                     "items": {
                         "glm": {
-                            "provider_type": "openai-compatible",
+                            "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "credential_ref": "env:OURO_TEST_KEY",
                             "base_url": "https://example.test/v1",
@@ -779,7 +785,7 @@ def test_endpoint_api_path_falls_back_to_protocol_default(tmp_path) -> None:
     assert options.api_path == "/chat/completions"
 
 
-def test_openai_compatible_endpoint_requires_base_url_at_provider_or_endpoint(
+def test_openai_chat_completions_endpoint_requires_base_url_at_provider_or_endpoint(
     tmp_path,
 ) -> None:
     config_dir = tmp_path / "config"
@@ -791,7 +797,7 @@ def test_openai_compatible_endpoint_requires_base_url_at_provider_or_endpoint(
                     "default": "glm",
                     "items": {
                         "glm": {
-                            "provider_type": "openai-compatible",
+                            "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "credential_ref": "env:OURO_TEST_KEY",
                             "default_endpoint": "chat",
@@ -817,7 +823,8 @@ def test_create_provider_with_base_url_but_no_model_keeps_empty_endpoints(
 
     provider = manager.create_provider(
         "glm",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://example.test/v1",
         api_path="/responses/chat",
     )
@@ -846,7 +853,8 @@ def test_removing_default_endpoint_clears_provider_default(tmp_path) -> None:
     manager = ProviderConfigManager(tmp_path)
     manager.create_provider(
         "glm",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://chat.example.test/v1",
     )
     manager.upsert_endpoint("glm", "chat", model_id="glm-chat", make_default=True)
@@ -871,7 +879,8 @@ def test_removing_default_endpoint_resets_global_default_when_no_endpoint_left(
     manager = ProviderConfigManager(tmp_path)
     manager.create_provider(
         "glm",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://chat.example.test/v1",
     )
     manager.upsert_endpoint("glm", "chat", model_id="glm-chat", make_default=True)
@@ -892,7 +901,8 @@ def test_provider_retry_policy_round_trips_into_runtime_options(tmp_path) -> Non
     )
     manager.create_provider(
         "glm",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://chat.example.test/v1",
         retry_policy=policy,
     )
@@ -915,7 +925,8 @@ def test_provider_retry_opt_out_survives_round_trip(tmp_path) -> None:
     manager = ProviderConfigManager(tmp_path)
     manager.create_provider(
         "glm",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         base_url="https://chat.example.test/v1",
         retry_policy=ProviderRetryPolicy(max_attempts=1),
     )
@@ -937,7 +948,7 @@ def test_invalid_provider_retry_policy_is_rejected_without_rewriting_config(tmp_
             "items": {
                 "glm": {
                     "provider_id": "glm",
-                    "provider_type": "openai-compatible",
+                    "provider_type": "custom",
                     "protocol": "openai-chat-completions",
                     "base_url": "https://example.test/v1",
                     "retry_policy": {"max_attempts": 0},

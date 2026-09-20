@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 import pytest
 
-from ouro.config import openai_effort_reasoning
+from ouro.config import openai_chat_completions_effort_reasoning
 from ouro.core.messages import (
     ImageContent,
     MessageRecord,
@@ -17,7 +17,7 @@ from ouro.core.messages import (
 )
 from ouro.core.provider import ModelMetadata, ProviderRetryPolicy
 from ouro.core.tools import ToolCallRequest
-from ouro.providers import OpenAICompatibleProvider
+from ouro.providers import OpenAIChatCompletionsProvider
 from ouro.providers import http_transport as provider_http_transport
 from ouro.providers.http_transport import (
     HttpxProviderHTTPTransport,
@@ -25,7 +25,7 @@ from ouro.providers.http_transport import (
 )
 from ouro.providers.reasoning import ReasoningPayloadEncoder
 
-_OPENAI_REASONING = openai_effort_reasoning(output="text", continuation="text")
+_OPENAI_REASONING = openai_chat_completions_effort_reasoning(output="text", continuation="text")
 
 
 class FakeTransport:
@@ -377,7 +377,7 @@ async def test_httpx_transport_post_connection_drop_reports_error_type() -> None
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_streams_text_response() -> None:
+async def test_chat_completions_streams_text_response() -> None:
     transport = FakeTransport(
         {
             "choices": [
@@ -393,7 +393,7 @@ async def test_openai_compatible_provider_streams_text_response() -> None:
             },
         }
     )
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         api_key="secret",
         transport=transport,
@@ -428,9 +428,9 @@ async def test_openai_compatible_provider_streams_text_response() -> None:
 @pytest.mark.asyncio
 async def test_openai_endpoint_options_and_system_prompt_shape_request() -> None:
     transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
-        endpoint="responses/chat",
+        api_path="responses/chat",
         request_options={
             "seed": 7,
             "model": "wrong-model",
@@ -441,14 +441,14 @@ async def test_openai_endpoint_options_and_system_prompt_shape_request() -> None
             "tools": [{"type": "wrong"}],
         },
         reasoning_encoder=ReasoningPayloadEncoder(
-            openai_effort_reasoning(
+            openai_chat_completions_effort_reasoning(
                 supported_efforts=("low", "high"),
                 default_effort="high",
             ).profile
         ),
         transport=transport,
     )
-    reasoning = openai_effort_reasoning(
+    reasoning = openai_chat_completions_effort_reasoning(
         supported_efforts=("low", "high"),
         default_effort="high",
     )
@@ -508,7 +508,7 @@ async def test_openai_endpoint_options_and_system_prompt_shape_request() -> None
 @pytest.mark.asyncio
 async def test_openai_endpoint_capabilities_gate_tools_and_encode_images() -> None:
     transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         transport=transport,
     )
@@ -551,7 +551,7 @@ async def test_openai_endpoint_capabilities_gate_tools_and_encode_images() -> No
 @pytest.mark.asyncio
 async def test_openai_endpoint_rejects_images_when_multimodal_is_disabled() -> None:
     transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         transport=transport,
     )
@@ -599,7 +599,7 @@ async def test_openai_endpoint_rejects_unexpected_tool_calls_when_tools_are_disa
             ]
         }
     )
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         transport=transport,
     )
@@ -622,7 +622,7 @@ async def test_openai_endpoint_rejects_unexpected_tool_calls_when_tools_are_disa
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_streams_text_chunks() -> None:
+async def test_chat_completions_streams_text_chunks() -> None:
     transport = FakeStreamingTransport(
         [
             {"choices": [{"delta": {"content": "hel"}}]},
@@ -630,7 +630,7 @@ async def test_openai_compatible_provider_streams_text_chunks() -> None:
             {"usage": {"prompt_tokens": 3, "completion_tokens": 2}, "choices": []},
         ]
     )
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         api_key="secret",
         transport=transport,
@@ -652,13 +652,13 @@ async def test_openai_compatible_provider_streams_text_chunks() -> None:
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_rejects_text_stream_without_finish_reason() -> None:
+async def test_chat_completions_rejects_text_stream_without_finish_reason() -> None:
     transport = FakeStreamingTransport(
         [
             {"choices": [{"delta": {"content": "truncated"}}]},
         ]
     )
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         transport=transport,
     )
@@ -676,13 +676,13 @@ async def test_openai_compatible_provider_rejects_text_stream_without_finish_rea
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_rejects_reasoning_stream_without_finish_reason() -> None:
+async def test_chat_completions_rejects_reasoning_stream_without_finish_reason() -> None:
     transport = FakeStreamingTransport(
         [
             {"choices": [{"delta": {"reasoning_content": "unfinished reasoning"}}]},
         ]
     )
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         transport=transport,
     )
@@ -704,7 +704,7 @@ async def test_openai_compatible_provider_rejects_reasoning_stream_without_finis
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_maps_tool_calls_and_schemas() -> None:
+async def test_chat_completions_maps_tool_calls_and_schemas() -> None:
     transport = FakeTransport(
         {
             "choices": [
@@ -735,7 +735,9 @@ async def test_openai_compatible_provider_maps_tool_calls_and_schemas() -> None:
             ]
         }
     )
-    provider = OpenAICompatibleProvider(base_url="http://localhost:8000/v1", transport=transport)
+    provider = OpenAIChatCompletionsProvider(
+        base_url="http://localhost:8000/v1", transport=transport
+    )
 
     events = [
         event
@@ -794,7 +796,7 @@ async def test_openai_compatible_provider_maps_tool_calls_and_schemas() -> None:
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_streams_tool_call_chunks() -> None:
+async def test_chat_completions_streams_tool_call_chunks() -> None:
     transport = FakeStreamingTransport(
         [
             {
@@ -839,7 +841,9 @@ async def test_openai_compatible_provider_streams_tool_call_chunks() -> None:
             },
         ]
     )
-    provider = OpenAICompatibleProvider(base_url="http://localhost:8000/v1", transport=transport)
+    provider = OpenAIChatCompletionsProvider(
+        base_url="http://localhost:8000/v1", transport=transport
+    )
 
     events = [
         event
@@ -882,7 +886,7 @@ async def test_openai_compatible_provider_streams_tool_call_chunks() -> None:
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_reports_empty_assistant_message() -> None:
+async def test_chat_completions_reports_empty_assistant_message() -> None:
     transport = FakeTransport(
         {
             "choices": [
@@ -893,7 +897,9 @@ async def test_openai_compatible_provider_reports_empty_assistant_message() -> N
             ]
         }
     )
-    provider = OpenAICompatibleProvider(base_url="https://example.test/v1", transport=transport)
+    provider = OpenAIChatCompletionsProvider(
+        base_url="https://example.test/v1", transport=transport
+    )
 
     events = [
         event
@@ -910,7 +916,7 @@ async def test_openai_compatible_provider_reports_empty_assistant_message() -> N
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_reports_error_response_body() -> None:
+async def test_chat_completions_reports_error_response_body() -> None:
     transport = FakeTransport(
         {
             "error": {
@@ -919,7 +925,9 @@ async def test_openai_compatible_provider_reports_error_response_body() -> None:
             }
         }
     )
-    provider = OpenAICompatibleProvider(base_url="https://example.test/v1", transport=transport)
+    provider = OpenAIChatCompletionsProvider(
+        base_url="https://example.test/v1", transport=transport
+    )
 
     events = [
         event
@@ -936,9 +944,11 @@ async def test_openai_compatible_provider_reports_error_response_body() -> None:
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_sends_assistant_tool_call_history() -> None:
+async def test_chat_completions_sends_assistant_tool_call_history() -> None:
     transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "done"}}]})
-    provider = OpenAICompatibleProvider(base_url="http://localhost:8000/v1", transport=transport)
+    provider = OpenAIChatCompletionsProvider(
+        base_url="http://localhost:8000/v1", transport=transport
+    )
     assistant = MessageRecord.text(session_id="ses_1", role="assistant", text="").model_copy(
         update={
             "tool_calls": [
@@ -992,9 +1002,9 @@ async def test_openai_compatible_provider_sends_assistant_tool_call_history() ->
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_connection_check_reports_status() -> None:
+async def test_chat_completions_connection_check_reports_status() -> None:
     success_transport = FakeTransport({"choices": [{"message": {"content": "ok"}}]})
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         provider_id="glm",
         transport=success_transport,
@@ -1007,7 +1017,7 @@ async def test_openai_compatible_provider_connection_check_reports_status() -> N
     assert success.model_id == "glm-test"
 
     failed_transport = FakeTransport(RuntimeError("network down"))
-    failed_provider = OpenAICompatibleProvider(
+    failed_provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         provider_id="glm",
         transport=failed_transport,
@@ -1030,7 +1040,7 @@ async def test_openai_compatible_provider_connection_check_reports_status() -> N
             ]
         }
     )
-    empty_provider = OpenAICompatibleProvider(
+    empty_provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         provider_id="glm",
         transport=empty_transport,
@@ -1045,7 +1055,7 @@ async def test_openai_compatible_provider_connection_check_reports_status() -> N
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_emits_reasoning_delta_from_response() -> None:
+async def test_chat_completions_emits_reasoning_delta_from_response() -> None:
     transport = FakeTransport(
         {
             "choices": [
@@ -1060,7 +1070,7 @@ async def test_openai_compatible_provider_emits_reasoning_delta_from_response() 
             "usage": {"prompt_tokens": 5, "completion_tokens": 4},
         }
     )
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         api_key="secret",
         transport=transport,
@@ -1088,7 +1098,7 @@ async def test_openai_compatible_provider_emits_reasoning_delta_from_response() 
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_emits_reasoning_delta_from_stream_chunks() -> None:
+async def test_chat_completions_emits_reasoning_delta_from_stream_chunks() -> None:
     transport = FakeStreamingTransport(
         [
             {"choices": [{"delta": {"reasoning_content": "Thinking"}}]},
@@ -1097,7 +1107,7 @@ async def test_openai_compatible_provider_emits_reasoning_delta_from_stream_chun
             {"usage": {"prompt_tokens": 3, "completion_tokens": 3}, "choices": []},
         ]
     )
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         api_key="secret",
         transport=transport,
@@ -1128,7 +1138,7 @@ async def test_openai_compatible_provider_emits_reasoning_delta_from_stream_chun
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_reasoning_only_response_is_not_empty() -> None:
+async def test_chat_completions_reasoning_only_response_is_not_empty() -> None:
     transport = FakeTransport(
         {
             "choices": [
@@ -1143,7 +1153,7 @@ async def test_openai_compatible_provider_reasoning_only_response_is_not_empty()
             "usage": {"prompt_tokens": 3, "completion_tokens": 5},
         }
     )
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         api_key="secret",
         transport=transport,
@@ -1169,7 +1179,7 @@ async def test_openai_compatible_provider_reasoning_only_response_is_not_empty()
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_preserves_reasoning_only_for_tool_continuation() -> None:
+async def test_openai_chat_completions_preserves_reasoning_only_for_tool_continuation() -> None:
     transport = FakeTransport(
         {
             "choices": [
@@ -1193,7 +1203,7 @@ async def test_openai_compatible_preserves_reasoning_only_for_tool_continuation(
             ]
         }
     )
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         transport=transport,
     )
@@ -1221,7 +1231,7 @@ async def test_openai_compatible_preserves_reasoning_only_for_tool_continuation(
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_emits_reasoning_delta_from_bare_reasoning_field() -> None:
+async def test_chat_completions_emits_reasoning_delta_from_bare_reasoning_field() -> None:
     transport = FakeTransport(
         {
             "choices": [
@@ -1236,7 +1246,7 @@ async def test_openai_compatible_provider_emits_reasoning_delta_from_bare_reason
             "usage": {"prompt_tokens": 5, "completion_tokens": 4},
         }
     )
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         api_key="secret",
         transport=transport,
@@ -1264,7 +1274,7 @@ async def test_openai_compatible_provider_emits_reasoning_delta_from_bare_reason
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_extracts_bare_reasoning_block_array() -> None:
+async def test_chat_completions_extracts_bare_reasoning_block_array() -> None:
     transport = FakeTransport(
         {
             "choices": [
@@ -1278,7 +1288,7 @@ async def test_openai_compatible_provider_extracts_bare_reasoning_block_array() 
             ]
         }
     )
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         transport=transport,
     )
@@ -1300,7 +1310,7 @@ async def test_openai_compatible_provider_extracts_bare_reasoning_block_array() 
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_prefers_reasoning_content_over_bare_reasoning() -> None:
+async def test_chat_completions_prefers_reasoning_content_over_bare_reasoning() -> None:
     transport = FakeTransport(
         {
             "choices": [
@@ -1315,7 +1325,7 @@ async def test_openai_compatible_provider_prefers_reasoning_content_over_bare_re
             ]
         }
     )
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         transport=transport,
     )
@@ -1337,7 +1347,7 @@ async def test_openai_compatible_provider_prefers_reasoning_content_over_bare_re
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_emits_bare_reasoning_stream_delta() -> None:
+async def test_chat_completions_emits_bare_reasoning_stream_delta() -> None:
     transport = FakeStreamingTransport(
         [
             {"choices": [{"delta": {"reasoning": "Thinking"}}]},
@@ -1345,7 +1355,7 @@ async def test_openai_compatible_provider_emits_bare_reasoning_stream_delta() ->
             {"choices": [{"delta": {"content": "Done"}, "finish_reason": "stop"}]},
         ]
     )
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         api_key="secret",
         transport=transport,
@@ -1374,7 +1384,7 @@ async def test_openai_compatible_provider_emits_bare_reasoning_stream_delta() ->
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_canonicalizes_bare_reasoning_for_tool_continuation() -> None:
+async def test_openai_chat_completions_canonicalizes_bare_reasoning_for_tool_continuation() -> None:
     transport = FakeStreamingTransport(
         [
             {"choices": [{"delta": {"reasoning": "I should inspect the file."}}]},
@@ -1397,7 +1407,7 @@ async def test_openai_compatible_canonicalizes_bare_reasoning_for_tool_continuat
             },
         ]
     )
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         transport=transport,
     )
@@ -1425,9 +1435,9 @@ async def test_openai_compatible_canonicalizes_bare_reasoning_for_tool_continuat
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_sends_reasoning_content_in_history() -> None:
+async def test_chat_completions_sends_reasoning_content_in_history() -> None:
     transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         api_key="secret",
         transport=transport,
@@ -1443,7 +1453,7 @@ async def test_openai_compatible_provider_sends_reasoning_content_in_history() -
             ],
             "reasoning_content": "I need to read the file.",
             "provider_continuation": ProviderContinuationArtifact(
-                provider_id="openai-compatible",
+                provider_id="openai-chat-completions",
                 protocol="openai-chat-completions",
                 model_id="glm-test",
                 blocks=({"reasoning_content": "I need to read the file."},),
@@ -1480,9 +1490,9 @@ async def test_openai_compatible_provider_sends_reasoning_content_in_history() -
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_does_not_replay_cross_route_continuation() -> None:
+async def test_chat_completions_does_not_replay_cross_route_continuation() -> None:
     transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         transport=transport,
     )
@@ -1492,7 +1502,7 @@ async def test_openai_compatible_provider_does_not_replay_cross_route_continuati
         update={
             "reasoning_content": "private prior reasoning",
             "provider_continuation": ProviderContinuationArtifact(
-                provider_id="openai-compatible",
+                provider_id="openai-chat-completions",
                 protocol="openai-chat-completions",
                 model_id="different-model",
                 blocks=({"reasoning_content": "private prior reasoning"},),
@@ -1517,9 +1527,9 @@ async def test_openai_compatible_provider_does_not_replay_cross_route_continuati
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_omits_empty_reasoning_content_for_tool_calls() -> None:
+async def test_chat_completions_omits_empty_reasoning_content_for_tool_calls() -> None:
     transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         api_key="secret",
         transport=transport,
@@ -1563,7 +1573,7 @@ async def test_provider_retries_transient_failure_before_any_response_event() ->
             },
         ]
     )
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         transport=transport,
         retry_policy=ProviderRetryPolicy(
@@ -1594,7 +1604,7 @@ async def test_provider_retries_transient_failure_before_any_response_event() ->
 @pytest.mark.asyncio
 async def test_provider_does_not_retry_after_partial_stream_output() -> None:
     transport = PartialFailureStreamingTransport([])
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         transport=transport,
         retry_policy=ProviderRetryPolicy(
@@ -1620,7 +1630,7 @@ async def test_provider_does_not_retry_after_partial_stream_output() -> None:
 async def test_structured_output_request_is_gated_by_endpoint_capability() -> None:
     response = {"choices": [{"message": {"role": "assistant", "content": '{"ok":true}'}}]}
     transport = FakeTransport(response)
-    provider = OpenAICompatibleProvider(
+    provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         transport=transport,
         request_options={"response_format": {"type": "json_object"}},

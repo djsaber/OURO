@@ -30,7 +30,7 @@ from ouro.providers.factory import build_runtime_adapter
 def fixture_product(monkeypatch):
     """Only test declarations admit managed pairs; production remains static."""
     spec = ProviderTypeSpec(
-        "openai-compatible",
+        "custom",
         ProviderConnectionSpec("openai-chat-completions"),
         (
             ProviderConnectionSpec("openai-chat-completions", "browser-fixture", "service-one"),
@@ -45,7 +45,8 @@ def managed_provider(tmp_path):
     manager = ProviderConfigManager(tmp_path)
     provider = manager.create_provider(
         "subscription",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         auth_driver="browser-fixture",
         base_url="https://fixture.test/v1",
     )
@@ -83,10 +84,8 @@ def test_managed_reference_rejects_secret_or_unknown_fields_without_echo(extra):
 
 
 def test_product_pairs_do_not_admit_their_cartesian_product(fixture_product):
-    first = resolve_provider_connection("openai-compatible", None, "browser-fixture")
-    second = resolve_provider_connection(
-        "openai-compatible", "anthropic-messages", "device-fixture"
-    )
+    first = resolve_provider_connection("custom", None, "browser-fixture")
+    second = resolve_provider_connection("custom", "anthropic-messages", "device-fixture")
     assert first.service_policy == "service-one"
     assert second.service_policy == "service-two"
     for protocol, driver in [
@@ -95,36 +94,39 @@ def test_product_pairs_do_not_admit_their_cartesian_product(fixture_product):
         ("anthropic-messages", "static"),
     ]:
         with pytest.raises(ValueError, match="combination"):
-            resolve_provider_connection("openai-compatible", protocol, driver)
+            resolve_provider_connection("custom", protocol, driver)
 
 
 def test_production_profiles_do_not_claim_managed_support():
     for provider_type in provider_models.SUPPORTED_PROVIDER_TYPES:
-        with pytest.raises(ValueError, match="combination"):
-            resolve_provider_connection(provider_type, auth_driver="browser-fixture")
+        for connection in provider_models.provider_type_spec(provider_type).connections:
+            with pytest.raises(ValueError, match="combination"):
+                resolve_provider_connection(
+                    provider_type, connection.protocol, auth_driver="browser-fixture"
+                )
 
 
 def test_product_declaration_rejects_ambiguous_pairs_and_missing_service_rules():
+    with pytest.raises(ValueError, match="at least one connection"):
+        ProviderTypeSpec("custom", None)
     connection = ProviderConnectionSpec("openai-chat-completions")
     with pytest.raises(ValueError, match="unique"):
-        ProviderTypeSpec("openai-compatible", connection, (connection,))
+        ProviderTypeSpec("custom", connection, (connection,))
     with pytest.raises(ValueError, match="service policy"):
-        ProviderTypeSpec(
-            "openai-compatible", ProviderConnectionSpec("openai-chat-completions", "fixture")
-        )
+        ProviderTypeSpec("custom", ProviderConnectionSpec("openai-chat-completions", "fixture"))
 
 
 def test_product_default_selects_protocol_and_auth_together(tmp_path, monkeypatch):
     monkeypatch.setitem(
         provider_models._PROVIDER_TYPE_SPECS,
-        "openai-compatible",
+        "custom",
         ProviderTypeSpec(
-            "openai-compatible",
+            "custom",
             ProviderConnectionSpec("anthropic-messages", "device-fixture", "service-two"),
         ),
     )
     provider = ProviderConfigManager(tmp_path).create_provider(
-        "subscription", provider_type="openai-compatible"
+        "subscription", provider_type="custom"
     )
     assert provider.protocol == "anthropic-messages"
     assert provider.auth_driver == "device-fixture"
@@ -160,7 +162,10 @@ def test_update_preserves_binding_replace_generates_new_identity(tmp_path, fixtu
     assert updated.auth_driver == original.auth_driver
     assert updated.credential_ref == original.credential_ref
     replacement = manager.replace_provider(
-        "subscription", provider_type="openai-compatible", auth_driver="browser-fixture"
+        "subscription",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        auth_driver="browser-fixture",
     )
     assert replacement.credential_ref != original.credential_ref
     assert replacement.endpoints == ()
@@ -178,7 +183,11 @@ def test_managed_mutations_reject_api_key_without_writing(tmp_path, fixture_prod
         kwargs = overrides.copy()
         target = "subscription"
         if operation != manager.update_provider:
-            kwargs.update(provider_type="openai-compatible", auth_driver="browser-fixture")
+            kwargs.update(
+                provider_type="custom",
+                protocol="openai-chat-completions",
+                auth_driver="browser-fixture",
+            )
         if operation == manager.create_provider:
             target = "another"
         with pytest.raises(ConfigError, match="API Key") as failure:
@@ -208,7 +217,10 @@ def test_runtime_cannot_replace_managed_authentication(tmp_path, fixture_product
 def test_static_defaults_and_api_key_overrides_are_preserved(tmp_path):
     manager = ProviderConfigManager(tmp_path)
     manager.create_provider(
-        "api", provider_type="openai-compatible", base_url="https://fixture.test"
+        "api",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        base_url="https://fixture.test",
     )
     manager.upsert_endpoint("api", "chat", model_id="fixture", make_default=True)
     options = manager.resolve_runtime_options(
@@ -233,7 +245,7 @@ def test_config_codec_rejects_mismatched_driver_and_reference(fixture_product, d
         provider_config_from_mapping(
             "fixture",
             {
-                "provider_type": "openai-compatible",
+                "provider_type": "custom",
                 "protocol": "openai-chat-completions",
                 "auth_driver": driver,
                 "credential_ref": ref,
@@ -247,7 +259,7 @@ def test_service_policy_cannot_be_user_configured(fixture_product):
         provider_config_from_mapping(
             "fixture",
             {
-                "provider_type": "openai-compatible",
+                "provider_type": "custom",
                 "protocol": "openai-chat-completions",
                 "service_policy": "untrusted-policy",
             },
@@ -315,14 +327,20 @@ def test_facade_creates_and_replaces_managed_config_without_resolving_credential
 ):
     facade = ConfigurationFacade(tmp_path)
     first = facade.add_provider(
-        "subscription", provider_type="openai-compatible", auth_driver="browser-fixture"
+        "subscription",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        auth_driver="browser-fixture",
     )
     assert first.providers[0].auth_driver == "browser-fixture"
     previous = facade.provider("subscription").credential.reference
     facade.update_provider_settings("subscription", timeout=42)
     assert facade.provider("subscription").credential.reference == previous
     facade.replace_provider(
-        "subscription", provider_type="openai-compatible", auth_driver="browser-fixture"
+        "subscription",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        auth_driver="browser-fixture",
     )
     assert facade.provider("subscription").credential.reference != previous
 
@@ -331,7 +349,7 @@ def subscription_template(**overrides) -> ProviderTemplate:
     return ProviderTemplate.model_validate(
         {
             **get_provider_template("openai").model_dump(),
-            "provider_type": "openai-compatible",
+            "provider_type": "custom",
             "auth_driver": "browser-fixture",
             "protocol": "openai-chat-completions",
             "api_path": "/chat/completions",

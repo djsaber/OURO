@@ -1,6 +1,6 @@
 from typing import Literal
 
-ResponsesErrorCode = Literal[
+OpenAIResponsesErrorCode = Literal[
     "invalid_output_item",
     "conflicting_output_item",
     "unfinished_output_item",
@@ -26,10 +26,10 @@ ResponsesErrorCode = Literal[
 ]
 
 
-class ResponsesError(ValueError):
+class OpenAIResponsesError(ValueError):
     """Fixed protocol facts; raw payloads, arguments and ciphertext never enter diagnostics."""
 
-    def __init__(self, code: ResponsesErrorCode) -> None:
+    def __init__(self, code: OpenAIResponsesErrorCode) -> None:
         self.code = code
         message = "Responses protocol error: " + code
         if code in {"continuation_scope_mismatch", "continuation_route_mismatch"}:

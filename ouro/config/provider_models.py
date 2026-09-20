@@ -27,8 +27,7 @@ ProviderType = Literal[
     "grok",
     "openrouter",
     "mistral",
-    "openai-compatible",
-    "anthropic-compatible",
+    "custom",
 ]
 ProviderProtocol = Literal[
     "faux",
@@ -53,8 +52,7 @@ INTEGRATED_PROVIDER_TYPES: tuple[ProviderType, ...] = (
 )
 CONFIGURABLE_PROVIDER_TYPES: tuple[ProviderType, ...] = (
     *INTEGRATED_PROVIDER_TYPES,
-    "openai-compatible",
-    "anthropic-compatible",
+    "custom",
 )
 SUPPORTED_PROVIDER_TYPES: tuple[ProviderType, ...] = (
     "faux",
@@ -81,19 +79,27 @@ class ProviderConnectionSpec:
 
 @dataclass(frozen=True)
 class ProviderTypeSpec:
-    """The default connection is supported, along with explicit alternatives."""
+    """Supported connections, optionally with a product-specific default."""
 
     provider_type: ProviderType
-    default_connection: ProviderConnectionSpec
+    default_connection: ProviderConnectionSpec | None
     alternative_connections: tuple[ProviderConnectionSpec, ...] = ()
 
     def __post_init__(self) -> None:
-        connections = (self.default_connection, *self.alternative_connections)
+        connections = self.connections
+        if not connections:
+            raise ValueError("provider types require at least one connection")
         pairs = [(item.protocol, item.auth_driver) for item in connections]
         if len(set(pairs)) != len(pairs):
             raise ValueError("provider connection pairs must be unique")
         if any(item.auth_driver != "static" and not item.service_policy for item in connections):
             raise ValueError("managed provider connections require a service policy")
+
+    @property
+    def connections(self) -> tuple[ProviderConnectionSpec, ...]:
+        if self.default_connection is None:
+            return self.alternative_connections
+        return (self.default_connection, *self.alternative_connections)
 
 
 @dataclass(frozen=True)
@@ -106,8 +112,8 @@ class ProviderProtocolSpec:
     reasoning_continuations: tuple[ReasoningContinuation, ...]
 
 
-_OPENAI_STATIC = ProviderConnectionSpec("openai-chat-completions")
-_ANTHROPIC_STATIC = ProviderConnectionSpec("anthropic-messages")
+_OPENAI_CHAT_COMPLETIONS_STATIC = ProviderConnectionSpec("openai-chat-completions")
+_ANTHROPIC_MESSAGES_STATIC = ProviderConnectionSpec("anthropic-messages")
 
 _PROVIDER_TYPE_SPECS: dict[ProviderType, ProviderTypeSpec] = {
     "faux": ProviderTypeSpec("faux", ProviderConnectionSpec("faux")),
@@ -121,7 +127,7 @@ _PROVIDER_TYPE_SPECS: dict[ProviderType, ProviderTypeSpec] = {
                 "client; start a new conversation."
             ),
         ),
-        alternative_connections=(_OPENAI_STATIC,),
+        alternative_connections=(_OPENAI_CHAT_COMPLETIONS_STATIC,),
     ),
     "openai-codex": ProviderTypeSpec(
         "openai-codex",
@@ -136,21 +142,24 @@ _PROVIDER_TYPE_SPECS: dict[ProviderType, ProviderTypeSpec] = {
             ),
         ),
     ),
-    "anthropic": ProviderTypeSpec("anthropic", _ANTHROPIC_STATIC),
-    "gemini": ProviderTypeSpec("gemini", _OPENAI_STATIC),
-    "deepseek": ProviderTypeSpec("deepseek", _OPENAI_STATIC),
-    "qwen": ProviderTypeSpec("qwen", _OPENAI_STATIC),
-    "kimi": ProviderTypeSpec("kimi", _OPENAI_STATIC),
-    "glm": ProviderTypeSpec("glm", _OPENAI_STATIC),
-    "grok": ProviderTypeSpec("grok", _OPENAI_STATIC),
-    "openrouter": ProviderTypeSpec("openrouter", _OPENAI_STATIC),
-    "mistral": ProviderTypeSpec("mistral", _OPENAI_STATIC),
-    "openai-compatible": ProviderTypeSpec(
-        "openai-compatible",
-        _OPENAI_STATIC,
-        alternative_connections=(ProviderConnectionSpec("openai-responses"),),
+    "anthropic": ProviderTypeSpec("anthropic", _ANTHROPIC_MESSAGES_STATIC),
+    "gemini": ProviderTypeSpec("gemini", _OPENAI_CHAT_COMPLETIONS_STATIC),
+    "deepseek": ProviderTypeSpec("deepseek", _OPENAI_CHAT_COMPLETIONS_STATIC),
+    "qwen": ProviderTypeSpec("qwen", _OPENAI_CHAT_COMPLETIONS_STATIC),
+    "kimi": ProviderTypeSpec("kimi", _OPENAI_CHAT_COMPLETIONS_STATIC),
+    "glm": ProviderTypeSpec("glm", _OPENAI_CHAT_COMPLETIONS_STATIC),
+    "grok": ProviderTypeSpec("grok", _OPENAI_CHAT_COMPLETIONS_STATIC),
+    "openrouter": ProviderTypeSpec("openrouter", _OPENAI_CHAT_COMPLETIONS_STATIC),
+    "mistral": ProviderTypeSpec("mistral", _OPENAI_CHAT_COMPLETIONS_STATIC),
+    "custom": ProviderTypeSpec(
+        "custom",
+        None,
+        alternative_connections=(
+            _OPENAI_CHAT_COMPLETIONS_STATIC,
+            ProviderConnectionSpec("openai-responses"),
+            _ANTHROPIC_MESSAGES_STATIC,
+        ),
     ),
-    "anthropic-compatible": ProviderTypeSpec("anthropic-compatible", _ANTHROPIC_STATIC),
 }
 
 _PROVIDER_PROTOCOL_SPECS: dict[ProviderProtocol, ProviderProtocolSpec] = {
@@ -241,12 +250,16 @@ def resolve_provider_connection(
 ) -> ProviderConnectionSpec:
     """Resolve defaults, then validate the pair without a Cartesian product."""
     spec = provider_type_spec(provider_type)
-    selected_protocol = protocol if protocol is not None else spec.default_connection.protocol
+    default = spec.default_connection
+    if protocol is None:
+        if default is None:
+            raise ValueError(f"protocol is required for provider type {provider_type!r}")
+        protocol = default.protocol
     selected_driver = (
-        auth_driver if auth_driver is not None else spec.default_connection.auth_driver
+        auth_driver if auth_driver is not None else (default.auth_driver if default else "static")
     )
-    for connection in (spec.default_connection, *spec.alternative_connections):
-        if (connection.protocol, connection.auth_driver) == (selected_protocol, selected_driver):
+    for connection in spec.connections:
+        if (connection.protocol, connection.auth_driver) == (protocol, selected_driver):
             return connection
     raise ValueError(
         f"protocol/auth_driver combination is not supported by provider type {provider_type!r}"

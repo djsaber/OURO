@@ -11,7 +11,7 @@ Provider 配置分别表达用户实例、产品配置、线协议和认证选�
 | 字段 | 语义 | 示例 |
 |---|---|---|
 | `provider_id` | 用户拥有的配置实例 id，也是模型路由第一段 | `work-kimi` |
-| `provider_type` | 产品层供应商档案或通用配置入口 | `kimi`、`openai-compatible` |
+| `provider_type` | 产品层供应商档案或通用配置入口 | `kimi`、`custom` |
 | `protocol` | adapter 使用的已注册线协议 | `openai-chat-completions`、`openai-responses`、`anthropic-messages` |
 | `auth_driver` | 认证方式的稳定标识；省略为 static | `static` |
 
@@ -22,7 +22,7 @@ Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它�
 ## 产品类型与协议
 
 集成厂商类型包括 `openai`、`openai-codex`、`anthropic`、`gemini`、`deepseek`、`qwen`、`kimi`、`glm`、`grok`、
-`openrouter` 和 `mistral`。它们提供已核验的模板。`ProviderTypeSpec` 保存一个默认连接组合和明确的备选组合；
+`openrouter` 和 `mistral`。它们提供已核验的模板。`ProviderTypeSpec` 保存可选默认连接组合和明确的备选组合；
 每个 `ProviderConnectionSpec` 包含 protocol、auth_driver 及可选服务规则引用，managed 组合必须声明服务规则引用。
 连接声明可携带只读 notice，由 Application 投影到 Provider/Template DTO 并交给 CLI/TUI 展示；不写入用户配置，也不由 Host 判断厂商。
 `openai` 默认使用 Responses + static，保留 Chat Completions + static 备选组合，已有配置不自动改协议。
@@ -30,15 +30,15 @@ Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它�
 与 GPT-6 Astra，默认 Sol；模型等级与各自后端能力按官方文档分别声明，详见
 [预制配置说明](../../docs/OURO_OpenAI预制配置说明_ZH_2026-09-19.md)。订阅上下文和 max_output_tokens 为本地预算，
 服务限制通过连接 notice 和模板描述披露；图像能力仍受 Responses adapter 当前实现约束。
-默认组合自然属于允许集合；组合不能重复，也不能将两组独立允许列表作笛卡尔积。创建时省略的协议/认证选择取各自
-默认值，再验证完整组合。持久化读取中省略 auth_driver 固定表示 static，不根据产品猜测其他认证。
+默认组合自然属于允许集合；组合不能重复，也不能将两组独立允许列表作笛卡尔积。有默认连接的产品在创建时，
+省略的协议/认证选择取各自默认值，再验证完整组合。持久化读取中省略 auth_driver 固定表示 static，不根据产品猜测其他认证。
 
-通用配置入口包括：
+通用配置入口为 `custom`，没有默认协议，创建时必须显式选择 `openai-chat-completions`、
+`openai-responses` 或 `anthropic-messages`。三个组合都使用 static 认证；选择 Responses 不授予订阅认证能力。
+`ProviderTypeSpec.default_connection` 可为空，`connections` 提供完整允许集合；没有默认连接时，
+省略协议会明确失败，省略认证仍使用 static。
 
-- `openai-compatible`：默认使用 `openai-chat-completions`，可显式选择 `openai-responses`；两者均为 static 组合；
-- `anthropic-compatible`：固定使用 `anthropic-messages`。
-
-两种 compatible 类型都允许用户为自定义 Endpoint 声明思考配置。协议档案同时限制 adapter 能忠实保存的
+`custom` 类型允许用户为自定义 Endpoint 声明思考配置。协议档案同时限制 adapter 能忠实保存的
 continuation：OpenAI Chat Completions 支持 `none/text`，Responses 与 Anthropic Messages 支持 `none/opaque`。不兼容的
 声明在配置或 adapter 构造时失败，不能接受后再丢弃。
 
@@ -71,23 +71,39 @@ continuation：OpenAI Chat Completions 支持 `none/text`，Responses 与 Anthro
 厂商模板不会产生一厂商一个 adapter。Gemini、DeepSeek、Qwen、KIMI、GLM、Grok、OpenRouter 和 Mistral 当前都
 复用 OpenAI Chat Completions adapter；Anthropic 使用 Messages adapter。
 
+## 命名约定
+
+协议标识使用 API 的完整名称，Python 模块使用对应的 snake_case，公开实现类保留 Provider 后缀：
+
+| 协议标识 | 实现模块 | 实现类 |
+|---|---|---|
+| `openai-chat-completions` | `openai_chat_completions.py` | `OpenAIChatCompletionsProvider` |
+| `openai-responses` | `openai_responses.py` | `OpenAIResponsesProvider` |
+| `anthropic-messages` | `anthropic_messages.py` | `AnthropicMessagesProvider` |
+
+编解码器及流式处理模块沿用协议前缀，例如 `openai_chat_completions_codec.py`、`openai_responses_stream.py`。
+跨模块的协议专用 reasoning 构造函数和预设同样明确 API 名称；模块内的局部变量可使用 message、usage 等简洁名称。
+HTTP 路径统一称为 `api_path`，Endpoint 表示模型路由。`provider_id` 始终表示实例身份，不随类型或协议名称推断、重写。
+协议无关的 `ProviderCompletion` 表示调用结束原因，与 Chat Completions API 无关。
+
 ## 创建、更新与替换
 
-CLI 的 `provider add/replace --protocol` 将显式协议传递到共享 Application 配置用例；省略时 compatible 类型
-采用默认连接，集成类型使用模板协议。显式协议与模板不一致时拒绝写盘，用户应使用 compatible 类型配置自定义连接。
-TUI 的 Provider 设置复用 `EditableChoiceScreen` 和 `ChoiceScreen`，从类型连接档案中筛选当前认证驱动支持的协议。
+CLI 的 `provider add/replace --protocol` 将显式协议传递到共享 Application 配置用例；custom 类型必须显式指定协议，
+集成类型省略时使用模板协议。显式协议与模板不一致时拒绝写盘，用户应使用 `custom` 类型配置自定义连接。
+TUI 的 Add provider 菜单在 Custom connection 分组直接提供三个协议入口，各自预选协议与默认 API 路径。
+Provider 设置复用 `EditableChoiceScreen` 和 `ChoiceScreen`，从类型连接档案中筛选当前认证驱动支持的协议。
 新建自定义供应商可选择协议；仅有一种协议、模板供应商及已有供应商显示只读协议。切换协议时，仍为旧协议默认值的
 API 路径跟随新协议默认值，用户自定义路径保持不变。协议选择经 `TuiProviderConfiguration` 传入 Application，
 不增加 Responses 专属供应商类型，也不在界面层复制连接组合校验。
 
 Provider mutation 使用三个明确操作：
 
-- `provider add`：唯一创建入口；根据 type 为集成厂商原子装载模板，或为 compatible 类型创建空 Provider；
+- `provider add`：唯一创建入口；根据 type 为集成厂商原子装载模板，或为 `custom` 类型创建空 Provider；
   `provider_id` 已存在时失败并提示 update/replace，不写入任何字段；
 - `provider update`：只更新现有 Provider；模板来源类型使用持久化旧模板基线做三方合并，只更新未被用户
-  修改的模板值，保留未知、修改或主动删除的 Endpoint，并报告同 id 冲突；compatible 类型只修改连接、凭据、
+  修改的模板值，保留未知、修改或主动删除的 Endpoint，并报告同 id 冲突；`custom` 类型只修改连接、凭据、
   timeout、retry 和 enabled；
-- `provider replace`：只替换现有 Provider；内置类型装载新类型模板，compatible 类型清空原 Endpoint、凭据和
+- `provider replace`：只替换现有 Provider；内置类型装载新类型模板，`custom` 类型清空原 Endpoint、凭据和
   扩展设置。
 
 模板更新优先根据持久化模板绑定定位同来源模板；旧配置首次更新才根据现有 `provider_type` 安全接管。持久化的

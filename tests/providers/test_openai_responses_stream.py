@@ -9,8 +9,8 @@ import httpx
 import pytest
 
 from ouro.providers.http_transport import HttpxProviderHTTPTransport
-from ouro.providers.responses_errors import ResponsesError
-from ouro.providers.responses_stream import ResponsesStreamDecoder, responses_events
+from ouro.providers.openai_responses_errors import OpenAIResponsesError
+from ouro.providers.openai_responses_stream import OpenAIResponsesStreamDecoder, responses_events
 from tests.providers.responses_fixtures import (
     SCOPE,
     call,
@@ -23,7 +23,7 @@ from tests.providers.responses_fixtures import (
 
 
 def decoder():
-    return ResponsesStreamDecoder(provider_id="provider", model_id="model", scope=SCOPE)
+    return OpenAIResponsesStreamDecoder(provider_id="provider", model_id="model", scope=SCOPE)
 
 
 def decode(events):
@@ -111,12 +111,12 @@ def test_final_reasoning_content_is_displayed_without_stream_deltas(summary):
     ],
 )
 def test_malformed_reasoning_content_cannot_publish_success(content):
-    with pytest.raises(ResponsesError):
+    with pytest.raises(OpenAIResponsesError):
         decode([terminal([reasoning(content=content)])])
 
 
 def test_reasoning_text_conflicts_are_rejected():
-    with pytest.raises(ResponsesError, match="conflicting_delta"):
+    with pytest.raises(OpenAIResponsesError, match="conflicting_delta"):
         decode(
             [
                 delta("response.reasoning_text.delta", 0, "rs", "first", content_index=0),
@@ -199,7 +199,7 @@ def test_completed_snapshots_fill_nested_metadata_without_duplicating_text(rich_
     ],
 )
 def test_completed_snapshot_differences_cannot_change_content_or_identity(changed):
-    with pytest.raises(ResponsesError, match="conflicting_output_item"):
+    with pytest.raises(OpenAIResponsesError, match="conflicting_output_item"):
         decode([item_event(0, message()), terminal([changed])])
 
 
@@ -278,7 +278,7 @@ def test_empty_reasoning_only_and_refusal_responses_have_explicit_success(output
 def test_malformed_or_unsuccessful_streams_cannot_publish_done_or_continuation(events, code):
     parser = decoder()
     seen = []
-    with pytest.raises(ResponsesError) as failure:
+    with pytest.raises(OpenAIResponsesError) as failure:
         for event in events:
             seen.extend(parser.feed(event))
         seen.extend(parser.finish())
@@ -291,7 +291,7 @@ def test_incomplete_response_after_tool_fragments_does_not_complete_the_call():
     parser = decoder()
     fragments = parser.feed(item_event(0, {**call(), "status": "in_progress"}, complete=False))
     assert fragments and fragments[0].type == "tool_call_delta"
-    with pytest.raises(ResponsesError, match="response_incomplete"):
+    with pytest.raises(OpenAIResponsesError, match="response_incomplete"):
         parser.feed({"type": "response.incomplete"})
 
 
@@ -331,7 +331,7 @@ def test_extensions_at_any_stream_position_do_not_change_completion(extension):
     for event in events:
         interleaved.extend([event, extension])
     assert decode(interleaved) == decode(events)
-    with pytest.raises(ResponsesError, match="missing_terminal"):
+    with pytest.raises(OpenAIResponsesError, match="missing_terminal"):
         decode([extension, item_event(0, message()), extension])
 
 
@@ -364,7 +364,7 @@ def test_extensions_after_terminal_do_not_hide_late_output_or_lifecycle_events(k
     assert parser.feed(terminal([message()])) == []
     assert parser.feed({"type": "vendor.metadata"}) == []
     code = "duplicate_terminal" if kind == "response.completed" else "output_after_terminal"
-    with pytest.raises(ResponsesError, match=code):
+    with pytest.raises(OpenAIResponsesError, match=code):
         parser.feed({"type": kind})
 
 
@@ -372,7 +372,7 @@ def test_extensions_after_terminal_do_not_hide_late_output_or_lifecycle_events(k
 def test_extensions_still_require_an_event_type_after_terminal(invalid):
     parser = decoder()
     parser.feed(terminal([]))
-    with pytest.raises(ResponsesError, match="invalid_event"):
+    with pytest.raises(OpenAIResponsesError, match="invalid_event"):
         parser.feed(invalid)
 
 

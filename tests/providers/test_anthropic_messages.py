@@ -17,7 +17,7 @@ from ouro.core.messages import (
 from ouro.core.provider import ModelMetadata
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.tools import ToolCallRequest
-from ouro.providers import AnthropicCompatibleProvider
+from ouro.providers import AnthropicMessagesProvider
 from ouro.providers.reasoning import ReasoningPayloadEncoder
 
 
@@ -99,7 +99,7 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
         }
     )
     reasoning = get_provider_template("anthropic").endpoint().reasoning
-    provider = AnthropicCompatibleProvider(
+    provider = AnthropicMessagesProvider(
         base_url="https://api.example.test",
         api_key="secret",
         transport=transport,
@@ -290,7 +290,7 @@ async def test_anthropic_provider_streams_text_tool_deltas_and_usage() -> None:
             {"type": "message_stop"},
         ]
     )
-    provider = AnthropicCompatibleProvider(
+    provider = AnthropicMessagesProvider(
         base_url="https://api.example.test",
         transport=transport,
     )
@@ -345,7 +345,7 @@ async def test_anthropic_stream_rejects_tool_input_without_a_started_tool_block(
             {"type": "message_stop"},
         ]
     )
-    provider = AnthropicCompatibleProvider(
+    provider = AnthropicMessagesProvider(
         base_url="https://api.example.test",
         transport=transport,
     )
@@ -396,7 +396,7 @@ async def test_anthropic_stream_preserves_signed_thinking_for_same_route_only() 
         ]
     )
     reasoning = get_provider_template("anthropic").endpoint("claude-opus-4-8").reasoning
-    provider = AnthropicCompatibleProvider(
+    provider = AnthropicMessagesProvider(
         base_url="https://api.example.test",
         provider_id="anthropic",
         transport=transport,
@@ -465,7 +465,7 @@ async def test_anthropic_stream_preserves_signed_thinking_for_same_route_only() 
 @pytest.mark.asyncio
 async def test_anthropic_provider_rejects_unsupported_image_without_request() -> None:
     transport = FakeTransport({})
-    provider = AnthropicCompatibleProvider(
+    provider = AnthropicMessagesProvider(
         base_url="https://api.example.test",
         transport=transport,
     )

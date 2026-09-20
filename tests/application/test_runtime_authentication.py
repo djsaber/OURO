@@ -29,9 +29,9 @@ def managed_runtime(tmp_path, monkeypatch):
     drivers = (fixtures.BrowserFixtureDriver(), fixtures.DeviceFixtureDriver())
     monkeypatch.setitem(
         provider_models._PROVIDER_TYPE_SPECS,
-        "openai-compatible",
+        "custom",
         ProviderTypeSpec(
-            "openai-compatible",
+            "custom",
             ProviderConnectionSpec("openai-chat-completions"),
             tuple(
                 ProviderConnectionSpec("openai-chat-completions", d.descriptor.driver_id, "fixture")
@@ -45,7 +45,8 @@ def managed_runtime(tmp_path, monkeypatch):
     configs = ProviderConfigManager(tmp_path)
     configs.create_provider(
         "subscription",
-        provider_type="openai-compatible",
+        provider_type="custom",
+        protocol="openai-chat-completions",
         auth_driver="fixture-browser",
         base_url="https://fixture.invalid/api",
     )
@@ -71,7 +72,9 @@ def managed_runtime(tmp_path, monkeypatch):
         async def aclose(self):
             pass
 
-    monkeypatch.setattr("ouro.providers.openai_compatible.HttpxProviderHTTPTransport", Transport)
+    monkeypatch.setattr(
+        "ouro.providers.openai_chat_completions.HttpxProviderHTTPTransport", Transport
+    )
     return configs, drivers, policies, requests
 
 
@@ -148,7 +151,8 @@ async def test_cached_adapters_observe_new_material_and_binding_changes(tmp_path
         # Replace changes authentication binding without changing the durable model route.
         configs.replace_provider(
             "subscription",
-            provider_type="openai-compatible",
+            provider_type="custom",
+            protocol="openai-chat-completions",
             auth_driver="fixture-device",
             base_url="https://fixture.invalid/api",
         )
@@ -308,12 +312,12 @@ async def test_static_product_service_policy_is_applied_without_managed_target_r
     tmp_path, managed_runtime, monkeypatch
 ):
     configs, drivers, _, requests = managed_runtime
-    old = provider_models.provider_type_spec("openai-compatible")
+    old = provider_models.provider_type_spec("custom")
     monkeypatch.setitem(
         provider_models._PROVIDER_TYPE_SPECS,
-        "openai-compatible",
+        "custom",
         ProviderTypeSpec(
-            "openai-compatible",
+            "custom",
             ProviderConnectionSpec("openai-chat-completions", "static", "fixture"),
             old.alternative_connections,
         ),
@@ -324,7 +328,10 @@ async def test_static_product_service_policy_is_applied_without_managed_target_r
         ProviderRequestPolicy(frozenset({"fixture-quota"})),
     )
     configs.replace_provider(
-        "subscription", provider_type="openai-compatible", base_url="http://localhost:1234"
+        "subscription",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        base_url="http://localhost:1234",
     )
     configs.upsert_endpoint("subscription", "chat", model_id="chat", make_default=True)
     configs.set_default_provider("subscription")

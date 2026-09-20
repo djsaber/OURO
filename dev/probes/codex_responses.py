@@ -13,8 +13,8 @@ import httpx
 from dev.probes.codex_oauth import ProbeError, required_text
 from ouro.auth.contracts import CredentialGrant
 from ouro.providers.http_transport import HttpxProviderHTTPTransport, ProviderTransportError
-from ouro.providers.responses_errors import ResponsesError
-from ouro.providers.responses_items import ResponseItems
+from ouro.providers.openai_responses_errors import OpenAIResponsesError
+from ouro.providers.openai_responses_items import OpenAIResponsesItemAccumulator
 
 RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
 _EVENT_TYPES = frozenset(
@@ -142,7 +142,7 @@ async def request(
     transport = HttpxProviderHTTPTransport(client)
     counts: dict[str, int] = {}
     terminal: dict[str, Any] | None = None
-    items = ResponseItems()
+    items = OpenAIResponsesItemAccumulator()
     try:
         # Total deadline also bounds a stream that sends keepalives forever.
         async with asyncio.timeout(120):
@@ -174,7 +174,7 @@ async def request(
         if terminal is None:
             raise ProbeError("missing_terminal")
         output = items.finish(terminal.get("output", []))
-    except ResponsesError as error:
+    except OpenAIResponsesError as error:
         raise ProbeError(error.code) from None
     except ProviderTransportError as error:
         # Shared transport diagnostics may include bodies; never expose them here.

@@ -88,16 +88,20 @@ def test_context_copies_values_and_rejects_unregistered_fields():
         ProviderRequestContext({"unknown": "secret"})
 
 
-@pytest.mark.parametrize("provider_type", ["openai-compatible", "openai"])
+@pytest.mark.parametrize("provider_type", ["custom", "openai"])
 def test_configuration_round_trip_preserve_replace_clear_and_public_redaction(
     tmp_path, provider_type
 ):
     facade = ConfigurationFacade(tmp_path)
     facade.add_provider(
-        "service", provider_type=provider_type, base_url="https://model.test", headers=HEADERS
+        "service",
+        provider_type=provider_type,
+        protocol="openai-responses",
+        base_url="https://model.test",
+        headers=HEADERS,
     )
     configs = ProviderConfigManager(tmp_path)
-    if provider_type == "openai-compatible":
+    if provider_type == "custom":
         facade.save_endpoint("service", "chat", model="model")
     provider = configs.get_provider("service")
     assert provider.headers["x-private"].value == "private-value"
@@ -130,7 +134,11 @@ def test_configuration_round_trip_preserve_replace_clear_and_public_redaction(
 def test_runtime_header_override_is_whole_map_and_empty_clears(tmp_path):
     facade = ConfigurationFacade(tmp_path)
     facade.add_provider(
-        "service", provider_type="openai-compatible", base_url="https://model.test", headers=HEADERS
+        "service",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        base_url="https://model.test",
+        headers=HEADERS,
     )
     facade.save_endpoint("service", "chat", model="model")
     options = ProviderConfigManager(tmp_path).resolve_runtime_options(

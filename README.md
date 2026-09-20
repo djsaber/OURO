@@ -6,7 +6,7 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 ## 当前能力
 
 - 默认 Textual 全屏 TUI，以及 `run --print`、`run --json` 两种单次运行模式。
-- 基于 `provider/endpoint` 的模型配置、主流厂商模板、连接检查和会话级模型选择，以及共享安全重试契约的 OpenAI-compatible / Anthropic-compatible 适配。
+- 基于 `provider/endpoint` 的模型配置、主流厂商模板、连接检查和会话级模型选择，以及共享安全重试契约的 OpenAI Chat Completions / OpenAI Responses / Anthropic Messages 适配。
 - 多轮模型/工具循环，支持顺序或并行工具批次、审批、结构化用户输入请求、协作式中止，以及 run 级 follow-up / turn 级 steer 排队输入。
 - 会话级 AFK 预设：自动批准可批准的工具，并以 provenance-bearing 无人值守 resolution 处理工具提问，不伪造用户回答。
 - [自动任务](docs/OURO_自动任务_2026-09-06.md)：持久化执行计划、工作空间与模型配置，启动后静默调度，
@@ -236,7 +236,7 @@ Provider 保持不变。
 ```bash
 uv run ouro provider add glm \
   --home ./.ouro-dev \
-  --type openai-compatible \
+  --type custom --protocol openai-chat-completions \
   --base-url https://example.test/v1 \
   --api-key-env GLM_API_KEY \
   --retry-attempts 3 \
@@ -246,10 +246,10 @@ uv run ouro provider add glm \
 # update 不允许改变 provider type/protocol
 uv run ouro provider update glm --home ./.ouro-dev --timeout 90
 
-# Responses 自定义供应商复用 openai-compatible 类型
+# 自定义供应商显式选择 Responses 协议
 uv run ouro provider add responses-gateway \
   --home ./.ouro-dev \
-  --type openai-compatible \
+  --type custom \
   --protocol openai-responses \
   --base-url https://models.example.com/v1 \
   --api-key-env GATEWAY_API_KEY
@@ -258,10 +258,10 @@ uv run ouro provider endpoint set responses-gateway chat \
   --home ./.ouro-dev \
   --model model-name --tools --streaming --default
 
-# 非内置厂商直接选择兼容协议类型
+# 自定义连接显式选择 Anthropic Messages 协议
 uv run ouro provider add private-model \
   --home ./.ouro-dev \
-  --type anthropic-compatible \
+  --type custom --protocol anthropic-messages \
   --base-url https://models.example.com
 
 uv run ouro provider endpoint set glm reasoning \
@@ -274,11 +274,11 @@ uv run ouro provider endpoint set glm reasoning \
   --reasoning-preset thinking-toggle \
   --default
 
-# Anthropic-compatible 自定义模型也可声明 adaptive thinking 与 effort
+# Anthropic Messages 自定义模型也可声明 adaptive thinking 与 effort
 uv run ouro provider endpoint set private-model claude \
   --home ./.ouro-dev \
   --model custom-claude-model \
-  --reasoning-preset anthropic-adaptive-effort \
+  --reasoning-preset anthropic-messages-adaptive-effort \
   --default
 
 # 单次运行覆盖统一的思考意图；不支持的模式或等级会在发起 HTTP 前失败
@@ -293,37 +293,37 @@ uv run ouro provider list --home ./.ouro-dev
 uv run ouro provider endpoint list glm --home ./.ouro-dev
 ```
 
-`provider add/replace --protocol` 显式选择自定义供应商的线协议；省略时使用类型默认值。
-`openai-compatible` 默认 Chat Completions，也可选择 Responses，默认 API 路径分别为 `/chat/completions`
-和 `/responses`，可通过 `--api-path` 覆盖。内置供应商使用模板协议，不能通过该参数改写模板契约。
-TUI 在 `Add provider → OpenAI-compatible → Protocol` 中选择协议，复用分组菜单与子选择页；切换协议时
-同步默认 API 路径，保留自定义路径。已有供应商的协议只读，普通编辑保留协议和 Endpoint。
+`provider add/replace --type custom` 必须通过 `--protocol` 显式选择线协议：
+`openai-chat-completions`、`openai-responses` 或 `anthropic-messages`，默认 API 路径分别为
+`/chat/completions`、`/responses` 和 `/v1/messages`。集成产品类型使用模板协议。
+TUI 在 `Add provider` 的 `Custom connection` 分组直接提供三个协议入口；创建时可以切换协议，
+仍为默认值的 API 路径随之更新，自定义路径保持不变。已有供应商的协议只读，普通编辑保留协议和 Endpoint。
 
-`--reasoning-preset` 提供 `none`、`openai-effort`、`responses-effort`、`responses-effort-summary`、`reasoning-content-effort`、
-`thinking-toggle`、`enable-thinking-toggle` 和 `anthropic-adaptive-effort`。Preset 是用户对目标模型协议能力的
+`--reasoning-preset` 提供 `none`、`openai-chat-completions-effort`、`openai-responses-effort`、`openai-responses-effort-summary`、`reasoning-content-effort`、
+`thinking-toggle`、`enable-thinking-toggle` 和 `anthropic-messages-adaptive-effort`。Preset 是用户对目标模型协议能力的
 显式声明，不是自动探测；若模型只支持部分等级，或参数值与 preset 不同，应使用
 `--reasoning-config '<JSON>'` 完整声明 capability 与各 variant 的原生请求片段。思考配置归 Endpoint 所有，
-因此 `openai-compatible` 和 `anthropic-compatible` 的任意自定义模型都使用同一套配置与运行时 flags。
+因此 `custom` 类型的任意自定义模型都使用同一套配置与运行时 flags。
 
-Responses 端点选择 `responses-effort`（TUI 的 `Thinking preset → OpenAI Responses effort`），
-将统一等级编码为 `reasoning.effort`；`openai-effort` 使用 Chat Completions 的 `reasoning_effort`。
+Responses 端点选择 `openai-responses-effort`（TUI 的 `Thinking preset → OpenAI Responses effort`），
+将统一等级编码为 `reasoning.effort`；`openai-chat-completions-effort` 使用 Chat Completions 的 `reasoning_effort`。
 例如，为已经使用 `openai-responses` 的供应商声明端点并指定单次运行等级：
 
 ```bash
-uv run ouro provider endpoint set gateway custom --model custom-model --reasoning-preset responses-effort
+uv run ouro provider endpoint set gateway custom --model custom-model --reasoning-preset openai-responses-effort
 uv run ouro run --provider gateway --endpoint custom --thinking-effort high --prompt "检查实现"
 ```
 
-`responses-effort` 声明 minimal、low、medium、high、xhigh、max 和开关能力；默认意图保留服务端默认值，
+`openai-responses-effort` 声明 minimal、low、medium、high、xhigh、max 和开关能力；默认意图保留服务端默认值，
 显式 enabled 且未指定等级时使用 medium，disabled 编码为 none。支持等级取决于目标模型，
 不支持关闭或仅支持部分等级的模型应使用内置模型模板，或通过 `--reasoning-config` / TUI 的
-`Thinking settings (JSON)` 声明实际能力与对应 variants；Python 配置可使用 `responses_effort_reasoning`
+`Thinking settings (JSON)` 声明实际能力与对应 variants；Python 配置可使用 `openai_responses_effort_reasoning`
 指定 `supported_efforts`、`default_effort` 和 `activation`，用 `output` 控制可见输出，用可选 `summary`
 声明原生摘要请求。协议字段见
 [OpenAI 推理文档](https://developers.openai.com/api/docs/guides/reasoning)。
 
-`responses-effort` 将 `capability.output` 设为 `summary`，展示服务端返回的思考摘要或文本，不额外发送
-`reasoning.summary`。需要显式请求摘要且服务端支持该参数时，选择 `responses-effort-summary`
+`openai-responses-effort` 将 `capability.output` 设为 `summary`，展示服务端返回的思考摘要或文本，不额外发送
+`reasoning.summary`。需要显式请求摘要且服务端支持该参数时，选择 `openai-responses-effort-summary`
 （TUI 的 `OpenAI Responses effort + request summary`）；它在默认及开启思考时发送 `summary: "auto"`。
 仅有加密续接数据时不生成可见思考。已有端点可在 `Thinking settings (JSON)` 中将 `capability.output`
 设为 `summary`，保留自身等级与参数映射；TUI 的思考展开设置独立控制显示折叠状态。
@@ -611,7 +611,7 @@ TUI 的 `Actions > Skill sources` 提供相同的总开关与逐源开关，并�
     "default": "glm",
     "items": {
       "glm": {
-        "provider_type": "openai-compatible",
+        "provider_type": "custom",
         "protocol": "openai-chat-completions",
         "provider_id": "glm",
         "credential_ref": "env:GLM_API_KEY",

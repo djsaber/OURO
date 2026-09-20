@@ -192,13 +192,13 @@ def test_provider_update_json_exposes_safe_template_merge_report(tmp_path, capsy
     }
 
 
-def test_removed_configure_and_custom_type_are_not_parseable() -> None:
+def test_removed_configure_and_unknown_type_are_not_parseable() -> None:
     parser = build_parser()
 
     with pytest.raises(SystemExit):
         parser.parse_args(["provider", "configure", "openai"])
     with pytest.raises(SystemExit):
-        parser.parse_args(["provider", "add", "local", "--type", "custom"])
+        parser.parse_args(["provider", "add", "local", "--type", "unknown"])
 
 
 def test_integrated_type_conflict_prompts_update_or_replace(tmp_path, capsys) -> None:
@@ -255,14 +255,16 @@ def test_integrated_type_conflict_prompts_update_or_replace(tmp_path, capsys) ->
     assert payload["provider"]["endpoint_count"] == 5
 
 
-def test_compatible_add_update_and_replace_infer_protocol(tmp_path, capsys) -> None:
+def test_custom_add_update_and_replace_preserve_explicit_protocol(tmp_path, capsys) -> None:
     code = main(
         [
             "provider",
             "add",
             "local",
             "--type",
-            "anthropic-compatible",
+            "custom",
+            "--protocol",
+            "anthropic-messages",
             "--base-url",
             "https://example.test",
             "--api-key-env",
@@ -274,7 +276,7 @@ def test_compatible_add_update_and_replace_infer_protocol(tmp_path, capsys) -> N
     )
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
-    assert payload["provider"]["provider_type"] == "anthropic-compatible"
+    assert payload["provider"]["provider_type"] == "custom"
     assert payload["provider"]["protocol"] == "anthropic-messages"
     assert payload["provider"]["endpoint_count"] == 0
 
@@ -292,7 +294,7 @@ def test_compatible_add_update_and_replace_infer_protocol(tmp_path, capsys) -> N
     )
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
-    assert payload["provider"]["provider_type"] == "anthropic-compatible"
+    assert payload["provider"]["provider_type"] == "custom"
     assert payload["provider"]["protocol"] == "anthropic-messages"
     assert payload["provider"]["timeout"] == 12
 
@@ -302,7 +304,9 @@ def test_compatible_add_update_and_replace_infer_protocol(tmp_path, capsys) -> N
             "replace",
             "local",
             "--type",
-            "openai-compatible",
+            "custom",
+            "--protocol",
+            "openai-chat-completions",
             "--base-url",
             "https://replacement.test/v1",
             "--home",
@@ -312,19 +316,21 @@ def test_compatible_add_update_and_replace_infer_protocol(tmp_path, capsys) -> N
     )
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
-    assert payload["provider"]["provider_type"] == "openai-compatible"
+    assert payload["provider"]["provider_type"] == "custom"
     assert payload["provider"]["protocol"] == "openai-chat-completions"
     assert payload["provider"]["endpoint_count"] == 0
 
 
-def test_compatible_add_rejects_template_only_route_options(tmp_path, capsys) -> None:
+def test_custom_add_rejects_template_only_route_options(tmp_path, capsys) -> None:
     code = main(
         [
             "provider",
             "add",
             "local",
             "--type",
-            "openai-compatible",
+            "custom",
+            "--protocol",
+            "openai-chat-completions",
             "--model",
             "model-name",
             "--home",

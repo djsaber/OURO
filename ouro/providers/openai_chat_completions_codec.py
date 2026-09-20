@@ -8,10 +8,10 @@ from ouro.core.messages import ImageContent, ModelMessage, TextContent, model_vi
 from ouro.core.provider import ToolCallDelta, Usage
 from ouro.core.tools import ToolCallRequest
 
-OpenAIMessageContent = str | list[dict[str, Any]]
+ChatCompletionsMessageContent = str | list[dict[str, Any]]
 
 
-def messages_to_openai(
+def messages_to_chat_completions(
     messages: list[ModelMessage],
     *,
     system_prompt: str,
@@ -20,12 +20,12 @@ def messages_to_openai(
     model_id: str,
     include_continuation: bool,
 ) -> list[dict[str, Any]]:
-    """Encode one request with at most one leading OpenAI system message."""
+    """Encode one request with at most one leading Chat Completions system message."""
 
-    system_contents: list[OpenAIMessageContent] = [system_prompt] if system_prompt else []
+    system_contents: list[ChatCompletionsMessageContent] = [system_prompt] if system_prompt else []
     converted_messages: list[dict[str, Any]] = []
     for message in messages:
-        converted = _message_to_openai(
+        converted = _message_to_chat_completions(
             message,
             supports_vision=supports_vision,
             provider_id=provider_id,
@@ -44,7 +44,9 @@ def messages_to_openai(
     return converted_messages
 
 
-def _merge_system_contents(contents: list[OpenAIMessageContent]) -> OpenAIMessageContent:
+def _merge_system_contents(
+    contents: list[ChatCompletionsMessageContent],
+) -> ChatCompletionsMessageContent:
     if all(isinstance(content, str) for content in contents):
         return "\n\n".join(content for content in contents if isinstance(content, str))
 
@@ -59,7 +61,7 @@ def _merge_system_contents(contents: list[OpenAIMessageContent]) -> OpenAIMessag
     return merged
 
 
-def _message_to_openai(
+def _message_to_chat_completions(
     message: ModelMessage,
     *,
     supports_vision: bool = False,
@@ -70,18 +72,18 @@ def _message_to_openai(
     message = model_visible_message(message)
     role = message.role
     if role == "tool_result":
-        openai_role = "tool"
+        wire_role = "tool"
     else:
-        openai_role = role
+        wire_role = role
 
     converted: dict[str, Any] = {
-        "role": openai_role,
-        "content": _message_content_to_openai(message, supports_vision=supports_vision),
+        "role": wire_role,
+        "content": _message_content_to_chat_completions(message, supports_vision=supports_vision),
     }
-    if openai_role == "assistant":
+    if wire_role == "assistant":
         if message.tool_calls:
             converted["tool_calls"] = [
-                _tool_call_message_to_openai(item.model_dump(mode="json"))
+                _tool_call_message_to_chat_completions(item.model_dump(mode="json"))
                 for item in message.tool_calls
             ]
         continuation = message.provider_continuation
@@ -98,14 +100,14 @@ def _message_to_openai(
             for block in continuation.blocks:
                 if "reasoning_content" in block:
                     converted["reasoning_content"] = block["reasoning_content"]
-    if openai_role == "tool":
+    if wire_role == "tool":
         if message.tool_result is None:
             raise ValueError("tool_result message is missing its tool result reference")
         converted["tool_call_id"] = message.tool_result.tool_call_id
     return converted
 
 
-def _message_content_to_openai(
+def _message_content_to_chat_completions(
     message: ModelMessage,
     *,
     supports_vision: bool,
@@ -125,7 +127,7 @@ def _message_content_to_openai(
     return content
 
 
-def _tool_to_openai(tool: Mapping[str, Any]) -> dict[str, Any]:
+def _tool_to_chat_completions(tool: Mapping[str, Any]) -> dict[str, Any]:
     parameters = tool.get("parameters_schema") or {"type": "object", "properties": {}}
     return {
         "type": "function",
@@ -137,7 +139,7 @@ def _tool_to_openai(tool: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _tool_call_message_to_openai(tool_call: object) -> dict[str, Any]:
+def _tool_call_message_to_chat_completions(tool_call: object) -> dict[str, Any]:
     if not isinstance(tool_call, Mapping):
         return {
             "id": "",
@@ -199,9 +201,9 @@ _REASONING_FIELDS = ("reasoning_content", "reasoning")
 
 
 def _reasoning_field_value(payload: Mapping[str, Any]) -> object | None:
-    """Pick the reasoning payload from an OpenAI-protocol message or delta.
+    """Pick the reasoning payload from an Chat Completions message or delta.
 
-    OpenAI-compatible vendors split across two field conventions: DeepSeek-style
+    Chat Completions services split across two field conventions: DeepSeek-style
     `reasoning_content` and the bare `reasoning` used by OpenRouter and others.
     Both accept the string-or-blocks shapes of _reasoning_content_to_text(); the
     first field that yields non-empty text wins.

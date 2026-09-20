@@ -28,16 +28,16 @@ from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 
 _REASONING_PRESET_LABELS = {
     "none": "None",
-    "openai-effort": "OpenAI Chat Completions effort",
-    "responses-effort": "OpenAI Responses effort",
-    "responses-effort-summary": "OpenAI Responses effort + request summary",
+    "openai-chat-completions-effort": "OpenAI Chat Completions effort",
+    "openai-responses-effort": "OpenAI Responses effort",
+    "openai-responses-effort-summary": "OpenAI Responses effort + request summary",
     "reasoning-content-effort": "Thinking level (reasoning_content)",
     "thinking-toggle": "Thinking switch (thinking)",
     "enable-thinking-toggle": "Thinking switch (enable_thinking)",
-    "anthropic-adaptive-effort": "Anthropic adaptive effort",
+    "anthropic-messages-adaptive-effort": "Anthropic Messages adaptive effort",
 }
 
-_PROTOCOL_LABELS = {
+_PROTOCOL_LABELS: dict[ProviderProtocol, str] = {
     "openai-chat-completions": "OpenAI Chat Completions",
     "openai-responses": "OpenAI Responses",
     "anthropic-messages": "Anthropic Messages",
@@ -49,6 +49,7 @@ class ProviderSetupProfile:
     """User-facing provider identity with connection defaults."""
 
     provider_type: ProviderType
+    protocol: ProviderProtocol
     default_provider_id: str
     display_name: str
     description: str
@@ -59,7 +60,6 @@ class ProviderSetupProfile:
     preset: bool
     auth_driver: str = "static"
     notice: str | None = None
-    protocol: ProviderProtocol | None = None
 
     @classmethod
     def from_template(cls, template: ProviderTemplateView) -> ProviderSetupProfile:
@@ -79,29 +79,20 @@ class ProviderSetupProfile:
         )
 
 
-COMPATIBLE_PROVIDER_PROFILES = (
+CUSTOM_PROVIDER_PROFILES = tuple(
     ProviderSetupProfile(
-        provider_type="openai-compatible",
-        default_provider_id="openai-compatible",
-        display_name="OpenAI-compatible",
-        description="Connect a service that implements OpenAI Chat Completions or Responses.",
+        provider_type="custom",
+        protocol=protocol,
+        default_provider_id=protocol,
+        display_name=display_name,
+        description=f"Connect a service that implements {display_name}.",
         base_url="",
-        api_path="/chat/completions",
+        api_path=default_api_path(protocol) or "",
         credential_env=None,
         endpoint_count=0,
         preset=False,
-    ),
-    ProviderSetupProfile(
-        provider_type="anthropic-compatible",
-        default_provider_id="anthropic-compatible",
-        display_name="Anthropic-compatible",
-        description="Connect a service that implements Anthropic Messages.",
-        base_url="",
-        api_path="/v1/messages",
-        credential_env=None,
-        endpoint_count=0,
-        preset=False,
-    ),
+    )
+    for protocol, display_name in _PROTOCOL_LABELS.items()
 )
 
 
@@ -132,7 +123,7 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
             if existing is not None or profile.preset
             else tuple(
                 connection.protocol
-                for connection in (spec.default_connection, *spec.alternative_connections)
+                for connection in spec.connections
                 if connection.auth_driver == self._auth_driver
             )
         )
@@ -705,22 +696,28 @@ def profile_for_provider(
     templates: tuple[ProviderTemplateView, ...],
 ) -> ProviderSetupProfile:
     template = next(
-        (item for item in templates if item.provider_type == provider.provider_type),
+        (
+            item
+            for item in templates
+            if item.provider_type == provider.provider_type and item.protocol == provider.protocol
+        ),
         None,
     )
     if template is not None:
         return ProviderSetupProfile.from_template(template)
-    compatible = next(
+    profile = next(
         (
             item
-            for item in COMPATIBLE_PROVIDER_PROFILES
-            if item.provider_type == provider.provider_type
+            for item in CUSTOM_PROVIDER_PROFILES
+            if item.provider_type == provider.provider_type and item.protocol == provider.protocol
         ),
         None,
     )
-    if compatible is None:
-        raise ValueError(f"Unsupported configurable provider type: {provider.provider_type}")
-    return compatible
+    if profile is None:
+        raise ValueError(
+            f"Unsupported provider connection: {provider.provider_type}/{provider.protocol}"
+        )
+    return profile
 
 
 def _credential_environment(

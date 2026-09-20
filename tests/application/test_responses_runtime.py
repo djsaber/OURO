@@ -30,9 +30,9 @@ async def responses_runtime(tmp_path, monkeypatch, request):
     driver = auth_fixtures.BrowserFixtureDriver()
     monkeypatch.setitem(
         provider_models._PROVIDER_TYPE_SPECS,
-        "openai-compatible",
+        "custom",
         ProviderTypeSpec(
-            "openai-compatible",
+            "custom",
             ProviderConnectionSpec("openai-chat-completions"),
             (ProviderConnectionSpec("openai-responses", "fixture-browser", "fixture"),),
         ),
@@ -47,7 +47,7 @@ async def responses_runtime(tmp_path, monkeypatch, request):
     configs = ProviderConfigManager(tmp_path)
     configs.create_provider(
         "subscription",
-        provider_type="openai-compatible",
+        provider_type="custom",
         protocol="openai-responses",
         auth_driver="fixture-browser",
         base_url="https://fixture.invalid/api",

@@ -82,9 +82,9 @@ async def test_inflight_request_keeps_old_service_attribution_after_rebinding(
     # Both connections use managed auth, but their service billing declarations differ.
     monkeypatch.setitem(
         provider_models._PROVIDER_TYPE_SPECS,
-        "openai-compatible",
+        "custom",
         ProviderTypeSpec(
-            "openai-compatible",
+            "custom",
             ProviderConnectionSpec("openai-chat-completions"),
             (
                 ProviderConnectionSpec(
@@ -126,7 +126,8 @@ async def test_inflight_request_keeps_old_service_attribution_after_rebinding(
             await asyncio.wait_for(entered.wait(), 5)
             configs.replace_provider(
                 "subscription",
-                provider_type="openai-compatible",
+                provider_type="custom",
+                protocol="openai-chat-completions",
                 auth_driver="fixture-device",
                 base_url="https://fixture.invalid/api",
             )
