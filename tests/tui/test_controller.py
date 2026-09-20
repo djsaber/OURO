@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from ouro.application.configuration import ConfigurationFacade
-from ouro.application.models import AvailableModel
 from ouro.application.plugin_models import PluginCommandExecutionView, PluginCommandView
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
@@ -44,7 +43,7 @@ from ouro.tui.controller import (
     TuiToolExecutionConfiguration,
     project_usage_system_status,
 )
-from tests.tui.helpers import two_route_application
+from tests.tui.helpers import StaticRouteCatalog, two_route_application
 
 
 def test_usage_status_projects_cache_totals_and_complete_recent_daily_detail() -> None:
@@ -2105,9 +2104,20 @@ async def test_controller_applies_draft_settings_and_persists_existing_session(
 @pytest.mark.asyncio
 async def test_controller_resets_reasoning_only_when_model_route_changes(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     application = _reasoning_application(tmp_path)
+    runtime = application.runtime
+    original_key = runtime.current_model().key
+    runtime.models = StaticRouteCatalog(
+        {
+            original_key: runtime.adapter,
+            "other/limited": RuntimeAdapter(
+                FauxProvider(),
+                ModelMetadata(provider_id="other", endpoint_id="limited", model_id="limited-model"),
+            ),
+        },
+        default_key=original_key,
+    )
     controller = TuiController(
         lambda _event: None,
         lambda _status: None,
@@ -2118,29 +2128,14 @@ async def test_controller_resets_reasoning_only_when_model_route_changes(
     try:
         await controller.set_session_reasoning(ReasoningRequest(mode="enabled", effort="high"))
         result = await controller.submit("create configured session")
-        runtime = application.runtime
-        selected = AvailableModel(
-            key="other/limited",
-            provider_id="other",
-            endpoint_id="limited",
-            model_id="limited-model",
+        await controller.select_model(original_key)
+        assert (await controller.session_reasoning()).requested == result.session.reasoning_request
+
+        await controller.select_model("other/limited")
+        assert (await controller.session_reasoning()).requested == ReasoningRequest()
+        assert runtime.sessions.open(result.session.session_id).session.current_model == (
+            "other/limited"
         )
-        calls: list[ReasoningRequest | None] = []
-
-        monkeypatch.setattr(runtime, "resolve_model", lambda _selector: selected)
-        monkeypatch.setattr(
-            runtime,
-            "switch_session_model",
-            lambda _session_id, _selector, *, reasoning_request=None: calls.append(
-                reasoning_request
-            ),
-        )
-
-        await controller.select_model(selected.key)
-        monkeypatch.setattr(runtime, "current_model", lambda _session_id=None: selected)
-        await controller.select_model(selected.key)
-
-        assert result.session.reasoning_request.effort == "high"
-        assert calls == [ReasoningRequest(), None]
     finally:
         await controller.close()
+        await application.close()

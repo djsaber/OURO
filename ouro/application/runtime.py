@@ -918,12 +918,19 @@ class RuntimeService:
         return self.models.resolve(session.current_model or self.models.default_model().key)
 
     def session_context_metrics(self, session_id: str) -> ContextMetrics | None:
-        """Project existing context usage against the Session's selected model limits."""
+        """Read durable usage, projecting current model limits when resolvable.
+
+        Model configuration is optional presentation metadata here. An unresolved
+        route retains the recorded limits; it does not invalidate Session history.
+        """
 
         metrics = self.sessions.effective_context_metrics(session_id)
         if metrics is None:
             return None
-        model = self.current_model(session_id)
+        try:
+            model = self.current_model(session_id)
+        except ConfigError:
+            return metrics
         return metrics.with_model_limits(
             context_window_tokens=model.context_window,
             reserved_output_tokens=model.max_output_tokens,

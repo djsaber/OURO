@@ -170,6 +170,21 @@ async def test_session_context_metrics_keep_usage_and_follow_selected_model_limi
 
 
 @pytest.mark.asyncio
+async def test_session_context_metrics_preserve_history_when_model_is_unavailable(tmp_path) -> None:
+    runtime, catalog, _providers = _runtime(tmp_path)
+    result = await runtime.run("first", initial_model="beta/fast")
+    session_id = result.session.session_id
+    durable = runtime.sessions.effective_context_metrics(session_id)
+    assert durable is not None
+    del catalog.adapters["beta/fast"]
+
+    assert runtime.session_context_metrics(session_id) == durable
+    assert runtime.sessions.open(session_id).session.current_model == "beta/fast"
+    with pytest.raises(ConfigError, match="model not found"):
+        runtime.resolve_model("beta/fast")
+
+
+@pytest.mark.asyncio
 async def test_session_model_switch_persists_and_is_used_after_runtime_restart(tmp_path) -> None:
     runtime, catalog, providers = _runtime(tmp_path)
 

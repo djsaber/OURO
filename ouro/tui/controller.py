@@ -1992,7 +1992,9 @@ class TuiController:
                 selected_reasoning = ReasoningRequest() if route_changed else reasoning_request
                 runtime.model_reasoning(model.key, selected_reasoning)
             else:
-                route_changed = model.key != runtime.current_model(session_id).key
+                session = runtime.sessions.open(session_id, recover=False).session
+                current_model = session.current_model or runtime.current_model().key
+                route_changed = model.key != current_model
                 runtime.switch_session_model(
                     session_id,
                     model.key,
