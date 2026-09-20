@@ -440,6 +440,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         filter_input.placeholder = placeholder
         with self.prevent(Input.Changed):
             filter_input.value = filter_value
+        filter_input.cursor_position = len(filter_value)
         self._refresh_options(needle=filter_value, preferred_value=initial_value)
         self._show_hint(interaction_hint)
         filter_input.focus()

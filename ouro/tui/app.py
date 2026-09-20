@@ -514,18 +514,14 @@ _OURO_TUI_CSS = """
     }
 
     .welcome-lower {
-        width: auto;
+        width: 100%;
         height: auto;
         overflow: hidden;
     }
 
     .welcome-usage {
-        width: auto;
-    }
-
-    .welcome-spacer {
         width: 1fr;
-        height: 1;
+        margin-right: 1;
     }
 
     .welcome-tips {
@@ -538,8 +534,10 @@ _OURO_TUI_CSS = """
     }
 
     .welcome-usage-line {
-        width: auto;
+        width: 100%;
         height: 1;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
 
     .welcome-tip-key {

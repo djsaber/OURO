@@ -9929,6 +9929,14 @@ async def test_action_choice_submenus_reuse_the_action_screen_without_flash(
             await pilot.press("escape")
             await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
             assert app.screen is action_screen
+            filter_input = action_screen.query_one("#choice-filter", Input)
+            assert filter_input.value == action_label
+            assert filter_input.cursor_position == len(action_label)
+            assert filter_input.selection.is_empty
+            assert filter_input.has_focus
+            assert app.cursor_position == filter_input.cursor_screen_offset
+            await pilot.press("x")
+            assert filter_input.value == action_label + "x"
             await pilot.press("escape")
 
 

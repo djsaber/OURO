@@ -1459,7 +1459,6 @@ class WelcomePanel(Vertical):
         self._tips = _WelcomeTipsBlock()
         self._lower = Horizontal(
             self._usage,
-            Static(classes="welcome-spacer"),
             self._tips,
             classes="welcome-lower",
         )
