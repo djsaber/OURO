@@ -54,6 +54,77 @@ def test_snapshot_and_item_completion_preserve_full_replay_and_emit_display_once
     assert sum(event.type == "done" for event in decoded) == 1
 
 
+@pytest.mark.parametrize("mode", ["items", "snapshot", "both"])
+def test_reasoning_text_and_summary_use_separate_coordinates_and_emit_once(mode):
+    item = reasoning(content=[{"type": "reasoning_text", "text": "analysis"}])
+    events = [
+        delta("response.reasoning_text.delta", 0, "rs", "ana", content_index=0),
+        {
+            "type": "response.reasoning_text.done",
+            "output_index": 0,
+            "content_index": 0,
+            "item_id": "rs",
+            "text": "analysis",
+        },
+        delta("response.reasoning_summary_text.delta", 0, "rs", "check", summary_index=0),
+    ]
+    if mode != "snapshot":
+        events.append(item_event(0, item))
+    events.append(terminal([] if mode == "items" else [item]))
+    decoded = decode(events)
+    assert "".join(event.reasoning_content or "" for event in decoded) == "analysischecking"
+    assert not any(event.type == "text_delta" for event in decoded)
+    continuation = next(event.continuation for event in decoded if event.type == "continuation")
+    assert continuation.blocks[0]["items"] == [item]
+
+
+@pytest.mark.parametrize(
+    "lane,coordinate",
+    [("reasoning_text", "content_index"), ("reasoning_summary_text", "summary_index")],
+)
+def test_reasoning_display_does_not_require_text_to_be_repeated_in_replay_item(lane, coordinate):
+    item = reasoning(summary=[])
+    decoded = decode(
+        [
+            delta(f"response.{lane}.delta", 0, "rs", "visible", **{coordinate: 0}),
+            terminal([item]),
+        ]
+    )
+    assert "".join(event.reasoning_content or "" for event in decoded) == "visible"
+    continuation = next(event.continuation for event in decoded if event.type == "continuation")
+    assert continuation.blocks[0]["items"] == [item]
+
+
+@pytest.mark.parametrize("summary", [None, []])
+def test_final_reasoning_content_is_displayed_without_stream_deltas(summary):
+    item = reasoning(summary=summary, content=[{"type": "reasoning_text", "text": "analysis"}])
+    decoded = decode([terminal([item])])
+    assert "".join(event.reasoning_content or "" for event in decoded) == "analysis"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "invalid",
+        [{"type": "reasoning_text", "text": 42}],
+        [{"type": "output_text", "text": "wrong lane"}],
+    ],
+)
+def test_malformed_reasoning_content_cannot_publish_success(content):
+    with pytest.raises(ResponsesError):
+        decode([terminal([reasoning(content=content)])])
+
+
+def test_reasoning_text_conflicts_are_rejected():
+    with pytest.raises(ResponsesError, match="conflicting_delta"):
+        decode(
+            [
+                delta("response.reasoning_text.delta", 0, "rs", "first", content_index=0),
+                terminal([reasoning(content=[{"type": "reasoning_text", "text": "different"}])]),
+            ]
+        )
+
+
 def test_interleaved_tools_use_call_id_and_dense_tool_ordinals_without_duplicate_arguments():
     first, second = call(), call(2)
     output = [reasoning(), first, message(), second]
@@ -271,6 +342,8 @@ def test_extensions_at_any_stream_position_do_not_change_completion(extension):
         "response.output_text.done",
         "response.refusal.delta",
         "response.reasoning_summary_text.delta",
+        "response.reasoning_text.delta",
+        "response.reasoning_text.done",
         "response.function_call_arguments.delta",
         "response.function_call_arguments.done",
         "response.output_item.added",

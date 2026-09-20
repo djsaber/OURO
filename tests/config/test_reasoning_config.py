@@ -9,6 +9,7 @@ from ouro.config import (
     ReasoningProfileConfig,
     mapped_reasoning,
     reasoning_preset,
+    responses_effort_reasoning,
 )
 from ouro.core.provider import ModelMetadata
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
@@ -129,6 +130,8 @@ def test_enabled_reasoning_encodes_the_default_effort_variant() -> None:
     (
         "none",
         "openai-effort",
+        "responses-effort",
+        "responses-effort-summary",
         "reasoning-content-effort",
         "thinking-toggle",
         "enable-thinking-toggle",
@@ -142,6 +145,49 @@ def test_reasoning_presets_are_valid_endpoint_contracts(name: str) -> None:
 def test_unknown_reasoning_preset_lists_available_names() -> None:
     with pytest.raises(ValueError, match="available: none, openai-effort"):
         reasoning_preset("unknown")
+
+
+def test_responses_preset_preserves_native_defaults_and_owns_reasoning_object() -> None:
+    reasoning = reasoning_preset("responses-effort")
+    assert reasoning.capability.default == ReasoningRequest()
+    assert reasoning.capability.default_effort == "medium"
+    assert reasoning.capability.continuation == "opaque"
+    assert reasoning.capability.output == "summary"
+    assert reasoning.profile is not None
+    assert reasoning.profile.variants["enabled"] == {"reasoning": {"effort": "medium"}}
+    assert reasoning.profile.variants["disabled"] == {"reasoning": {"effort": "none"}}
+    with pytest.raises(ValueError, match="reasoning-owned fields: reasoning"):
+        reasoning.validate_request_options({"reasoning": {"effort": "high"}})
+
+
+def test_responses_summary_request_is_explicit_and_applies_to_provider_default() -> None:
+    native = reasoning_preset("responses-effort")
+    requested = reasoning_preset("responses-effort-summary")
+    assert native.profile is not None and requested.profile is not None
+    assert "default" not in native.profile.variants
+    assert all(
+        "summary" not in fragment["reasoning"] for fragment in native.profile.variants.values()
+    )
+    assert requested.capability.output == "summary"
+    assert requested.profile.variants["default"] == {"reasoning": {"summary": "auto"}}
+    assert requested.profile.variants["high"] == {
+        "reasoning": {"effort": "high", "summary": "auto"}
+    }
+    assert requested.profile.variants["disabled"] == {"reasoning": {"effort": "none"}}
+
+
+def test_responses_profile_supports_endpoint_specific_default_effort() -> None:
+    reasoning = responses_effort_reasoning(
+        activation="always_on", supported_efforts=("high", "max"), default_effort="high"
+    )
+    model = ModelMetadata(model_id="custom", provider_id="custom", reasoning=reasoning.capability)
+    payload: dict[str, object] = {}
+    ReasoningPayloadEncoder(reasoning.profile).apply(payload, model)
+    assert payload == {"reasoning": {"effort": "high"}}
+    assert reasoning.profile is not None
+    assert "disabled" not in reasoning.profile.variants
+    with pytest.raises(ValueError, match="default effort must be supported"):
+        responses_effort_reasoning(supported_efforts=("high",), default_effort="medium")
 
 
 @pytest.mark.parametrize(

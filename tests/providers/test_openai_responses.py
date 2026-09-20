@@ -10,7 +10,7 @@ import pytest
 from ouro.auth.contracts import CredentialGrant
 from ouro.auth.request_auth import StaticRequestAuthenticator
 from ouro.config import ProviderConfigManager, ProviderRuntimeOptions
-from ouro.config.reasoning import mapped_reasoning, openai_effort_reasoning
+from ouro.config.reasoning import mapped_reasoning, openai_effort_reasoning, reasoning_preset
 from ouro.core.context import ContextView
 from ouro.core.errors import ConfigError
 from ouro.core.messages import ModelMessage
@@ -366,6 +366,144 @@ def test_factory_rejects_chat_reasoning_profile_for_responses():
         )
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("intent", "native_effort"),
+    [
+        (ReasoningRequest(), None),
+        (ReasoningRequest(mode="enabled"), "medium"),
+        (ReasoningRequest(mode="disabled"), "none"),
+        *[
+            (ReasoningRequest(effort=effort), effort)
+            for effort in ("minimal", "low", "medium", "high", "xhigh", "max")
+        ],
+    ],
+)
+async def test_responses_preset_roundtrips_config_and_encodes_requested_effort(
+    tmp_path, streaming, intent, native_effort
+):
+    manager = ProviderConfigManager(tmp_path)
+    manager.create_provider(
+        "fixture",
+        provider_type="openai-compatible",
+        protocol="openai-responses",
+        base_url="https://fixture.invalid/v1",
+    )
+    manager.upsert_endpoint(
+        "fixture",
+        "main",
+        model_id="custom-model",
+        reasoning=reasoning_preset("responses-effort"),
+        supports_streaming=streaming,
+        make_default=True,
+    )
+    options = ProviderConfigManager(tmp_path).resolve_runtime_options(
+        ProviderRuntimeOptions(provider_id="fixture", reasoning_request=intent)
+    )
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        response = terminal([message()])
+        if streaming:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                text=f"data: {json.dumps(response)}\n\n",
+            )
+        return httpx.Response(200, json=response["response"])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = build_runtime_adapter(options)
+        await adapter.provider.close()
+        adapter.provider.transport = HttpxProviderHTTPTransport(client)
+        events = [
+            event
+            async for event in adapter.stream(
+                ContextView(model_messages=[ModelMessage.text(role="user", text="hello")])
+            )
+        ]
+    assert events[-1].type == "done"
+    assert len(requests) == 1
+    payload = requests[0]
+    if native_effort is None:
+        assert "reasoning" not in payload
+    else:
+        assert payload["reasoning"] == {"effort": native_effort}
+    assert "reasoning_effort" not in payload
+    assert payload["include"] == ["reasoning.encrypted_content"]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("preset", ["responses-effort", "responses-effort-summary"])
+async def test_responses_visible_reasoning_reaches_adapter_without_becoming_answer(
+    tmp_path, monkeypatch, streaming, preset
+):
+    manager = ProviderConfigManager(tmp_path)
+    manager.create_provider(
+        "fixture",
+        provider_type="openai-compatible",
+        protocol="openai-responses",
+        base_url="https://fixture.invalid/v1",
+    )
+    manager.upsert_endpoint(
+        "fixture",
+        "main",
+        model_id="model",
+        reasoning=reasoning_preset(preset),
+        supports_streaming=streaming,
+        make_default=True,
+    )
+    requests = []
+    output = [
+        reasoning(summary=[], content=[{"type": "reasoning_text", "text": "analysis"}]),
+        message(),
+    ]
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        if streaming:
+            chunks = [
+                delta("response.reasoning_text.delta", 0, "rs", "ana", content_index=0),
+                terminal(output),
+            ]
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                text="".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks),
+            )
+        return httpx.Response(200, json=terminal(output)["response"])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        monkeypatch.setattr(
+            "ouro.providers.openai_responses.HttpxProviderHTTPTransport",
+            lambda: HttpxProviderHTTPTransport(client),
+        )
+        adapter = build_runtime_adapter(
+            ProviderConfigManager(tmp_path).resolve_runtime_options(
+                ProviderRuntimeOptions(provider_id="fixture")
+            )
+        )
+        try:
+            events = [
+                event
+                async for event in adapter.stream(
+                    ContextView(model_messages=[ModelMessage.text(role="user", text="hello")])
+                )
+            ]
+        finally:
+            await adapter.provider.close()
+    assert events[-1].type == "done"
+    assert "".join(event.reasoning_content or "" for event in events) == "analysis"
+    assert "".join(event.text or "" for event in events) == "hello"
+    continuation = next(event.continuation for event in events if event.type == "continuation")
+    assert continuation.blocks[0]["items"] == output
+    if preset == "responses-effort":
+        assert "reasoning" not in requests[0]
+    else:
+        assert requests[0]["reasoning"] == {"summary": "auto"}
+
+
 @pytest.mark.parametrize(
     "options", [{"text": "invalid"}, {"text": {"format": {"type": "json_schema"}}}]
 )
@@ -381,13 +519,15 @@ def test_factory_validates_structured_output_contract(options):
         )
 
 
-async def test_network_failure_after_hidden_reasoning_does_not_replay_response():
+@pytest.mark.parametrize(
+    "lane,coordinate",
+    [("reasoning_summary_text", "summary_index"), ("reasoning_text", "content_index")],
+)
+async def test_network_failure_after_hidden_reasoning_does_not_replay_response(lane, coordinate):
     class DroppingTransport(StreamTransport):
         async def stream_json(self, **kwargs):
             self.requests.append(kwargs)
-            yield delta(
-                "response.reasoning_summary_text.delta", 0, "rs", "checking", summary_index=0
-            )
+            yield delta(f"response.{lane}.delta", 0, "rs", "checking", **{coordinate: 0})
             raise ProviderTransportError("disconnected", retryable=True)
 
     transport = DroppingTransport([])

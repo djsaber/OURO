@@ -170,9 +170,21 @@ Provider profile 只拥有 reasoning 相关顶层字段，禁止覆盖 `model`�
 Preset 包括：
 
 - `none`；
-- `openai-effort`、`reasoning-content-effort`；
+- `openai-effort`、`responses-effort`、`responses-effort-summary`、`reasoning-content-effort`；
 - `thinking-toggle`、`enable-thinking-toggle`；
 - `anthropic-adaptive-effort`。
+
+CLI 与 TUI 共用预设目录和协议兼容性校验。`responses-effort` 使用原生 `reasoning.effort`，
+声明 minimal、low、medium、high、xhigh、max 与 toggle 能力；默认意图沿用服务端默认值，
+显式 enabled 使用 medium，disabled 发送 none，续接为 opaque。`openai-effort` 使用
+Chat Completions 的顶层 `reasoning_effort`，不能用于 Responses。内置模型模板与自定义预设复用
+`responses_effort_reasoning`，该构造函数允许指定实际 `supported_efforts`、`default_effort` 与 `activation`。
+
+Responses 的输出声明与摘要请求独立：两个 Responses 预设均以 `output=summary` 开放可见思考，
+`responses-effort` 不附加摘要请求；`responses-effort-summary` 在 default、enabled 和各 effort variant
+中声明 `reasoning.summary=auto`，disabled 只发送 `effort=none`。构造函数的 `output` 默认为 none，
+`summary` 默认为不发送，可显式传入 auto、concise 或 detailed；模板必须按端点实际支持情况声明。
+用户配置的 output=none 仍过滤展示事件；服务端没有返回可见思考时，不从加密续接数据生成文本。
 
 Preset 是显式配置，不代表 OURO 自动探测了自定义模型。模型仅支持部分 effort 或使用不同参数时，完整 JSON
 必须只列出实际支持的 effort，声明明确的 `default_effort`，并为 `enabled`、可用 effort 以及可切换模型的

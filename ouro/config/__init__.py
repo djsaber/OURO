@@ -66,6 +66,7 @@ from ouro.config.reasoning import (
     mapped_reasoning,
     openai_effort_reasoning,
     reasoning_preset,
+    responses_effort_reasoning,
     toggle_reasoning,
     unsupported_reasoning,
 )
@@ -129,6 +130,7 @@ __all__ = [
     "mapped_reasoning",
     "openai_effort_reasoning",
     "reasoning_preset",
+    "responses_effort_reasoning",
     "prompt_config_to_public_dict",
     "queued_input_config_to_public_dict",
     "run_budget_to_public_dict",

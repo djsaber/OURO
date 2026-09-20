@@ -6,10 +6,12 @@ import pytest
 from textual.widgets import Input, OptionList
 
 from ouro.application.configuration import ConfigurationFacade
+from ouro.config import reasoning_preset
 from ouro.core.errors import ConfigError
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.provider_screens import (
     COMPATIBLE_PROVIDER_PROFILES,
+    EndpointConfigurationScreen,
     ProviderConfigurationScreen,
     ProviderSetupProfile,
     profile_for_provider,
@@ -59,6 +61,37 @@ async def select_choice(app, pilot, value):
     options.focus()
     await pilot.press("enter")
     await pilot.pause()
+
+
+@pytest.mark.parametrize("preset", ["responses-effort", "responses-effort-summary"])
+async def test_responses_endpoint_thinking_preset_can_be_selected_and_saved(tmp_path, preset):
+    app = OuroTuiApp(application=two_route_application(tmp_path))
+    facade = ConfigurationFacade(tmp_path)
+    facade.add_provider(
+        "gateway",
+        provider_type="openai-compatible",
+        protocol="openai-responses",
+        base_url="https://gateway.test/v1",
+    )
+    async with run_ready_app(app, size=(100, 34)) as pilot:
+        screen = EndpointConfigurationScreen(facade.provider("gateway"))
+        app.push_screen(screen)
+        await pilot.pause()
+        await select_choice(app, pilot, "endpoint-reasoning-preset")
+        options = app.screen.query_one("#choice-list", OptionList)
+        assert not options.get_option(preset).disabled
+        assert options.get_option("openai-effort").disabled
+        await select_choice(app, pilot, preset)
+        assert app.screen is screen
+        assert screen._reasoning_preset_name() == preset
+        await screen._save_field("endpoint-id", "main")
+        await screen._save_field("endpoint-model-id", "custom-model")
+        await app._controller.add_endpoint(screen._draft())
+        saved = facade.endpoint("gateway", "main")
+        assert saved.reasoning == reasoning_preset(preset)
+        assert saved.reasoning.capability.output == "summary"
+        editor = EndpointConfigurationScreen(facade.provider("gateway"), saved)
+        assert editor._reasoning_preset_name() == preset
 
 
 async def test_create_responses_provider_through_shared_menu_and_preserve_on_edit(tmp_path):

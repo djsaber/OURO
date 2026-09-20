@@ -78,7 +78,11 @@ def test_input_preserves_system_order_canonical_calls_and_tool_result_references
 
 
 def test_complete_items_survive_persistence_and_replace_canonical_reconstruction():
-    output = [reasoning(), message(phase="commentary"), call()]
+    output = [
+        reasoning(content=[{"type": "reasoning_text", "text": "analysis"}]),
+        message(phase="commentary"),
+        call(),
+    ]
     original = assistant(output)
     stored = MessageRecord(
         session_id="test",

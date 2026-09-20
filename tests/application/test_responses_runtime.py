@@ -155,6 +155,21 @@ def output_items(payload):
     return [item for item in payload["input"] if "id" in item]
 
 
+async def test_reasoning_text_is_persisted_separately_from_answer(responses_runtime):
+    build, replies, _, _ = responses_runtime
+    item = reasoning(summary=[], content=[{"type": "reasoning_text", "text": "analysis"}])
+    async with build() as app:
+        await login(app.provider_auth)
+        replies.append(terminal([item, message("answer")]))
+        result = await app.runtime.run("Explain briefly.")
+        assert result.run.status == "completed", result.run.error
+        assert result.final_text == "answer"
+        saved = app.runtime.store.load_session(result.session.session_id).messages
+        assistant = next(m for m in saved if m.role == "assistant")
+        assert assistant.reasoning_content == "analysis"
+        assert assistant.provider_continuation.blocks[0]["items"] == [item, message("answer")]
+
+
 async def test_tool_loop_persists_and_replays_after_restart_and_refresh(responses_runtime):
     build, replies, requests, executions = responses_runtime
     async with build() as app:

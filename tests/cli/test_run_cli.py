@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from ouro.application.compaction import LLMSummaryCompactionStrategy
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.runtime import RuntimeService
@@ -927,10 +929,25 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
     assert remove_payload["default_provider"] is None
 
 
+@pytest.mark.parametrize(
+    ("protocol", "preset", "enabled_payload"),
+    [
+        ("openai-chat-completions", "thinking-toggle", {"thinking": {"type": "enabled"}}),
+        ("openai-responses", "responses-effort", {"reasoning": {"effort": "medium"}}),
+        (
+            "openai-responses",
+            "responses-effort-summary",
+            {"reasoning": {"effort": "medium", "summary": "auto"}},
+        ),
+    ],
+)
 def test_provider_endpoint_reasoning_preset_configures_custom_model(
     tmp_path,
     monkeypatch,
     capsys,
+    protocol,
+    preset,
+    enabled_payload,
 ) -> None:
     monkeypatch.setenv("CUSTOM_KEY", "secret")
     assert (
@@ -945,6 +962,8 @@ def test_provider_endpoint_reasoning_preset_configures_custom_model(
                 "openai-compatible",
                 "--api-key-env",
                 "CUSTOM_KEY",
+                "--protocol",
+                protocol,
             ]
         )
         == 0
@@ -965,7 +984,7 @@ def test_provider_endpoint_reasoning_preset_configures_custom_model(
             "--base-url",
             "https://example.test/v1",
             "--reasoning-preset",
-            "thinking-toggle",
+            preset,
             "--default",
             "--json",
         ]
@@ -975,7 +994,13 @@ def test_provider_endpoint_reasoning_preset_configures_custom_model(
     assert code == 0
     reasoning = payload["endpoint"]["reasoning"]
     assert reasoning["capability"]["activation"] == "toggle"
-    assert reasoning["profile"]["variants"]["enabled"] == {"thinking": {"type": "enabled"}}
+    assert reasoning["profile"]["variants"]["enabled"] == enabled_payload
+    assert (
+        ConfigurationFacade(tmp_path)
+        .endpoint("custom", "chat")
+        .reasoning.model_dump(mode="json", exclude_none=True)
+        == reasoning
+    )
 
 
 def test_provider_check_cannot_target_internal_faux(tmp_path, capsys) -> None:

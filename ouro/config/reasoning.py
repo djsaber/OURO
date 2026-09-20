@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -19,6 +20,8 @@ from ouro.core.reasoning import (
 REASONING_PRESETS: tuple[str, ...] = (
     "none",
     "openai-effort",
+    "responses-effort",
+    "responses-effort-summary",
     "reasoning-content-effort",
     "thinking-toggle",
     "enable-thinking-toggle",
@@ -195,21 +198,33 @@ def openai_effort_reasoning(
 
 def responses_effort_reasoning(
     *,
-    supported_efforts: tuple[ReasoningEffort, ...],
+    supported_efforts: tuple[ReasoningEffort, ...] = REASONING_EFFORTS,
+    default_effort: ReasoningEffort = "medium",
     activation: ReasoningActivation = "toggle",
+    output: ReasoningOutput = "none",
+    summary: Literal["auto", "concise", "detailed"] | None = None,
 ) -> EndpointReasoningConfig:
     """Declare native Responses effort controls and preserve opaque reasoning."""
+    summary_options = {"summary": summary} if summary is not None else {}
     variants: dict[ReasoningVariant, Mapping[str, object]] = {
-        "enabled": {"reasoning": {"effort": "medium"}},
-        **{effort: {"reasoning": {"effort": effort}} for effort in supported_efforts},
+        "enabled": {"reasoning": {"effort": default_effort, **summary_options}},
+        **{
+            effort: {"reasoning": {"effort": effort, **summary_options}}
+            for effort in supported_efforts
+        },
     }
+    if summary is not None:
+        # Requesting a summary is opt-in; receiving visible reasoning does not
+        # imply the endpoint accepts this optional request parameter.
+        variants["default"] = {"reasoning": summary_options}
     if activation == "toggle":
         variants["disabled"] = {"reasoning": {"effort": "none"}}
     return mapped_reasoning(
         name="responses-effort",
         activation=activation,
         supported_efforts=supported_efforts,
-        default_effort="medium",
+        default_effort=default_effort,
+        output=output,
         continuation="opaque",
         variants=variants,
     )
@@ -242,6 +257,10 @@ def reasoning_preset(name: str) -> EndpointReasoningConfig:
         return unsupported_reasoning()
     if normalized == "openai-effort":
         return openai_effort_reasoning()
+    if normalized == "responses-effort":
+        return responses_effort_reasoning(output="summary")
+    if normalized == "responses-effort-summary":
+        return responses_effort_reasoning(output="summary", summary="auto")
     if normalized == "reasoning-content-effort":
         return openai_effort_reasoning(output="text", continuation="text")
     if normalized == "thinking-toggle":

@@ -62,18 +62,25 @@ def output_item(item: object) -> dict[str, Any]:
     elif kind in {"message", "reasoning"}:
         if kind == "message" and item.get("role") != "assistant":
             raise ResponsesError("invalid_output_item")
-        parts = item.get("content") if kind == "message" else item.get("summary", [])
-        if not isinstance(parts, list):
-            raise ResponsesError("invalid_output_item")
-        for part in parts:
-            if not isinstance(part, dict):
+        fields = (
+            (("content", {"output_text", "refusal"}),)
+            if kind == "message"
+            else (("summary", {"summary_text"}), ("content", {"reasoning_text"}))
+        )
+        for field, allowed in fields:
+            parts = item.get(field)
+            if kind == "reasoning" and parts is None:
+                continue
+            if not isinstance(parts, list):
                 raise ResponsesError("invalid_output_item")
-            allowed = {"output_text", "refusal"} if kind == "message" else {"summary_text"}
-            if not isinstance(part.get("type"), str) or part["type"] not in allowed:
-                raise ResponsesError("unsupported_output_item")
-            key = "refusal" if part["type"] == "refusal" else "text"
-            if not isinstance(part.get(key), str):
-                raise ResponsesError("invalid_output_item")
+            for part in parts:
+                if not isinstance(part, dict):
+                    raise ResponsesError("invalid_output_item")
+                if not isinstance(part.get("type"), str) or part["type"] not in allowed:
+                    raise ResponsesError("unsupported_output_item")
+                key = "refusal" if part["type"] == "refusal" else "text"
+                if not isinstance(part.get(key), str):
+                    raise ResponsesError("invalid_output_item")
         if kind == "reasoning" and item.get("encrypted_content") is not None:
             if not isinstance(item["encrypted_content"], str):
                 raise ResponsesError("invalid_output_item")

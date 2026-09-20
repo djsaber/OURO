@@ -101,6 +101,7 @@ class ResponsesStreamDecoder:
         lanes = {
             "response.output_text": ("message", "output_text", "content_index", "text"),
             "response.refusal": ("message", "refusal", "content_index", "refusal"),
+            "response.reasoning_text": ("reasoning", "reasoning_text", "content_index", "text"),
             "response.reasoning_summary_text": (
                 "reasoning",
                 "summary_text",
@@ -231,18 +232,25 @@ class ResponsesStreamDecoder:
                 _tool_delta(tool.ordinal, arguments=tool.arguments.finish(item["arguments"]))
             )
             return events
-        parts = item.get("content" if item["type"] == "message" else "summary", [])
         events = []
         keys = set()
-        for part_index, part in enumerate(parts):
-            lane = part["type"]
-            key = (index, lane, part_index)
-            keys.add(key)
-            progress = self._text.setdefault(key, _Text())
-            events.extend(
-                _display(lane, progress.finish(part["refusal" if lane == "refusal" else "text"]))
-            )
-        if any(key[0] == index and key not in keys for key in self._text):
+        fields = ("content",) if item["type"] == "message" else ("summary", "content")
+        for content_field in fields:
+            for part_index, part in enumerate(item.get(content_field) or []):
+                lane = part["type"]
+                key = (index, lane, part_index)
+                keys.add(key)
+                progress = self._text.setdefault(key, _Text())
+                events.extend(
+                    _display(
+                        lane, progress.finish(part["refusal" if lane == "refusal" else "text"])
+                    )
+                )
+        # Visible reasoning may be streamed without being repeated in the
+        # replay item. Preserve the native item rather than synthesizing text.
+        if item["type"] == "message" and any(
+            key[0] == index and key not in keys for key in self._text
+        ):
             raise ResponsesError("conflicting_output_item")
         return events
 
@@ -257,7 +265,7 @@ def _index(event: dict[str, Any], key: str) -> int:
 def _display(lane: str, text: str) -> list[ProviderStreamEvent]:
     if not text:
         return []
-    if lane == "summary_text":
+    if lane in {"summary_text", "reasoning_text"}:
         return [ProviderStreamEvent(type="reasoning_delta", reasoning_content=text)]
     return [ProviderStreamEvent(type="text_delta", text=text)]
 

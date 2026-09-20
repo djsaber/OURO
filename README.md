@@ -299,11 +299,34 @@ uv run ouro provider endpoint list glm --home ./.ouro-dev
 TUI 在 `Add provider → OpenAI-compatible → Protocol` 中选择协议，复用分组菜单与子选择页；切换协议时
 同步默认 API 路径，保留自定义路径。已有供应商的协议只读，普通编辑保留协议和 Endpoint。
 
-`--reasoning-preset` 提供 `none`、`openai-effort`、`reasoning-content-effort`、
+`--reasoning-preset` 提供 `none`、`openai-effort`、`responses-effort`、`responses-effort-summary`、`reasoning-content-effort`、
 `thinking-toggle`、`enable-thinking-toggle` 和 `anthropic-adaptive-effort`。Preset 是用户对目标模型协议能力的
 显式声明，不是自动探测；若模型只支持部分等级，或参数值与 preset 不同，应使用
 `--reasoning-config '<JSON>'` 完整声明 capability 与各 variant 的原生请求片段。思考配置归 Endpoint 所有，
 因此 `openai-compatible` 和 `anthropic-compatible` 的任意自定义模型都使用同一套配置与运行时 flags。
+
+Responses 端点选择 `responses-effort`（TUI 的 `Thinking preset → OpenAI Responses effort`），
+将统一等级编码为 `reasoning.effort`；`openai-effort` 使用 Chat Completions 的 `reasoning_effort`。
+例如，为已经使用 `openai-responses` 的供应商声明端点并指定单次运行等级：
+
+```bash
+uv run ouro provider endpoint set gateway custom --model custom-model --reasoning-preset responses-effort
+uv run ouro run --provider gateway --endpoint custom --thinking-effort high --prompt "检查实现"
+```
+
+`responses-effort` 声明 minimal、low、medium、high、xhigh、max 和开关能力；默认意图保留服务端默认值，
+显式 enabled 且未指定等级时使用 medium，disabled 编码为 none。支持等级取决于目标模型，
+不支持关闭或仅支持部分等级的模型应使用内置模型模板，或通过 `--reasoning-config` / TUI 的
+`Thinking settings (JSON)` 声明实际能力与对应 variants；Python 配置可使用 `responses_effort_reasoning`
+指定 `supported_efforts`、`default_effort` 和 `activation`，用 `output` 控制可见输出，用可选 `summary`
+声明原生摘要请求。协议字段见
+[OpenAI 推理文档](https://developers.openai.com/api/docs/guides/reasoning)。
+
+`responses-effort` 将 `capability.output` 设为 `summary`，展示服务端返回的思考摘要或文本，不额外发送
+`reasoning.summary`。需要显式请求摘要且服务端支持该参数时，选择 `responses-effort-summary`
+（TUI 的 `OpenAI Responses effort + request summary`）；它在默认及开启思考时发送 `summary: "auto"`。
+仅有加密续接数据时不生成可见思考。已有端点可在 `Thinking settings (JSON)` 中将 `capability.output`
+设为 `summary`，保留自身等级与参数映射；TUI 的思考展开设置独立控制显示折叠状态。
 
 TUI 欢迎页可通过 `/workspace <path>` 为尚未创建的会话选择工作空间；输入命令后回车可从最近 20 条
 历史目录中选择，也可继续输入其他目录。会话一旦创建，工作空间即固定，需使用 `/new` 返回新会话欢迎页后

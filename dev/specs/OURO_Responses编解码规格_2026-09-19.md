@@ -34,6 +34,13 @@ managed scope 使用稳定服务/账户身份，刷新 revision 不改变 scope�
 
 ## 完整续接
 
+可见思考支持 `response.reasoning_summary_text.delta/done` 与 `response.reasoning_text.delta/done`，
+分别按 summary_index 和 content_index 跟踪，并从终态 reasoning item 的 summary/content 补齐未展示的文本。
+两条流均投影为 canonical reasoning，不混入回答正文；重复完成通知不重复展示，已返回的文本发生冲突时拒绝。
+reasoning 的 summary/content 可缺省、为 null 或为空，终态无需重复流式思考文本；完整原生 item 仍原样续接，
+不将仅用于展示的 delta 拼造为续接数据。消息正文、工具参数、关联身份与成功终态继续接受既有校验。
+事件与字段定义见 [OpenAI 流式事件规范](https://developers.openai.com/api/reference/resources/responses/streaming-events)。
+
 完整输出只从 output_item.done 与可选的终态 output 快照收集，不由 delta 重建。ResponseItems 按 output_index 保存顺序，验证同位置 type/id 一致、已提供的 item id 不跨位置重复、索引连续、已观察 item 均完成。重复完整快照可递归补齐缺失字段，包括 content/summary 内的 annotations 等附加信息；数组位置与长度必须一致，已有值冲突不能覆盖，不能改写文本、工具参数或加密续接。返回数据使用独立副本。隔离探针复用此收集器。
 
 接收字段以官方 schema 的含义为准，校验限于 OURO 消费及重放所需的语义，不要求服务复刻全部响应元数据。function_call.id/status 可省略，id 可为 null；call_id、name 和合法 arguments 仍必需，不以 item id 替代 call_id，也不伪造 id。message/reasoning 的 id、消息 role/type 与内容类型维持明确校验。省略 annotations/usage 或提供未知附加字段不会单独导致失败；提供的实际 usage 则须合法。未知元数据事件可忽略，未知内容/可执行类型明确拒绝，避免把未支持能力误报为成功。

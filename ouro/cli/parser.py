@@ -1186,6 +1186,8 @@ Use 'ouro provider endpoint set --help' for custom capability and reasoning cont
     --reasoning-preset reasoning-content-effort --default
   ouro provider endpoint set claude custom --model custom-claude \\
     --reasoning-preset anthropic-adaptive-effort
+  ouro provider endpoint set responses custom --model custom-model \\
+    --reasoning-preset responses-effort
 
 Reasoning presets:
   {", ".join(REASONING_PRESETS)}
@@ -1193,6 +1195,12 @@ Reasoning presets:
 Presets are explicit declarations, not capability detection. Use --reasoning-config when a
 model supports different native fields or only a subset of efforts. Its JSON shape is:
   {{"capability": {{...}}, "profile": {{"name": "...", "variants": {{...}}}}}}
+
+Use responses-effort for openai-responses (reasoning.effort); openai-effort uses the
+Chat Completions reasoning_effort field. Responses default inherits the provider setting;
+enabled without an effort selects medium, and disabled sends none.
+Both responses-effort and responses-effort-summary expose returned reasoning text.
+Only responses-effort-summary requests reasoning.summary=auto; use it when supported.
 
 Reasoning-owned fields must not also appear in --request-options. Invalid or incomplete
 contracts are rejected before configuration is written.""",

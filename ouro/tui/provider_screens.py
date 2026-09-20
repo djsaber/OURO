@@ -28,7 +28,9 @@ from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 
 _REASONING_PRESET_LABELS = {
     "none": "None",
-    "openai-effort": "OpenAI effort",
+    "openai-effort": "OpenAI Chat Completions effort",
+    "responses-effort": "OpenAI Responses effort",
+    "responses-effort-summary": "OpenAI Responses effort + request summary",
     "reasoning-content-effort": "Thinking level (reasoning_content)",
     "thinking-toggle": "Thinking switch (thinking)",
     "enable-thinking-toggle": "Thinking switch (enable_thinking)",
