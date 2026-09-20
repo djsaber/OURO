@@ -5,6 +5,7 @@
 OURO 是本地优先的 Agent 框架，包含：
 
 - 可恢复的 Session/Run、files 与 SQLite 持久化、排队输入、撤销与分支。
+- Host 中立的会话摘要历史查询，支持历次保留结果与当前生效状态；CLI `session summary` 支持文本/JSON，TUI `/summary` 仅显示当前会话最新一次摘要，沿用命令输出样式且不展示会话 ID，只读查询且不调用模型。
 - TUI 会话加载与模型可用性解耦：失效路由不阻断历史恢复与观察，保留历史上下文用量，并允许重新选择有效模型继续对话。
 - Provider/Endpoint 配置、流式模型调用、工具权限、人工协同、资源与上下文压缩。
 - CLI/TUI 共用 `openai-responses-effort` 思考预设，将端点等级与开关编码为 Responses 原生 `reasoning.effort`，沿用能力校验与 opaque 续接；配置构造函数支持端点自定义默认等级。

@@ -159,6 +159,11 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
         "Compress older conversation history to free up space",
     ),
     TuiCommand(
+        "/summary",
+        "Session summary",
+        "Show the latest saved summary for the current session",
+    ),
+    TuiCommand(
         "/skill",
         "Use skill",
         "Send a task using a chosen skill",

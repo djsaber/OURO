@@ -69,6 +69,7 @@ TUI 经 `TuiController` 调用 Application，使用 Runtime 事件与 Session ob
   `--reasoning-config` 声明思考契约；
 - `provider auth methods/login/status/logout/list/forget` 使用轻量认证用例，见下节；
 - `session ...` 管理持久化会话；
+- `session summary <session_id> [--json]` 通过轻量 SessionService 查询历次保留的压缩摘要，按持久化顺序输出完整正文、生成时间、触发方式与当前生效标记；支持 `--home` 和 `--session-backend`，不构造模型或触发压缩。JSON 返回 `status/session_id/summaries`，空历史为 `summaries: []`；查询错误沿用 CLI 错误与退出码契约。
 - `resource import/list/show/export/remove` 管理 Session 可达的内容寻址资源；
 - `agent definition ...` 管理 builtin/user AgentDefinition 与工具兼容性；
 - `agent list|show|spawn|wait|send|interrupt|close|tree|interactions` 查询和控制 durable subagent；

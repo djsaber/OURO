@@ -79,6 +79,7 @@ from ouro.cli.session_commands import (
     set_session_tags,
     show_session,
     show_session_context,
+    show_session_summaries,
 )
 from ouro.cli.skills import (
     install_skills,
@@ -218,6 +219,13 @@ def _session_command(args: argparse.Namespace) -> int:
         )
     if command == "show":
         return show_session(
+            args.session_id,
+            home=home,
+            json_mode=args.json,
+            session_backend=session_backend,
+        )
+    if command == "summary":
+        return show_session_summaries(
             args.session_id,
             home=home,
             json_mode=args.json,

@@ -36,7 +36,7 @@ from ouro.application.event_models import RuntimeEventView
 from ouro.application.models import AvailableModel, ModelReasoningState
 from ouro.application.queued_inputs import QueuedInputMode, QueuedUserInputView
 from ouro.application.runtime_activity import overlay_run_activity
-from ouro.application.session_models import SessionCatalogEntry
+from ouro.application.session_models import SessionCatalogEntry, SessionSummary
 from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.supervisor import RuntimeSubscription
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
@@ -2698,6 +2698,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         elif command.name == "/compact":
             if not argument:
                 self._compact_session()
+        elif command.name == "/summary":
+            if argument:
+                self.notify("Usage: /summary", severity="warning")
+            else:
+                self._show_session_summaries()
         elif command.name == "/skill":
             await self._submit_skill(argument)
         elif command.name == "/unqueue":
@@ -3016,6 +3021,25 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if creating_projection:
                 self._waiting_for_session_event = False
                 self._sync_interaction_focus(self._interaction)
+
+    @work(exclusive=True, group="session-summary")
+    async def _show_session_summaries(self) -> None:
+        session_id = self._visible_session_id()
+        if session_id is None:
+            self.notify("Open a session to view summaries", severity="warning")
+            return
+        try:
+            summaries = await self._controller.session_summaries(session_id)
+        except Exception as exc:  # noqa: BLE001 - query errors are user-visible.
+            _LOG.warning("Could not load session summaries: %s", exc)
+            self.notify("Could not load summaries for the current session", severity="error")
+            return
+        async with self._runtime_event_apply_lock:
+            if not self._surface_available() or self._visible_session_id() != session_id:
+                return
+            await self.query_one(ConversationView).add_command_output(
+                _format_session_summaries(summaries)
+            )
 
     @work(exclusive=True, group="compaction")
     async def _compact_session(self) -> None:
@@ -4773,6 +4797,19 @@ def _reasoning_description(value: str) -> str:
     if value == "disabled":
         return "Turn off thinking for future replies"
     return f"Use {THINKING_LABELS[value].lower()} thinking effort"
+
+
+def _format_session_summaries(summaries: tuple[SessionSummary, ...]) -> str:
+    if not summaries:
+        return "No summaries for the current session."
+    latest = summaries[-1]
+    state = "active" if latest.active else "inactive"
+    return (
+        f"Latest session summary\n\n"
+        f"{latest.compaction_id} [{state}]\n"
+        f"Created: {latest.created_at.isoformat()}\n"
+        f"Trigger: {latest.trigger}\n\n{latest.summary}"
+    )
 
 
 def _format_reasoning_state(state: ModelReasoningState) -> str:

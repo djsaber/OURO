@@ -52,6 +52,7 @@ from ouro.application.session_models import (
     SessionMutationResult,
     SessionObservationSnapshot,
     SessionReplay,
+    SessionSummary,
     SessionTrashResult,
     SessionView,
 )
@@ -147,6 +148,7 @@ __all__ = [
     "SessionMutationResult",
     "SessionObservationSnapshot",
     "SessionReplay",
+    "SessionSummary",
     "SessionTrashResult",
     "SessionView",
     "SpawnAgentRequest",

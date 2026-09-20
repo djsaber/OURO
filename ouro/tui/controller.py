@@ -63,6 +63,7 @@ from ouro.application.session_models import (
     SessionDetail,
     SessionMessagePage,
     SessionObservationSnapshot,
+    SessionSummary,
     SessionUndoResult,
     SessionView,
 )
@@ -2121,6 +2122,11 @@ class TuiController:
         await asyncio.to_thread(runtime.set_session_reasoning, session_id, reasoning_request)
         await self._unarchive_current_session_after_update()
         return await asyncio.to_thread(runtime.session_reasoning, session_id)
+
+    async def session_summaries(self, session_id: str) -> tuple[SessionSummary, ...]:
+        """Query summary history without changing the controlled Session."""
+
+        return await asyncio.to_thread(self._runtime().sessions.summaries, session_id)
 
     async def load_session(self, session_id: str) -> LoadedSession:
         loaded, control_archived = await asyncio.to_thread(

@@ -608,6 +608,14 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
     _add_session_backend_arg(show_parser)
     show_parser.add_argument("--json", action="store_true", help="Print JSON")
 
+    summary_parser = session_subparsers.add_parser(
+        "summary", help="Show all saved session compaction summaries"
+    )
+    summary_parser.add_argument("session_id", help="Session id")
+    summary_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(summary_parser)
+    summary_parser.add_argument("--json", action="store_true", help="Print JSON")
+
     context_parser = session_subparsers.add_parser(
         "context",
         help="Show the latest prepared Provider request context",

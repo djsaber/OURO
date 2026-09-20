@@ -7,7 +7,7 @@ from pydantic import Field
 
 from ouro.application.dto import ApplicationDTO, Diagnostic
 from ouro.core.approvals import SessionApprovalMode
-from ouro.core.compaction import CompactionRecord
+from ouro.core.compaction import CompactionRecord, CompactionTrigger
 from ouro.core.context import ContextMetrics, ProviderContext
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.events import EventRecord
@@ -196,6 +196,17 @@ class SessionDetail(ApplicationDTO):
     recent_run: RunRecord | None = None
     active_compaction: CompactionRecord | None = None
     diagnostics: tuple[Diagnostic, ...] = ()
+
+
+class SessionSummary(ApplicationDTO):
+    """One persisted compaction summary and its state at the query boundary."""
+
+    session_id: str
+    compaction_id: str
+    created_at: datetime
+    trigger: CompactionTrigger
+    summary: str
+    active: bool
 
 
 class SessionContextStatus(ApplicationDTO):

@@ -30,6 +30,7 @@ from ouro.application.session_models import (
     SessionMutationResult,
     SessionObservationSnapshot,
     SessionReplay,
+    SessionSummary,
     SessionTrashResult,
     SessionUndoResult,
     SessionView,
@@ -195,6 +196,35 @@ class SessionService:
 
         self._require_session(session_id)
         return tuple(self._store.load_compactions(session_id))
+
+    def summaries(self, session_id: str) -> tuple[SessionSummary, ...]:
+        """Read all retained summaries in persistence order, without running recovery.
+
+        Summary text and the active pointer share one snapshot boundary. Querying
+        history requires neither a model nor loading messages and runtime events.
+        """
+
+        with self._store.session_mutation(session_id):
+            session = self._load_session_record(session_id)
+            compactions = self._store.load_compactions(session_id)
+            active_id = session.active_compaction_id
+            if active_id is not None and not any(
+                item.compaction_id == active_id for item in compactions
+            ):
+                raise PersistenceError(
+                    f"session {session_id} references missing compaction {active_id}"
+                )
+            return tuple(
+                SessionSummary(
+                    session_id=session_id,
+                    compaction_id=item.compaction_id,
+                    created_at=item.created_at,
+                    trigger=item.trigger,
+                    summary=item.summary,
+                    active=item.compaction_id == active_id,
+                )
+                for item in compactions
+            )
 
     def context(self, session_id: str) -> SessionContextSnapshot | None:
         self._require_session(session_id)

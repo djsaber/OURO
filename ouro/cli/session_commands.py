@@ -336,6 +336,44 @@ def show_session(
     return 0
 
 
+def show_session_summaries(
+    session_id: str,
+    *,
+    home: str | Path | None = None,
+    json_mode: bool = False,
+    session_backend: SessionBackend | None = None,
+) -> int:
+    try:
+        summaries = _sessions(home, session_backend).summaries(session_id)
+    except OuroError as exc:
+        _print_error(exc, json_mode=json_mode)
+        return error_exit_code(exc)
+
+    if json_mode:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "session_id": session_id,
+                    "summaries": [item.model_dump(mode="json") for item in summaries],
+                },
+                ensure_ascii=False,
+            )
+        )
+    elif not summaries:
+        print(f"No summaries for session {session_id}.")
+    else:
+        print(f"Session summaries: {session_id}")
+        for index, item in enumerate(summaries, start=1):
+            state = "active" if item.active else "inactive"
+            print(
+                f"\n#{index} {item.compaction_id} [{state}]\n"
+                f"Created: {item.created_at.isoformat()}\n"
+                f"Trigger: {item.trigger}\n\n{item.summary}"
+            )
+    return 0
+
+
 async def show_session_context(
     session_id: str,
     *,

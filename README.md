@@ -364,6 +364,8 @@ TUI 的 `/undo` 撤回最近一条直接用户输入；有待消费的排队输�
 ```bash
 uv run ouro session list --home ./.ouro-dev --search auth --no-archived
 uv run ouro session show <session_id> --home ./.ouro-dev
+uv run ouro session summary <session_id> --home ./.ouro-dev
+uv run ouro session summary <session_id> --home ./.ouro-dev --json
 uv run ouro session context <session_id> --home ./.ouro-dev
 uv run ouro session context <session_id> --home ./.ouro-dev --content --json
 uv run ouro session rename <session_id> "Auth refactor" --home ./.ouro-dev
@@ -405,6 +407,9 @@ PDF 可存储和导出，但在接入专用解析 adapter 前不能直接投影�
 
 `run --queue-mode follow-up|steer` 选择排队交付边界。follow-up 在当前 Run 结束后进入后续 Run，steer 在当前
 完整 model turn 结束后进入同一 Run。TUI 在 Composer 中提供同一输入交付模式。
+`session summary <session_id>` 查询会话历次保留的压缩摘要，显示完整正文、生成时间和生效状态，支持 `--json`。
+TUI 使用无参数命令 `/summary` 仅显示当前可见会话最新一次摘要，命令输出和提示不展示会话 ID。查询不会调用模型或改变会话状态。
+
 `session context [--content]` 读取最近一次真实 Provider 请求的指标或完整 system prompt、messages 和 tools；
 TUI 可从 Actions 查看相同的上下文快照。
 
