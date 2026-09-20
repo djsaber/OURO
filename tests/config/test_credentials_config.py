@@ -109,7 +109,8 @@ def test_provider_options_are_replaceable_defaults_with_owned_field_validation(
         "chat",
         model_id="custom-model",
     )
-    assert endpoint.supports_tools is False
+    assert endpoint.supports_tools is True
+    assert endpoint.supports_structured_output is True
 
     updated = manager.update_provider(
         "custom",
@@ -638,6 +639,20 @@ def test_unknown_explicit_default_provider_fails_visibly(tmp_path) -> None:
 def test_default_api_path_per_provider_protocol() -> None:
     assert default_api_path("openai-chat-completions") == "/chat/completions"
     assert default_api_path("faux") is None
+
+
+def test_endpoint_capability_defaults_match_mapping_defaults() -> None:
+    endpoint = ProviderEndpointConfig(endpoint_id="chat", model_id="chat-model")
+    mapped = endpoint_config_from_mapping("chat", {"model_id": "chat-model"})
+
+    assert endpoint.supports_tools is True
+    assert endpoint.supports_vision is False
+    assert endpoint.supports_streaming is True
+    assert endpoint.supports_structured_output is True
+    assert mapped.supports_tools is True
+    assert mapped.supports_vision is False
+    assert mapped.supports_streaming is True
+    assert mapped.supports_structured_output is True
 
 
 def test_endpoint_api_path_is_optional_and_normalized() -> None:

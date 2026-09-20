@@ -7249,7 +7249,8 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
             "REQUEST",
             "ACTIONS",
         ]
-        assert screen._capabilities["endpoint-tools"] is False
+        assert screen._capabilities["endpoint-tools"] is True
+        assert screen._capabilities["endpoint-structured-output"] is True
 
         options = screen.query_one("#choice-list", OptionList)
         for field_id, value in (
@@ -7350,9 +7351,10 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         assert draft.model_id == "provider-model"
         assert draft.context_window == 100
         assert draft.max_output_tokens == 50
-        assert draft.supports_tools is False
+        assert draft.supports_tools is True
         assert draft.supports_vision is True
         assert draft.supports_streaming is True
+        assert draft.supports_structured_output is True
         assert draft.reasoning is not None
         assert draft.reasoning.profile is not None
         assert draft.reasoning.profile.name == "vendor-thinking"

@@ -311,7 +311,7 @@ class TuiEndpointConfiguration:
     supports_tools: bool = True
     supports_vision: bool = False
     supports_streaming: bool = True
-    supports_structured_output: bool = False
+    supports_structured_output: bool = True
     reasoning: EndpointReasoningConfig | None = None
     request_options: dict[str, object] | None = None
 

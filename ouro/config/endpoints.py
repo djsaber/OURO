@@ -49,10 +49,10 @@ class ProviderEndpointConfig(OuroModel):
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     context_window: int = Field(default=128_000, ge=1)
     max_output_tokens: int = Field(default=8192, ge=1)
-    supports_tools: bool = False
+    supports_tools: bool = True
     supports_vision: bool = False
     supports_streaming: bool = True
-    supports_structured_output: bool = False
+    supports_structured_output: bool = True
     reasoning: EndpointReasoningConfig = Field(default_factory=EndpointReasoningConfig)
     request_options: Metadata = MetadataField
     metadata: Metadata = MetadataField
@@ -115,7 +115,7 @@ def endpoint_config_from_mapping(
         supports_tools=raw.get("supports_tools", True),
         supports_vision=raw.get("supports_vision", False),
         supports_streaming=raw.get("supports_streaming", True),
-        supports_structured_output=raw.get("supports_structured_output", False),
+        supports_structured_output=raw.get("supports_structured_output", True),
         reasoning=EndpointReasoningConfig.model_validate(raw.get("reasoning") or {}),
         request_options=dict(raw.get("request_options") or {}),
         metadata=dict(raw.get("metadata") or {}),

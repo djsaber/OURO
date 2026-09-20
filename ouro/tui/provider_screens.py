@@ -425,11 +425,11 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             "endpoint-request-options": request_options,
         }
         self._capabilities = {
-            "endpoint-tools": existing.supports_tools if existing is not None else False,
+            "endpoint-tools": existing.supports_tools if existing is not None else True,
             "endpoint-vision": existing.supports_vision if existing is not None else False,
             "endpoint-streaming": (existing.supports_streaming if existing is not None else True),
             "endpoint-structured-output": (
-                existing.supports_structured_output if existing is not None else False
+                existing.supports_structured_output if existing is not None else True
             ),
         }
         super().__init__(
