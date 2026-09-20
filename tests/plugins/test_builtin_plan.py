@@ -62,6 +62,7 @@ class PlanBuildProvider:
         system_prompt="",
         messages,
         tools=None,
+        request_context=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt
         self.requests.append(list(messages))
@@ -121,7 +122,7 @@ class PlanBuildProvider:
         yield ProviderStreamEvent.from_tool_call(call)
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model) -> ProviderCheckResult:
+    async def check_connection(self, model, *, request_context=None) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,
@@ -145,6 +146,7 @@ class FinalProvider:
         system_prompt="",
         messages,
         tools=None,
+        request_context=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt
         self.messages = list(messages)
@@ -152,7 +154,7 @@ class FinalProvider:
         yield ProviderStreamEvent(type="text_delta", text="Plan approved; ready to implement.")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model) -> ProviderCheckResult:
+    async def check_connection(self, model, *, request_context=None) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,
@@ -176,6 +178,7 @@ class PlanToolAttemptProvider:
         system_prompt="",
         messages,
         tools=None,
+        request_context=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, messages, tools
         if self.stream_count == 0:
@@ -199,7 +202,7 @@ class PlanToolAttemptProvider:
         self.stream_count += 1
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model) -> ProviderCheckResult:
+    async def check_connection(self, model, *, request_context=None) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,
@@ -222,6 +225,7 @@ class PlainTextProvider:
         system_prompt="",
         messages,
         tools=None,
+        request_context=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, tools
         self.stream_count += 1
@@ -229,7 +233,7 @@ class PlainTextProvider:
         yield ProviderStreamEvent(type="text_delta", text="Planning can continue later.")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model) -> ProviderCheckResult:
+    async def check_connection(self, model, *, request_context=None) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,

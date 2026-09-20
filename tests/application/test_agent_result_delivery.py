@@ -16,7 +16,7 @@ class ResultProvider:
         self.failed = failed
         self.parent_inputs = []
 
-    async def stream(self, *, model, messages, system_prompt="", tools=None):
+    async def stream(self, *, model, messages, system_prompt="", tools=None, request_context=None):
         primary = any(tool["name"] == "SpawnAgent" for tool in tools or [])
         if primary:
             self.parent_inputs.append(tuple(message.text_content for message in messages))

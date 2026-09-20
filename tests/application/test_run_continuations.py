@@ -113,14 +113,16 @@ class CountingProvider:
         self.calls = 0
         self.contexts = []
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, tools
         self.calls += 1
         self.contexts.append(list(messages))
         yield ProviderStreamEvent(type="text_delta", text=f"answer-{self.calls}")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,

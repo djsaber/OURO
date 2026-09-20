@@ -61,6 +61,7 @@ TUI 经 `TuiController` 调用 Application，使用 Runtime 事件与 Session ob
 
 - `provider list/show/templates/restore-template/add/update/replace/use/remove/check` 管理供应商与内置模板；
 - `provider add <id> --type <type>` 是唯一创建入口：内置厂商类型自动装载模板，compatible 类型创建空 Provider；
+- `provider add/update/replace --headers '<JSON>'` 接受 Provider 级请求头声明，值来源为 literal/env/context；省略保留当前值（创建与 replace 使用空配置），`{}` 清空，非空对象整组替换。`show` 和 JSON 结果隐藏所有 literal 值，只公开头名、来源与引用；字段和解析契约见 Provider 配置规格。
 - 同 id 创建失败并提示 `provider update` 或 `provider replace`；内部 Faux 不出现在用户侧 Provider 命令中；
 - 模板来源 Provider 的 `provider update` 返回三方合并报告；TUI Provider 子菜单的 `Update from preset` 调用
   同一 application 用例，不在 Host 重写合并规则；

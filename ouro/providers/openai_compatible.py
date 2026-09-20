@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 from ouro.auth.request_auth import RequestAuthenticator, StaticRequestAuthenticator
+from ouro.config.provider_headers import ProviderHeaderValue
 from ouro.core.messages import ModelMessage, ProviderContinuationArtifact
 from ouro.core.provider import (
     ModelMetadata,
@@ -14,11 +15,13 @@ from ouro.core.provider import (
     ProviderStreamEvent,
     Usage,
 )
+from ouro.core.request_context import ProviderRequestContext
 from ouro.providers.authentication import (
     ProviderRequestPolicy,
     request_authentication,
     safe_response_event,
 )
+from ouro.providers.headers import ProviderHeaderResolver
 from ouro.providers.http_transport import (
     HttpxProviderHTTPTransport,
     ProviderHTTPTransport,
@@ -37,6 +40,7 @@ from ouro.providers.openai_codec import (
     messages_to_openai,
 )
 from ouro.providers.reasoning import ReasoningPayloadEncoder
+from ouro.providers.request_context import model_request_context
 from ouro.providers.retrying import stream_with_retries
 
 
@@ -55,6 +59,7 @@ class OpenAICompatibleProvider:
         timeout: float = 60.0,
         transport: ProviderHTTPTransport | None = None,
         default_headers: Mapping[str, str] | None = None,
+        headers: Mapping[str, ProviderHeaderValue] | None = None,
         request_options: Mapping[str, Any] | None = None,
         reasoning_encoder: ReasoningPayloadEncoder | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
@@ -72,6 +77,8 @@ class OpenAICompatibleProvider:
         self.timeout = timeout
         self.transport = transport or HttpxProviderHTTPTransport()
         self.default_headers = dict(default_headers or {})
+        self.header_resolver = ProviderHeaderResolver(headers)
+        self.redact_errors = bool(headers)
         self.request_options = dict(request_options or {})
         self.reasoning_encoder = reasoning_encoder or ReasoningPayloadEncoder(None)
         self.retry_policy = retry_policy or ProviderRetryPolicy()
@@ -88,13 +95,17 @@ class OpenAICompatibleProvider:
         system_prompt: str = "",
         messages: list[ModelMessage],
         tools: list[dict[str, Any]] | None = None,
+        request_context: ProviderRequestContext | None = None,
     ) -> AsyncIterator[ProviderStreamEvent]:
+        request_context = model_request_context(model, request_context)
+        headers = self.header_resolver.resolve(request_context, defaults=self._headers())
         async for event in stream_with_retries(
             lambda: self._stream_once(
                 model=model,
                 system_prompt=system_prompt,
                 messages=messages,
                 tools=tools,
+                headers=headers,
             ),
             self.retry_policy,
         ):
@@ -107,11 +118,13 @@ class OpenAICompatibleProvider:
         system_prompt: str,
         messages: list[ModelMessage],
         tools: list[dict[str, Any]] | None,
+        headers: Mapping[str, str],
     ) -> AsyncIterator[ProviderStreamEvent]:
         async with request_authentication(
             self.authenticator,
             url=f"{self.base_url}{self.endpoint}",
-            headers=self._headers(),
+            headers=headers,
+            redact_errors=self.redact_errors,
             policy=self.request_policy,
         ) as snapshot:
             async for event in self._stream_response(
@@ -121,7 +134,7 @@ class OpenAICompatibleProvider:
                 tools=tools,
                 headers=snapshot.headers,
             ):
-                yield safe_response_event(event, snapshot)
+                yield safe_response_event(event, snapshot, redact_errors=self.redact_errors)
 
     async def _stream_response(
         self,
@@ -170,10 +183,15 @@ class OpenAICompatibleProvider:
         ):
             yield event
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context: ProviderRequestContext | None = None
+    ) -> ProviderCheckResult:
+        request_context = model_request_context(model, request_context, purpose="connection_check")
         check_model = model.model_copy(update={"supports_streaming": False, "max_output_tokens": 1})
         async for event in self.stream(
-            model=check_model, messages=[ModelMessage.text(role="user", text="ping")]
+            model=check_model,
+            messages=[ModelMessage.text(role="user", text="ping")],
+            request_context=request_context,
         ):
             if event.type == "error":
                 return ProviderCheckResult(

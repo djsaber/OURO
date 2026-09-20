@@ -18,6 +18,41 @@ from ouro.tui.screens import ChoiceScreen, EditableChoiceScreen
 from tests.tui.helpers import run_ready_app, two_route_application
 
 
+async def test_header_editor_preserves_secrets_and_explicitly_replaces_or_clears(tmp_path):
+    app = OuroTuiApp(application=two_route_application(tmp_path))
+    facade = ConfigurationFacade(tmp_path)
+    facade.add_provider(
+        "gateway",
+        provider_type="openai-compatible",
+        base_url="https://model.test",
+        headers={"X-Secret": {"source": "literal", "value": "private-value"}},
+    )
+    async with run_ready_app(app, size=(100, 34)) as pilot:
+        provider = facade.provider("gateway")
+        profile = profile_for_provider(provider, await app._controller.provider_templates())
+        screen = ProviderConfigurationScreen(profile, provider)
+        app.push_screen(screen)
+        await pilot.pause()
+        assert screen._values["provider-headers"] == ""
+        assert screen._draft().headers is None
+        await app._controller.update_provider(replace(screen._draft(), timeout=17))
+        from ouro.config import ProviderConfigManager
+
+        configs = ProviderConfigManager(tmp_path)
+        assert configs.get_provider("gateway").headers["x-secret"].value == "private-value"
+        await select_choice(app, pilot, "provider-headers")
+        text = '{"X-Model":{"source":"context","key":"model.id"}}'
+        await pilot.press(*text, "enter")
+        await pilot.pause()
+        await app._controller.update_provider(screen._draft())
+        assert set(configs.get_provider("gateway").headers) == {"x-model"}
+        await screen._save_field("provider-headers", "{}")
+        await app._controller.update_provider(screen._draft())
+        assert configs.get_provider("gateway").headers == {}
+        await screen._save_field("provider-headers", '{"X":{"source":"context","key":"unknown"}}')
+        assert screen._validation_error()
+
+
 async def select_choice(app, pilot, value):
     options = app.screen.query_one("#choice-list", OptionList)
     options.highlighted = options.get_option_index(value)

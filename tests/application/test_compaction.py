@@ -38,13 +38,15 @@ class RecordingProvider:
     def __init__(self) -> None:
         self.calls: list[list[MessageRecord]] = []
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, tools
         self.calls.append(list(messages))
         yield ProviderStreamEvent(type="text_delta", text="ok")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(provider_id=self.provider_id, ok=True, model_id=model.model_id)
 
 
@@ -89,11 +91,13 @@ class SummaryRouteProvider:
         self.reasoning = reasoning
         self.models: list[ModelMetadata] = []
         self.system_prompts: list[str] = []
+        self.request_contexts = []
         self.messages: list[list[MessageRecord]] = []
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del tools
         self.models.append(model)
+        self.request_contexts.append(request_context)
         self.system_prompts.append(system_prompt)
         self.messages.append(list(messages))
         if self.error is not None:
@@ -107,7 +111,9 @@ class SummaryRouteProvider:
             completion=ProviderCompletion(finish_reason="stop"),
         )
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(provider_id=self.provider_id, ok=True, model_id=model.model_id)
 
 
@@ -118,7 +124,7 @@ class BlockingSummaryProvider:
         self.started = asyncio.Event()
         self.cancelled = asyncio.Event()
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, messages, tools
         self.started.set()
         try:
@@ -128,7 +134,9 @@ class BlockingSummaryProvider:
         if False:  # pragma: no cover - keeps this provider an async generator.
             yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(provider_id=self.provider_id, ok=True, model_id=model.model_id)
 
 
@@ -394,6 +402,10 @@ async def test_dedicated_compaction_endpoint_uses_isolated_model_parameters() ->
 
     assert runtime_provider.models == []
     assert len(configured_provider.models) == 1
+    assert configured_provider.request_contexts[0].values == {
+        "session.id": "ses_route",
+        "request.purpose": "compaction",
+    }
     request_model = configured_provider.models[0]
     assert request_model.temperature == 0.1
     assert request_model.max_output_tokens == 512
@@ -548,7 +560,9 @@ async def test_unclosed_length_summary_retries_once_with_half_the_frames() -> No
                 ("<summary>complete rolling summary</summary>", "stop", 10),
             ]
 
-        async def stream(self, *, model, system_prompt="", messages, tools=None):
+        async def stream(
+            self, *, model, system_prompt="", messages, tools=None, request_context=None
+        ):
             del tools
             self.models.append(model)
             self.system_prompts.append(system_prompt)
@@ -603,7 +617,9 @@ async def test_unclosed_length_summary_retries_once_with_half_the_frames() -> No
 @pytest.mark.asyncio
 async def test_unclosed_length_summary_stops_after_one_binary_retry() -> None:
     class RepeatedTruncationProvider(SummaryRouteProvider):
-        async def stream(self, *, model, system_prompt="", messages, tools=None):
+        async def stream(
+            self, *, model, system_prompt="", messages, tools=None, request_context=None
+        ):
             del tools
             self.models.append(model)
             self.system_prompts.append(system_prompt)

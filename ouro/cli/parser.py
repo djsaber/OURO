@@ -1369,6 +1369,12 @@ def _add_provider_mutation_args(
         metavar="JSON",
         help="Additional request body defaults inherited by provider endpoints",
     )
+    parser.add_argument(
+        "--headers",
+        type=_json_object,
+        metavar="JSON",
+        help="Replace provider header declarations (literal/env/context); {} clears all headers",
+    )
     credentials = parser.add_mutually_exclusive_group()
     credentials.add_argument(
         "--api-key",

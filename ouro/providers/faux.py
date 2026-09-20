@@ -10,6 +10,7 @@ from ouro.core.provider import (
     ProviderStreamEvent,
     Usage,
 )
+from ouro.core.request_context import ProviderRequestContext
 
 
 class FauxProvider:
@@ -45,13 +46,16 @@ class FauxProvider:
         system_prompt: str = "",
         messages: list[ModelMessage],
         tools: list[dict[str, object]] | None = None,
+        request_context: ProviderRequestContext | None = None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, messages, tools
         events = self._next_events()
         for event in events:
             yield event
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context: ProviderRequestContext | None = None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,

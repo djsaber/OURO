@@ -77,7 +77,7 @@ class LiveToolProvider:
         self.release = asyncio.Event()
         self.deltas = asyncio.Queue()
 
-    async def stream(self, *, model, messages, system_prompt="", tools=None):
+    async def stream(self, *, model, messages, system_prompt="", tools=None, request_context=None):
         self.turns += 1
         if self.turns == 1:
             yield ProviderStreamEvent(

@@ -15,6 +15,7 @@ from ouro.config import (
     ProviderType,
     reasoning_preset,
 )
+from ouro.config.provider_headers import parse_provider_headers
 from ouro.config.provider_models import (
     default_api_path,
     provider_type_spec,
@@ -146,6 +147,7 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
             or "",
             "provider-timeout": str(existing.timeout if existing is not None else 60.0),
             "provider-options": provider_options,
+            "provider-headers": "",
         }
         super().__init__(
             title="EDIT PROVIDER" if existing is not None else "ADD PROVIDER",
@@ -239,6 +241,10 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
             self._values["provider-options"],
             "Request defaults",
         )
+        headers_text = self._values["provider-headers"]
+        headers = _json_object(headers_text, "Request headers") if headers_text else None
+        if headers is not None:
+            parse_provider_headers(headers)
         return TuiProviderConfiguration(
             provider_id=provider_id,
             provider_type=self._profile.provider_type,
@@ -248,6 +254,7 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
             api_key=api_key or None,
             api_key_env=api_key_env or None,
             timeout=timeout,
+            headers=headers,
             provider_options=(
                 None
                 if self._existing is not None
@@ -349,6 +356,19 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
                 trailing=f"{self._values['provider-timeout']} seconds",
                 group="ADVANCED",
                 edit_value=self._values["provider-timeout"],
+            ),
+            Choice(
+                "provider-headers",
+                "Request headers",
+                trailing=(
+                    "Replace"
+                    if self._values["provider-headers"]
+                    else f"Keep ({len(self._existing.headers) if self._existing else 0} configured)"
+                ),
+                description="Blank keeps existing headers; {} clears; a JSON object replaces all.",
+                group="REQUEST",
+                edit_value=self._values["provider-headers"],
+                edit_placeholder="Header declarations as JSON; blank keeps existing",
             ),
             Choice(
                 "provider-options",

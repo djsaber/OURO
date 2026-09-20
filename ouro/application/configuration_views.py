@@ -35,6 +35,7 @@ from ouro.config import (
     endpoint_config_to_public_dict,
 )
 from ouro.config.endpoints import redact_sensitive_mapping
+from ouro.config.provider_headers import public_provider_headers
 from ouro.config.provider_models import resolve_provider_connection
 from ouro.core.errors import CredentialError
 from ouro.mcp import MCPServerConfig, mcp_config_to_public_dict
@@ -74,6 +75,7 @@ def provider_view(provider: ProviderConfig, *, is_default: bool) -> ProviderView
         retry_policy=provider.retry_policy,
         base_url=provider.base_url,
         api_path=provider.api_path,
+        headers=public_provider_headers(provider.headers),
         provider_options=redact_sensitive_mapping(provider.extra),
         default=is_default,
         default_endpoint=provider.default_endpoint,

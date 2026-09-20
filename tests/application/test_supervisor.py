@@ -49,7 +49,7 @@ class ConcurrencyProvider:
         self.started: list[str] = []
         self.release = asyncio.Event()
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, tools
         prompt = messages[-1].text_content
         self.started.append(prompt)
@@ -62,7 +62,7 @@ class ConcurrencyProvider:
         finally:
             self.active -= 1
 
-    async def check_connection(self, model) -> ProviderCheckResult:
+    async def check_connection(self, model, *, request_context=None) -> ProviderCheckResult:
         return ProviderCheckResult(provider_id=self.provider_id, ok=True, model_id=model.model_id)
 
 
@@ -73,7 +73,7 @@ class BlockingProvider:
         self.started = asyncio.Event()
         self.closed = False
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, messages, tools
         self.started.set()
         try:
@@ -83,7 +83,7 @@ class BlockingProvider:
             self.closed = True
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model) -> ProviderCheckResult:
+    async def check_connection(self, model, *, request_context=None) -> ProviderCheckResult:
         return ProviderCheckResult(provider_id=self.provider_id, ok=True, model_id=model.model_id)
 
 
@@ -93,7 +93,7 @@ class BlockingToolStreamProvider:
     def __init__(self) -> None:
         self.release = asyncio.Event()
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, messages, tools
         yield ProviderStreamEvent(
             type="tool_call_delta",

@@ -449,7 +449,7 @@ class _SkillPromptCapturingProvider(FauxProvider):
         super().__init__()
         self.system_prompts: list[str] = []
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         self.system_prompts.append(system_prompt)
         async for event in super().stream(
             model=model,

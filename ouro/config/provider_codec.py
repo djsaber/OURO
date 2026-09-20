@@ -13,6 +13,7 @@ from ouro.config.endpoints import (
     endpoint_config_to_raw,
     redact_sensitive_mapping,
 )
+from ouro.config.provider_headers import public_provider_headers
 from ouro.config.provider_models import (
     SUPPORTED_PROVIDER_PROTOCOLS,
     SUPPORTED_PROVIDER_TYPES,
@@ -40,6 +41,7 @@ _PROVIDER_FIELDS = frozenset(
         "timeout_seconds",
         "retry_policy",
         "provider_options",
+        "headers",
         "template",
     }
 )
@@ -66,6 +68,7 @@ def provider_config_to_public_dict(
         "default_endpoint": provider.default_endpoint,
         "endpoint_count": len(provider.endpoints),
         "provider_options": redact_sensitive_mapping(provider.extra),
+        "headers": public_provider_headers(provider.headers),
         "endpoints": [
             {
                 **endpoint_config_to_public_dict(endpoint),
@@ -117,6 +120,7 @@ def provider_config_from_mapping(
             timeout_seconds=raw.get("timeout_seconds", 60.0),
             retry_policy=ProviderRetryPolicy.model_validate(raw.get("retry_policy") or {}),
             extra=dict(raw.get("provider_options") or {}),
+            headers=raw.get("headers", {}),
             template=_template_binding_from_mapping(raw.get("template")),
         )
         return normalize_provider_config(provider)
@@ -152,6 +156,8 @@ def provider_config_to_raw(provider: ProviderConfig) -> dict[str, Any]:
     # reverting to the default on reload.
     if provider.retry_policy != ProviderRetryPolicy():
         raw["retry_policy"] = provider.retry_policy.model_dump(mode="json")
+    if provider.headers:
+        raw["headers"] = {name: item.model_dump() for name, item in provider.headers.items()}
     if provider.extra:
         raw["provider_options"] = provider.extra
     if provider.template is not None:

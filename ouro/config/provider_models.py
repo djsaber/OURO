@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -8,6 +8,7 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ouro.config.credentials import CredentialRef
 from ouro.config.endpoints import ProviderEndpointConfig
+from ouro.config.provider_headers import ProviderHeaderValue, parse_provider_headers
 from ouro.config.reasoning import EndpointReasoningConfig, ReasoningProfileConfig
 from ouro.core.base import Metadata, MetadataField, OuroModel
 from ouro.core.provider import ProviderRetryPolicy
@@ -403,8 +404,11 @@ class ProviderConfig(OuroModel):
     enabled: bool = True
     timeout_seconds: float = Field(default=60.0, gt=0)
     retry_policy: ProviderRetryPolicy = Field(default_factory=ProviderRetryPolicy)
+    headers: dict[str, ProviderHeaderValue] = Field(default_factory=dict, repr=False)
     extra: Metadata = MetadataField
     template: ProviderTemplateBinding | None = None
+
+    _validate_headers = field_validator("headers", mode="before")(parse_provider_headers)
 
     @field_validator("provider_id")
     @classmethod
@@ -441,6 +445,8 @@ class ProviderConfig(OuroModel):
 
     @model_validator(mode="after")
     def _validate_provider(self) -> ProviderConfig:
+        if self.protocol == "faux" and self.headers:
+            raise ValueError("faux protocol does not accept HTTP headers")
         resolve_provider_connection(self.provider_type, self.protocol, self.auth_driver)
         validate_credential_binding(self.auth_driver, self.credential_ref)
         validate_request_options(self.protocol, self.extra)
@@ -524,6 +530,7 @@ class ProviderRuntimeOptions:
     reasoning: EndpointReasoningConfig | None = None
     reasoning_request: ReasoningRequest | None = None
     retry_policy: ProviderRetryPolicy | None = None
+    headers: dict[str, ProviderHeaderValue] | None = field(default=None, repr=False)
     extra: dict[str, Any] | None = None
 
 

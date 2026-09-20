@@ -26,7 +26,7 @@ class TurnGateProvider:
         self.release_first = asyncio.Event()
         self.contexts: list[list[ModelMessage]] = []
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, tools
         self.contexts.append(list(messages))
         call_number = len(self.contexts)
@@ -36,7 +36,9 @@ class TurnGateProvider:
         yield ProviderStreamEvent(type="text_delta", text=f"answer-{call_number}")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,
@@ -45,7 +47,7 @@ class TurnGateProvider:
 
 
 class ToolTurnGateProvider(TurnGateProvider):
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, tools
         self.contexts.append(list(messages))
         if len(self.contexts) == 1:

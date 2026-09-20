@@ -291,6 +291,7 @@ class TuiProviderConfiguration:
     api_key: str | None
     api_key_env: str | None
     timeout: float
+    headers: dict[str, object] | None = field(default=None, repr=False)
     provider_options: dict[str, object] | None = None
     enabled: bool = True
     make_default: bool = False
@@ -1086,6 +1087,7 @@ class TuiController:
             api_key=draft.api_key,
             api_key_env=draft.api_key_env,
             timeout=draft.timeout,
+            headers=draft.headers,
             provider_options=draft.provider_options,
             enabled=draft.enabled,
             make_default=draft.make_default,
@@ -1121,6 +1123,7 @@ class TuiController:
             api_key=draft.api_key,
             api_key_env=draft.api_key_env,
             timeout=draft.timeout,
+            headers=draft.headers,
             provider_options=draft.provider_options,
             enabled=draft.enabled,
             make_default=draft.make_default,

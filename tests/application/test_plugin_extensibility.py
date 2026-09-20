@@ -373,7 +373,9 @@ async def test_queued_prompt_policy_approval_pins_the_prospective_catalog(tmp_pa
             self.release = asyncio.Event()
             self.calls = 0
 
-        async def stream(self, *, model, system_prompt="", messages, tools=None):
+        async def stream(
+            self, *, model, system_prompt="", messages, tools=None, request_context=None
+        ):
             del model, system_prompt, messages, tools
             self.calls += 1
             if self.calls == 1:
@@ -382,7 +384,7 @@ async def test_queued_prompt_policy_approval_pins_the_prospective_catalog(tmp_pa
             yield ProviderStreamEvent(type="text_delta", text="done")
             yield ProviderStreamEvent(type="done")
 
-        async def check_connection(self, model):
+        async def check_connection(self, model, *, request_context=None):
             raise AssertionError(f"unexpected connection check: {model.model_id}")
 
     home = tmp_path / "home"
@@ -454,7 +456,9 @@ async def test_steering_prompt_policy_uses_the_active_run_catalog(tmp_path) -> N
             self.release = asyncio.Event()
             self.calls = 0
 
-        async def stream(self, *, model, system_prompt="", messages, tools=None):
+        async def stream(
+            self, *, model, system_prompt="", messages, tools=None, request_context=None
+        ):
             del model, system_prompt, messages, tools
             self.calls += 1
             if self.calls == 1:
@@ -463,7 +467,7 @@ async def test_steering_prompt_policy_uses_the_active_run_catalog(tmp_path) -> N
             yield ProviderStreamEvent(type="text_delta", text="done")
             yield ProviderStreamEvent(type="done")
 
-        async def check_connection(self, model):
+        async def check_connection(self, model, *, request_context=None):
             raise AssertionError(f"unexpected connection check: {model.model_id}")
 
     home = tmp_path / "home"
@@ -1298,7 +1302,9 @@ async def test_plugin_skill_prompt_is_resolved_from_each_run_catalog(tmp_path) -
             super().__init__()
             self.system_prompts: list[str] = []
 
-        async def stream(self, *, model, system_prompt="", messages, tools=None):
+        async def stream(
+            self, *, model, system_prompt="", messages, tools=None, request_context=None
+        ):
             self.system_prompts.append(system_prompt)
             async for event in super().stream(
                 model=model,

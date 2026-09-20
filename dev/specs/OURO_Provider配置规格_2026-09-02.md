@@ -77,6 +77,61 @@ Endpoint 使用单一正整数 `max_output_tokens` 定义输出预算，同时�
 `providers.items` 和 `endpoints` 必须是以 id 为 key 的对象。未知字段、列表形态、短字段别名和根级
 `provider` 必须明确失败。读取器不能修复、迁移或静默忽略非权威结构。
 
+## 请求头配置
+
+Provider 的 `headers` 是独立于请求体参数的 HTTP 连接配置，适用于该 Provider 的所有 Endpoint。
+它是以头名为 key 的对象，每个值必须显式声明一种来源：
+
+```json
+{
+  "headers": {
+    "X-Client-Name": {"source": "literal", "value": "ouro"},
+    "X-Tenant-ID": {"source": "env", "name": "MODEL_TENANT_ID"},
+    "X-Conversation-ID": {"source": "context", "key": "session.id"}
+  }
+}
+```
+
+`literal` 只接受 `value`，`env` 只接受 `name`，`context` 只接受 `key`。来源是有限的判别联合，
+未知字段与来源明确失败；不支持脚本、表达式、对象路径遍历、拼接或递归插值。头名按 HTTP token
+语法校验并规范化为小写，大小写不敏感的重复项明确失败。头值限定为非空、无首尾空白的可打印 ASCII，
+字面量在配置阶段校验，环境变量与上下文值在请求发送前校验。
+
+上下文字段通过 `core/request_context.py` 的只读目录显式注册；配置只能引用目录中的 key。
+`ProviderRequestContext` 是每次调用独立的不可变字符串映射，不携带 HTTP 头或供应商规则。
+调用方负责字段的产生与生命周期，解析器只执行精确查找，不生成缺失值。扩展一个上下文字段需要注册
+字段并接入对应提供方与传递点，不需要修改来源解析算法或协议适配器。
+
+可引用的上下文字段及提供方契约：
+
+| 字段 | 提供方与取值 | 可用范围 |
+| --- | --- | --- |
+| `session.id` | 所属会话的持久 ID | 对话、压缩；连接检查入口使用检查专用临时 ID |
+| `run.id` | 当前 Run 的 ID | 对话与 Run 内压缩；手动压缩、连接检查可能没有 Run |
+| `provider.id` | 最终所选 ModelMetadata 的供应商配置实例 ID | 所有 HTTP 模型调用 |
+| `endpoint.id` | 最终所选 ModelMetadata 的 Endpoint ID | 已配置路由；临时模型没有 Endpoint 时缺失 |
+| `model.id` | 最终所选 ModelMetadata 的模型 ID | 所有 HTTP 模型调用 |
+| `request.purpose` | 调用用途：`chat`、`compaction`、`connection_check`；直接推理默认为 `inference` | 所有 HTTP 模型调用 |
+
+模型路由字段由协议适配入口根据实际模型提供，覆盖调用方可能携带的旧路由信息。请求头解析器不理解
+字段的业务意义。字段可用范围不一致是明确契约：例如配置必须引用 `run.id` 时，无 Run 的连接检查
+会报告缺失，不伪造 Run、不省略请求头。字段不隐式包含用户身份、文件路径、Token 或消息内容。
+
+`session.id` 是会话提供方注册的字段：多轮、工具续接、压缩、重试与恢复使用所属会话的稳定 ID，
+独立子会话使用自身 ID。连接检查入口创建本次检查专用的临时 ID，在该次检查及重试内复用。
+其他直接调用者须显式提供配置引用的上下文；缺失上下文或环境变量在 HTTP 前返回安全配置错误。
+仅配置引用的字段被发送，运行值不写回配置、不进入共享 adapter 状态或模型消息。
+
+配置 mutation 对 `headers` 使用整组原子替换：省略表示保留，空对象表示清空。Provider 创建和 replace
+省略时使用空配置。模板同步保留用户请求头，除非调用方显式替换；请求头声明参与运行参数指纹，
+使后续路由选择读取有效配置。环境变量在每次模型调用开始时解析，重试复用本次解析结果；认证材料仍
+按每次尝试独立获取。`faux` 不接受 HTTP 请求头。
+
+公开查询只展示头名、来源与引用；所有 literal 值均显示为 `***`，不以头名猜测敏感性。
+CLI `provider add/update/replace --headers '<JSON>'` 接受完整声明。TUI 的请求头编辑框空白表示保留，
+输入 `{}` 表示清空，输入完整对象表示替换，不将脱敏查询结果作为可回写数据。
+HTTP 合并、认证所有权和传输约束见[模型请求认证规格](OURO_请求认证规格_2026-09-17.md)。
+
 ## 思考契约
 
 思考能力分为四个相互独立的概念，避免把厂商差异泄漏到 core 或 CLI：

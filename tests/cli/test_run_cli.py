@@ -38,7 +38,7 @@ class CapturingProvider:
         self.messages: list[Any] = []
         self.system_prompt = ""
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, tools
         self.system_prompt = system_prompt
         self.messages = list(messages)

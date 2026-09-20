@@ -40,15 +40,15 @@ def request_failure(
     error: ProviderTransportError,
     *,
     policy: ProviderRequestPolicy,
-    managed: bool,
+    redact_errors: bool,
     recovery: Callable[[], Awaitable[bool]] | None = None,
 ) -> ProviderRequestError:
-    code = "provider_request_failed" if managed else None
+    code = "provider_request_failed" if redact_errors else None
     message = (
         f"Model service returned HTTP {error.status_code}."
-        if managed and error.status_code is not None
+        if redact_errors and error.status_code is not None
         else "Model request failed."
-        if managed
+        if redact_errors
         else str(error)
     )
     retryable = error.retryable
@@ -81,6 +81,7 @@ async def request_authentication(
     url: str,
     headers: Mapping[str, str],
     policy: ProviderRequestPolicy,
+    redact_errors: bool = False,
 ) -> AsyncIterator[RequestAuthSnapshot]:
     snapshot = await authenticator.acquire(url)
     normalized = {name.lower(): value for name, value in headers.items()}
@@ -108,12 +109,15 @@ async def request_authentication(
         yield prepared
     except ProviderTransportError as error:
         raise request_failure(
-            error, policy=policy, managed=snapshot.revision is not None, recovery=recover
+            error,
+            policy=policy,
+            redact_errors=snapshot.revision is not None or redact_errors,
+            recovery=recover,
         ) from None
     except AuthError, ConfigError:
         raise
     except Exception:
-        if snapshot.revision is not None:
+        if snapshot.revision is not None or redact_errors:
             raise ProviderRequestError(
                 "Model response could not be processed.", error_code="provider_response_failed"
             ) from None
@@ -121,11 +125,12 @@ async def request_authentication(
 
 
 def safe_response_event(
-    event: ProviderStreamEvent, snapshot: RequestAuthSnapshot
+    event: ProviderStreamEvent, snapshot: RequestAuthSnapshot, *, redact_errors: bool = False
 ) -> ProviderStreamEvent:
-    if snapshot.revision is not None and event.type == "error":
+    if (snapshot.revision is not None or redact_errors) and event.type == "error":
         # Wire error strings may echo credentials. Only classified safe facts may
-        # leave a managed request; successful content remains the codec's output.
+        # leave a request carrying private headers; successful content remains
+        # the codec's output.
         return event.model_copy(
             update={
                 "error": "Model service returned an invalid or failed response.",

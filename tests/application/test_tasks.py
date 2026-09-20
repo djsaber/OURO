@@ -264,7 +264,7 @@ class SelectivelyBlockingProvider:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def stream(self, *, model, messages, system_prompt="", tools=None):
+    async def stream(self, *, model, messages, system_prompt="", tools=None, request_context=None):
         if "scheduled" in messages[-1].text_content:
             self.started.set()
             await self.release.wait()

@@ -9,6 +9,7 @@ from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextView
 from ouro.core.provider import ModelMetadata, Provider, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningRequest
+from ouro.core.request_context import ProviderRequestContext
 
 _STREAM_BUFFER_CAPACITY = 256
 _STREAM_COALESCE_MAX_CHARS = 16 * 1024
@@ -39,6 +40,7 @@ class RuntimeAdapter:
         self,
         context: ContextView,
         *,
+        request_context: ProviderRequestContext | None = None,
         signal: AbortSignal | None = None,
         max_output_tokens: int | None = None,
         on_stream_start: Callable[[], None] | None = None,
@@ -54,6 +56,7 @@ class RuntimeAdapter:
             system_prompt=provider_context.system_prompt,
             messages=provider_context.messages,
             tools=provider_context.tools,
+            request_context=request_context,
         )
         async for event in _interruptible(
             provider_events,

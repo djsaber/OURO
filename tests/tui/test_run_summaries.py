@@ -20,7 +20,7 @@ class SummaryProvider:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def stream(self, *, model, messages, system_prompt="", tools=None):
+    async def stream(self, *, model, messages, system_prompt="", tools=None, request_context=None):
         yield ProviderStreamEvent(type="text_delta", text="Visible answer.")
         self.started.set()
         await self.release.wait()

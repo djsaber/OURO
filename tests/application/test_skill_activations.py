@@ -32,7 +32,7 @@ class CapturingProvider:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, tools
         self.calls.append(list(messages))
         self.system_prompts.append(system_prompt)

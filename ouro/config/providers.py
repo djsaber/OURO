@@ -18,6 +18,7 @@ from ouro.config.provider_codec import (
     provider_config_from_mapping,
     provider_config_to_raw,
 )
+from ouro.config.provider_headers import configured_provider_headers
 from ouro.config.provider_models import (
     BUILTIN_FAUX_PROVIDER_ID,
     ProviderConfig,
@@ -166,6 +167,7 @@ class ProviderConfigManager:
         api_key_env: str | None = None,
         timeout_seconds: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        headers: Mapping[str, Any] | None = None,
         provider_options: Mapping[str, Any] | None = None,
         enabled: bool = True,
     ) -> ProviderConfig:
@@ -195,6 +197,7 @@ class ProviderConfigManager:
                 api_path=api_path,
                 timeout_seconds=timeout_seconds if timeout_seconds is not None else 60.0,
                 retry_policy=retry_policy or ProviderRetryPolicy(),
+                headers=dict(headers or {}),
                 extra=dict(provider_options or {}),
                 enabled=enabled,
             )
@@ -214,6 +217,7 @@ class ProviderConfigManager:
         api_key_env: str | None = None,
         timeout_seconds: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        headers: Mapping[str, Any] | None = None,
         provider_options: Mapping[str, Any] | None = None,
         enabled: bool | None = None,
         make_default: bool = False,
@@ -243,6 +247,11 @@ class ProviderConfigManager:
                             else current.timeout_seconds
                         ),
                         "retry_policy": retry_policy or current.retry_policy,
+                        "headers": (
+                            configured_provider_headers(headers)
+                            if headers is not None
+                            else current.headers
+                        ),
                         "extra": (
                             dict(provider_options)
                             if provider_options is not None
@@ -273,6 +282,7 @@ class ProviderConfigManager:
         api_key_env: str | None = None,
         timeout_seconds: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        headers: Mapping[str, Any] | None = None,
         provider_options: Mapping[str, Any] | None = None,
         enabled: bool = True,
     ) -> ProviderConfig:
@@ -300,6 +310,7 @@ class ProviderConfigManager:
                 api_path=api_path,
                 timeout_seconds=timeout_seconds if timeout_seconds is not None else 60.0,
                 retry_policy=retry_policy or ProviderRetryPolicy(),
+                headers=dict(headers or {}),
                 extra=dict(provider_options or {}),
                 enabled=enabled,
             )
@@ -324,6 +335,7 @@ class ProviderConfigManager:
         api_key_env: str | None = None,
         timeout_seconds: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        headers: Mapping[str, Any] | None = None,
         provider_options: Mapping[str, Any] | None = None,
         enabled: bool = True,
         make_default: bool = False,
@@ -342,6 +354,7 @@ class ProviderConfigManager:
             api_key_env=api_key_env,
             timeout_seconds=timeout_seconds,
             retry_policy=retry_policy,
+            headers=headers,
             provider_options=provider_options,
             enabled=enabled,
             make_default=make_default,
@@ -362,6 +375,7 @@ class ProviderConfigManager:
         api_key_env: str | None = None,
         timeout_seconds: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        headers: Mapping[str, Any] | None = None,
         provider_options: Mapping[str, Any] | None = None,
         enabled: bool | None = None,
         make_default: bool = False,
@@ -378,6 +392,7 @@ class ProviderConfigManager:
             api_key_env=api_key_env,
             timeout_seconds=timeout_seconds,
             retry_policy=retry_policy,
+            headers=headers,
             provider_options=provider_options,
             enabled=enabled,
             make_default=make_default,
@@ -399,6 +414,7 @@ class ProviderConfigManager:
         api_key_env: str | None = None,
         timeout_seconds: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        headers: Mapping[str, Any] | None = None,
         provider_options: Mapping[str, Any] | None = None,
         enabled: bool = True,
         make_default: bool = False,
@@ -417,6 +433,7 @@ class ProviderConfigManager:
             api_key_env=api_key_env,
             timeout_seconds=timeout_seconds,
             retry_policy=retry_policy,
+            headers=headers,
             provider_options=provider_options,
             enabled=enabled,
             make_default=make_default,
@@ -436,6 +453,7 @@ class ProviderConfigManager:
         api_key_env: str | None,
         timeout_seconds: float | None,
         retry_policy: ProviderRetryPolicy | None,
+        headers: Mapping[str, Any] | None,
         provider_options: Mapping[str, Any] | None,
         enabled: bool | None,
         make_default: bool,
@@ -679,6 +697,7 @@ class ProviderConfigManager:
                     timeout_seconds if timeout_seconds is not None else current.timeout_seconds
                 ),
                 retry_policy=retry_policy or current.retry_policy,
+                headers=dict(headers) if headers is not None else current.headers,
                 extra=(dict(provider_options) if provider_options is not None else current.extra),
                 template=next_binding,
             )
@@ -721,6 +740,7 @@ class ProviderConfigManager:
         api_key_env: str | None = None,
         timeout_seconds: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        headers: Mapping[str, Any] | None = None,
         provider_options: Mapping[str, Any] | None = None,
         enabled: bool | None = None,
         make_default: bool = False,
@@ -798,6 +818,7 @@ class ProviderConfigManager:
                 enabled=(enabled if enabled is not None else True),
                 timeout_seconds=(timeout_seconds if timeout_seconds is not None else 60.0),
                 retry_policy=retry_policy or ProviderRetryPolicy(),
+                headers=dict(headers or {}),
                 extra=(dict(provider_options) if provider_options is not None else {}),
                 template=_provider_template_binding(
                     template,

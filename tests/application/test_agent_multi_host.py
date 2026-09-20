@@ -22,7 +22,7 @@ class DelegatingProvider:
     def __init__(self, *, spawn: bool = False):
         self.spawn = spawn
 
-    async def stream(self, *, model, messages, system_prompt="", tools=None):
+    async def stream(self, *, model, messages, system_prompt="", tools=None, request_context=None):
         primary = any(tool["name"] == "SpawnAgent" for tool in tools or [])
         last_input = max(
             i

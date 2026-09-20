@@ -422,12 +422,14 @@ def test_session_message_command_exposes_page_cursor(tmp_path, capsys) -> None:
 class _DummyProvider:
     provider_id = "dummy"
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, messages, tools
         yield ProviderStreamEvent(type="text_delta", text="ok")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(provider_id=self.provider_id, ok=True, model_id=model.model_id)
 
 

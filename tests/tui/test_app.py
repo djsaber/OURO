@@ -774,6 +774,7 @@ class BlockingStreamProvider:
         system_prompt: str = "",
         messages: list[ModelMessage],
         tools: list[dict[str, object]] | None = None,
+        request_context=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, messages, tools
         yield ProviderStreamEvent(type="text_delta", text="first ")
@@ -782,7 +783,9 @@ class BlockingStreamProvider:
         yield ProviderStreamEvent(type="text_delta", text="second")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,
@@ -805,6 +808,7 @@ class RetryThenBlockProvider:
         system_prompt: str = "",
         messages: list[ModelMessage],
         tools: list[dict[str, object]] | None = None,
+        request_context=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, messages, tools
         yield ProviderStreamEvent(
@@ -836,6 +840,7 @@ class BlockingReasoningProvider:
         system_prompt: str = "",
         messages: list[ModelMessage],
         tools: list[dict[str, object]] | None = None,
+        request_context=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, messages, tools
         yield ProviderStreamEvent(type="reasoning_delta", reasoning_content="Inspecting ")
@@ -845,7 +850,9 @@ class BlockingReasoningProvider:
         yield ProviderStreamEvent(type="text_delta", text="Done.")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,
@@ -869,6 +876,7 @@ class ReasoningBurstThenBlockProvider:
         system_prompt: str = "",
         messages: list[ModelMessage],
         tools: list[dict[str, object]] | None = None,
+        request_context=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, messages, tools
         for _ in range(self.reasoning_chunks):
@@ -878,7 +886,9 @@ class ReasoningBurstThenBlockProvider:
         await self.release.wait()
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,
@@ -965,13 +975,16 @@ class ToolCapturingProvider:
         system_prompt: str = "",
         messages: list[ModelMessage],
         tools: list[dict[str, object]] | None = None,
+        request_context=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, messages
         self.tool_batches.append(list(tools or []))
         yield ProviderStreamEvent(type="text_delta", text="Tools inspected.")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,
@@ -999,6 +1012,7 @@ class QueuedSubagentApprovalProvider:
         system_prompt: str = "",
         messages: list[ModelMessage],
         tools: list[dict[str, object]] | None = None,
+        request_context=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, messages
         names = [str(item["name"]) for item in (tools or [])]
@@ -1045,7 +1059,9 @@ class QueuedSubagentApprovalProvider:
         yield ProviderStreamEvent(type="text_delta", text="queued input consumed")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,
@@ -1087,6 +1103,7 @@ class MultiChildStreamingProvider:
         system_prompt: str = "",
         messages: list[ModelMessage],
         tools: list[dict[str, object]] | None = None,
+        request_context=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt
         names = [str(item["name"]) for item in (tools or [])]
@@ -1128,7 +1145,9 @@ class MultiChildStreamingProvider:
         yield ProviderStreamEvent(type="text_delta", text=f" + {label} child suffix")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,
@@ -1154,6 +1173,7 @@ class SyncChildViewProvider:
         system_prompt: str = "",
         messages: list[ModelMessage],
         tools: list[dict[str, object]] | None = None,
+        request_context=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, messages
         names = [str(item["name"]) for item in (tools or [])]
@@ -1184,7 +1204,9 @@ class SyncChildViewProvider:
         yield ProviderStreamEvent(type="text_delta", text="parent resumed")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,
@@ -1214,6 +1236,7 @@ class TuiPlanConfirmationProvider:
         system_prompt: str = "",
         messages: list[ModelMessage],
         tools: list[dict[str, object]] | None = None,
+        request_context=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, tools
         if self.stream_count == 0:
@@ -1248,7 +1271,9 @@ class TuiPlanConfirmationProvider:
         yield ProviderStreamEvent.from_tool_call(call)
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,

@@ -54,6 +54,7 @@ class _EndToEndGoalProvider:
         system_prompt="",
         messages,
         tools=None,
+        request_context=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, tools
         self.requests.append(list(messages))
@@ -90,7 +91,7 @@ class _EndToEndGoalProvider:
             usage=Usage(input_tokens=3, output_tokens=2),
         )
 
-    async def check_connection(self, model) -> ProviderCheckResult:
+    async def check_connection(self, model, *, request_context=None) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,
@@ -112,6 +113,7 @@ class _AbortableGoalProvider:
         system_prompt="",
         messages,
         tools=None,
+        request_context=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, messages, tools
         call = self.calls
@@ -136,7 +138,7 @@ class _AbortableGoalProvider:
             raise AssertionError("aborted Goal started another model round")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model) -> ProviderCheckResult:
+    async def check_connection(self, model, *, request_context=None) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,

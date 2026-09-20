@@ -20,9 +20,11 @@ class _RespondingProvider:
         self.text = text
         self.models: list[str] = []
         self.reasoning_requests: list[ReasoningRequest] = []
+        self.request_contexts = []
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del system_prompt, messages, tools
+        self.request_contexts.append(request_context)
         self.models.append(model.model_id)
         self.reasoning_requests.append(model.reasoning_request)
         yield ProviderStreamEvent(type="text_delta", text=self.text)
@@ -37,9 +39,11 @@ class _BlockingToolProvider:
         self.release = asyncio.Event()
         self.models: list[str] = []
         self.reasoning_requests: list[ReasoningRequest] = []
+        self.request_contexts = []
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del system_prompt, messages, tools
+        self.request_contexts.append(request_context)
         self.models.append(model.model_id)
         self.reasoning_requests.append(model.reasoning_request)
         if len(self.models) > 1:
@@ -190,6 +194,19 @@ async def test_session_model_switch_persists_and_is_used_after_runtime_restart(t
     assert third.final_text == "beta-response"
     assert providers["alpha"].models == ["alpha-model"]
     assert providers["beta"].models == ["beta-model", "beta-model"]
+    assert providers["alpha"].request_contexts[0].values == {
+        "session.id": first.session.session_id,
+        "run.id": first.run.run_id,
+        "request.purpose": "chat",
+    }
+    assert [context.values["session.id"] for context in providers["beta"].request_contexts] == [
+        first.session.session_id,
+        first.session.session_id,
+    ]
+    assert [context.values["run.id"] for context in providers["beta"].request_contexts] == [
+        second.run.run_id,
+        third.run.run_id,
+    ]
 
 
 @pytest.mark.asyncio
@@ -243,6 +260,8 @@ async def test_active_session_model_switch_applies_to_the_next_model_request(tmp
     assert result.final_text == "beta-response"
     assert result.run.model == "beta-model"
     assert result.run.model_endpoint_id == "fast"
+    assert alpha.request_contexts[0].values == beta.request_contexts[0].values
+    assert beta.request_contexts[0].values["run.id"] == result.run.run_id
 
 
 @pytest.mark.asyncio

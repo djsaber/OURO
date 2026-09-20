@@ -25,7 +25,7 @@ class _BlockingWriteProvider:
         self.release = asyncio.Event()
         self.request_count = 0
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, messages, tools
         self.request_count += 1
         if self.request_count == 1:

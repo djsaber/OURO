@@ -10,6 +10,7 @@ from copy import deepcopy
 from typing import Any
 
 from ouro.auth.request_auth import RequestAuthenticator, StaticRequestAuthenticator
+from ouro.config.provider_headers import ProviderHeaderValue
 from ouro.config.provider_models import (
     validate_request_options,
     validate_responses_reasoning_profile,
@@ -21,13 +22,16 @@ from ouro.core.provider import (
     ProviderRetryPolicy,
     ProviderStreamEvent,
 )
+from ouro.core.request_context import ProviderRequestContext
 from ouro.providers.authentication import ProviderRequestPolicy, request_authentication
+from ouro.providers.headers import ProviderHeaderResolver
 from ouro.providers.http_transport import (
     HttpxProviderHTTPTransport,
     ProviderHTTPTransport,
     ProviderTransportError,
 )
 from ouro.providers.reasoning import ReasoningPayloadEncoder
+from ouro.providers.request_context import model_request_context
 from ouro.providers.responses_codec import responses_input, responses_tools
 from ouro.providers.responses_errors import ResponsesError
 from ouro.providers.responses_stream import responses_events
@@ -49,6 +53,7 @@ class OpenAIResponsesProvider:
         timeout: float = 60,
         transport: ProviderHTTPTransport | None = None,
         default_headers: Mapping[str, str] | None = None,
+        headers: Mapping[str, ProviderHeaderValue] | None = None,
         request_options: Mapping[str, Any] | None = None,
         reasoning_encoder: ReasoningPayloadEncoder | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
@@ -67,6 +72,8 @@ class OpenAIResponsesProvider:
         self.request_policy = request_policy or ProviderRequestPolicy()
         self.transport = transport or HttpxProviderHTTPTransport()
         self.default_headers = dict(default_headers or {})
+        self.header_resolver = ProviderHeaderResolver(headers)
+        self.redact_errors = bool(headers)
         self.request_options = deepcopy(dict(request_options or {}))
         self.reasoning_encoder = reasoning_encoder or ReasoningPayloadEncoder(None)
         self.retry_policy = retry_policy or ProviderRetryPolicy()
@@ -83,10 +90,17 @@ class OpenAIResponsesProvider:
         system_prompt: str = "",
         messages: list[ModelMessage],
         tools: list[dict[str, Any]] | None = None,
+        request_context: ProviderRequestContext | None = None,
     ) -> AsyncGenerator[ProviderStreamEvent]:
+        request_context = model_request_context(model, request_context)
+        headers = self.header_resolver.resolve(request_context, defaults=self.default_headers)
         attempts = stream_with_retries(
             lambda: self._stream_once(
-                model=model, system_prompt=system_prompt, messages=messages, tools=tools
+                model=model,
+                system_prompt=system_prompt,
+                messages=messages,
+                tools=tools,
+                headers=headers,
             ),
             self.retry_policy,
         )
@@ -108,12 +122,17 @@ class OpenAIResponsesProvider:
         system_prompt: str,
         messages: list[ModelMessage],
         tools: list[dict[str, Any]] | None,
+        headers: Mapping[str, str],
     ) -> AsyncGenerator[ProviderStreamEvent]:
         # Validate explicit controls before acquiring credentials or refreshing.
         payload = self._payload(model, tools)
         url = self.base_url + self.endpoint
         async with request_authentication(
-            self.authenticator, url=url, headers=self.default_headers, policy=self.request_policy
+            self.authenticator,
+            url=url,
+            headers=headers,
+            policy=self.request_policy,
+            redact_errors=self.redact_errors,
         ) as snapshot:
             try:
                 payload.update(
@@ -217,11 +236,18 @@ class OpenAIResponsesProvider:
             payload["tools"] = responses_tools(tools)
         return payload
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context: ProviderRequestContext | None = None
+    ) -> ProviderCheckResult:
+        request_context = model_request_context(model, request_context, purpose="connection_check")
         # Keep the endpoint's streaming contract and output budget; some models
         # consume reasoning tokens before any visible response.
         async with aclosing(
-            self.stream(model=model, messages=[ModelMessage.text(role="user", text="Reply OK.")])
+            self.stream(
+                model=model,
+                messages=[ModelMessage.text(role="user", text="Reply OK.")],
+                request_context=request_context,
+            )
         ) as events:
             async for event in events:
                 if event.type == "error":

@@ -11,6 +11,32 @@ from ouro.core.provider import ModelMetadata
 from ouro.providers import FauxProvider, OpenAICompatibleProvider, build_runtime_adapter
 
 
+async def test_header_declarations_invalidate_route_cache_and_preserve_inflight_adapter(tmp_path):
+    configs = ProviderConfigManager(tmp_path)
+    configs.create_provider(
+        "service",
+        provider_type="openai-compatible",
+        base_url="https://model.test",
+        headers={"X-Tenant": {"source": "literal", "value": "first"}},
+    )
+    configs.upsert_endpoint("service", "chat", model_id="model", make_default=True)
+    configs.set_default_provider("service")
+    original = build_runtime_adapter(configs.resolve_runtime_options(ProviderRuntimeOptions()))
+    catalog = ConfiguredModelCatalog(configs, original, adapter_builder=build_runtime_adapter)
+    try:
+        assert catalog.adapter_for("service/chat") is original
+        configs.update_provider(
+            "service", headers={"X-Tenant": {"source": "literal", "value": "second"}}
+        )
+        current = catalog.adapter_for("service/chat")
+        assert current is not original
+        assert catalog.adapter_for("service/chat") is current
+        assert original.provider.header_resolver.resolve(None, defaults={})["x-tenant"] == "first"
+        assert current.provider.header_resolver.resolve(None, defaults={})["x-tenant"] == "second"
+    finally:
+        await catalog.close()
+
+
 async def test_default_adapter_rebinds_connection_and_inline_credential_changes(tmp_path):
     configs = ProviderConfigManager(tmp_path)
     configs.create_provider(

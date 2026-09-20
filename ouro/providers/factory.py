@@ -57,6 +57,8 @@ def build_runtime_adapter(
     if options.auth_driver not in (None, "static") and authenticator is None:
         raise ConfigError("managed request authenticator must be supplied by composition")
     protocol = options.protocol or "faux"
+    if protocol == "faux" and options.headers:
+        raise ConfigError("faux protocol does not accept HTTP headers")
     if protocol not in SUPPORTED_PROVIDER_PROTOCOLS:
         raise ConfigError(f"unsupported provider protocol: {protocol}")
     default_provider_id = "faux" if protocol == "faux" else protocol
@@ -124,6 +126,7 @@ def _build_openai_compatible(context: _AdapterBuildContext) -> RuntimeAdapter:
         provider_id=context.provider_id,
         endpoint=endpoint,
         timeout=context.timeout,
+        headers=context.options.headers,
         request_options=context.options.extra,
         reasoning_encoder=ReasoningPayloadEncoder(
             context.options.reasoning.profile if context.options.reasoning is not None else None
@@ -145,6 +148,7 @@ def _build_anthropic_compatible(context: _AdapterBuildContext) -> RuntimeAdapter
         provider_id=context.provider_id,
         endpoint=endpoint,
         timeout=context.timeout,
+        headers=context.options.headers,
         request_options=context.options.extra,
         reasoning_encoder=ReasoningPayloadEncoder(
             context.options.reasoning.profile if context.options.reasoning is not None else None
@@ -166,6 +170,7 @@ def _build_openai_responses(context: _AdapterBuildContext) -> RuntimeAdapter:
         provider_id=context.provider_id,
         endpoint=endpoint,
         timeout=context.timeout,
+        headers=context.options.headers,
         request_options=context.options.extra,
         reasoning_encoder=ReasoningPayloadEncoder(
             context.options.reasoning.profile if context.options.reasoning is not None else None

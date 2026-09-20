@@ -414,6 +414,7 @@ class WaitingProvider:
         system_prompt: str = "",
         messages,
         tools=None,
+        request_context=None,
     ):
         del model, system_prompt, messages, tools
         try:
@@ -423,7 +424,9 @@ class WaitingProvider:
         finally:
             self.closed = True
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,
@@ -447,6 +450,7 @@ class GateProvider:
         system_prompt: str = "",
         messages,
         tools=None,
+        request_context=None,
     ):
         del model, system_prompt, messages, tools
         self.calls += 1
@@ -459,7 +463,9 @@ class GateProvider:
         yield ProviderStreamEvent(type="text_delta", text="second")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,
@@ -482,6 +488,7 @@ class ToolDeltaGateProvider:
         system_prompt: str = "",
         messages,
         tools=None,
+        request_context=None,
     ):
         del model, system_prompt, messages, tools
         yield ProviderStreamEvent(
@@ -504,7 +511,9 @@ class ToolDeltaGateProvider:
         )
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,
@@ -523,12 +532,15 @@ class ExplodingProvider:
         system_prompt: str = "",
         messages,
         tools=None,
+        request_context=None,
     ):
         del model, system_prompt, messages, tools
         yield ProviderStreamEvent(type="text_delta", text="partial")
         raise RuntimeError("stream broke")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,
@@ -553,6 +565,7 @@ class CapturingProvider:
         system_prompt: str = "",
         messages,
         tools=None,
+        request_context=None,
     ):
         del model
         self.calls += 1
@@ -562,7 +575,9 @@ class CapturingProvider:
         yield ProviderStreamEvent(type="text_delta", text="ok")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,
@@ -3199,6 +3214,7 @@ class ReasoningToolProvider:
         system_prompt: str = "",
         messages,
         tools=None,
+        request_context=None,
     ):
         del model, tools
         self.calls += 1
@@ -3221,7 +3237,9 @@ class ReasoningToolProvider:
         yield ProviderStreamEvent(type="text_delta", text="Done")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,
@@ -3375,7 +3393,9 @@ async def test_runtime_automatically_compacts_and_persists_context_projection(tm
             self.summary_calls = 0
             self.business_messages: list[MessageRecord] = []
 
-        async def stream(self, *, model, system_prompt="", messages, tools=None):
+        async def stream(
+            self, *, model, system_prompt="", messages, tools=None, request_context=None
+        ):
             del model, tools
             self.calls += 1
             if system_prompt == render_summarization_prompt(SUMMARIZATION_PROMPT, 4_000):

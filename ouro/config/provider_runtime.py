@@ -46,6 +46,7 @@ def runtime_options_from_config(
         supports_structured_output=endpoint.supports_structured_output,
         reasoning=endpoint.reasoning,
         retry_policy=provider.retry_policy,
+        headers=dict(provider.headers),
         extra={**provider.extra, **endpoint.request_options},
     )
 
@@ -121,6 +122,7 @@ def merge_runtime_options(
         retry_policy=(
             override.retry_policy if override.retry_policy is not None else base.retry_policy
         ),
+        headers=override.headers if override.headers is not None else base.headers,
         extra=_merge_extra(base.extra, override.extra),
     )
     validate_runtime_auth(merged)

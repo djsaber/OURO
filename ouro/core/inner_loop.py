@@ -15,6 +15,7 @@ from ouro.core.errors import ContextBlockedError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ModelResponseRecord, ProviderContinuationArtifact
 from ouro.core.provider import ProviderCompletion, ToolCallDelta
+from ouro.core.request_context import ProviderRequestContext
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason
 from ouro.core.run_transitions import plan_run_transition
@@ -484,6 +485,13 @@ class InnerAgentLoop:
         try:
             async for provider_event in self.adapter.stream(
                 context,
+                request_context=ProviderRequestContext(
+                    {
+                        "session.id": state.session.session_id,
+                        "run.id": state.run.run_id,
+                        "request.purpose": "chat",
+                    }
+                ),
                 signal=abort_signal,
                 on_stream_start=self.ports.turns.notify_provider_stream_start,
             ):

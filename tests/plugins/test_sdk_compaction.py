@@ -23,11 +23,13 @@ from ouro.tools import ToolRegistry
 class PassiveProvider:
     provider_id = "passive"
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, messages, tools
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(provider_id=self.provider_id, model_id=model.model_id, ok=True)
 
 

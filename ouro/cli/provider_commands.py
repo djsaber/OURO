@@ -16,7 +16,9 @@ from ouro.application.configuration_models import (
 from ouro.cli.errors import error_exit_code
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime
 from ouro.config import EndpointReasoningConfig, ProviderProtocol, ProviderType
+from ouro.core.base import new_id
 from ouro.core.errors import OuroError
+from ouro.core.request_context import ProviderRequestContext
 
 
 async def check_provider_connection(
@@ -33,7 +35,15 @@ async def check_provider_connection(
             provider_options=options,
         )
         async with runtime:
-            result = await runtime.adapter.provider.check_connection(runtime.adapter.model)
+            result = await runtime.adapter.provider.check_connection(
+                runtime.adapter.model,
+                request_context=ProviderRequestContext(
+                    {
+                        "session.id": new_id("check"),
+                        "request.purpose": "connection_check",
+                    }
+                ),
+            )
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -225,6 +235,7 @@ def show_provider_config(
                 f"Protocol: {public['protocol']}",
                 f"Credential: {public['credential']}",
                 f"Timeout: {public['timeout']}",
+                "Headers: " + json.dumps(public["headers"], ensure_ascii=False),
                 "Request defaults: " + json.dumps(public["provider_options"], ensure_ascii=False),
                 f"Enabled: {'yes' if public['enabled'] else 'no'}",
                 f"Default provider: {'yes' if public['default'] else 'no'}",
@@ -252,6 +263,7 @@ def mutate_provider_config(
     api_key: str | None = None,
     api_key_env: str | None = None,
     timeout: float | None = None,
+    headers: Mapping[str, Any] | None = None,
     provider_options: Mapping[str, Any] | None = None,
     retry_max_attempts: int | None = None,
     retry_initial_backoff_seconds: float | None = None,
@@ -273,6 +285,7 @@ def mutate_provider_config(
                 api_key=api_key,
                 api_key_env=api_key_env,
                 timeout=timeout,
+                headers=headers,
                 provider_options=provider_options,
                 retry_max_attempts=retry_max_attempts,
                 retry_initial_backoff_seconds=retry_initial_backoff_seconds,
@@ -297,6 +310,7 @@ def mutate_provider_config(
                     api_key=api_key,
                     api_key_env=api_key_env,
                     timeout=timeout,
+                    headers=headers,
                     provider_options=provider_options,
                     retry_max_attempts=retry_max_attempts,
                     retry_initial_backoff_seconds=retry_initial_backoff_seconds,
@@ -317,6 +331,7 @@ def mutate_provider_config(
                     api_key=api_key,
                     api_key_env=api_key_env,
                     timeout=timeout,
+                    headers=headers,
                     provider_options=provider_options,
                     retry_max_attempts=retry_max_attempts,
                     retry_initial_backoff_seconds=retry_initial_backoff_seconds,
@@ -631,6 +646,7 @@ def _provider_to_public(provider: ProviderView) -> dict[str, Any]:
         "timeout": provider.timeout,
         "base_url": provider.base_url,
         "api_path": provider.api_path,
+        "headers": provider.headers,
         "provider_options": provider.provider_options,
         "default": provider.default,
         "default_endpoint": provider.default_endpoint,

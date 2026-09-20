@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from ouro import __version__
 from ouro.config import get_provider_template
 from ouro.core.messages import (
     ImageContent,
@@ -194,6 +195,7 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
     request = transport.requests[0]
     assert request["url"] == "https://api.example.test/v1/messages"
     assert request["headers"] == {
+        "user-agent": f"ouro/{__version__}",
         "anthropic-version": "2023-06-01",
         "x-api-key": "secret",
     }

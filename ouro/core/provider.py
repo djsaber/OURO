@@ -15,6 +15,7 @@ from ouro.core.reasoning import (
     ReasoningResolution,
     resolve_reasoning,
 )
+from ouro.core.request_context import ProviderRequestContext
 from ouro.core.tools import ToolCallRequest
 
 ProviderFinishReason = Literal[
@@ -226,7 +227,9 @@ class ProviderStreamEvent(OuroModel):
 class Provider(Protocol):
     provider_id: str
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult: ...
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context: ProviderRequestContext | None = None
+    ) -> ProviderCheckResult: ...
 
     def stream(
         self,
@@ -235,4 +238,5 @@ class Provider(Protocol):
         system_prompt: str = "",
         messages: list[ModelMessage],
         tools: list[dict[str, Any]] | None = None,
+        request_context: ProviderRequestContext | None = None,
     ) -> AsyncIterator[ProviderStreamEvent]: ...

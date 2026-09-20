@@ -65,6 +65,7 @@ from ouro.core.provider import (
     ProviderStreamEvent,
     Usage,
 )
+from ouro.core.request_context import ProviderRequestContext
 from ouro.core.session_commits import SessionCommitConflict
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolDefinition
@@ -523,6 +524,13 @@ class LLMSummaryCompactionStrategy:
                 context,
                 signal=signal,
                 max_output_tokens=summary_output_tokens,
+                request_context=ProviderRequestContext(
+                    {
+                        "session.id": session_id,
+                        "request.purpose": "compaction",
+                        **({"run.id": run_id} if run_id is not None else {}),
+                    }
+                ),
             ):
                 if event.type == "reasoning_delta" and event.reasoning_content:
                     reasoning_parts.append(event.reasoning_content)

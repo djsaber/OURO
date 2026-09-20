@@ -44,7 +44,7 @@ class CapturingChildProvider:
         self.tool_names: list[list[str]] = []
         self.messages: list[list[object]] = []
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model
         self.system_prompts.append(system_prompt)
         self.tool_names.append([item["name"] for item in (tools or [])])
@@ -52,7 +52,9 @@ class CapturingChildProvider:
         yield ProviderStreamEvent(type="text_delta", text="child complete")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,
@@ -69,7 +71,7 @@ class SyncAgentProvider:
         self.root_tool_schemas: list[list[dict[str, object]]] = []
         self.child_tool_names: list[str] = []
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt
         definitions = list(tools or [])
         names = [item["name"] for item in definitions]
@@ -99,7 +101,9 @@ class SyncAgentProvider:
         yield ProviderStreamEvent(type="text_delta", text="parent resumed")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,
@@ -118,7 +122,7 @@ class ParallelSyncAgentProvider:
         self.child_count = 0
         self.children_ready = asyncio.Event()
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, messages
         names = [item["name"] for item in (tools or [])]
         if "SpawnAgent" not in names:
@@ -151,7 +155,9 @@ class ParallelSyncAgentProvider:
         yield ProviderStreamEvent(type="text_delta", text="parallel parent resumed")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,
@@ -167,7 +173,7 @@ class SyncHitlProvider:
         self.root_round = 0
         self.child_round = 0
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, messages
         names = [item["name"] for item in (tools or [])]
         if "SpawnAgent" not in names:
@@ -205,7 +211,9 @@ class SyncHitlProvider:
         yield ProviderStreamEvent(type="text_delta", text="sync parent resumed")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,
@@ -221,7 +229,7 @@ class SpawnAndChildApprovalProvider:
         self.root_round = 0
         self.child_round = 0
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, messages
         names = [item["name"] for item in (tools or [])]
         if "SpawnAgent" not in names:
@@ -258,7 +266,9 @@ class SpawnAndChildApprovalProvider:
         yield ProviderStreamEvent(type="text_delta", text="parent spawn approved")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,
@@ -273,7 +283,7 @@ class AsyncFollowUpProvider:
     def __init__(self) -> None:
         self.root_round = 0
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, messages
         names = [item["name"] for item in (tools or [])]
         if "SpawnAgent" not in names:
@@ -304,7 +314,9 @@ class AsyncFollowUpProvider:
         yield ProviderStreamEvent(type="text_delta", text="parent received follow-up")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,
@@ -330,7 +342,7 @@ class AsyncSendAfterDeliveryProvider:
     def __init__(self) -> None:
         self.root_round = 0
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt
         names = [item["name"] for item in (tools or [])]
         if "SpawnAgent" not in names:
@@ -377,7 +389,9 @@ class AsyncSendAfterDeliveryProvider:
         yield ProviderStreamEvent(type="text_delta", text="parent settled")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,
@@ -395,7 +409,7 @@ class NextBoundaryRaceProvider:
         self.root_release = asyncio.Event()
         self.root_messages: list[list[object]] = []
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt
         names = [item["name"] for item in (tools or [])]
         if "SpawnAgent" not in names:
@@ -429,7 +443,9 @@ class NextBoundaryRaceProvider:
         yield ProviderStreamEvent(type="text_delta", text="parent consumed child result")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,
@@ -446,7 +462,7 @@ class SteeredChildProvider:
         self.release = asyncio.Event()
         self.round = 0
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, messages, tools
         if self.round == 0:
             self.round += 1
@@ -458,7 +474,9 @@ class SteeredChildProvider:
         yield ProviderStreamEvent(type="text_delta", text="steered child complete")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,
@@ -473,7 +491,7 @@ class ApprovalChildProvider:
     def __init__(self) -> None:
         self.round = 0
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, messages, tools
         if self.round == 0:
             self.round += 1
@@ -489,7 +507,9 @@ class ApprovalChildProvider:
         yield ProviderStreamEvent(type="text_delta", text="approved child complete")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,
@@ -504,7 +524,7 @@ class AskUserChildProvider:
     def __init__(self) -> None:
         self.round = 0
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, messages, tools
         if self.round == 0:
             self.round += 1
@@ -520,7 +540,9 @@ class AskUserChildProvider:
         yield ProviderStreamEvent(type="text_delta", text="child received answer")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,
@@ -535,7 +557,7 @@ class ConcurrentAskUserProvider:
     def __init__(self) -> None:
         self.initial_calls = 0
 
-    async def stream(self, *, model, system_prompt="", messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, messages, tools
         if self.initial_calls < 2:
             index = self.initial_calls
@@ -552,7 +574,9 @@ class ConcurrentAskUserProvider:
         yield ProviderStreamEvent(type="text_delta", text="concurrent child answered")
         yield ProviderStreamEvent(type="done")
 
-    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+    async def check_connection(
+        self, model: ModelMetadata, *, request_context=None
+    ) -> ProviderCheckResult:
         return ProviderCheckResult(
             provider_id=self.provider_id,
             model_id=model.model_id,
