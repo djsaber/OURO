@@ -245,9 +245,67 @@ def test_identical_done_events_only_fill_unseen_suffix_and_future_metadata_is_ig
     assert "".join(event.text or "" for event in result) == "hello"
 
 
+@pytest.mark.parametrize(
+    "extension",
+    [
+        {"type": "vendor.billing", "cost": "0.01"},
+        {"type": "response.future_metadata", "value": "unknown"},
+        {"type": "ping", "cost": "0"},
+    ],
+)
+def test_extensions_at_any_stream_position_do_not_change_completion(extension):
+    output = [message(), call()]
+    events = [item_event(i, item) for i, item in enumerate(output)] + [terminal(output)]
+    interleaved = [extension]
+    for event in events:
+        interleaved.extend([event, extension])
+    assert decode(interleaved) == decode(events)
+    with pytest.raises(ResponsesError, match="missing_terminal"):
+        decode([extension, item_event(0, message()), extension])
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "response.output_text.delta",
+        "response.output_text.done",
+        "response.refusal.delta",
+        "response.reasoning_summary_text.delta",
+        "response.function_call_arguments.delta",
+        "response.function_call_arguments.done",
+        "response.output_item.added",
+        "response.output_item.done",
+        "response.content_part.done",
+        "response.reasoning_summary_part.done",
+        "response.output_text.annotation.added",
+        "response.created",
+        "response.in_progress",
+        "response.failed",
+        "response.incomplete",
+        "error",
+        "response.completed",
+    ],
+)
+def test_extensions_after_terminal_do_not_hide_late_output_or_lifecycle_events(kind):
+    parser = decoder()
+    assert parser.feed(terminal([message()])) == []
+    assert parser.feed({"type": "vendor.metadata"}) == []
+    code = "duplicate_terminal" if kind == "response.completed" else "output_after_terminal"
+    with pytest.raises(ResponsesError, match=code):
+        parser.feed({"type": kind})
+
+
+@pytest.mark.parametrize("invalid", [{}, {"type": None}, {"type": 42}])
+def test_extensions_still_require_an_event_type_after_terminal(invalid):
+    parser = decoder()
+    parser.feed(terminal([]))
+    with pytest.raises(ResponsesError, match="invalid_event"):
+        parser.feed(invalid)
+
+
 async def test_shared_http_sse_transport_drives_the_decoder():
     async def handler(request):
-        events = [item_event(0, message()), terminal([])]
+        events = [item_event(0, message()), terminal([]), {"type": "vendor.billing", "cost": "0"}]
         return httpx.Response(
             200,
             headers={"content-type": "text/event-stream"},

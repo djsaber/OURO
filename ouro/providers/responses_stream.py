@@ -61,17 +61,18 @@ class ResponsesStreamDecoder:
         kind = event.get("type")
         if not isinstance(kind, str):
             raise ResponsesError("invalid_event")
-        if self._terminal is not None or self._finished:
-            raise ResponsesError(
-                "duplicate_terminal" if kind == "response.completed" else "output_after_terminal"
-            )
+        if self._finished:
+            self._require_open(kind)
         if kind == "response.incomplete":
+            self._require_open(kind)
             # No successful done means Core cannot execute even syntactically complete
             # tool fragments from an unsuccessful response.
             raise ResponsesError("response_incomplete")
         if kind in {"response.failed", "error"}:
+            self._require_open(kind)
             raise ResponsesError("response_failed")
         if kind == "response.completed":
+            self._require_open(kind)
             response = event.get("response")
             if (
                 not isinstance(response, dict)
@@ -83,6 +84,7 @@ class ResponsesStreamDecoder:
             self._terminal = response
             return []
         if kind in {"response.output_item.added", "response.output_item.done"}:
+            self._require_open(kind)
             index = _index(event, "output_index")
             item = event.get("item")
             complete = kind == "response.output_item.done"
@@ -108,6 +110,7 @@ class ResponsesStreamDecoder:
         }
         stem, _, suffix = kind.rpartition(".")
         if stem in lanes and suffix in {"delta", "done"}:
+            self._require_open(kind)
             item_kind, lane, coordinate, field_name = lanes[stem]
             index = self._event_item(event, item_kind)
             part = _index(event, coordinate)
@@ -119,6 +122,7 @@ class ResponsesStreamDecoder:
             )
             return _display(lane, text)
         if stem == "response.function_call_arguments" and suffix in {"delta", "done"}:
+            self._require_open(kind)
             index = self._event_item(event, "function_call")
             tool = self._tool(index)
             text = (
@@ -127,9 +131,29 @@ class ResponsesStreamDecoder:
                 else tool.arguments.finish(event.get("arguments"))
             )
             return _tool_delta(tool.ordinal, arguments=text)
-        # Lifecycle, annotations, content-part notices and future metadata are not
-        # independent replay items. Supported complete item shapes are checked above.
+        if kind in {
+            "response.created",
+            "response.queued",
+            "response.in_progress",
+            "response.content_part.added",
+            "response.content_part.done",
+            "response.reasoning_summary_part.added",
+            "response.reasoning_summary_part.done",
+            "response.output_text.annotation.added",
+        }:
+            # These notices carry no independent replay items, but still belong
+            # to the response lifecycle and must precede its terminal event.
+            self._require_open(kind)
+        # Unknown event types are extensions, including after response.completed.
+        # Ignore them without treating them as output or a completion boundary.
+        # Unknown item types inside known output events remain errors above.
         return []
+
+    def _require_open(self, kind: str) -> None:
+        if self._terminal is not None or self._finished:
+            raise ResponsesError(
+                "duplicate_terminal" if kind == "response.completed" else "output_after_terminal"
+            )
 
     def finish(self) -> list[ProviderStreamEvent]:
         if self._finished:
