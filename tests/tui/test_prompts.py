@@ -3,10 +3,11 @@ from textual.app import App
 from textual.widgets import Input, OptionList
 
 from ouro.application.configuration import ConfigurationFacade
-from ouro.config.prompts import PromptConfigManager, PromptDraft, PromptEntry
+from ouro.config.prompts import PromptConfig, PromptConfigManager, PromptDraft, PromptEntry
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.prompt_screens import PromptEntryScreen
+from ouro.tui.prompt_screens import PromptEntryScreen, prompt_choices
 from ouro.tui.screens import ConfirmationScreen
+from ouro.tui.theme import DEFAULT_TUI_THEME
 from tests.tui.helpers import run_ready_app, two_route_application
 
 
@@ -34,6 +35,31 @@ async def test_prompt_editor_requires_content_and_preserves_multiline_and_cancel
         await pilot.press("enter")
         await pilot.pause()
     assert results[0] == PromptDraft(text="a\nb")
+
+
+def test_prompt_choices_use_concise_group_and_add_labels():
+    choices = prompt_choices(
+        PromptConfig(
+            replacements=(PromptEntry(id="base", text="Base", enabled=True),),
+            additions=(PromptEntry(id="note", text="Note"),),
+        )
+    )
+
+    assert {choice.group for choice in choices} == {"REPLACEMENT", "ADDITIONS"}
+    assert [choice.label for choice in choices if choice.value.startswith("add:")] == ["Add", "Add"]
+
+
+def test_prompt_editor_uses_action_label_and_danger_for_replacement_activation():
+    screen = PromptEntryScreen("replacement")
+
+    description = next(choice for choice in screen._choices if choice.value == "description")
+    activation = next(choice for choice in screen._choices if choice.value == "enabled")
+
+    assert description.label == "Description"
+    assert activation.label == "Enable"
+    assert activation.trailing == ""
+    assert activation.description == "Enabling overrides OURO's default system prompt."
+    assert activation.description_accent == DEFAULT_TUI_THEME.danger
 
 
 async def test_prompt_actions_manage_order_activation_edit_and_delete(tmp_path):
@@ -69,6 +95,13 @@ async def test_prompt_actions_manage_order_activation_edit_and_delete(tmp_path):
         await choose("Personal prompts")
         assert any(c.label == "First annotation" for c in app.screen._choices)
         await choose("other")
+        choices = {choice.value: choice for choice in app.screen._choices}
+        assert choices["edit"].label == "Edit"
+        assert choices["delete"].label == "Delete"
+        assert choices["toggle"].description == (
+            "Enabling overrides OURO's default system prompt."
+        )
+        assert choices["toggle"].description_accent == DEFAULT_TUI_THEME.danger
         await choose("Enable")
         config = PromptConfigManager(tmp_path).snapshot().config
         assert [p.enabled for p in config.replacements] == [False, True]
@@ -79,7 +112,7 @@ async def test_prompt_actions_manage_order_activation_edit_and_delete(tmp_path):
             == "Last\n\nFirst"
         )
         await choose("First annotation")
-        await choose("Edit description")
+        await choose("Edit")
         assert isinstance(app.screen, PromptEntryScreen)
         await choose("Content")
         await pilot.press("ctrl+u", "n", "shift+enter", "e", "enter")
@@ -89,12 +122,12 @@ async def test_prompt_actions_manage_order_activation_edit_and_delete(tmp_path):
         await choose("Disable")
         assert PromptConfigManager(tmp_path).snapshot().config.additional_system_prompt == "n\ne"
         await choose("last")
-        await choose("Delete prompt")
+        await choose("Delete")
         assert isinstance(app.screen, ConfirmationScreen)
         await pilot.press("escape")
         await pilot.pause()
         assert len(PromptConfigManager(tmp_path).snapshot().config.additions) == 2
-        await choose("Delete prompt")
+        await choose("Delete")
         await pilot.press("down", "enter")
         await pilot.pause(0.2)
         assert len(PromptConfigManager(tmp_path).snapshot().config.additions) == 1
@@ -115,12 +148,18 @@ async def test_prompt_creation_and_stale_editor_do_not_overwrite_other_changes(t
         await pilot.press("ctrl+p")
         await pilot.pause()
         await choose("Personal prompts")
-        await choose("Add addition")
+        app.screen.query_one(Input).value = "Add"
+        await pilot.pause()
+        await pilot.press("right", "enter")
+        await pilot.pause(0.15)
         assert isinstance(app.screen, PromptEntryScreen)
         assert all(choice.value != "id" for choice in app.screen._choices)
         await choose("Content")
         await pilot.press("h", "i", "enter")
-        await choose("Enabled")
+        await choose("Enable")
+        assert next(
+            choice for choice in app.screen._choices if choice.value == "enabled"
+        ).label == "Disable"
         await choose("Save")
         config = facade.system_prompt().config
         assert len(config.additions) == 1
@@ -128,7 +167,7 @@ async def test_prompt_creation_and_stale_editor_do_not_overwrite_other_changes(t
         assert entry_id.startswith("prompt_")
         assert config.additions[0].text == "hi"
         await choose("hi")
-        await choose("Edit description")
+        await choose("Edit")
         # Another Host saves after the edit form was opened.
         facade.save_prompt(
             "addition",

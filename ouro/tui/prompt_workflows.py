@@ -8,6 +8,7 @@ from ouro.config.prompts import PromptDraft, PromptKind
 from ouro.tui.data_transfer import DataTransferWorkflows
 from ouro.tui.prompt_screens import PromptEntryScreen, prompt_choices, prompt_label
 from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
+from ouro.tui.theme import theme_for
 
 
 class PromptWorkflows(DataTransferWorkflows):
@@ -101,17 +102,22 @@ class PromptWorkflows(DataTransferWorkflows):
                 title=f"PROMPT · {prompt_label(entry)}",
                 placeholder="Choose an action…",
                 choices=(
-                    Choice("edit", "Edit description and content"),
+                    Choice("edit", "Edit"),
                     Choice(
                         "toggle",
                         "Disable" if entry.enabled else "Enable",
-                        description="Switches off the other replacement."
+                        description="Enabling overrides OURO's default system prompt."
                         if kind == "replacement" and not entry.enabled
                         else "",
+                        description_accent=(
+                            theme_for(self).danger
+                            if kind == "replacement" and not entry.enabled
+                            else None
+                        ),
                     ),
                     Choice("up", "Move up", disabled=position == 1),
                     Choice("down", "Move down", disabled=position == len(entries)),
-                    Choice("delete", "Delete prompt", destructive=True),
+                    Choice("delete", "Delete", destructive=True),
                 ),
                 on_select=action,
             )

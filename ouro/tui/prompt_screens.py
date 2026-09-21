@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from ouro.config.prompts import PromptConfig, PromptDraft, PromptEntry, PromptKind
 from ouro.tui.inline_editor import MultilineEditableChoiceScreen
 from ouro.tui.screens import Choice
+from ouro.tui.theme import theme_for
 
 
 def prompt_label(entry: PromptEntry) -> str:
@@ -16,8 +17,8 @@ def prompt_label(entry: PromptEntry) -> str:
 def prompt_choices(config: PromptConfig) -> tuple[Choice, ...]:
     choices: list[Choice] = []
     for kind, entries, group in (
-        ("replacement", config.replacements, "REPLACEMENT · AT MOST ONE ENABLED"),
-        ("addition", config.additions, "ADDITIONS · APPLIED IN LIST ORDER"),
+        ("replacement", config.replacements, "REPLACEMENT"),
+        ("addition", config.additions, "ADDITIONS"),
     ):
         group_trailing = (
             "System default active"
@@ -35,7 +36,7 @@ def prompt_choices(config: PromptConfig) -> tuple[Choice, ...]:
                 )
             )
         choices.append(
-            Choice(f"add:{kind}", f"Add {kind} prompt", group=group, group_trailing=group_trailing)
+            Choice(f"add:{kind}", "Add", group=group, group_trailing=group_trailing)
         )
     return tuple(choices)
 
@@ -87,7 +88,7 @@ class PromptEntryScreen(MultilineEditableChoiceScreen):
         return (
             Choice(
                 "description",
-                "Description (optional)",
+                "Description",
                 trailing=self._values["description"] or "Not set",
                 edit_value=self._values["description"],
                 group="PROMPT",
@@ -102,11 +103,13 @@ class PromptEntryScreen(MultilineEditableChoiceScreen):
             ),
             Choice(
                 "enabled",
-                "Enabled",
-                trailing="Yes" if self._enabled else "No",
-                description="Enabling switches off the other replacement."
+                "Disable" if self._enabled else "Enable",
+                description="Enabling overrides OURO's default system prompt."
                 if self._kind == "replacement"
                 else "",
+                description_accent=(
+                    theme_for(self).danger if self._kind == "replacement" else None
+                ),
                 group="ACTIVATION",
             ),
             Choice(
