@@ -880,12 +880,17 @@ class ChoiceScreen(ModalScreen[str | None]):
 
     def _move_group(self, direction: int) -> None:
         options = self.query_one("#choice-list", OptionList)
-        starts = tuple(
-            index + 1
-            for index in range(options.option_count - 1)
-            if self._is_group_header(options.get_option_at_index(index))
-            and not options.get_option_at_index(index + 1).disabled
-        )
+        starts: list[int] = []
+        for index in range(options.option_count):
+            if not self._is_group_header(options.get_option_at_index(index)):
+                continue
+            for candidate in range(index + 1, options.option_count):
+                option = options.get_option_at_index(candidate)
+                if self._is_group_header(option):
+                    break
+                if not option.disabled:
+                    starts.append(candidate)
+                    break
         if not starts:
             return
         highlighted = options.highlighted

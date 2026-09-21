@@ -57,11 +57,15 @@ class ArchivePathScreen(EditableChoiceScreen):
                         Choice("save", "Use this location", group="ARCHIVE"),
                     )
                 )
+            archives: list[Choice] = []
+            folders: list[Choice] = []
             for path in sorted(self._directory.iterdir(), key=lambda item: item.name.casefold()):
                 if path.is_dir():
-                    rows.append(Choice(f"directory:{path.name}", path.name, group="FOLDERS"))
+                    folders.append(Choice(f"directory:{path.name}", path.name, group="FOLDERS"))
                 elif self._filename is None and path.is_file() and path.suffix.lower() == ".zip":
-                    rows.append(Choice(f"file:{path.name}", path.name, group="ARCHIVES"))
+                    archives.append(Choice(f"file:{path.name}", path.name, group="ARCHIVES"))
+            rows.extend(archives)
+            rows.extend(folders)
             return tuple(rows)
 
         try:

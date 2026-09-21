@@ -649,6 +649,35 @@ async def test_grouped_choice_filter_hides_empty_groups_and_selects_first_choice
 
 
 @pytest.mark.asyncio
+async def test_group_shortcuts_select_first_enabled_choice_after_disabled_rows(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with run_ready_app(app, size=(80, 24)) as pilot:
+        await pilot.pause()
+        app.push_screen(
+            ChoiceScreen(
+                title="GROUPS",
+                placeholder="Filter choices…",
+                choices=(
+                    Choice("locked", "Locked", group="First", disabled=True),
+                    Choice("available", "Available", group="First"),
+                    Choice("second", "Second", group="Second"),
+                ),
+            )
+        )
+        await pilot.pause()
+
+        options = app.screen.query_one(OptionList)
+        assert options.get_option_at_index(options.highlighted).id == "available"
+        await pilot.press("right")
+        assert options.get_option_at_index(options.highlighted).id == "second"
+        await pilot.press("right")
+        assert options.get_option_at_index(options.highlighted).id == "available"
+
+
+@pytest.mark.asyncio
 async def test_refreshing_choice_screen_can_retain_focus_position_across_groups(
     tmp_path: Path,
 ) -> None:
@@ -7246,6 +7275,8 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         ]
         assert screen._capabilities["endpoint-tools"] is True
         assert screen._capabilities["endpoint-structured-output"] is True
+        assert screen._values["endpoint-context-window"] == "1000000"
+        assert screen._values["endpoint-max-output"] == "32768"
 
         options = screen.query_one("#choice-list", OptionList)
         for field_id, value in (
@@ -7884,6 +7915,15 @@ async def test_actions_lists_the_unified_subagent_catalog(tmp_path: Path) -> Non
         tools=application.runtime.tools,
         expected_revision=0,
     )
+    application.agent_definitions.create(
+        agent_id="write-tests",
+        name="Write tests",
+        description="Write regression tests for a bounded change.",
+        system_prompt="Write focused regression tests.",
+        tool_selection=ToolSelection(mode="all"),
+        tools=application.runtime.tools,
+        expected_revision=1,
+    )
     app = OuroTuiApp(application=application)
 
     async with run_ready_app(app, size=(100, 34)) as pilot:
@@ -7894,6 +7934,12 @@ async def test_actions_lists_the_unified_subagent_catalog(tmp_path: Path) -> Non
         await pilot.pause()
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="SUBAGENTS")
+
+        assert [(choice.label, choice.group) for choice in app.screen._choices] == [
+            ("General", "BUILT-IN"),
+            ("Code reviewer", "USER"),
+            ("Write tests", "USER"),
+        ]
 
         general = next(choice for choice in app.screen._choices if choice.value == "general")
         assert general.group == "BUILT-IN"
@@ -8417,6 +8463,85 @@ async def test_provider_deletions_use_shared_menu_confirmation(
         await pilot.pause()
         assert not isinstance(app.screen, ConfirmationScreen)
         assert ConfigurationFacade(tmp_path).provider("custom") is not None
+
+
+@pytest.mark.asyncio
+async def test_provider_management_returns_to_catalog_after_deletion(tmp_path: Path) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    configuration.add_provider(
+        "custom",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        base_url="https://custom.example.invalid/v1",
+    )
+    configuration.save_endpoint("custom", "chat", model="custom-model")
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with run_ready_app(app, size=(100, 34)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        app.screen.query_one("#choice-filter", Input).value = "Manage providers"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="PROVIDERS")
+        app.screen.query_one("#choice-filter", Input).value = "custom"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="PROVIDER • custom")
+
+        options = app.screen.query_one(OptionList)
+        options.highlighted = options.get_option_index("remove")
+        options.focus()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ConfirmationScreen, title="CONFIRM DELETE PROVIDER")
+        await pilot.press("down", "enter")
+        await _wait_for_screen(app, ChoiceScreen, title="PROVIDERS")
+
+        assert all(choice.value != "custom" for choice in app.screen._choices)
+        assert all(
+            provider.provider_id != "custom"
+            for provider in ConfigurationFacade(tmp_path).provider_catalog().providers
+        )
+
+
+@pytest.mark.asyncio
+async def test_endpoint_management_returns_to_catalog_after_deletion(tmp_path: Path) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    configuration.add_provider(
+        "custom",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        base_url="https://custom.example.invalid/v1",
+    )
+    configuration.save_endpoint("custom", "chat", model="chat-model")
+    configuration.save_endpoint("custom", "keep", model="keep-model")
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with run_ready_app(app, size=(100, 34)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        app.screen.query_one("#choice-filter", Input).value = "Manage endpoints"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="ENDPOINTS")
+        app.screen.query_one("#choice-filter", Input).value = "custom/chat"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="ENDPOINT • custom/chat")
+
+        options = app.screen.query_one(OptionList)
+        options.highlighted = options.get_option_index("remove")
+        options.focus()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ConfirmationScreen, title="CONFIRM DELETE ENDPOINT")
+        await pilot.press("down", "enter")
+        await _wait_for_screen(app, ChoiceScreen, title="ENDPOINTS")
+
+        values = {choice.value for choice in app.screen._choices}
+        assert "custom/chat" not in values
+        assert "custom/keep" in values
 
 
 @pytest.mark.asyncio
@@ -9768,6 +9893,40 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
 
 
 @pytest.mark.asyncio
+async def test_mcp_management_returns_to_catalog_after_deletion(tmp_path: Path) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    for server_id in ("keep", "remove"):
+        configuration.save_mcp_server(
+            server_id,
+            MCPServerConfigUpdate(command="python", auto_start=False),
+        )
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with run_ready_app(app, size=(100, 34)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        app.screen.query_one("#choice-filter", Input).value = "Manage MCP servers"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
+        app.screen.query_one("#choice-filter", Input).value = "remove"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP • remove")
+
+        options = app.screen.query_one(OptionList)
+        options.highlighted = options.get_option_index("remove")
+        options.focus()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ConfirmationScreen, title="CONFIRM DELETE MCP SERVER")
+        await pilot.press("down", "enter")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
+
+        assert [choice.value for choice in app.screen._choices] == ["keep"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
     tmp_path: Path,
 ) -> None:
@@ -10285,6 +10444,16 @@ async def test_mcp_configuration_screen_validates_json_and_returns_typed_draft(
             "CONNECTION SETTINGS",
             "ACTIONS",
         }
+        target = next(choice for choice in screen._choices if choice.value == "mcp-target")
+        assert target.edit_placeholder == (
+            "Enter executable only (e.g. npx); put arguments in Arguments (JSON)"
+        )
+        screen._values["mcp-transport"] = "http"
+        screen._refresh("mcp-target")
+        target = next(choice for choice in screen._choices if choice.value == "mcp-target")
+        assert target.edit_placeholder == "Enter the MCP server URL"
+        screen._values["mcp-transport"] = "stdio"
+        screen._refresh("mcp-target")
         options = screen.query_one("#choice-list", OptionList)
         options.highlighted = options.get_option_index("mcp-server-id")
         options.focus()

@@ -647,10 +647,12 @@ def test_default_api_path_per_provider_protocol() -> None:
     assert default_api_path("faux") is None
 
 
-def test_endpoint_capability_defaults_match_mapping_defaults() -> None:
+def test_endpoint_defaults_match_mapping_defaults() -> None:
     endpoint = ProviderEndpointConfig(endpoint_id="chat", model_id="chat-model")
     mapped = endpoint_config_from_mapping("chat", {"model_id": "chat-model"})
 
+    assert endpoint.context_window == mapped.context_window == 1_000_000
+    assert endpoint.max_output_tokens == mapped.max_output_tokens == 32_768
     assert endpoint.supports_tools is True
     assert endpoint.supports_vision is False
     assert endpoint.supports_streaming is True

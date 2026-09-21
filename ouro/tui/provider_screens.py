@@ -370,10 +370,10 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             "endpoint-id": existing.endpoint_id if existing is not None else "",
             "endpoint-model-id": existing.model_id if existing is not None else "",
             "endpoint-context-window": str(
-                existing.context_window if existing is not None else 128_000
+                existing.context_window if existing is not None else 1_000_000
             ),
             "endpoint-max-output": str(
-                existing.max_output_tokens if existing is not None else 8192
+                existing.max_output_tokens if existing is not None else 32_768
             ),
             "endpoint-reasoning-config": _reasoning_text(reasoning),
             "endpoint-request-options": request_options,

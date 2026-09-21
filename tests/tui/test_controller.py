@@ -961,6 +961,49 @@ async def test_controller_installs_and_configures_user_plugin(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_controller_creates_mcp_configuration(tmp_path: Path) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=_reasoning_application(tmp_path),
+        configuration=configuration,
+    )
+    await controller.start()
+
+    try:
+        saved = await controller.save_mcp_configuration(
+            TuiMCPServerConfiguration(
+                server_id="local",
+                name="Local server",
+                transport="stdio",
+                target="python",
+                args=["-m", "server"],
+                env=None,
+                inherit_env=None,
+                cwd=None,
+                headers=None,
+                credential_refs=None,
+                enabled=True,
+                auto_start=False,
+                auto_reconnect=True,
+                max_reconnect_attempts=3,
+                reconnect_backoff_seconds=0.5,
+                timeout_seconds=30.0,
+                health_check_interval_seconds=30.0,
+                permission_mode="approval",
+                tool_effect_overrides=None,
+            )
+        )
+
+        assert saved.server_id == "local"
+        assert configuration.mcp_server("local") == saved
+        assert controller.mcp_servers()[0].server_id == "local"
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
 async def test_controller_hot_updates_mcp_tool_policy_without_reconfiguring_connection(
     tmp_path: Path,
 ) -> None:

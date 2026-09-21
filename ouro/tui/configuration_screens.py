@@ -1177,7 +1177,11 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 trailing=self._values["mcp-target"] or "Required",
                 group="CONNECTION",
                 edit_value=self._values["mcp-target"],
-                edit_placeholder="Enter a command or URL",
+                edit_placeholder=(
+                    "Enter executable only (e.g. npx); put arguments in Arguments (JSON)"
+                    if self._values["mcp-transport"] == "stdio"
+                    else "Enter the MCP server URL"
+                ),
             ),
             Choice(
                 "mcp-args",

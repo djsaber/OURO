@@ -47,8 +47,8 @@ class ProviderEndpointConfig(OuroModel):
     base_url: str | None = None
     api_path: str | None = None
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
-    context_window: int = Field(default=128_000, ge=1)
-    max_output_tokens: int = Field(default=8192, ge=1)
+    context_window: int = Field(default=1_000_000, ge=1)
+    max_output_tokens: int = Field(default=32_768, ge=1)
     supports_tools: bool = True
     supports_vision: bool = False
     supports_streaming: bool = True
@@ -110,8 +110,8 @@ def endpoint_config_from_mapping(
         base_url=_optional_str(raw.get("base_url")),
         api_path=_optional_str(raw.get("api_path")),
         temperature=raw.get("temperature"),
-        context_window=raw.get("context_window", 128_000),
-        max_output_tokens=raw.get("max_output_tokens", 8192),
+        context_window=raw.get("context_window", 1_000_000),
+        max_output_tokens=raw.get("max_output_tokens", 32_768),
         supports_tools=raw.get("supports_tools", True),
         supports_vision=raw.get("supports_vision", False),
         supports_streaming=raw.get("supports_streaming", True),

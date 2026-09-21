@@ -365,7 +365,8 @@ class ProviderConfigurationWorkflows(App[int]):
                 elif selected == "add-endpoint":
                     await self._edit_endpoint(provider, None, menu=menu)
                 elif selected == "remove":
-                    await self._remove_provider(provider.provider_id, menu=menu)
+                    if await self._remove_provider(provider.provider_id, menu=menu):
+                        await menu.pop_page_refreshed()
                 return None
 
             menu.push_page(
@@ -488,7 +489,7 @@ class ProviderConfigurationWorkflows(App[int]):
         provider_id: str,
         *,
         menu: ChoiceScreen | None = None,
-    ) -> None:
+    ) -> bool:
         screen = ConfirmationScreen(
             title="DELETE PROVIDER",
             message=(f"Delete {provider_id} and all of its endpoints from your settings?"),
@@ -498,13 +499,14 @@ class ProviderConfigurationWorkflows(App[int]):
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
         )
         if not ConfirmationScreen.confirmed(selected):
-            return
+            return False
         try:
             await self._controller.remove_provider(provider_id)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
-            return
+            return False
         self.notify(f"Provider deleted: {provider_id} (next request)")
+        return True
 
     async def _choose_endpoint_action(
         self,
@@ -866,11 +868,12 @@ class ProviderConfigurationWorkflows(App[int]):
                 elif selected == "use":
                     await self._use_endpoint(provider.provider_id, endpoint.endpoint_id)
                 elif selected == "remove":
-                    await self._remove_endpoint(
+                    if await self._remove_endpoint(
                         provider.provider_id,
                         endpoint.endpoint_id,
                         menu=menu,
-                    )
+                    ):
+                        await menu.pop_page_refreshed()
                 return None
 
             menu.push_page(
@@ -943,7 +946,7 @@ class ProviderConfigurationWorkflows(App[int]):
         endpoint_id: str,
         *,
         menu: ChoiceScreen | None = None,
-    ) -> None:
+    ) -> bool:
         screen = ConfirmationScreen(
             title="DELETE ENDPOINT",
             message=f"Delete {provider_id}/{endpoint_id} from your settings?",
@@ -953,13 +956,14 @@ class ProviderConfigurationWorkflows(App[int]):
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
         )
         if not ConfirmationScreen.confirmed(selected):
-            return
+            return False
         try:
             await self._controller.remove_endpoint(provider_id, endpoint_id)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
-            return
+            return False
         self.notify(f"Endpoint deleted: {provider_id}/{endpoint_id} (next request)")
+        return True
 
 
 def _provider_choice(

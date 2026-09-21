@@ -7,6 +7,31 @@ from textual.widgets import OptionList
 from ouro.tui.archive_paths import ArchivePathScreen
 
 
+async def test_import_choices_list_archives_before_one_contiguous_folder_group(tmp_path) -> None:
+    (tmp_path / "zeta").mkdir()
+    (tmp_path / "Alpha").mkdir()
+    (tmp_path / "beta.zip").write_bytes(b"zip")
+    (tmp_path / "ALPHA.ZIP").write_bytes(b"zip")
+    (tmp_path / "ignored.txt").write_text("ignored", encoding="utf-8")
+
+    choices = await ArchivePathScreen(directory=tmp_path, filename=None)._path_choices()
+
+    assert [choice.value for choice in choices] == [
+        "location",
+        "home",
+        "parent",
+        "file:ALPHA.ZIP",
+        "file:beta.zip",
+        "directory:Alpha",
+        "directory:zeta",
+    ]
+    assert list(dict.fromkeys(choice.group for choice in choices)) == [
+        "LOCATION",
+        "ARCHIVES",
+        "FOLDERS",
+    ]
+
+
 @pytest.mark.parametrize(
     ("field", "invalid", "valid", "message"),
     [

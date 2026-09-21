@@ -1039,7 +1039,8 @@ class ConfigurationWorkflowsApp(DataTransferWorkflows):
                         loading_action=loading_action,
                     )
                 elif selected == "remove":
-                    await self._remove_mcp(server_id, menu=menu)
+                    if await self._remove_mcp(server_id, menu=menu):
+                        await menu.pop_page_refreshed()
                 return None
 
             menu.push_page(
@@ -1140,7 +1141,7 @@ class ConfigurationWorkflowsApp(DataTransferWorkflows):
         server_id: str,
         *,
         menu: ChoiceScreen | None = None,
-    ) -> None:
+    ) -> bool:
         screen = ConfirmationScreen(
             title="DELETE MCP SERVER",
             message=(f"Delete {server_id}? Takes effect after restarting the app."),
@@ -1150,14 +1151,15 @@ class ConfigurationWorkflowsApp(DataTransferWorkflows):
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
         )
         if not ConfirmationScreen.confirmed(selected):
-            return
+            return False
         try:
             await self._controller.remove_mcp_configuration(server_id)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
-            return
+            return False
         self._refresh_mcp_system_status()
         self.notify(f"MCP server deleted: {server_id} (next restart)")
+        return True
 
     async def _set_mcp_enabled(self, server_id: str, *, enabled: bool) -> bool:
         try:
@@ -1654,7 +1656,10 @@ def _agent_definition_choices(
             trailing=theme.inline_separator.join((definition.agent_id, definition.compatibility)),
             disabled=not definition.editable,
         )
-        for definition in sorted(definitions, key=lambda item: item.name.casefold())
+        for definition in sorted(
+            definitions,
+            key=lambda item: (item.source != "builtin", item.name.casefold()),
+        )
     )
 
 

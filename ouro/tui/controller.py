@@ -1510,13 +1510,16 @@ class TuiController:
         draft: TuiMCPServerConfiguration,
     ) -> MCPServerConfigView:
         configuration = self._require_configuration()
-        previous = await asyncio.to_thread(configuration.mcp_server, draft.server_id)
+        previous = await asyncio.to_thread(configuration.mcp.get, draft.server_id)
         saved, config = await asyncio.to_thread(self._save_mcp_configuration, draft)
         self._runtime()
         assert self._application is not None
         try:
             await self._application.reconcile_mcp_configuration(config)
         except Exception:
+            if previous is None:
+                await asyncio.to_thread(configuration.remove_mcp_server, draft.server_id)
+                raise
             await asyncio.to_thread(
                 configuration.save_mcp_server,
                 draft.server_id,
