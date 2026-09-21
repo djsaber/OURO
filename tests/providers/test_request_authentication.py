@@ -341,7 +341,8 @@ async def test_managed_network_failure_remains_classified_after_budget_exhaustio
             adapter = build(provider, auth, client)
             adapter.retry_policy.max_attempts = 1
             events = await collect(adapter)
-            assert events[-1].error_code == "provider_request_failed"
+            assert events[-1].error_code == "provider_connection_failed"
+            assert events[-1].error == "Model connection could not be established (ConnectError)."
             assert "fixture-access" not in repr(events)
     finally:
         await service.close()

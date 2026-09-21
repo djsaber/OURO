@@ -28,7 +28,7 @@ from ouro.providers.headers import ProviderHeaderResolver
 from ouro.providers.http_transport import (
     HttpxProviderHTTPTransport,
     ProviderHTTPTransport,
-    ProviderTransportError,
+    ProviderResponseTimeout,
 )
 from ouro.providers.openai_responses_codec import responses_input, responses_tools
 from ouro.providers.openai_responses_errors import OpenAIResponsesError
@@ -169,7 +169,7 @@ class OpenAIResponsesProvider:
                 # continuation mismatches; never replace them with raw service text.
                 yield ProviderStreamEvent(type="error", error=str(error), error_code=error.code)
             except TimeoutError:
-                raise ProviderTransportError("Model response timed out.", retryable=True) from None
+                raise ProviderResponseTimeout(self.timeout) from None
 
     async def _chunks(
         self, url: str, headers: Mapping[str, str], payload: dict[str, Any], streaming: bool

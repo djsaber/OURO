@@ -94,7 +94,10 @@ async def test_closing_outer_stream_immediately_releases_transport():
 
 
 @pytest.mark.parametrize("cancel", [False, True])
-async def test_stalled_stream_times_out_or_cancels_and_closes_without_replay(cancel):
+@pytest.mark.parametrize("private_headers", [False, True])
+async def test_stalled_stream_times_out_or_cancels_and_closes_without_replay(
+    cancel, private_headers
+):
     started = asyncio.Event()
 
     class StalledTransport(StreamTransport):
@@ -112,6 +115,11 @@ async def test_stalled_stream_times_out_or_cancels_and_closes_without_replay(can
         base_url="https://fixture.invalid",
         transport=transport,
         timeout=10 if cancel else 0.03,
+        headers=(
+            {"x-conversation-id": {"source": "literal", "value": "private-session"}}
+            if private_headers
+            else None
+        ),
     )
     task = asyncio.create_task(collect(provider))
     await asyncio.wait_for(started.wait(), 1)
@@ -123,6 +131,12 @@ async def test_stalled_stream_times_out_or_cancels_and_closes_without_replay(can
         events = await asyncio.wait_for(task, 1)
         assert [event.type for event in events] == ["text_delta", "error"]
         assert "timed out" in events[-1].error
+        assert events[-1].error_code == "provider_response_timeout"
+        if private_headers:
+            assert events[-1].error == (
+                "Model response timed out after 0.03 seconds (total request timeout)."
+            )
+        assert "private-session" not in repr(events)
     assert transport.closed and len(transport.requests) == 1
 
 

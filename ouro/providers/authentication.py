@@ -4,11 +4,31 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
+import httpx
+
 from ouro.auth.request_auth import AuthError, RequestAuthenticator, RequestAuthSnapshot
 from ouro.core.billing import BillingMode
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ProviderStreamEvent
-from ouro.providers.http_transport import ProviderTransportError
+from ouro.providers.http_transport import ProviderResponseTimeout, ProviderTransportError
+
+_SAFE_NETWORK_ERRORS = (
+    (httpx.ConnectTimeout, "connect_timeout", "Model connection timed out (ConnectTimeout)."),
+    (httpx.ReadTimeout, "read_timeout", "Model response read timed out (ReadTimeout)."),
+    (httpx.WriteTimeout, "write_timeout", "Model request write timed out (WriteTimeout)."),
+    (httpx.PoolTimeout, "pool_timeout", "Model connection pool wait timed out (PoolTimeout)."),
+    (httpx.TimeoutException, "timeout", "Model network request timed out."),
+    (
+        httpx.ConnectError,
+        "connection_failed",
+        "Model connection could not be established (ConnectError).",
+    ),
+    (httpx.ReadError, "read_error", "Model response could not be read (ReadError)."),
+    (httpx.WriteError, "write_error", "Model request could not be sent (WriteError)."),
+    (httpx.ProxyError, "proxy_error", "Model proxy connection failed (ProxyError)."),
+    (httpx.ProtocolError, "protocol_error", "Model HTTP protocol error (ProtocolError)."),
+    (httpx.RequestError, "network_error", "Model network request failed."),
+)
 
 
 @dataclass(frozen=True)
@@ -51,6 +71,11 @@ def request_failure(
         if redact_errors
         else str(error)
     )
+    safe_failure = _safe_transport_failure(error)
+    if safe_failure is not None:
+        code, safe_message = safe_failure
+        if redact_errors:
+            message = safe_message
     retryable = error.retryable
     if error.status_code == 401:
         code, message, retryable = (
@@ -72,6 +97,21 @@ def request_failure(
         retry_after=error.retry_after,
         recovery=recovery if error.status_code == 401 else None,
     )
+
+
+def _safe_transport_failure(error: ProviderTransportError) -> tuple[str, str] | None:
+    if isinstance(error, ProviderResponseTimeout):
+        return "provider_response_timeout", (
+            f"Model response timed out after {error.timeout_seconds:g} seconds "
+            "(total request timeout)."
+        )
+    # The transport chains the actual httpx failure, including the final route
+    # after fallback. Expose only known class names, never messages or URLs.
+    if error.status_code is None:
+        for exception_type, code, message in _SAFE_NETWORK_ERRORS:
+            if isinstance(error.__cause__, exception_type):
+                return "provider_" + code, message
+    return None
 
 
 @asynccontextmanager

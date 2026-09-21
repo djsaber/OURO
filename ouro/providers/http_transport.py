@@ -37,6 +37,17 @@ class ProviderTransportError(RuntimeError):
         self.service_error_code = service_error_code
 
 
+class ProviderResponseTimeout(ProviderTransportError):
+    """The adapter's total request deadline, distinct from HTTP read/connect timeouts."""
+
+    def __init__(self, timeout_seconds: float) -> None:
+        self.timeout_seconds = timeout_seconds
+        super().__init__(
+            f"Model response timed out after {timeout_seconds:g} seconds (total request timeout).",
+            retryable=True,
+        )
+
+
 class ProviderHTTPTransport(Protocol):
     async def post_json(
         self,
