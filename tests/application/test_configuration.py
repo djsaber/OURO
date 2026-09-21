@@ -7,6 +7,7 @@ import pytest
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import CompactionConfigInput
 from ouro.config import openai_chat_completions_effort_reasoning
+from ouro.config.prompts import PromptDraft
 from ouro.core.errors import ConfigError
 from ouro.core.reasoning import ReasoningRequest
 from ouro.local_application import LocalApplication
@@ -116,7 +117,11 @@ def test_inline_provider_credential_is_never_exposed(tmp_path) -> None:
 def test_configuration_section_commands_preserve_other_sections(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
 
-    prompt = facade.set_system_prompt("Custom prompt")
+    prompt = facade.save_prompt(
+        "replacement",
+        PromptDraft(text="Custom prompt", enabled=True),
+        expected_revision=0,
+    )
     permissions = facade.set_tool_permission("Bash", "approval")
     plugin_permissions = facade.set_plugin_permission("dev.ouro.deploy", "deny")
     execution = facade.update_tool_execution(mode="parallel", max_concurrency=3)
@@ -133,7 +138,7 @@ def test_configuration_section_commands_preserve_other_sections(tmp_path) -> Non
         max_output_tokens=2048,
     )
 
-    assert prompt.change is not None and prompt.change.effective_from == "next_runtime"
+    assert prompt.change is not None and prompt.change.effective_from == "next_request"
     assert permissions.tools == {"Bash": "approval"}
     assert plugin_permissions.plugins == {"dev.ouro.deploy": "deny"}
     assert execution.mode == "parallel"
@@ -361,7 +366,11 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
     tmp_path,
 ) -> None:
     facade = ConfigurationFacade(tmp_path)
-    facade.set_system_prompt("Keep this section")
+    facade.save_prompt(
+        "replacement",
+        PromptDraft(text="Keep this section", enabled=True),
+        expected_revision=0,
+    )
 
     templates = facade.provider_template_catalog()
     assert [template.template_id for template in templates.templates] == [

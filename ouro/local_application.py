@@ -5,6 +5,7 @@ import os
 from collections.abc import AsyncGenerator, Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 
 from ouro.application.agent_definitions import AgentDefinitionService
@@ -572,6 +573,8 @@ def build_local_runtime(
         tools=registry,
         context_builder=context_builder,
         system_prompt=resolved.system_prompt,
+        additional_system_prompt=resolved.additional_system_prompt,
+        prompt_context_resolver=partial(configuration.prompt_context, system_prompt=system_prompt),
         event_sink=event_sink,
         permission_overrides=resolved.permission_overrides,
         plugin_permission_overrides=resolved.plugin_permission_overrides,

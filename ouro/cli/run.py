@@ -92,6 +92,12 @@ async def run_print(
     except OuroError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return error_exit_code(exc)
+    for event in result.events:
+        if event.event_type == "diagnostic":
+            message = event.payload.get("message") or event.payload.get("error")
+            if isinstance(message, str) and message:
+                severity = event.payload.get("severity", "error")
+                print(f"[{severity}] {message}", file=sys.stderr)
     if result.run.status == "completed":
         _print_run_events(result.events)
         return 0

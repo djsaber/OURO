@@ -9,7 +9,7 @@ import pytest
 from ouro.application.data_transfer import DataTransferRequest
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.config.file import JsonConfigFile
-from ouro.config.prompts import PromptConfigManager
+from ouro.config.prompts import PromptConfigManager, PromptDraft
 from ouro.config.provider_template_store import ProviderTemplateStore
 from ouro.config.providers import ProviderConfigManager
 from ouro.config.skills import ManagedSkillRecord, SkillConfigManager
@@ -65,14 +65,18 @@ def _configure(home: Path) -> None:
 def test_configuration_round_trip_replacement_and_domain_isolation(tmp_path, kind):
     source, target = tmp_path / "source", tmp_path / "target"
     _configure(source)
-    PromptConfigManager(target).set_system_prompt("Keep target settings")
+    PromptConfigManager(target).save_entry(
+        "replacement",
+        PromptDraft(text="Keep target settings", enabled=True),
+        expected_revision=0,
+    )
     archive = tmp_path / "config.zip"
     transfer(source, "export", kind, archive)
     transfer(target, "import", kind, archive)
     source_raw = JsonConfigFile(source, name=f"{kind}.json").read()
     target_raw = JsonConfigFile(target, name=f"{kind}.json").read()
     assert target_raw == source_raw
-    assert PromptConfigManager(target).snapshot().system_prompt == "Keep target settings"
+    assert PromptConfigManager(target).snapshot().config.system_prompt == "Keep target settings"
     with pytest.raises(DataTransferError, match="exists"):
         transfer(target, "import", kind, archive)
     transfer(target, "import", kind, archive, replace=True)

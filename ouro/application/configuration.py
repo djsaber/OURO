@@ -73,9 +73,11 @@ from ouro.config import (
     RunBudgetConfigManager,
     ToolExecutionConfigManager,
 )
+from ouro.config.prompts import PromptConfigSnapshot, PromptDraft, PromptKind
 from ouro.config.skills import SKILL_DISCOVERY_SOURCE_IDS, SkillInstallScope
 from ouro.core.agents import ExecutionMode, LifecycleBinding
 from ouro.core.compaction import CompactionPolicy
+from ouro.core.context import compose_system_prompt
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ProviderRetryPolicy
 from ouro.core.reasoning import ReasoningRequest, resolve_reasoning
@@ -700,22 +702,67 @@ class ConfigurationFacade:
         change: ConfigurationChange | None = None,
     ) -> SystemPromptConfigView:
         snapshot = self.prompts.snapshot()
-        public = self.prompts.resolve_system_prompt()
+        return self._prompt_view(snapshot, change=change)
+
+    @staticmethod
+    def _prompt_view(
+        snapshot: PromptConfigSnapshot, *, change: ConfigurationChange | None = None
+    ) -> SystemPromptConfigView:
+        config = snapshot.config
+        base = config.resolve_system_prompt()
+        additional = config.additional_system_prompt
         return SystemPromptConfigView(
             config_path=str(snapshot.config_path),
-            configured=snapshot.has_system_prompt,
-            system_prompt=snapshot.system_prompt,
-            effective_system_prompt=public,
+            config=config,
+            configured=config.system_prompt is not None,
+            system_prompt=config.system_prompt,
+            additional_system_prompt=additional,
+            effective_system_prompt=compose_system_prompt(base, additional),
             change=change,
         )
 
-    def set_system_prompt(self, prompt: str) -> SystemPromptConfigView:
-        self.prompts.set_system_prompt(prompt)
-        return self.system_prompt(change=configuration_change("prompts", "saved", "next_runtime"))
+    def save_prompt(
+        self,
+        kind: PromptKind,
+        draft: PromptDraft,
+        *,
+        entry_id: str | None = None,
+        expected_revision: int,
+    ) -> SystemPromptConfigView:
+        snapshot = self.prompts.save_entry(
+            kind, draft, entry_id=entry_id, expected_revision=expected_revision
+        )
+        return self._prompt_view(
+            snapshot, change=configuration_change("prompts", "saved", "next_request")
+        )
 
-    def clear_system_prompt(self) -> SystemPromptConfigView:
-        self.prompts.clear_system_prompt()
-        return self.system_prompt(change=configuration_change("prompts", "cleared", "next_runtime"))
+    def remove_prompt(
+        self, kind: PromptKind, entry_id: str, *, expected_revision: int
+    ) -> SystemPromptConfigView:
+        snapshot = self.prompts.remove_entry(kind, entry_id, expected_revision=expected_revision)
+        return self._prompt_view(
+            snapshot, change=configuration_change("prompts", "removed", "next_request")
+        )
+
+    def set_prompt_enabled(
+        self, kind: PromptKind, entry_id: str, enabled: bool, *, expected_revision: int
+    ) -> SystemPromptConfigView:
+        snapshot = self.prompts.set_enabled(
+            kind, entry_id, enabled, expected_revision=expected_revision
+        )
+        return self._prompt_view(
+            snapshot, change=configuration_change("prompts", "saved", "next_request")
+        )
+
+    def move_prompt(
+        self, kind: PromptKind, entry_id: str, position: int, *, expected_revision: int
+    ) -> SystemPromptConfigView:
+        snapshot = self.prompts.move_entry(
+            kind, entry_id, position, expected_revision=expected_revision
+        )
+        return self._prompt_view(
+            snapshot, change=configuration_change("prompts", "reordered", "next_request")
+        )
 
     def permission_config(
         self,

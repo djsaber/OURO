@@ -7,7 +7,9 @@ import pytest
 import ouro.application.compaction as compaction_module
 from ouro.application.compaction import LLMSummaryCompactionStrategy
 from ouro.application.runtime import RuntimeService
+from ouro.application.runtime_configuration import RuntimeConfigurationResolver
 from ouro.config.compaction import CompactionConfig, CompactionModelConfig
+from ouro.config.prompts import PromptConfigManager, PromptDraft
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.compaction import (
     CompactionAbortedError,
@@ -261,6 +263,60 @@ def _append_turns(
                 sequence=sequence,
             )
         )
+
+
+@pytest.mark.parametrize("manual", [False, True])
+async def test_prompt_snapshot_survives_config_update_during_compaction(tmp_path, manual):
+    manager = PromptConfigManager(tmp_path)
+    manager.save_entry("replacement", PromptDraft(text="Before", enabled=True), expected_revision=0)
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Prompt snapshot")
+    store.create_session(session)
+    _append_turns(store, session.session_id, 5)
+    resolutions = []
+    resolver = RuntimeConfigurationResolver(tmp_path)
+
+    def resolve_prompt():
+        prompt = resolver.prompt_context()
+        resolutions.append(prompt)
+        return prompt
+
+    class UpdatingStrategy(RecordingStrategy):
+        async def compact(self, request, *, signal=None):
+            manager.save_entry(
+                "replacement",
+                PromptDraft(text="Oversized instruction " * 5_000, enabled=True),
+                expected_revision=1,
+            )
+            return await super().compact(request, signal=signal)
+
+    strategy = UpdatingStrategy()
+    provider = RecordingProvider()
+    runtime = _runtime(store, provider, strategy, strategy_id=strategy.strategy_id)
+    runtime.context_preparation.prompt_context_resolver = resolve_prompt
+    async with runtime:
+        if manual:
+            result = await runtime.compact(session_id=session.session_id)
+        else:
+            result = await runtime.run("new", session_id=session.session_id)
+            context = store.load_latest_context(session.session_id)
+            assert context.system_prompt == "Before"
+            assert context.context_metadata["personal_prompt"]["revision"] == 1
+        assert result.run.status == "completed"
+        record = store.load_active_compaction(session.session_id)
+        assert record is not None
+        assert record.context_metrics_after.estimated_fixed_tokens < 100
+        assert len(strategy.requests) == 1
+        assert len(resolutions) == 1
+        assert resolutions[0].system_prompt == "Before"
+        sent = len(provider.calls)
+        # A fresh request budgets the new instructions instead of reusing the old snapshot.
+        blocked = await runtime.run("next", session_id=session.session_id)
+        assert blocked.run.status == "paused"
+        assert len(provider.calls) == sent
+        assert len(resolutions) == 2
+        assert resolutions[-1].revision == 2
 
 
 def _summary_request() -> CompactionRequest:

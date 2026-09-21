@@ -7681,6 +7681,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Remember drafts",
             "Queued messages",
             "Context compaction",
+            "Personal prompts",
             "Manage data",
             "New session",
             "Open session",
@@ -7723,7 +7724,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Keyboard help",
         ]
         assert [choice.group for choice in action_choices] == [
-            *("Settings",) * 6,
+            *("Settings",) * 7,
             *("Session",) * 5,
             *("Task",) * 4,
             *("Providers",) * 9,

@@ -791,21 +791,32 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
     config_parser = subparsers.add_parser("config", help="Inspect or update configuration")
     config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
 
-    prompt_parser = config_subparsers.add_parser("prompt", help="Inspect or set prompts")
-    prompt_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
-    prompt_parser.add_argument("--json", dest="prompt_json", action="store_true", help="Print JSON")
-    prompt_mode = prompt_parser.add_mutually_exclusive_group()
-    prompt_mode.add_argument(
-        "--set",
-        dest="prompt_value",
-        help="Persist a system prompt override",
-    )
-    prompt_mode.add_argument(
-        "--clear",
-        dest="prompt_clear",
-        action="store_true",
-        help="Clear the persisted system prompt override",
-    )
+    prompt_parser = config_subparsers.add_parser("prompt", help="Manage personal system prompts")
+    prompt_parser.add_argument("--home", help="Override OURO_HOME")
+    prompt_parser.add_argument("--json", action="store_true")
+    prompt_subparsers = prompt_parser.add_subparsers(dest="prompt_command")
+    for action in ("list", "add", "edit", "remove", "enable", "disable", "move"):
+        command = prompt_subparsers.add_parser(action)
+        command.add_argument("--home", default=argparse.SUPPRESS, help="Override OURO_HOME")
+        command.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+        if action == "list":
+            continue
+        command.add_argument("kind", choices=("replacement", "addition"))
+        if action != "add":
+            command.add_argument("number", type=int, help="Prompt number shown in the list")
+        command.add_argument(
+            "--expected-revision", type=int, help="Reject stale configuration edits"
+        )
+        if action in {"add", "edit"}:
+            command.add_argument("--description", help="Optional display-only annotation")
+            content = command.add_mutually_exclusive_group(required=action == "add")
+            content.add_argument("--text", help="Prompt content")
+            content.add_argument("--file", help="Read prompt content from a UTF-8 file")
+            enabled = command.add_mutually_exclusive_group()
+            enabled.add_argument("--enabled", dest="enabled", action="store_true", default=None)
+            enabled.add_argument("--disabled", dest="enabled", action="store_false")
+        if action == "move":
+            command.add_argument("position", type=int, help="New position, starting at 1")
 
     permissions_parser = config_subparsers.add_parser(
         "permissions",

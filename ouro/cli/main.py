@@ -13,15 +13,12 @@ from ouro.cli.approval_commands import (
     reject_tool_command,
 )
 from ouro.cli.config_commands import (
-    clear_system_prompt_config,
-    set_system_prompt_config,
     show_agent_runtime_config,
     show_compaction_config,
     show_permissions_config,
     show_queued_input_config,
     show_run_budget_config,
     show_skill_discovery_config,
-    show_system_prompt_config,
     show_tool_execution_config,
 )
 from ouro.cli.data_commands import run_data_command
@@ -35,6 +32,7 @@ from ouro.cli.mcp_commands import (
 )
 from ouro.cli.parser import build_parser
 from ouro.cli.plugin_commands import run_plugin_command
+from ouro.cli.prompt_commands import run_prompt_command
 from ouro.cli.provider_auth_commands import run_provider_auth_command
 from ouro.cli.provider_commands import (
     check_provider_connection,
@@ -444,15 +442,7 @@ def _selected_session_backend(
 def _config_command(args: argparse.Namespace) -> int:
     home = args.home
     if args.config_command == "prompt":
-        if args.prompt_value is not None:
-            return set_system_prompt_config(
-                args.prompt_value,
-                home=home,
-                json_mode=args.prompt_json,
-            )
-        if args.prompt_clear:
-            return clear_system_prompt_config(home=home, json_mode=args.prompt_json)
-        return show_system_prompt_config(home=home, json_mode=args.prompt_json)
+        return run_prompt_command(args)
 
     if args.config_command == "permissions":
         return show_permissions_config(

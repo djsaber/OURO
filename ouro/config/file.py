@@ -17,6 +17,8 @@ DOMAIN_CONFIG_FILES = {
     "providers": "providers.json",
     "mcp": "mcp.json",
     "agents": "agents.json",
+    "prompts": "prompts.json",
+    "system_prompt": "prompts.json",
 }
 
 

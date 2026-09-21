@@ -10,6 +10,7 @@ from typing import Protocol, cast
 
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.harness import capture_harness
+from ouro.application.prompt_context import PromptContext, PromptContextResolver
 from ouro.application.usage import UsageService
 from ouro.config.compaction import CompactionConfig, CompactionModelConfig
 from ouro.core.adapter import RuntimeAdapter
@@ -665,6 +666,7 @@ class ContextPreparationService:
         config: CompactionConfig,
         system_prompt: str,
         append_context_message: ContextMessageAppender,
+        prompt_context_resolver: PromptContextResolver | None = None,
         project_model_messages: ModelMessageProjector | None = None,
         usage_service: UsageService | None = None,
     ) -> None:
@@ -676,6 +678,7 @@ class ContextPreparationService:
         self.strategies = strategies
         self.config = config
         self.system_prompt = system_prompt
+        self.prompt_context_resolver = prompt_context_resolver
         self.append_context_message = append_context_message
         self.project_model_messages = project_model_messages
         self.usage_service = usage_service
@@ -697,6 +700,7 @@ class ContextPreparationService:
         strategies: CompactionStrategyRegistry | None = None,
         skill_instructions: str = "",
     ) -> tuple[ContextView, int]:
+        prompt_context = await self._resolve_prompt_context(emitted, sequence, session, run)
         active_adapter = adapter or self.adapter
         active_context_providers = context_providers or self.context_providers
         provider_result = await active_context_providers.evaluate(
@@ -755,6 +759,7 @@ class ContextPreparationService:
             added_context=added_context,
             adapter=active_adapter,
             skill_instructions=skill_instructions,
+            prompt_context=prompt_context,
         )
 
         trigger_tokens = int(budget * self.config.policy.trigger_ratio)
@@ -776,6 +781,7 @@ class ContextPreparationService:
                     adapter=active_adapter,
                     strategies=strategies,
                     skill_instructions=skill_instructions,
+                    prompt_context=prompt_context,
                 )
             except CompactionError as exc:
                 if isinstance(exc, CompactionAbortedError):
@@ -827,6 +833,7 @@ class ContextPreparationService:
                 added_context=added_context,
                 adapter=active_adapter,
                 skill_instructions=skill_instructions,
+                prompt_context=prompt_context,
             )
 
         if view.metrics.over_budget:
@@ -1046,7 +1053,11 @@ class ContextPreparationService:
         adapter: RuntimeAdapter | None = None,
         strategies: CompactionStrategyRegistry | None = None,
         skill_instructions: str = "",
+        prompt_context: PromptContext | None = None,
     ) -> CompactionExecution:
+        # Auto compaction shares the request snapshot; a manual command resolves its own.
+        if prompt_context is None:
+            prompt_context = await self._resolve_prompt_context(emitted, sequence, session, run)
         active_adapter = adapter or self.adapter
         budget = self._input_budget(active_adapter)
         active = await run_blocking(self.store.load_active_compaction, session.session_id)
@@ -1062,6 +1073,7 @@ class ContextPreparationService:
             added_context=added_context or [],
             adapter=active_adapter,
             skill_instructions=skill_instructions,
+            prompt_context=prompt_context,
         )
         before_tokens = (
             estimated_tokens_before
@@ -1191,6 +1203,7 @@ class ContextPreparationService:
                 added_context=added_context or [],
                 adapter=active_adapter,
                 skill_instructions=skill_instructions,
+                prompt_context=prompt_context,
             )
             after_tokens = final_view.metrics.estimated_input_tokens
             if final_view.metrics.over_budget:
@@ -1340,6 +1353,36 @@ class ContextPreparationService:
             )
         return sequence
 
+    async def _resolve_prompt_context(
+        self,
+        emitted: list[EventRecord],
+        sequence: int,
+        session: SessionRecord,
+        run: RunRecord,
+    ) -> PromptContext:
+        if self.prompt_context_resolver is None:
+            return PromptContext(system_prompt=self.system_prompt)
+        try:
+            return await run_blocking(self.prompt_context_resolver)
+        except ConfigError as exc:
+            message = f"Cannot prepare system instructions: {exc}"
+            await self.events.emit(
+                emitted,
+                sequence,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                event_type="diagnostic",
+                payload={
+                    "code": "prompt_configuration_invalid",
+                    "severity": "error",
+                    "component": "application.context_preparation",
+                    "message": message,
+                    "recoverable": True,
+                    "suggested_action": "Correct the personal prompt configuration, then continue.",
+                },
+            )
+            raise ContextBlockedError(message) from exc
+
     def _project_context(
         self,
         *,
@@ -1350,6 +1393,7 @@ class ContextPreparationService:
         added_context: Sequence[str | ContextFragment],
         adapter: RuntimeAdapter,
         skill_instructions: str,
+        prompt_context: PromptContext,
     ) -> tuple[list[MessageRecord], ContextView]:
         complete_messages, excluded = project_tool_exchanges(
             project_compacted_messages(messages, active)
@@ -1380,10 +1424,12 @@ class ContextPreparationService:
             added_context=added_context,
             adapter=adapter,
             skill_instructions=skill_instructions,
+            prompt_context=prompt_context,
         )
         metadata = dict(view.context_metadata)
         metadata.update(
             {
+                "personal_prompt": prompt_context.metadata(),
                 "compaction_id": active.compaction_id if active else None,
                 "compaction_strategy": active.strategy_id if active else None,
                 "covered_message_count": len(active.covered_message_ids) if active else 0,
@@ -1403,12 +1449,13 @@ class ContextPreparationService:
         tools: list[ToolDefinition],
         added_context: Sequence[str | ContextFragment],
         adapter: RuntimeAdapter,
+        prompt_context: PromptContext,
         skill_instructions: str = "",
     ) -> ContextView:
         return self.context_builder.build(
             messages=messages,
             tools=tools,
-            system_prompt=self.system_prompt,
+            system_prompt=prompt_context.system_prompt,
             added_context=added_context,
             additional_skill_instructions=skill_instructions,
             context_window_tokens=adapter.model.context_window,

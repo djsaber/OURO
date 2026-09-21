@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ouro.application.models import AdapterBuilder, ConfiguredModelCatalog
+from ouro.application.prompt_context import PromptContext
 from ouro.config import (
     CompactionConfig,
     CompactionConfigManager,
@@ -18,6 +19,7 @@ from ouro.config import (
     ToolExecutionConfigManager,
 )
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.context import compose_system_prompt
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.tools import PermissionMode
 from ouro.skills import SkillMetadata, discover_skill_catalog
@@ -29,6 +31,7 @@ RuntimeProviderOptions = ProviderRuntimeOptions
 class RuntimeConfigurationSnapshot:
     provider_options: ProviderRuntimeOptions
     system_prompt: str
+    additional_system_prompt: str
     permission_overrides: dict[str, PermissionMode]
     plugin_permission_overrides: dict[str, PermissionMode]
     compaction: CompactionConfig
@@ -39,7 +42,7 @@ class RuntimeConfigurationSnapshot:
 
 
 class RuntimeConfigurationResolver:
-    """Resolve persisted configuration for one newly assembled runtime."""
+    """Resolve startup configuration and explicitly refreshable request settings."""
 
     def __init__(self, root: str | Path | None = None) -> None:
         self.root = ProviderConfigManager(root).root
@@ -58,12 +61,14 @@ class RuntimeConfigurationResolver:
         system_prompt: str | None = None,
     ) -> RuntimeConfigurationSnapshot:
         skill_catalog = discover_skill_catalog(home=self.root)
+        prompts = self._prompts.snapshot().config
         permissions = self._permissions.snapshot()
         return RuntimeConfigurationSnapshot(
             provider_options=self._providers.resolve_runtime_options(
                 provider_options or ProviderRuntimeOptions()
             ),
-            system_prompt=self._prompts.resolve_system_prompt(system_prompt),
+            system_prompt=prompts.resolve_system_prompt(system_prompt),
+            additional_system_prompt=prompts.additional_system_prompt,
             permission_overrides=permissions.tools,
             plugin_permission_overrides=permissions.plugins,
             compaction=self._compaction.snapshot(),
@@ -71,6 +76,27 @@ class RuntimeConfigurationResolver:
             run_budget=self._run_budget.snapshot(),
             queued_inputs=self._queued_inputs.snapshot(),
             skills=tuple(skill.model_copy(deep=True) for skill in skill_catalog.skills),
+        )
+
+    def prompt_context(self, *, system_prompt: str | None = None) -> PromptContext:
+        prompts = self._prompts.snapshot().config
+        replacement = next((entry for entry in prompts.replacements if entry.enabled), None)
+        return PromptContext(
+            system_prompt=compose_system_prompt(
+                prompts.resolve_system_prompt(system_prompt), prompts.additional_system_prompt
+            ),
+            source=(
+                "override"
+                if system_prompt is not None
+                else "replacement"
+                if replacement
+                else "default"
+            ),
+            revision=prompts.revision,
+            replacement_id=(
+                replacement.id if replacement is not None and system_prompt is None else None
+            ),
+            addition_ids=tuple(entry.id for entry in prompts.additions if entry.enabled),
         )
 
     def model_catalog(

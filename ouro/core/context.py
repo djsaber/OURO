@@ -177,7 +177,7 @@ class ContextBuilder:
             for fragment in context_fragments
             if fragment.target == "system_prompt"
         ]
-        composed_prompt = _compose_system_prompt(
+        composed_prompt = compose_system_prompt(
             system_prompt,
             skill_instructions,
             *prompt_fragments,
@@ -234,7 +234,9 @@ def _compose_skill_instructions(base: str, additional: str) -> str:
     return "\n\n".join(values)
 
 
-def _compose_system_prompt(system_prompt: str, *fragments: str) -> str:
+def compose_system_prompt(system_prompt: str, *fragments: str) -> str:
+    """Join instruction bodies with blank-line boundaries, preserving their content."""
+
     composed = system_prompt
     for fragment in fragments:
         if not fragment:

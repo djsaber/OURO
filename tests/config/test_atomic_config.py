@@ -7,14 +7,13 @@ import pytest
 
 from ouro.config.file import JsonConfigFile
 from ouro.config.permissions import PermissionConfigManager
-from ouro.config.prompts import PromptConfigManager
 from ouro.config.queued_inputs import QueuedInputConfigManager
 from ouro.core.errors import ConfigError
 
 
 def test_config_commands_preserve_concurrent_section_updates(tmp_path) -> None:
     queued_inputs = QueuedInputConfigManager(tmp_path)
-    prompts = PromptConfigManager(tmp_path)
+    permissions = PermissionConfigManager(tmp_path)
     first_read_entered = threading.Event()
     release_first_update = threading.Event()
     second_update_finished = threading.Event()
@@ -32,8 +31,8 @@ def test_config_commands_preserve_concurrent_section_updates(tmp_path) -> None:
 
     queued_inputs.file.read = blocking_read  # type: ignore[method-assign]
 
-    def update_prompt() -> None:
-        prompts.set_system_prompt("Concurrent prompt")
+    def update_permission() -> None:
+        permissions.set_tool_mode("Read", "auto")
         second_update_finished.set()
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -42,7 +41,7 @@ def test_config_commands_preserve_concurrent_section_updates(tmp_path) -> None:
             consumption_mode="all_at_once",
         )
         assert first_read_entered.wait(timeout=1)
-        second = executor.submit(update_prompt)
+        second = executor.submit(update_permission)
         assert not second_update_finished.wait(timeout=0.05)
         release_first_update.set()
         first.result(timeout=2)
@@ -50,7 +49,7 @@ def test_config_commands_preserve_concurrent_section_updates(tmp_path) -> None:
 
     raw = JsonConfigFile(tmp_path).read()
     assert raw["queued_inputs"] == {"consumption_mode": "all_at_once"}
-    assert raw["prompts"] == {"system": "Concurrent prompt"}
+    assert permissions.snapshot().tools == {"Read": "auto"}
 
 
 def test_permission_config_preserves_tool_and_plugin_overrides_independently(tmp_path) -> None:

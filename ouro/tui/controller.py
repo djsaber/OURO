@@ -40,6 +40,7 @@ from ouro.application.configuration_models import (
     SkillPolicyView,
     SkillValidationView,
     SkillView,
+    SystemPromptConfigView,
     ToolExecutionConfigView,
 )
 from ouro.application.data_transfer import (
@@ -85,6 +86,7 @@ from ouro.config import (
     ProviderType,
     QueuedInputConsumptionMode,
 )
+from ouro.config.prompts import PromptDraft, PromptKind
 from ouro.core.agents import ExecutionMode, ToolSelection
 from ouro.core.approvals import (
     SESSION_APPROVAL_MODES,
@@ -1321,6 +1323,57 @@ class TuiController:
     async def tool_execution_configuration(self) -> ToolExecutionConfigView:
         configuration = self._require_configuration()
         return await asyncio.to_thread(configuration.tool_execution_config)
+
+    async def prompt_configuration(self) -> SystemPromptConfigView:
+        return await asyncio.to_thread(self._require_configuration().system_prompt)
+
+    async def save_prompt(
+        self,
+        kind: PromptKind,
+        draft: PromptDraft,
+        *,
+        entry_id: str | None = None,
+        expected_revision: int,
+    ) -> SystemPromptConfigView:
+        return await asyncio.to_thread(
+            self._require_configuration().save_prompt,
+            kind,
+            draft,
+            entry_id=entry_id,
+            expected_revision=expected_revision,
+        )
+
+    async def remove_prompt(
+        self, kind: PromptKind, entry_id: str, *, expected_revision: int
+    ) -> SystemPromptConfigView:
+        return await asyncio.to_thread(
+            self._require_configuration().remove_prompt,
+            kind,
+            entry_id,
+            expected_revision=expected_revision,
+        )
+
+    async def set_prompt_enabled(
+        self, kind: PromptKind, entry_id: str, enabled: bool, *, expected_revision: int
+    ) -> SystemPromptConfigView:
+        return await asyncio.to_thread(
+            self._require_configuration().set_prompt_enabled,
+            kind,
+            entry_id,
+            enabled,
+            expected_revision=expected_revision,
+        )
+
+    async def move_prompt(
+        self, kind: PromptKind, entry_id: str, position: int, *, expected_revision: int
+    ) -> SystemPromptConfigView:
+        return await asyncio.to_thread(
+            self._require_configuration().move_prompt,
+            kind,
+            entry_id,
+            position,
+            expected_revision=expected_revision,
+        )
 
     async def update_tool_execution(
         self,

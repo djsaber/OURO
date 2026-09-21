@@ -23,9 +23,12 @@ from ouro.config.permissions import (
     permission_config_to_public_dict,
 )
 from ouro.config.prompts import (
+    PromptConfig,
     PromptConfigManager,
     PromptConfigSnapshot,
-    prompt_config_to_public_dict,
+    PromptDraft,
+    PromptEntry,
+    PromptKind,
 )
 from ouro.config.provider_codec import provider_config_to_public_dict
 from ouro.config.provider_models import (
@@ -116,6 +119,10 @@ __all__ = [
     "INTEGRATED_PROVIDER_TYPES",
     "PromptConfigManager",
     "PromptConfigSnapshot",
+    "PromptConfig",
+    "PromptEntry",
+    "PromptDraft",
+    "PromptKind",
     "QueuedInputConfig",
     "QueuedInputConfigManager",
     "QueuedInputConsumptionMode",
@@ -131,7 +138,6 @@ __all__ = [
     "openai_chat_completions_effort_reasoning",
     "reasoning_preset",
     "openai_responses_effort_reasoning",
-    "prompt_config_to_public_dict",
     "queued_input_config_to_public_dict",
     "run_budget_to_public_dict",
     "tool_execution_config_to_public_dict",

@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from ouro.application.dto import ApplicationDTO, Diagnostic
+from ouro.config.prompts import PromptConfig
 from ouro.config.provider_models import (
     ProviderProtocol,
     ProviderTemplateOrigin,
@@ -162,8 +163,10 @@ class ProviderTemplateCatalogView(ApplicationDTO):
 
 class SystemPromptConfigView(ApplicationDTO):
     config_path: str
+    config: PromptConfig
     configured: bool
     system_prompt: str | None = None
+    additional_system_prompt: str
     effective_system_prompt: str
     change: ConfigurationChange | None = None
 

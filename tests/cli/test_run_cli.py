@@ -92,6 +92,23 @@ def test_run_json_mode_outputs_machine_readable_result(tmp_path, capsys) -> None
     assert payload["startup_diagnostics"] == []
 
 
+async def test_run_print_reports_invalid_live_prompt_configuration(tmp_path, capsys, monkeypatch):
+    runtime = build_default_runtime(tmp_path)
+    path = tmp_path / "config" / "prompts.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{broken-json", encoding="utf-8")
+    monkeypatch.setattr("ouro.cli.run.build_default_runtime", lambda *args, **kwargs: runtime)
+
+    code = await run_print("hello", home=tmp_path)
+
+    captured = capsys.readouterr()
+    assert code == 4
+    assert captured.out == ""
+    assert "Cannot prepare system instructions" in captured.err
+    assert "prompts.json" in captured.err
+    assert "Run stopped with status: paused" in captured.err
+
+
 def test_run_print_surfaces_plugin_state_recovery_before_running(tmp_path, capsys) -> None:
     plugin_root = tmp_path / "plugins"
     plugin_root.mkdir()
@@ -505,7 +522,10 @@ def test_config_prompt_command_persists_system_prompt(tmp_path, capsys) -> None:
             "prompt",
             "--home",
             str(tmp_path),
-            "--set",
+            "add",
+            "replacement",
+            "--enabled",
+            "--text",
             "Custom prompt.",
             "--json",
         ]
@@ -523,7 +543,9 @@ def test_config_prompt_command_persists_system_prompt(tmp_path, capsys) -> None:
     assert show_code == 0
     assert show_payload["effective_system_prompt"] == "Custom prompt."
 
-    clear_code = main(["config", "prompt", "--home", str(tmp_path), "--clear", "--json"])
+    clear_code = main(
+        ["config", "prompt", "--home", str(tmp_path), "disable", "replacement", "1", "--json"]
+    )
     clear_payload = json.loads(capsys.readouterr().out)
 
     assert clear_code == 0
