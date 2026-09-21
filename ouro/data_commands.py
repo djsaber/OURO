@@ -23,11 +23,19 @@ def add_data_arguments(parser: argparse.ArgumentParser) -> None:
         dest="identities",
         help="Select Session trees for either action, or native skills for export; repeatable",
     )
-    parser.add_argument(
+    conflicts = parser.add_mutually_exclusive_group()
+    conflicts.add_argument(
         "--replace",
         action="store_true",
-        help="Replace the export file or imported configuration/skills; never Sessions",
+        help="Replace the export file or existing imported data; Sessions replace complete trees",
     )
+    conflicts.add_argument(
+        "--skip-existing",
+        action="store_false",
+        dest="replace",
+        help="Skip existing Session trees on import (default); do not replace other data",
+    )
+    parser.set_defaults(replace=False)
 
 
 def data_request(args: argparse.Namespace) -> DataTransferRequest:
@@ -45,6 +53,8 @@ def format_data_result(result: DataTransferResult) -> str:
     direction = "to" if result.action == "export" else "from"
     unit = "configuration" if result.kind not in {"skills", "sessions"} else "item(s)"
     text = f"{action} {result.kind}: {result.count} {unit} {direction} {result.path}"
+    if result.kind == "sessions" and result.action == "import":
+        text += f"\nExisting Sessions: {result.skipped} skipped, {result.replaced} replaced."
     if result.restart_required:
         text += "\nRestart running OURO hosts to load the imported data."
     if result.diagnostics:

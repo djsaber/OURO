@@ -729,6 +729,10 @@ ouro data export --kind skills --path skills.zip
 ouro data export --kind sessions --path all-sessions.zip
 ouro data import --kind sessions --path all-sessions.zip --home ./restored
 
+# 同 ID 会话默认跳过；显式选择跳过或覆盖完整会话树
+ouro data import --kind sessions --path all-sessions.zip --skip-existing
+ouro data import --kind sessions --path all-sessions.zip --replace
+
 # --id 可重复指定；导入时也可以从全量归档中筛选
 ouro data export --kind sessions --id ses_one --id ses_two --path selected.zip
 ouro data import --kind sessions --id ses_one --path all-sessions.zip --home ./restored
@@ -737,7 +741,12 @@ ouro data import --kind sessions --path all-sessions.zip --home ./restored-sqlit
 
 - 每次操作处理一种数据。配置按整个领域导入；已有非空配置需要 `--replace`，不会混合两份配置。
 - 会话可指定一个、多个或全量。选择子会话会包含其所属主会话、所有子会话、Delegation 和附件；普通 fork 的历史来源不要求同时导入。
-  会话保留 ID，目标 ID 冲突时整批拒绝，不支持 `--replace`。文件与 SQLite 后端可以互相传输。
+  会话保留 ID，目标 ID 冲突时默认跳过整棵树，也可显式使用 `--skip-existing`；`--replace` 替换完整目标树，
+  同时移除归档中不存在的旧子会话。跨树身份冲突或运行中的目标树拒绝覆盖；其他独立会话不受影响。
+  TUI 的 `Existing sessions` 提供相同的 `Skip` / `Replace` 选项，结果列出跳过和覆盖数量。
+  文件与 SQLite 后端可以互相传输；覆盖后应按结果提示重启已运行的 Host，重新加载会话和订阅。
+- 会话选择列表使用本地目录索引或归档内独立的轻量 `index.json`，不加载完整会话和附件。
+  缺少归档索引时从 manifest 投影 ID 与标题，不读取附件；实际导入仍校验完整数据及索引一致性。
 - 导出要求会话树没有运行中的任务或未完成的 Run。归档包含消息、事件、运行记录、压缩、Harness 检查点、提交记录、
   插件状态、最近请求上下文及资源内容；不包含外部工作区文件、插件安装包、自动任务或独立计费账本。
 - 未知插件、工具、模型以及插件私有状态版本不会阻止导入历史。引用及 opaque 状态原样保留，结果提供外部引用诊断；

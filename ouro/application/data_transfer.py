@@ -4,21 +4,21 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
-from pydantic import ValidationError
-
 from ouro.application.configuration_transfer import (
     CONFIG_KINDS,
     export_configuration,
     import_configuration,
 )
 from ouro.application.dto import ApplicationDTO, Diagnostic
-from ouro.application.session_transfer import SessionArchiveData, SessionTransferService
+from ouro.application.session_transfer import SessionTransferService, session_archive_index
 from ouro.skills.loader import SkillLoader
 from ouro.transfer.archive import (
     DATA_KINDS,
+    ArchiveManifest,
     DataKind,
     DataTransferError,
     read_archive,
+    read_archive_index,
     write_archive,
 )
 from ouro.transfer.skills import export_skills, import_skills
@@ -39,6 +39,8 @@ class DataTransferResult(ApplicationDTO):
     kind: DataKind
     path: Path
     count: int
+    skipped: int = 0
+    replaced: int = 0
     restart_required: bool = False
     diagnostics: tuple[Diagnostic, ...] = ()
 
@@ -56,21 +58,24 @@ class DataTransferService:
         self.sessions = sessions
 
     def archive_kind(self, path: Path) -> DataKind:
-        """Identify a validated archive without changing local data or loading a runtime."""
-        return read_archive(path.expanduser()).manifest.kind
+        """Identify archive metadata; validate complete payloads only on import."""
+        return read_archive_index(path.expanduser()).kind
 
     def selection_items(self, request: DataTransferRequest) -> tuple[DataTransferItem, ...]:
         """List selectable source records without publishing data or resolving dependencies."""
         if request.kind == "sessions":
             if request.action == "import":
-                archive = read_archive(request.path.expanduser(), "sessions")
-                try:
-                    data = SessionArchiveData.model_validate(archive.manifest.data)
-                except ValidationError as exc:
-                    raise DataTransferError("invalid or unsupported Session archive data") from exc
-                records = [item.snapshot.session for item in data.bundle.sessions]
+                index = read_archive_index(request.path.expanduser())
+                if index.kind != "sessions":
+                    raise DataTransferError("archive does not contain Sessions")
+                if isinstance(index, ArchiveManifest):
+                    index = session_archive_index(index)
+                return tuple(
+                    DataTransferItem(identity=item.identity, label=item.label)
+                    for item in index.items
+                )
             else:
-                records = self.sessions().sessions.list_sessions()
+                records = self.sessions().sessions.read_catalog().sessions
             return tuple(
                 DataTransferItem(
                     identity=record.session_id, label=record.title or "Untitled session"
@@ -90,12 +95,11 @@ class DataTransferService:
             request.kind == "sessions" or (request.action == "export" and request.kind == "skills")
         ):
             raise DataTransferError("--id selects Sessions for either action or skills for export")
-        if request.action == "import" and request.kind == "sessions" and request.replace:
-            raise DataTransferError("Session import does not support replacement")
         path = request.path.expanduser().absolute()
         if request.action == "export":
             self._validate_export_destination(path)
         diagnostics: tuple[Diagnostic, ...] = ()
+        skipped = replaced = 0
         try:
             if request.action == "export":
                 if request.kind in CONFIG_KINDS:
@@ -115,8 +119,11 @@ class DataTransferService:
                 elif request.kind == "skills":
                     count = import_skills(self.home, archive, replace=request.replace)
                 else:
-                    imported = self.sessions().import_data(archive, request.identities)
+                    imported = self.sessions().import_data(
+                        archive, request.identities, replace=request.replace
+                    )
                     count, diagnostics = imported.count, imported.diagnostics
+                    skipped, replaced = imported.skipped, imported.replaced
         except OSError as exc:
             raise DataTransferError(f"could not {request.action} {request.kind} data") from exc
         return DataTransferResult(
@@ -124,7 +131,10 @@ class DataTransferService:
             kind=request.kind,
             path=path,
             count=count,
-            restart_required=request.action == "import" and request.kind != "sessions",
+            skipped=skipped,
+            replaced=replaced,
+            restart_required=request.action == "import"
+            and (request.kind != "sessions" or replaced > 0),
             diagnostics=diagnostics,
         )
 

@@ -152,9 +152,43 @@ def test_session_round_trip_across_backends_with_attachments(
     assert (
         LocalResourceStore(target).load_content(resource.resource_id)[1] == b"portable attachment"
     )
-    with pytest.raises(DataTransferError, match="already exists"):
-        transfer(target, "import", "sessions", archive, backend=target_backend)
+    repeated = transfer(target, "import", "sessions", archive, backend=target_backend)
+    assert repeated.count == 0 and repeated.skipped == 2 and repeated.replaced == 0
     assert len(imported.sessions.catalog().entries) == 2
+
+
+def test_session_attachment_import_rebuilds_resource_catalog_once(tmp_path, monkeypatch):
+    source, target = tmp_path / "source", tmp_path / "target"
+    services = build_local_session_services(source)
+    session, _ = _create_session(services._store)
+    expected = []
+    for index in range(8):
+        path = tmp_path / f"attachment-{index}.txt"
+        path.write_bytes(f"attachment {index}".encode())
+        resource = services.resources.import_resource(session.session_id, path).resource
+        expected.append(LocalResourceStore(source).load_record(resource.resource_id))
+    archive = tmp_path / "sessions.zip"
+    transfer(source, "export", "sessions", archive)
+    imported = build_local_session_services(target)
+    original = LocalResourceStore._rebuild_index_locked
+    rebuilds = 0
+
+    def count_rebuild(store):
+        nonlocal rebuilds
+        rebuilds += 1
+        return original(store)
+
+    monkeypatch.setattr(LocalResourceStore, "_rebuild_index_locked", count_rebuild)
+    transfer(target, "import", "sessions", archive)
+    assert rebuilds == 1
+    assert len(imported._store.load_resource_references(session.session_id)) == len(expected)
+    resources = LocalResourceStore(target)
+    for record in expected:
+        assert resources.load_record(record.resource_id, verify=True) == record
+    catalog = json.loads(resources.index_path.read_text("utf-8"))
+    assert {item["resource_id"] for item in catalog["resources"]} == {
+        record.resource_id for record in expected
+    }
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -583,6 +617,8 @@ def test_transfer_selection_lists_sources_without_importing(tmp_path, backend):
     store = build_local_session_services(source, session_backend=backend)._store
     _create_session(store, "ses_one", title="First conversation")
     _create_session(store, "ses_two", title="Second conversation", archived=True)
+    store.refresh_catalog("ses_one")
+    store.refresh_catalog("ses_two")
     archive = tmp_path / "sessions.zip"
     request = DataTransferRequest(action="export", kind="sessions", path=archive)
     service = build_local_data_transfer_service(source, session_backend=backend)

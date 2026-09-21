@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
@@ -23,10 +24,69 @@ from ouro.core.errors import (
 )
 from ouro.core.messages import ImageContent, MessageRecord
 from ouro.core.observers import ObserverRegistry
+from ouro.core.resources import ResourceRecord, ResourceSource
 from ouro.core.state import RunRecord
 from ouro.core.tools import ToolResult
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore
+
+
+def test_blob_batch_failure_keeps_published_catalog_and_cleans_staging(tmp_path, monkeypatch):
+    store = LocalResourceStore(tmp_path)
+    store.initialize()
+    items = []
+    for content in (b"first", b"second"):
+        digest = hashlib.sha256(content).hexdigest()
+        items.append(
+            (
+                ResourceRecord(
+                    resource_id=f"res_{digest}",
+                    digest=f"sha256:{digest}",
+                    size=len(content),
+                    media_type="text/plain",
+                    source=ResourceSource(name="test.txt"),
+                ),
+                content,
+            )
+        )
+    publish = store._publish_blob_and_record
+
+    def fail_second(staged, record):
+        if record == items[1][0]:
+            raise OSError("injected blob publication failure")
+        return publish(staged, record)
+
+    monkeypatch.setattr(store, "_publish_blob_and_record", fail_second)
+    with pytest.raises(OSError, match="injected"):
+        store.import_contents(iter(items))
+    assert store.load_content(items[0][0].resource_id) == items[0]
+    assert not list(store.staging_dir.iterdir())
+    catalog = json.loads(store.index_path.read_text("utf-8"))
+    assert [item["resource_id"] for item in catalog["resources"]] == [items[0][0].resource_id]
+    with pytest.raises(ResourceNotFoundError):
+        store.load_record(items[1][0].resource_id)
+
+
+def test_blob_batch_checks_existing_and_incoming_content(tmp_path):
+    store = LocalResourceStore(tmp_path)
+    store.initialize()
+    content = b"verified"
+    digest = hashlib.sha256(content).hexdigest()
+    record = ResourceRecord(
+        resource_id=f"res_{digest}",
+        digest=f"sha256:{digest}",
+        size=len(content),
+        media_type="text/plain",
+        source=ResourceSource(name="test.txt"),
+    )
+    store.import_contents([(record, content)])
+    with pytest.raises(ResourceIntegrityError):
+        store.import_contents([(record, b"modified")])
+    assert store.load_content(record.resource_id) == (record, content)
+    (store.blobs_dir / digest).write_bytes(b"corrupt")
+    with pytest.raises(ResourceIntegrityError):
+        store.import_contents([(record, content)])
+    assert not list(store.staging_dir.iterdir())
 
 
 def _services(tmp_path, *, max_bytes=1024 * 1024):

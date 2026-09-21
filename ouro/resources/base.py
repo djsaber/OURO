@@ -14,6 +14,10 @@ class BlobStore(Protocol):
 
     def import_content(self, record: ResourceRecord, content: bytes) -> None: ...
 
+    def import_contents(self, items: Iterable[tuple[ResourceRecord, bytes]]) -> None:
+        """Publish immutable blobs, maintaining their catalog once per batch."""
+        ...
+
     def import_file(
         self,
         source_path: Path,

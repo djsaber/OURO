@@ -9,12 +9,15 @@ from ouro.application.dto import ApplicationDTO, Diagnostic
 from ouro.core.base import OuroModel
 from ouro.core.errors import SessionBusyError
 from ouro.core.resources import ResourceRecord
+from ouro.core.state import ACTIVE_RUN_STATUSES
 from ouro.resources.base import BlobStore
 from ouro.sessions.base import SessionStore
 from ouro.sessions.portable import PortableSession, SessionBundle
 from ouro.transfer.archive import (
     MAX_ARCHIVE_BYTES,
+    ArchiveIndex,
     ArchiveManifest,
+    ArchiveSelectionItem,
     DataArchive,
     DataTransferError,
 )
@@ -29,6 +32,8 @@ class SessionArchiveData(OuroModel):
 
 class SessionImportResult(ApplicationDTO):
     count: int
+    skipped: int = 0
+    replaced: int = 0
     diagnostics: tuple[Diagnostic, ...] = ()
 
 
@@ -103,19 +108,22 @@ class SessionTransferService:
                 resource_records.append(resource_record)
                 files[f"resources/{identity}"] = content
         data = SessionArchiveData(bundle=bundle, resources=resource_records)
-        return DataArchive(
-            ArchiveManifest(kind="sessions", data=data.model_dump(mode="json")), files
-        )
+        manifest = ArchiveManifest(kind="sessions", data=data.model_dump(mode="json"))
+        return DataArchive(manifest, files, session_archive_index(manifest))
 
     def import_data(
         self,
         archive: DataArchive,
         identities: tuple[str, ...] = (),
+        *,
+        replace: bool = False,
     ) -> SessionImportResult:
         try:
             data = SessionArchiveData.model_validate(archive.manifest.data)
         except ValidationError as exc:
             raise DataTransferError("invalid or unsupported Session archive data") from exc
+        if archive.index is not None and archive.index != session_archive_index(archive.manifest):
+            raise DataTransferError("archive index does not match its manifest")
         resources = {record.resource_id: record for record in data.resources}
         expected = _resource_ids(data.bundle)
         if len(resources) != len(data.resources) or set(resources) != expected:
@@ -139,33 +147,125 @@ class SessionTransferService:
             roots = {
                 records[identity].snapshot.session.agent_root_session_id for identity in identities
             }
-            data.bundle = SessionBundle(
-                layout_version=data.bundle.layout_version,
-                sessions=[
-                    item
-                    for item in data.bundle.sessions
-                    if item.snapshot.session.agent_root_session_id in roots
-                ],
-                delegations=[
-                    item for item in data.bundle.delegations if item.root_session_id in roots
-                ],
-            )
-            selected_resources = _resource_ids(data.bundle)
-            resources = {
-                key: value for key, value in resources.items() if key in selected_resources
+            data.bundle = _select_roots(data.bundle, roots)
+        return self._publish_import(data, archive, replace=replace)
+
+    def _publish_import(
+        self, data: SessionArchiveData, archive: DataArchive, *, replace: bool
+    ) -> SessionImportResult:
+        bundle = data.bundle
+        selected_count = len(bundle.sessions)
+        existing = {record.session_id: record for record in self.sessions.list_sessions()}
+        if not replace:
+            bundle = _skip_existing_trees(bundle, set(existing))
+        if not bundle.sessions:
+            return SessionImportResult(count=0, skipped=selected_count)
+        with ExitStack() as locks:
+            roots = {item.snapshot.session.agent_root_session_id for item in bundle.sessions}
+            for identity in sorted(roots):
+                lock = self.sessions.acquire_session_lock(identity, "data-import")
+                if lock is None:
+                    raise SessionBusyError(f"stop the running Session before import: {identity}")
+                locks.callback(lock.release)
+            # Recheck after execution ownership: a concurrent import may have
+            # published a tree since the initial skip decision.
+            existing = {record.session_id: record for record in self.sessions.list_sessions()}
+            if not replace:
+                bundle = _skip_existing_trees(bundle, set(existing))
+            roots = {item.snapshot.session.agent_root_session_id for item in bundle.sessions}
+            incoming = {
+                item.snapshot.session.session_id: item.snapshot.session for item in bundle.sessions
             }
-        existing = {record.session_id for record in self.sessions.list_sessions()}
-        if any(item.snapshot.session.session_id in existing for item in data.bundle.sessions):
-            raise DataTransferError("Session already exists; import into a different home")
-        # Blobs are immutable and may be shared. Publish them before references;
-        # a failed Session commit can leave unreachable blobs, never broken refs.
-        for identity, record in resources.items():
-            self.resources.import_content(record, archive.files[f"resources/{identity}"])
-        self.sessions.import_bundle(data.bundle)
+            for identity in incoming.keys() & existing.keys():
+                if (
+                    incoming[identity].agent_root_session_id
+                    != existing[identity].agent_root_session_id
+                    or incoming[identity].session_kind != existing[identity].session_kind
+                ):
+                    raise DataTransferError("Session identity belongs to a different agent tree")
+            replaced_ids = {
+                identity
+                for identity, record in existing.items()
+                if replace and record.agent_root_session_id in roots
+            }
+            for identity in sorted(incoming.keys() | replaced_ids):
+                if identity not in roots:
+                    lock = self.sessions.acquire_session_lock(identity, "data-import")
+                    if lock is None:
+                        raise SessionBusyError(
+                            f"stop the running child Session before import: {identity}"
+                        )
+                    locks.callback(lock.release)
+                locks.enter_context(self.sessions.session_mutation(identity))
+            for identity in sorted(replaced_ids):
+                record = self.sessions.load_session_record(identity)
+                if (
+                    record.active_run_id is not None
+                    or record.status not in {"idle", "failed"}
+                    or any(
+                        run.status in ACTIVE_RUN_STATUSES
+                        for run in self.sessions.load_runs(identity)
+                    )
+                ):
+                    raise SessionBusyError(
+                        f"stop the active Session before replacement: {identity}"
+                    )
+            if bundle.sessions:
+                required = _resource_ids(bundle)
+                # Publish immutable blobs before references; failed publication
+                # may leave unreachable blobs, never broken Session references.
+                self.resources.import_contents(
+                    (record, archive.files[f"resources/{record.resource_id}"])
+                    for record in data.resources
+                    if record.resource_id in required
+                )
+                self.sessions.import_bundle(bundle, replace_session_ids=tuple(sorted(replaced_ids)))
         return SessionImportResult(
-            count=len(data.bundle.sessions),
-            diagnostics=_external_reference_diagnostics(data.bundle),
+            count=len(bundle.sessions),
+            skipped=selected_count - len(bundle.sessions),
+            replaced=len(incoming.keys() & replaced_ids),
+            diagnostics=_external_reference_diagnostics(bundle),
         )
+
+
+def session_archive_index(manifest: ArchiveManifest) -> ArchiveIndex:
+    """Project only selectable Session headers, without decoding runtime histories."""
+    try:
+        items = []
+        for item in manifest.data["bundle"]["sessions"]:
+            session = item["snapshot"]["session"]
+            if session["session_kind"] == "primary":
+                items.append(
+                    ArchiveSelectionItem(
+                        identity=session["session_id"], label=session["title"] or "Untitled session"
+                    )
+                )
+    except (KeyError, TypeError, ValidationError) as exc:
+        raise DataTransferError("invalid Session selection data") from exc
+    return ArchiveIndex(format="ouro-data-index", version=1, kind="sessions", items=tuple(items))
+
+
+def _select_roots(bundle: SessionBundle, roots: set[str]) -> SessionBundle:
+    return bundle.model_copy(
+        update={
+            "sessions": [
+                item
+                for item in bundle.sessions
+                if item.snapshot.session.agent_root_session_id in roots
+            ],
+            "delegations": [item for item in bundle.delegations if item.root_session_id in roots],
+        }
+    )
+
+
+def _skip_existing_trees(bundle: SessionBundle, existing: set[str]) -> SessionBundle:
+    roots = {item.snapshot.session.agent_root_session_id for item in bundle.sessions}
+    collisions = {
+        item.snapshot.session.agent_root_session_id
+        for item in bundle.sessions
+        if item.snapshot.session.session_id in existing
+    }
+    return _select_roots(bundle, roots - collisions)
 
 
 def _external_reference_diagnostics(bundle: SessionBundle) -> tuple[Diagnostic, ...]:

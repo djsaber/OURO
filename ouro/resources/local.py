@@ -110,24 +110,40 @@ class LocalResourceStore:
 
     def import_content(self, record: ResourceRecord, content: bytes) -> None:
         """Publish verified portable content while preserving canonical metadata."""
-        if (
-            f"sha256:{hashlib.sha256(content).hexdigest()}" != record.digest
-            or len(content) != record.size
-        ):
-            raise ResourceIntegrityError(f"resource integrity mismatch: {record.resource_id}")
-        staged = self.staging_dir / f"{new_id('resource')}.blob"
-        try:
-            staged.write_bytes(content)
-            with self._catalog_lock():
-                existing = self._load_optional_record(record.resource_id)
-                if existing is not None:
-                    self._verify_record_compatibility(existing, record)
-                    self._verify_blob(existing)
-                else:
-                    self._publish_blob_and_record(staged, record)
-                self._try_update_index_or_mark_dirty()
-        finally:
-            staged.unlink(missing_ok=True)
+        self.import_contents(((record, content),))
+
+    def import_contents(self, items: Iterable[tuple[ResourceRecord, bytes]]) -> None:
+        # Blobs can remain unreferenced after a failed batch; the catalog must
+        # still reflect those already published, without rescanning per blob.
+        with self._catalog_lock():
+            changed = False
+            try:
+                for record, content in items:
+                    if (
+                        len(content) != record.size
+                        or f"sha256:{hashlib.sha256(content).hexdigest()}" != record.digest
+                    ):
+                        raise ResourceIntegrityError(
+                            f"resource integrity mismatch: {record.resource_id}"
+                        )
+                    existing = self._load_optional_record(record.resource_id)
+                    if existing is not None:
+                        self._verify_record_compatibility(existing, record)
+                        self._verify_blob(existing)
+                        continue
+                    staged = self.staging_dir / f"{new_id('resource')}.blob"
+                    try:
+                        with staged.open("xb") as stream:
+                            stream.write(content)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                        self._publish_blob_and_record(staged, record)
+                        changed = True
+                    finally:
+                        staged.unlink(missing_ok=True)
+            finally:
+                if changed:
+                    self._try_update_index_or_mark_dirty()
 
     def load_content(
         self,

@@ -80,6 +80,7 @@ class LocalSessionStore:
         self._event_sequence_cache: dict[str, tuple[int, int]] = {}
         self._event_sequence_index_cache: dict[str, tuple[int, int] | None] = {}
         self._event_run_offset_cache: dict[tuple[str, str], int] = {}
+        self._session_directory_ids: dict[str, tuple[int, int]] = {}
         self._message_queries = MessageJournalQueries()
         self._commits = FileSessionCommits(self._session_dir, self._message_queries)
         self._delegation_paths: OrderedDict[str, Path] = OrderedDict()
@@ -103,28 +104,66 @@ class LocalSessionStore:
     def create_session(self, session: SessionRecord) -> None:
         self.create_session_snapshot(session, [])
 
-    def import_bundle(self, bundle: SessionBundle) -> None:
-        with TemporaryDirectory(prefix=".session-import-", dir=self.root) as directory:
-            staged = LocalSessionStore(directory)
+    def import_bundle(
+        self, bundle: SessionBundle, *, replace_session_ids: tuple[str, ...] = ()
+    ) -> None:
+        temporary = TemporaryDirectory(prefix=".session-import-", dir=self.root, delete=False)
+        staging = Path(temporary.name)
+        retain_backups = False
+        try:
+            staged = LocalSessionStore(staging)
             staged.initialize()
             populate_sessions(staged, bundle)
             identities = sorted(item.snapshot.session.session_id for item in bundle.sessions)
+            affected = sorted(set(identities) | set(replace_session_ids))
             published: list[str] = []
+            backed_up: list[str] = []
+            backups = staging / "backups"
+            backups.mkdir()
             with ExitStack() as locks:
-                for identity in identities:
+                for identity in affected:
                     locks.enter_context(self.session_mutation(identity))
-                    if self._session_dir(identity).exists():
+                    if self._session_dir(identity).exists() and identity not in replace_session_ids:
                         raise PersistenceError(f"session already exists: {identity}")
                 try:
+                    for identity in replace_session_ids:
+                        self._session_dir(identity).rename(backups / identity)
+                        backed_up.append(identity)
                     for identity in identities:
                         staged._session_dir(identity).rename(self._session_dir(identity))
                         published.append(identity)
                 except BaseException:
-                    for identity in reversed(published):
-                        self._session_dir(identity).rename(staged._session_dir(identity))
+                    retain_backups = True
+                    try:
+                        for identity in reversed(published):
+                            self._session_dir(identity).rename(staged._session_dir(identity))
+                        for identity in reversed(backed_up):
+                            (backups / identity).rename(self._session_dir(identity))
+                    except OSError as exc:
+                        raise PersistenceError(
+                            f"Session import rollback failed; original data retained at {staging}"
+                        ) from exc
+                    retain_backups = False
                     raise
-            for identity in identities:
+                finally:
+                    for identity in affected:
+                        self._invalidate_session_caches(identity)
+            for identity in affected:
                 self.refresh_catalog(identity)
+        finally:
+            if not retain_backups:
+                temporary.cleanup()
+
+    def _invalidate_session_caches(self, session_id: str) -> None:
+        self._event_sequence_cache.pop(session_id, None)
+        self._event_sequence_index_cache.pop(session_id, None)
+        self._event_run_offset_cache = {
+            key: offset
+            for key, offset in self._event_run_offset_cache.items()
+            if key[0] != session_id
+        }
+        with self._delegation_path_lock:
+            self._delegation_paths.clear()
 
     def create_delegation(self, delegation: DelegationRecord) -> DelegationRecord:
         root_id = delegation.root_session_id
@@ -323,7 +362,7 @@ class LocalSessionStore:
                         f"message {message.message_id} does not belong to "
                         f"session {session.session_id}"
                     )
-                self._append_jsonl(staging_dir / "messages.jsonl", message)
+            self._append_jsonl_batch(staging_dir / "messages.jsonl", messages)
             compaction_records = compactions or []
             if any(item.session_id != session.session_id for item in compaction_records):
                 raise PersistenceError(
@@ -336,8 +375,7 @@ class LocalSessionStore:
                     f"active compaction {session.active_compaction_id} is missing from "
                     f"session snapshot {session.session_id}"
                 )
-            for compaction in compaction_records:
-                self._append_jsonl(staging_dir / "compactions.jsonl", compaction)
+            self._append_jsonl_batch(staging_dir / "compactions.jsonl", compaction_records)
             self._write_json_atomic(
                 staging_dir / "resources" / "index.json",
                 SessionResourceReferences(resources=resource_references or []).model_dump(
@@ -545,6 +583,46 @@ class LocalSessionStore:
                 )
             self._event_sequence_cache.pop(event.session_id, None)
 
+    def append_events(self, events: list[EventRecord]) -> None:
+        if not events:
+            return
+        session_id = events[0].session_id
+        if any(event.session_id != session_id for event in events):
+            raise PersistenceError("event batch must belong to one Session")
+        with self.session_mutation(session_id):
+            path = self._require_session_dir(session_id) / "events.jsonl"
+            initial_size = path.stat().st_size
+            run_offsets = {
+                run_id: self._event_run_offset(session_id, run_id, path)
+                for run_id in dict.fromkeys(event.run_id for event in events)
+                if run_id is not None
+            }
+            first_events: dict[str, tuple[int, EventRecord]] = {}
+            try:
+                # Import owns a private staging store. Keep a single buffered journal
+                # open and sync once before snapshot verification and publication.
+                with path.open("ab") as stream:
+                    for event in events:
+                        offset = stream.tell()
+                        self._prepare_event_sequence_index(
+                            session_id, path, sequence=event.sequence, offset=offset
+                        )
+                        if event.run_id is not None and event.run_id not in first_events:
+                            first_events[event.run_id] = (offset, event)
+                        stream.write(event.model_dump_json().encode("utf-8") + b"\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                    journal_size = stream.tell()
+            except (OSError, TypeError, ValueError) as exc:
+                raise PersistenceError(f"could not append event batch: {session_id}") from exc
+            finally:
+                self._event_sequence_cache.pop(session_id, None)
+            for run_id, (offset, event) in first_events.items():
+                if run_offsets[run_id] == initial_size:
+                    self._write_event_run_offset(
+                        session_id, run_id, offset, journal_size=journal_size, first_event=event
+                    )
+
     def append_ordered_event(self, event: EventRecord) -> EventRecord:
         with self.session_mutation(event.session_id):
             session_dir = self._require_session_dir(event.session_id)
@@ -669,7 +747,10 @@ class LocalSessionStore:
             except (OSError, ValidationError, ValueError) as exc:
                 raise PersistenceError(f"could not load session {session_id}: {exc}") from exc
             snapshot = SessionSnapshot(
-                **runtime.model_dump(),
+                session=runtime.session,
+                messages=runtime.messages,
+                runs=runtime.runs,
+                compactions=runtime.compactions,
                 events=events,
                 extension_states=self.load_session_extension_states(session_id),
                 harness_versions=[
@@ -1323,6 +1404,7 @@ class LocalSessionStore:
         journal: Path,
         *,
         sequence: int,
+        offset: int | None = None,
     ) -> None:
         """Checkpoint a sparse sequence-to-byte cursor before journal append."""
 
@@ -1334,7 +1416,9 @@ class LocalSessionStore:
         previous = self._event_sequence_index_cache[session_id]
         if previous is not None and sequence - previous[0] < _EVENT_SEQUENCE_INDEX_STRIDE:
             return
-        journal_size = journal.stat().st_size if journal.exists() else 0
+        journal_size = (
+            offset if offset is not None else (journal.stat().st_size if journal.exists() else 0)
+        )
         if previous is None and journal_size == 0:
             # Offset zero is the implicit checkpoint. Materialize the sparse
             # index only once it can skip a non-empty historical prefix.
@@ -1486,11 +1570,13 @@ class LocalSessionStore:
         *,
         durable: bool = True,
     ) -> None:
+        if not models:
+            return
         try:
-            payload = "".join(f"{model.model_dump_json()}\n" for model in models)
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as file:
-                file.write(payload)
+                for model in models:
+                    file.write(model.model_dump_json() + "\n")
                 file.flush()
                 if durable:
                     os.fsync(file.fileno())
@@ -1606,6 +1692,19 @@ class _SessionMutation(SessionMutationLock):
     def __enter__(self) -> Self:
         super().__enter__()
         try:
+            directory = self._store._session_dir(self.session_id)
+            try:
+                stat = directory.stat()
+            except FileNotFoundError:
+                pass
+            else:
+                identity = (stat.st_dev, stat.st_ino)
+                previous = self._store._session_directory_ids.get(self.session_id)
+                if previous is not None and previous != identity:
+                    # Replacement can come from another Host. Directory identity
+                    # invalidates cursors even when journal lengths happen to match.
+                    self._store._invalidate_session_caches(self.session_id)
+                self._store._session_directory_ids[self.session_id] = identity
             self._store._commits.finish(self.session_id)
         except OSError as exc:
             self.release()

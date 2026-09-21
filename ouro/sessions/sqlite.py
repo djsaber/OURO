@@ -66,11 +66,21 @@ class SQLiteSessionStore:
         self._locks_dir = self.database.parent / f".{self.database.name}.locks"
         self._transaction_state = threading.local()
 
-    def import_bundle(self, bundle: SessionBundle) -> None:
+    def import_bundle(
+        self, bundle: SessionBundle, *, replace_session_ids: tuple[str, ...] = ()
+    ) -> None:
         with self.session_mutation("data-import"):
+            connection = self._transaction_connection()
+            connection.executemany(
+                "DELETE FROM sessions WHERE session_id = ?",
+                ((identity,) for identity in replace_session_ids),
+            )
             populate_sessions(self, bundle)
-            for item in bundle.sessions:
-                self.refresh_catalog(item.snapshot.session.session_id)
+            for identity in sorted(
+                set(replace_session_ids)
+                | {item.snapshot.session.session_id for item in bundle.sessions}
+            ):
+                self.refresh_catalog(identity)
 
     def initialize(self) -> None:
         self.database.parent.mkdir(parents=True, exist_ok=True)
@@ -622,6 +632,33 @@ class SQLiteSessionStore:
                 self._insert_event(self._transaction_connection(), event)
             except sqlite3.IntegrityError as exc:
                 raise PersistenceError(f"could not append event {event.event_id}: {exc}") from exc
+
+    def append_events(self, events: list[EventRecord]) -> None:
+        if not events:
+            return
+        session_id = events[0].session_id
+        if any(event.session_id != session_id for event in events):
+            raise PersistenceError("event batch must belong to one Session")
+        with self.session_mutation(session_id):
+            connection = self._transaction_connection()
+            self._require_session(connection, session_id)
+            try:
+                connection.executemany(
+                    "INSERT INTO events(session_id, event_id, run_id, sequence, payload) "
+                    "VALUES(?, ?, ?, ?, ?)",
+                    (
+                        (
+                            session_id,
+                            event.event_id,
+                            event.run_id,
+                            event.sequence,
+                            event.model_dump_json(),
+                        )
+                        for event in events
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise PersistenceError(f"could not append event batch: {session_id}") from exc
 
     def append_ordered_event(self, event: EventRecord) -> EventRecord:
         _validated_record_id(event.session_id, kind="session")

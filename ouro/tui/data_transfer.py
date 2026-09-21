@@ -65,6 +65,7 @@ class DataTransferScreen(ChoiceScreen):
         self._load_items = load_items
         self._identify_archive = identify_archive
         self._identifying = False
+        self._loading_items = False
         self._archive_error: str | None = None
         self._progress = progress
         self._on_submit = on_submit
@@ -146,12 +147,24 @@ class DataTransferScreen(ChoiceScreen):
         if value == "all":
             self._identities = ()
         elif value == "selected":
-            items = await self._load_items(self._request())
+            self._loading_items = True
+            self.run_worker(
+                self._open_selection(self._request()), group="transfer-selection", exclusive=True
+            )
+
+    async def _open_selection(self, request: DataTransferRequest) -> None:
+        try:
+            items = await self._load_items(request)
+            if self._kind != request.kind or self._path != request.path:
+                return
             if not items:
                 self.notify("No items available", severity="information")
                 return
 
             async def confirm(identities: tuple[str, ...]) -> None:
+                if not identities:
+                    self.notify("Select at least one item, or choose All", severity="warning")
+                    return
                 self._identities = identities
                 screen.dismiss("selected")
 
@@ -174,6 +187,11 @@ class DataTransferScreen(ChoiceScreen):
                 selected_values=self._identities,
             )
             await self.open_child(screen)
+        except (OuroError, OSError, ValueError) as exc:
+            self.notify(str(exc), severity="error", markup=False)
+        finally:
+            self._loading_items = False
+            await self.refresh_choices()
 
     def _transfer_choices(self) -> tuple[Choice, ...]:
         rows = []
@@ -216,16 +234,23 @@ class DataTransferScreen(ChoiceScreen):
                     "selection",
                     "Sessions" if self._kind == "sessions" else "Skills",
                     trailing=f"{len(self._identities)} selected" if self._identities else "All",
-                    disabled=self._action == "import" and self._path is None,
+                    description="Loading selection…" if self._loading_items else "",
+                    loading=self._loading_items,
+                    disabled=self._loading_items
+                    or (self._action == "import" and self._path is None),
                     group="TRANSFER",
                 )
             )
-        if self._kind is not None and (self._action == "export" or self._kind != "sessions"):
+        if self._kind is not None:
+            session_import = self._action == "import" and self._kind == "sessions"
             rows.append(
                 Choice(
                     "replace",
-                    "Replace existing data",
-                    trailing="Yes" if self._replace else "No",
+                    "Existing sessions" if session_import else "Replace existing data",
+                    trailing=("Replace" if self._replace else "Skip")
+                    if session_import
+                    else ("Yes" if self._replace else "No"),
+                    description="Applies to complete session trees" if session_import else "",
                     group="TRANSFER",
                 )
             )
@@ -370,6 +395,21 @@ class DataTransferWorkflows(TaskManagementWorkflows):
             progress.error = str(exc)
         finally:
             progress.running = False
+        if progress.error is not None:
+            self.notify(
+                progress.error,
+                title=f"{request.action.title()} failed",
+                severity="error",
+                timeout=10,
+                markup=False,
+            )
+        elif progress.result is not None:
+            self.notify(
+                format_data_result(progress.result),
+                title=f"{request.action.title()} completed",
+                timeout=6,
+                markup=False,
+            )
         screen = self._data_transfer_screen_ref() if self._data_transfer_screen_ref else None
         if screen is not None:
             await screen.refresh_choices()

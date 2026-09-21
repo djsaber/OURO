@@ -143,6 +143,10 @@ class SessionRepository(Protocol):
 
     def append_event(self, event: EventRecord) -> None: ...
 
+    def append_events(self, events: list[EventRecord]) -> None:
+        """Append one Session's existing events within a staging store or transaction."""
+        ...
+
     def append_ordered_event(self, event: EventRecord) -> EventRecord: ...
 
     def save_run(self, run: RunRecord) -> None: ...
@@ -261,6 +265,12 @@ class SessionCatalogStore(Protocol):
 class SessionStore(SessionRepository, SessionCatalogStore, Protocol):
     """Complete in-process store composed from canonical and catalog ports."""
 
-    def import_bundle(self, bundle: SessionBundle) -> None:
-        """Publish a validated bundle, rejecting collisions and rolling back failures."""
+    def import_bundle(
+        self, bundle: SessionBundle, *, replace_session_ids: tuple[str, ...] = ()
+    ) -> None:
+        """Publish a bundle, replacing explicitly selected trees with failure rollback.
+
+        The application owns execution locks and resolves complete target trees.
+        Other identity collisions are rejected at publication time.
+        """
         ...

@@ -4,9 +4,10 @@ import json
 
 import pytest
 
+from ouro.application.data_transfer import DataTransferRequest
 from ouro.cli.main import main
 from ouro.config.providers import ProviderConfigManager
-from ouro.local_application import build_local_session_services
+from ouro.local_application import build_local_data_transfer_service, build_local_session_services
 
 
 @pytest.mark.parametrize(
@@ -107,3 +108,37 @@ def test_data_cli_failure_is_json_and_does_not_overwrite_configuration(tmp_path,
     assert result["status"] == "failed"
     assert result["error_type"] == "DataTransferError"
     assert providers.config_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("flag", ["--skip-existing", "--replace"])
+def test_session_import_cli_conflict_policy(tmp_path, capsys, flag):
+    source, target = tmp_path / "source", tmp_path / "target"
+    build_local_session_services(source).sessions.create(session_id="ses_one", title="Incoming")
+    build_local_session_services(target).sessions.create(session_id="ses_one", title="Original")
+    archive = tmp_path / "sessions.zip"
+    build_local_data_transfer_service(source).transfer(
+        DataTransferRequest(action="export", kind="sessions", path=archive)
+    )
+    assert (
+        main(
+            [
+                "data",
+                "import",
+                "--kind",
+                "sessions",
+                "--path",
+                str(archive),
+                "--home",
+                str(target),
+                flag,
+                "--json",
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["skipped"] == (1 if flag == "--skip-existing" else 0)
+    assert result["replaced"] == (1 if flag == "--replace" else 0)
+    assert build_local_session_services(target)._store.load_session_record("ses_one").title == (
+        "Incoming" if flag == "--replace" else "Original"
+    )

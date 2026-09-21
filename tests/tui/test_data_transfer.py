@@ -246,7 +246,7 @@ async def test_session_import_selection_uses_archive_titles_and_file_browser(
             await pilot.press("escape")
             await pilot.pause()
         assert app.screen is form
-        assert "replace" not in {row.value for row in form._choices}
+        assert next(row for row in form._choices if row.value == "replace").trailing == "Skip"
         await _choose_menu_row(app, pilot, "submit")
         await app.workers.wait_for_complete()
         assert {
@@ -293,6 +293,7 @@ async def test_transfer_progress_stays_in_menu_and_outlives_picker(
     app = OuroTuiApp(home=tmp_path / "home")
     entered, release = asyncio.Event(), asyncio.Event()
     calls = []
+    notices = []
     original = app._controller.transfer_data
 
     async def delayed(request):
@@ -309,6 +310,9 @@ async def test_transfer_progress_stays_in_menu_and_outlives_picker(
             while app._controller._application is None:
                 await pilot.pause()
         await app.workers.wait_for_complete()
+        monkeypatch.setattr(
+            app, "notify", lambda message, **kwargs: notices.append((message, kwargs))
+        )
         history = app.query_one(ConversationHistory)
         before = [(entry.kind, entry.text) for entry in history.entries]
         await _open_data_menu(app, pilot, "export", "providers")
@@ -342,10 +346,16 @@ async def test_transfer_progress_stays_in_menu_and_outlives_picker(
         assert not any(row.loading for row in reopened._choices)
         if fail_first:
             assert any(row.label == "Export failed" for row in reopened._choices)
+            assert notices[-1][1]["title"] == "Export failed"
+            assert notices[-1][1]["severity"] == "error"
             await _choose_menu_row(app, pilot, "submit")
             await app.workers.wait_for_complete()
             assert len(calls) == 2
         assert any(row.value == "result:0" for row in reopened._choices)
+        assert len(notices) == (2 if fail_first else 1)
+        assert notices[-1][1]["title"] == "Export completed"
+        assert notices[-1][1]["markup"] is False
+        assert "Exported providers" in notices[-1][0]
         assert [(entry.kind, entry.text) for entry in history.entries] == before
 
 
@@ -543,3 +553,79 @@ async def test_archive_detection_keeps_navigation_responsive_and_discards_replac
         await pilot.pause()
         assert form._kind == "mcp"
         assert app._data_transfer_progress.request is None
+
+
+@pytest.mark.asyncio
+async def test_selection_loading_can_be_cancelled_without_reopening_picker(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    home = tmp_path / "home"
+    build_local_session_services(home).sessions.create(session_id="ses_one")
+    app = OuroTuiApp(home=home)
+    entered, release = asyncio.Event(), asyncio.Event()
+    load_items = app._controller.data_transfer_items
+
+    async def delayed(request):
+        entered.set()
+        await release.wait()
+        return await load_items(request)
+
+    monkeypatch.setattr(app._controller, "data_transfer_items", delayed)
+    async with app.run_test(size=(100, 35)) as pilot:
+        async with asyncio.timeout(10):
+            while app._controller._application is None:
+                await pilot.pause()
+        await app.workers.wait_for_complete()
+        await _open_data_menu(app, pilot, "export", "sessions")
+        form = app.screen
+        await _choose_menu_row(app, pilot, "selection")
+        await _choose_menu_row(app, pilot, "selected")
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        assert app.screen is form
+        assert next(row for row in form._choices if row.value == "selection").loading
+        await pilot.press("escape")
+        menu = app.screen
+        assert menu is not form
+        release.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.screen is menu
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replace", [False, True])
+async def test_import_form_applies_existing_session_policy(tmp_path, monkeypatch, replace):
+    monkeypatch.chdir(tmp_path)
+    source, target = tmp_path / "source", tmp_path / "target"
+    build_local_session_services(source).sessions.create(session_id="ses_one", title="Incoming")
+    build_local_session_services(target).sessions.create(session_id="ses_one", title="Original")
+    archive = tmp_path / "sessions.zip"
+    build_local_data_transfer_service(source).transfer(
+        DataTransferRequest(action="export", kind="sessions", path=archive)
+    )
+    app = OuroTuiApp(home=target)
+    async with app.run_test(size=(100, 35)) as pilot:
+        async with asyncio.timeout(10):
+            while app._controller._application is None:
+                await pilot.pause()
+        await app.workers.wait_for_complete()
+        await _open_data_menu(app, pilot, "import")
+        form = app.screen
+        await _choose_menu_row(app, pilot, "path")
+        await _choose_menu_row(app, pilot, "file:sessions.zip")
+        await app.workers.wait_for_complete()
+        assert next(row for row in form._choices if row.value == "replace").trailing == "Skip"
+        if replace:
+            await _choose_menu_row(app, pilot, "replace")
+            assert (
+                next(row for row in form._choices if row.value == "replace").trailing == "Replace"
+            )
+        await _choose_menu_row(app, pilot, "submit")
+        await app.workers.wait_for_complete()
+        result = app._data_transfer_progress.result
+        assert result is not None
+        assert (result.count, result.skipped, result.replaced) == (
+            (1, 0, 1) if replace else (0, 1, 0)
+        )
+        assert build_local_session_services(target)._store.load_session_record("ses_one").title == (
+            "Incoming" if replace else "Original"
+        )

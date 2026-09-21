@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import re
 import stat
@@ -9,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile
 from typing import Any, Literal, get_args
-from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
+from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile, ZipInfo
 
 from pydantic import ConfigDict, ValidationError, field_validator
 
@@ -47,6 +46,72 @@ class ArchiveManifest(OuroModel):
 class DataArchive:
     manifest: ArchiveManifest
     files: dict[str, bytes] = field(default_factory=dict)
+    index: ArchiveIndex | None = None
+
+
+class ArchiveSelectionItem(OuroModel):
+    identity: str
+    label: str
+
+
+class ArchiveIndex(OuroModel):
+    """Optional, disposable selection projection; never authoritative import data."""
+
+    format: Literal["ouro-data-index"]
+    version: Literal[1]
+    kind: DataKind
+    items: tuple[ArchiveSelectionItem, ...] = ()
+
+
+def _checked_entries(archive: ZipFile) -> list[ZipInfo]:
+    entries = archive.infolist()
+    if len(entries) > MAX_ARCHIVE_FILES or sum(e.file_size for e in entries) > MAX_ARCHIVE_BYTES:
+        raise DataTransferError("archive exceeds the file count or size limit")
+    seen: set[str] = set()
+    for entry in entries:
+        portable_path(entry.filename)
+        key = entry.filename.casefold()
+        mode = entry.external_attr >> 16
+        if (
+            key in seen
+            or entry.is_dir()
+            or stat.S_IFMT(mode) not in {0, stat.S_IFREG}
+            or entry.flag_bits & 1
+        ):
+            raise DataTransferError("archive contains duplicate or unsupported entries")
+        seen.add(key)
+    if "manifest.json" not in {entry.filename for entry in entries}:
+        raise DataTransferError("archive is missing manifest.json")
+    return entries
+
+
+def _read_manifest(content: bytes) -> ArchiveManifest:
+    manifest = ArchiveManifest.model_validate_json(content)
+    if manifest.model_fields_set != {"format", "version", "kind", "data"}:
+        raise DataTransferError("archive manifest must declare its format and version")
+    return manifest
+
+
+def read_archive_index(path: Path) -> ArchiveIndex | ArchiveManifest:
+    """Read only selection metadata; payload integrity is checked at import time."""
+    try:
+        with ZipFile(path) as archive:
+            entries = _checked_entries(archive)
+            if any(entry.filename == "index.json" for entry in entries):
+                return ArchiveIndex.model_validate_json(archive.read("index.json"))
+            # The index is an optional accelerator, like the local Session catalog.
+            # Without it, let the application project headers from the manifest.
+            # Attachments are never decompressed on this path.
+            return _read_manifest(archive.read("manifest.json"))
+    except (
+        OSError,
+        BadZipFile,
+        RuntimeError,
+        ValidationError,
+        NotImplementedError,
+        zlib.error,
+    ) as exc:
+        raise DataTransferError("could not read a valid OURO archive index") from exc
 
 
 def portable_path(value: str) -> PurePosixPath:
@@ -70,36 +135,15 @@ def portable_path(value: str) -> PurePosixPath:
 def read_archive(path: Path, kind: DataKind | None = None) -> DataArchive:
     try:
         with ZipFile(path) as archive:
-            entries = archive.infolist()
-            if (
-                len(entries) > MAX_ARCHIVE_FILES
-                or sum(entry.file_size for entry in entries) > MAX_ARCHIVE_BYTES
-            ):
-                raise DataTransferError("archive exceeds the file count or size limit")
-            seen: set[str] = set()
-            files: dict[str, bytes] = {}
-            for entry in entries:
-                portable_path(entry.filename)
-                key = entry.filename.casefold()
-                mode = entry.external_attr >> 16
-                if (
-                    key in seen
-                    or entry.is_dir()
-                    or stat.S_IFMT(mode) not in {0, stat.S_IFREG}
-                    or entry.flag_bits & 1
-                ):
-                    raise DataTransferError("archive contains duplicate or unsupported entries")
-                seen.add(key)
-                files[entry.filename] = archive.read(entry)
-        manifest_bytes = files.pop("manifest.json", None)
-        if manifest_bytes is None:
-            raise DataTransferError("archive is missing manifest.json")
-        manifest = ArchiveManifest.model_validate_json(manifest_bytes)
-        if manifest.model_fields_set != {"format", "version", "kind", "data"}:
-            raise DataTransferError("archive manifest must declare its format and version")
+            files = {entry.filename: archive.read(entry) for entry in _checked_entries(archive)}
+        manifest = _read_manifest(files.pop("manifest.json"))
+        index_bytes = files.pop("index.json", None)
+        index = ArchiveIndex.model_validate_json(index_bytes) if index_bytes is not None else None
+        if index is not None and index.kind != manifest.kind:
+            raise DataTransferError("archive index does not match its manifest")
         if kind is not None and manifest.kind != kind:
             raise DataTransferError(f"archive kind is {manifest.kind}; requested {kind}")
-        return DataArchive(manifest, files)
+        return DataArchive(manifest, files, index)
     except (
         OSError,
         BadZipFile,
@@ -112,9 +156,14 @@ def read_archive(path: Path, kind: DataKind | None = None) -> DataArchive:
 
 
 def write_archive(path: Path, data: DataArchive, *, replace: bool) -> None:
-    manifest = json.dumps(data.manifest.model_dump(mode="json"), ensure_ascii=False).encode()
-    entries = {"manifest.json": manifest, **data.files}
-    if "manifest.json" in data.files or len(entries) > MAX_ARCHIVE_FILES:
+    manifest = data.manifest.model_dump_json().encode("utf-8")
+    entries = {
+        "manifest.json": manifest,
+        **data.files,
+    }
+    if data.index is not None:
+        entries["index.json"] = data.index.model_dump_json().encode("utf-8")
+    if {"manifest.json", "index.json"}.intersection(data.files) or len(entries) > MAX_ARCHIVE_FILES:
         raise DataTransferError("archive contains too many files or a reserved entry")
     if sum(map(len, entries.values())) > MAX_ARCHIVE_BYTES:
         raise DataTransferError("archive exceeds the size limit")

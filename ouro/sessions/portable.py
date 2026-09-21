@@ -153,8 +153,7 @@ def populate_sessions(target: SessionRepository, bundle: SessionBundle) -> None:
         )
         for run in snapshot.runs:
             target.save_run(run)
-        for event in snapshot.events:
-            target.append_event(event)
+        target.append_events(snapshot.events)
         if item.latest_context is not None:
             target.save_latest_context(item.latest_context)
         actual = target.load_session(snapshot.session.session_id)
