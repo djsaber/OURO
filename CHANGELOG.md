@@ -10,7 +10,7 @@ OURO 是本地优先的 Agent 框架，包含：
 - TUI 端点菜单按当前会话或待建会话选中的路由显示选择标记，默认端点使用右侧标签；新增自定义供应商的协议固定来自上级连接类型，移除重复协议配置项。
 - TUI 主页 USAGE 栏仅展示用量图、请求数、输入/输出 token 和缓存命中率，移除费用及账单信息。
 - Provider/Endpoint 配置、流式模型调用、工具权限、人工协同、资源与上下文压缩。
-- 配置按职责拆分为基础设置、供应商、供应商模板、MCP 与 Agent 文件；CLI `data` 与 TUI 共用应用层导入导出服务；TUI `/export` 仅导出当前会话，其他数据操作通过 Actions → Manage data 分页菜单完成，导入自动识别归档类型，会话多选将 ID 显示为右侧标签，后台传输过程与结果在菜单内动态呈现，支持配置及原生技能文件，会话支持指定 ID 或全量导入导出、完整子智能体树与附件、files/SQLite 跨后端往返。未知插件、工具与模型引用原样保留，历史查询与继续执行的依赖校验分离。
+- 配置按职责拆分为基础设置、供应商、供应商模板、MCP、Agent 与个性化提示词文件；CLI `data` 与 TUI 共用应用层导入导出服务；TUI `/export` 仅导出当前会话，其他数据操作通过 Actions → Manage data 分页菜单完成，导入自动识别归档类型，会话多选将 ID 显示为右侧标签，后台传输过程与结果在菜单内动态呈现，支持各领域配置及原生技能文件，会话支持指定 ID 或全量导入导出、完整子智能体树与附件、files/SQLite 跨后端往返。未知插件、工具与模型引用原样保留，历史查询与继续执行的依赖校验分离。
 - CLI/TUI 共用 `openai-responses-effort` 思考预设，将端点等级与开关编码为 Responses 原生 `reasoning.effort`，沿用能力校验与 opaque 续接；配置构造函数支持端点自定义默认等级。
 - Responses 思考展示支持标准 reasoning_text 与 reasoning_summary_text 的流式及完整输出；预设区分接收可见思考和显式请求摘要，允许终态省略已流出的思考文本，并保留原生续接与必要一致性校验。
 - 协议实现、编解码器与思考预设按 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 明确命名；自定义接入统一为 `custom`，CLI 必须显式指定协议，TUI 提供三个协议入口，保留自定义 API 路径与已有供应商协议。

@@ -213,7 +213,7 @@ CLI 不提供历史数据或 Harness 状态迁移命令；不支持的数据格�
 ## 数据传输
 
 `ouro data export|import --kind <kind> --path <archive>` 是配置及数据归档的统一命令。
-kind 为 `providers`、`provider-templates`、`mcp`、`agents`、`sessions`、`skills`。
+kind 为 `providers`、`provider-templates`、`mcp`、`agents`、`prompts`、`sessions`、`skills`。
 会话两种操作均支持重复 `--id` 筛选，省略则全量；技能导出支持按名称筛选。
 `--replace` 仅用于导出文件、领域配置及同名技能，不能覆盖会话。
 CLI 不读取具体配置文件或解释会话记录；通过组合根装配 `DataTransferService`，输出其类型化结果。

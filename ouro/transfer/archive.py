@@ -15,7 +15,15 @@ from pydantic import ConfigDict, ValidationError, field_validator
 from ouro.core.base import OuroModel
 from ouro.core.errors import OuroError
 
-DataKind = Literal["providers", "provider-templates", "mcp", "agents", "sessions", "skills"]
+DataKind = Literal[
+    "providers",
+    "provider-templates",
+    "mcp",
+    "agents",
+    "prompts",
+    "sessions",
+    "skills",
+]
 DATA_KINDS: tuple[DataKind, ...] = get_args(DataKind)
 MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 MAX_ARCHIVE_FILES = 10_000

@@ -134,6 +134,7 @@ class DataTransferService:
             skipped=skipped,
             replaced=replaced,
             restart_required=request.action == "import"
+            and request.kind != "prompts"
             and (request.kind != "sessions" or replaced > 0),
             diagnostics=diagnostics,
         )

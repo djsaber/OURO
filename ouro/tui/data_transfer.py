@@ -27,6 +27,7 @@ TRANSFER_KIND_LABELS = {
     "provider-templates": "Provider templates",
     "mcp": "MCP configuration",
     "agents": "Agent configuration",
+    "prompts": "Personal prompt configuration",
     "sessions": "Sessions and attachments",
     "skills": "Native skill files",
 }

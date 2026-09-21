@@ -7,6 +7,7 @@ from textual.widgets import Input, OptionList
 
 from ouro.application.data_transfer import DataTransferRequest
 from ouro.cli.main import main
+from ouro.config.prompts import PromptConfigManager, PromptDraft
 from ouro.core.harness import HarnessState
 from ouro.core.messages import MessageRecord
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
@@ -178,11 +179,44 @@ async def _open_data_menu(app, pilot, action, kind=None):
         "provider-templates",
         "mcp",
         "agents",
+        "prompts",
         "sessions",
         "skills",
     }
+    assert next(row for row in menu._choices if row.value == "prompts").label == (
+        "Personal prompt configuration"
+    )
     await _choose_menu_row(app, pilot, kind)
     assert isinstance(app.screen, DataTransferScreen)
+
+
+@pytest.mark.asyncio
+async def test_tui_exports_personal_prompt_configuration(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    home = tmp_path / "home"
+    PromptConfigManager(home).save_entry(
+        "addition",
+        PromptDraft(description="Portable", text="Keep answers concise", enabled=True),
+        expected_revision=0,
+    )
+    app = OuroTuiApp(home=home)
+    async with app.run_test(size=(100, 35)) as pilot:
+        async with asyncio.timeout(10):
+            while app._controller._application is None:
+                await pilot.pause()
+        await app.workers.wait_for_complete()
+        await _open_data_menu(app, pilot, "export", "prompts")
+        form = app.screen
+        assert isinstance(form, DataTransferScreen)
+        assert next(row for row in form._choices if row.value == "kind").trailing == (
+            "Personal prompt configuration"
+        )
+        await _choose_menu_row(app, pilot, "submit")
+        await app.workers.wait_for_complete()
+        assert form._path is not None
+        payload = read_archive(form._path, "prompts").manifest.data
+        assert payload["prompts"]["additions"][0]["text"] == "Keep answers concise"
+        assert not app._data_transfer_progress.result.restart_required
 
 
 @pytest.mark.asyncio

@@ -85,6 +85,72 @@ def test_configuration_round_trip_replacement_and_domain_isolation(tmp_path, kin
     assert not (source / "config" / "config.json").exists()
 
 
+def test_prompt_configuration_round_trip_rebases_revision_and_applies_without_restart(tmp_path):
+    source, target = tmp_path / "source", tmp_path / "target"
+    source_prompts = PromptConfigManager(source)
+    source_prompts.save_entry(
+        "replacement",
+        PromptDraft(description="Primary", text="Use the source prompt", enabled=True),
+        expected_revision=0,
+    )
+    source_prompts.save_entry(
+        "addition",
+        PromptDraft(description="Appendix", text="Preserve this addition", enabled=True),
+        expected_revision=1,
+    )
+    target_prompts = PromptConfigManager(target)
+    for revision in range(3):
+        target_prompts.save_entry(
+            "addition",
+            PromptDraft(text=f"Target prompt {revision}"),
+            expected_revision=revision,
+        )
+
+    archive = tmp_path / "prompts.zip"
+    transfer(source, "export", "prompts", archive)
+    with pytest.raises(DataTransferError, match="exists"):
+        transfer(target, "import", "prompts", archive)
+
+    result = transfer(target, "import", "prompts", archive, replace=True)
+
+    expected = source_prompts.snapshot().config.model_copy(update={"revision": 4})
+    assert target_prompts.snapshot().config == expected
+    assert result.count == 1
+    assert not result.restart_required
+
+
+def test_invalid_prompt_archive_cannot_change_target(tmp_path):
+    prompts = PromptConfigManager(tmp_path)
+    prompts.save_entry(
+        "replacement", PromptDraft(text="Keep this prompt", enabled=True), expected_revision=0
+    )
+    before = prompts.config_path.read_bytes()
+    archive = tmp_path / "invalid-prompts.zip"
+    write_archive(
+        archive,
+        DataArchive(
+            ArchiveManifest(
+                kind="prompts",
+                data={
+                    "prompts": {
+                        "revision": 1,
+                        "replacements": [
+                            {"id": "first", "text": "First", "enabled": True},
+                            {"id": "second", "text": "Second", "enabled": True},
+                        ],
+                        "additions": [],
+                    }
+                },
+            )
+        ),
+        replace=False,
+    )
+
+    with pytest.raises(DataTransferError, match="invalid prompts"):
+        transfer(tmp_path, "import", "prompts", archive, replace=True)
+    assert prompts.config_path.read_bytes() == before
+
+
 def test_invalid_configuration_archive_cannot_change_target(tmp_path):
     _configure(tmp_path)
     target = tmp_path / "config" / "mcp.json"
@@ -639,7 +705,8 @@ def test_transfer_selection_lists_sources_without_importing(tmp_path, backend):
 
 
 @pytest.mark.parametrize(
-    "kind", ["providers", "provider-templates", "mcp", "agents", "sessions", "skills"]
+    "kind",
+    ["providers", "provider-templates", "mcp", "agents", "prompts", "sessions", "skills"],
 )
 def test_archive_detection_uses_manifest_without_creating_target(tmp_path, kind):
     archive = tmp_path / "unrelated-name.zip"

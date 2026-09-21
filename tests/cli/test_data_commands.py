@@ -6,12 +6,14 @@ import pytest
 
 from ouro.application.data_transfer import DataTransferRequest
 from ouro.cli.main import main
+from ouro.config.prompts import PromptConfigManager, PromptDraft
 from ouro.config.providers import ProviderConfigManager
 from ouro.local_application import build_local_data_transfer_service, build_local_session_services
 
 
 @pytest.mark.parametrize(
-    "kind", ["providers", "provider-templates", "mcp", "agents", "sessions", "skills"]
+    "kind",
+    ["providers", "provider-templates", "mcp", "agents", "prompts", "sessions", "skills"],
 )
 def test_unified_data_command_round_trip(tmp_path, capsys, kind):
     source, target = tmp_path / "source", tmp_path / "target"
@@ -40,6 +42,40 @@ def test_unified_data_command_round_trip(tmp_path, capsys, kind):
     if kind not in {"skills", "sessions"}:
         assert not (target / "sessions").exists()
         assert not (target / "sessions.sqlite3").exists()
+
+
+def test_data_cli_round_trips_personal_prompts_without_restart_notice(tmp_path, capsys):
+    source, target = tmp_path / "source", tmp_path / "target"
+    PromptConfigManager(source).save_entry(
+        "replacement",
+        PromptDraft(description="Portable", text="Use this system prompt", enabled=True),
+        expected_revision=0,
+    )
+    archive = tmp_path / "prompts.zip"
+
+    for action, home in (("export", source), ("import", target)):
+        assert (
+            main(
+                [
+                    "data",
+                    action,
+                    "--kind",
+                    "prompts",
+                    "--home",
+                    str(home),
+                    "--path",
+                    str(archive),
+                ]
+            )
+            == 0
+        )
+        output = capsys.readouterr().out
+        assert f"{action.title()}ed prompts: 1 configuration" in output
+        assert "Restart running OURO hosts" not in output
+
+    imported = PromptConfigManager(target).snapshot().config
+    assert imported.system_prompt == "Use this system prompt"
+    assert imported.replacements[0].description == "Portable"
 
 
 def test_data_import_cli_selects_several_sessions_from_full_archive(tmp_path, capsys):

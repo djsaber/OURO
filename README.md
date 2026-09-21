@@ -763,6 +763,8 @@ ouro data import --kind providers --path providers.zip --replace
 ouro data export --kind provider-templates --path templates.zip
 ouro data export --kind mcp --path mcp.zip
 ouro data export --kind agents --path agents.zip
+ouro data export --kind prompts --path prompts.zip
+ouro data import --kind prompts --path prompts.zip --replace
 ouro data export --kind skills --path skills.zip
 
 # 不指定 --id 时，导出全部会话；导入归档内全部会话
@@ -779,7 +781,9 @@ ouro data import --kind sessions --id ses_one --path all-sessions.zip --home ./r
 ouro data import --kind sessions --path all-sessions.zip --home ./restored-sqlite --session-backend sqlite
 ```
 
-- 每次操作处理一种数据。配置按整个领域导入；已有非空配置需要 `--replace`，不会混合两份配置。
+- 每次操作处理一种数据。Provider、Provider 模板、MCP、Agent 和个性化提示词配置按整个领域导入；
+  已有非空配置需要 `--replace`，不会混合两份配置。Agent 与提示词导入均在目标当前 revision 上递增，
+  不采用来源端的并发控制 token；提示词配置在下一次模型请求时读取，不要求重启正在运行的 Host。
 - 会话可指定一个、多个或全量。选择子会话会包含其所属主会话、所有子会话、Delegation 和附件；普通 fork 的历史来源不要求同时导入。
   会话保留 ID，目标 ID 冲突时默认跳过整棵树，也可显式使用 `--skip-existing`；`--replace` 替换完整目标树，
   同时移除归档中不存在的旧子会话。跨树身份冲突或运行中的目标树拒绝覆盖；其他独立会话不受影响。

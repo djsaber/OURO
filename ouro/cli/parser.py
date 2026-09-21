@@ -122,6 +122,7 @@ Use 'ouro COMMAND --help' to inspect a workflow and its examples.""",
         epilog=(
             "Examples:\n"
             "  ouro data export --kind providers --path providers.zip\n"
+            "  ouro data export --kind prompts --path prompts.zip\n"
             "  ouro data export --kind sessions --path all-sessions.zip\n"
             "  ouro data import --kind sessions --path all-sessions.zip --id ses_example\n"
             "  ouro data import --kind skills --path skills.zip --replace"

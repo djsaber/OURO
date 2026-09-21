@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.config.compaction import CompactionConfigManager
 from ouro.config.file import JsonConfigFile
+from ouro.config.prompts import PromptConfigManager
 from ouro.config.provider_template_store import (
     SCHEMA_VERSION,
     ProviderTemplateStore,
@@ -19,7 +20,7 @@ from ouro.core.errors import ConfigError
 from ouro.mcp.configuration import MCPConfigStore
 from ouro.transfer.archive import ArchiveManifest, DataArchive, DataKind, DataTransferError
 
-CONFIG_KINDS = frozenset({"providers", "provider-templates", "mcp", "agents"})
+CONFIG_KINDS = frozenset({"providers", "provider-templates", "mcp", "agents", "prompts"})
 
 
 def export_configuration(home: Path, kind: DataKind) -> DataArchive:
@@ -45,10 +46,14 @@ def import_configuration(home: Path, archive: DataArchive, *, replace: bool) -> 
             raise DataTransferError(f"{kind} configuration exists; use --replace to replace it")
         if kind == "providers":
             _validate_compaction_reference(home, raw)
-        if kind == "agents":
+        if kind in {"agents", "prompts"}:
             # A replacement is a new local revision, never an imported CAS token.
-            revision = AgentDefinitionsConfigManager(home).snapshot().revision
-            raw = {"agents": {**(raw.get("agents") or {}), "revision": revision + 1}}
+            revision = (
+                AgentDefinitionsConfigManager(home).snapshot().revision
+                if kind == "agents"
+                else PromptConfigManager(home).snapshot().config.revision
+            )
+            raw = {kind: {**(raw.get(kind) or {}), "revision": revision + 1}}
         target.write(raw)
     return 1
 
@@ -68,6 +73,8 @@ def validate_configuration(kind: DataKind, raw: dict[str, Any]) -> None:
                 MCPConfigStore(directory).snapshot()
             elif kind == "agents":
                 AgentDefinitionsConfigManager(directory).snapshot()
+            elif kind == "prompts":
+                PromptConfigManager(directory).snapshot()
             else:
                 raise DataTransferError(f"unsupported configuration kind: {kind}")
     except (ConfigError, ValidationError, TypeError, ValueError) as exc:
