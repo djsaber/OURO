@@ -44,14 +44,14 @@ def fixture_product(monkeypatch):
 def managed_provider(tmp_path):
     manager = ProviderConfigManager(tmp_path)
     provider = manager.create_provider(
-        "subscription",
+        display_name="Subscription",
         provider_type="custom",
         protocol="openai-chat-completions",
         auth_driver="browser-fixture",
         base_url="https://fixture.test/v1",
     )
-    manager.upsert_endpoint("subscription", "chat", model_id="fixture", make_default=True)
-    manager.set_default_provider("subscription")
+    manager.create_endpoint(provider.provider_id, model_id="fixture", make_default=True)
+    manager.set_default_provider(provider.provider_id)
     return manager, provider
 
 
@@ -126,7 +126,7 @@ def test_product_default_selects_protocol_and_auth_together(tmp_path, monkeypatc
         ),
     )
     provider = ProviderConfigManager(tmp_path).create_provider(
-        "subscription", provider_type="custom"
+        display_name="Subscription", provider_type="custom"
     )
     assert provider.protocol == "anthropic-messages"
     assert provider.auth_driver == "device-fixture"
@@ -136,7 +136,8 @@ def test_product_default_selects_protocol_and_auth_together(tmp_path, monkeypatc
 def test_create_reload_runtime_and_public_view_need_no_credential_file(tmp_path, fixture_product):
     manager, created = managed_provider(tmp_path)
     assert created.credential_ref.type == "managed"
-    reloaded = ProviderConfigManager(tmp_path).get_provider("subscription")
+    reloaded = ProviderConfigManager(tmp_path).get_provider(created.provider_id)
+    assert reloaded is not None
     assert reloaded.auth_driver == "browser-fixture"
     assert reloaded.credential_ref == created.credential_ref
     options = manager.resolve_runtime_options(ProviderRuntimeOptions())
@@ -150,7 +151,7 @@ def test_create_reload_runtime_and_public_view_need_no_credential_file(tmp_path,
     assert view.credential.available is None
     assert provider_config_to_public_dict(reloaded)["auth_driver"] == "browser-fixture"
     raw = json.loads(manager.config_path.read_text(encoding="utf-8"))
-    item = raw["providers"]["items"]["subscription"]
+    item = raw["providers"]["items"][created.provider_id]
     assert item["credential_ref"] == {"type": "managed", "name": created.credential_ref.name}
     assert "service_policy" not in item
     assert not (tmp_path / "credentials").exists()
@@ -158,18 +159,19 @@ def test_create_reload_runtime_and_public_view_need_no_credential_file(tmp_path,
 
 def test_update_preserves_binding_replace_generates_new_identity(tmp_path, fixture_product):
     manager, original = managed_provider(tmp_path)
-    updated = manager.update_provider("subscription", timeout_seconds=42)
+    updated = manager.update_provider(original.provider_id, timeout_seconds=42)
     assert updated.auth_driver == original.auth_driver
     assert updated.credential_ref == original.credential_ref
     replacement = manager.replace_provider(
-        "subscription",
+        original.provider_id,
+        display_name="Replacement Subscription",
         provider_type="custom",
         protocol="openai-chat-completions",
         auth_driver="browser-fixture",
     )
     assert replacement.credential_ref != original.credential_ref
     assert replacement.endpoints == ()
-    manager.remove_provider("subscription")
+    manager.remove_provider(original.provider_id)
     assert not (tmp_path / "credentials").exists()
 
 
@@ -179,22 +181,32 @@ def test_update_preserves_binding_replace_generates_new_identity(tmp_path, fixtu
 def test_managed_mutations_reject_api_key_without_writing(tmp_path, fixture_product, overrides):
     manager, original = managed_provider(tmp_path)
     before = manager.config_path.read_bytes()
-    for operation in (manager.update_provider, manager.create_provider, manager.replace_provider):
-        kwargs = overrides.copy()
-        target = "subscription"
-        if operation != manager.update_provider:
-            kwargs.update(
-                provider_type="custom",
-                protocol="openai-chat-completions",
-                auth_driver="browser-fixture",
-            )
-        if operation == manager.create_provider:
-            target = "another"
+    operations = (
+        lambda: manager.update_provider(original.provider_id, **overrides),
+        lambda: manager.create_provider(
+            display_name="Another",
+            provider_type="custom",
+            protocol="openai-chat-completions",
+            auth_driver="browser-fixture",
+            **overrides,
+        ),
+        lambda: manager.replace_provider(
+            original.provider_id,
+            display_name="Subscription",
+            provider_type="custom",
+            protocol="openai-chat-completions",
+            auth_driver="browser-fixture",
+            **overrides,
+        ),
+    )
+    for operation in operations:
         with pytest.raises(ConfigError, match="API Key") as failure:
-            operation(target, **kwargs)
+            operation()
         assert "fixture-secret" not in str(failure.value)
         assert manager.config_path.read_bytes() == before
-    assert manager.get_provider("subscription").credential_ref == original.credential_ref
+    restored = manager.get_provider(original.provider_id)
+    assert restored is not None
+    assert restored.credential_ref == original.credential_ref
 
 
 @pytest.mark.parametrize(
@@ -216,20 +228,20 @@ def test_runtime_cannot_replace_managed_authentication(tmp_path, fixture_product
 
 def test_static_defaults_and_api_key_overrides_are_preserved(tmp_path):
     manager = ProviderConfigManager(tmp_path)
-    manager.create_provider(
-        "api",
+    provider = manager.create_provider(
+        display_name="API",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://fixture.test",
     )
-    manager.upsert_endpoint("api", "chat", model_id="fixture", make_default=True)
+    manager.create_endpoint(provider.provider_id, model_id="fixture", make_default=True)
     options = manager.resolve_runtime_options(
-        ProviderRuntimeOptions(provider_id="api", api_key="fixture-secret")
+        ProviderRuntimeOptions(provider_id=provider.provider_id, api_key="fixture-secret")
     )
     assert options.auth_driver == "static"
     assert options.api_key == "fixture-secret"
     raw = json.loads(manager.config_path.read_text(encoding="utf-8"))
-    assert "auth_driver" not in raw["providers"]["items"]["api"]
+    assert "auth_driver" not in raw["providers"]["items"][provider.provider_id]
 
 
 @pytest.mark.parametrize(
@@ -245,6 +257,7 @@ def test_config_codec_rejects_mismatched_driver_and_reference(fixture_product, d
         provider_config_from_mapping(
             "fixture",
             {
+                "display_name": "Fixture",
                 "provider_type": "custom",
                 "protocol": "openai-chat-completions",
                 "auth_driver": driver,
@@ -259,6 +272,7 @@ def test_service_policy_cannot_be_user_configured(fixture_product):
         provider_config_from_mapping(
             "fixture",
             {
+                "display_name": "Fixture",
                 "provider_type": "custom",
                 "protocol": "openai-chat-completions",
                 "service_policy": "untrusted-policy",
@@ -327,22 +341,25 @@ def test_facade_creates_and_replaces_managed_config_without_resolving_credential
 ):
     facade = ConfigurationFacade(tmp_path)
     first = facade.add_provider(
-        "subscription",
+        display_name="Subscription",
         provider_type="custom",
         protocol="openai-chat-completions",
         auth_driver="browser-fixture",
     )
     assert first.providers[0].auth_driver == "browser-fixture"
-    previous = facade.provider("subscription").credential.reference
-    facade.update_provider_settings("subscription", timeout=42)
-    assert facade.provider("subscription").credential.reference == previous
+    provider_id = first.changed_provider_id
+    assert provider_id is not None
+    previous = facade.provider(provider_id).credential.reference
+    facade.update_provider_settings(provider_id, timeout=42)
+    assert facade.provider(provider_id).credential.reference == previous
     facade.replace_provider(
-        "subscription",
+        provider_id,
+        display_name="Subscription",
         provider_type="custom",
         protocol="openai-chat-completions",
         auth_driver="browser-fixture",
     )
-    assert facade.provider("subscription").credential.reference != previous
+    assert facade.provider(provider_id).credential.reference != previous
 
 
 def subscription_template(**overrides) -> ProviderTemplate:
@@ -364,8 +381,8 @@ def subscription_template(**overrides) -> ProviderTemplate:
 def test_template_creates_instance_id_and_update_preserves_auth_choice(tmp_path, fixture_product):
     manager = ProviderConfigManager(tmp_path)
     template = subscription_template()
-    first = manager.create_from_template(template, provider_id="first")
-    second = manager.create_from_template(template, provider_id="second")
+    first = manager.create_from_template(template, display_name="First")
+    second = manager.create_from_template(template, display_name="Second")
     assert first.credential_ref != second.credential_ref
     assert first.auth_driver == "browser-fixture"
     assert first.template.auth_driver == "browser-fixture"
@@ -373,14 +390,18 @@ def test_template_creates_instance_id_and_update_preserves_auth_choice(tmp_path,
     next_template = subscription_template(
         auth_driver="static", credential_env="NEW_KEY", revision=template.revision + 1
     )
-    updated = manager.update_from_template(next_template, provider_id="first")
+    updated = manager.update_from_template(next_template, provider_id=first.provider_id)
     assert updated.provider.auth_driver == first.auth_driver
     assert updated.provider.credential_ref == first.credential_ref
     assert "auth_driver" in updated.preserved_fields
-    repeated = manager.update_from_template(next_template, provider_id="first")
+    repeated = manager.update_from_template(next_template, provider_id=first.provider_id)
     assert repeated.changed is False
     assert repeated.provider.credential_ref == first.credential_ref
-    replacement = manager.replace_from_template(next_template, provider_id="first")
+    replacement = manager.replace_from_template(
+        next_template,
+        provider_id=first.provider_id,
+        display_name="First",
+    )
     assert replacement.auth_driver == "static"
     assert replacement.credential_ref == CredentialRef.parse("env:NEW_KEY")
 
@@ -394,7 +415,8 @@ def test_template_auth_override_is_explicit_and_update_does_not_switch_it(
     updated = manager.update_from_template(
         subscription_template(
             auth_driver="static", credential_env="NEW_KEY", revision=static.revision + 1
-        )
+        ),
+        provider_id=original.provider_id,
     )
     assert updated.provider.auth_driver == original.auth_driver
     assert updated.provider.credential_ref == original.credential_ref

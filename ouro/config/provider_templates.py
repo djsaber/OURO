@@ -27,7 +27,6 @@ class ProviderTemplate(OuroModel):
     template_id: str
     display_name: str
     description: str
-    provider_id: str
     provider_type: ProviderType
     protocol: ProviderProtocol
     auth_driver: str = "static"
@@ -40,7 +39,7 @@ class ProviderTemplate(OuroModel):
     verified_on: str
     revision: int = Field(default=1, ge=1)
 
-    @field_validator("template_id", "provider_id", "default_endpoint")
+    @field_validator("template_id", "display_name", "default_endpoint")
     @classmethod
     def _require_identifier(cls, value: str) -> str:
         normalized = value.strip()
@@ -297,6 +296,14 @@ _ANTHROPIC_MANUAL_REASONING = toggle_reasoning(
     continuation="opaque",
 )
 
+_OPENAI_MODEL_DISPLAY_NAMES = {
+    "gpt-6-astra": "GPT-6 Astra",
+    "gpt-5.6-sol": "GPT-5.6 Sol",
+    "gpt-5.6-terra": "GPT-5.6 Terra",
+    "gpt-5.6-luna": "GPT-5.6 Luna",
+    "gpt-5.5": "GPT-5.5",
+}
+
 
 _PROVIDER_TEMPLATES = (
     ProviderTemplate(
@@ -310,7 +317,6 @@ _PROVIDER_TEMPLATES = (
             "No request output limit; context 128000 and output 8192 are local planning budgets. "
             "Images and structured output are not declared supported by this integration."
         ),
-        provider_id="openai-codex",
         provider_type="openai-codex",
         protocol="openai-responses",
         auth_driver="openai-codex",
@@ -320,6 +326,7 @@ _PROVIDER_TEMPLATES = (
         endpoints=tuple(
             ProviderEndpointConfig(
                 endpoint_id=model_id,
+                display_name=_OPENAI_MODEL_DISPLAY_NAMES[model_id],
                 model_id=model_id,
                 context_window=128_000,
                 max_output_tokens=8192,
@@ -337,7 +344,7 @@ _PROVIDER_TEMPLATES = (
         ),
         documentation_url="https://learn.chatgpt.com/docs/models",
         verified_on="2026-09-19",
-        revision=2,
+        revision=3,
     ),
     ProviderTemplate(
         template_id="openai",
@@ -348,7 +355,6 @@ _PROVIDER_TEMPLATES = (
             "the preset requests an output budget of 32768. Astra tool calling requires Responses. "
             "Image input is not yet implemented by the OURO Responses adapter."
         ),
-        provider_id="openai",
         provider_type="openai",
         protocol="openai-responses",
         credential_env="OPENAI_API_KEY",
@@ -358,6 +364,7 @@ _PROVIDER_TEMPLATES = (
         endpoints=tuple(
             ProviderEndpointConfig(
                 endpoint_id=model_id,
+                display_name=_OPENAI_MODEL_DISPLAY_NAMES[model_id],
                 model_id=model_id,
                 context_window=1_050_000,
                 max_output_tokens=32_768,
@@ -377,13 +384,12 @@ _PROVIDER_TEMPLATES = (
         ),
         documentation_url="https://developers.openai.com/api/docs/models",
         verified_on="2026-09-19",
-        revision=3,
+        revision=4,
     ),
     ProviderTemplate(
         template_id="anthropic",
         display_name="Anthropic",
         description="Anthropic Messages API with current Claude production models.",
-        provider_id="anthropic",
         provider_type="anthropic",
         protocol="anthropic-messages",
         credential_env="ANTHROPIC_API_KEY",
@@ -393,6 +399,7 @@ _PROVIDER_TEMPLATES = (
         endpoints=(
             ProviderEndpointConfig(
                 endpoint_id="claude-sonnet-5",
+                display_name="Claude Sonnet 5",
                 model_id="claude-sonnet-5",
                 context_window=1_000_000,
                 max_output_tokens=32_768,
@@ -404,6 +411,7 @@ _PROVIDER_TEMPLATES = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="claude-opus-4-8",
+                display_name="Claude Opus 4.8",
                 model_id="claude-opus-4-8",
                 context_window=1_000_000,
                 max_output_tokens=32_768,
@@ -415,6 +423,7 @@ _PROVIDER_TEMPLATES = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="claude-haiku-4-5",
+                display_name="Claude Haiku 4.5",
                 model_id="claude-haiku-4-5",
                 context_window=200_000,
                 max_output_tokens=32_768,
@@ -427,13 +436,12 @@ _PROVIDER_TEMPLATES = (
         ),
         documentation_url="https://platform.claude.com/docs/en/about-claude/models/overview",
         verified_on=_VERIFIED_ON,
-        revision=2,
+        revision=3,
     ),
     ProviderTemplate(
         template_id="gemini",
         display_name="Google Gemini",
         description="Gemini through Google's official OpenAI Chat Completions-compatible endpoint.",
-        provider_id="gemini",
         provider_type="gemini",
         protocol="openai-chat-completions",
         credential_env="GEMINI_API_KEY",
@@ -443,6 +451,7 @@ _PROVIDER_TEMPLATES = (
         endpoints=(
             ProviderEndpointConfig(
                 endpoint_id="gemini-3.5-flash",
+                display_name="Gemini 3.5 Flash",
                 model_id="gemini-3.5-flash",
                 context_window=1_048_576,
                 max_output_tokens=32_768,
@@ -454,6 +463,7 @@ _PROVIDER_TEMPLATES = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="gemini-3.1-pro-preview",
+                display_name="Gemini 3.1 Pro Preview",
                 model_id="gemini-3.1-pro-preview",
                 context_window=1_048_576,
                 max_output_tokens=32_768,
@@ -465,6 +475,7 @@ _PROVIDER_TEMPLATES = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="gemini-3.1-flash-lite",
+                display_name="Gemini 3.1 Flash Lite",
                 model_id="gemini-3.1-flash-lite",
                 context_window=1_048_576,
                 max_output_tokens=32_768,
@@ -477,13 +488,12 @@ _PROVIDER_TEMPLATES = (
         ),
         documentation_url="https://ai.google.dev/gemini-api/docs/models",
         verified_on=_VERIFIED_ON,
-        revision=2,
+        revision=3,
     ),
     ProviderTemplate(
         template_id="deepseek",
         display_name="DeepSeek",
         description="DeepSeek's OpenAI Chat Completions-compatible API with current V4 models.",
-        provider_id="deepseek",
         provider_type="deepseek",
         protocol="openai-chat-completions",
         credential_env="DEEPSEEK_API_KEY",
@@ -493,6 +503,7 @@ _PROVIDER_TEMPLATES = (
         endpoints=(
             ProviderEndpointConfig(
                 endpoint_id="deepseek-v4-pro",
+                display_name="DeepSeek V4 Pro",
                 model_id="deepseek-v4-pro",
                 context_window=1_000_000,
                 max_output_tokens=32_768,
@@ -504,6 +515,7 @@ _PROVIDER_TEMPLATES = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="deepseek-v4-flash",
+                display_name="DeepSeek V4 Flash",
                 model_id="deepseek-v4-flash",
                 context_window=1_000_000,
                 max_output_tokens=32_768,
@@ -516,7 +528,7 @@ _PROVIDER_TEMPLATES = (
         ),
         documentation_url="https://api-docs.deepseek.com/quick_start/pricing/",
         verified_on="2026-08-27",
-        revision=3,
+        revision=4,
     ),
     ProviderTemplate(
         template_id="qwen",
@@ -525,7 +537,6 @@ _PROVIDER_TEMPLATES = (
             "DashScope's OpenAI Chat Completions-compatible China endpoint with the Qwen3.8-Max "
             "flagship, Qwen3.8-Flash, and Qwen3.7-Plus multimodal models."
         ),
-        provider_id="qwen",
         provider_type="qwen",
         protocol="openai-chat-completions",
         credential_env="DASHSCOPE_API_KEY",
@@ -535,6 +546,7 @@ _PROVIDER_TEMPLATES = (
         endpoints=(
             ProviderEndpointConfig(
                 endpoint_id="qwen3.8-max",
+                display_name="Qwen3.8 Max",
                 model_id="qwen3.8-max",
                 context_window=1_000_000,
                 max_output_tokens=131_072,
@@ -546,6 +558,7 @@ _PROVIDER_TEMPLATES = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="qwen3.8-flash",
+                display_name="Qwen3.8 Flash",
                 model_id="qwen3.8-flash",
                 context_window=1_000_000,
                 max_output_tokens=131_072,
@@ -557,6 +570,7 @@ _PROVIDER_TEMPLATES = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="qwen3.7-plus",
+                display_name="Qwen3.7 Plus",
                 model_id="qwen3.7-plus",
                 context_window=1_000_000,
                 max_output_tokens=131_072,
@@ -569,13 +583,12 @@ _PROVIDER_TEMPLATES = (
         ),
         documentation_url="https://help.aliyun.com/zh/model-studio/text-generation-model",
         verified_on="2026-08-27",
-        revision=4,
+        revision=5,
     ),
     ProviderTemplate(
         template_id="kimi",
         display_name="Moonshot AI Kimi",
         description="Kimi's Chat Completions API with the K3 flagship and K2 Agent models.",
-        provider_id="kimi",
         provider_type="kimi",
         protocol="openai-chat-completions",
         credential_env="MOONSHOT_API_KEY",
@@ -585,6 +598,7 @@ _PROVIDER_TEMPLATES = (
         endpoints=(
             ProviderEndpointConfig(
                 endpoint_id="kimi-k3",
+                display_name="Kimi K3",
                 model_id="kimi-k3",
                 context_window=1_048_576,
                 max_output_tokens=32_768,
@@ -596,6 +610,7 @@ _PROVIDER_TEMPLATES = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="kimi-k2.7-code",
+                display_name="Kimi K2.7 Code",
                 model_id="kimi-k2.7-code",
                 context_window=262_144,
                 max_output_tokens=32_768,
@@ -607,6 +622,7 @@ _PROVIDER_TEMPLATES = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="kimi-k2.7-code-highspeed",
+                display_name="Kimi K2.7 Code Highspeed",
                 model_id="kimi-k2.7-code-highspeed",
                 context_window=262_144,
                 max_output_tokens=32_768,
@@ -618,6 +634,7 @@ _PROVIDER_TEMPLATES = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="kimi-k2.6",
+                display_name="Kimi K2.6",
                 model_id="kimi-k2.6",
                 context_window=262_144,
                 max_output_tokens=32_768,
@@ -630,13 +647,12 @@ _PROVIDER_TEMPLATES = (
         ),
         documentation_url="https://platform.kimi.com/docs/guide/use-thinking-effort",
         verified_on="2026-07-17",
-        revision=2,
+        revision=3,
     ),
     ProviderTemplate(
         template_id="glm",
         display_name="Zhipu GLM",
         description="Zhipu's Chat Completions API with current text and multimodal models.",
-        provider_id="glm",
         provider_type="glm",
         protocol="openai-chat-completions",
         credential_env="ZAI_API_KEY",
@@ -646,6 +662,7 @@ _PROVIDER_TEMPLATES = (
         endpoints=(
             ProviderEndpointConfig(
                 endpoint_id="glm-5.3",
+                display_name="GLM-5.3",
                 model_id="glm-5.3",
                 context_window=1_000_000,
                 max_output_tokens=128_000,
@@ -657,6 +674,7 @@ _PROVIDER_TEMPLATES = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="glm-5.3-flash",
+                display_name="GLM-5.3 Flash",
                 model_id="glm-5.3-flash",
                 context_window=1_000_000,
                 max_output_tokens=128_000,
@@ -668,6 +686,7 @@ _PROVIDER_TEMPLATES = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="glm-5.2",
+                display_name="GLM-5.2",
                 model_id="glm-5.2",
                 context_window=1_000_000,
                 max_output_tokens=32_768,
@@ -679,6 +698,7 @@ _PROVIDER_TEMPLATES = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="glm-5-turbo",
+                display_name="GLM-5 Turbo",
                 model_id="glm-5-turbo",
                 context_window=200_000,
                 max_output_tokens=32_768,
@@ -690,6 +710,7 @@ _PROVIDER_TEMPLATES = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="glm-5v-turbo",
+                display_name="GLM-5V Turbo",
                 model_id="glm-5v-turbo",
                 context_window=200_000,
                 max_output_tokens=32_768,
@@ -702,13 +723,12 @@ _PROVIDER_TEMPLATES = (
         ),
         documentation_url="https://docs.bigmodel.cn/cn/guide/start/model-overview",
         verified_on="2026-08-27",
-        revision=3,
+        revision=4,
     ),
     ProviderTemplate(
         template_id="grok",
         display_name="xAI Grok",
         description="xAI's Chat Completions API with the latest Grok frontier model.",
-        provider_id="grok",
         provider_type="grok",
         protocol="openai-chat-completions",
         credential_env="XAI_API_KEY",
@@ -718,6 +738,7 @@ _PROVIDER_TEMPLATES = (
         endpoints=(
             ProviderEndpointConfig(
                 endpoint_id="grok-4.6",
+                display_name="Grok 4.6",
                 model_id="grok-4.6",
                 context_window=500_000,
                 max_output_tokens=128_000,
@@ -731,13 +752,12 @@ _PROVIDER_TEMPLATES = (
         ),
         documentation_url="https://docs.x.ai/developers/grok-4-6",
         verified_on="2026-08-27",
-        revision=2,
+        revision=3,
     ),
     ProviderTemplate(
         template_id="openrouter",
         display_name="OpenRouter",
         description="OpenRouter's automatic paid and free model routers.",
-        provider_id="openrouter",
         provider_type="openrouter",
         protocol="openai-chat-completions",
         credential_env="OPENROUTER_API_KEY",
@@ -747,6 +767,7 @@ _PROVIDER_TEMPLATES = (
         endpoints=(
             ProviderEndpointConfig(
                 endpoint_id="auto",
+                display_name="Auto Router",
                 model_id="openrouter/auto",
                 context_window=128_000,
                 max_output_tokens=8192,
@@ -757,6 +778,7 @@ _PROVIDER_TEMPLATES = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="free",
+                display_name="Free Models Router",
                 model_id="openrouter/free",
                 context_window=200_000,
                 max_output_tokens=8192,
@@ -768,12 +790,12 @@ _PROVIDER_TEMPLATES = (
         ),
         documentation_url="https://openrouter.ai/docs/guides/routing/routers/auto-router",
         verified_on=_VERIFIED_ON,
+        revision=2,
     ),
     ProviderTemplate(
         template_id="mistral",
         display_name="Mistral AI",
         description="Mistral's Chat Completions API with current general models.",
-        provider_id="mistral",
         provider_type="mistral",
         protocol="openai-chat-completions",
         credential_env="MISTRAL_API_KEY",
@@ -783,6 +805,7 @@ _PROVIDER_TEMPLATES = (
         endpoints=(
             ProviderEndpointConfig(
                 endpoint_id="mistral-medium-3-5",
+                display_name="Mistral Medium 3.5",
                 model_id="mistral-medium-3-5",
                 context_window=256_000,
                 max_output_tokens=32_768,
@@ -793,6 +816,7 @@ _PROVIDER_TEMPLATES = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="mistral-small-2603",
+                display_name="Mistral Small 2603",
                 model_id="mistral-small-2603",
                 context_window=256_000,
                 max_output_tokens=32_768,
@@ -803,6 +827,7 @@ _PROVIDER_TEMPLATES = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="mistral-large-2512",
+                display_name="Mistral Large 2512",
                 model_id="mistral-large-2512",
                 context_window=256_000,
                 max_output_tokens=32_768,
@@ -814,6 +839,7 @@ _PROVIDER_TEMPLATES = (
         ),
         documentation_url="https://docs.mistral.ai/models/model-selection-guide",
         verified_on=_VERIFIED_ON,
+        revision=2,
     ),
 )
 

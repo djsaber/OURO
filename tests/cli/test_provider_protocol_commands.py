@@ -41,15 +41,19 @@ def test_custom_provider_creation_update_and_replacement(
         args.extend(["--api-path", api_path])
     assert main(args) == 0
     provider = json.loads(capsys.readouterr().out)["provider"]
+    provider_id = provider["provider_id"]
+    assert provider["display_name"] == "gateway"
     assert provider["provider_type"] == "custom"
     assert provider["protocol"] == protocol
     assert provider["api_path"] == api_path
     assert provider["endpoint_count"] == 0
 
     facade = ConfigurationFacade(tmp_path)
-    facade.save_endpoint("gateway", "chat", model="custom-model")
+    endpoints = facade.add_endpoint(provider_id, display_name="Chat", model="custom-model")
+    endpoint_id = endpoints.changed_endpoint_id
+    assert endpoint_id is not None
     resolved = ProviderConfigManager(tmp_path).resolve_runtime_options(
-        ProviderRuntimeOptions(provider_id="gateway", endpoint_id="chat")
+        ProviderRuntimeOptions(provider_id=provider_id, endpoint_id=endpoint_id)
     )
     assert resolved.protocol == protocol
     assert resolved.api_path == (api_path or default_path)
@@ -58,7 +62,7 @@ def test_custom_provider_creation_update_and_replacement(
             [
                 "provider",
                 "update",
-                "gateway",
+                provider_id,
                 "--timeout",
                 "15",
                 "--home",
@@ -69,7 +73,7 @@ def test_custom_provider_creation_update_and_replacement(
         == 0
     )
     capsys.readouterr()
-    saved = ConfigurationFacade(tmp_path).provider("gateway")
+    saved = ConfigurationFacade(tmp_path).provider(provider_id)
     assert saved.protocol == protocol
     assert saved.api_path == api_path
     assert saved.endpoint_count == 1
@@ -79,7 +83,7 @@ def test_custom_provider_creation_update_and_replacement(
             [
                 "provider",
                 "replace",
-                "gateway",
+                provider_id,
                 "--type",
                 "custom",
                 "--protocol",
@@ -94,7 +98,7 @@ def test_custom_provider_creation_update_and_replacement(
         == 0
     )
     capsys.readouterr()
-    saved = ConfigurationFacade(tmp_path).provider("gateway")
+    saved = ConfigurationFacade(tmp_path).provider(provider_id)
     assert saved.protocol == "openai-chat-completions"
     assert saved.api_path is None
     assert saved.endpoint_count == 0
@@ -103,14 +107,16 @@ def test_custom_provider_creation_update_and_replacement(
 @pytest.mark.parametrize("operation", ["add", "replace"])
 def test_custom_provider_requires_explicit_protocol_without_writing(tmp_path, capsys, operation):
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider("existing", provider_type="anthropic")
+    created = facade.add_provider(display_name="Existing", provider_type="anthropic")
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
     before = facade.providers.config_path.read_bytes()
     assert (
         main(
             [
                 "provider",
                 operation,
-                "new" if operation == "add" else "existing",
+                "New" if operation == "add" else provider_id,
                 "--type",
                 "custom",
                 "--home",
@@ -133,7 +139,9 @@ def test_rejected_protocol_selection_preserves_configuration(
     provider_type,
 ):
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider("existing", provider_type="anthropic")
+    created = facade.add_provider(display_name="Existing", provider_type="anthropic")
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
     before = facade.providers.config_path.read_bytes()
     protocol = "openai-responses" if provider_type == "anthropic" else "openai-chat-completions"
     assert (
@@ -141,7 +149,7 @@ def test_rejected_protocol_selection_preserves_configuration(
             [
                 "provider",
                 operation,
-                "new" if operation == "add" else "existing",
+                "New" if operation == "add" else provider_id,
                 "--type",
                 provider_type,
                 "--protocol",
@@ -161,13 +169,15 @@ def test_rejected_protocol_selection_preserves_configuration(
 
 def test_replace_custom_provider_with_responses(tmp_path, capsys):
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider("gateway", provider_type="anthropic")
+    created = facade.add_provider(display_name="Gateway", provider_type="anthropic")
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
     assert (
         main(
             [
                 "provider",
                 "replace",
-                "gateway",
+                provider_id,
                 "--type",
                 "custom",
                 "--protocol",

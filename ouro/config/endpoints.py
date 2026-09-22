@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import Field, field_validator, model_validator
 
 from ouro.config.reasoning import EndpointReasoningConfig
-from ouro.core.base import Metadata, MetadataField, OuroModel
+from ouro.core.base import Metadata, MetadataField, OuroModel, new_id
 
 _SENSITIVE_PUBLIC_KEYS = frozenset(
     {
@@ -21,7 +21,7 @@ _SENSITIVE_PUBLIC_KEYS = frozenset(
 )
 _ENDPOINT_FIELDS = frozenset(
     {
-        "endpoint_id",
+        "display_name",
         "model_id",
         "base_url",
         "api_path",
@@ -42,7 +42,8 @@ _ENDPOINT_FIELDS = frozenset(
 class ProviderEndpointConfig(OuroModel):
     """Configuration and capabilities for one callable model endpoint."""
 
-    endpoint_id: str
+    endpoint_id: str = Field(default_factory=lambda: new_id("endpoint"))
+    display_name: str | None = None
     model_id: str
     base_url: str | None = None
     api_path: str | None = None
@@ -64,6 +65,14 @@ class ProviderEndpointConfig(OuroModel):
         if not normalized:
             raise ValueError("must not be empty")
         return normalized
+
+    @field_validator("display_name")
+    @classmethod
+    def _normalize_display_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
 
     @field_validator("base_url")
     @classmethod
@@ -98,14 +107,12 @@ def endpoint_config_from_mapping(
     unsupported = sorted(set(raw) - _ENDPOINT_FIELDS)
     if unsupported:
         raise ValueError(f"unsupported endpoint config fields: {', '.join(unsupported)}")
-    configured_id = _optional_str(raw.get("endpoint_id")) or endpoint_id
-    if configured_id != endpoint_id:
-        raise ValueError(f"endpoint_id must match endpoints key ({configured_id} != {endpoint_id})")
     model_id = _optional_str(raw.get("model_id"))
     if model_id is None:
         raise ValueError(f"endpoint config is missing model_id: {endpoint_id}")
     return ProviderEndpointConfig(
-        endpoint_id=configured_id,
+        endpoint_id=endpoint_id,
+        display_name=_optional_str(raw.get("display_name")),
         model_id=model_id,
         base_url=_optional_str(raw.get("base_url")),
         api_path=_optional_str(raw.get("api_path")),
@@ -124,7 +131,6 @@ def endpoint_config_from_mapping(
 
 def endpoint_config_to_raw(endpoint: ProviderEndpointConfig) -> dict[str, Any]:
     raw: dict[str, Any] = {
-        "endpoint_id": endpoint.endpoint_id,
         "model_id": endpoint.model_id,
         "context_window": endpoint.context_window,
         "max_output_tokens": endpoint.max_output_tokens,
@@ -134,6 +140,8 @@ def endpoint_config_to_raw(endpoint: ProviderEndpointConfig) -> dict[str, Any]:
         "supports_structured_output": endpoint.supports_structured_output,
         "reasoning": endpoint.reasoning.model_dump(mode="json", exclude_none=True),
     }
+    if endpoint.display_name:
+        raw["display_name"] = endpoint.display_name
     if endpoint.base_url:
         raw["base_url"] = endpoint.base_url
     if endpoint.api_path:

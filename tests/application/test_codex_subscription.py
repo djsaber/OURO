@@ -24,8 +24,14 @@ async def test_subscription_target_override_fails_before_credentials_or_network(
     tmp_path, monkeypatch, base_url
 ):
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider("personal", provider_type="openai-codex", make_default=True)
-    facade.update_provider("personal", base_url=base_url)
+    created = facade.add_provider(
+        display_name="Personal Codex",
+        provider_type="openai-codex",
+        make_default=True,
+    )
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
+    facade.update_provider(provider_id, base_url=base_url)
 
     def forbidden_client(**kwargs):
         pytest.fail("rejected subscription target must not create a network client")
@@ -88,8 +94,17 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
 
     monkeypatch.setattr(httpx, "AsyncClient", client_factory)
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider("personal", provider_type="openai-codex", make_default=True)
-    configured = facade.provider("personal")
+    created = facade.add_provider(
+        display_name="Personal Codex",
+        provider_type="openai-codex",
+        make_default=True,
+    )
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
+    configured = facade.provider(provider_id)
+    gpt_55_endpoint_id = next(
+        endpoint.endpoint_id for endpoint in configured.endpoints if endpoint.model_id == "gpt-5.5"
+    )
     assert configured.auth_driver == "openai-codex"
     assert "local planning budget" in configured.notice
     assert configured.endpoints[0].reasoning.capability.continuation == "opaque"
@@ -110,7 +125,7 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
         task = await app.tasks.create(
             TaskConfiguration(
                 workspace=str(tmp_path),
-                model="personal/gpt-5.5",
+                model=f"{provider_id}/{gpt_55_endpoint_id}",
                 description="Reply OK.",
                 schedule=TaskSchedule(frequency="daily", starts_at=due, ends_at=due),
             )
@@ -132,9 +147,9 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
 
     # Exercise the real lightweight composition, loopback callback and file commit.
     async with open_local_provider_auth(tmp_path) as auth:
-        assert (await auth.status("personal")).state == "missing"
-        assert [method.method_id for method in await auth.methods("personal")] == ["browser"]
-        challenge = await auth.begin("personal", "browser")
+        assert (await auth.status(provider_id)).state == "missing"
+        assert [method.method_id for method in await auth.methods(provider_id)] == ["browser"]
+        challenge = await auth.begin(provider_id, "browser")
         query = parse_qs(urlsplit(str(challenge.challenge.authorization_url)).query)
         async with original_client(
             transport=httpx.AsyncHTTPTransport(trust_env=False), trust_env=False
@@ -145,7 +160,7 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
             )
             assert response.status_code == 200
         assert (await auth.wait(challenge.operation_id)).state == "succeeded"
-        assert (await auth.status("personal")).credential.revision == 1
+        assert (await auth.status(provider_id)).credential.revision == 1
 
     def echo(invocation):
         executions.append(invocation.arguments["round"])
@@ -209,16 +224,16 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
         assert model_requests[-2][1]["authorization"] == "Bearer access-secret"
         assert model_requests[-1][1]["authorization"] == "Bearer rotated-secret"
         assert reasoning() in model_requests[-1][0]["input"]
-        assert (await app.provider_auth.status("personal")).credential.revision == 2
+        assert (await app.provider_auth.status(provider_id)).credential.revision == 2
         assert executions == [1, 2]
-        await app.provider_auth.logout("personal")
+        await app.provider_auth.logout(provider_id)
         count = len(model_requests)
         failed = await app.runtime.run("After logout.", session_id=session_id)
         assert failed.run.status == "failed"
         assert any(e.payload.get("error_code") == "authentication_required" for e in failed.events)
         assert len(model_requests) == count
         public = app.runtime.store.load_session(session_id).model_dump_json()
-        public += facade.provider("personal").model_dump_json()
+        public += facade.provider(provider_id).model_dump_json()
         assert all(
             secret not in public for secret in ("access-secret", "refresh-secret", "rotated-secret")
         )
@@ -226,5 +241,6 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
     assert len(token_requests) == 2 and not replies
     assert all(client.is_closed for client in clients)
     async with open_local_provider_auth(tmp_path) as auth:
-        assert (await auth.status("personal")).state == "logged_out"
-    assert ProviderConfigManager(tmp_path).get_provider("personal").credential_ref.type == "managed"
+        assert (await auth.status(provider_id)).state == "logged_out"
+    provider = ProviderConfigManager(tmp_path).get_provider(provider_id)
+    assert provider is not None and provider.credential_ref.type == "managed"

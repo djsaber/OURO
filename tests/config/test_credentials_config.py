@@ -71,6 +71,7 @@ def test_provider_options_are_redacted_in_public_output() -> None:
     public = provider_config_to_public_dict(
         ProviderConfig(
             provider_id="custom",
+            display_name="Custom",
             provider_type="custom",
             protocol="openai-chat-completions",
             extra={
@@ -93,7 +94,7 @@ def test_provider_options_are_replaceable_defaults_with_owned_field_validation(
 ) -> None:
     manager = ProviderConfigManager(tmp_path)
     created = manager.create_provider(
-        "custom",
+        display_name="Custom",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://example.test/v1",
@@ -101,29 +102,30 @@ def test_provider_options_are_replaceable_defaults_with_owned_field_validation(
     )
 
     assert created.extra == {"tool_choice": "none", "top_p": 0.8}
-    assert manager.update_provider("custom", timeout_seconds=30).extra == created.extra
+    provider_id = created.provider_id
+    assert provider_id.startswith("provider_")
+    assert manager.update_provider(provider_id, timeout_seconds=30).extra == created.extra
 
-    endpoint = manager.upsert_endpoint(
-        "custom",
-        "chat",
+    endpoint = manager.create_endpoint(
+        provider_id,
         model_id="custom-model",
     )
     assert endpoint.supports_tools is True
     assert endpoint.supports_structured_output is True
 
     updated = manager.update_provider(
-        "custom",
+        provider_id,
         provider_options={"top_p": 0.9},
     )
     assert updated.extra == {"top_p": 0.9}
-    assert manager.update_provider("custom", provider_options={}).extra == {}
+    assert manager.update_provider(provider_id, provider_options={}).extra == {}
 
     with pytest.raises(ConfigError, match="protocol-owned fields: model"):
         manager.update_provider(
-            "custom",
+            provider_id,
             provider_options={"model": "wrong-model"},
         )
-    configured = manager.get_provider("custom")
+    configured = manager.get_provider(provider_id)
     assert configured is not None
     assert configured.extra == {}
 
@@ -138,7 +140,7 @@ def test_provider_config_manager_resolves_configured_default(tmp_path) -> None:
                     "default": "glm",
                     "items": {
                         "glm": {
-                            "provider_id": "glm",
+                            "display_name": "GLM",
                             "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "credential_ref": "env:OURO_TEST_KEY",
@@ -181,7 +183,7 @@ def test_provider_config_manager_selects_configured_provider_by_id(tmp_path) -> 
                     "default": "faux",
                     "items": {
                         "glm": {
-                            "provider_id": "glm",
+                            "display_name": "GLM",
                             "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "default_endpoint": "default",
@@ -209,7 +211,7 @@ def test_provider_config_manager_selects_configured_provider_by_id(tmp_path) -> 
     assert options.base_url == "https://example.test/v1"
 
 
-def test_provider_config_manager_rejects_provider_id_mismatch(tmp_path) -> None:
+def test_provider_config_manager_rejects_user_configured_provider_id(tmp_path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     (config_dir / "providers.json").write_text(
@@ -231,7 +233,30 @@ def test_provider_config_manager_rejects_provider_id_mismatch(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="provider_id must match"):
+    with pytest.raises(ConfigError, match="unsupported provider config fields: provider_id"):
+        ProviderConfigManager(tmp_path).snapshot()
+
+
+def test_provider_config_manager_requires_display_name(tmp_path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "providers.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "items": {
+                        "provider_generated": {
+                            "provider_type": "custom",
+                            "protocol": "openai-chat-completions",
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="missing display_name"):
         ProviderConfigManager(tmp_path).snapshot()
 
 
@@ -244,7 +269,7 @@ def test_provider_config_rejects_noncanonical_provider_type(tmp_path) -> None:
                 "providers": {
                     "items": {
                         "local": {
-                            "provider_id": "local",
+                            "display_name": "Local",
                             "provider_type": "openai_chat_completions",
                             "protocol": "openai-chat-completions",
                         }
@@ -268,7 +293,7 @@ def test_provider_config_requires_explicit_protocol_without_legacy_inference(tmp
                 "providers": {
                     "items": {
                         "local": {
-                            "provider_id": "local",
+                            "display_name": "Local",
                             "provider_type": "custom",
                         }
                     }
@@ -286,6 +311,7 @@ def test_provider_type_protocol_combinations_are_validated() -> None:
     with pytest.raises(ValueError, match="not supported by provider type"):
         ProviderConfig(
             provider_id="openai",
+            display_name="OpenAI",
             provider_type="openai",
             protocol="anthropic-messages",
         )
@@ -296,6 +322,7 @@ def test_provider_type_protocol_combinations_are_validated() -> None:
     (
         "model",
         "endpoint",
+        "endpoint_id",
         "supports_multimodal",
         "supports_reasoning",
         "supported_thinking_levels",
@@ -319,8 +346,8 @@ def test_endpoint_config_rejects_noncanonical_fields(field) -> None:
         {
             "providers": {
                 "items": {
-                    "local": {
-                        "provider_id": "local",
+                        "local": {
+                            "display_name": "Local",
                         "provider_type": "custom",
                         "protocol": "openai-chat-completions",
                         "default_model": "model",
@@ -353,6 +380,7 @@ def test_provider_config_resolves_endpoint_capabilities(tmp_path) -> None:
                     "default": "glm",
                     "items": {
                         "glm": {
+                            "display_name": "GLM",
                             "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "credential_ref": "env:OURO_TEST_KEY",
@@ -419,8 +447,8 @@ def test_provider_endpoint_writes_reasoning_profile_and_rejects_option_conflicts
     tmp_path,
 ) -> None:
     manager = ProviderConfigManager(tmp_path)
-    manager.create_provider(
-        "glm",
+    provider = manager.create_provider(
+        display_name="GLM",
         provider_type="custom",
         protocol="openai-chat-completions",
         api_key_env="OURO_TEST_KEY",
@@ -430,28 +458,33 @@ def test_provider_endpoint_writes_reasoning_profile_and_rejects_option_conflicts
         supported_efforts=("low", "high"),
         default_effort="high",
     )
-    endpoint = manager.upsert_endpoint(
-        "glm",
-        "reasoning",
+    endpoint = manager.create_endpoint(
+        provider.provider_id,
+        display_name="Reasoning",
         model_id="glm-reasoning",
         base_url="https://example.test/v1",
         reasoning=reasoning,
         make_default=True,
     )
 
-    assert endpoint.endpoint_id == "reasoning"
+    assert endpoint.endpoint_id.startswith("endpoint_")
     raw = json.loads((tmp_path / "config" / "providers.json").read_text(encoding="utf-8"))
-    provider_raw = raw["providers"]["items"]["glm"]
+    provider_raw = raw["providers"]["items"][provider.provider_id]
+    assert "provider_id" not in provider_raw
     assert "default_model" not in provider_raw
     assert "base_url" not in provider_raw
-    assert provider_raw["default_endpoint"] == "reasoning"
-    assert provider_raw["endpoints"]["reasoning"]["model_id"] == "glm-reasoning"
-    assert provider_raw["endpoints"]["reasoning"]["reasoning"] == reasoning.model_dump(mode="json")
+    assert provider_raw["default_endpoint"] == endpoint.endpoint_id
+    assert provider_raw["endpoints"][endpoint.endpoint_id]["model_id"] == "glm-reasoning"
+    assert "endpoint_id" not in provider_raw["endpoints"][endpoint.endpoint_id]
+    assert provider_raw["endpoints"][endpoint.endpoint_id]["reasoning"] == reasoning.model_dump(
+        mode="json"
+    )
 
     with pytest.raises(ConfigError, match="reasoning_effort"):
-        manager.upsert_endpoint(
-            "glm",
-            "reasoning",
+        manager.update_endpoint(
+            provider.provider_id,
+            endpoint.endpoint_id,
+            display_name=endpoint.display_name,
             request_options={"reasoning_effort": "low"},
         )
 
@@ -461,25 +494,27 @@ def test_provider_and_endpoint_mutations_translate_validation_errors(tmp_path) -
 
     with pytest.raises(ConfigError, match="timeout_seconds"):
         manager.create_provider(
-            "glm",
+            display_name="GLM",
             provider_type="custom",
             protocol="openai-chat-completions",
             timeout_seconds=-1,
         )
 
-    manager.create_provider("glm", provider_type="custom", protocol="openai-chat-completions")
+    provider = manager.create_provider(
+        display_name="GLM",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+    )
     with pytest.raises(ConfigError, match="model_id"):
-        manager.upsert_endpoint(
-            "glm",
-            "chat",
+        manager.create_endpoint(
+            provider.provider_id,
             model_id="   ",
             base_url="https://example.test/v1",
         )
 
     with pytest.raises(ConfigError, match="could not serialize"):
-        manager.upsert_endpoint(
-            "glm",
-            "chat",
+        manager.create_endpoint(
+            provider.provider_id,
             model_id="glm-chat",
             base_url="https://example.test/v1",
             request_options={"invalid": object()},
@@ -490,16 +525,18 @@ def test_incomplete_provider_does_not_replace_safe_default(tmp_path) -> None:
     manager = ProviderConfigManager(tmp_path)
 
     provider = manager.create_provider(
-        "glm", provider_type="custom", protocol="openai-chat-completions"
+        display_name="GLM",
+        provider_type="custom",
+        protocol="openai-chat-completions",
     )
 
     assert provider.default_endpoint is None
     assert manager.snapshot().default_provider_id == "faux"
     with pytest.raises(ConfigError, match="default provider"):
-        manager.update_provider("glm", make_default=True)
+        manager.update_provider(provider.provider_id, make_default=True)
 
-    with pytest.raises(ConfigError, match="built-in provider"):
-        manager.create_provider("faux", provider_type="faux")
+    with pytest.raises(ConfigError, match="built-in Faux provider"):
+        manager.create_provider(display_name="Faux", provider_type="faux")
 
 
 def test_runtime_resolution_distinguishes_configured_and_ad_hoc_providers(tmp_path) -> None:
@@ -531,6 +568,7 @@ def test_raw_provider_timeout_zero_is_rejected_and_enabled_is_typed(tmp_path) ->
                 "providers": {
                     "items": {
                         "glm": {
+                            "display_name": "GLM",
                             "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "enabled": "false",
@@ -556,28 +594,31 @@ def test_raw_provider_timeout_zero_is_rejected_and_enabled_is_typed(tmp_path) ->
 
 def test_provider_mutations_keep_default_provider_runnable(tmp_path) -> None:
     manager = ProviderConfigManager(tmp_path)
-    manager.create_provider(
-        "glm",
+    provider = manager.create_provider(
+        display_name="GLM",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://example.test/v1",
     )
-    manager.upsert_endpoint("glm", "default", model_id="glm-test", make_default=True)
-    manager.set_default_provider("glm")
-    assert manager.snapshot().default_provider_id == "glm"
+    default_endpoint = manager.create_endpoint(
+        provider.provider_id,
+        model_id="glm-test",
+        make_default=True,
+    )
+    manager.set_default_provider(provider.provider_id)
+    assert manager.snapshot().default_provider_id == provider.provider_id
 
-    manager.remove_endpoint("glm", "default")
+    manager.remove_endpoint(provider.provider_id, default_endpoint.endpoint_id)
     assert manager.snapshot().default_provider_id == "faux"
 
-    manager.upsert_endpoint(
-        "glm",
-        "chat",
+    manager.create_endpoint(
+        provider.provider_id,
         model_id="glm-test",
         base_url="https://example.test/v1",
         make_default=True,
     )
-    manager.set_default_provider("glm")
-    manager.update_provider("glm", enabled=False)
+    manager.set_default_provider(provider.provider_id)
+    manager.update_provider(provider.provider_id, enabled=False)
     assert manager.snapshot().default_provider_id == "faux"
 
 
@@ -655,6 +696,7 @@ def test_provider_level_base_url_and_api_path_inherited_by_endpoint(tmp_path) ->
                     "default": "glm",
                     "items": {
                         "glm": {
+                            "display_name": "GLM",
                             "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "credential_ref": "env:OURO_TEST_KEY",
@@ -692,6 +734,7 @@ def test_endpoint_explicit_base_url_and_api_path_override_provider_defaults(
                     "default": "glm",
                     "items": {
                         "glm": {
+                            "display_name": "GLM",
                             "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "credential_ref": "env:OURO_TEST_KEY",
@@ -731,6 +774,7 @@ def test_endpoint_api_path_falls_back_to_protocol_default(tmp_path) -> None:
                     "default": "glm",
                     "items": {
                         "glm": {
+                            "display_name": "GLM",
                             "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "credential_ref": "env:OURO_TEST_KEY",
@@ -766,6 +810,7 @@ def test_openai_chat_completions_endpoint_requires_base_url_at_provider_or_endpo
                     "default": "glm",
                     "items": {
                         "glm": {
+                            "display_name": "GLM",
                             "provider_type": "custom",
                             "protocol": "openai-chat-completions",
                             "credential_ref": "env:OURO_TEST_KEY",
@@ -791,7 +836,7 @@ def test_create_provider_with_base_url_but_no_model_keeps_empty_endpoints(
     manager = ProviderConfigManager(tmp_path)
 
     provider = manager.create_provider(
-        "glm",
+        display_name="GLM",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://example.test/v1",
@@ -804,59 +849,69 @@ def test_create_provider_with_base_url_but_no_model_keeps_empty_endpoints(
     assert manager.snapshot().default_provider_id == "faux"
 
     # An endpoint can be added later and inherits the provider-level defaults.
-    endpoint = manager.upsert_endpoint(
-        "glm",
-        "chat",
+    endpoint = manager.create_endpoint(
+        provider.provider_id,
         model_id="glm-chat",
         make_default=True,
     )
     assert endpoint.base_url is None
     assert endpoint.api_path is None
 
-    options = manager.resolve_runtime_options(ProviderRuntimeOptions(provider_id="glm"))
+    options = manager.resolve_runtime_options(
+        ProviderRuntimeOptions(provider_id=provider.provider_id)
+    )
     assert options.base_url == "https://example.test/v1"
     assert options.api_path == "/responses/chat"
 
 
 def test_removing_default_endpoint_clears_provider_default(tmp_path) -> None:
     manager = ProviderConfigManager(tmp_path)
-    manager.create_provider(
-        "glm",
+    provider = manager.create_provider(
+        display_name="GLM",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://chat.example.test/v1",
     )
-    manager.upsert_endpoint("glm", "chat", model_id="glm-chat", make_default=True)
-    manager.upsert_endpoint(
-        "glm",
-        "reasoning",
+    chat = manager.create_endpoint(
+        provider.provider_id,
+        model_id="glm-chat",
+        make_default=True,
+    )
+    reasoning = manager.create_endpoint(
+        provider.provider_id,
         model_id="glm-reasoning",
         base_url="https://reasoning.example.test/v1",
     )
 
-    manager.remove_endpoint("glm", "chat")
-    provider = manager.get_provider("glm")
-    assert provider is not None
+    manager.remove_endpoint(provider.provider_id, chat.endpoint_id)
+    restored = manager.get_provider(provider.provider_id)
+    assert restored is not None
 
-    assert provider.default_endpoint is None
-    assert {endpoint.endpoint_id for endpoint in provider.endpoints} == {"reasoning"}
+    assert restored.default_endpoint is None
+    assert {endpoint.endpoint_id for endpoint in restored.endpoints} == {
+        reasoning.endpoint_id
+    }
 
 
 def test_removing_default_endpoint_resets_global_default_when_no_endpoint_left(
     tmp_path,
 ) -> None:
     manager = ProviderConfigManager(tmp_path)
-    manager.create_provider(
-        "glm",
+    provider = manager.create_provider(
+        display_name="GLM",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://chat.example.test/v1",
     )
-    manager.upsert_endpoint("glm", "chat", model_id="glm-chat", make_default=True)
-    manager.set_default_provider("glm")
-    assert manager.snapshot().default_provider_id == "glm"
+    endpoint = manager.create_endpoint(
+        provider.provider_id,
+        model_id="glm-chat",
+        make_default=True,
+    )
+    manager.set_default_provider(provider.provider_id)
+    assert manager.snapshot().default_provider_id == provider.provider_id
 
-    manager.remove_endpoint("glm", "chat")
+    manager.remove_endpoint(provider.provider_id, endpoint.endpoint_id)
 
     assert manager.snapshot().default_provider_id == "faux"
 
@@ -868,43 +923,53 @@ def test_provider_retry_policy_round_trips_into_runtime_options(tmp_path) -> Non
         initial_backoff_seconds=0.25,
         max_backoff_seconds=2,
     )
-    manager.create_provider(
-        "glm",
+    provider = manager.create_provider(
+        display_name="GLM",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://chat.example.test/v1",
         retry_policy=policy,
     )
-    manager.upsert_endpoint("glm", "chat", model_id="glm-chat", make_default=True)
+    endpoint = manager.create_endpoint(
+        provider.provider_id,
+        model_id="glm-chat",
+        make_default=True,
+    )
 
-    restored = ProviderConfigManager(tmp_path).get_provider("glm")
+    restored = ProviderConfigManager(tmp_path).get_provider(provider.provider_id)
     options = manager.resolve_runtime_options(
-        ProviderRuntimeOptions(provider_id="glm", endpoint_id="chat")
+        ProviderRuntimeOptions(
+            provider_id=provider.provider_id,
+            endpoint_id=endpoint.endpoint_id,
+        )
     )
 
     assert restored is not None and restored.retry_policy == policy
     assert options.retry_policy == policy
     raw = json.loads((tmp_path / "config" / "providers.json").read_text(encoding="utf-8"))
-    assert raw["providers"]["items"]["glm"]["retry_policy"]["max_attempts"] == 3
+    assert raw["providers"]["items"][provider.provider_id]["retry_policy"]["max_attempts"] == 3
 
 
 def test_provider_retry_opt_out_survives_round_trip(tmp_path) -> None:
     # max_attempts=1 disables retries; it diverges from the default policy and
     # must be persisted, otherwise a reload would silently re-enable retries.
     manager = ProviderConfigManager(tmp_path)
-    manager.create_provider(
-        "glm",
+    provider = manager.create_provider(
+        display_name="GLM",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://chat.example.test/v1",
         retry_policy=ProviderRetryPolicy(max_attempts=1),
     )
-    manager.upsert_endpoint("glm", "chat", model_id="glm-chat", make_default=True)
+    manager.create_endpoint(provider.provider_id, model_id="glm-chat", make_default=True)
 
     raw = json.loads((tmp_path / "config" / "providers.json").read_text(encoding="utf-8"))
-    assert raw["providers"]["items"]["glm"]["retry_policy"]["max_attempts"] == 1
+    assert (
+        raw["providers"]["items"][provider.provider_id]["retry_policy"]["max_attempts"]
+        == 1
+    )
 
-    restored = ProviderConfigManager(tmp_path).get_provider("glm")
+    restored = ProviderConfigManager(tmp_path).get_provider(provider.provider_id)
     assert restored is not None and restored.retry_policy.max_attempts == 1
 
 
@@ -916,7 +981,7 @@ def test_invalid_provider_retry_policy_is_rejected_without_rewriting_config(tmp_
             "default": "faux",
             "items": {
                 "glm": {
-                    "provider_id": "glm",
+                    "display_name": "GLM",
                     "provider_type": "custom",
                     "protocol": "openai-chat-completions",
                     "base_url": "https://example.test/v1",

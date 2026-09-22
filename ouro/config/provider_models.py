@@ -10,7 +10,7 @@ from ouro.config.credentials import CredentialRef
 from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.config.provider_headers import ProviderHeaderValue, parse_provider_headers
 from ouro.config.reasoning import EndpointReasoningConfig, ReasoningProfileConfig
-from ouro.core.base import Metadata, MetadataField, OuroModel
+from ouro.core.base import Metadata, MetadataField, OuroModel, new_id
 from ouro.core.provider import ProviderRetryPolicy
 from ouro.core.reasoning import ReasoningContinuation, ReasoningRequest
 
@@ -405,7 +405,8 @@ class ProviderConfig(OuroModel):
 
     model_config = ConfigDict(hide_input_in_errors=True)
 
-    provider_id: str
+    provider_id: str = Field(default_factory=lambda: new_id("provider"))
+    display_name: str
     provider_type: ProviderType
     protocol: ProviderProtocol
     auth_driver: str = "static"
@@ -423,12 +424,12 @@ class ProviderConfig(OuroModel):
 
     _validate_headers = field_validator("headers", mode="before")(parse_provider_headers)
 
-    @field_validator("provider_id")
+    @field_validator("provider_id", "display_name")
     @classmethod
     def _require_provider_id(cls, value: str) -> str:
         normalized = value.strip()
         if not normalized:
-            raise ValueError("provider_id must not be empty")
+            raise ValueError("must not be empty")
         return normalized
 
     @field_validator("base_url")
@@ -560,6 +561,7 @@ def normalize_provider_config(provider: ProviderConfig) -> ProviderConfig:
     if provider.protocol == "faux" and not provider.endpoints:
         endpoint = ProviderEndpointConfig(
             endpoint_id="faux",
+            display_name="Faux",
             model_id="faux",
             supports_tools=True,
         )
@@ -577,11 +579,13 @@ def normalize_provider_config(provider: ProviderConfig) -> ProviderConfig:
 def builtin_faux_provider() -> ProviderConfig:
     endpoint = ProviderEndpointConfig(
         endpoint_id="faux",
+        display_name="Faux",
         model_id="faux",
         supports_tools=True,
     )
     return ProviderConfig(
         provider_id=BUILTIN_FAUX_PROVIDER_ID,
+        display_name="Faux",
         provider_type="faux",
         protocol="faux",
         default_endpoint=endpoint.endpoint_id,

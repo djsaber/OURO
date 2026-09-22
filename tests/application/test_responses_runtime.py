@@ -45,17 +45,17 @@ async def responses_runtime(tmp_path, monkeypatch, request):
         ),
     )
     configs = ProviderConfigManager(tmp_path)
-    configs.create_provider(
-        "subscription",
+    provider = configs.create_provider(
+        display_name="Subscription",
         provider_type="custom",
         protocol="openai-responses",
         auth_driver="fixture-browser",
         base_url="https://fixture.invalid/api",
     )
+    endpoint_ids = {}
     for endpoint in ("chat", "summary"):
-        configs.upsert_endpoint(
-            "subscription",
-            endpoint,
+        configured = configs.create_endpoint(
+            provider.provider_id,
             model_id=endpoint,
             supports_streaming=streaming,
             supports_tools=True,
@@ -69,9 +69,10 @@ async def responses_runtime(tmp_path, monkeypatch, request):
                 continuation="opaque",
             ),
         )
-    configs.set_default_route("subscription", "chat")
+        endpoint_ids[endpoint] = configured.endpoint_id
+    configs.set_default_route(provider.provider_id, endpoint_ids["chat"])
     CompactionConfigManager(tmp_path).update_model(
-        provider_id="subscription", endpoint_id="summary"
+        provider_id=provider.provider_id, endpoint_id=endpoint_ids["summary"]
     )
     replies = deque()
     requests = []
@@ -220,7 +221,7 @@ async def test_tool_loop_persists_and_replays_after_restart_and_refresh(response
         assert output_items(requests[-1][0]) == [
             item for m in assistants for item in m.provider_continuation.blocks[0]["items"]
         ]
-        await app.provider_auth.logout("subscription")
+        await app.provider_auth.logout(app.runtime.adapter.model.provider_id)
         count = len(requests)
         failed = await app.runtime.run("After logout.", session_id=session_id)
         assert failed.run.status == "failed"

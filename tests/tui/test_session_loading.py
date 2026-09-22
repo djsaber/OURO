@@ -92,7 +92,7 @@ async def test_tui_restores_history_and_observation_without_the_old_model(
                 observation.subscription.close()
 
             await app._select_model("faux/default")
-            assert app._active_model == "default"
+            assert app._active_model == "default-model"
             assert app._reasoning_state is not None
             assert application.runtime.sessions.open(session_id).session.current_model == (
                 "faux/default"
@@ -112,30 +112,37 @@ async def test_configured_route_changes_do_not_block_session_loading(
         result = await controller.submit("Saved conversation")
         runtime = application.runtime
         original_route = result.session.current_model
-        configuration.add_provider(
-            "remote",
+        created = configuration.add_provider(
+            display_name="Remote",
             provider_type="custom",
             protocol="openai-chat-completions",
             base_url="https://example.invalid/v1",
             api_key="test-key",
         )
-        configuration.save_endpoint("remote", "chat", model="test-model")
-        await controller.select_model("remote/chat")
+        provider_id = created.changed_provider_id
+        assert provider_id is not None
+        endpoints = configuration.add_endpoint(
+            provider_id, display_name="Chat", model="test-model"
+        )
+        endpoint_id = endpoints.changed_endpoint_id
+        assert endpoint_id is not None
+        route = f"{provider_id}/{endpoint_id}"
+        await controller.select_model(route)
         if change == "endpoint_removed":
-            configuration.remove_endpoint("remote", "chat")
+            configuration.remove_endpoint(provider_id, endpoint_id)
         elif change == "provider_removed":
-            configuration.remove_provider("remote")
+            configuration.remove_provider(provider_id)
         else:
-            configuration.update_provider("remote", enabled=False)
+            configuration.update_provider(provider_id, enabled=False)
 
         loaded = await controller.load_session(result.session.session_id)
         assert loaded.messages
-        assert loaded.detail.session.current_model == "remote/chat"
+        assert loaded.detail.session.current_model == route
         assert loaded.effective_context_metrics == runtime.sessions.effective_context_metrics(
             result.session.session_id
         )
         with pytest.raises(ConfigError):
-            await controller.select_model("remote/chat")
+            await controller.select_model(route)
         assert original_route is not None
         await controller.select_model(original_route)
         continued = await controller.submit("Continue after configuration change")

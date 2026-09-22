@@ -110,7 +110,8 @@ def list_provider_configs(
         enabled = "enabled" if provider["enabled"] else "disabled"
         endpoint = provider["default_endpoint"] or "-"
         lines.append(
-            f"{marker} {provider['provider_id']} type={provider['provider_type']} "
+            f"{marker} {provider['display_name']} ({provider['provider_id']}) "
+            f"type={provider['provider_type']} "
             f"protocol={provider['protocol']} "
             f"endpoint={endpoint} endpoints={provider['endpoint_count']} {enabled}"
         )
@@ -230,7 +231,7 @@ def show_provider_config(
     print(
         "\n".join(
             [
-                f"Provider: {public['provider_id']}",
+                f"Provider: {public['display_name']} ({public['provider_id']})",
                 f"Type: {public['provider_type']}",
                 f"Protocol: {public['protocol']}",
                 f"Credential: {public['credential']}",
@@ -251,12 +252,12 @@ def show_provider_config(
 
 def mutate_provider_config(
     operation: Literal["add", "update", "replace"],
-    provider_id: str,
+    provider_id: str | None,
     *,
     home: str | Path | None = None,
+    display_name: str | None = None,
     provider_type: ProviderType | None = None,
     protocol: ProviderProtocol | None = None,
-    endpoint_id: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
     api_path: str | None = None,
@@ -276,9 +277,11 @@ def mutate_provider_config(
     try:
         facade = ConfigurationFacade(home)
         if operation == "update":
+            if provider_id is None:
+                raise AssertionError("provider id is required for update")
             catalog = facade.update_provider(
                 provider_id,
-                endpoint_id=endpoint_id,
+                display_name=display_name,
                 model=model,
                 base_url=base_url,
                 api_path=api_path,
@@ -299,11 +302,12 @@ def mutate_provider_config(
                 raise AssertionError(f"provider type is required for {operation}")
             configured_enabled = True if enabled is None else enabled
             if operation == "add":
+                if display_name is None:
+                    raise AssertionError("provider display name is required for add")
                 catalog = facade.add_provider(
-                    provider_id,
+                    display_name=display_name,
                     provider_type=provider_type,
                     protocol=protocol,
-                    endpoint_id=endpoint_id,
                     model=model,
                     base_url=base_url,
                     api_path=api_path,
@@ -320,11 +324,14 @@ def mutate_provider_config(
                     make_default=make_default,
                 )
             else:
+                if provider_id is None:
+                    raise AssertionError("provider id is required for replace")
+                replacement_name = display_name or facade.provider(provider_id).display_name
                 catalog = facade.replace_provider(
                     provider_id,
+                    display_name=replacement_name,
                     provider_type=provider_type,
                     protocol=protocol,
-                    endpoint_id=endpoint_id,
                     model=model,
                     base_url=base_url,
                     api_path=api_path,
@@ -340,7 +347,11 @@ def mutate_provider_config(
                     enabled=configured_enabled,
                     make_default=make_default,
                 )
-        provider = next(item for item in catalog.providers if item.provider_id == provider_id)
+        changed_provider_id = catalog.changed_provider_id
+        assert changed_provider_id is not None
+        provider = next(
+            item for item in catalog.providers if item.provider_id == changed_provider_id
+        )
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -367,7 +378,9 @@ def mutate_provider_config(
         return 0
     suffix = " and set as default" if public["default"] else ""
     action = {"add": "added", "update": "updated", "replace": "replaced"}[operation]
-    print(f"Provider {action}: {provider.provider_id}{suffix}")
+    print(
+        f"Provider {action}: {provider.display_name} ({provider.provider_id}){suffix}"
+    )
     if provider.notice:
         print(provider.notice)
     if catalog.template_update is not None:
@@ -462,11 +475,15 @@ def list_provider_endpoints(
         )
         return 0
 
-    lines = [f"Endpoints for {catalog.provider_id} (default: {catalog.default_endpoint or '-'}):"]
+    lines = [
+        f"Endpoints for {catalog.provider_display_name} ({catalog.provider_id}) "
+        f"(default: {catalog.default_endpoint or '-'}):"
+    ]
     for endpoint in endpoints:
         marker = "*" if endpoint["default"] else "-"
         lines.append(
-            f"{marker} {endpoint['endpoint_id']} model={endpoint['model_id']} "
+            f"{marker} {endpoint.get('display_name') or endpoint['model_id']} "
+            f"({endpoint['endpoint_id']}) model={endpoint['model_id']} "
             f"context={endpoint['context_window']}"
         )
     print("\n".join(lines))
@@ -510,11 +527,77 @@ def show_provider_endpoint(
     return 0
 
 
-def set_provider_endpoint(
+def create_provider_endpoint(
+    provider_id: str,
+    *,
+    home: str | Path | None = None,
+    display_name: str | None = None,
+    model: str,
+    base_url: str | None = None,
+    api_path: str | None = None,
+    temperature: float | None = None,
+    context_window: int | None = None,
+    max_output_tokens: int | None = None,
+    supports_tools: bool | None = None,
+    supports_vision: bool | None = None,
+    supports_streaming: bool | None = None,
+    supports_structured_output: bool | None = None,
+    reasoning: EndpointReasoningConfig | None = None,
+    request_options: Mapping[str, Any] | None = None,
+    make_default: bool = False,
+    json_mode: bool = False,
+) -> int:
+    try:
+        catalog = ConfigurationFacade(home).add_endpoint(
+            provider_id,
+            display_name=display_name,
+            model=model,
+            base_url=base_url,
+            api_path=api_path,
+            temperature=temperature,
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            supports_tools=supports_tools,
+            supports_vision=supports_vision,
+            supports_streaming=supports_streaming,
+            supports_structured_output=supports_structured_output,
+            reasoning=reasoning,
+            request_options=request_options,
+            make_default=make_default,
+        )
+        endpoint_id = catalog.changed_endpoint_id
+        assert endpoint_id is not None
+        endpoint = next(item for item in catalog.endpoints if item.endpoint_id == endpoint_id)
+    except OuroError as exc:
+        _print_provider_error(exc, json_mode=json_mode)
+        return error_exit_code(exc)
+
+    public = _endpoint_to_public(endpoint)
+    if json_mode:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "provider_id": provider_id,
+                    "endpoint": public,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    print(
+        f"Endpoint added: {endpoint.display_name or endpoint.model_id} "
+        f"({provider_id}/{endpoint_id})"
+    )
+    return 0
+
+
+def update_provider_endpoint(
     provider_id: str,
     endpoint_id: str,
     *,
     home: str | Path | None = None,
+    display_name: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
     api_path: str | None = None,
@@ -531,9 +614,12 @@ def set_provider_endpoint(
     json_mode: bool = False,
 ) -> int:
     try:
-        catalog = ConfigurationFacade(home).save_endpoint(
+        facade = ConfigurationFacade(home)
+        current = facade.endpoint(provider_id, endpoint_id)
+        catalog = facade.update_endpoint(
             provider_id,
             endpoint_id,
+            display_name=(display_name if display_name is not None else current.display_name),
             model=model,
             base_url=base_url,
             api_path=api_path,
@@ -566,7 +652,10 @@ def set_provider_endpoint(
             )
         )
         return 0
-    print(f"Endpoint saved: {provider_id}/{endpoint_id}")
+    print(
+        f"Endpoint updated: {endpoint.display_name or endpoint.model_id} "
+        f"({provider_id}/{endpoint_id})"
+    )
     return 0
 
 
@@ -637,6 +726,7 @@ def remove_provider_endpoint(
 def _provider_to_public(provider: ProviderView) -> dict[str, Any]:
     return {
         "provider_id": provider.provider_id,
+        "display_name": provider.display_name,
         "provider_type": provider.provider_type,
         "protocol": provider.protocol,
         "auth_driver": provider.auth_driver,

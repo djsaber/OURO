@@ -49,7 +49,6 @@ class ProviderSetupProfile:
 
     provider_type: ProviderType
     protocol: ProviderProtocol
-    default_provider_id: str
     display_name: str
     description: str
     base_url: str
@@ -65,7 +64,6 @@ class ProviderSetupProfile:
         return cls(
             provider_type=template.provider_type,
             protocol=template.protocol,
-            default_provider_id=template.provider_id,
             display_name=template.display_name,
             description=template.description,
             base_url=template.base_url,
@@ -82,7 +80,6 @@ CUSTOM_PROVIDER_PROFILES = tuple(
     ProviderSetupProfile(
         provider_type="custom",
         protocol=protocol,
-        default_provider_id=protocol,
         display_name=display_name,
         description=f"Connect a service that implements {display_name}.",
         base_url="",
@@ -120,8 +117,8 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
         self._values = {
             "provider-api-key": "",
             "provider-api-key-env": _credential_environment(profile, existing),
-            "provider-id": (
-                existing.provider_id if existing is not None else profile.default_provider_id
+            "provider-display-name": (
+                existing.display_name if existing is not None else profile.display_name
             ),
             "provider-base-url": (existing.base_url if existing is not None else profile.base_url)
             or "",
@@ -170,13 +167,13 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
         self.dismiss(draft)  # type: ignore[arg-type]
 
     def _draft(self) -> TuiProviderConfiguration:
-        provider_id = self._values["provider-id"]
+        display_name = self._values["provider-display-name"]
         base_url = self._values["provider-base-url"]
         api_path = self._values["provider-api-path"]
         api_key = self._values["provider-api-key"]
         api_key_env = self._values["provider-api-key-env"]
-        if not provider_id:
-            raise ValueError("Provider ID is required")
+        if not display_name:
+            raise ValueError("Display name is required")
         if not base_url:
             raise ValueError("Base URL is required")
         if api_key and api_key_env:
@@ -194,7 +191,7 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
         if headers is not None:
             parse_provider_headers(headers)
         return TuiProviderConfiguration(
-            provider_id=provider_id,
+            display_name=display_name,
             provider_type=self._profile.provider_type,
             protocol=self._protocol,
             base_url=base_url,
@@ -270,12 +267,11 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
                 self._existing.notice if self._existing is not None else self._profile.notice
             ),
             Choice(
-                "provider-id",
-                "Provider ID",
-                trailing=self._values["provider-id"] or "Required",
-                group="ADVANCED",
-                disabled=self._existing is not None,
-                edit_value=self._values["provider-id"],
+                "provider-display-name",
+                "Display name",
+                trailing=self._values["provider-display-name"] or "Required",
+                group="DETAILS",
+                edit_value=self._values["provider-display-name"],
             ),
             *(
                 (
@@ -367,7 +363,9 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         request_options = _json_text(existing.request_options if existing is not None else {})
         reasoning = existing.reasoning if existing is not None else EndpointReasoningConfig()
         self._values = {
-            "endpoint-id": existing.endpoint_id if existing is not None else "",
+            "endpoint-display-name": (
+                existing.display_name if existing is not None and existing.display_name else ""
+            ),
             "endpoint-model-id": existing.model_id if existing is not None else "",
             "endpoint-context-window": str(
                 existing.context_window if existing is not None else 1_000_000
@@ -493,10 +491,8 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         self.dismiss(draft)  # type: ignore[arg-type]
 
     def _draft(self) -> TuiEndpointConfiguration:
-        endpoint_id = self._values["endpoint-id"]
+        display_name = self._values["endpoint-display-name"]
         model_id = self._values["endpoint-model-id"]
-        if not endpoint_id:
-            raise ValueError("Endpoint ID is required")
         if not model_id:
             raise ValueError("Provider model ID is required")
         context_window = _positive_int(
@@ -525,8 +521,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         except ValueError as exc:
             raise ValueError(f"Reasoning config is incompatible: {exc}") from exc
         return TuiEndpointConfiguration(
-            provider_id=self._provider.provider_id,
-            endpoint_id=endpoint_id,
+            display_name=display_name or None,
             model_id=model_id,
             context_window=context_window,
             max_output_tokens=max_output_tokens,
@@ -563,12 +558,11 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         return (
             *_service_notice_choices(self._provider.notice),
             Choice(
-                "endpoint-id",
-                "Endpoint ID",
-                trailing=self._values["endpoint-id"] or "Required",
+                "endpoint-display-name",
+                "Display name",
+                trailing=self._values["endpoint-display-name"] or "Optional",
                 group="DETAILS",
-                disabled=self._existing is not None,
-                edit_value=self._values["endpoint-id"],
+                edit_value=self._values["endpoint-display-name"],
             ),
             Choice(
                 "endpoint-model-id",

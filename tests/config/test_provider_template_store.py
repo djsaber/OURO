@@ -45,7 +45,6 @@ def _custom_entry() -> dict:
         "template_id": "mygw",
         "display_name": "My Gateway",
         "description": "Custom gateway template.",
-        "provider_id": "mygw",
         "provider_type": "custom",
         "protocol": "openai-chat-completions",
         "credential_env": "MYGW_API_KEY",

@@ -10,12 +10,13 @@ Provider 配置分别表达用户实例、产品配置、线协议和认证选�
 
 | 字段 | 语义 | 示例 |
 |---|---|---|
-| `provider_id` | 用户拥有的配置实例 id，也是模型路由第一段 | `work-kimi` |
+| `provider_id` | 框架生成的内部实例身份，也是模型路由第一段 | `provider_<generated>` |
+| `display_name` | 用户配置的必填展示名 | `Work Kimi` |
 | `provider_type` | 产品层供应商档案或通用配置入口 | `kimi`、`custom` |
 | `protocol` | adapter 使用的已注册线协议 | `openai-chat-completions`、`openai-responses`、`anthropic-messages` |
 | `auth_driver` | 认证方式的稳定标识；省略为 static | `static` |
 
-`provider_id` 不参与协议推断；相同厂商可以有多个用户实例，多个厂商也可以复用同一个协议 adapter。
+`provider_id` 不参与协议推断且不接受用户配置；相同厂商或相同展示名可以有多个实例，多个厂商也可以复用同一个协议 adapter。
 Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它只在选定协议内声明该模型的真实控制能力和
 原生参数映射。
 
@@ -49,7 +50,7 @@ continuation：OpenAI Chat Completions 支持 `none/text`，Responses 与 Anthro
 
 ```json
 {
-  "provider_id": "work-kimi",
+  "display_name": "Work Kimi",
   "provider_type": "kimi",
   "protocol": "openai-chat-completions",
   "credential_ref": "env:MOONSHOT_API_KEY",
@@ -83,7 +84,7 @@ continuation：OpenAI Chat Completions 支持 `none/text`，Responses 与 Anthro
 
 编解码器及流式处理模块沿用协议前缀，例如 `openai_chat_completions_codec.py`、`openai_responses_stream.py`。
 跨模块的协议专用 reasoning 构造函数和预设同样明确 API 名称；模块内的局部变量可使用 message、usage 等简洁名称。
-HTTP 路径统一称为 `api_path`，Endpoint 表示模型路由。`provider_id` 始终表示实例身份，不随类型或协议名称推断、重写。
+HTTP 路径统一称为 `api_path`，Endpoint 表示模型路由。`provider_id` 始终表示框架生成的实例身份，不随类型或协议名称推断、重写。
 协议无关的 `ProviderCompletion` 表示调用结束原因，与 Chat Completions API 无关。
 
 ## 创建、更新与替换
@@ -99,7 +100,7 @@ API 路径跟随新协议默认值，用户自定义路径保持不变。协议�
 Provider mutation 使用三个明确操作：
 
 - `provider add`：唯一创建入口；根据 type 为集成厂商原子装载模板，或为 `custom` 类型创建空 Provider；
-  `provider_id` 已存在时失败并提示 update/replace，不写入任何字段；
+  接收必填展示名并返回框架生成的 `provider_id`；
 - `provider update`：只更新现有 Provider；模板来源类型使用持久化旧模板基线做三方合并，只更新未被用户
   修改的模板值，保留未知、修改或主动删除的 Endpoint，并报告同 id 冲突；`custom` 类型只修改连接、凭据、
   timeout、retry 和 enabled；
@@ -108,7 +109,7 @@ Provider mutation 使用三个明确操作：
 
 模板更新优先根据持久化模板绑定定位同来源模板；旧配置首次更新才根据现有 `provider_type` 安全接管。持久化的
 type/protocol 组合仍必须合法。所有冲突与校验在一次写盘前完成；失败时配置保持不变。交互 Host 遇到 Provider
-同 id 创建冲突时应让用户选择新 id、更新或替换，不能自行改变操作语义。
+更新与替换以已生成 id 选择目标；Host 不提供编辑内部身份的入口。
 
 ## 非目标
 
@@ -122,5 +123,5 @@ type/protocol 组合仍必须合法。所有冲突与校验在一次写盘前完
 - 持久化配置缺失协议会失败，不从旧类型或 id 推导；
 - 产品类型与协议的不合法组合会失败；
 - runtime options 携带认证引用和产品服务规则标识，adapter registry 仍只按协议分派；
-- 相同 `provider_id` 的创建不会静默修改既有配置；
+- 相同展示名的多次创建会生成不同内部身份且不会静默修改既有配置；
 - 更新与替换具有不同、原子且经过 CLI 集成测试保护的状态变化。

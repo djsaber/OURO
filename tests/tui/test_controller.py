@@ -484,22 +484,26 @@ async def test_controller_configures_provider_endpoint_through_application_facad
     tmp_path: Path,
 ) -> None:
     configuration = ConfigurationFacade(tmp_path)
-    configuration.add_provider(
-        "custom",
+    created = configuration.add_provider(
+        display_name="Custom",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://example.invalid/v1",
         api_key="test-key",
     )
-    configuration.save_endpoint(
-        "custom",
-        "base",
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
+    base_catalog = configuration.add_endpoint(
+        provider_id,
+        display_name="Base",
         model="base-model",
         context_window=100_000,
         max_output_tokens=8_000,
         make_default=True,
     )
-    configuration.use_provider("custom")
+    base_id = base_catalog.changed_endpoint_id
+    assert base_id is not None
+    configuration.use_provider(provider_id)
     controller = TuiController(
         lambda _event: None,
         lambda _status: None,
@@ -508,8 +512,7 @@ async def test_controller_configures_provider_endpoint_through_application_facad
     )
     await controller.start()
     draft = TuiEndpointConfiguration(
-        provider_id="custom",
-        endpoint_id="new",
+        display_name="New",
         model_id="new-model",
         context_window=200_000,
         max_output_tokens=16_000,
@@ -520,10 +523,10 @@ async def test_controller_configures_provider_endpoint_through_application_facad
     )
 
     try:
-        endpoint = await controller.add_endpoint(draft)
-        saved = configuration.endpoint("custom", "new")
+        endpoint = await controller.add_endpoint(provider_id, draft)
+        saved = configuration.endpoint(provider_id, endpoint.endpoint_id)
 
-        assert endpoint.endpoint_id == "new"
+        assert endpoint.endpoint_id.startswith("endpoint_")
         assert saved.model_id == "new-model"
         assert saved.context_window == 200_000
         assert saved.max_output_tokens == 16_000
@@ -531,11 +534,15 @@ async def test_controller_configures_provider_endpoint_through_application_facad
         assert saved.supports_vision is True
         assert saved.reasoning == reasoning_preset("thinking-toggle")
         assert saved.request_options == {"seed": 7}
-        assert "custom/new" in {model.key for model in await controller.models()}
-        with pytest.raises(ConfigError, match="already exists"):
-            await controller.add_endpoint(draft)
+        assert f"{provider_id}/{endpoint.endpoint_id}" in {
+            model.key for model in await controller.models()
+        }
+        duplicate = await controller.add_endpoint(provider_id, draft)
+        assert duplicate.endpoint_id != endpoint.endpoint_id
 
         changed = await controller.update_endpoint(
+            provider_id,
+            endpoint.endpoint_id,
             TuiEndpointConfiguration(
                 **{
                     **draft.__dict__,
@@ -550,10 +557,11 @@ async def test_controller_configures_provider_endpoint_through_application_facad
         assert changed.supports_structured_output is True
         assert changed.reasoning == reasoning_preset("none")
         assert changed.request_options == {"seed": 9}
-        assert (await controller.use_endpoint("custom", "new")).default is True
-        await controller.remove_endpoint("custom", "new")
-        endpoints = (await controller.provider_endpoints("custom")).endpoints
-        assert {item.endpoint_id for item in endpoints} == {"base"}
+        assert (await controller.use_endpoint(provider_id, endpoint.endpoint_id)).default is True
+        await controller.remove_endpoint(provider_id, endpoint.endpoint_id)
+        await controller.remove_endpoint(provider_id, duplicate.endpoint_id)
+        endpoints = (await controller.provider_endpoints(provider_id)).endpoints
+        assert {item.endpoint_id for item in endpoints} == {base_id}
     finally:
         await controller.close()
 
@@ -577,7 +585,7 @@ async def test_controller_configures_preset_and_custom_providers(
 
         preset = await controller.add_provider(
             TuiProviderConfiguration(
-                provider_id="primary",
+                display_name="Primary",
                 provider_type="openai",
                 base_url=None,
                 api_path=None,
@@ -592,16 +600,19 @@ async def test_controller_configures_preset_and_custom_providers(
         assert preset.endpoint_count == 5
         assert preset.credential.reference == "env:PRIVATE_OPENAI_KEY"
         assert preset.provider_options == {"service_tier": "flex"}
+        primary_id = preset.provider_id
 
-        target = next(item for item in preset.endpoints if item.endpoint_id == "gpt-5.6-sol")
+        target = next(item for item in preset.endpoints if item.model_id == "gpt-5.6-sol")
+        terra = next(item for item in preset.endpoints if item.model_id == "gpt-5.6-terra")
         untouched_reasoning = configuration.endpoint(
-            "primary",
-            "gpt-5.6-terra",
+            primary_id,
+            terra.endpoint_id,
         ).reasoning
         overridden = await controller.update_endpoint(
+            primary_id,
+            target.endpoint_id,
             TuiEndpointConfiguration(
-                provider_id="primary",
-                endpoint_id=target.endpoint_id,
+                display_name=target.display_name,
                 model_id=target.model_id,
                 context_window=target.context_window,
                 max_output_tokens=target.max_output_tokens,
@@ -615,15 +626,15 @@ async def test_controller_configures_preset_and_custom_providers(
         assert overridden.reasoning == reasoning_preset("none")
         assert (
             configuration.endpoint(
-                "primary",
-                "gpt-5.6-terra",
+                primary_id,
+                terra.endpoint_id,
             ).reasoning
             == untouched_reasoning
         )
 
         custom = await controller.add_provider(
             TuiProviderConfiguration(
-                provider_id="gateway",
+                display_name="Gateway",
                 provider_type="custom",
                 protocol="anthropic-messages",
                 base_url="https://gateway.example.invalid",
@@ -637,12 +648,13 @@ async def test_controller_configures_preset_and_custom_providers(
         assert custom.endpoint_count == 0
         assert custom.protocol == "anthropic-messages"
         assert custom.provider_options == {"tool_choice": "none", "top_p": 0.8}
+        gateway_id = custom.provider_id
 
-        disabled = await controller.set_provider_enabled("gateway", enabled=False)
+        disabled = await controller.set_provider_enabled(gateway_id, enabled=False)
         assert disabled.enabled is False
-        await controller.remove_provider("gateway")
+        await controller.remove_provider(gateway_id)
         assert {item.provider_id for item in (await controller.provider_catalog()).providers} == {
-            "primary"
+            primary_id
         }
     finally:
         await controller.close()

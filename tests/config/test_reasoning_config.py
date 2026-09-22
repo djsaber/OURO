@@ -216,6 +216,7 @@ def test_provider_rejects_reasoning_continuation_unsupported_by_protocol(
     with pytest.raises(ValueError, match="is not supported by protocol"):
         ProviderConfig(
             provider_id="custom",
+            display_name="Custom",
             provider_type="custom",
             protocol=protocol,
             base_url="https://example.test",

@@ -43,20 +43,22 @@ def managed_runtime(tmp_path, monkeypatch):
         ProviderServicePolicy("fixture", (RequestTarget("https://fixture.invalid", "/api"),)),
     )
     configs = ProviderConfigManager(tmp_path)
-    configs.create_provider(
-        "subscription",
+    provider = configs.create_provider(
+        display_name="Subscription",
         provider_type="custom",
         protocol="openai-chat-completions",
         auth_driver="fixture-browser",
         base_url="https://fixture.invalid/api",
     )
+    endpoint_ids = {}
     for endpoint in ("chat", "summary", "child"):
-        configs.upsert_endpoint(
-            "subscription", endpoint, model_id=endpoint, supports_streaming=False
+        configured = configs.create_endpoint(
+            provider.provider_id, model_id=endpoint, supports_streaming=False
         )
-    configs.set_default_route("subscription", "chat")
+        endpoint_ids[endpoint] = configured.endpoint_id
+    configs.set_default_route(provider.provider_id, endpoint_ids["chat"])
     CompactionConfigManager(tmp_path).update_model(
-        provider_id="subscription", endpoint_id="summary"
+        provider_id=provider.provider_id, endpoint_id=endpoint_ids["summary"]
     )
     requests = []
 
@@ -79,9 +81,30 @@ def managed_runtime(tmp_path, monkeypatch):
 
 
 async def login(auth):
-    method = (await auth.methods("subscription"))[0]
-    started = await auth.begin("subscription", method.method_id)
+    provider_id = _provider_id(auth._config)
+    method = (await auth.methods(provider_id))[0]
+    started = await auth.begin(provider_id, method.method_id)
     assert (await auth.wait(started.operation_id)).state == "succeeded"
+
+
+def _provider_id(configs: ProviderConfigManager) -> str:
+    providers = configs.snapshot(include_builtin=False).providers
+    assert len(providers) == 1
+    return providers[0].provider_id
+
+
+def _endpoint_id(configs: ProviderConfigManager, model_id: str) -> str:
+    provider = configs.get_provider(_provider_id(configs))
+    assert provider is not None
+    return next(
+        endpoint.endpoint_id
+        for endpoint in provider.endpoints
+        if endpoint.model_id == model_id
+    )
+
+
+def _model_key(configs: ProviderConfigManager, model_id: str) -> str:
+    return f"{_provider_id(configs)}/{_endpoint_id(configs, model_id)}"
 
 
 async def test_unlogged_default_starts_and_shared_login_serves_all_model_consumers(
@@ -93,7 +116,8 @@ async def test_unlogged_default_starts_and_shared_login_serves_all_model_consume
     assert auth is app.runtime.provider_auth
     assert not (tmp_path / "credentials").exists()
     async with app:
-        assert (await auth.status("subscription")).state == "missing"
+        provider_id = _provider_id(configs)
+        assert (await auth.status(provider_id)).state == "missing"
         check = await app.runtime.adapter.provider.check_connection(app.runtime.adapter.model)
         assert not check.ok and check.error_code == "authentication_required"
         assert requests == []
@@ -103,7 +127,7 @@ async def test_unlogged_default_starts_and_shared_login_serves_all_model_consume
         strategy = app.runtime.compaction_strategies.get(LLMSummaryCompactionStrategy.strategy_id)
         summary = strategy._adapter_routes(result.session.session_id)[0].adapter
         assert (await summary.provider.check_connection(summary.model)).ok
-        child = SessionRecord(namespace="agent", current_model="subscription/child")
+        child = SessionRecord(namespace="agent", current_model=_model_key(configs, "child"))
         app.runtime.store.create_session(child)
         _, child_adapter = app.runtime._resolve_session_adapter(child)
         assert (await child_adapter.provider.check_connection(child_adapter.model)).ok
@@ -111,15 +135,15 @@ async def test_unlogged_default_starts_and_shared_login_serves_all_model_consume
         assert {request["headers"]["authorization"] for request in requests} == {
             "Bearer fixture-access"
         }
-        main = app.runtime.models.adapter_for("subscription/chat")
-        await auth.logout("subscription")
+        main = app.runtime.models.adapter_for(_model_key(configs, "chat"))
+        await auth.logout(provider_id)
         for adapter in (main, summary, child_adapter):
             assert (
                 await adapter.provider.check_connection(adapter.model)
             ).error_code == "authentication_required"
         assert len(requests) == 3
     with pytest.raises(AuthError, match="closed"):
-        await auth.begin("subscription", "external-browser")
+        await auth.begin(_provider_id(configs), "external-browser")
 
 
 async def test_cached_adapters_observe_new_material_and_binding_changes(tmp_path, managed_runtime):
@@ -127,8 +151,11 @@ async def test_cached_adapters_observe_new_material_and_binding_changes(tmp_path
     runtime = build_local_runtime(tmp_path, auth_drivers=drivers, service_policies=policies)
     try:
         await login(runtime.provider_auth)
-        main = runtime.models.adapter_for("subscription/chat")
-        ref = configs.get_provider("subscription").credential_ref.name
+        provider_id = _provider_id(configs)
+        main = runtime.models.adapter_for(_model_key(configs, "chat"))
+        provider = configs.get_provider(provider_id)
+        assert provider is not None
+        ref = provider.credential_ref.name
         external = CredentialService(FileCredentialStore(tmp_path))
         try:
             await external.commit(
@@ -145,23 +172,26 @@ async def test_cached_adapters_observe_new_material_and_binding_changes(tmp_path
             )
         finally:
             await external.close()
-        assert runtime.models.adapter_for("subscription/chat") is main
+        assert runtime.models.adapter_for(_model_key(configs, "chat")) is main
         assert (await main.provider.check_connection(main.model)).ok
         assert requests[-1]["headers"]["authorization"] == "Bearer updated"
-        # Replace changes authentication binding without changing the durable model route.
+        # Replace keeps the provider identity but regenerates its endpoint identities.
         configs.replace_provider(
-            "subscription",
+            provider_id,
+            display_name="Subscription",
             provider_type="custom",
             protocol="openai-chat-completions",
             auth_driver="fixture-device",
             base_url="https://fixture.invalid/api",
         )
+        endpoint_ids = {}
         for endpoint in ("chat", "summary"):
-            configs.upsert_endpoint(
-                "subscription", endpoint, model_id=endpoint, supports_streaming=False
+            configured = configs.create_endpoint(
+                provider_id, model_id=endpoint, supports_streaming=False
             )
-        configs.set_default_route("subscription", "chat")
-        new_main = runtime.models.adapter_for("subscription/chat")
+            endpoint_ids[endpoint] = configured.endpoint_id
+        configs.set_default_route(provider_id, endpoint_ids["chat"])
+        new_main = runtime.models.adapter_for(_model_key(configs, "chat"))
         assert new_main is not main
         assert (
             await new_main.provider.check_connection(new_main.model)
@@ -170,10 +200,7 @@ async def test_cached_adapters_observe_new_material_and_binding_changes(tmp_path
         assert (await new_main.provider.check_connection(new_main.model)).ok
         assert "authorization" not in requests[-1]["headers"]
         assert requests[-1]["headers"]["x-fixture-session"] == "fixture-ticket"
-        session = SessionRecord(current_model="subscription/chat")
-        runtime.store.create_session(session)
-        strategy = runtime.compaction_strategies.get(LLMSummaryCompactionStrategy.strategy_id)
-        summary = strategy._adapter_routes(session.session_id)[0].adapter
+        summary = runtime.models.adapter_for(_model_key(configs, "summary"))
         assert (await summary.provider.check_connection(summary.model)).ok
         assert requests[-1]["headers"]["x-fixture-session"] == "fixture-ticket"
     finally:
@@ -242,7 +269,9 @@ async def test_pending_login_is_settled_before_model_consumers_and_credentials(
     app = LocalApplication.build(
         tmp_path, auth_drivers=(driver, drivers[1]), service_policies=policies
     )
-    started = await app.provider_auth.begin("subscription", "external-browser")
+    started = await app.provider_auth.begin(
+        _provider_id(app.provider_auth._config), "external-browser"
+    )
     await driver.started.wait()
     close_models = app.runtime.models.close
 
@@ -273,7 +302,7 @@ async def test_separate_homes_do_not_share_credentials_or_shutdown(tmp_path, man
     other = build_local_runtime(other_home, auth_drivers=drivers, service_policies=policies)
     try:
         await login(original.provider_auth)
-        assert (await other.provider_auth.status("subscription")).state == "missing"
+        assert (await other.provider_auth.status(_provider_id(other_config))).state == "missing"
         assert (
             await other.adapter.provider.check_connection(other.adapter.model)
         ).error_code == "authentication_required"
@@ -293,7 +322,7 @@ async def test_start_failure_uses_normal_authentication_cleanup(
     app = LocalApplication.build(
         tmp_path, auth_drivers=(driver, drivers[1]), service_policies=policies
     )
-    await app.provider_auth.begin("subscription", "external-browser")
+    await app.provider_auth.begin(_provider_id(app.provider_auth._config), "external-browser")
     await driver.started.wait()
 
     async def fail_start():
@@ -328,13 +357,15 @@ async def test_static_product_service_policy_is_applied_without_managed_target_r
         ProviderRequestPolicy(frozenset({"fixture-quota"})),
     )
     configs.replace_provider(
-        "subscription",
+        _provider_id(configs),
+        display_name="Subscription",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="http://localhost:1234",
     )
-    configs.upsert_endpoint("subscription", "chat", model_id="chat", make_default=True)
-    configs.set_default_provider("subscription")
+    provider_id = _provider_id(configs)
+    configs.create_endpoint(provider_id, model_id="chat", make_default=True)
+    configs.set_default_provider(provider_id)
     runtime = build_local_runtime(tmp_path, auth_drivers=drivers, service_policies=(policy,))
 
     async def quota(**request):

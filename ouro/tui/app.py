@@ -1298,7 +1298,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _apply_bootstrap(self, bootstrap: TuiBootstrap) -> None:
         self._models = bootstrap.models
         self._sessions = bootstrap.sessions
-        self._active_model = bootstrap.current_model.endpoint_id
+        self._active_model = (
+            bootstrap.current_model.display_name or bootstrap.current_model.model_id
+        )
         status_line = self.query_one(StatusLine)
         status_line.set_model(self._active_model)
         status_line.set_activity("idle")
@@ -1946,10 +1948,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         if not self._surface_available() or run.kind != "agent":
             return
-        # Every Host uses the same durable end time and request endpoint.
-        # Older records can still use this Run's observed request label.
-        presentation = project_run_presentation(run)
-        if run.model_endpoint_id is None and model is not None:
+        # Internal endpoint identity remains durable; only its user-facing
+        # display projection crosses into the transcript.
+        presentation = project_run_presentation(run, models=self._models)
+        if presentation.model == "unknown model" and model is not None:
             presentation = replace(presentation, model=model)
         await self.query_one(ConversationView).add_run_summary(presentation)
 
@@ -2770,8 +2772,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 options = tuple(
                     TuiCommandArgument(
                         value=model.key,
-                        description=model.provider_id,
-                        label=model.endpoint_id,
+                        description=model.provider_display_name or model.provider_id,
+                        label=model.display_name or model.model_id,
                     )
                     for model in self._models
                 )
@@ -3088,7 +3090,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             workspace=self._active_workspace,
         )
         status_line = self.query_one(StatusLine)
-        self._active_model = model.endpoint_id
+        self._active_model = model.display_name or model.model_id
         status_line.set_model(self._active_model)
         status_line.set_activity("idle")
         status_line.set_context(None)
@@ -3555,6 +3557,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         projection, run_presentations, active_stream_tail = await asyncio.to_thread(
             self._prepare_loaded_session,
             loaded,
+            self._models,
         )
         agents = await self._replace_agent_tree(session.agent_root_session_id)
         read_only = session.session_kind == "subagent"
@@ -3643,7 +3646,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self._active_title = agent_name if agent_name is not None else session.title
                 self._active_workspace = session.workspace or self._system_status.workspace
                 if session.current_model is not None:
-                    self._active_model = _model_endpoint_name(session.current_model)
+                    self._active_model = _model_display_name(
+                        session.current_model,
+                        self._models,
+                    )
                 self.query_one(BrandHeader).set_context(
                     session_title=self._active_title,
                     session_detail=agent.task_description if agent is not None else None,
@@ -3831,6 +3837,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     @staticmethod
     def _prepare_loaded_session(
         loaded: LoadedSession,
+        models: tuple[AvailableModel, ...],
     ) -> tuple[
         TuiSessionProjection,
         tuple[RunPresentation, ...],
@@ -3861,6 +3868,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             project_run_presentations(
                 (run for run in loaded.runs if run.kind == "agent"),
                 loaded.messages,
+                models=models,
             ),
             _active_stream_tail(ordered_events, loaded.messages),
         )
@@ -3900,7 +3908,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception as exc:  # noqa: BLE001
             self.notify(str(exc), severity="error", markup=False)
             return
-        self._active_model = model.endpoint_id
+        self._active_model = model.display_name or model.model_id
         status_line = self.query_one(StatusLine)
         status_line.set_model(self._active_model)
         await self._refresh_reasoning_indicator()
@@ -4681,7 +4689,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify(str(exc), severity="error", markup=False)
 
 
-def _model_endpoint_name(route: str) -> str:
+def _model_display_name(route: str, models: tuple[AvailableModel, ...]) -> str:
+    model = next((candidate for candidate in models if candidate.key == route), None)
+    if model is not None:
+        return model.display_name or model.model_id
     _provider_id, separator, endpoint_id = route.partition("/")
     return endpoint_id if separator else route
 

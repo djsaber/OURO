@@ -1039,12 +1039,12 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
         ),
         epilog="""Typical workflow:
   ouro provider templates
-  ouro provider add openai --type openai --api-key-env OPENAI_API_KEY --default
-  ouro provider endpoint list openai
-  ouro provider check openai
+  ouro provider add "OpenAI" --type openai --api-key-env OPENAI_API_KEY --default
+  ouro provider endpoint list PROVIDER_ID
+  ouro provider check PROVIDER_ID
 
 For a private or gateway model, add a custom Provider with an explicit --protocol,
-then create its model route with 'ouro provider endpoint set'.""",
+then create its model route with 'ouro provider endpoint add'.""",
     )
     provider_subparsers = provider_parser.add_subparsers(
         dest="provider_command",
@@ -1095,16 +1095,16 @@ then create its model route with 'ouro provider endpoint set'.""",
             "catalog.\nCustom types create an empty Provider for custom Endpoints."
         ),
         epilog="""Examples:
-  ouro provider add openai --type openai --api-key-env OPENAI_API_KEY --default
-  ouro provider add private --type custom --protocol openai-chat-completions \\
+  ouro provider add "OpenAI" --type openai --api-key-env OPENAI_API_KEY --default
+  ouro provider add "Private Gateway" --type custom --protocol openai-chat-completions \\
     --base-url https://models.example.com/v1 --api-key-env PRIVATE_API_KEY
-  ouro provider add responses --type custom --protocol openai-responses \\
+  ouro provider add "Private Responses" --type custom --protocol openai-responses \\
     --base-url https://models.example.com/v1 --api-key-env PRIVATE_API_KEY
 
-Provider ids are unique. Use 'provider update' for an existing Provider or 'provider replace'
-when its type and complete template-owned configuration must change.""",
+OURO generates the Provider id. Use 'provider update' for an existing Provider or
+'provider replace' when its type and complete template-owned configuration must change.""",
     )
-    provider_add_parser.add_argument("provider_id", help="Provider/supplier id")
+    provider_add_parser.add_argument("display_name", help="Provider display name")
     _add_provider_identity_args(provider_add_parser)
     _add_provider_mutation_args(
         provider_add_parser,
@@ -1122,6 +1122,7 @@ when its type and complete template-owned configuration must change.""",
         ),
     )
     provider_update_parser.add_argument("provider_id", help="Provider/supplier id")
+    provider_update_parser.add_argument("--name", dest="display_name", help="Display name")
     _add_provider_mutation_args(
         provider_update_parser,
         enabled_default=None,
@@ -1137,6 +1138,7 @@ when its type and complete template-owned configuration must change.""",
         ),
     )
     provider_replace_parser.add_argument("provider_id", help="Provider/supplier id")
+    provider_replace_parser.add_argument("--name", dest="display_name", help="Display name")
     _add_provider_identity_args(provider_replace_parser)
     _add_provider_mutation_args(
         provider_replace_parser,
@@ -1178,11 +1180,11 @@ when its type and complete template-owned configuration must change.""",
             "to the Endpoint because models behind the same Provider can differ."
         ),
         epilog="""Examples:
-  ouro provider endpoint list openai
-  ouro provider endpoint show openai gpt-5.6
-  ouro provider endpoint set private chat --model private-model --default
+  ouro provider endpoint list PROVIDER_ID
+  ouro provider endpoint show PROVIDER_ID ENDPOINT_ID
+  ouro provider endpoint add PROVIDER_ID --model private-model --name "Private Model"
 
-Use 'ouro provider endpoint set --help' for custom capability and reasoning contracts.""",
+Use 'ouro provider endpoint add --help' for custom capability and reasoning contracts.""",
     )
     endpoint_subparsers = endpoint_parser.add_subparsers(
         dest="endpoint_command",
@@ -1200,20 +1202,20 @@ Use 'ouro provider endpoint set --help' for custom capability and reasoning cont
     endpoint_show_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     endpoint_show_parser.add_argument("--json", action="store_true", help="Print JSON")
 
-    endpoint_set_parser = endpoint_subparsers.add_parser(
-        "set",
-        help="Create or update an endpoint",
+    endpoint_add_parser = endpoint_subparsers.add_parser(
+        "add",
+        help="Add an endpoint",
         description=(
-            "Create or update one model Endpoint.\nOmitted fields retain their stored values "
-            "when updating; reasoning preset and full JSON options are mutually exclusive."
+            "Create one model Endpoint with an OURO-generated id.\nReasoning preset and "
+            "full JSON options are mutually exclusive."
         ),
         epilog=f"""Examples:
-  ouro provider endpoint set private chat --model private-model --default
-  ouro provider endpoint set private reasoning --model reasoning-model \\
+  ouro provider endpoint add PROVIDER_ID --model private-model --default
+  ouro provider endpoint add PROVIDER_ID --model reasoning-model \\
     --reasoning-preset reasoning-content-effort --default
-  ouro provider endpoint set claude custom --model custom-claude \\
+  ouro provider endpoint add PROVIDER_ID --model custom-claude \\
     --reasoning-preset anthropic-messages-adaptive-effort
-  ouro provider endpoint set responses custom --model custom-model \\
+  ouro provider endpoint add PROVIDER_ID --model custom-model \\
     --reasoning-preset openai-responses-effort
 
 Reasoning presets:
@@ -1233,12 +1235,45 @@ Only openai-responses-effort-summary requests reasoning.summary=auto; use it whe
 Reasoning-owned fields must not also appear in --request-options. Invalid or incomplete
 contracts are rejected before configuration is written.""",
     )
-    endpoint_set_parser.add_argument("provider_id", help="Provider/supplier id")
-    endpoint_set_parser.add_argument("endpoint_id", help="Stable endpoint id")
-    endpoint_set_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    endpoint_add_parser.add_argument("provider_id", help="Provider/supplier id")
+    _add_endpoint_mutation_args(endpoint_add_parser, model_required=True)
 
-    route_group = endpoint_set_parser.add_argument_group("model route")
-    route_group.add_argument("--model", metavar="MODEL_ID", help="Provider-native model id")
+    endpoint_update_parser = endpoint_subparsers.add_parser(
+        "update",
+        help="Update an endpoint",
+        description="Update one Endpoint selected by its OURO-generated id.",
+    )
+    endpoint_update_parser.add_argument("provider_id", help="Provider/supplier id")
+    endpoint_update_parser.add_argument("endpoint_id", help="Endpoint id")
+    _add_endpoint_mutation_args(endpoint_update_parser, model_required=False)
+
+    endpoint_use_parser = endpoint_subparsers.add_parser("use", help="Set default endpoint")
+    endpoint_use_parser.add_argument("provider_id", help="Provider/supplier id")
+    endpoint_use_parser.add_argument("endpoint_id", help="Endpoint id")
+    endpoint_use_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    endpoint_use_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    endpoint_remove_parser = endpoint_subparsers.add_parser("remove", help="Remove an endpoint")
+    endpoint_remove_parser.add_argument("provider_id", help="Provider/supplier id")
+    endpoint_remove_parser.add_argument("endpoint_id", help="Endpoint id")
+    endpoint_remove_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    endpoint_remove_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+
+def _add_endpoint_mutation_args(
+    parser: argparse.ArgumentParser,
+    *,
+    model_required: bool,
+) -> None:
+    parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    parser.add_argument("--name", dest="display_name", help="Optional display name")
+    route_group = parser.add_argument_group("model route")
+    route_group.add_argument(
+        "--model",
+        required=model_required,
+        metavar="MODEL_ID",
+        help="Provider-native model id",
+    )
     route_group.add_argument(
         "--base-url",
         metavar="URL",
@@ -1270,17 +1305,15 @@ contracts are rejected before configuration is written.""",
         metavar="TOKENS",
         help="Maximum output tokens; must not exceed context window",
     )
-
-    capability_group = endpoint_set_parser.add_argument_group("endpoint capabilities")
+    capability_group = parser.add_argument_group("endpoint capabilities")
     _add_endpoint_capability_args(capability_group)
-
-    reasoning_group = endpoint_set_parser.add_argument_group("reasoning contract")
+    reasoning_group = parser.add_argument_group("reasoning contract")
     endpoint_reasoning_group = reasoning_group.add_mutually_exclusive_group()
     endpoint_reasoning_group.add_argument(
         "--reasoning-preset",
         type=_reasoning_preset,
         metavar="PRESET",
-        help="Install a common native reasoning mapping; see preset list below",
+        help="Install a common native reasoning mapping",
     )
     endpoint_reasoning_group.add_argument(
         "--reasoning-config",
@@ -1294,24 +1327,8 @@ contracts are rejected before configuration is written.""",
         metavar="JSON",
         help="Additional provider request fields not owned by the reasoning profile",
     )
-    endpoint_set_parser.add_argument(
-        "--default",
-        action="store_true",
-        help="Set endpoint as provider default",
-    )
-    endpoint_set_parser.add_argument("--json", action="store_true", help="Print JSON")
-
-    endpoint_use_parser = endpoint_subparsers.add_parser("use", help="Set default endpoint")
-    endpoint_use_parser.add_argument("provider_id", help="Provider/supplier id")
-    endpoint_use_parser.add_argument("endpoint_id", help="Endpoint id")
-    endpoint_use_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
-    endpoint_use_parser.add_argument("--json", action="store_true", help="Print JSON")
-
-    endpoint_remove_parser = endpoint_subparsers.add_parser("remove", help="Remove an endpoint")
-    endpoint_remove_parser.add_argument("provider_id", help="Provider/supplier id")
-    endpoint_remove_parser.add_argument("endpoint_id", help="Endpoint id")
-    endpoint_remove_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
-    endpoint_remove_parser.add_argument("--json", action="store_true", help="Print JSON")
+    parser.add_argument("--default", action="store_true", help="Set endpoint as default")
+    parser.add_argument("--json", action="store_true", help="Print JSON")
 
 
 def _add_provider_auth_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -1383,10 +1400,6 @@ def _add_provider_mutation_args(
     enabled_default: bool | None,
 ) -> None:
     parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
-    parser.add_argument(
-        "--endpoint-id",
-        help="Override the default preset endpoint id (integrated types only)",
-    )
     parser.add_argument(
         "--model",
         help="Override the default preset endpoint model id (integrated types only)",

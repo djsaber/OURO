@@ -323,22 +323,23 @@ async def test_compatible_config_factory_encodes_native_reasoning_without_produc
         },
     )
     manager = ProviderConfigManager(tmp_path)
-    manager.create_provider(
-        "fixture",
+    provider = manager.create_provider(
+        display_name="Fixture",
         provider_type="custom",
         protocol="openai-responses",
         base_url="https://fixture.invalid/v1",
     )
-    manager.upsert_endpoint(
-        "fixture",
-        "main",
+    manager.create_endpoint(
+        provider.provider_id,
         model_id="model",
         reasoning=contract,
         max_output_tokens=256,
         temperature=0,
         make_default=True,
     )
-    options = manager.resolve_runtime_options(ProviderRuntimeOptions(provider_id="fixture"))
+    options = manager.resolve_runtime_options(
+        ProviderRuntimeOptions(provider_id=provider.provider_id)
+    )
     adapter = build_runtime_adapter(options)
     transport = StreamTransport([terminal([reasoning(), message()])])
     adapter.provider.transport = transport
@@ -401,22 +402,21 @@ async def test_responses_preset_roundtrips_config_and_encodes_requested_effort(
     tmp_path, streaming, intent, native_effort
 ):
     manager = ProviderConfigManager(tmp_path)
-    manager.create_provider(
-        "fixture",
+    provider = manager.create_provider(
+        display_name="Fixture",
         provider_type="custom",
         protocol="openai-responses",
         base_url="https://fixture.invalid/v1",
     )
-    manager.upsert_endpoint(
-        "fixture",
-        "main",
+    manager.create_endpoint(
+        provider.provider_id,
         model_id="custom-model",
         reasoning=reasoning_preset("openai-responses-effort"),
         supports_streaming=streaming,
         make_default=True,
     )
     options = ProviderConfigManager(tmp_path).resolve_runtime_options(
-        ProviderRuntimeOptions(provider_id="fixture", reasoning_request=intent)
+        ProviderRuntimeOptions(provider_id=provider.provider_id, reasoning_request=intent)
     )
     requests = []
 
@@ -458,15 +458,14 @@ async def test_responses_visible_reasoning_reaches_adapter_without_becoming_answ
     tmp_path, monkeypatch, streaming, preset
 ):
     manager = ProviderConfigManager(tmp_path)
-    manager.create_provider(
-        "fixture",
+    provider = manager.create_provider(
+        display_name="Fixture",
         provider_type="custom",
         protocol="openai-responses",
         base_url="https://fixture.invalid/v1",
     )
-    manager.upsert_endpoint(
-        "fixture",
-        "main",
+    manager.create_endpoint(
+        provider.provider_id,
         model_id="model",
         reasoning=reasoning_preset(preset),
         supports_streaming=streaming,
@@ -499,7 +498,7 @@ async def test_responses_visible_reasoning_reaches_adapter_without_becoming_answ
         )
         adapter = build_runtime_adapter(
             ProviderConfigManager(tmp_path).resolve_runtime_options(
-                ProviderRuntimeOptions(provider_id="fixture")
+                ProviderRuntimeOptions(provider_id=provider.provider_id)
             )
         )
         try:

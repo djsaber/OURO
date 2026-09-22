@@ -23,35 +23,44 @@ from tests.tui.helpers import run_ready_app, two_route_application
 async def test_header_editor_preserves_secrets_and_explicitly_replaces_or_clears(tmp_path):
     app = OuroTuiApp(application=two_route_application(tmp_path))
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider(
-        "gateway",
+    created = facade.add_provider(
+        display_name="Gateway",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://model.test",
         headers={"X-Secret": {"source": "literal", "value": "private-value"}},
     )
     async with run_ready_app(app, size=(100, 34)) as pilot:
-        provider = facade.provider("gateway")
+        provider_id = created.changed_provider_id
+        assert provider_id is not None
+        provider = facade.provider(provider_id)
         profile = profile_for_provider(provider, await app._controller.provider_templates())
         screen = ProviderConfigurationScreen(profile, provider)
         app.push_screen(screen)
         await pilot.pause()
         assert screen._values["provider-headers"] == ""
         assert screen._draft().headers is None
-        await app._controller.update_provider(replace(screen._draft(), timeout=17))
+        await app._controller.update_provider(
+            provider_id, replace(screen._draft(), timeout=17)
+        )
         from ouro.config import ProviderConfigManager
 
         configs = ProviderConfigManager(tmp_path)
-        assert configs.get_provider("gateway").headers["x-secret"].value == "private-value"
+        configured = configs.get_provider(provider_id)
+        assert configured is not None
+        assert configured.headers["x-secret"].value == "private-value"
         await select_choice(app, pilot, "provider-headers")
         text = '{"X-Model":{"source":"context","key":"model.id"}}'
         await pilot.press(*text, "enter")
         await pilot.pause()
-        await app._controller.update_provider(screen._draft())
-        assert set(configs.get_provider("gateway").headers) == {"x-model"}
+        await app._controller.update_provider(provider_id, screen._draft())
+        configured = configs.get_provider(provider_id)
+        assert configured is not None
+        assert set(configured.headers) == {"x-model"}
         await screen._save_field("provider-headers", "{}")
-        await app._controller.update_provider(screen._draft())
-        assert configs.get_provider("gateway").headers == {}
+        await app._controller.update_provider(provider_id, screen._draft())
+        configured = configs.get_provider(provider_id)
+        assert configured is not None and configured.headers == {}
         await screen._save_field("provider-headers", '{"X":{"source":"context","key":"unknown"}}')
         assert screen._validation_error()
 
@@ -68,14 +77,16 @@ async def select_choice(app, pilot, value):
 async def test_responses_endpoint_thinking_preset_can_be_selected_and_saved(tmp_path, preset):
     app = OuroTuiApp(application=two_route_application(tmp_path))
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider(
-        "gateway",
+    created = facade.add_provider(
+        display_name="Gateway",
         provider_type="custom",
         protocol="openai-responses",
         base_url="https://gateway.test/v1",
     )
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
     async with run_ready_app(app, size=(100, 34)) as pilot:
-        screen = EndpointConfigurationScreen(facade.provider("gateway"))
+        screen = EndpointConfigurationScreen(facade.provider(provider_id))
         app.push_screen(screen)
         await pilot.pause()
         await select_choice(app, pilot, "endpoint-reasoning-preset")
@@ -85,13 +96,12 @@ async def test_responses_endpoint_thinking_preset_can_be_selected_and_saved(tmp_
         await select_choice(app, pilot, preset)
         assert app.screen is screen
         assert screen._reasoning_preset_name() == preset
-        await screen._save_field("endpoint-id", "main")
+        await screen._save_field("endpoint-display-name", "Main")
         await screen._save_field("endpoint-model-id", "custom-model")
-        await app._controller.add_endpoint(screen._draft())
-        saved = facade.endpoint("gateway", "main")
+        saved = await app._controller.add_endpoint(provider_id, screen._draft())
         assert saved.reasoning == reasoning_preset(preset)
         assert saved.reasoning.capability.output == "summary"
-        editor = EndpointConfigurationScreen(facade.provider("gateway"), saved)
+        editor = EndpointConfigurationScreen(facade.provider(provider_id), saved)
         assert editor._reasoning_preset_name() == preset
 
 
@@ -119,7 +129,7 @@ async def test_create_custom_provider_through_protocol_entry_and_preserve_on_edi
         assert all(choice.value != "provider-protocol" for choice in screen._choices)
         assert screen._values["provider-api-path"] == api_path
         for field, value in (
-            ("provider-id", "gateway"),
+            ("provider-display-name", "Gateway"),
             ("provider-base-url", "https://gateway.test/v1"),
             ("provider-api-key-env", "GATEWAY_KEY"),
         ):
@@ -128,7 +138,10 @@ async def test_create_custom_provider_through_protocol_entry_and_preserve_on_edi
             await pilot.pause()
         await select_choice(app, pilot, "provider-save")
         facade = ConfigurationFacade(tmp_path)
-        provider = facade.provider("gateway")
+        providers = facade.provider_catalog().providers
+        assert len(providers) == 1
+        provider = providers[0]
+        provider_id = provider.provider_id
         assert provider.provider_type == "custom"
         assert provider.protocol == protocol
         assert provider.api_path == api_path
@@ -143,13 +156,14 @@ async def test_create_custom_provider_through_protocol_entry_and_preserve_on_edi
         assert protocol_choice.disabled
         assert protocol_choice.trailing == label
         draft = replace(editor._draft(), timeout=15)
-        updated = await app._controller.update_provider(draft)
+        updated = await app._controller.update_provider(provider_id, draft)
         assert updated.protocol == protocol
         assert updated.api_path == api_path
         assert updated.timeout == 15
         before = facade.providers.config_path.read_bytes()
         with pytest.raises(ConfigError, match="protocol cannot be changed"):
             await app._controller.update_provider(
+                provider_id,
                 replace(
                     draft,
                     protocol=(

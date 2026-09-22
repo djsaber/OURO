@@ -162,7 +162,7 @@ class ProviderConfigurationWorkflows(App[int]):
         )
         self.notify(
             theme_for(self).inline_separator.join(
-                (f"Provider added: {provider.provider_id}", suffix)
+                (f"Provider added: {provider.display_name}", suffix)
             )
         )
 
@@ -370,7 +370,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 return None
 
             menu.push_page(
-                title=theme_for(self).inline_separator.join(("PROVIDER", provider.provider_id)),
+                title=theme_for(self).inline_separator.join(("PROVIDER", provider.display_name)),
                 placeholder="Choose an action…",
                 choices=choices,
                 on_select=select_action,
@@ -379,7 +379,7 @@ class ProviderConfigurationWorkflows(App[int]):
             return
         selected = await self.push_screen_wait(
             ChoiceScreen(
-                title=theme_for(self).inline_separator.join(("PROVIDER", provider.provider_id)),
+                title=theme_for(self).inline_separator.join(("PROVIDER", provider.display_name)),
                 placeholder="Choose an action…",
                 choices=choices,
             )
@@ -440,11 +440,14 @@ class ProviderConfigurationWorkflows(App[int]):
             return
         provider_draft = cast(TuiProviderConfiguration, draft)
         try:
-            saved = await self._controller.update_provider(provider_draft)
+            saved = await self._controller.update_provider(
+                provider.provider_id,
+                provider_draft,
+            )
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        self.notify(f"Provider saved: {saved.provider_id} (next request)")
+        self.notify(f"Provider saved: {saved.display_name} (next request)")
 
     async def _update_provider_template(
         self,
@@ -659,8 +662,8 @@ class ProviderConfigurationWorkflows(App[int]):
                     await self._edit_endpoint(provider, endpoint, menu=menu)
                 else:
                     await self._remove_endpoint(
-                        provider.provider_id,
-                        endpoint.endpoint_id,
+                        provider,
+                        endpoint,
                         menu=menu,
                     )
                 return None
@@ -689,7 +692,7 @@ class ProviderConfigurationWorkflows(App[int]):
         elif action == "edit":
             await self._edit_endpoint(provider, endpoint)
         else:
-            await self._remove_endpoint(provider.provider_id, endpoint.endpoint_id)
+            await self._remove_endpoint(provider, endpoint)
 
     async def _choose_endpoints(
         self,
@@ -777,15 +780,15 @@ class ProviderConfigurationWorkflows(App[int]):
                     await self._use_endpoint(provider.provider_id, endpoint.endpoint_id)
                 elif action == "remove":
                     await self._remove_endpoint(
-                        provider.provider_id,
-                        endpoint.endpoint_id,
+                        provider,
+                        endpoint,
                         menu=menu,
                     )
                 return None
 
             menu.push_page(
                 title=theme_for(self).inline_separator.join(
-                    (_endpoint_action_label(action), provider.provider_id)
+                    (_endpoint_action_label(action), provider.display_name)
                 ),
                 placeholder="Filter endpoints…",
                 choices=choices,
@@ -796,7 +799,7 @@ class ProviderConfigurationWorkflows(App[int]):
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title=theme_for(self).inline_separator.join(
-                    (_endpoint_action_label(action), provider.provider_id)
+                    (_endpoint_action_label(action), provider.display_name)
                 ),
                 placeholder="Filter endpoints…",
                 choices=choices,
@@ -812,7 +815,7 @@ class ProviderConfigurationWorkflows(App[int]):
         elif action == "use":
             await self._use_endpoint(provider.provider_id, endpoint.endpoint_id)
         elif action == "remove":
-            await self._remove_endpoint(provider.provider_id, endpoint.endpoint_id)
+            await self._remove_endpoint(provider, endpoint)
 
     async def _manage_endpoint(
         self,
@@ -869,8 +872,8 @@ class ProviderConfigurationWorkflows(App[int]):
                     await self._use_endpoint(provider.provider_id, endpoint.endpoint_id)
                 elif selected == "remove":
                     if await self._remove_endpoint(
-                        provider.provider_id,
-                        endpoint.endpoint_id,
+                        provider,
+                        endpoint,
                         menu=menu,
                     ):
                         await menu.pop_page_refreshed()
@@ -878,7 +881,7 @@ class ProviderConfigurationWorkflows(App[int]):
 
             menu.push_page(
                 title=theme_for(self).inline_separator.join(
-                    ("ENDPOINT", f"{provider.provider_id}/{endpoint.endpoint_id}")
+                    ("ENDPOINT", endpoint.display_name or endpoint.model_id)
                 ),
                 placeholder="Choose an action…",
                 choices=tuple(choices),
@@ -889,7 +892,7 @@ class ProviderConfigurationWorkflows(App[int]):
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title=theme_for(self).inline_separator.join(
-                    ("ENDPOINT", f"{provider.provider_id}/{endpoint.endpoint_id}")
+                    ("ENDPOINT", endpoint.display_name or endpoint.model_id)
                 ),
                 placeholder="Choose an action…",
                 choices=tuple(choices),
@@ -900,7 +903,7 @@ class ProviderConfigurationWorkflows(App[int]):
         elif selected == "use":
             await self._use_endpoint(provider.provider_id, endpoint.endpoint_id)
         elif selected == "remove":
-            await self._remove_endpoint(provider.provider_id, endpoint.endpoint_id)
+            await self._remove_endpoint(provider, endpoint)
 
     async def _edit_endpoint(
         self,
@@ -922,15 +925,21 @@ class ProviderConfigurationWorkflows(App[int]):
         endpoint_draft = cast(TuiEndpointConfiguration, draft)
         try:
             saved = (
-                await self._controller.add_endpoint(endpoint_draft)
+                await self._controller.add_endpoint(provider.provider_id, endpoint_draft)
                 if existing is None
-                else await self._controller.update_endpoint(endpoint_draft)
+                else await self._controller.update_endpoint(
+                    provider.provider_id,
+                    existing.endpoint_id,
+                    endpoint_draft,
+                )
             )
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         action = "added" if existing is None else "saved"
-        self.notify(f"Endpoint {action}: {provider.provider_id}/{saved.endpoint_id} (next request)")
+        self.notify(
+            f"Endpoint {action}: {saved.display_name or saved.model_id} (next request)"
+        )
 
     async def _use_endpoint(self, provider_id: str, endpoint_id: str) -> bool:
         try:
@@ -942,14 +951,15 @@ class ProviderConfigurationWorkflows(App[int]):
 
     async def _remove_endpoint(
         self,
-        provider_id: str,
-        endpoint_id: str,
+        provider: ProviderView,
+        endpoint: ProviderEndpointView,
         *,
         menu: ChoiceScreen | None = None,
     ) -> bool:
+        endpoint_label = endpoint.display_name or endpoint.model_id
         screen = ConfirmationScreen(
             title="DELETE ENDPOINT",
-            message=f"Delete {provider_id}/{endpoint_id} from your settings?",
+            message=f"Delete {endpoint_label} from {provider.display_name}?",
             confirm_label="Delete",
         )
         selected = await (
@@ -958,11 +968,14 @@ class ProviderConfigurationWorkflows(App[int]):
         if not ConfirmationScreen.confirmed(selected):
             return False
         try:
-            await self._controller.remove_endpoint(provider_id, endpoint_id)
+            await self._controller.remove_endpoint(
+                provider.provider_id,
+                endpoint.endpoint_id,
+            )
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return False
-        self.notify(f"Endpoint deleted: {provider_id}/{endpoint_id} (next request)")
+        self.notify(f"Endpoint deleted: {endpoint_label} (next request)")
         return True
 
 
@@ -975,7 +988,7 @@ def _provider_choice(
     state = "enabled" if provider.enabled else "disabled"
     return Choice(
         provider.provider_id,
-        provider.provider_id,
+        provider.display_name,
         marker=theme.selected_choice_marker if provider.default else "",
         trailing=theme.inline_separator.join(
             (provider.provider_type, str(provider.endpoint_count), state)
@@ -1045,11 +1058,22 @@ def _endpoint_choice(
     selected: bool,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> Choice:
+    trailing = tuple(
+        value
+        for value in (
+            endpoint.model_id
+            if endpoint.display_name
+            and endpoint.display_name.casefold() != endpoint.model_id.casefold()
+            else "",
+            "default" if endpoint.default else "",
+        )
+        if value
+    )
     return Choice(
         endpoint.endpoint_id,
-        endpoint.endpoint_id,
+        endpoint.display_name or endpoint.model_id,
         marker=theme.selected_choice_marker if selected else "",
-        trailing="default" if endpoint.default else "",
+        trailing=theme.inline_separator.join(trailing),
         disabled=not available,
     )
 
@@ -1072,7 +1096,7 @@ def _endpoint_route_choice(
         choice.label,
         marker=choice.marker,
         trailing=choice.trailing,
-        group=provider.provider_id,
+        group=provider.display_name,
         group_trailing="" if provider.enabled else "unavailable",
         disabled=choice.disabled,
     )

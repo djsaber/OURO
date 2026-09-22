@@ -268,30 +268,40 @@ async def test_task_picker_marks_and_focuses_selected_option(tmp_path, field, ti
 
 async def test_new_task_uses_default_endpoint_independently_of_session_model(tmp_path):
     configuration = ConfigurationFacade(tmp_path)
-    for provider in ("alpha", "zeta"):
-        configuration.add_provider(
-            provider,
+    routes = {}
+    for provider_name in ("alpha", "zeta"):
+        created = configuration.add_provider(
+            display_name=provider_name.title(),
             provider_type="custom",
             protocol="openai-chat-completions",
-            base_url=f"https://{provider}.example.invalid/v1",
+            base_url=f"https://{provider_name}.example.invalid/v1",
             api_key="test-key",
         )
-        configuration.save_endpoint(provider, "chat", model=f"{provider}-model")
-    configuration.use_endpoint("zeta", "chat")
+        provider_id = created.changed_provider_id
+        assert provider_id is not None
+        endpoints = configuration.add_endpoint(
+            provider_id, display_name="Chat", model=f"{provider_name}-model"
+        )
+        endpoint_id = endpoints.changed_endpoint_id
+        assert endpoint_id is not None
+        routes[provider_name] = f"{provider_id}/{endpoint_id}"
+    zeta_provider, zeta_endpoint = routes["zeta"].split("/", 1)
+    configuration.use_endpoint(zeta_provider, zeta_endpoint)
     application = LocalApplication.build(tmp_path)
     app = OuroTuiApp(application=application)
     async with run_ready_app(app, size=(100, 34)) as pilot:
-        assert (await app._controller.models())[0].key.startswith("alpha/")
-        await app._controller.select_model("alpha/chat")
+        assert {model.key for model in await app._controller.models()} == set(routes.values())
+        await app._controller.select_model(routes["alpha"])
         await pilot.press("ctrl+p")
         await choose(pilot, app, "Create task")
         await _wait_for_screen(app, TaskConfigurationScreen, title="CREATE TASK")
-        assert app.screen._values["model"] == "zeta/chat"
+        assert app.screen._values["model"] == routes["zeta"]
         await pilot.press("escape")
-        configuration.use_endpoint("alpha", "chat")
+        alpha_provider, alpha_endpoint = routes["alpha"].split("/", 1)
+        configuration.use_endpoint(alpha_provider, alpha_endpoint)
         await choose(pilot, app, "Create task")
         await _wait_for_screen(app, TaskConfigurationScreen, title="CREATE TASK")
-        assert app.screen._values["model"] == "alpha/chat"
+        assert app.screen._values["model"] == routes["alpha"]
         await pilot.press("escape")
 
 

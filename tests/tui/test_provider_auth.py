@@ -68,22 +68,35 @@ class AuthApp(App):
         self.push_screen(self.initial)
 
 
+def _provider_id(owner) -> str:
+    config = owner if hasattr(owner, "snapshot") else owner._config
+    providers = config.snapshot(include_builtin=False).providers
+    assert len(providers) == 1
+    return providers[0].provider_id
+
+
 async def test_builtin_subscription_starts_without_login_and_shows_service_limits(tmp_path):
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider("personal", provider_type="openai-codex", make_default=True)
+    created = facade.add_provider(
+        display_name="Personal Codex",
+        provider_type="openai-codex",
+        make_default=True,
+    )
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
     application = LocalApplication.build(tmp_path)
     app = OuroTuiApp(application=application)
     async with run_ready_app(app) as pilot:
         await pilot.press("ctrl+p")
         await choose(app, pilot, "Manage providers")
-        await choose(app, pilot, "personal")
+        await choose(app, pilot, "Personal Codex")
         assert "local planning budget" in choices(app.screen)["service-notice"].description
         await choose(app, pilot, "Authentication")
         assert isinstance(app.screen, ProviderAuthenticationScreen)
         await eventually(lambda: "status" in choices(app.screen))
         assert choices(app.screen)["status"].trailing == "missing"
         assert any(choice.label == "Browser" for choice in choices(app.screen).values())
-        provider = facade.provider("personal")
+        provider = facade.provider(provider_id)
         profile = profile_for_provider(provider, facade.provider_template_catalog().templates)
         editor = ProviderConfigurationScreen(profile, existing=provider)
         assert "local planning budget" in next(
@@ -125,13 +138,14 @@ async def test_method_challenge_success_logout_and_no_challenge_in_terminal_ui(
     monkeypatch,
 ):
     driver = GatedDriver(driver())
-    _, _, _, service, _ = auth_home(driver)
+    config, _, _, service, _ = auth_home(driver)
+    provider_id = _provider_id(config)
     opened = []
     monkeypatch.setattr(
         "ouro.tui.provider_auth_screens.webbrowser.open",
         lambda url, **kw: opened.append(url) or True,
     )
-    menu = ProviderAuthenticationScreen(service, "subscription")
+    menu = ProviderAuthenticationScreen(service, provider_id)
     app = AuthApp(menu)
     async with app.run_test(size=(100, 40)) as pilot:
         await eventually(lambda: "status" in choices(menu))
@@ -157,16 +171,16 @@ async def test_method_challenge_success_logout_and_no_challenge_in_terminal_ui(
         assert login.query_one("#choice-filter", Input).value == ""
         assert login.query_one(OptionList).get_option("result")
         assert login._login is None
-        assert (await service.status("subscription")).state == "ready"
+        assert (await service.status(provider_id)).state == "ready"
         await pilot.press("escape")
         await eventually(lambda: choices(menu)["status"].trailing == "ready")
         await choose(app, pilot, "Sign out")
         assert isinstance(app.screen, ConfirmationScreen)
         await choose(app, pilot, "Cancel")
-        assert (await service.status("subscription")).state == "ready"
+        assert (await service.status(provider_id)).state == "ready"
         await choose(app, pilot, "Sign out")
         await choose(app, pilot, "Confirm")
-        assert (await service.status("subscription")).state == "logged_out"
+        assert (await service.status(provider_id)).state == "logged_out"
         # Authentication UI never creates conversation notices or model events.
         assert "fixture-access" not in repr(menu._choices)
 
@@ -174,8 +188,9 @@ async def test_method_challenge_success_logout_and_no_challenge_in_terminal_ui(
 @pytest.mark.parametrize("stop", ["escape", "unmount", "shutdown"])
 async def test_pending_authorization_is_cancelled_and_cleaned_when_ui_leaves(auth_home, stop):
     driver = GatedDriver(BrowserFixtureDriver())
-    _, _, _, service, _ = auth_home(driver)
-    login = ProviderLoginScreen(service, "subscription", "external-browser")
+    config, _, _, service, _ = auth_home(driver)
+    provider_id = _provider_id(config)
+    login = ProviderLoginScreen(service, provider_id, "external-browser")
     app = AuthApp(login)
     async with app.run_test() as pilot:
         await eventually(lambda: login._login is not None)
@@ -188,7 +203,7 @@ async def test_pending_authorization_is_cancelled_and_cleaned_when_ui_leaves(aut
             await eventually(lambda: driver.cleaned == 1)
     assert driver.cleaned == 1
     assert login._login_task.done()
-    assert (await service.status("subscription")).state == "missing"
+    assert (await service.status(provider_id)).state == "missing"
 
 
 @pytest.mark.parametrize(
@@ -202,8 +217,9 @@ async def test_pending_authorization_is_cancelled_and_cleaned_when_ui_leaves(aut
 async def test_driver_failures_use_application_terminal_state_and_safe_message(auth_home, failure):
     driver = GatedDriver(DeviceFixtureDriver())
     driver.failure = failure
-    _, _, _, service, _ = auth_home(driver)
-    login = ProviderLoginScreen(service, "subscription", "link-device")
+    config, _, _, service, _ = auth_home(driver)
+    provider_id = _provider_id(config)
+    login = ProviderLoginScreen(service, provider_id, "link-device")
     app = AuthApp(login)
     async with app.run_test() as pilot:
         await eventually(lambda: login._login is not None)
@@ -212,20 +228,20 @@ async def test_driver_failures_use_application_terminal_state_and_safe_message(a
         assert login.result.state in {"failed", "expired"}
         assert "fixture-private-response" not in repr(login._choices)
         assert "fixture-code" not in repr(login._choices)
-        assert (await service.status("subscription")).state == "missing"
+        assert (await service.status(provider_id)).state == "missing"
         await pilot.press("escape")
     assert driver.cleaned == 1
 
 
 async def test_storage_failure_cannot_be_presented_as_login_success(auth_home, monkeypatch):
     driver = GatedDriver(BrowserFixtureDriver())
-    _, store, _, service, _ = auth_home(driver)
+    config, store, _, service, _ = auth_home(driver)
 
     def fail_save(*args, **kwargs):
         raise OSError("fixture-private-disk-path")
 
     monkeypatch.setattr(store, "write", fail_save)
-    login = ProviderLoginScreen(service, "subscription", "external-browser")
+    login = ProviderLoginScreen(service, _provider_id(config), "external-browser")
     async with AuthApp(login).run_test():
         await eventually(lambda: login._login is not None)
         driver.release.set()
@@ -236,10 +252,11 @@ async def test_storage_failure_cannot_be_presented_as_login_success(auth_home, m
 
 async def test_local_credentials_list_allows_clearing_orphan_without_false_cancel(auth_home):
     config, _, _, service, _ = auth_home(BrowserFixtureDriver())
-    started = await service.begin("subscription", "external-browser")
+    provider_id = _provider_id(config)
+    started = await service.begin(provider_id, "external-browser")
     result = await service.wait(started.operation_id)
     credential_id = result.credential.credential_id
-    config.remove_provider("subscription")
+    config.remove_provider(provider_id)
     screen = ProviderCredentialsScreen(service)
     app = AuthApp(screen)
     async with app.run_test() as pilot:
@@ -257,9 +274,9 @@ async def test_browser_launch_failure_leaves_challenge_and_cancellation_availabl
     auth_home, monkeypatch
 ):
     driver = GatedDriver(BrowserFixtureDriver())
-    _, _, _, service, _ = auth_home(driver)
+    config, _, _, service, _ = auth_home(driver)
     monkeypatch.setattr("ouro.tui.provider_auth_screens.webbrowser.open", lambda *a, **kw: False)
-    login = ProviderLoginScreen(service, "subscription", "external-browser")
+    login = ProviderLoginScreen(service, _provider_id(config), "external-browser")
     app = AuthApp(login)
     async with app.run_test() as pilot:
         await eventually(lambda: login._login is not None)
@@ -272,7 +289,7 @@ async def test_browser_launch_failure_leaves_challenge_and_cancellation_availabl
 
 async def test_cancel_during_admitted_save_reports_the_committed_success(auth_home, monkeypatch):
     driver = GatedDriver(BrowserFixtureDriver())
-    _, store, _, service, _ = auth_home(driver)
+    config, store, _, service, _ = auth_home(driver)
     entered, release = threading.Event(), threading.Event()
     write = store.write
 
@@ -282,7 +299,8 @@ async def test_cancel_during_admitted_save_reports_the_committed_success(auth_ho
         write(record)
 
     monkeypatch.setattr(store, "write", blocked_write)
-    login = ProviderLoginScreen(service, "subscription", "external-browser")
+    provider_id = _provider_id(config)
+    login = ProviderLoginScreen(service, provider_id, "external-browser")
     async with AuthApp(login).run_test():
         await eventually(lambda: login._login is not None)
         driver.release.set()
@@ -295,7 +313,7 @@ async def test_cancel_during_admitted_save_reports_the_committed_success(auth_ho
         await cancelled
         assert login.result.state == "succeeded"
         assert choices(login)["result"].label == "Sign-in succeeded"
-        assert (await service.status("subscription")).state == "ready"
+        assert (await service.status(provider_id)).state == "ready"
 
 
 async def test_cancel_while_begin_has_not_returned_cleans_up_operation(auth_home):
@@ -309,24 +327,26 @@ async def test_cancel_while_begin_has_not_returned_cleans_up_operation(auth_home
             finally:
                 cleaned.set()
 
-    _, _, _, service, _ = auth_home(SlowBegin())
-    login = ProviderLoginScreen(service, "subscription", "external-browser")
+    config, _, _, service, _ = auth_home(SlowBegin())
+    provider_id = _provider_id(config)
+    login = ProviderLoginScreen(service, provider_id, "external-browser")
     async with AuthApp(login).run_test() as pilot:
         await entered.wait()
         await pilot.press("escape")
         assert cleaned.is_set()
         assert login._login is None
         assert choices(login)["result"].label == "Sign-in cancelled"
-        assert (await service.status("subscription")).state == "missing"
+        assert (await service.status(provider_id)).state == "missing"
 
 
 async def test_configuration_change_during_login_is_shown_as_conflict(auth_home):
     driver = GatedDriver(BrowserFixtureDriver())
     config, _, _, service, _ = auth_home(driver)
-    login = ProviderLoginScreen(service, "subscription", "external-browser")
+    provider_id = _provider_id(config)
+    login = ProviderLoginScreen(service, provider_id, "external-browser")
     async with AuthApp(login).run_test():
         await eventually(lambda: login._login is not None)
-        config.remove_provider("subscription")
+        config.remove_provider(provider_id)
         driver.release.set()
         await eventually(lambda: login.result is not None)
         assert login.result.state == "failed"
@@ -337,28 +357,29 @@ async def test_full_tui_uses_runtime_auth_and_preserves_managed_provider_edit(
     tmp_path,
     managed_runtime,
 ):
-    _, drivers, policies, _ = managed_runtime
+    configs, drivers, policies, _ = managed_runtime
+    provider_id = _provider_id(configs)
     application = LocalApplication.build(tmp_path, auth_drivers=drivers, service_policies=policies)
     app = OuroTuiApp(application=application)
     async with run_ready_app(app, size=(100, 40)) as pilot:
         controller = app._controller
         assert controller.provider_auth() is application.provider_auth
         configuration = ConfigurationFacade(tmp_path)
-        before = configuration.provider("subscription")
+        before = configuration.provider(provider_id)
         profile = profile_for_provider(before, ())
         editor = ProviderConfigurationScreen(profile, before)
         assert "provider-api-key" not in choices(editor)
         assert "provider-api-key-env" not in choices(editor)
         draft = editor._draft()
         assert draft.api_key is None and draft.api_key_env is None
-        saved = await controller.update_provider(replace(draft, timeout=80))
+        saved = await controller.update_provider(provider_id, replace(draft, timeout=80))
         assert saved.credential == before.credential and saved.auth_driver == before.auth_driver
         assert saved.timeout == 80
         # A managed setup default reaches the creation use case without a key field.
         managed_profile = replace(
             profile,
             auth_driver=before.auth_driver,
-            default_provider_id="second",
+            display_name="Second",
             base_url=before.base_url,
         )
         creation = ProviderConfigurationScreen(managed_profile)._draft()
@@ -368,7 +389,7 @@ async def test_full_tui_uses_runtime_auth_and_preserves_managed_provider_edit(
         assert created.credential.reference != before.credential.reference
         await pilot.press("ctrl+p")
         await choose(app, pilot, "Manage providers")
-        await choose(app, pilot, "subscription")
+        await choose(app, pilot, "Subscription")
         await choose(app, pilot, "Authentication")
         assert isinstance(app.screen, ProviderAuthenticationScreen)
         await eventually(lambda: "status" in choices(app.screen))
@@ -377,19 +398,19 @@ async def test_full_tui_uses_runtime_auth_and_preserves_managed_provider_edit(
         login = app.screen
         await eventually(lambda: login.result is not None)
         assert login.result.state == "succeeded"
-        assert (await application.provider_auth.status("subscription")).state == "ready"
+        assert (await application.provider_auth.status(provider_id)).state == "ready"
 
 
 async def test_unavailable_store_status_and_failed_begin_stay_in_management_ui(
     auth_home, monkeypatch
 ):
-    _, _, credentials, service, _ = auth_home(BrowserFixtureDriver())
+    config, _, credentials, service, _ = auth_home(BrowserFixtureDriver())
 
     async def unavailable(_credential_id):
         raise AuthError("credential_store_error")
 
     monkeypatch.setattr(credentials, "status", unavailable)
-    screen = ProviderAuthenticationScreen(service, "subscription")
+    screen = ProviderAuthenticationScreen(service, _provider_id(config))
     app = AuthApp(screen)
     async with app.run_test() as pilot:
         await eventually(lambda: "status" in choices(screen))
@@ -414,7 +435,10 @@ async def test_static_authentication_has_no_login_method_and_disables_logout(aut
 
 async def test_corrupt_credentials_do_not_prevent_full_tui_management(tmp_path, managed_runtime):
     configs, drivers, policies, _ = managed_runtime
-    credential_id = configs.get_provider("subscription").credential_ref.name
+    provider_id = _provider_id(configs)
+    provider = configs.get_provider(provider_id)
+    assert provider is not None
+    credential_id = provider.credential_ref.name
     directory = tmp_path / "credentials"
     directory.mkdir()
     (directory / f"{credential_id}.json").write_text(
@@ -423,7 +447,7 @@ async def test_corrupt_credentials_do_not_prevent_full_tui_management(tmp_path, 
     application = LocalApplication.build(tmp_path, auth_drivers=drivers, service_policies=policies)
     app = OuroTuiApp(application=application)
     async with run_ready_app(app):
-        screen = ProviderAuthenticationScreen(app._controller.provider_auth(), "subscription")
+        screen = ProviderAuthenticationScreen(app._controller.provider_auth(), provider_id)
         await app.push_screen(screen)
         await eventually(lambda: "status" in choices(screen))
         assert choices(screen)["status"].trailing == "unavailable"
@@ -431,7 +455,8 @@ async def test_corrupt_credentials_do_not_prevent_full_tui_management(tmp_path, 
 
 
 async def test_full_tui_shutdown_settles_shared_pending_login(tmp_path, managed_runtime):
-    _, drivers, policies, _ = managed_runtime
+    configs, drivers, policies, _ = managed_runtime
+    provider_id = _provider_id(configs)
     driver = GatedDriver(drivers[0])
     application = LocalApplication.build(
         tmp_path,
@@ -441,11 +466,11 @@ async def test_full_tui_shutdown_settles_shared_pending_login(tmp_path, managed_
     app = OuroTuiApp(application=application)
     async with run_ready_app(app):
         login = ProviderLoginScreen(
-            app._controller.provider_auth(), "subscription", "external-browser"
+            app._controller.provider_auth(), provider_id, "external-browser"
         )
         await app.push_screen(login)
         await eventually(lambda: login._login is not None)
     assert driver.cleaned == 1
     assert login._login_task.done()
     with pytest.raises(AuthError, match="closed"):
-        await application.provider_auth.begin("subscription", "external-browser")
+        await application.provider_auth.begin(provider_id, "external-browser")

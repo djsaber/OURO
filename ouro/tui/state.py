@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Literal
 
 from ouro.application.agent_models import AgentInteractionView
+from ouro.application.models import AvailableModel
 from ouro.application.runtime_activity import reduce_runtime_activity
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.events import EventRecord
@@ -122,11 +123,19 @@ def describe_run_pause(run: RunRecord) -> str:
 def project_run_presentation(
     run: RunRecord,
     messages: Iterable[MessageRecord] = (),
+    *,
+    models: Iterable[AvailableModel] = (),
 ) -> RunPresentation:
+    available_models = tuple(models)
     requests = tuple(
         ModelRequestPresentation(
             message_id=message.message_id,
-            model=response.endpoint_id or response.model_id,
+            model=_presented_model_name(
+                available_models,
+                provider_id=response.provider_id,
+                endpoint_id=response.endpoint_id,
+                model_id=response.model_id,
+            ),
             reasoning_seconds=(
                 max(0.0, (response.reasoning_ended_at - response.started_at).total_seconds())
                 if response.reasoning_ended_at is not None
@@ -136,8 +145,10 @@ def project_run_presentation(
         for message in messages
         if message.run_id == run.run_id and (response := message.model_response) is not None
     )
-    model = run.model_endpoint_id or (
-        requests[-1].model if requests else run.model or "unknown model"
+    model = requests[-1].model if requests else _presented_model_name(
+        available_models,
+        endpoint_id=run.model_endpoint_id,
+        model_id=run.model,
     )
     duration = (
         max(0.0, (run.ended_at - run.started_at).total_seconds())
@@ -157,12 +168,44 @@ def project_run_presentation(
 def project_run_presentations(
     runs: Iterable[RunRecord],
     messages: Iterable[MessageRecord] = (),
+    *,
+    models: Iterable[AvailableModel] = (),
 ) -> tuple[RunPresentation, ...]:
+    available_models = tuple(models)
     messages_by_run: dict[str, list[MessageRecord]] = {}
     for message in messages:
         if message.run_id is not None:
             messages_by_run.setdefault(message.run_id, []).append(message)
-    return tuple(project_run_presentation(run, messages_by_run.get(run.run_id, ())) for run in runs)
+    return tuple(
+        project_run_presentation(
+            run,
+            messages_by_run.get(run.run_id, ()),
+            models=available_models,
+        )
+        for run in runs
+    )
+
+
+def _presented_model_name(
+    models: tuple[AvailableModel, ...],
+    *,
+    provider_id: str | None = None,
+    endpoint_id: str | None = None,
+    model_id: str | None = None,
+) -> str:
+    candidates = models
+    if provider_id is not None:
+        candidates = tuple(model for model in candidates if model.provider_id == provider_id)
+    if endpoint_id is not None:
+        candidates = tuple(model for model in candidates if model.endpoint_id == endpoint_id)
+    elif model_id is not None:
+        candidates = tuple(model for model in candidates if model.model_id == model_id)
+    if len(candidates) > 1 and model_id is not None:
+        candidates = tuple(model for model in candidates if model.model_id == model_id)
+    if len(candidates) == 1:
+        model = candidates[0]
+        return model.display_name or model.model_id
+    return model_id or "unknown model"
 
 
 @dataclass
@@ -334,7 +377,7 @@ class TuiSessionProjection:
             self._reasoning_seen = False
             self._reasoning_finished = False
             self._reasoning_duration_seconds = None
-            self._model = _string(payload.get("endpoint")) or _string(payload.get("model"))
+            self._model = _string(payload.get("model"))
         elif event.event_type == "model_text_delta":
             assistant_delta = _string(payload.get("text")) or ""
             self._assistant_text.append(assistant_delta)

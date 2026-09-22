@@ -11,7 +11,7 @@ from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.cli.main import main
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime, run_json, run_print
-from ouro.config import openai_chat_completions_effort_reasoning
+from ouro.config import ProviderConfigManager, openai_chat_completions_effort_reasoning
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningRequest
@@ -23,6 +23,19 @@ from ouro.tools import ToolRegistry, builtin_tools
 from ouro.tools.builtin_shell import detect_command_shell
 
 MCP_ECHO_SERVER = Path(__file__).parents[1] / "mcp" / "fixtures" / "echo_server.py"
+
+
+def _only_provider_id(home: Path) -> str:
+    providers = ProviderConfigManager(home).snapshot(include_builtin=False).providers
+    assert len(providers) == 1
+    return providers[0].provider_id
+
+
+def _endpoint_id_for_model(home: Path, provider_id: str, model_id: str) -> str:
+    provider = ProviderConfigManager(home).get_provider(provider_id, include_builtin=False)
+    assert provider is not None
+    endpoint = next(item for item in provider.endpoints if item.model_id == model_id)
+    return endpoint.endpoint_id
 
 
 def _expected_builtin_tool_names() -> list[str]:
@@ -482,17 +495,17 @@ def test_build_runtime_reads_local_config_file(tmp_path, monkeypatch) -> None:
         json.dumps(
             {
                 "providers": {
-                    "default": "configured",
+                    "default": "provider_generated",
                     "items": {
-                        "configured": {
+                        "provider_generated": {
+                            "display_name": "Configured",
                             "provider_type": "custom",
                             "protocol": "openai-chat-completions",
-                            "provider_id": "configured",
                             "credential_ref": "env:OURO_TEST_KEY",
                             "timeout_seconds": 9.0,
-                            "default_endpoint": "default",
+                            "default_endpoint": "endpoint_generated",
                             "endpoints": {
-                                "default": {
+                                "endpoint_generated": {
                                     "model_id": "configured-model",
                                     "base_url": "https://configured.test/v1",
                                 }
@@ -510,7 +523,7 @@ def test_build_runtime_reads_local_config_file(tmp_path, monkeypatch) -> None:
     provider = runtime.adapter.provider
     assert isinstance(provider, OpenAIChatCompletionsProvider)
     assert runtime.adapter.model.model_id == "configured-model"
-    assert runtime.adapter.model.provider_id == "configured"
+    assert runtime.adapter.model.provider_id == "provider_generated"
     assert provider.base_url == "https://configured.test/v1"
     assert provider.timeout == 9.0
 
@@ -735,7 +748,9 @@ def test_provider_commands_manage_config_and_runtime_default(
     set_payload = json.loads(capsys.readouterr().out)
 
     assert set_code == 0
-    assert set_payload["provider"]["provider_id"] == "glm"
+    provider_id = set_payload["provider"]["provider_id"]
+    assert provider_id.startswith("provider_")
+    assert set_payload["provider"]["display_name"] == "glm"
     assert set_payload["provider"]["credential"] == "env:OURO_TEST_KEY"
     assert set_payload["provider"]["provider_options"] == {
         "nested": {"password": "***"},
@@ -747,9 +762,8 @@ def test_provider_commands_manage_config_and_runtime_default(
         [
             "provider",
             "endpoint",
-            "set",
-            "glm",
-            "default",
+            "add",
+            provider_id,
             "--home",
             str(tmp_path),
             "--model",
@@ -764,20 +778,26 @@ def test_provider_commands_manage_config_and_runtime_default(
     assert endpoint_code == 0
     assert endpoint_payload["endpoint"]["model_id"] == "glm-test"
     assert endpoint_payload["endpoint"]["default"] is True
+    endpoint_id = endpoint_payload["endpoint"]["endpoint_id"]
+    assert endpoint_id.startswith("endpoint_")
 
-    use_code = main(["provider", "use", "glm", "--home", str(tmp_path), "--json"])
+    use_code = main(["provider", "use", provider_id, "--home", str(tmp_path), "--json"])
     use_payload = json.loads(capsys.readouterr().out)
     assert use_code == 0
-    assert use_payload["default"] == "glm"
+    assert use_payload["default"] == provider_id
 
     list_code = main(["provider", "list", "--home", str(tmp_path), "--json"])
     list_payload = json.loads(capsys.readouterr().out)
 
     assert list_code == 0
-    assert list_payload["default"] == "glm"
-    assert {provider["provider_id"] for provider in list_payload["providers"]} == {"glm"}
+    assert list_payload["default"] == provider_id
+    assert {provider["provider_id"] for provider in list_payload["providers"]} == {
+        provider_id
+    }
 
-    show_code = main(["provider", "show", "glm", "--home", str(tmp_path), "--json"])
+    show_code = main(
+        ["provider", "show", provider_id, "--home", str(tmp_path), "--json"]
+    )
     show_output = capsys.readouterr().out
     show_payload = json.loads(show_output)
 
@@ -790,7 +810,8 @@ def test_provider_commands_manage_config_and_runtime_default(
 
     provider = runtime.adapter.provider
     assert isinstance(provider, OpenAIChatCompletionsProvider)
-    assert runtime.adapter.model.provider_id == "glm"
+    assert runtime.adapter.model.provider_id == provider_id
+    assert runtime.adapter.model.endpoint_id == endpoint_id
     assert runtime.adapter.model.model_id == "glm-test"
     assert provider.base_url == "https://example.test/v1"
     assert provider.api_key == "secret"
@@ -805,7 +826,7 @@ def test_provider_commands_manage_config_and_runtime_default(
         [
             "provider",
             "update",
-            "glm",
+            provider_id,
             "--home",
             str(tmp_path),
             "--provider-options",
@@ -843,6 +864,7 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
         == 0
     )
     capsys.readouterr()
+    provider_id = _only_provider_id(tmp_path)
 
     list_code = main(["provider", "list", "--home", str(tmp_path), "--json"])
     list_payload = json.loads(capsys.readouterr().out)
@@ -853,9 +875,8 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
         [
             "provider",
             "endpoint",
-            "set",
-            "glm",
-            "reasoning",
+            "add",
+            provider_id,
             "--home",
             str(tmp_path),
             "--model",
@@ -886,24 +907,27 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
 
     assert set_code == 0
     endpoint = set_payload["endpoint"]
-    assert endpoint["endpoint_id"] == "reasoning"
+    endpoint_id = endpoint["endpoint_id"]
+    assert endpoint_id.startswith("endpoint_")
     assert endpoint["supports_tools"] is False
     assert endpoint["supports_vision"] is True
     assert endpoint["supports_streaming"] is False
     assert endpoint["reasoning"] == reasoning.model_dump(mode="json")
 
-    list_code = main(["provider", "endpoint", "list", "glm", "--home", str(tmp_path), "--json"])
+    list_code = main(
+        ["provider", "endpoint", "list", provider_id, "--home", str(tmp_path), "--json"]
+    )
     list_payload = json.loads(capsys.readouterr().out)
     assert list_code == 0
-    assert list_payload["default_endpoint"] == "reasoning"
+    assert list_payload["default_endpoint"] == endpoint_id
 
     show_code = main(
         [
             "provider",
             "endpoint",
             "show",
-            "glm",
-            "reasoning",
+            provider_id,
+            endpoint_id,
             "--home",
             str(tmp_path),
             "--json",
@@ -914,13 +938,13 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
     assert show_payload["endpoint"]["api_path"] == "/chat/completions"
     assert show_payload["endpoint"]["supports_structured_output"] is True
 
-    use_code = main(["provider", "use", "glm", "--home", str(tmp_path), "--json"])
+    use_code = main(["provider", "use", provider_id, "--home", str(tmp_path), "--json"])
     use_payload = json.loads(capsys.readouterr().out)
     assert use_code == 0
-    assert use_payload["default"] == "glm"
+    assert use_payload["default"] == provider_id
 
     runtime = build_default_runtime(tmp_path)
-    assert runtime.adapter.model.endpoint_id == "reasoning"
+    assert runtime.adapter.model.endpoint_id == endpoint_id
     assert runtime.adapter.model.temperature == 0.2
     assert runtime.adapter.model.context_window == 200_000
     assert runtime.adapter.model.max_output_tokens == 16_000
@@ -942,8 +966,8 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
             "provider",
             "endpoint",
             "remove",
-            "glm",
-            "reasoning",
+            provider_id,
+            endpoint_id,
             "--home",
             str(tmp_path),
             "--json",
@@ -995,14 +1019,14 @@ def test_provider_endpoint_reasoning_preset_configures_custom_model(
         == 0
     )
     capsys.readouterr()
+    provider_id = _only_provider_id(tmp_path)
 
     code = main(
         [
             "provider",
             "endpoint",
-            "set",
-            "custom",
-            "chat",
+            "add",
+            provider_id,
             "--home",
             str(tmp_path),
             "--model",
@@ -1019,11 +1043,12 @@ def test_provider_endpoint_reasoning_preset_configures_custom_model(
 
     assert code == 0
     reasoning = payload["endpoint"]["reasoning"]
+    endpoint_id = payload["endpoint"]["endpoint_id"]
     assert reasoning["capability"]["activation"] == "toggle"
     assert reasoning["profile"]["variants"]["enabled"] == enabled_payload
     assert (
         ConfigurationFacade(tmp_path)
-        .endpoint("custom", "chat")
+        .endpoint(provider_id, endpoint_id)
         .reasoning.model_dump(mode="json", exclude_none=True)
         == reasoning
     )
@@ -1062,13 +1087,16 @@ def test_provider_remove_clears_user_visible_default(tmp_path, capsys) -> None:
                 "--home",
                 str(tmp_path),
                 "--default",
+                "--json",
             ]
         )
         == 0
     )
-    capsys.readouterr()
+    provider_id = json.loads(capsys.readouterr().out)["provider"]["provider_id"]
 
-    remove_code = main(["provider", "remove", "local", "--home", str(tmp_path), "--json"])
+    remove_code = main(
+        ["provider", "remove", provider_id, "--home", str(tmp_path), "--json"]
+    )
     remove_payload = json.loads(capsys.readouterr().out)
 
     assert remove_code == 0
@@ -1116,15 +1144,15 @@ def test_provider_add_api_path_defaults_and_endpoint_inherits(
         )
         == 0
     )
+    provider_id = _only_provider_id(tmp_path)
 
     assert (
         main(
             [
                 "provider",
                 "endpoint",
-                "set",
-                "glm",
-                "default",
+                "add",
+                provider_id,
                 "--home",
                 str(tmp_path),
                 "--model",
@@ -1143,9 +1171,8 @@ def test_provider_add_api_path_defaults_and_endpoint_inherits(
             [
                 "provider",
                 "endpoint",
-                "set",
-                "glm",
-                "reasoning",
+                "add",
+                provider_id,
                 "--home",
                 str(tmp_path),
                 "--model",
@@ -1158,7 +1185,7 @@ def test_provider_add_api_path_defaults_and_endpoint_inherits(
         == 0
     )
 
-    assert main(["provider", "use", "glm", "--home", str(tmp_path)]) == 0
+    assert main(["provider", "use", provider_id, "--home", str(tmp_path)]) == 0
 
     runtime = build_default_runtime(tmp_path)
     provider = cast(OpenAIChatCompletionsProvider, runtime.adapter.provider)
@@ -1193,15 +1220,15 @@ def test_provider_endpoint_set_api_path_overrides_provider_default(
         )
         == 0
     )
+    provider_id = _only_provider_id(tmp_path)
 
     assert (
         main(
             [
                 "provider",
                 "endpoint",
-                "set",
-                "glm",
-                "default",
+                "add",
+                provider_id,
                 "--home",
                 str(tmp_path),
                 "--model",
@@ -1219,9 +1246,8 @@ def test_provider_endpoint_set_api_path_overrides_provider_default(
             [
                 "provider",
                 "endpoint",
-                "set",
-                "glm",
-                "chat",
+                "add",
+                provider_id,
                 "--home",
                 str(tmp_path),
                 "--model",
@@ -1236,7 +1262,7 @@ def test_provider_endpoint_set_api_path_overrides_provider_default(
         == 0
     )
 
-    assert main(["provider", "use", "glm", "--home", str(tmp_path)]) == 0
+    assert main(["provider", "use", provider_id, "--home", str(tmp_path)]) == 0
 
     runtime = build_default_runtime(tmp_path)
     provider = cast(OpenAIChatCompletionsProvider, runtime.adapter.provider)
@@ -1271,7 +1297,9 @@ def test_provider_add_base_url_without_model_creates_empty_provider(
     payload = json.loads(capsys.readouterr().out)
 
     assert code == 0
-    assert payload["provider"]["provider_id"] == "glm"
+    provider_id = payload["provider"]["provider_id"]
+    assert provider_id.startswith("provider_")
+    assert payload["provider"]["display_name"] == "glm"
     assert payload["provider"]["base_url"] == "https://example.test/v1"
     assert payload["provider"]["endpoint_count"] == 0
 
@@ -1300,10 +1328,11 @@ def test_provider_add_and_update_configure_validated_retry_policy(tmp_path, caps
         ]
     )
     payload = json.loads(capsys.readouterr().out)
-    provider = ConfigurationFacade(tmp_path).provider("glm")
+    provider_id = payload["provider"]["provider_id"]
+    provider = ConfigurationFacade(tmp_path).provider(provider_id)
 
     assert code == 0
-    assert payload["provider"]["provider_id"] == "glm"
+    assert provider_id.startswith("provider_")
     assert provider is not None
     assert provider.retry_policy.max_attempts == 3
     assert provider.retry_policy.initial_backoff_seconds == 0.25
@@ -1313,7 +1342,7 @@ def test_provider_add_and_update_configure_validated_retry_policy(tmp_path, caps
         [
             "provider",
             "update",
-            "glm",
+            provider_id,
             "--home",
             str(tmp_path),
             "--retry-attempts",
@@ -1325,10 +1354,10 @@ def test_provider_add_and_update_configure_validated_retry_policy(tmp_path, caps
 
     assert code == 2
     assert error["error_type"] == "ConfigError"
-    assert ConfigurationFacade(tmp_path).provider("glm") == provider
+    assert ConfigurationFacade(tmp_path).provider(provider_id) == provider
 
 
-def test_provider_endpoint_set_default_updates_existing_endpoint(
+def test_provider_endpoint_add_default_selects_generated_endpoint(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -1352,15 +1381,15 @@ def test_provider_endpoint_set_default_updates_existing_endpoint(
         )
         == 0
     )
+    provider_id = _only_provider_id(tmp_path)
 
     assert (
         main(
             [
                 "provider",
                 "endpoint",
-                "set",
-                "glm",
-                "first",
+                "add",
+                provider_id,
                 "--home",
                 str(tmp_path),
                 "--model",
@@ -1376,9 +1405,8 @@ def test_provider_endpoint_set_default_updates_existing_endpoint(
             [
                 "provider",
                 "endpoint",
-                "set",
-                "glm",
-                "second",
+                "add",
+                provider_id,
                 "--home",
                 str(tmp_path),
                 "--model",
@@ -1390,11 +1418,12 @@ def test_provider_endpoint_set_default_updates_existing_endpoint(
         )
         == 0
     )
+    second_endpoint_id = _endpoint_id_for_model(tmp_path, provider_id, "second-model")
 
-    assert main(["provider", "use", "glm", "--home", str(tmp_path)]) == 0
+    assert main(["provider", "use", provider_id, "--home", str(tmp_path)]) == 0
 
     runtime = build_default_runtime(tmp_path)
-    assert runtime.adapter.model.endpoint_id == "second"
+    assert runtime.adapter.model.endpoint_id == second_endpoint_id
     provider = cast(OpenAIChatCompletionsProvider, runtime.adapter.provider)
     assert provider.base_url == "https://second.example.test/v1"
 
@@ -1450,13 +1479,14 @@ def test_runtime_composes_configured_compaction_endpoint(tmp_path) -> None:
                 "providers": {
                     "default": "faux",
                     "items": {
-                        "glm": {
-                            "provider_id": "glm",
+                        "provider_generated": {
+                            "display_name": "GLM",
                             "provider_type": "custom",
                             "protocol": "openai-chat-completions",
-                            "default_endpoint": "summary",
+                            "default_endpoint": "endpoint_generated",
                             "endpoints": {
-                                "summary": {
+                                "endpoint_generated": {
+                                    "display_name": "Summary",
                                     "model_id": "summary-model",
                                     "base_url": "https://summary.example.test/v1",
                                 }
@@ -1474,8 +1504,8 @@ def test_runtime_composes_configured_compaction_endpoint(tmp_path) -> None:
             {
                 "compaction": {
                     "model": {
-                        "provider_id": "glm",
-                        "endpoint_id": "summary",
+                        "provider_id": "provider_generated",
+                        "endpoint_id": "endpoint_generated",
                         "temperature": 0.1,
                     }
                 }
@@ -1490,8 +1520,8 @@ def test_runtime_composes_configured_compaction_endpoint(tmp_path) -> None:
     assert isinstance(strategy, LLMSummaryCompactionStrategy)
     assert runtime.adapter.model.provider_id == "faux"
     assert strategy.configured_adapter is not None
-    assert strategy.configured_adapter.model.provider_id == "glm"
-    assert strategy.configured_adapter.model.endpoint_id == "summary"
+    assert strategy.configured_adapter.model.provider_id == "provider_generated"
+    assert strategy.configured_adapter.model.endpoint_id == "endpoint_generated"
 
 
 def test_missing_compaction_endpoint_does_not_break_runtime_composition(tmp_path) -> None:

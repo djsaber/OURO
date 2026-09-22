@@ -42,8 +42,8 @@ API 的 none 映射到 OURO 的 reasoning disabled；Astra 不提供关闭思考
 ## 创建与更新
 
 ```powershell
-uv run --frozen ouro provider add api --type openai
-uv run --frozen ouro provider add personal --type openai-codex
+uv run --frozen ouro provider add "OpenAI API" --type openai
+uv run --frozen ouro provider add "Personal Codex" --type openai-codex
 uv run --frozen ouro provider auth login personal --method browser --open-browser
 ```
 

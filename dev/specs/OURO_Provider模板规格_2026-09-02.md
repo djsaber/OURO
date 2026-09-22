@@ -11,7 +11,7 @@
 [Provider 类型与协议](OURO_Provider类型与协议规格_2026-09-02.md)定义。内联模板目录继续由
 `ouro/config/provider_templates.py` 维护。
 
-当前 OpenAI API 模板修订 3、Codex 订阅模板修订 2；模型清单、能力依据与协议更新边界见
+当前 OpenAI API 模板修订 4、Codex 订阅模板修订 3；模型清单、能力依据与协议更新边界见
 [OpenAI 预制配置说明](../../docs/OURO_OpenAI预制配置说明_ZH_2026-09-19.md)。verified_on 表示文档核对日期，
 真实调用的验收范围在使用指南中单独记录。
 
@@ -31,7 +31,7 @@
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "templates": {
     "openai": {
       "template_id": "openai",
@@ -42,9 +42,13 @@
       "credential_env": "OPENAI_API_KEY",
       "base_url": "https://api.openai.com/v1",
       "default_endpoint": "gpt-5.6-sol",
-      "endpoints": {
-        "gpt-5.6-sol": {"model_id": "gpt-5.6-sol"}
-      },
+      "endpoints": [
+        {
+          "endpoint_id": "gpt-5.6-sol",
+          "display_name": "GPT-5.6 Sol",
+          "model_id": "gpt-5.6-sol"
+        }
+      ],
       "meta": {
         "origin": "inline",
         "baseline_revision": 1,
@@ -72,7 +76,10 @@
 
 ## 版本模型
 
-当前结构版本为 2。模板 auth_driver 默认 static；credential_env 可省略，managed 模板必须省略或置为 null。
+当前结构版本为 3。该版本移除了模板中的建议 Provider ID，并为模板 Endpoint 增加展示名；不读取或转换
+旧结构。模板中的 `endpoint_id` 是模板目录内部用于版本合并的稳定身份，不会成为实例 Endpoint ID；实例化时
+OURO 为 Provider 和每个 Endpoint 分别生成内部 ID。模板 auth_driver 默认 static；credential_env 可省略，
+managed 模板必须省略或置为 null。
 静态模板缺少 credential_env 时创建 none 引用，可在创建时显式提供 API Key。模板不提供 credential id 或账户材料；
 managed 引用属于实例，创建/显式替换时生成。模板业务指纹包含认证默认值，实例模板绑定保存其基线；普通模板更新
 保留实例认证选择与 managed 引用，不因模板默认值改变而换绑。详细合并语义见 Provider 配置规格。

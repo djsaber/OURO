@@ -28,11 +28,11 @@ def test_provider_help_explains_integrated_and_custom_workflows(capsys) -> None:
     assert "Integrated types install reviewed Endpoint templates" in help_text
     assert "custom types start empty" in help_text
     assert "Typical workflow:" in help_text
-    assert "provider endpoint set" in help_text
+    assert "provider endpoint add" in help_text
 
 
-def test_endpoint_set_help_documents_reasoning_contract_choices(capsys) -> None:
-    help_text = _subcommand_help(["provider", "endpoint", "set"], capsys)
+def test_endpoint_add_help_documents_reasoning_contract_choices(capsys) -> None:
+    help_text = _subcommand_help(["provider", "endpoint", "add"], capsys)
 
     assert "model route:" in help_text
     assert "endpoint capabilities:" in help_text

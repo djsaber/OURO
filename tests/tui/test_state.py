@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from ouro.application.models import AvailableModel
 from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord
 from ouro.tui.state import (
@@ -52,6 +53,34 @@ def test_run_presentation_preserves_failure_information() -> None:
 
     assert presentation.status == "failed"
     assert presentation.error == "provider request failed"
+
+
+@pytest.mark.parametrize(
+    ("display_name", "expected"),
+    (("Friendly model", "Friendly model"), (None, "provider-model")),
+)
+def test_run_presentation_uses_display_name_with_model_id_fallback(
+    display_name: str | None,
+    expected: str,
+) -> None:
+    run = RunRecord(
+        session_id="ses_test",
+        status="completed",
+        model="provider-model",
+        model_endpoint_id="internal-endpoint",
+    )
+    model = AvailableModel(
+        key="provider/internal-endpoint",
+        provider_id="provider",
+        endpoint_id="internal-endpoint",
+        model_id="provider-model",
+        display_name=display_name,
+    )
+
+    presentation = project_run_presentation(run, models=(model,))
+
+    assert presentation.model == expected
+    assert presentation.model != "internal-endpoint"
 
 
 def test_projection_accumulates_stream_and_ignores_duplicate_events() -> None:

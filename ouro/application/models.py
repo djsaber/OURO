@@ -27,6 +27,7 @@ class AvailableModel(OuroModel):
 
     key: str
     provider_id: str
+    provider_display_name: str | None = None
     endpoint_id: str
     model_id: str
     display_name: str | None = None
@@ -146,9 +147,10 @@ class ConfiguredModelCatalog:
                     AvailableModel(
                         key=f"{provider.provider_id}/{endpoint.endpoint_id}",
                         provider_id=provider.provider_id,
+                        provider_display_name=provider.display_name,
                         endpoint_id=endpoint.endpoint_id,
                         model_id=endpoint.model_id,
-                        display_name=str(endpoint.metadata.get("display_name") or "") or None,
+                        display_name=endpoint.display_name,
                         temperature=endpoint.temperature,
                         context_window=endpoint.context_window,
                         max_output_tokens=endpoint.max_output_tokens,

@@ -206,6 +206,7 @@ class ConfigurationFacade:
         self,
         *,
         change: ConfigurationChange | None = None,
+        changed_provider_id: str | None = None,
         template_update: ProviderTemplateUpdateView | None = None,
     ) -> ProviderCatalogView:
         snapshot = self.providers.snapshot(include_builtin=False)
@@ -217,6 +218,7 @@ class ConfigurationFacade:
         return ProviderCatalogView(
             config_path=str(snapshot.config_path),
             default_provider_id=default_provider_id,
+            changed_provider_id=changed_provider_id,
             providers=[
                 provider_view(
                     provider,
@@ -265,12 +267,11 @@ class ConfigurationFacade:
 
     def add_provider(
         self,
-        provider_id: str,
         *,
+        display_name: str,
         provider_type: ProviderType,
         protocol: ProviderProtocol | None = None,
         auth_driver: str | None = None,
-        endpoint_id: str | None = None,
         model: str | None = None,
         base_url: str | None = None,
         api_path: str | None = None,
@@ -288,7 +289,7 @@ class ConfigurationFacade:
         make_default: bool = False,
     ) -> ProviderCatalogView:
         retry_policy = self._resolve_provider_retry_policy(
-            provider_id,
+            None,
             preserve_current=False,
             retry_policy=retry_policy,
             max_attempts=retry_max_attempts,
@@ -299,12 +300,11 @@ class ConfigurationFacade:
         if provider_type in INTEGRATED_PROVIDER_TYPES:
             entry = self.provider_templates.get_entry(provider_type)
             self._validate_template_protocol(entry, protocol)
-            self.providers.create_from_template(
+            created = self.providers.create_from_template(
                 entry.template,
                 auth_driver=auth_driver,
                 template_origin=entry.origin,
-                provider_id=provider_id,
-                endpoint_id=endpoint_id,
+                display_name=display_name,
                 model_id=model,
                 base_url=base_url,
                 api_path=api_path,
@@ -320,12 +320,11 @@ class ConfigurationFacade:
         else:
             self._reject_template_options(
                 provider_type,
-                endpoint_id=endpoint_id,
                 model=model,
                 make_default=make_default,
             )
-            self.providers.create_provider(
-                provider_id,
+            created = self.providers.create_provider(
+                display_name=display_name,
                 protocol=protocol,
                 auth_driver=auth_driver,
                 provider_type=provider_type,
@@ -340,14 +339,15 @@ class ConfigurationFacade:
                 enabled=enabled,
             )
         return self.provider_catalog(
-            change=configuration_change("providers", "created", "next_request")
+            change=configuration_change("providers", "created", "next_request"),
+            changed_provider_id=created.provider_id,
         )
 
     def update_provider(
         self,
         provider_id: str,
         *,
-        endpoint_id: str | None = None,
+        display_name: str | None = None,
         model: str | None = None,
         base_url: str | None = None,
         api_path: str | None = None,
@@ -380,7 +380,7 @@ class ConfigurationFacade:
                 entry.template,
                 template_origin=entry.origin,
                 provider_id=provider_id,
-                endpoint_id=endpoint_id,
+                display_name=display_name,
                 model_id=model,
                 base_url=base_url,
                 api_path=api_path,
@@ -397,12 +397,12 @@ class ConfigurationFacade:
         else:
             self._reject_template_options(
                 current.provider_type,
-                endpoint_id=endpoint_id,
                 model=model,
                 make_default=False,
             )
             self.providers.update_provider(
                 provider_id,
+                display_name=display_name,
                 base_url=base_url,
                 api_path=api_path,
                 api_key=api_key,
@@ -417,6 +417,7 @@ class ConfigurationFacade:
             template_update = None
         return self.provider_catalog(
             change=configuration_change("providers", "updated", "next_request"),
+            changed_provider_id=provider_id,
             template_update=template_update,
         )
 
@@ -424,6 +425,7 @@ class ConfigurationFacade:
         self,
         provider_id: str,
         *,
+        display_name: str | None = None,
         base_url: str | None = None,
         api_path: str | None = None,
         api_key: str | None = None,
@@ -450,6 +452,7 @@ class ConfigurationFacade:
             )
         self.providers.update_provider(
             provider_id,
+            display_name=display_name,
             base_url=base_url,
             api_path=api_path,
             api_key=api_key,
@@ -462,17 +465,18 @@ class ConfigurationFacade:
             make_default=make_default,
         )
         return self.provider_catalog(
-            change=configuration_change("providers", "settings_updated", "next_request")
+            change=configuration_change("providers", "settings_updated", "next_request"),
+            changed_provider_id=provider_id,
         )
 
     def replace_provider(
         self,
         provider_id: str,
         *,
+        display_name: str,
         provider_type: ProviderType,
         protocol: ProviderProtocol | None = None,
         auth_driver: str | None = None,
-        endpoint_id: str | None = None,
         model: str | None = None,
         base_url: str | None = None,
         api_path: str | None = None,
@@ -506,7 +510,7 @@ class ConfigurationFacade:
                 auth_driver=auth_driver,
                 template_origin=entry.origin,
                 provider_id=provider_id,
-                endpoint_id=endpoint_id,
+                display_name=display_name,
                 model_id=model,
                 base_url=base_url,
                 api_path=api_path,
@@ -522,12 +526,12 @@ class ConfigurationFacade:
         else:
             self._reject_template_options(
                 provider_type,
-                endpoint_id=endpoint_id,
                 model=model,
                 make_default=make_default,
             )
             self.providers.replace_provider(
                 provider_id,
+                display_name=display_name,
                 protocol=protocol,
                 auth_driver=auth_driver,
                 provider_type=provider_type,
@@ -542,7 +546,8 @@ class ConfigurationFacade:
                 enabled=enabled,
             )
         return self.provider_catalog(
-            change=configuration_change("providers", "replaced", "next_request")
+            change=configuration_change("providers", "replaced", "next_request"),
+            changed_provider_id=provider_id,
         )
 
     @staticmethod
@@ -559,7 +564,7 @@ class ConfigurationFacade:
 
     def _resolve_provider_retry_policy(
         self,
-        provider_id: str,
+        provider_id: str | None,
         *,
         preserve_current: bool,
         retry_policy: ProviderRetryPolicy | None,
@@ -582,7 +587,11 @@ class ConfigurationFacade:
             raise ConfigError("retry_policy cannot be combined with individual retry options")
         if not updates:
             return retry_policy
-        current = self.providers.get_provider(provider_id) if preserve_current else None
+        current = (
+            self.providers.get_provider(provider_id)
+            if preserve_current and provider_id is not None
+            else None
+        )
         if preserve_current and current is None:
             raise ConfigError(f"provider not found: {provider_id}")
         base_retry = current.retry_policy if current is not None else ProviderRetryPolicy()
@@ -597,13 +606,12 @@ class ConfigurationFacade:
     def _reject_template_options(
         provider_type: ProviderType,
         *,
-        endpoint_id: str | None,
         model: str | None,
         make_default: bool,
     ) -> None:
-        if endpoint_id is not None or model is not None:
+        if model is not None:
             raise ConfigError(
-                "--endpoint-id and --model require an integrated provider type; "
+                "--model requires an integrated provider type; "
                 f"{provider_type} uses explicit endpoint commands"
             )
         if make_default:
@@ -637,12 +645,12 @@ class ConfigurationFacade:
             raise ConfigError(f"endpoint not found: {provider_id}/{target}")
         return endpoint_view(endpoint, default_endpoint=provider.default_endpoint)
 
-    def save_endpoint(
+    def add_endpoint(
         self,
         provider_id: str,
-        endpoint_id: str,
         *,
-        model: str | None = None,
+        display_name: str | None = None,
+        model: str,
         base_url: str | None = None,
         api_path: str | None = None,
         temperature: float | None = None,
@@ -656,9 +664,9 @@ class ConfigurationFacade:
         request_options: Mapping[str, Any] | None = None,
         make_default: bool = False,
     ) -> ProviderEndpointCatalogView:
-        self.providers.upsert_endpoint(
+        created = self.providers.create_endpoint(
             provider_id,
-            endpoint_id,
+            display_name=display_name,
             model_id=model,
             base_url=base_url,
             api_path=api_path,
@@ -675,7 +683,52 @@ class ConfigurationFacade:
         )
         return endpoint_catalog_view(
             self._require_provider(provider_id),
-            change=configuration_change("providers", "endpoint_saved", "next_request"),
+            change=configuration_change("providers", "endpoint_created", "next_request"),
+            changed_endpoint_id=created.endpoint_id,
+        )
+
+    def update_endpoint(
+        self,
+        provider_id: str,
+        endpoint_id: str,
+        *,
+        display_name: str | None,
+        model: str | None = None,
+        base_url: str | None = None,
+        api_path: str | None = None,
+        temperature: float | None = None,
+        context_window: int | None = None,
+        max_output_tokens: int | None = None,
+        supports_tools: bool | None = None,
+        supports_vision: bool | None = None,
+        supports_streaming: bool | None = None,
+        supports_structured_output: bool | None = None,
+        reasoning: EndpointReasoningConfig | None = None,
+        request_options: Mapping[str, Any] | None = None,
+        make_default: bool = False,
+    ) -> ProviderEndpointCatalogView:
+        updated = self.providers.update_endpoint(
+            provider_id,
+            endpoint_id,
+            display_name=display_name,
+            model_id=model,
+            base_url=base_url,
+            api_path=api_path,
+            temperature=temperature,
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            supports_tools=supports_tools,
+            supports_vision=supports_vision,
+            supports_streaming=supports_streaming,
+            supports_structured_output=supports_structured_output,
+            reasoning=reasoning,
+            request_options=request_options,
+            make_default=make_default,
+        )
+        return endpoint_catalog_view(
+            self._require_provider(provider_id),
+            change=configuration_change("providers", "endpoint_updated", "next_request"),
+            changed_endpoint_id=updated.endpoint_id,
         )
 
     def use_endpoint(self, provider_id: str, endpoint_id: str) -> ProviderEndpointCatalogView:

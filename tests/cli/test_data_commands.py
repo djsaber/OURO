@@ -121,7 +121,11 @@ def test_data_import_cli_selects_several_sessions_from_full_archive(tmp_path, ca
 
 def test_data_cli_failure_is_json_and_does_not_overwrite_configuration(tmp_path, capsys):
     providers = ProviderConfigManager(tmp_path)
-    providers.create_provider("example", provider_type="custom", protocol="openai-chat-completions")
+    providers.create_provider(
+        display_name="Example",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+    )
     before = providers.config_path.read_bytes()
     assert (
         main(

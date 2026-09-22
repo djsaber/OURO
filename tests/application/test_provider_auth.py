@@ -76,9 +76,9 @@ async def auth_home(tmp_path, monkeypatch):
         protocol = (
             "anthropic-messages" if driver_id == "fixture-device" else "openai-chat-completions"
         )
-        if config.get_provider("subscription") is None:
+        if not config.snapshot(include_builtin=False).providers:
             config.create_provider(
-                "subscription",
+                display_name="Subscription",
                 provider_type="custom",
                 protocol=protocol,
                 auth_driver=driver_id,
@@ -95,34 +95,42 @@ async def auth_home(tmp_path, monkeypatch):
 
 
 async def begin(service, driver):
-    return await service.begin("subscription", driver.descriptor.methods[0].method_id)
+    return await service.begin(_provider_id(service), driver.descriptor.methods[0].method_id)
+
+
+def _provider_id(owner) -> str:
+    config = owner if isinstance(owner, ProviderConfigManager) else owner._config
+    providers = config.snapshot(include_builtin=False).providers
+    assert len(providers) == 1
+    return providers[0].provider_id
 
 
 @pytest.mark.parametrize("driver", drivers(), ids=lambda driver: driver.descriptor.driver_id)
 async def test_two_existing_drivers_share_login_status_forget_and_logout(auth_home, driver):
     config, store, credentials, service, driver = auth_home(driver)
-    assert (await service.status("subscription")).state == "missing"
+    provider_id = _provider_id(config)
+    assert (await service.status(provider_id)).state == "missing"
     assert not store.directory.exists()
-    assert await service.methods("subscription") == driver.descriptor.methods
+    assert await service.methods(provider_id) == driver.descriptor.methods
     started = await begin(service, driver)
     assert started.challenge.kind == driver.descriptor.methods[0].kind
     result = await service.wait(started.operation_id)
     assert result.state == "succeeded" and result.credential.revision == 1
     assert await service.cancel(started.operation_id) == result
     assert await service.wait(started.operation_id) == result
-    status = await service.status("subscription")
+    status = await service.status(provider_id)
     assert status.state == "ready"
-    assert status.bound_provider_ids == ("subscription",)
+    assert status.bound_provider_ids == (provider_id,)
     material = driver.encode(await credentials.read(status.credential_id))
     assert material.headers
     listed = await service.credentials()
     assert listed[0].credential == status.credential
-    assert listed[0].bound_provider_ids == ("subscription",)
+    assert listed[0].bound_provider_ids == (provider_id,)
     erased = await service.forget(status.credential_id)
-    assert erased.bound_provider_ids == ("subscription",)
+    assert erased.bound_provider_ids == (provider_id,)
     assert erased.credential.state == "logged_out"
-    assert await service.logout("subscription") == erased
-    assert (await service.status("subscription")).state == "logged_out"
+    assert await service.logout(provider_id) == erased
+    assert (await service.status(provider_id)).state == "logged_out"
     for dto in (result, status, listed[0], erased):
         serialized = dto.model_dump_json()
         assert "secret_payload" not in serialized
@@ -133,9 +141,10 @@ async def test_two_existing_drivers_share_login_status_forget_and_logout(auth_ho
 
 async def test_static_missing_provider_unknown_method_and_unknown_driver(auth_home):
     config, _, credentials, service, driver = auth_home()
+    provider_id = _provider_id(config)
     assert await service.methods("faux") == ()
     assert (await service.status("faux")).state == "static"
-    for provider, method in (("faux", "external-browser"), ("subscription", "unknown")):
+    for provider, method in (("faux", "external-browser"), (provider_id, "unknown")):
         with pytest.raises(AuthError) as error:
             await service.begin(provider, method)
         assert error.value.code == "authorization_unsupported"
@@ -143,7 +152,7 @@ async def test_static_missing_provider_unknown_method_and_unknown_driver(auth_ho
         await service.methods("missing")
     assert error.value.code == "authorization_configuration_error"
     empty = ProviderAuthService(config, credentials, ())
-    assert (await empty.status("subscription")).state == "unavailable"
+    assert (await empty.status(provider_id)).state == "unavailable"
     with pytest.raises(AuthError):
         await begin(empty, driver)
     await empty.close()
@@ -160,7 +169,9 @@ async def test_static_missing_provider_unknown_method_and_unknown_driver(auth_ho
 )
 async def test_failed_or_cancelled_relogin_keeps_previous_record(auth_home, failure, state, code):
     config, store, credentials, service, driver = auth_home()
-    credential_id = config.get_provider("subscription").credential_ref.name
+    provider = config.get_provider(_provider_id(config))
+    assert provider is not None
+    credential_id = provider.credential_ref.name
     original = await credentials.commit(
         credential_id,
         driver.descriptor.driver_id,
@@ -202,7 +213,10 @@ async def test_waiter_cancellation_does_not_cancel_login_or_second_waiter(auth_h
 )
 async def test_binding_or_revision_change_rejects_old_login(auth_home, change):
     config, store, credentials, service, driver = auth_home()
-    credential_id = config.get_provider("subscription").credential_ref.name
+    provider_id = _provider_id(config)
+    provider = config.get_provider(provider_id)
+    assert provider is not None
+    credential_id = provider.credential_ref.name
     if change == "refresh":
         await credentials.commit(
             credential_id,
@@ -212,23 +226,24 @@ async def test_binding_or_revision_change_rejects_old_login(auth_home, change):
         )
     started = await begin(service, driver)
     if change == "remove":
-        config.remove_provider("subscription")
+        config.remove_provider(provider_id)
     elif change == "replace":
         config.replace_provider(
-            "subscription",
+            provider_id,
+            display_name="Subscription",
             provider_type="custom",
             protocol="openai-chat-completions",
             auth_driver=driver.descriptor.driver_id,
             base_url="https://fixture.invalid/v1",
         )
     elif change == "base_url":
-        config.update_provider("subscription", base_url="https://other.invalid/v1")
+        config.update_provider(provider_id, base_url="https://other.invalid/v1")
     elif change == "endpoint_target":
-        config.upsert_endpoint(
-            "subscription", "chat", model_id="fixture", base_url="https://other.invalid/v1"
+        config.create_endpoint(
+            provider_id, model_id="fixture", base_url="https://other.invalid/v1"
         )
     elif change == "logout":
-        await service.logout("subscription")
+        await service.logout(provider_id)
     else:
 
         async def refresh(record):
@@ -247,8 +262,9 @@ async def test_binding_or_revision_change_rejects_old_login(auth_home, change):
 async def test_unrelated_configuration_change_does_not_invalidate_login(auth_home):
     config, _, _, service, driver = auth_home()
     started = await begin(service, driver)
-    config.update_provider("subscription", timeout_seconds=42)
-    config.upsert_endpoint("subscription", "chat", model_id="fixture", make_default=True)
+    provider_id = _provider_id(config)
+    config.update_provider(provider_id, timeout_seconds=42)
+    config.create_endpoint(provider_id, model_id="fixture", make_default=True)
     driver.release.set()
     assert (await service.wait(started.operation_id)).state == "succeeded"
 
@@ -290,7 +306,9 @@ def held_config(config):
 @pytest.mark.parametrize("action", ["cancel", "timeout", "close"])
 async def test_config_lock_wait_is_bounded_and_never_commits_late(auth_home, monkeypatch, action):
     config, store, credentials, service, driver = auth_home()
-    credential_id = config.get_provider("subscription").credential_ref.name
+    provider = config.get_provider(_provider_id(config))
+    assert provider is not None
+    credential_id = provider.credential_ref.name
     started = await begin(service, driver)
     entered = threading.Event()
     mutation = config.mutation
@@ -343,7 +361,7 @@ async def test_save_wins_cancellation_and_config_changes_wait_for_result(
     cancelled = asyncio.create_task(service.cancel(started.operation_id))
 
     def change_config():
-        config.update_provider("subscription", base_url="https://changed.invalid/v1")
+        config.update_provider(_provider_id(config), base_url="https://changed.invalid/v1")
         config_changed.set()
 
     mutation = asyncio.create_task(asyncio.to_thread(change_config))
@@ -365,7 +383,9 @@ async def test_cleanup_failure_is_not_a_successful_login(auth_home):
     result = await service.wait(started.operation_id)
     assert result.state == "failed" and result.error_code == "authorization_cleanup_failed"
     assert "fixture-secret" not in result.model_dump_json()
-    assert store.read(config.get_provider("subscription").credential_ref.name) is None
+    provider = config.get_provider(_provider_id(config))
+    assert provider is not None
+    assert store.read(provider.credential_ref.name) is None
 
 
 async def test_bounded_retention_never_discards_pending_operations(auth_home):
@@ -391,7 +411,9 @@ async def test_bounded_retention_never_discards_pending_operations(auth_home):
 async def test_expiry_status_does_not_execute_network(auth_home, can_refresh):
     driver = drivers()[0 if can_refresh else 1]
     config, _, credentials, service, _ = auth_home(driver)
-    credential_id = config.get_provider("subscription").credential_ref.name
+    provider = config.get_provider(_provider_id(config))
+    assert provider is not None
+    credential_id = provider.credential_ref.name
     await credentials.commit(
         credential_id,
         driver.descriptor.driver_id,
@@ -400,19 +422,21 @@ async def test_expiry_status_does_not_execute_network(auth_home, can_refresh):
         ),
         expected_revision=0,
     )
-    status = await service.status("subscription")
+    status = await service.status(_provider_id(config))
     assert status.state == ("refresh_needed" if can_refresh else "reauth_required")
     assert status.credential.revision == 1
 
 
 async def test_corrupt_record_is_safe_status_and_does_not_break_construction(auth_home):
     config, store, credentials, service, driver = auth_home()
-    credential_id = config.get_provider("subscription").credential_ref.name
+    provider = config.get_provider(_provider_id(config))
+    assert provider is not None
+    credential_id = provider.credential_ref.name
     await credentials.logout(credential_id, driver.descriptor.driver_id)
     (store.directory / f"{credential_id}.json").write_text(
         "fixture-private-corrupt-value", encoding="utf-8"
     )
-    status = await service.status("subscription")
+    status = await service.status(_provider_id(config))
     assert status.state == "unavailable" and status.error_code == "credential_store_error"
     assert "fixture-private" not in status.model_dump_json()
 
@@ -422,12 +446,14 @@ async def test_forget_reports_shared_references_and_removal_does_not_erase_secre
     started = await begin(service, driver)
     driver.release.set()
     credential = (await service.wait(started.operation_id)).credential
+    provider_id = _provider_id(config)
     raw = config.load_raw()
-    raw["providers"]["items"]["shared"] = dict(raw["providers"]["items"]["subscription"])
-    raw["providers"]["items"]["shared"]["provider_id"] = "shared"
+    raw["providers"]["items"]["shared"] = dict(raw["providers"]["items"][provider_id])
     JsonConfigFile(config.root, name="providers.json").write(raw)
-    assert (await service.status("subscription")).bound_provider_ids == ("shared", "subscription")
-    config.remove_provider("subscription")
+    assert (await service.status(provider_id)).bound_provider_ids == tuple(
+        sorted((provider_id, "shared"))
+    )
+    config.remove_provider(provider_id)
     assert store.read(credential.credential_id).state == "active"
     assert (await service.credentials())[0].bound_provider_ids == ("shared",)
     forgotten = await service.forget(credential.credential_id)
@@ -439,7 +465,9 @@ async def test_forget_reports_shared_references_and_removal_does_not_erase_secre
 
 async def test_forget_missing_but_bound_record_blocks_pending_login(auth_home):
     config, store, _, service, driver = auth_home()
-    credential_id = config.get_provider("subscription").credential_ref.name
+    provider = config.get_provider(_provider_id(config))
+    assert provider is not None
+    credential_id = provider.credential_ref.name
     started = await begin(service, driver)
     result = await service.forget(credential_id)
     assert result.credential.revision == 1 and result.credential.state == "logged_out"
@@ -504,7 +532,9 @@ async def test_close_reports_cleanup_failure_after_closing_other_operations(auth
 
 async def test_configuration_lock_receives_remaining_credential_wait_budget(auth_home, monkeypatch):
     config, store, _, service, driver = auth_home()
-    credential_id = config.get_provider("subscription").credential_ref.name
+    provider = config.get_provider(_provider_id(config))
+    assert provider is not None
+    credential_id = provider.credential_ref.name
     started = await begin(service, driver)
     mutation = config.mutation
     timeouts = []

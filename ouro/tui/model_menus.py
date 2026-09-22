@@ -69,9 +69,14 @@ def model_choices(
         Choice(
             model.key,
             model.display_name or model.model_id,
-            trailing=model.endpoint_id,
+            trailing=(
+                model.model_id
+                if model.display_name
+                and model.display_name.casefold() != model.model_id.casefold()
+                else ""
+            ),
             marker=theme.selected_choice_marker if model.key == selected else "",
-            group=model.provider_id,
+            group=model.provider_display_name or model.provider_id,
         )
         for model in models
     )

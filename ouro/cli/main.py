@@ -36,6 +36,7 @@ from ouro.cli.prompt_commands import run_prompt_command
 from ouro.cli.provider_auth_commands import run_provider_auth_command
 from ouro.cli.provider_commands import (
     check_provider_connection,
+    create_provider_endpoint,
     list_provider_configs,
     list_provider_endpoints,
     list_provider_templates,
@@ -43,9 +44,9 @@ from ouro.cli.provider_commands import (
     remove_provider_config,
     remove_provider_endpoint,
     restore_provider_template,
-    set_provider_endpoint,
     show_provider_config,
     show_provider_endpoint,
+    update_provider_endpoint,
     use_provider_config,
     use_provider_endpoint,
 )
@@ -537,11 +538,11 @@ def _provider_command(args: argparse.Namespace) -> int:
     if args.provider_command in {"add", "update", "replace"}:
         return mutate_provider_config(
             args.provider_command,
-            args.provider_id,
+            getattr(args, "provider_id", None),
             home=home,
+            display_name=getattr(args, "display_name", None),
             provider_type=getattr(args, "provider_type", None),
             protocol=getattr(args, "protocol", None),
-            endpoint_id=args.endpoint_id,
             model=args.model,
             base_url=args.base_url,
             api_path=args.api_path,
@@ -648,11 +649,21 @@ def _provider_endpoint_command(
             home=home,
             json_mode=args.json,
         )
-    if args.endpoint_command == "set":
-        return set_provider_endpoint(
+    if args.endpoint_command in {"add", "update"}:
+        command = (
+            create_provider_endpoint
+            if args.endpoint_command == "add"
+            else update_provider_endpoint
+        )
+        return command(
             args.provider_id,
-            args.endpoint_id,
+            *(
+                ()
+                if args.endpoint_command == "add"
+                else (args.endpoint_id,)
+            ),
             home=home,
+            display_name=args.display_name,
             model=args.model,
             base_url=args.base_url,
             api_path=args.api_path,

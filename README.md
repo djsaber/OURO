@@ -194,8 +194,9 @@ pause、resume、replace、cancel 与预算权限。Goal 与 Plan 竞争同一�
 
 ## Provider 与 Endpoint
 
-Provider 用三个独立字段表达配置：`provider_id` 是用户实例标识，`provider_type` 是产品/通用配置类型，
-`protocol` 是运行时 adapter 使用的线协议。Endpoint 保存具体模型及其能力。可先查看内置模板，再用一条命令
+Provider 用展示名、`provider_type` 和 `protocol` 表达用户配置；`provider_id` 与 `endpoint_id` 由 OURO
+生成，仅作为内部身份与路由键。Provider 展示名必填，Endpoint 展示名选填。Endpoint 保存具体模型及其能力。
+可先查看内置模板，再用一条命令
 原子创建 Provider 与模板预置的整组 Endpoint：
 
 ```bash
@@ -203,10 +204,10 @@ uv run ouro provider templates
 uv run ouro provider templates anthropic --json
 
 # 默认引用模板建议的环境变量；此例为 ANTHROPIC_API_KEY
-uv run ouro provider add anthropic --type anthropic --home ./.ouro-dev --default
+uv run ouro provider add "Anthropic" --type anthropic --home ./.ouro-dev --default
 
-# 可覆盖稳定配置标识、默认 Endpoint 的模型 ID、Base URL 或凭据环境变量
-uv run ouro provider add google \
+# 可覆盖默认 Endpoint 的模型 ID、Base URL 或凭据环境变量
+uv run ouro provider add "Google Gemini" \
   --home ./.ouro-dev \
   --type gemini \
   --model gemini-3.5-flash \
@@ -215,12 +216,12 @@ uv run ouro provider add google \
 ```
 
 当前模板包括 OpenAI、Anthropic、Gemini、DeepSeek、Qwen、KIMI、GLM、Grok、OpenRouter 和 Mistral；每个模板携带
-一个明确的默认 Endpoint、多个当前主流模型 Endpoint、官方文档链接与核验日期。`--model` 和
-`--endpoint-id` 只覆盖默认 Endpoint。`add` 根据 `--type` 自动判断是否装载内置模板；Provider id 已存在时会
-提示使用 `provider update` 或 `provider replace`。内置类型的 `update` 会基于创建时记录的模板基线做安全三方
+一个明确的默认 Endpoint、多个当前主流模型 Endpoint、预定义展示名、官方文档链接与核验日期。`--model`
+只覆盖默认 Endpoint 的模型标识。`add` 根据 `--type` 自动判断是否装载内置模板并返回生成的 Provider ID。
+内置类型的 `update` 会基于创建时记录的模板基线做安全三方
 合并：未修改的预置值跟随新模板，用户修改或删除的预置 Endpoint、未知 Endpoint 和自定义连接信息保留；新增
-模板 Endpoint 自动加入，同名占用会报告而不覆盖。旧版本创建且没有基线的 Provider 首次更新只补缺失 Endpoint
-并建立跟踪，不猜测覆盖已有配置。`replace` 则用所选类型的模板完整替换现有 Provider。
+模板 Endpoint 自动加入，同名占用会报告而不覆盖。没有模板基线的 Provider 不执行推断式更新，必须显式
+`replace` 后才能跟踪模板版本。`replace` 会用所选类型的模板完整替换现有 Provider。
 
 CLI 更新会在文本或 `--json` 输出中给出 added/updated/removed/preserved/conflicts 报告；TUI 可在供应商列表选中
 Provider 回车后，通过 `Update from preset` 执行同一更新逻辑。模板已删除、禁用或来源发生替换时，更新失败且
@@ -234,7 +235,7 @@ Provider 保持不变。
 管理，不会隐式创建另一层对象：
 
 ```bash
-uv run ouro provider add glm \
+uv run ouro provider add "GLM Gateway" \
   --home ./.ouro-dev \
   --type custom --protocol openai-chat-completions \
   --base-url https://example.test/v1 \
@@ -244,28 +245,29 @@ uv run ouro provider add glm \
   --retry-max-backoff 8
 
 # update 不允许改变 provider type/protocol
-uv run ouro provider update glm --home ./.ouro-dev --timeout 90
+uv run ouro provider update <provider_id> --home ./.ouro-dev --timeout 90
 
 # 自定义供应商显式选择 Responses 协议
-uv run ouro provider add responses-gateway \
+uv run ouro provider add "Responses Gateway" \
   --home ./.ouro-dev \
   --type custom \
   --protocol openai-responses \
   --base-url https://models.example.com/v1 \
   --api-key-env GATEWAY_API_KEY
 
-uv run ouro provider endpoint set responses-gateway chat \
+uv run ouro provider endpoint add <provider_id> \
   --home ./.ouro-dev \
-  --model model-name --tools --streaming --default
+  --name "Chat" --model model-name --tools --streaming --default
 
 # 自定义连接显式选择 Anthropic Messages 协议
-uv run ouro provider add private-model \
+uv run ouro provider add "Private Model" \
   --home ./.ouro-dev \
   --type custom --protocol anthropic-messages \
   --base-url https://models.example.com
 
-uv run ouro provider endpoint set glm reasoning \
+uv run ouro provider endpoint add <provider_id> \
   --home ./.ouro-dev \
+  --name "Reasoning" \
   --model model-name \
   --temperature 0.2 \
   --context-window 200000 \
@@ -275,22 +277,23 @@ uv run ouro provider endpoint set glm reasoning \
   --default
 
 # Anthropic Messages 自定义模型也可声明 adaptive thinking 与 effort
-uv run ouro provider endpoint set private-model claude \
+uv run ouro provider endpoint add <provider_id> \
   --home ./.ouro-dev \
+  --name "Claude" \
   --model custom-claude-model \
   --reasoning-preset anthropic-messages-adaptive-effort \
   --default
 
 # 单次运行覆盖统一的思考意图；不支持的模式或等级会在发起 HTTP 前失败
 uv run ouro run --home ./.ouro-dev \
-  --provider glm --endpoint reasoning \
+  --provider <provider_id> --endpoint <endpoint_id> \
   --thinking-mode enabled --thinking-effort high \
   "Analyze this problem"
 
-uv run ouro provider use glm --home ./.ouro-dev
-uv run ouro provider check glm --endpoint reasoning --home ./.ouro-dev
+uv run ouro provider use <provider_id> --home ./.ouro-dev
+uv run ouro provider check <provider_id> --endpoint <endpoint_id> --home ./.ouro-dev
 uv run ouro provider list --home ./.ouro-dev
-uv run ouro provider endpoint list glm --home ./.ouro-dev
+uv run ouro provider endpoint list <provider_id> --home ./.ouro-dev
 ```
 
 `provider add/replace --type custom` 必须通过 `--protocol` 显式选择线协议：
@@ -310,8 +313,8 @@ Responses 端点选择 `openai-responses-effort`（TUI 的 `Thinking preset → 
 例如，为已经使用 `openai-responses` 的供应商声明端点并指定单次运行等级：
 
 ```bash
-uv run ouro provider endpoint set gateway custom --model custom-model --reasoning-preset openai-responses-effort
-uv run ouro run --provider gateway --endpoint custom --thinking-effort high --prompt "检查实现"
+uv run ouro provider endpoint add <provider_id> --name "Custom" --model custom-model --reasoning-preset openai-responses-effort
+uv run ouro run --provider <provider_id> --endpoint <endpoint_id> --thinking-effort high --prompt "检查实现"
 ```
 
 `openai-responses-effort` 声明 minimal、low、medium、high、xhigh、max 和开关能力；默认意图保留服务端默认值，
@@ -674,12 +677,12 @@ TUI 复用分组列表及多行编辑器，支持 Shift+Enter 换行、编辑、
 ```json
 {
   "providers": {
-    "default": "glm",
+    "default": "provider_<generated>",
     "items": {
-      "glm": {
+      "provider_<generated>": {
+        "display_name": "GLM Gateway",
         "provider_type": "custom",
         "protocol": "openai-chat-completions",
-        "provider_id": "glm",
         "credential_ref": "env:GLM_API_KEY",
         "base_url": "https://example.test/v1",
         "api_path": "/chat/completions",
@@ -689,9 +692,10 @@ TUI 复用分组列表及多行编辑器，支持 Shift+Enter 换行、编辑、
           "max_backoff_seconds": 8.0,
           "backoff_multiplier": 2.0
         },
-        "default_endpoint": "reasoning",
+        "default_endpoint": "endpoint_<generated>",
         "endpoints": {
-          "reasoning": {
+          "endpoint_<generated>": {
+            "display_name": "Reasoning",
             "model_id": "model-name",
             "temperature": 0.2,
             "context_window": 200000,

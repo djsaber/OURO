@@ -63,6 +63,7 @@ def mcp_server_view(config: MCPServerConfig) -> MCPServerConfigView:
 def provider_view(provider: ProviderConfig, *, is_default: bool) -> ProviderView:
     return ProviderView(
         provider_id=provider.provider_id,
+        display_name=provider.display_name,
         provider_type=provider.provider_type,
         protocol=provider.protocol,
         auth_driver=provider.auth_driver,
@@ -120,10 +121,13 @@ def endpoint_catalog_view(
     provider: ProviderConfig,
     *,
     change: ConfigurationChange | None = None,
+    changed_endpoint_id: str | None = None,
 ) -> ProviderEndpointCatalogView:
     return ProviderEndpointCatalogView(
         provider_id=provider.provider_id,
+        provider_display_name=provider.display_name,
         default_endpoint=provider.default_endpoint,
+        changed_endpoint_id=changed_endpoint_id,
         endpoints=[
             endpoint_view(endpoint, default_endpoint=provider.default_endpoint)
             for endpoint in provider.endpoints
@@ -141,7 +145,6 @@ def provider_template_view(
         template_id=template.template_id,
         display_name=template.display_name,
         description=template.description,
-        provider_id=template.provider_id,
         provider_type=template.provider_type,
         protocol=template.protocol,
         auth_driver=template.auth_driver,

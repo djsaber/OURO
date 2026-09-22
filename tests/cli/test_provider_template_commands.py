@@ -95,17 +95,19 @@ def test_provider_add_integrated_type_persists_complete_default_route(
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     provider = payload["provider"]
-    assert provider["provider_id"] == "claude"
+    provider_id = provider["provider_id"]
+    assert provider_id.startswith("provider_")
+    assert provider["display_name"] == "claude"
     assert provider["provider_type"] == "anthropic"
     assert provider["protocol"] == "anthropic-messages"
-    assert provider["default_endpoint"] == "claude-sonnet-5"
+    assert provider["default_endpoint"].startswith("endpoint_")
     assert provider["endpoint_count"] == 3
     assert next(item for item in provider["endpoints"] if item["default"])["model_id"] == (
         "claude-custom"
     )
     snapshot = ProviderConfigManager(tmp_path).snapshot()
-    assert snapshot.default_provider_id == "claude"
-    configured = ProviderConfigManager(tmp_path).get_provider("claude")
+    assert snapshot.default_provider_id == provider_id
+    configured = ProviderConfigManager(tmp_path).get_provider(provider_id)
     assert configured is not None
     assert configured.credential_ref.display() == "env:CLAUDE_KEY"
 
@@ -127,12 +129,14 @@ def test_provider_add_grok_installs_latest_reviewed_endpoint(tmp_path, capsys) -
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     provider = payload["provider"]
-    assert provider["provider_id"] == "xai"
+    provider_id = provider["provider_id"]
+    assert provider_id.startswith("provider_")
+    assert provider["display_name"] == "xai"
     assert provider["provider_type"] == "grok"
     assert provider["protocol"] == "openai-chat-completions"
-    assert provider["default_endpoint"] == "grok-4.6"
+    assert provider["default_endpoint"].startswith("endpoint_")
     assert provider["endpoint_count"] == 1
-    configured = ProviderConfigManager(tmp_path).get_provider("xai")
+    configured = ProviderConfigManager(tmp_path).get_provider(provider_id)
     assert configured is not None
     assert configured.base_url == "https://api.x.ai/v1"
     assert configured.api_path == "/chat/completions"
@@ -140,27 +144,25 @@ def test_provider_add_grok_installs_latest_reviewed_endpoint(tmp_path, capsys) -
 
 
 def test_provider_update_json_exposes_safe_template_merge_report(tmp_path, capsys) -> None:
-    assert (
-        main(
-            [
-                "provider",
-                "add",
-                "primary",
-                "--type",
-                "openai",
-                "--home",
-                str(tmp_path),
-            ]
-        )
-        == 0
-    )
-    capsys.readouterr()
+    assert main(
+        [
+            "provider",
+            "add",
+            "Primary",
+            "--type",
+            "openai",
+            "--home",
+            str(tmp_path),
+            "--json",
+        ]
+    ) == 0
+    provider_id = json.loads(capsys.readouterr().out)["provider"]["provider_id"]
 
     code = main(
         [
             "provider",
             "update",
-            "primary",
+            provider_id,
             "--home",
             str(tmp_path),
             "--json",
@@ -201,28 +203,29 @@ def test_removed_configure_and_unknown_type_are_not_parseable() -> None:
         parser.parse_args(["provider", "add", "local", "--type", "unknown"])
 
 
-def test_integrated_type_conflict_prompts_update_or_replace(tmp_path, capsys) -> None:
+def test_duplicate_display_names_create_independent_integrated_providers(tmp_path, capsys) -> None:
     assert (
         main(
             [
                 "provider",
                 "add",
-                "primary",
+                "Primary",
                 "--type",
                 "anthropic",
                 "--home",
                 str(tmp_path),
+                "--json",
             ]
         )
         == 0
     )
-    capsys.readouterr()
+    first = json.loads(capsys.readouterr().out)["provider"]
 
     code = main(
         [
             "provider",
             "add",
-            "primary",
+            "Primary",
             "--type",
             "openai",
             "--home",
@@ -230,19 +233,23 @@ def test_integrated_type_conflict_prompts_update_or_replace(tmp_path, capsys) ->
             "--json",
         ]
     )
-    error = json.loads(capsys.readouterr().out)
-    assert code == 2
-    assert "provider update" in error["error"]
-    assert "provider replace" in error["error"]
-    assert ProviderConfigManager(tmp_path).get_provider("primary").provider_type == "anthropic"
+    second = json.loads(capsys.readouterr().out)["provider"]
+    assert code == 0
+    assert first["provider_id"] != second["provider_id"]
+    assert first["display_name"] == second["display_name"] == "Primary"
+    assert ProviderConfigManager(tmp_path).get_provider(first["provider_id"]).provider_type == (
+        "anthropic"
+    )
 
     code = main(
         [
             "provider",
             "replace",
-            "primary",
+            first["provider_id"],
             "--type",
             "openai",
+            "--name",
+            "Primary API",
             "--home",
             str(tmp_path),
             "--json",
@@ -251,8 +258,13 @@ def test_integrated_type_conflict_prompts_update_or_replace(tmp_path, capsys) ->
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
     assert payload["operation"] == "replace"
+    assert payload["provider"]["provider_id"] == first["provider_id"]
+    assert payload["provider"]["display_name"] == "Primary API"
     assert payload["provider"]["provider_type"] == "openai"
     assert payload["provider"]["endpoint_count"] == 5
+    assert ProviderConfigManager(tmp_path).get_provider(second["provider_id"]).provider_type == (
+        "openai"
+    )
 
 
 def test_custom_add_update_and_replace_preserve_explicit_protocol(tmp_path, capsys) -> None:
@@ -279,12 +291,13 @@ def test_custom_add_update_and_replace_preserve_explicit_protocol(tmp_path, caps
     assert payload["provider"]["provider_type"] == "custom"
     assert payload["provider"]["protocol"] == "anthropic-messages"
     assert payload["provider"]["endpoint_count"] == 0
+    provider_id = payload["provider"]["provider_id"]
 
     code = main(
         [
             "provider",
             "update",
-            "local",
+            provider_id,
             "--timeout",
             "12",
             "--home",
@@ -302,7 +315,7 @@ def test_custom_add_update_and_replace_preserve_explicit_protocol(tmp_path, caps
         [
             "provider",
             "replace",
-            "local",
+            provider_id,
             "--type",
             "custom",
             "--protocol",

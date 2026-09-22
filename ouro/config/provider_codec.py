@@ -31,7 +31,7 @@ _PROVIDER_FIELDS = frozenset(
         "provider_type",
         "protocol",
         "auth_driver",
-        "provider_id",
+        "display_name",
         "credential_ref",
         "default_endpoint",
         "endpoints",
@@ -56,6 +56,7 @@ def provider_config_to_public_dict(
 
     return {
         "provider_id": provider.provider_id,
+        "display_name": provider.display_name,
         "provider_type": provider.provider_type,
         "protocol": provider.protocol,
         "auth_driver": provider.auth_driver,
@@ -98,16 +99,10 @@ def provider_config_from_mapping(
     if unsupported:
         raise ConfigError(f"unsupported provider config fields: {', '.join(unsupported)}")
 
-    configured_provider_id = _optional_str(raw.get("provider_id")) or provider_id
-    if configured_provider_id != provider_id:
-        raise ConfigError(
-            "provider_id must match providers.items key "
-            f"({configured_provider_id} != {provider_id})"
-        )
-
     try:
         provider = ProviderConfig(
-            provider_id=configured_provider_id,
+            provider_id=provider_id,
+            display_name=_required_str(raw.get("display_name"), "display_name"),
             provider_type=_provider_type(raw.get("provider_type")),
             protocol=_provider_protocol(raw.get("protocol")),
             auth_driver=raw.get("auth_driver", "static"),
@@ -134,7 +129,7 @@ def provider_config_to_raw(provider: ProviderConfig) -> dict[str, Any]:
     raw: dict[str, Any] = {
         "provider_type": provider.provider_type,
         "protocol": provider.protocol,
-        "provider_id": provider.provider_id,
+        "display_name": provider.display_name,
         "enabled": provider.enabled,
         "timeout_seconds": provider.timeout_seconds,
         "default_endpoint": provider.default_endpoint,
@@ -214,6 +209,13 @@ def _optional_str(value: object) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
+
+
+def _required_str(value: object, field: str) -> str:
+    normalized = _optional_str(value)
+    if normalized is None:
+        raise ValueError(f"provider config is missing {field}")
+    return normalized
 
 
 def _provider_type(value: object) -> ProviderType:

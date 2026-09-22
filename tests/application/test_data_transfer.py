@@ -42,7 +42,7 @@ def transfer(home, action, kind, path, *, ids=(), replace=False, backend="files"
 
 def _configure(home: Path) -> None:
     ProviderConfigManager(home).create_provider(
-        "example",
+        display_name="Example",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://example.test/v1",

@@ -93,56 +93,61 @@ def test_configuration_round_trip_preserve_replace_clear_and_public_redaction(
     tmp_path, provider_type
 ):
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider(
-        "service",
+    created = facade.add_provider(
+        display_name="Service",
         provider_type=provider_type,
         protocol="openai-responses",
         base_url="https://model.test",
         headers=HEADERS,
     )
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
     configs = ProviderConfigManager(tmp_path)
     if provider_type == "custom":
-        facade.save_endpoint("service", "chat", model="model")
-    provider = configs.get_provider("service")
+        facade.add_endpoint(provider_id, model="model")
+    provider = configs.get_provider(provider_id)
+    assert provider is not None
     assert provider.headers["x-private"].value == "private-value"
     assert "private-value" in configs.config_path.read_text(encoding="utf-8")
-    assert "private-value" not in facade.provider("service").model_dump_json()
-    options = configs.resolve_runtime_options(ProviderRuntimeOptions(provider_id="service"))
+    assert "private-value" not in facade.provider(provider_id).model_dump_json()
+    options = configs.resolve_runtime_options(ProviderRuntimeOptions(provider_id=provider_id))
     assert options.headers == provider.headers
     assert "private-value" not in repr(options)
 
     # This includes the integrated provider's explicit template synchronization path.
-    facade.update_provider("service", timeout=23)
-    assert configs.get_provider("service").headers == provider.headers
+    facade.update_provider(provider_id, timeout=23)
+    assert configs.get_provider(provider_id).headers == provider.headers
     before = configs.config_path.read_bytes()
     with pytest.raises(ConfigError):
         facade.update_provider(
-            "service", headers={"X-Bad": {"source": "literal", "value": "secret\n"}}
+            provider_id, headers={"X-Bad": {"source": "literal", "value": "secret\n"}}
         )
     assert configs.config_path.read_bytes() == before
     facade.update_provider_settings(
-        "service", headers={"X-New": {"source": "literal", "value": "new"}}
+        provider_id, headers={"X-New": {"source": "literal", "value": "new"}}
     )
-    assert set(configs.get_provider("service").headers) == {"x-new"}
-    facade.update_provider("service", headers={})
-    assert configs.get_provider("service").headers == {}
+    assert set(configs.get_provider(provider_id).headers) == {"x-new"}
+    facade.update_provider(provider_id, headers={})
+    assert configs.get_provider(provider_id).headers == {}
     assert (
         "headers"
-        not in json.loads(configs.config_path.read_text())["providers"]["items"]["service"]
+        not in json.loads(configs.config_path.read_text())["providers"]["items"][provider_id]
     )
 
 
 def test_runtime_header_override_is_whole_map_and_empty_clears(tmp_path):
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider(
-        "service",
+    created = facade.add_provider(
+        display_name="Service",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://model.test",
         headers=HEADERS,
     )
-    facade.save_endpoint("service", "chat", model="model")
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
+    facade.add_endpoint(provider_id, model="model")
     options = ProviderConfigManager(tmp_path).resolve_runtime_options(
-        ProviderRuntimeOptions(provider_id="service", headers={})
+        ProviderRuntimeOptions(provider_id=provider_id, headers={})
     )
     assert options.headers == {}

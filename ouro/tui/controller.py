@@ -277,7 +277,7 @@ def project_plugin_system_status(
 class TuiProviderConfiguration:
     """Supplier-level configuration intent collected by the TUI."""
 
-    provider_id: str
+    display_name: str
     provider_type: ProviderType
     base_url: str | None
     api_path: str | None
@@ -296,8 +296,7 @@ class TuiProviderConfiguration:
 class TuiEndpointConfiguration:
     """One provider-owned callable endpoint collected by the TUI."""
 
-    provider_id: str
-    endpoint_id: str
+    display_name: str | None
     model_id: str
     context_window: int
     max_output_tokens: int
@@ -1092,7 +1091,7 @@ class TuiController:
     def _add_provider(self, draft: TuiProviderConfiguration) -> ProviderView:
         configuration = self._require_configuration()
         catalog = configuration.add_provider(
-            draft.provider_id,
+            display_name=draft.display_name,
             provider_type=draft.provider_type,
             protocol=draft.protocol,
             auth_driver=draft.auth_driver,
@@ -1106,20 +1105,30 @@ class TuiController:
             enabled=draft.enabled,
             make_default=draft.make_default,
         )
+        provider_id = catalog.changed_provider_id
+        assert provider_id is not None
         return next(
-            provider for provider in catalog.providers if provider.provider_id == draft.provider_id
+            provider for provider in catalog.providers if provider.provider_id == provider_id
         )
 
-    async def update_provider(self, draft: TuiProviderConfiguration) -> ProviderView:
-        return await asyncio.to_thread(self._update_provider, draft)
+    async def update_provider(
+        self,
+        provider_id: str,
+        draft: TuiProviderConfiguration,
+    ) -> ProviderView:
+        return await asyncio.to_thread(self._update_provider, provider_id, draft)
 
     async def update_provider_template(self, provider_id: str) -> ProviderCatalogView:
         configuration = self._require_configuration()
         return await asyncio.to_thread(configuration.update_provider, provider_id)
 
-    def _update_provider(self, draft: TuiProviderConfiguration) -> ProviderView:
+    def _update_provider(
+        self,
+        provider_id: str,
+        draft: TuiProviderConfiguration,
+    ) -> ProviderView:
         configuration = self._require_configuration()
-        current = configuration.provider(draft.provider_id)
+        current = configuration.provider(provider_id)
         if current.provider_type != draft.provider_type:
             raise ConfigError(
                 "provider type cannot be changed by editing settings: "
@@ -1131,7 +1140,8 @@ class TuiController:
                 f"{current.protocol} != {draft.protocol}"
             )
         catalog = configuration.update_provider_settings(
-            draft.provider_id,
+            provider_id,
+            display_name=draft.display_name,
             base_url=draft.base_url,
             api_path=draft.api_path,
             api_key=draft.api_key,
@@ -1143,7 +1153,7 @@ class TuiController:
             make_default=draft.make_default,
         )
         return next(
-            provider for provider in catalog.providers if provider.provider_id == draft.provider_id
+            provider for provider in catalog.providers if provider.provider_id == provider_id
         )
 
     async def set_provider_enabled(self, provider_id: str, *, enabled: bool) -> ProviderView:
@@ -1174,35 +1184,55 @@ class TuiController:
 
     async def add_endpoint(
         self,
+        provider_id: str,
         draft: TuiEndpointConfiguration,
     ) -> ProviderEndpointView:
-        return await asyncio.to_thread(self._save_endpoint, draft, True)
+        return await asyncio.to_thread(self._add_endpoint, provider_id, draft)
 
     async def update_endpoint(
         self,
+        provider_id: str,
+        endpoint_id: str,
         draft: TuiEndpointConfiguration,
     ) -> ProviderEndpointView:
-        return await asyncio.to_thread(self._save_endpoint, draft, False)
+        return await asyncio.to_thread(self._update_endpoint, provider_id, endpoint_id, draft)
 
-    def _save_endpoint(
+    def _add_endpoint(
         self,
+        provider_id: str,
         draft: TuiEndpointConfiguration,
-        create: bool,
     ) -> ProviderEndpointView:
         configuration = self._require_configuration()
-        endpoints = configuration.endpoint_catalog(draft.provider_id).endpoints
-        exists = any(endpoint.endpoint_id == draft.endpoint_id for endpoint in endpoints)
-        if create and exists:
-            raise ConfigError(
-                f"provider endpoint already exists: {draft.provider_id}/{draft.endpoint_id}"
-            )
-        if not create and not exists:
-            raise ConfigError(
-                f"provider endpoint not found: {draft.provider_id}/{draft.endpoint_id}"
-            )
-        catalog = configuration.save_endpoint(
-            draft.provider_id,
-            draft.endpoint_id,
+        catalog = configuration.add_endpoint(
+            provider_id,
+            display_name=draft.display_name,
+            model=draft.model_id,
+            context_window=draft.context_window,
+            max_output_tokens=draft.max_output_tokens,
+            supports_tools=draft.supports_tools,
+            supports_vision=draft.supports_vision,
+            supports_streaming=draft.supports_streaming,
+            supports_structured_output=draft.supports_structured_output,
+            reasoning=draft.reasoning,
+            request_options=draft.request_options,
+        )
+        endpoint_id = catalog.changed_endpoint_id
+        assert endpoint_id is not None
+        return next(
+            endpoint for endpoint in catalog.endpoints if endpoint.endpoint_id == endpoint_id
+        )
+
+    def _update_endpoint(
+        self,
+        provider_id: str,
+        endpoint_id: str,
+        draft: TuiEndpointConfiguration,
+    ) -> ProviderEndpointView:
+        configuration = self._require_configuration()
+        catalog = configuration.update_endpoint(
+            provider_id,
+            endpoint_id,
+            display_name=draft.display_name,
             model=draft.model_id,
             context_window=draft.context_window,
             max_output_tokens=draft.max_output_tokens,
@@ -1214,7 +1244,7 @@ class TuiController:
             request_options=draft.request_options,
         )
         return next(
-            endpoint for endpoint in catalog.endpoints if endpoint.endpoint_id == draft.endpoint_id
+            endpoint for endpoint in catalog.endpoints if endpoint.endpoint_id == endpoint_id
         )
 
     async def use_endpoint(self, provider_id: str, endpoint_id: str) -> ProviderEndpointView:

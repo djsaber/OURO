@@ -63,7 +63,6 @@ def _template(**updates: object) -> ProviderTemplate:
         "template_id": "example",
         "display_name": "Example",
         "description": "Example provider template.",
-        "provider_id": "example",
         "provider_type": "custom",
         "protocol": "openai-chat-completions",
         "credential_env": "EXAMPLE_API_KEY",
@@ -92,6 +91,8 @@ def test_builtin_provider_templates_expose_reviewed_endpoint_sets() -> None:
             "openai-responses",
         }
         assert {endpoint.endpoint_id for endpoint in template.endpoints} == endpoint_ids
+        assert template.display_name.strip()
+        assert all(endpoint.display_name for endpoint in template.endpoints)
         expected_verified_on = _EXPECTED_VERIFIED_ON.get(template_id, "2026-07-14")
         assert template.verified_on == expected_verified_on
 
@@ -138,10 +139,10 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
         "reasoning_effort": "max",
     }
     assert deepseek.capability.default_effort == "high"
-    assert templates["deepseek"].revision == 3
+    assert templates["deepseek"].revision == 4
 
     qwen = templates["qwen"]
-    assert qwen.revision == 4
+    assert qwen.revision == 5
     qwen_max = qwen.endpoint()
     assert qwen_max.model_id == "qwen3.8-max"
     assert qwen_max.context_window == 1_000_000
@@ -190,7 +191,7 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     assert k3_reasoning.profile.variants["enabled"] == {"reasoning_effort": "max"}
 
     glm = templates["glm"]
-    assert glm.revision == 3
+    assert glm.revision == 4
     glm_53 = glm.endpoint().reasoning
     assert glm_53.capability.activation == "always_on"
     assert glm_53.capability.supported_efforts == ("low", "high", "max")

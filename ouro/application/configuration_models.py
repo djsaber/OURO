@@ -62,6 +62,7 @@ class CredentialStatus(ApplicationDTO):
 
 class ProviderEndpointView(ApplicationDTO):
     endpoint_id: str
+    display_name: str | None = None
     model_id: str
     base_url: str | None = None
     api_path: str | None = None
@@ -80,6 +81,7 @@ class ProviderEndpointView(ApplicationDTO):
 
 class ProviderView(ApplicationDTO):
     provider_id: str
+    display_name: str
     provider_type: ProviderType
     protocol: ProviderProtocol
     auth_driver: str = "static"
@@ -121,6 +123,7 @@ class ProviderTemplateUpdateView(ApplicationDTO):
 class ProviderCatalogView(ApplicationDTO):
     config_path: str
     default_provider_id: str | None = None
+    changed_provider_id: str | None = None
     providers: list[ProviderView] = Field(default_factory=list)
     change: ConfigurationChange | None = None
     template_update: ProviderTemplateUpdateView | None = None
@@ -128,7 +131,9 @@ class ProviderCatalogView(ApplicationDTO):
 
 class ProviderEndpointCatalogView(ApplicationDTO):
     provider_id: str
+    provider_display_name: str
     default_endpoint: str | None = None
+    changed_endpoint_id: str | None = None
     endpoints: list[ProviderEndpointView] = Field(default_factory=list)
     change: ConfigurationChange | None = None
 
@@ -137,7 +142,6 @@ class ProviderTemplateView(ApplicationDTO):
     template_id: str
     display_name: str
     description: str
-    provider_id: str
     provider_type: ProviderType
     protocol: ProviderProtocol
     auth_driver: str = "static"

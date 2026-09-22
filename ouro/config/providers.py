@@ -156,8 +156,8 @@ class ProviderConfigManager:
     @atomic_config_update
     def create_provider(
         self,
-        provider_id: str,
         *,
+        display_name: str,
         provider_type: ProviderType,
         protocol: ProviderProtocol | None = None,
         auth_driver: str | None = None,
@@ -171,20 +171,15 @@ class ProviderConfigManager:
         provider_options: Mapping[str, Any] | None = None,
         enabled: bool = True,
     ) -> ProviderConfig:
-        """Create a new empty provider and fail if its id already exists."""
+        """Create a provider with an identity owned by OURO."""
 
-        provider_id = self._validate_mutable_provider_id(provider_id)
         self._reject_faux_type(provider_type)
         raw = self.load_raw()
         configured = self._configured_providers(raw)
-        if provider_id in configured:
-            raise ConfigError(
-                f"provider already exists: {provider_id}; use provider update or provider replace"
-            )
         try:
             connection = resolve_provider_connection(provider_type, protocol, auth_driver)
             provider = ProviderConfig(
-                provider_id=provider_id,
+                display_name=display_name,
                 provider_type=provider_type,
                 protocol=connection.protocol,
                 auth_driver=connection.auth_driver,
@@ -211,6 +206,7 @@ class ProviderConfigManager:
         self,
         provider_id: str,
         *,
+        display_name: str | None = None,
         base_url: str | None = None,
         api_path: str | None = None,
         api_key: str | None = None,
@@ -234,6 +230,9 @@ class ProviderConfigManager:
             provider = ProviderConfig.model_validate(
                 current.model_copy(
                     update={
+                        "display_name": (
+                            display_name if display_name is not None else current.display_name
+                        ),
                         "credential_ref": self._updated_credential(
                             current.credential_ref,
                             api_key=api_key,
@@ -273,6 +272,7 @@ class ProviderConfigManager:
         self,
         provider_id: str,
         *,
+        display_name: str,
         provider_type: ProviderType,
         protocol: ProviderProtocol | None = None,
         auth_driver: str | None = None,
@@ -298,6 +298,7 @@ class ProviderConfigManager:
             connection = resolve_provider_connection(provider_type, protocol, auth_driver)
             provider = ProviderConfig(
                 provider_id=provider_id,
+                display_name=display_name,
                 provider_type=provider_type,
                 protocol=connection.protocol,
                 auth_driver=connection.auth_driver,
@@ -326,8 +327,7 @@ class ProviderConfigManager:
         *,
         template_origin: ProviderTemplateOrigin = "inline",
         auth_driver: str | None = None,
-        provider_id: str | None = None,
-        endpoint_id: str | None = None,
+        display_name: str | None = None,
         model_id: str | None = None,
         base_url: str | None = None,
         api_path: str | None = None,
@@ -345,8 +345,7 @@ class ProviderConfigManager:
             template_origin=template_origin,
             operation="create",
             auth_driver=auth_driver,
-            provider_id=provider_id,
-            endpoint_id=endpoint_id,
+            display_name=display_name,
             model_id=model_id,
             base_url=base_url,
             api_path=api_path,
@@ -366,8 +365,8 @@ class ProviderConfigManager:
         template: ProviderTemplate,
         *,
         template_origin: ProviderTemplateOrigin = "inline",
-        provider_id: str | None = None,
-        endpoint_id: str | None = None,
+        provider_id: str,
+        display_name: str | None = None,
         model_id: str | None = None,
         base_url: str | None = None,
         api_path: str | None = None,
@@ -384,7 +383,7 @@ class ProviderConfigManager:
             template,
             template_origin=template_origin,
             provider_id=provider_id,
-            endpoint_id=endpoint_id,
+            display_name=display_name,
             model_id=model_id,
             base_url=base_url,
             api_path=api_path,
@@ -405,8 +404,8 @@ class ProviderConfigManager:
         *,
         template_origin: ProviderTemplateOrigin = "inline",
         auth_driver: str | None = None,
-        provider_id: str | None = None,
-        endpoint_id: str | None = None,
+        provider_id: str,
+        display_name: str,
         model_id: str | None = None,
         base_url: str | None = None,
         api_path: str | None = None,
@@ -425,7 +424,7 @@ class ProviderConfigManager:
             operation="replace",
             auth_driver=auth_driver,
             provider_id=provider_id,
-            endpoint_id=endpoint_id,
+            display_name=display_name,
             model_id=model_id,
             base_url=base_url,
             api_path=api_path,
@@ -444,8 +443,8 @@ class ProviderConfigManager:
         template: ProviderTemplate,
         *,
         template_origin: ProviderTemplateOrigin,
-        provider_id: str | None,
-        endpoint_id: str | None,
+        provider_id: str,
+        display_name: str | None,
         model_id: str | None,
         base_url: str | None,
         api_path: str | None,
@@ -460,9 +459,7 @@ class ProviderConfigManager:
     ) -> ProviderTemplateUpdateResult:
         """Three-way merge one configured provider against its latest template."""
 
-        target_provider_id = self._validate_mutable_provider_id(
-            provider_id if provider_id is not None else template.provider_id
-        )
+        target_provider_id = self._validate_mutable_provider_id(provider_id)
         raw = self.load_raw()
         configured = self._configured_providers(raw)
         current = configured.get(target_provider_id)
@@ -562,11 +559,12 @@ class ProviderConfigManager:
             template_endpoint_id = template_endpoint.endpoint_id
             if template_endpoint_id in endpoint_ids:
                 continue
-            configured_endpoint_id = template_endpoint_id
-            if configured_endpoint_id in next_endpoints:
-                conflicts.append(configured_endpoint_id)
-                continue
-            next_endpoints[configured_endpoint_id] = template_endpoint
+            configured_endpoint_id = new_id("endpoint")
+            configured_endpoint = _configured_template_endpoint(
+                template_endpoint,
+                configured_endpoint_id=configured_endpoint_id,
+            )
+            next_endpoints[configured_endpoint_id] = configured_endpoint
             endpoint_ids[template_endpoint_id] = configured_endpoint_id
             added.append(configured_endpoint_id)
 
@@ -626,7 +624,7 @@ class ProviderConfigManager:
             endpoint_ids=endpoint_ids,
         )
 
-        if endpoint_id is not None or model_id is not None:
+        if model_id is not None:
             default_binding = next_binding.endpoint_binding(template.default_endpoint)
             if default_binding is None:
                 raise ConfigError(
@@ -642,39 +640,14 @@ class ProviderConfigManager:
                 )
                 next_endpoints[source_endpoint_id] = configured_default
                 added.append(source_endpoint_id)
-            target_endpoint_id = (
-                endpoint_id.strip() if endpoint_id is not None else source_endpoint_id
-            )
-            if not target_endpoint_id:
-                raise ConfigError("endpoint id is required")
-            if target_endpoint_id != source_endpoint_id and target_endpoint_id in next_endpoints:
-                raise ConfigError(
-                    "default endpoint override conflicts with an existing endpoint: "
-                    f"{target_endpoint_id}"
-                )
-            next_endpoints.pop(source_endpoint_id, None)
-            next_endpoints[target_endpoint_id] = ProviderEndpointConfig.model_validate(
+            next_endpoints[source_endpoint_id] = ProviderEndpointConfig.model_validate(
                 configured_default.model_copy(
                     update={
-                        "endpoint_id": target_endpoint_id,
-                        "model_id": model_id
-                        if model_id is not None
-                        else configured_default.model_id,
+                        "model_id": model_id,
                     }
                 ).model_dump()
             )
-            if target_endpoint_id != source_endpoint_id:
-                for reported_endpoint_ids in (added, updated, preserved):
-                    if source_endpoint_id in reported_endpoint_ids:
-                        reported_endpoint_ids.remove(source_endpoint_id)
-                        reported_endpoint_ids.append(target_endpoint_id)
-            endpoint_ids[template.default_endpoint] = target_endpoint_id
-            next_binding = _provider_template_binding(
-                template,
-                origin=template_origin,
-                endpoint_ids=endpoint_ids,
-            )
-            next_default = target_endpoint_id
+            next_default = source_endpoint_id
 
         next_credential = self._updated_credential(
             next_credential,
@@ -684,6 +657,7 @@ class ProviderConfigManager:
         try:
             provider = ProviderConfig(
                 provider_id=target_provider_id,
+                display_name=display_name or current.display_name,
                 provider_type=current.provider_type,
                 protocol=current.protocol,
                 auth_driver=current.auth_driver,
@@ -732,7 +706,7 @@ class ProviderConfigManager:
         operation: Literal["create", "replace"],
         auth_driver: str | None = None,
         provider_id: str | None = None,
-        endpoint_id: str | None = None,
+        display_name: str | None = None,
         model_id: str | None = None,
         base_url: str | None = None,
         api_path: str | None = None,
@@ -747,24 +721,11 @@ class ProviderConfigManager:
     ) -> ProviderConfig:
         """Apply all template endpoints in one validated config transaction."""
 
-        target_provider_id = self._validate_mutable_provider_id(
-            provider_id if provider_id is not None else template.provider_id
+        target_provider_id = (
+            new_id("provider")
+            if operation == "create"
+            else self._validate_mutable_provider_id(provider_id or "")
         )
-        target_endpoint_id = (
-            endpoint_id if endpoint_id is not None else template.default_endpoint
-        ).strip()
-        if not target_endpoint_id:
-            raise ConfigError("endpoint id is required")
-        template_endpoint_ids = {
-            item.endpoint_id
-            for item in template.endpoints
-            if item.endpoint_id != template.default_endpoint
-        }
-        if target_endpoint_id in template_endpoint_ids:
-            raise ConfigError(
-                "default endpoint override conflicts with another template endpoint: "
-                f"{target_endpoint_id}"
-            )
 
         raw = self.load_raw()
         configured = self._configured_providers(raw)
@@ -789,12 +750,12 @@ class ProviderConfigManager:
             endpoints: dict[str, ProviderEndpointConfig] = {}
             endpoint_ids: dict[str, str] = {}
             for template_endpoint in template.endpoints:
-                is_default = template_endpoint.endpoint_id == template.default_endpoint
-                configured_endpoint_id = (
-                    target_endpoint_id if is_default else template_endpoint.endpoint_id
-                )
+                configured_endpoint_id = new_id("endpoint")
                 configured_model_id = (
-                    model_id if is_default and model_id is not None else template_endpoint.model_id
+                    model_id
+                    if template_endpoint.endpoint_id == template.default_endpoint
+                    and model_id is not None
+                    else template_endpoint.model_id
                 )
                 endpoint_ids[template_endpoint.endpoint_id] = configured_endpoint_id
                 endpoints[configured_endpoint_id] = ProviderEndpointConfig.model_validate(
@@ -807,11 +768,12 @@ class ProviderConfigManager:
                 )
             provider = ProviderConfig(
                 provider_id=target_provider_id,
+                display_name=display_name or template.display_name,
                 provider_type=template.provider_type,
                 protocol=template.protocol,
                 auth_driver=selected_driver,
                 credential_ref=credential_ref,
-                default_endpoint=target_endpoint_id,
+                default_endpoint=endpoint_ids[template.default_endpoint],
                 endpoints=tuple(endpoints[key] for key in sorted(endpoints)),
                 base_url=base_url if base_url is not None else template.base_url,
                 api_path=api_path if api_path is not None else template.api_path,
@@ -833,12 +795,50 @@ class ProviderConfigManager:
         )
         return provider
 
-    @atomic_config_update
-    def upsert_endpoint(
+    def create_endpoint(
+        self,
+        provider_id: str,
+        *,
+        display_name: str | None = None,
+        model_id: str,
+        base_url: str | None = None,
+        api_path: str | None = None,
+        temperature: float | None = None,
+        context_window: int | None = None,
+        max_output_tokens: int | None = None,
+        supports_tools: bool | None = None,
+        supports_vision: bool | None = None,
+        supports_streaming: bool | None = None,
+        supports_structured_output: bool | None = None,
+        reasoning: EndpointReasoningConfig | None = None,
+        request_options: Mapping[str, Any] | None = None,
+        make_default: bool = False,
+    ) -> ProviderEndpointConfig:
+        return self._save_endpoint(
+            provider_id,
+            None,
+            display_name=display_name,
+            model_id=model_id,
+            base_url=base_url,
+            api_path=api_path,
+            temperature=temperature,
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            supports_tools=supports_tools,
+            supports_vision=supports_vision,
+            supports_streaming=supports_streaming,
+            supports_structured_output=supports_structured_output,
+            reasoning=reasoning,
+            request_options=request_options,
+            make_default=make_default,
+        )
+
+    def update_endpoint(
         self,
         provider_id: str,
         endpoint_id: str,
         *,
+        display_name: str | None,
         model_id: str | None = None,
         base_url: str | None = None,
         api_path: str | None = None,
@@ -853,10 +853,47 @@ class ProviderConfigManager:
         request_options: Mapping[str, Any] | None = None,
         make_default: bool = False,
     ) -> ProviderEndpointConfig:
+        return self._save_endpoint(
+            provider_id,
+            endpoint_id,
+            display_name=display_name,
+            model_id=model_id,
+            base_url=base_url,
+            api_path=api_path,
+            temperature=temperature,
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            supports_tools=supports_tools,
+            supports_vision=supports_vision,
+            supports_streaming=supports_streaming,
+            supports_structured_output=supports_structured_output,
+            reasoning=reasoning,
+            request_options=request_options,
+            make_default=make_default,
+        )
+
+    @atomic_config_update
+    def _save_endpoint(
+        self,
+        provider_id: str,
+        endpoint_id: str | None,
+        *,
+        display_name: str | None,
+        model_id: str | None,
+        base_url: str | None,
+        api_path: str | None,
+        temperature: float | None,
+        context_window: int | None,
+        max_output_tokens: int | None,
+        supports_tools: bool | None,
+        supports_vision: bool | None,
+        supports_streaming: bool | None,
+        supports_structured_output: bool | None,
+        reasoning: EndpointReasoningConfig | None,
+        request_options: Mapping[str, Any] | None,
+        make_default: bool,
+    ) -> ProviderEndpointConfig:
         provider_id = provider_id.strip()
-        endpoint_id = endpoint_id.strip()
-        if not endpoint_id:
-            raise ConfigError("endpoint id is required")
 
         raw = self.load_raw()
         configured = self._configured_providers(raw)
@@ -865,21 +902,28 @@ class ProviderConfigManager:
             raise ConfigError(f"provider not found: {provider_id}")
 
         try:
-            current = provider.endpoint(endpoint_id)
-            if current is None:
+            if endpoint_id is None:
+                endpoint_id = new_id("endpoint")
                 if model_id is None:
-                    raise ConfigError("--model is required for a new endpoint")
+                    raise ConfigError("model is required for a new endpoint")
                 current = ProviderEndpointConfig(
                     endpoint_id=endpoint_id,
+                    display_name=display_name,
                     model_id=model_id,
                     base_url=base_url,
                 )
+            else:
+                existing = provider.endpoint(endpoint_id)
+                if existing is None:
+                    raise ConfigError(f"endpoint not found: {provider_id}/{endpoint_id}")
+                current = existing
         except ValidationError as exc:
             raise ConfigError(f"invalid endpoint config: {exc}") from exc
 
         try:
             updated = current.model_copy(
                 update={
+                    "display_name": display_name,
                     "model_id": model_id if model_id is not None else current.model_id,
                     "base_url": base_url if base_url is not None else current.base_url,
                     "api_path": api_path if api_path is not None else current.api_path,

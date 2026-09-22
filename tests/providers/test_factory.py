@@ -192,17 +192,17 @@ def test_runtime_credential_override_wins_over_configured_reference(
     monkeypatch.setenv("CONFIGURED_KEY", "configured")
     monkeypatch.setenv("RUNTIME_KEY", "runtime")
     manager = ProviderConfigManager(tmp_path)
-    manager.create_provider(
-        "glm",
+    provider = manager.create_provider(
+        display_name="GLM",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://example.test/v1",
         api_key_env="CONFIGURED_KEY",
     )
-    manager.upsert_endpoint("glm", "default", model_id="glm-test", make_default=True)
+    manager.create_endpoint(provider.provider_id, model_id="glm-test", make_default=True)
 
     options = manager.resolve_runtime_options(
-        ProviderRuntimeOptions(provider_id="glm", api_key_env="RUNTIME_KEY")
+        ProviderRuntimeOptions(provider_id=provider.provider_id, api_key_env="RUNTIME_KEY")
     )
     adapter = build_runtime_adapter(options)
 
@@ -233,15 +233,14 @@ def test_factory_rejects_unfulfillable_reasoning_requests(
 @pytest.mark.asyncio
 async def test_configured_endpoint_drives_model_metadata_and_provider_request(tmp_path) -> None:
     manager = ProviderConfigManager(tmp_path)
-    manager.create_provider(
-        "glm",
+    provider_config = manager.create_provider(
+        display_name="GLM",
         provider_type="custom",
         protocol="openai-chat-completions",
         provider_options={"seed": 1, "tool_choice": "none", "top_p": 0.8},
     )
-    manager.upsert_endpoint(
-        "glm",
-        "reasoning",
+    endpoint = manager.create_endpoint(
+        provider_config.provider_id,
         model_id="glm-reasoning",
         base_url="https://example.test/v1/",
         api_path="responses/chat",
@@ -260,7 +259,10 @@ async def test_configured_endpoint_drives_model_metadata_and_provider_request(tm
         make_default=True,
     )
     options = manager.resolve_runtime_options(
-        ProviderRuntimeOptions(provider_id="glm", endpoint_id="reasoning")
+        ProviderRuntimeOptions(
+            provider_id=provider_config.provider_id,
+            endpoint_id=endpoint.endpoint_id,
+        )
     )
     adapter = build_runtime_adapter(options)
     provider = cast(OpenAIChatCompletionsProvider, adapter.provider)
@@ -278,7 +280,7 @@ async def test_configured_endpoint_drives_model_metadata_and_provider_request(tm
     ]
 
     assert [event.type for event in events] == ["text_delta", "done"]
-    assert adapter.model.endpoint_id == "reasoning"
+    assert adapter.model.endpoint_id == endpoint.endpoint_id
     assert adapter.model.context_window == 200_000
     assert adapter.model.supports_vision is True
     assert adapter.model.supports_structured_output is True

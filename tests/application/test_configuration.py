@@ -65,7 +65,7 @@ def test_provider_commands_return_safe_views_and_explicit_effect_scope(
     monkeypatch.delenv("GLM_API_KEY", raising=False)
 
     saved = facade.add_provider(
-        "glm",
+        display_name="GLM",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://example.test/v1",
@@ -73,11 +73,13 @@ def test_provider_commands_return_safe_views_and_explicit_effect_scope(
     )
     assert saved.change is not None
     assert saved.change.effective_from == "next_request"
-    assert facade.provider("glm").credential.state == "missing"
+    provider_id = saved.changed_provider_id
+    assert provider_id is not None
+    assert facade.provider(provider_id).credential.state == "missing"
 
-    endpoints = facade.save_endpoint(
-        "glm",
-        "reasoning",
+    endpoints = facade.add_endpoint(
+        provider_id,
+        display_name="Reasoning",
         model="model-name",
         reasoning=openai_chat_completions_effort_reasoning(
             supported_efforts=("low", "high"),
@@ -85,14 +87,17 @@ def test_provider_commands_return_safe_views_and_explicit_effect_scope(
         ),
         make_default=True,
     )
-    assert endpoints.default_endpoint == "reasoning"
+    endpoint_id = endpoints.changed_endpoint_id
+    assert endpoint_id is not None
+    assert endpoints.default_endpoint == endpoint_id
     assert endpoints.endpoints[0].reasoning.capability.default.effort == "high"
 
-    facade.use_provider("glm")
+    facade.use_provider(provider_id)
     monkeypatch.setenv("GLM_API_KEY", "top-secret")
     provider = facade.provider()
 
-    assert provider.provider_id == "glm"
+    assert provider.provider_id == provider_id
+    assert provider.display_name == "GLM"
     assert provider.credential.reference == "env:GLM_API_KEY"
     assert provider.credential.state == "configured"
     assert "top-secret" not in provider.model_dump_json()
@@ -100,15 +105,16 @@ def test_provider_commands_return_safe_views_and_explicit_effect_scope(
 
 def test_inline_provider_credential_is_never_exposed(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider(
-        "local",
+    created = facade.add_provider(
+        display_name="Local",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://example.test/v1",
         api_key="inline-secret",
     )
 
-    payload = facade.provider("local").model_dump_json()
+    assert created.changed_provider_id is not None
+    payload = facade.provider(created.changed_provider_id).model_dump_json()
 
     assert "inline-secret" not in payload
     assert "inline:***" in payload
@@ -198,15 +204,17 @@ def test_complete_compaction_configuration_is_saved_atomically(tmp_path) -> None
 
 def test_compaction_overrides_are_validated_against_fixed_endpoint_capabilities(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider(
-        "glm",
+    created = facade.add_provider(
+        display_name="GLM",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://example.test/v1",
     )
-    facade.save_endpoint(
-        "glm",
-        "summary",
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
+    endpoint_catalog = facade.add_endpoint(
+        provider_id,
+        display_name="Summary",
         model="summary-model",
         context_window=32_000,
         max_output_tokens=2048,
@@ -216,9 +224,11 @@ def test_compaction_overrides_are_validated_against_fixed_endpoint_capabilities(
         ),
     )
 
+    endpoint_id = endpoint_catalog.changed_endpoint_id
+    assert endpoint_id is not None
     saved = facade.update_compaction_model(
-        provider_id="glm",
-        endpoint_id="summary",
+        provider_id=provider_id,
+        endpoint_id=endpoint_id,
         max_output_tokens=1024,
         reasoning=ReasoningRequest(mode="enabled", effort="high"),
     )
@@ -291,8 +301,8 @@ async def test_agent_runtime_config_is_applied_by_local_composition_root(tmp_pat
 
 def test_invalid_configuration_mutation_does_not_change_persisted_state(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider(
-        "glm",
+    created = facade.add_provider(
+        display_name="GLM",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://example.test/v1",
@@ -301,9 +311,9 @@ def test_invalid_configuration_mutation_does_not_change_persisted_state(tmp_path
     before = json.loads(config_path.read_text(encoding="utf-8"))
 
     with pytest.raises(ConfigError):
-        facade.save_endpoint(
-            "glm",
-            "invalid",
+        assert created.changed_provider_id is not None
+        facade.add_endpoint(
+            created.changed_provider_id,
             model="model-name",
             context_window=1024,
             max_output_tokens=2048,
@@ -391,53 +401,64 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
     assert facade.provider_template("kimi").default_endpoint == "kimi-k3"
     assert facade.provider_template("kimi").endpoint_count == 4
 
-    configured = facade.add_provider("gemini", provider_type="gemini", make_default=True)
-    provider = next(item for item in configured.providers if item.provider_id == "gemini")
+    configured = facade.add_provider(
+        display_name="Google Gemini",
+        provider_type="gemini",
+        make_default=True,
+    )
+    provider_id = configured.changed_provider_id
+    assert provider_id is not None
+    provider = next(item for item in configured.providers if item.provider_id == provider_id)
 
-    assert configured.default_provider_id == "gemini"
+    assert configured.default_provider_id == provider_id
     assert configured.change is not None
     assert configured.change.action == "created"
-    assert provider.default_endpoint == "gemini-3.5-flash"
-    assert {endpoint.endpoint_id for endpoint in provider.endpoints} == {
+    assert {endpoint.model_id for endpoint in provider.endpoints} == {
         "gemini-3.5-flash",
         "gemini-3.1-pro-preview",
         "gemini-3.1-flash-lite",
     }
-    assert facade.endpoint("gemini", "gemini-3.5-flash").model_id == "gemini-3.5-flash"
+    assert provider.default_endpoint is not None
+    assert facade.endpoint(provider_id, provider.default_endpoint).model_id == "gemini-3.5-flash"
     assert provider.credential.reference == "env:GEMINI_API_KEY"
     assert ConfigurationFacade(tmp_path).system_prompt().system_prompt == "Keep this section"
 
 
 def test_provider_template_reapply_preserves_other_endpoints_and_credential(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider(
-        "primary",
+    created = facade.add_provider(
+        display_name="Primary",
         provider_type="openai",
         api_key_env="CUSTOM_OPENAI_KEY",
     )
-    facade.save_endpoint("primary", "legacy", model="gpt-legacy")
-    facade.update_provider("primary", enabled=False)
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
+    legacy = facade.add_endpoint(provider_id, display_name="Legacy", model="gpt-legacy")
+    assert legacy.changed_endpoint_id is not None
+    facade.update_provider(provider_id, enabled=False)
 
-    facade.update_provider("primary", model="gpt-custom")
-    provider = facade.provider("primary")
+    facade.update_provider(provider_id, model="gpt-custom")
+    provider = facade.provider(provider_id)
 
     assert provider.credential.reference == "env:CUSTOM_OPENAI_KEY"
     assert provider.enabled is False
-    assert provider.default_endpoint == "gpt-5.6-sol"
-    assert {endpoint.endpoint_id for endpoint in provider.endpoints} == {
-        "gpt-5.6-sol",
+    assert {endpoint.model_id for endpoint in provider.endpoints} == {
+        "gpt-custom",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
         "gpt-5.5",
         "gpt-6-astra",
-        "legacy",
+        "gpt-legacy",
     }
-    assert facade.endpoint("primary", "gpt-5.6-sol").model_id == "gpt-custom"
+    assert provider.default_endpoint is not None
+    assert facade.endpoint(provider_id, provider.default_endpoint).model_id == "gpt-custom"
 
 
 def test_provider_update_returns_template_merge_report_and_tracking_state(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider("primary", provider_type="openai")
+    created = facade.add_provider(display_name="Primary", provider_type="openai")
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
     template_path = tmp_path / "config" / "provider-templates.json"
     root = json.loads(template_path.read_text(encoding="utf-8"))
     template = root["templates"]["openai"]
@@ -447,18 +468,19 @@ def test_provider_update_returns_template_merge_report_and_tracking_state(tmp_pa
     endpoint["context_window"] = 2_000_000
     template_path.write_text(json.dumps(root), encoding="utf-8")
 
-    updated = facade.update_provider("primary")
-    provider = facade.provider("primary")
+    updated = facade.update_provider(provider_id)
+    provider = facade.provider(provider_id)
 
     assert updated.template_update is not None
     assert updated.template_update.template_id == "openai"
     assert updated.template_update.from_revision == from_revision
     assert updated.template_update.to_revision == from_revision + 1
-    assert updated.template_update.updated_endpoints == ["gpt-5.6-sol"]
+    assert len(updated.template_update.updated_endpoints) == 1
     assert provider.template_id == "openai"
     assert provider.template_origin == "inline"
     assert provider.template_revision == from_revision + 1
-    assert facade.endpoint("primary", "gpt-5.6-sol").context_window == 2_000_000
+    changed_endpoint_id = updated.template_update.updated_endpoints[0]
+    assert facade.endpoint(provider_id, changed_endpoint_id).context_window == 2_000_000
 
 
 def test_removed_provider_template_rejects_update_without_changing_provider(
@@ -469,7 +491,9 @@ def test_removed_provider_template_rejects_update_without_changing_provider(
     from ouro.config.provider_templates import provider_templates
 
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider("primary", provider_type="openai")
+    created = facade.add_provider(display_name="Primary", provider_type="openai")
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
     config_path = tmp_path / "config" / "providers.json"
     before = json.loads(config_path.read_text(encoding="utf-8"))
     without_openai = tuple(
@@ -478,25 +502,27 @@ def test_removed_provider_template_rejects_update_without_changing_provider(
     monkeypatch.setattr(store_module, "inline_provider_templates", lambda: without_openai)
 
     with pytest.raises(ConfigError, match="template was removed"):
-        facade.update_provider("primary")
+        facade.update_provider(provider_id)
 
     assert json.loads(config_path.read_text(encoding="utf-8")) == before
 
 
 def test_provider_settings_update_preserves_integrated_endpoint_registry(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider("primary", provider_type="openai")
-    facade.save_endpoint("primary", "private", model="private-model")
-    before = facade.provider("primary").endpoints
+    created = facade.add_provider(display_name="Primary", provider_type="openai")
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
+    facade.add_endpoint(provider_id, display_name="Private", model="private-model")
+    before = facade.provider(provider_id).endpoints
 
     updated = facade.update_provider_settings(
-        "primary",
+        provider_id,
         base_url="https://gateway.example.invalid/v1",
         api_key_env="PRIVATE_OPENAI_KEY",
         timeout=45.0,
         enabled=False,
     )
-    provider = next(item for item in updated.providers if item.provider_id == "primary")
+    provider = next(item for item in updated.providers if item.provider_id == provider_id)
 
     assert provider.base_url == "https://gateway.example.invalid/v1"
     assert provider.credential.reference == "env:PRIVATE_OPENAI_KEY"
@@ -509,126 +535,164 @@ def test_provider_settings_update_preserves_integrated_endpoint_registry(tmp_pat
 
 def test_provider_settings_reject_disabling_the_default_provider(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider("primary", provider_type="openai", make_default=True)
+    created = facade.add_provider(
+        display_name="Primary", provider_type="openai", make_default=True
+    )
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
 
     with pytest.raises(ConfigError, match="select another default provider first"):
-        facade.update_provider_settings("primary", enabled=False)
+        facade.update_provider_settings(provider_id, enabled=False)
 
-    assert facade.provider("primary").enabled is True
+    assert facade.provider(provider_id).enabled is True
 
 
 def test_using_endpoint_atomically_updates_the_default_provider_route(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
-    for provider_id in ("primary", "secondary"):
-        facade.add_provider(
-            provider_id,
+    provider_ids: dict[str, str] = {}
+    endpoint_ids: dict[str, str] = {}
+    for provider_name in ("primary", "secondary"):
+        created = facade.add_provider(
+            display_name=provider_name.title(),
             provider_type="custom",
             protocol="openai-chat-completions",
-            base_url=f"https://{provider_id}.example.invalid/v1",
+            base_url=f"https://{provider_name}.example.invalid/v1",
         )
-        facade.save_endpoint(
+        provider_id = created.changed_provider_id
+        assert provider_id is not None
+        provider_ids[provider_name] = provider_id
+        endpoint_catalog = facade.add_endpoint(
             provider_id,
-            "chat",
-            model=f"{provider_id}-model",
+            display_name="Chat",
+            model=f"{provider_name}-model",
         )
-    facade.use_provider("primary")
+        endpoint_id = endpoint_catalog.changed_endpoint_id
+        assert endpoint_id is not None
+        endpoint_ids[provider_name] = endpoint_id
+    facade.use_provider(provider_ids["primary"])
 
-    endpoints = facade.use_endpoint("secondary", "chat")
+    endpoints = facade.use_endpoint(provider_ids["secondary"], endpoint_ids["secondary"])
     providers = facade.provider_catalog()
 
-    assert endpoints.default_endpoint == "chat"
+    assert endpoints.default_endpoint == endpoint_ids["secondary"]
     assert endpoints.change is not None
     assert endpoints.change.action == "default_route_changed"
-    assert providers.default_provider_id == "secondary"
-    assert facade.provider("secondary").default is True
+    assert providers.default_provider_id == provider_ids["secondary"]
+    assert facade.provider(provider_ids["secondary"]).default is True
 
 
 def test_using_endpoint_rejects_disabled_provider_without_partial_update(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider("primary", provider_type="openai", make_default=True)
-    facade.add_provider(
-        "disabled",
+    primary = facade.add_provider(
+        display_name="Primary", provider_type="openai", make_default=True
+    )
+    disabled = facade.add_provider(
+        display_name="Disabled",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://disabled.example.invalid/v1",
         enabled=False,
     )
-    facade.save_endpoint("disabled", "base", model="disabled-base")
-    facade.save_endpoint("disabled", "chat", model="disabled-model")
+    primary_id = primary.changed_provider_id
+    disabled_id = disabled.changed_provider_id
+    assert primary_id is not None and disabled_id is not None
+    base = facade.add_endpoint(disabled_id, display_name="Base", model="disabled-base")
+    chat = facade.add_endpoint(disabled_id, display_name="Chat", model="disabled-model")
+    assert base.changed_endpoint_id is not None and chat.changed_endpoint_id is not None
     before = facade.provider_catalog()
 
     with pytest.raises(ConfigError, match="provider is disabled"):
-        facade.use_endpoint("disabled", "chat")
+        facade.use_endpoint(disabled_id, chat.changed_endpoint_id)
 
     after = facade.provider_catalog()
-    assert after.default_provider_id == before.default_provider_id == "primary"
-    assert facade.provider("disabled").default_endpoint == "base"
+    assert after.default_provider_id == before.default_provider_id == primary_id
+    assert facade.provider(disabled_id).default_endpoint == base.changed_endpoint_id
 
 
-def test_provider_template_default_endpoint_override_keeps_other_template_endpoints(
+def test_provider_template_model_override_keeps_generated_endpoint_registry(
     tmp_path,
 ) -> None:
     facade = ConfigurationFacade(tmp_path)
 
-    facade.add_provider(
-        "openai",
+    created = facade.add_provider(
+        display_name="OpenAI",
         provider_type="openai",
-        endpoint_id="primary",
         model="gpt-custom",
     )
-    provider = facade.provider("openai")
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
+    provider = facade.provider(provider_id)
 
-    assert provider.default_endpoint == "primary"
-    assert {endpoint.endpoint_id for endpoint in provider.endpoints} == {
-        "primary",
+    assert provider.default_endpoint is not None
+    assert provider.default_endpoint.startswith("endpoint_")
+    assert {endpoint.model_id for endpoint in provider.endpoints} == {
+        "gpt-custom",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
         "gpt-5.5",
         "gpt-6-astra",
     }
-    assert facade.endpoint("openai", "primary").model_id == "gpt-custom"
+    assert facade.endpoint(provider_id, provider.default_endpoint).model_id == "gpt-custom"
 
 
-def test_provider_template_rejects_default_endpoint_collision_before_write(tmp_path) -> None:
+def test_generated_provider_and_endpoint_ids_avoid_user_configured_collisions(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
 
-    with pytest.raises(ConfigError, match="conflicts with another template endpoint"):
-        facade.add_provider(
-            "openai",
-            provider_type="openai",
-            endpoint_id="gpt-5.6-terra",
-        )
+    first = facade.add_provider(display_name="OpenAI", provider_type="openai")
+    second = facade.add_provider(display_name="OpenAI", provider_type="openai")
+    first_id = first.changed_provider_id
+    second_id = second.changed_provider_id
+    assert first_id is not None and second_id is not None
 
-    assert not (tmp_path / "config" / "providers.json").exists()
+    assert first_id != second_id
+    assert first_id.startswith("provider_")
+    assert second_id.startswith("provider_")
+    first_endpoint_ids = {item.endpoint_id for item in facade.provider(first_id).endpoints}
+    second_endpoint_ids = {item.endpoint_id for item in facade.provider(second_id).endpoints}
+    assert first_endpoint_ids.isdisjoint(second_endpoint_ids)
+
+    root = json.loads((tmp_path / "config" / "providers.json").read_text(encoding="utf-8"))
+    provider_items = root["providers"]["items"]
+    assert all("provider_id" not in item for item in provider_items.values())
+    assert all(
+        "endpoint_id" not in endpoint
+        for provider in provider_items.values()
+        for endpoint in provider["endpoints"].values()
+    )
 
 
 def test_integrated_provider_update_is_detected_from_persisted_type(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider("primary", provider_type="anthropic")
-    facade.update_provider("primary", model="claude-custom")
+    created = facade.add_provider(display_name="Primary", provider_type="anthropic")
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
+    facade.update_provider(provider_id, model="claude-custom")
 
-    provider = facade.provider("primary")
+    provider = facade.provider(provider_id)
     assert provider.provider_type == "anthropic"
     assert provider.protocol == "anthropic-messages"
-    assert facade.endpoint("primary", "claude-sonnet-5").model_id == "claude-custom"
+    assert provider.default_endpoint is not None
+    assert facade.endpoint(provider_id, provider.default_endpoint).model_id == "claude-custom"
 
 
-def test_provider_create_conflict_and_explicit_replace_are_atomic(tmp_path) -> None:
+def test_provider_create_and_explicit_replace_keep_internal_identity(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
-    facade.add_provider("primary", provider_type="anthropic")
-    config_path = tmp_path / "config" / "providers.json"
-    before = config_path.read_text(encoding="utf-8")
+    created = facade.add_provider(display_name="Primary", provider_type="anthropic")
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
+    other = facade.add_provider(display_name="Primary", provider_type="openai")
+    assert other.changed_provider_id not in {None, provider_id}
 
-    with pytest.raises(ConfigError, match="provider already exists"):
-        facade.add_provider("primary", provider_type="openai")
-
-    assert config_path.read_text(encoding="utf-8") == before
-
-    replaced = facade.replace_provider("primary", provider_type="openai")
-    provider = next(item for item in replaced.providers if item.provider_id == "primary")
+    replaced = facade.replace_provider(
+        provider_id,
+        display_name="Primary OpenAI",
+        provider_type="openai",
+    )
+    provider = next(item for item in replaced.providers if item.provider_id == provider_id)
+    assert provider.display_name == "Primary OpenAI"
     assert provider.provider_type == "openai"
     assert provider.protocol == "openai-responses"
-    assert {endpoint.endpoint_id for endpoint in provider.endpoints} == {
+    assert {endpoint.model_id for endpoint in provider.endpoints} == {
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",

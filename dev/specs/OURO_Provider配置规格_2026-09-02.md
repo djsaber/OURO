@@ -12,7 +12,8 @@
 
 Provider 表示供应商级连接和默认值：
 
-- `provider_id`：用户拥有的配置实例 id；
+- `provider_id`：框架生成的内部实例身份，不接受用户配置；
+- `display_name`：必填的用户展示名，不承担身份语义；
 - `provider_type`：集成厂商产品档案，或 `custom` 通用入口；
 - `protocol`：`faux`、`openai-chat-completions`、`openai-responses` 或 `anthropic-messages`，只负责线协议 adapter 选择；
 - `auth_driver`：认证选择，省略时为 `static`；
@@ -22,7 +23,8 @@ Provider 表示供应商级连接和默认值：
 
 Endpoint 表示一个具体可调用模型：
 
-- `endpoint_id` 与 `model_id`；
+- `endpoint_id`：框架生成的内部身份，不接受用户配置；
+- `display_name`：可选展示名；`model_id`：发送给供应商的模型标识；
 - 可覆盖的 base URL/API path；
 - temperature、context window、max output tokens；
 - tools、vision、streaming、structured output 能力；
@@ -37,18 +39,19 @@ Endpoint 使用单一正整数 `max_output_tokens` 定义输出预算，同时�
 ```json
 {
   "providers": {
-    "default": "supplier",
+    "default": "provider_<generated>",
     "items": {
-      "supplier": {
-        "provider_id": "supplier",
+      "provider_<generated>": {
+        "display_name": "Supplier",
         "provider_type": "custom",
         "protocol": "openai-chat-completions",
         "credential_ref": "env:API_KEY",
         "base_url": "https://example.test/v1",
         "api_path": "/chat/completions",
-        "default_endpoint": "chat",
+        "default_endpoint": "endpoint_<generated>",
         "endpoints": {
-          "chat": {
+          "endpoint_<generated>": {
+            "display_name": "Chat",
             "model_id": "model-name",
             "reasoning": {
               "capability": {
@@ -215,9 +218,9 @@ manager。Provider retry 的关联字段作为一个原子 mutation 提交，不
 ## 内置模板
 
 `config/provider_templates.py` 保存经过核验的只读模板目录。模板是配置域数据，不是新的 adapter 类型；多个
-厂商可复用同一线协议。每项包含稳定 template id、建议的 provider id、默认 endpoint id、非空且 id 唯一的
+厂商可复用同一线协议。每项包含稳定 template id、必填展示名、默认模板 Endpoint 身份、非空且模板身份唯一的
 Endpoint 集合、连接地址、凭据环境变量、Endpoint capability、官方文档和核验日期。默认 Endpoint 必须存在于
-模板 Endpoint 集合中。
+模板 Endpoint 集合中；模板 Endpoint 身份只服务模板版本合并，实例化时不会复用为运行时 Endpoint ID。
 
 当前目录包含以下经官方文档核验的配置：
 
@@ -234,14 +237,13 @@ Endpoint 集合、连接地址、凭据环境变量、Endpoint capability、官�
 | OpenRouter | `auto` | `free` |
 | Mistral | `mistral-medium-3-5` | `mistral-small-2603`、`mistral-large-2512` |
 
-模板值是便捷默认值。CLI 允许显式覆盖 provider id、默认 endpoint id、默认 endpoint 的 model、base URL 和
-credential；覆盖不会丢弃同一模板中的其他 Endpoint。
+模板值是便捷默认值。CLI 允许显式覆盖展示名、默认 endpoint 的 model、base URL 和 credential；内部身份
+始终由框架生成，覆盖不会丢弃同一模板中的其他 Endpoint。
 
-`provider add <id> --type <type>` 是唯一创建用例。application 根据 type 判断：集成厂商类型由配置 manager
+`provider add <display_name> --type <type>` 是唯一创建用例。application 根据 type 判断：集成厂商类型由配置 manager
 在一次校验和一次写盘中创建 Provider 与全部模板 Endpoint；`custom` 类型只创建 Provider，Endpoint 由独立
-命令管理。失败不得产生半配置。若 id 已存在，明确提示使用 `provider update` 或 `provider replace`。内置类型的
-update 按下述模板基线规则合并，replace 按所选类型完整替换。默认 Endpoint 的 id 或 model 覆盖与其他模板
-Endpoint 冲突时，在写盘前明确失败。
+命令管理。失败不得产生半配置。相同展示名允许存在，身份仍保持唯一。内置类型的 update 按下述模板基线规则
+合并，replace 按所选类型完整替换；默认 Endpoint 的 model 覆盖在写盘前完成校验。
 
 ### 模板来源与显式更新
 
@@ -265,10 +267,11 @@ Provider 级模板值，以及每个模板 Endpoint 到配置 Endpoint 的 id �
 | 配置中的未知 Endpoint | 始终保留 |
 
 Provider 级 `base_url`、`api_path`、静态模板凭据环境变量和默认 Endpoint 采用同样的旧值比较：当前值仍等于旧模板值
-才跟随新模板，否则保留用户值。`enabled`、timeout、retry、provider options 和 Provider id 始终归用户管理。
+才跟随新模板，否则保留用户值。`enabled`、timeout、retry、provider options 和展示名归用户管理；Provider id
+始终由框架管理。
 实例 `auth_driver` 和 managed 引用始终保留；模板认证默认值改变时不自动切换实例认证。只有实例、旧基线和新模板
 均使用 static 时，才合并环境变量变化。创建或显式替换可选择允许的认证组合；managed 每次生成新的 credential id。
-Endpoint id/model、连接和凭据等本次 CLI 显式参数在合并后应用，并作为用户覆盖留待后续合并识别。
+Endpoint model、连接和凭据等本次 CLI 显式参数在合并后应用，并作为用户覆盖留待后续合并识别。
 
 没有 `template` 绑定的 Provider 无法执行模板更新，不根据类型或端点名称接管已有配置。
 用户可显式从模板替换该 Provider，建立当前基线后再使用 update。
@@ -299,7 +302,8 @@ Mistral 模板暂不声明 reasoning capability。其 reasoning 响应使用嵌�
 
 ## 模型路由
 
-持久化和 Host 输入统一使用 `provider_id/endpoint_id`。`ConfiguredModelCatalog`：
+持久化路由和创建后的 Host 选择统一使用框架返回的 `provider_id/endpoint_id`；创建表单和配置文件内容不接收
+用户指定 ID。`ConfiguredModelCatalog`：
 
 - 只列出 enabled Provider 的 Endpoint；
 - 精确解析完整 route；

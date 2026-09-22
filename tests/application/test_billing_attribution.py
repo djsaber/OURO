@@ -16,7 +16,12 @@ from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.state import RunRecord
 from ouro.local_application import LocalApplication
 from ouro.providers.authentication import ProviderRequestPolicy
-from tests.application.test_runtime_authentication import login
+from tests.application.test_runtime_authentication import (
+    _endpoint_id,
+    _model_key,
+    _provider_id,
+    login,
+)
 from tests.application.test_runtime_authentication import managed_runtime as managed_runtime
 
 
@@ -124,18 +129,20 @@ async def test_inflight_request_keeps_old_service_attribution_after_rebinding(
         run = asyncio.create_task(application.runtime.run("first"))
         try:
             await asyncio.wait_for(entered.wait(), 5)
+            provider_id = _provider_id(configs)
             configs.replace_provider(
-                "subscription",
+                provider_id,
+                display_name="Subscription",
                 provider_type="custom",
                 protocol="openai-chat-completions",
                 auth_driver="fixture-device",
                 base_url="https://fixture.invalid/api",
             )
-            configs.upsert_endpoint(
-                "subscription", "chat", model_id="chat", supports_streaming=False
+            chat = configs.create_endpoint(
+                provider_id, model_id="chat", supports_streaming=False
             )
-            configs.set_default_route("subscription", "chat")
-            new_adapter = application.runtime.models.adapter_for("subscription/chat")
+            configs.set_default_route(provider_id, chat.endpoint_id)
+            new_adapter = application.runtime.models.adapter_for(_model_key(configs, "chat"))
             assert new_adapter.model.billing_mode == "usage_based"
             release.set()
             first = await run
@@ -163,7 +170,7 @@ async def test_failed_dedicated_compaction_keeps_service_mode_and_actual_tokens(
     managed_runtime,
     monkeypatch,
 ):
-    _, drivers, policies, _ = managed_runtime
+    configs, drivers, policies, _ = managed_runtime
     policies = (replace(policies[0], requests=ProviderRequestPolicy(billing_mode="subscription")),)
     application = LocalApplication.build(tmp_path, auth_drivers=drivers, service_policies=policies)
     transport_type = type(application.runtime.adapter.provider.transport)
@@ -187,7 +194,7 @@ async def test_failed_dedicated_compaction_keeps_service_mode_and_actual_tokens(
             await application.runtime.compact(session_id=first.session.session_id)
         entries = LocalUsageLedger(tmp_path).list_entries()
         compaction = [entry for entry in entries if entry.purpose == "compaction"]
-        assert compaction and compaction[0].endpoint_id == "summary"
+        assert compaction and compaction[0].endpoint_id == _endpoint_id(configs, "summary")
         assert all(entry.billing_mode == "subscription" for entry in entries)
         assert all(entry.estimated_cost is None for entry in entries)
         assert all(entry.total_tokens == 14 and entry.cache_read_tokens == 2 for entry in entries)

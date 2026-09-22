@@ -24,7 +24,8 @@ async def test_openai_preset_sends_native_responses_tools_and_reasoning(
 ):
     monkeypatch.setenv("OPENAI_API_KEY", "fixture-key")
     manager = ProviderConfigManager(tmp_path)
-    manager.create_from_template(get_provider_template("openai"), provider_id="primary")
+    provider = manager.create_from_template(get_provider_template("openai"))
+    endpoint = next(item for item in provider.endpoints if item.model_id == model_id)
     requests = []
 
     def respond(request):
@@ -45,8 +46,8 @@ async def test_openai_preset_sends_native_responses_tools_and_reasoning(
         adapter = build_runtime_adapter(
             manager.resolve_runtime_options(
                 ProviderRuntimeOptions(
-                    provider_id="primary",
-                    endpoint_id=model_id,
+                    provider_id=provider.provider_id,
+                    endpoint_id=endpoint.endpoint_id,
                     reasoning_request=ReasoningRequest(mode="enabled", effort="high"),
                 )
             )
