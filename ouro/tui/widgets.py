@@ -928,7 +928,7 @@ def _tool_activity_text(
     line_styles: dict[ToolLineState, str] = {
         "pending": theme.text_detail,
         "active": theme.accent,
-        "done": theme.success,
+        "done": theme.accent,
         "muted": theme.text_faint,
     }
     part_styles: dict[ToolTextTone, str] = {

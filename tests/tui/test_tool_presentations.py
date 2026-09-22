@@ -133,18 +133,17 @@ def test_command_presentation_keeps_full_flattened_command_for_layout_time() -> 
 
 
 def test_todolist_presentation_exposes_progress_and_item_states() -> None:
-    presentation = present_tool(
-        _tool(
-            "TodoList",
-            arguments={
-                "todos": [
-                    {"title": "Inspect architecture", "status": "done"},
-                    {"title": "Implement lifecycle", "status": "in_progress"},
-                    {"title": "Run tests", "status": "pending"},
-                ]
-            },
-        )
+    tool = _tool(
+        "TodoList",
+        arguments={
+            "todos": [
+                {"title": "Inspect architecture", "status": "done"},
+                {"title": "Implement lifecycle", "status": "in_progress"},
+                {"title": "Run tests", "status": "pending"},
+            ]
+        },
     )
+    presentation = present_tool(tool)
 
     assert presentation.summary == "1/3 done"
     assert [(line.marker, line.state) for line in presentation.lines] == [
@@ -152,6 +151,13 @@ def test_todolist_presentation_exposes_progress_and_item_states() -> None:
         ("◉", "active"),
         ("○", "pending"),
     ]
+
+    rendered = _tool_activity_text(tool, frame=0, theme=DEFAULT_TUI_THEME)
+    for marker in ("●", "◉"):
+        marker_style = rendered.get_style_at_offset(Console(), rendered.plain.index(marker))
+        assert marker_style.color is not None
+        assert marker_style.color.triplet is not None
+        assert marker_style.color.triplet.hex == DEFAULT_TUI_THEME.accent
 
 
 def test_spawn_agent_uses_agent_identity_and_places_task_below_header() -> None:
