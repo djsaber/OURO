@@ -4360,7 +4360,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             nonlocal selected_theme_id, selected_level
             if theme_id != selected_theme_id:
                 selected_theme_id = theme_id
-                selected_level = self._theme_choice_saturation_level(theme_id)
             self._request_tui_theme(
                 theme_id,
                 saturation_level=selected_level,
@@ -4373,7 +4372,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if theme is not None:
                 if theme_id != selected_theme_id:
                     selected_theme_id = theme_id
-                    selected_level = self._theme_choice_saturation_level(theme_id)
                     screen.update_choices(
                         theme_choices(),
                         preferred_value=theme_id,
@@ -4391,7 +4389,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 return None
             if theme_id != selected_theme_id:
                 selected_theme_id = theme_id
-                selected_level = self._theme_choice_saturation_level(theme_id)
             level = max(0, min(THEME_SATURATION_LEVELS - 1, selected_level + direction))
             if level == selected_level:
                 return None
@@ -4561,7 +4558,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return tuple(theme_choice(theme) for theme in TUI_THEMES.values())
 
     def _theme_choice_saturation_level(self, theme_id: str) -> int:
-        """Return the visible level for a palette; unselected palettes start at maximum."""
+        """Return the persisted or pending level used to initialize the picker."""
 
         if self._pending_tui_theme_id is not None:
             if theme_id == self._pending_tui_theme_id:

@@ -12842,6 +12842,19 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         assert selected_coral.swatch_marker_index == 1
         assert selected_coral.leading_swatch == TUI_THEMES["coral"].accent_saturation_scale()[1]
 
+        await pilot.press("down")
+        await pilot.pause()
+        selected_sienna = next(
+            choice for choice in theme_screen._choices if choice.value == "sienna"
+        )
+        assert selected_sienna.swatch_marker_index == 1
+        assert selected_sienna.leading_swatch == TUI_THEMES["sienna"].accent_saturation_scale()[1]
+
+        await pilot.press("up")
+        await pilot.pause()
+        selected_coral = next(choice for choice in theme_screen._choices if choice.value == "coral")
+        assert selected_coral.swatch_marker_index == 1
+
         await pilot.press("enter")
         await _wait_until(
             lambda: not app._theme_switch_active,
