@@ -45,6 +45,11 @@ class Choice:
     description_accent: str | None = None
     destructive: bool = False
     edit_lines: int = 1
+    leading_swatch: str | None = None
+    swatches: tuple[str, ...] = ()
+    swatch_marker_index: int | None = None
+    trailing_accent: str | None = None
+    trailing_swatch: str | None = None
 
 
 _HELP_SHORTCUTS = (
@@ -102,6 +107,7 @@ def help_choices(
 ChoiceSelectionHandler = Callable[[str], Awaitable[tuple[Choice, ...] | None]]
 ChoiceRefreshHandler = Callable[[], Awaitable[tuple[Choice, ...] | None]]
 ChoiceCancelHandler = Callable[[], bool]
+ChoiceAdjustmentHandler = Callable[[str, int], tuple[Choice, ...] | None]
 MultiChoiceConfirmationHandler = Callable[
     [tuple[str, ...]],
     Awaitable[tuple[Choice, ...] | None],
@@ -124,6 +130,7 @@ class _ChoicePage:
     on_select: ChoiceSelectionHandler | None
     on_refresh: ChoiceRefreshHandler | None
     on_cancel: ChoiceCancelHandler | None
+    on_adjust: ChoiceAdjustmentHandler | None
     retain_focus_position_on_select: bool
     interaction_hint: str | None
 
@@ -172,6 +179,33 @@ def _choice_option(
 ) -> Option:
     """Render one selectable row independently from its surrounding group chrome."""
 
+    if choice.swatches:
+        palette = Text(no_wrap=True)
+        leading_mark = (
+            theme.spinner_frames[spinner_frame]
+            if choice.loading
+            else theme.session_node_mark
+        )
+        palette.append(leading_mark, style=choice.leading_swatch or choice.accent or "")
+        palette.append("  ")
+        for index, color in enumerate(choice.swatches):
+            mark = (
+                theme.selected_session_node_mark
+                if index == choice.swatch_marker_index
+                else theme.session_node_mark
+            )
+            palette.append(mark, style=color)
+        row = Table.grid(expand=True, padding=0)
+        row.add_column(width=len(choice.swatches) + 3, no_wrap=True)
+        row.add_column(width=2)
+        row.add_column(justify="right", overflow="ellipsis", no_wrap=True)
+        row.add_row(
+            palette,
+            "",
+            Text(choice.label, style=choice.trailing_accent or choice.accent or ""),
+        )
+        return Option(row, id=choice.value, disabled=choice.disabled)
+
     label = Text(overflow="ellipsis", no_wrap=True)
     marker = theme.spinner_frames[spinner_frame] if choice.loading else choice.marker
     markers = tuple(value for value in (choice.selection_marker, marker) if value)
@@ -184,7 +218,11 @@ def _choice_option(
         row.add_column(ratio=1)
         row.add_column(width=2)
         row.add_column(justify="right", no_wrap=True)
-        row.add_row(label, "", "", Text(choice.trailing, style=theme.text_choice))
+        trailing = Text(choice.trailing, style=choice.trailing_accent or theme.text_choice)
+        if choice.trailing_swatch is not None:
+            trailing.append(theme.inline_separator, style=theme.separator_tone)
+            trailing.append(theme.session_node_mark, style=choice.trailing_swatch)
+        row.add_row(label, "", "", trailing)
         return Option(row, id=choice.value, disabled=choice.disabled)
     if choice.description:
         label.append(
@@ -283,6 +321,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         on_select: ChoiceSelectionHandler | None = None,
         on_refresh: ChoiceRefreshHandler | None = None,
         on_cancel: ChoiceCancelHandler | None = None,
+        on_adjust: ChoiceAdjustmentHandler | None = None,
         retain_focus_position_on_select: bool = False,
         navigation_id: MenuDestination | None = None,
         retain_for_switching: bool = False,
@@ -297,6 +336,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._on_select = on_select
         self._on_refresh = on_refresh
         self._on_cancel = on_cancel
+        self._on_adjust = on_adjust
         self._retain_focus_position_on_select = retain_focus_position_on_select
         self._navigation_id = navigation_id
         self._retain_for_switching = retain_for_switching
@@ -307,6 +347,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._spinner_frame = 0
         self._spinner_timer: Timer | None = None
         self._accent_preview: Color | None = None
+        self._highlight_callback_pending = False
 
     @property
     def navigation_id(self) -> MenuDestination | None:
@@ -415,6 +456,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         on_select: ChoiceSelectionHandler | None = None,
         on_refresh: ChoiceRefreshHandler | None = None,
         on_cancel: ChoiceCancelHandler | None = None,
+        on_adjust: ChoiceAdjustmentHandler | None = None,
         retain_focus_position_on_select: bool = False,
         navigation_id: MenuDestination | None = None,
         retain_for_switching: bool = False,
@@ -431,6 +473,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._on_select = on_select
         self._on_refresh = on_refresh
         self._on_cancel = on_cancel
+        self._on_adjust = on_adjust
         self._retain_focus_position_on_select = retain_focus_position_on_select
         self._navigation_id = navigation_id
         self._retain_for_switching = retain_for_switching
@@ -457,6 +500,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         on_select: ChoiceSelectionHandler | None = None,
         on_refresh: ChoiceRefreshHandler | None = None,
         on_cancel: ChoiceCancelHandler | None = None,
+        on_adjust: ChoiceAdjustmentHandler | None = None,
         retain_focus_position_on_select: bool = False,
         retain_for_switching: bool = False,
         interaction_hint: str | None = None,
@@ -483,6 +527,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             on_select=on_select,
             on_refresh=on_refresh,
             on_cancel=on_cancel,
+            on_adjust=on_adjust,
             retain_focus_position_on_select=retain_focus_position_on_select,
             retain_for_switching=(
                 root.retain_for_switching if returning_to_root else retain_for_switching
@@ -501,6 +546,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         on_select: ChoiceSelectionHandler | None = None,
         on_refresh: ChoiceRefreshHandler | None = None,
         on_cancel: ChoiceCancelHandler | None = None,
+        on_adjust: ChoiceAdjustmentHandler | None = None,
         retain_focus_position_on_select: bool = False,
         navigation_id: MenuDestination | None = None,
         retain_for_switching: bool = False,
@@ -518,6 +564,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             on_select=on_select,
             on_refresh=on_refresh,
             on_cancel=on_cancel,
+            on_adjust=on_adjust,
             retain_focus_position_on_select=retain_focus_position_on_select,
             navigation_id=navigation_id,
             retain_for_switching=retain_for_switching,
@@ -545,6 +592,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             on_select=page.on_select,
             on_refresh=page.on_refresh,
             on_cancel=page.on_cancel,
+            on_adjust=page.on_adjust,
             retain_focus_position_on_select=page.retain_focus_position_on_select,
             navigation_id=page.navigation_id,
             retain_for_switching=page.retain_for_switching,
@@ -592,10 +640,12 @@ class ChoiceScreen(ModalScreen[str | None]):
             expected_revision is not None and self._page_revision != expected_revision
         ):
             return False
+        previous_choices = self._choices
         self._choices = choices
         self._refresh_options(
             needle=self.query_one("#choice-filter", Input).value,
             preferred_value=preferred_value,
+            previous_choices=previous_choices,
         )
         return True
 
@@ -631,10 +681,15 @@ class ChoiceScreen(ModalScreen[str | None]):
         if not self._accepts_choice_updates() or self._on_refresh is None:
             return False
         page_revision = self._page_revision
+        selected = self._selected_value()
         choices = await self._on_refresh()
         if choices is None:
             return False
-        return self.update_choices(choices, expected_revision=page_revision)
+        return self.update_choices(
+            choices,
+            expected_revision=page_revision,
+            preferred_value=selected,
+        )
 
     def _accepts_choice_updates(self) -> bool:
         """Return whether this menu still owns a live render surface."""
@@ -697,6 +752,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             on_select=self._on_select,
             on_refresh=self._on_refresh,
             on_cancel=self._on_cancel,
+            on_adjust=self._on_adjust,
             retain_focus_position_on_select=self._retain_focus_position_on_select,
             interaction_hint=self._interaction_hint,
         )
@@ -718,6 +774,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         needle: str,
         preferred_value: str | None,
         preferred_position: int | None = None,
+        previous_choices: tuple[Choice, ...] | None = None,
     ) -> None:
         theme = theme_for(self)
         normalized_needle = needle.casefold().strip()
@@ -725,6 +782,22 @@ class ChoiceScreen(ModalScreen[str | None]):
             choice for choice in self._choices if self._matches_filter(choice, normalized_needle)
         )
         options = self.query_one("#choice-list", OptionList)
+        if previous_choices is not None:
+            previous_visible = tuple(
+                choice
+                for choice in previous_choices
+                if self._matches_filter(choice, normalized_needle)
+            )
+            if self._replace_ungrouped_options(
+                options,
+                previous_visible,
+                choices,
+                theme=theme,
+                preferred_value=preferred_value,
+                preferred_position=preferred_position,
+            ):
+                self._sync_loading_timer()
+                return
         options.clear_options()
         options.add_options(
             self._options(
@@ -744,6 +817,55 @@ class ChoiceScreen(ModalScreen[str | None]):
             else None
         )
         self._sync_loading_timer()
+
+    def _replace_ungrouped_options(
+        self,
+        options: OptionList,
+        previous: tuple[Choice, ...],
+        choices: tuple[Choice, ...],
+        *,
+        theme: TuiTheme,
+        preferred_value: str | None,
+        preferred_position: int | None,
+    ) -> bool:
+        """Update stable flat rows without resetting OptionList navigation state."""
+
+        if (
+            any(choice.group for choice in (*previous, *choices))
+            or len(previous) != len(choices)
+            or options.option_count != len(choices)
+            or any(
+                before.value != after.value or before.disabled != after.disabled
+                for before, after in zip(previous, choices, strict=True)
+            )
+            or any(
+                option.id != choice.value
+                for option, choice in zip(options.options, choices, strict=True)
+            )
+        ):
+            return False
+        for index, (before, after) in enumerate(zip(previous, choices, strict=True)):
+            if before == after:
+                continue
+            prompt = _choice_option(
+                after,
+                group_accent=theme.accent,
+                spinner_frame=self._spinner_frame,
+                theme=theme,
+            ).prompt
+            options.replace_option_prompt_at_index(index, prompt)
+        highlighted = (
+            self._highlight_index(
+                options,
+                preferred_value=preferred_value,
+                preferred_position=preferred_position,
+            )
+            if choices
+            else None
+        )
+        if options.highlighted != highlighted:
+            options.highlighted = highlighted
+        return True
 
     def _sync_loading_timer(self, *, force: bool = False) -> None:
         theme = theme_for(self)
@@ -832,11 +954,13 @@ class ChoiceScreen(ModalScreen[str | None]):
             or not self._accepts_choice_updates()
         ):
             return
+        previous_choices = self._choices
         self._choices = choices
         self._refresh_options(
             needle=self.query_one("#choice-filter", Input).value,
             preferred_value=(None if self._retain_focus_position_on_select else selected),
             preferred_position=(focus_position if self._retain_focus_position_on_select else None),
+            previous_choices=previous_choices,
         )
 
     def _highlight_position(self) -> int | None:
@@ -847,8 +971,23 @@ class ChoiceScreen(ModalScreen[str | None]):
         return sum(not options.get_option_at_index(index).disabled for index in range(highlighted))
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
-        if self._on_highlight is not None and event.option.id is not None:
-            self._on_highlight(str(event.option.id))
+        if self._on_highlight is None or event.option.id is None:
+            return
+        if self._highlight_callback_pending:
+            return
+        self._highlight_callback_pending = True
+        if not self.call_after_refresh(self._sync_highlight_callback):
+            self._highlight_callback_pending = False
+
+    def _sync_highlight_callback(self) -> None:
+        """Coalesce queued highlight messages and project only the current row."""
+
+        self._highlight_callback_pending = False
+        if not self._accepts_choice_updates() or self._on_highlight is None:
+            return
+        selected = self._selected_value()
+        if selected is not None:
+            self._on_highlight(selected)
 
     async def action_cancel(self) -> None:
         if self._on_cancel is not None and self._on_cancel():
@@ -873,10 +1012,31 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._reveal_group_header_after_upward_move(options, previous)
 
     def action_previous_group(self) -> None:
+        if self._on_adjust is not None:
+            self._adjust_choice(-1)
+            return
         self._move_group(-1)
 
     def action_next_group(self) -> None:
+        if self._on_adjust is not None:
+            self._adjust_choice(1)
+            return
         self._move_group(1)
+
+    def _adjust_choice(self, direction: int) -> None:
+        selected = self._selected_value()
+        if selected is None or self._on_adjust is None:
+            return
+        choices = self._on_adjust(selected, direction)
+        if choices is None or choices is self._choices:
+            return
+        previous_choices = self._choices
+        self._choices = choices
+        self._refresh_options(
+            needle=self.query_one("#choice-filter", Input).value,
+            preferred_value=selected,
+            previous_choices=previous_choices,
+        )
 
     def _move_group(self, direction: int) -> None:
         options = self.query_one("#choice-list", OptionList)
@@ -940,7 +1100,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         if action == "switch_session_domain":
             return self.navigation_id == "sessions"
         if action in {"previous_group", "next_group"}:
-            return any(choice.group for choice in self._choices)
+            return self._on_adjust is not None or any(choice.group for choice in self._choices)
         return super().check_action(action, parameters)
 
     def action_accept_choice(self) -> None:

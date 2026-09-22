@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Mapping
-from dataclasses import dataclass
+from colorsys import hls_to_rgb, rgb_to_hls
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from math import isfinite
 from types import MappingProxyType
@@ -20,6 +21,9 @@ from rich.theme import Theme as RichTheme
 _HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}\Z")
 _MIN_SPINNER_INTERVAL_SECONDS = 0.05
 _MAX_SPINNER_INTERVAL_SECONDS = 2.0
+THEME_SATURATION_LEVELS = 32
+DEFAULT_THEME_SATURATION_MIN = 0.2
+DEFAULT_THEME_SATURATION_MAX = 1.0
 
 
 class _TuiSyntaxTheme(SyntaxTheme):
@@ -131,6 +135,9 @@ class TuiTheme:
         "⠏",
     )
     spinner_interval_seconds: float = 0.12
+    saturation: float = DEFAULT_THEME_SATURATION_MAX
+    saturation_min: float = DEFAULT_THEME_SATURATION_MIN
+    saturation_max: float = DEFAULT_THEME_SATURATION_MAX
 
     _COLOR_FIELDS: ClassVar[tuple[str, ...]] = (
         "accent",
@@ -197,6 +204,20 @@ class TuiTheme:
             object.__setattr__(self, name, value.lower())
         for name in self._GLYPH_FIELDS:
             self._validate_glyph(name, getattr(self, name))
+        for name in ("saturation", "saturation_min", "saturation_max"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or not 0.0 <= value <= 1.0
+            ):
+                raise ValueError(f"{name} must be between 0.0 and 1.0")
+            object.__setattr__(self, name, float(value))
+        if self.saturation_min > self.saturation_max:
+            raise ValueError("saturation_min must not exceed saturation_max")
+        if not self.saturation_min <= self.saturation <= self.saturation_max:
+            raise ValueError("saturation must be within the theme saturation bounds")
         if self.selected_choice_marker == self.unselected_choice_marker:
             raise ValueError("selected and unselected choice markers must differ")
         if self.expanded_disclosure_marker == self.collapsed_disclosure_marker:
@@ -245,6 +266,53 @@ class TuiTheme:
     @property
     def idle_mark(self) -> str:
         return self.inline_separator_mark
+
+    def saturation_for_level(self, level: int) -> float:
+        """Map a high-to-low UI level onto this palette's declared bounds."""
+
+        if isinstance(level, bool) or not isinstance(level, int):
+            raise ValueError("saturation level must be an integer")
+        if not 0 <= level < THEME_SATURATION_LEVELS:
+            raise ValueError(
+                f"saturation level must be between 0 and {THEME_SATURATION_LEVELS - 1}"
+            )
+        if level == 0:
+            return self.saturation_max
+        if level == THEME_SATURATION_LEVELS - 1:
+            return self.saturation_min
+        ratio = level / (THEME_SATURATION_LEVELS - 1)
+        return self.saturation_max + (self.saturation_min - self.saturation_max) * ratio
+
+    def saturation_level(self) -> int:
+        """Return the nearest UI level for the theme's configured saturation."""
+
+        span = self.saturation_max - self.saturation_min
+        if span == 0:
+            return 0
+        ratio = (self.saturation_max - self.saturation) / span
+        return round(ratio * (THEME_SATURATION_LEVELS - 1))
+
+    def at_saturation(self, saturation: float) -> TuiTheme:
+        """Resolve every palette color from its source value at ``saturation``."""
+
+        if (
+            isinstance(saturation, bool)
+            or not isinstance(saturation, (int, float))
+            or not isfinite(saturation)
+            or not self.saturation_min <= saturation <= self.saturation_max
+        ):
+            raise ValueError("saturation must be within the theme saturation bounds")
+        return _theme_at_saturation(self, float(saturation))
+
+    def at_saturation_level(self, level: int) -> TuiTheme:
+        """Resolve the palette at one of the shared high-to-low UI levels."""
+
+        return self.at_saturation(self.saturation_for_level(level))
+
+    def accent_saturation_scale(self) -> tuple[str, ...]:
+        """Return the dynamically derived 32-step accent preview scale."""
+
+        return _accent_saturation_scale(self)
 
     def css_variables(self) -> dict[str, str]:
         """Project theme colors into Textual's CSS token namespace."""
@@ -331,6 +399,34 @@ def _syntax_theme(theme: TuiTheme) -> SyntaxTheme:
     return _TuiSyntaxTheme(theme)
 
 
+def _color_at_saturation(color: str, saturation: float) -> str:
+    red = int(color[1:3], 16) / 255
+    green = int(color[3:5], 16) / 255
+    blue = int(color[5:7], 16) / 255
+    hue, lightness, source_saturation = rgb_to_hls(red, green, blue)
+    resolved = hls_to_rgb(hue, lightness, min(1.0, source_saturation * saturation))
+    return "#" + "".join(f"{round(channel * 255):02x}" for channel in resolved)
+
+
+@lru_cache(maxsize=256)
+def _theme_at_saturation(theme: TuiTheme, saturation: float) -> TuiTheme:
+    if saturation == theme.saturation_max and theme.saturation == theme.saturation_max:
+        return theme
+    colors = {
+        name: _color_at_saturation(getattr(theme, name), saturation) for name in theme._COLOR_FIELDS
+    }
+    return replace(theme, saturation=saturation, **cast(Any, colors))
+
+
+@lru_cache(maxsize=64)
+def _accent_saturation_scale(theme: TuiTheme) -> tuple[str, ...]:
+    return tuple(
+        _color_at_saturation(theme.accent, theme.saturation_for_level(level))
+        for level in range(THEME_SATURATION_LEVELS)
+    )
+
+
+# Keep the neutral default first, then follow the perceptual hue wheel through red.
 _THEMES = (
     TuiTheme(
         theme_id="original",
@@ -340,172 +436,116 @@ _THEMES = (
         accent_bright="#ffffff",
     ),
     TuiTheme(
-        theme_id="harbor",
-        label="Harbor",
-        description="Muted ocean blue",
-        accent="#6083ae",
-        accent_bright="#7194bf",
-    ),
-    TuiTheme(
-        theme_id="sage",
-        label="Sage",
-        description="Quiet eucalyptus green",
-        accent="#6f9284",
-        accent_bright="#80a395",
-    ),
-    TuiTheme(
-        theme_id="iris",
-        label="Iris",
-        description="Soft smoked violet",
-        accent="#867da5",
-        accent_bright="#978eb6",
-    ),
-    TuiTheme(
-        theme_id="rosewood",
-        label="Rosewood",
-        description="Understated dusty rose",
-        accent="#9b747b",
-        accent_bright="#ac858c",
-    ),
-    TuiTheme(
-        theme_id="sandstone",
-        label="Sandstone",
-        description="Warm muted bronze",
-        accent="#968264",
-        accent_bright="#a79375",
-    ),
-    TuiTheme(
-        theme_id="fjord",
-        label="Fjord",
-        description="Deep misted teal",
-        accent="#5f898d",
-        accent_bright="#709a9e",
-    ),
-    TuiTheme(
-        theme_id="slate",
-        label="Slate",
-        description="Cool architectural blue-gray",
-        accent="#718398",
-        accent_bright="#8294a9",
-    ),
-    TuiTheme(
-        theme_id="plum",
-        label="Plum",
-        description="Reserved muted mauve",
-        accent="#8c728d",
-        accent_bright="#9d839e",
-    ),
-    TuiTheme(
-        theme_id="terracotta",
-        label="Terracotta",
-        description="Soft mineral clay",
-        accent="#9b705f",
-        accent_bright="#ac816f",
-    ),
-    TuiTheme(
-        theme_id="olive",
-        label="Olive",
-        description="Calm weathered green",
-        accent="#858765",
-        accent_bright="#969876",
-    ),
-    TuiTheme(
-        theme_id="azure",
-        label="Azure",
-        description="Bright sky blue",
-        accent="#6cb6e8",
-        accent_bright="#8ac8f0",
-    ),
-    TuiTheme(
-        theme_id="jade",
-        label="Jade",
-        description="Bright mint green",
-        accent="#5fc19c",
-        accent_bright="#7fd2b0",
-    ),
-    TuiTheme(
-        theme_id="orchid",
-        label="Orchid",
-        description="Bright soft violet",
-        accent="#b09ae8",
-        accent_bright="#c3b1f2",
+        theme_id="blossom",
+        label="Blossom",
+        description="Refined rose",
+        accent="#e08795",
+        accent_bright="#f0a1ad",
     ),
     TuiTheme(
         theme_id="coral",
         label="Coral",
-        description="Bright warm coral",
-        accent="#f0947e",
-        accent_bright="#f7ab97",
-    ),
-    TuiTheme(
-        theme_id="honey",
-        label="Honey",
-        description="Bright warm amber",
-        accent="#d9ab63",
-        accent_bright="#e7c07e",
-    ),
-    TuiTheme(
-        theme_id="blossom",
-        label="Blossom",
-        description="Bright soft pink",
-        accent="#e59ab3",
-        accent_bright="#f0b0c6",
-    ),
-    TuiTheme(
-        theme_id="cobalt",
-        label="Cobalt",
-        description="Rich steel blue",
-        accent="#7aa4d3",
-        accent_bright="#98b9dd",
-    ),
-    TuiTheme(
-        theme_id="lagoon",
-        label="Lagoon",
-        description="Rich cool teal",
-        accent="#48b1a8",
-        accent_bright="#6fc4bd",
+        description="Soft warm coral",
+        accent="#e18881",
+        accent_bright="#f2a39c",
     ),
     TuiTheme(
         theme_id="sienna",
         label="Sienna",
-        description="Rich warm clay",
-        accent="#cd9569",
-        accent_bright="#d9ad8b",
+        description="Polished warm clay",
+        accent="#de8e69",
+        accent_bright="#eea788",
     ),
     TuiTheme(
-        theme_id="lilac",
-        label="Lilac",
-        description="Rich dusty mauve",
-        accent="#c990aa",
-        accent_bright="#d5a9be",
+        theme_id="honey",
+        label="Honey",
+        description="Muted golden amber",
+        accent="#cd9a50",
+        accent_bright="#dfb274",
+    ),
+    TuiTheme(
+        theme_id="citrine",
+        label="Citrine",
+        description="Balanced yellow olive",
+        accent="#b5a64f",
+        accent_bright="#c9bc73",
     ),
     TuiTheme(
         theme_id="fern",
         label="Fern",
-        description="Bright leaf green",
-        accent="#74bc65",
-        accent_bright="#87ce78",
+        description="Fresh botanical green",
+        accent="#86b46d",
+        accent_bright="#a0c98b",
+    ),
+    TuiTheme(
+        theme_id="jade",
+        label="Jade",
+        description="Calm mint green",
+        accent="#60ba8d",
+        accent_bright="#82cea6",
+    ),
+    TuiTheme(
+        theme_id="lagoon",
+        label="Lagoon",
+        description="Clear coastal teal",
+        accent="#39bab4",
+        accent_bright="#6acec8",
+    ),
+    TuiTheme(
+        theme_id="glacier",
+        label="Glacier",
+        description="Cool mineral cyan",
+        accent="#3db6cf",
+        accent_bright="#6bcae1",
+    ),
+    TuiTheme(
+        theme_id="azure",
+        label="Azure",
+        description="Open sky blue",
+        accent="#57afe0",
+        accent_bright="#7bc5ef",
+    ),
+    TuiTheme(
+        theme_id="cobalt",
+        label="Cobalt",
+        description="Polished medium blue",
+        accent="#74a7e8",
+        accent_bright="#91bef7",
     ),
     TuiTheme(
         theme_id="indigo",
         label="Indigo",
-        description="Bright cool indigo",
-        accent="#9ca6f7",
-        accent_bright="#b1b9ff",
+        description="Soft blue violet",
+        accent="#909fe9",
+        accent_bright="#a8b6f8",
+    ),
+    TuiTheme(
+        theme_id="orchid",
+        label="Orchid",
+        description="Refined violet",
+        accent="#a996e2",
+        accent_bright="#bfaff2",
     ),
     TuiTheme(
         theme_id="wisteria",
         label="Wisteria",
-        description="Bright soft purple",
-        accent="#ce93ec",
-        accent_bright="#e0a5fe",
+        description="Gentle purple",
+        accent="#bf8fd4",
+        accent_bright="#d2a8e5",
     ),
     TuiTheme(
         theme_id="peony",
         label="Peony",
-        description="Bright magenta pink",
-        accent="#ea8ed3",
-        accent_bright="#fca0e5",
+        description="Modern magenta rose",
+        accent="#d389ba",
+        accent_bright="#e4a3ce",
+    ),
+    TuiTheme(
+        theme_id="lilac",
+        label="Lilac",
+        description="Quiet pink mauve",
+        accent="#db87a8",
+        accent_bright="#eca1be",
     ),
 )
 
@@ -527,7 +567,10 @@ def theme_for(node: object) -> TuiTheme:
 
 
 __all__ = [
+    "DEFAULT_THEME_SATURATION_MAX",
+    "DEFAULT_THEME_SATURATION_MIN",
     "DEFAULT_TUI_THEME",
+    "THEME_SATURATION_LEVELS",
     "TUI_THEMES",
     "TuiTheme",
     "theme_for",

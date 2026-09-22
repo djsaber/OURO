@@ -114,7 +114,12 @@ from ouro.tui.state import (
     project_run_presentations,
 )
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
-from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES, TuiTheme
+from ouro.tui.theme import (
+    DEFAULT_TUI_THEME,
+    THEME_SATURATION_LEVELS,
+    TUI_THEMES,
+    TuiTheme,
+)
 from ouro.tui.widgets import (
     COMMAND_POPUP_MAX_HEIGHT,
     COMMAND_POPUP_MIN_HEIGHT,
@@ -1083,7 +1088,17 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             input_drafts = TuiInputDrafts()
             self._input_drafts_error = str(exc)
         self._input_drafts = input_drafts
-        self._tui_theme = theme if theme is not None else TUI_THEMES[preferences.theme]
+        theme_source = theme if theme is not None else TUI_THEMES[preferences.theme]
+        self._tui_theme_saturation_level = (
+            theme_source.saturation_level()
+            if theme is not None
+            else preferences.theme_saturation_level
+        )
+        self._tui_theme = (
+            theme_source.at_saturation(theme_source.saturation)
+            if theme is not None
+            else theme_source.at_saturation_level(self._tui_theme_saturation_level)
+        )
         super().__init__()
         self.console.push_theme(self._tui_theme.rich_theme())
         self._controller = TuiController(
@@ -1139,6 +1154,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._input_draft_error_notified = False
         self._preferences_save_lock = asyncio.Lock()
         self._pending_tui_theme_id: str | None = None
+        self._pending_tui_theme_saturation_level: int | None = None
         self._theme_switch_revision = 0
         self._theme_switch_success_revision = 0
         self._theme_switch_active = False
@@ -4203,6 +4219,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                         _THEME_ACTION,
                         "Theme",
                         accent=self._tui_theme.accent,
+                        trailing=self._tui_theme.label,
+                        trailing_swatch=self._tui_theme.accent,
                         group="Settings",
                     ),
                     Choice(
@@ -4326,23 +4344,78 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return ""
 
     async def _choose_theme(self, *, menu: ChoiceScreen | None = None) -> None:
+        selected_theme_id = self._pending_tui_theme_id or self._tui_theme.theme_id
+        selected_level = self._theme_choice_saturation_level(selected_theme_id)
+
+        def theme_choices() -> tuple[Choice, ...]:
+            return self._theme_choices(
+                selected_theme_id=selected_theme_id,
+                selected_level=selected_level,
+            )
+
+        async def refresh_themes() -> tuple[Choice, ...]:
+            return theme_choices()
+
         async def select_theme(theme_id: str) -> tuple[Choice, ...] | None:
-            self._request_tui_theme(theme_id)
-            return self._theme_choices()
+            nonlocal selected_theme_id, selected_level
+            if theme_id != selected_theme_id:
+                selected_theme_id = theme_id
+                selected_level = self._theme_choice_saturation_level(theme_id)
+            self._request_tui_theme(
+                theme_id,
+                saturation_level=selected_level,
+            )
+            return theme_choices()
 
         def preview_theme(screen: ChoiceScreen, theme_id: str) -> None:
+            nonlocal selected_theme_id, selected_level
             theme = TUI_THEMES.get(theme_id)
             if theme is not None:
-                screen.preview_accent(theme.accent)
+                if theme_id != selected_theme_id:
+                    selected_theme_id = theme_id
+                    selected_level = self._theme_choice_saturation_level(theme_id)
+                    screen.update_choices(
+                        theme_choices(),
+                        preferred_value=theme_id,
+                    )
+                screen.preview_accent(theme.accent_saturation_scale()[selected_level])
+
+        def adjust_theme(
+            screen: ChoiceScreen,
+            theme_id: str,
+            direction: int,
+        ) -> tuple[Choice, ...] | None:
+            nonlocal selected_theme_id, selected_level
+            theme = TUI_THEMES.get(theme_id)
+            if theme is None:
+                return None
+            if theme_id != selected_theme_id:
+                selected_theme_id = theme_id
+                selected_level = self._theme_choice_saturation_level(theme_id)
+            level = max(0, min(THEME_SATURATION_LEVELS - 1, selected_level + direction))
+            if level == selected_level:
+                return None
+            selected_level = level
+            screen.preview_accent(theme.accent_saturation_scale()[level])
+            return theme_choices()
 
         if menu is not None:
             menu.push_page(
                 title="THEME",
                 placeholder="Filter themes…",
-                choices=self._theme_choices(),
+                choices=theme_choices(),
                 initial_value=self._pending_tui_theme_id or self._tui_theme.theme_id,
                 on_highlight=lambda theme_id: preview_theme(menu, theme_id),
                 on_select=select_theme,
+                on_refresh=refresh_themes,
+                on_adjust=lambda theme_id, direction: adjust_theme(
+                    menu,
+                    theme_id,
+                    direction,
+                ),
+                interaction_hint=DEFAULT_TUI_THEME.inline_separator.join(
+                    ("↑/↓ theme", "←/→ saturation", "Enter select", "Esc back")
+                ),
             )
             self._register_theme_picker(menu)
             return
@@ -4354,10 +4427,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         theme_screen = ChoiceScreen(
             title="THEME",
             placeholder="Filter themes…",
-            choices=self._theme_choices(),
+            choices=theme_choices(),
             initial_value=self._pending_tui_theme_id or self._tui_theme.theme_id,
             on_highlight=preview_standalone_theme,
             on_select=select_theme,
+            on_refresh=refresh_themes,
+            on_adjust=lambda theme_id, direction: adjust_theme(
+                theme_screen,
+                theme_id,
+                direction,
+            ),
+            interaction_hint=DEFAULT_TUI_THEME.inline_separator.join(
+                ("↑/↓ theme", "←/→ saturation", "Enter select", "Esc close")
+            ),
         )
         self._register_theme_picker(theme_screen)
         await self.push_screen_wait(theme_screen)
@@ -4446,17 +4528,48 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
         )
 
-    def _theme_choices(self) -> tuple[Choice, ...]:
-        return tuple(
-            Choice(
+    def _theme_choices(
+        self,
+        *,
+        selected_theme_id: str | None = None,
+        selected_level: int | None = None,
+    ) -> tuple[Choice, ...]:
+        if selected_theme_id is None:
+            selected_theme_id = self._pending_tui_theme_id or self._tui_theme.theme_id
+        if selected_level is None:
+            selected_level = (
+                self._pending_tui_theme_saturation_level
+                if self._pending_tui_theme_saturation_level is not None
+                else self._tui_theme_saturation_level
+            )
+
+        def theme_choice(theme: TuiTheme) -> Choice:
+            saturation_scale = theme.accent_saturation_scale()
+            is_selected = theme.theme_id == selected_theme_id
+            display_level = selected_level if is_selected else 0
+            display_accent = saturation_scale[display_level]
+            return Choice(
                 theme.theme_id,
                 theme.label,
-                accent=theme.accent,
-                marker=(self._tui_theme.selected_choice_marker if theme == self._tui_theme else ""),
+                leading_swatch=display_accent,
+                swatches=saturation_scale,
+                swatch_marker_index=selected_level if is_selected else None,
+                trailing_accent=display_accent,
                 loading=theme.theme_id == self._pending_tui_theme_id,
             )
-            for theme in TUI_THEMES.values()
-        )
+
+        return tuple(theme_choice(theme) for theme in TUI_THEMES.values())
+
+    def _theme_choice_saturation_level(self, theme_id: str) -> int:
+        """Return the visible level for a palette; unselected palettes start at maximum."""
+
+        if self._pending_tui_theme_id is not None:
+            if theme_id == self._pending_tui_theme_id:
+                return self._pending_tui_theme_saturation_level or 0
+            return 0
+        if theme_id == self._tui_theme.theme_id:
+            return self._tui_theme_saturation_level
+        return 0
 
     def _register_theme_picker(self, screen: ChoiceScreen) -> None:
         self._theme_picker_ref = ref(screen)
@@ -4466,6 +4579,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         screen = self._theme_picker_ref() if self._theme_picker_ref is not None else None
         if screen is None:
             return
+        if (
+            screen.page_revision == self._theme_picker_revision
+            and await screen.refresh_choices()
+        ):
+            return
         if screen.update_choices(
             self._theme_choices(),
             expected_revision=self._theme_picker_revision,
@@ -4474,22 +4592,43 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         await screen.refresh_choices()
 
-    def _request_tui_theme(self, theme_id: str) -> int | None:
+    def _request_tui_theme(
+        self,
+        theme_id: str,
+        *,
+        saturation_level: int | None = None,
+    ) -> int | None:
         theme = TUI_THEMES.get(theme_id)
         if theme is None:
             self.notify(f"Unknown TUI theme: {theme_id}", severity="error", markup=False)
             return None
-        if theme_id == self._pending_tui_theme_id:
+        level = (
+            self._preferences.theme_saturation_level
+            if saturation_level is None
+            else saturation_level
+        )
+        try:
+            theme.saturation_for_level(level)
+        except ValueError:
+            self.notify("Invalid TUI theme saturation", severity="error", markup=False)
+            return None
+        if (
+            theme_id == self._pending_tui_theme_id
+            and level == self._pending_tui_theme_saturation_level
+        ):
             return self._theme_switch_revision
         if (
             self._pending_tui_theme_id is None
-            and theme == self._tui_theme
+            and theme_id == self._tui_theme.theme_id
+            and level == self._tui_theme_saturation_level
             and self._preferences.theme == theme_id
+            and self._preferences.theme_saturation_level == level
         ):
             return self._theme_switch_success_revision
 
         self._theme_switch_revision += 1
         self._pending_tui_theme_id = theme_id
+        self._pending_tui_theme_saturation_level = level
         self._theme_switch_changed.set()
         self._theme_switch_settled.clear()
         if not self._theme_switch_active:
@@ -4504,8 +4643,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _set_tui_theme(
         self,
         theme_id: str,
+        *,
+        saturation_level: int | None = None,
     ) -> bool:
-        revision = self._request_tui_theme(theme_id)
+        revision = self._request_tui_theme(
+            theme_id,
+            saturation_level=saturation_level,
+        )
         if revision is None:
             return False
         if self._pending_tui_theme_id is not None:
@@ -4519,13 +4663,22 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             while self._pending_tui_theme_id is not None:
                 revision = self._theme_switch_revision
                 theme_id = self._pending_tui_theme_id
-                theme = TUI_THEMES[theme_id]
+                saturation_level = self._pending_tui_theme_saturation_level
+                if saturation_level is None:
+                    break
+                source_theme = TUI_THEMES[theme_id]
+                theme = source_theme.at_saturation_level(saturation_level)
                 self._theme_switch_changed.clear()
                 save_error: OuroError | None = None
                 async with self._preferences_save_lock:
                     if revision != self._theme_switch_revision:
                         continue
-                    preferences = self._preferences.model_copy(update={"theme": theme_id})
+                    preferences = self._preferences.model_copy(
+                        update={
+                            "theme": theme_id,
+                            "theme_saturation_level": saturation_level,
+                        }
+                    )
                     try:
                         await asyncio.to_thread(self._preferences_store.save, preferences)
                     except OuroError as exc:
@@ -4536,6 +4689,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     if revision != self._theme_switch_revision:
                         continue
                     self._pending_tui_theme_id = None
+                    self._pending_tui_theme_saturation_level = None
                     self._theme_switch_settled.set()
                     self.notify(str(save_error), severity="error", markup=False)
                     await self._refresh_theme_picker()
@@ -4543,12 +4697,17 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 if revision != self._theme_switch_revision:
                     continue
 
-                self._apply_tui_theme(theme)
+                self._apply_tui_theme(
+                    theme,
+                    source=source_theme,
+                    saturation_level=saturation_level,
+                )
                 await self._wait_for_theme_render_or_request()
                 if revision != self._theme_switch_revision:
                     continue
 
                 self._pending_tui_theme_id = None
+                self._pending_tui_theme_saturation_level = None
                 self._theme_switch_success_revision = revision
                 self._theme_switch_settled.set()
                 await self._refresh_theme_picker()
@@ -4620,7 +4779,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._set_input_drafts(drafts, force_persist=True)
         return True
 
-    def _apply_tui_theme(self, theme: TuiTheme) -> None:
+    def _apply_tui_theme(
+        self,
+        theme: TuiTheme,
+        *,
+        source: TuiTheme | None = None,
+        saturation_level: int | None = None,
+    ) -> None:
+        source_theme = theme if source is None else source
+        self._tui_theme_saturation_level = (
+            source_theme.saturation_level()
+            if saturation_level is None
+            else saturation_level
+        )
         if theme == self._tui_theme:
             return
         self._session_history_states.clear()

@@ -11,13 +11,28 @@ from pydantic import ValidationError, field_validator
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
 from ouro.local_io import read_text_atomic, write_model_atomic
-from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
+from ouro.tui.theme import DEFAULT_TUI_THEME, THEME_SATURATION_LEVELS, TUI_THEMES
 
 MAX_RECENT_WORKSPACES = 20
+
+# The levels approximate each retired palette when an older file has no explicit level.
+_LEGACY_THEME_MIGRATIONS: dict[str, tuple[str, int]] = {
+    "harbor": ("cobalt", 21),
+    "sage": ("jade", 25),
+    "iris": ("orchid", 26),
+    "rosewood": ("blossom", 28),
+    "sandstone": ("honey", 25),
+    "fjord": ("lagoon", 25),
+    "slate": ("azure", 30),
+    "plum": ("wisteria", 30),
+    "terracotta": ("sienna", 24),
+    "olive": ("citrine", 25),
+}
 
 
 class TuiPreferences(OuroModel):
     theme: str = DEFAULT_TUI_THEME.theme_id
+    theme_saturation_level: int = 0
     reasoning_expanded: bool = False
     input_draft_memory_enabled: bool = True
     recent_actions: tuple[str, ...] = ()
@@ -29,6 +44,15 @@ class TuiPreferences(OuroModel):
         if value not in TUI_THEMES:
             available = ", ".join(TUI_THEMES)
             raise ValueError(f"unknown TUI theme {value!r}; expected one of: {available}")
+        return value
+
+    @field_validator("theme_saturation_level", mode="before")
+    @classmethod
+    def validate_theme_saturation_level(cls, value: object) -> int:
+        if type(value) is not int or not 0 <= value < THEME_SATURATION_LEVELS:
+            raise ValueError(
+                f"theme_saturation_level must be between 0 and {THEME_SATURATION_LEVELS - 1}"
+            )
         return value
 
     @field_validator("recent_actions")
@@ -69,6 +93,16 @@ class TuiPreferencesStore:
             return TuiPreferences()
         try:
             raw = json.loads(read_text_atomic(self.path))
+            legacy_theme = raw.get("theme") if isinstance(raw, dict) else None
+            migration = (
+                _LEGACY_THEME_MIGRATIONS.get(legacy_theme)
+                if isinstance(legacy_theme, str)
+                else None
+            )
+            if migration is not None:
+                theme, saturation_level = migration
+                raw = {**raw, "theme": theme}
+                raw.setdefault("theme_saturation_level", saturation_level)
             return TuiPreferences.model_validate(raw)
         except json.JSONDecodeError as exc:
             raise ConfigError(f"invalid TUI preferences {self.path}: {exc}") from exc

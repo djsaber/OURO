@@ -13,41 +13,47 @@ from ouro.tui.preferences import (
     TuiPreferences,
     TuiPreferencesStore,
 )
-from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES, TuiTheme
+from ouro.tui.theme import (
+    DEFAULT_THEME_SATURATION_MAX,
+    DEFAULT_THEME_SATURATION_MIN,
+    DEFAULT_TUI_THEME,
+    THEME_SATURATION_LEVELS,
+    TUI_THEMES,
+    TuiTheme,
+)
 
 
 def test_tui_theme_catalog_uses_distinct_restrained_palettes() -> None:
     assert tuple(TUI_THEMES) == (
         "original",
-        "harbor",
-        "sage",
-        "iris",
-        "rosewood",
-        "sandstone",
-        "fjord",
-        "slate",
-        "plum",
-        "terracotta",
-        "olive",
-        "azure",
-        "jade",
-        "orchid",
-        "coral",
-        "honey",
         "blossom",
-        "cobalt",
-        "lagoon",
+        "coral",
         "sienna",
-        "lilac",
+        "honey",
+        "citrine",
         "fern",
+        "jade",
+        "lagoon",
+        "glacier",
+        "azure",
+        "cobalt",
         "indigo",
+        "orchid",
         "wisteria",
         "peony",
+        "lilac",
     )
     assert DEFAULT_TUI_THEME.theme_id in TUI_THEMES
     assert len({theme.accent for theme in TUI_THEMES.values()}) == len(TUI_THEMES)
     assert all(theme.accent.startswith("#") for theme in TUI_THEMES.values())
     assert all(theme.accent_bright.startswith("#") for theme in TUI_THEMES.values())
+    assert {(theme.saturation_min, theme.saturation_max) for theme in TUI_THEMES.values()} == {
+        (DEFAULT_THEME_SATURATION_MIN, DEFAULT_THEME_SATURATION_MAX)
+    }
+    lagoon_scale = TUI_THEMES["lagoon"].accent_saturation_scale()
+    assert len(lagoon_scale) == THEME_SATURATION_LEVELS
+    assert lagoon_scale[0] == TUI_THEMES["lagoon"].accent
+    assert lagoon_scale[-1] != lagoon_scale[0]
 
 
 def test_tui_theme_owns_shared_symbols_colors_and_animation() -> None:
@@ -80,6 +86,11 @@ def test_custom_tui_theme_is_complete_immutable_and_caches_render_projections() 
     assert theme.css_variables()["ouro-panel"] == "#102030"
     assert theme.rich_theme() is theme.rich_theme()
     assert theme.syntax_theme() is theme.syntax_theme()
+    muted = theme.at_saturation_level(THEME_SATURATION_LEVELS - 1)
+    assert muted.saturation == theme.saturation_min
+    assert muted.accent == theme.accent_saturation_scale()[-1]
+    assert muted.accent != theme.accent
+    assert muted.warning != theme.warning
     with pytest.raises(FrozenInstanceError):
         theme.accent = "#ffffff"  # type: ignore[misc]
 
@@ -98,6 +109,10 @@ def test_custom_tui_theme_is_complete_immutable_and_caches_render_projections() 
         ({"spinner_interval_seconds": 0.01}, "between"),
         ({"spinner_interval_seconds": float("inf")}, "between"),
         ({"spinner_interval_seconds": True}, "between"),
+        ({"saturation_min": -0.1}, "saturation_min"),
+        ({"saturation_max": 1.1}, "saturation_max"),
+        ({"saturation_min": 0.8, "saturation_max": 0.7}, "must not exceed"),
+        ({"saturation": 0.1}, "within the theme saturation bounds"),
     ),
 )
 def test_tui_theme_rejects_invalid_token_values(
@@ -142,9 +157,11 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
 
     assert TuiPreferences().reasoning_expanded is False
     assert TuiPreferences().input_draft_memory_enabled is True
+    assert TuiPreferences().theme_saturation_level == 0
     store.save(
         TuiPreferences(
-            theme="iris",
+            theme="indigo",
+            theme_saturation_level=17,
             reasoning_expanded=False,
             input_draft_memory_enabled=False,
             recent_actions=("/new", "__ouro_theme__"),
@@ -154,18 +171,25 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
 
     assert store.path == tmp_path / "config" / "tui.json"
     assert store.load() == TuiPreferences(
-        theme="iris",
+        theme="indigo",
+        theme_saturation_level=17,
         reasoning_expanded=False,
         input_draft_memory_enabled=False,
         recent_actions=("/new", "__ouro_theme__"),
         recent_workspaces=(str(tmp_path),),
     )
 
+    store.path.write_text(json.dumps({"theme": "harbor"}), encoding="utf-8")
+    assert store.load() == TuiPreferences(theme="cobalt", theme_saturation_level=21)
+
 
 @pytest.mark.parametrize(
     "raw",
     (
         {"theme": "neon"},
+        {"theme": "harbor", "theme_saturation_level": -1},
+        {"theme": "harbor", "theme_saturation_level": THEME_SATURATION_LEVELS},
+        {"theme": "harbor", "theme_saturation_level": True},
         {"theme": "harbor", "reasoning_expanded": "sometimes"},
         {"theme": "harbor", "input_draft_memory_enabled": "sometimes"},
         {"theme": "harbor", "recent_actions": ["one", "two", "three", "four"]},
