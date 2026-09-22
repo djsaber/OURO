@@ -7723,9 +7723,9 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         ]
         assert [choice.group for choice in action_choices] == [
             *("Settings",) * 7,
-            *("Session",) * 5,
-            *("Task",) * 4,
-            *("Provider",) * 5,
+            *("Sessions",) * 5,
+            *("Tasks",) * 4,
+            *("Providers",) * 5,
             *("Plugins",) * 3,
             *("Tools",) * 2,
             *("Subagents",) * 5,

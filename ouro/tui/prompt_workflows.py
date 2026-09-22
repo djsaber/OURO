@@ -117,7 +117,12 @@ class PromptWorkflows(DataTransferWorkflows):
                     ),
                     Choice("up", "Move up", disabled=position == 1),
                     Choice("down", "Move down", disabled=position == len(entries)),
-                    Choice("delete", "Delete", destructive=True),
+                    Choice(
+                        "delete",
+                        "Delete",
+                        accent=theme_for(self).danger,
+                        destructive=True,
+                    ),
                 ),
                 on_select=action,
             )

@@ -115,7 +115,10 @@ async def test_prompt_actions_manage_order_activation_edit_and_delete(tmp_path):
         await choose("other")
         choices = {choice.value: choice for choice in app.screen._choices}
         assert choices["edit"].label == "Edit"
+        assert choices["edit"].accent is None
         assert choices["delete"].label == "Delete"
+        assert choices["delete"].accent == DEFAULT_TUI_THEME.danger
+        assert choices["delete"].destructive
         assert choices["toggle"].description == (
             "Enabling overrides OURO's default system prompt."
         )
