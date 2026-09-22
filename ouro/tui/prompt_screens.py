@@ -10,16 +10,23 @@ from ouro.tui.screens import Choice
 from ouro.tui.theme import theme_for
 
 
+PROMPT_GROUP_LABELS: dict[PromptKind, str] = {
+    "replacement": "ASSISTANT BEHAVIOR",
+    "addition": "ADDITIONAL GUIDANCE",
+}
+
+
 def prompt_label(entry: PromptEntry) -> str:
     return entry.description.strip() or " ".join(entry.text.split())[:80]
 
 
 def prompt_choices(config: PromptConfig) -> tuple[Choice, ...]:
     choices: list[Choice] = []
-    for kind, entries, group in (
-        ("replacement", config.replacements, "REPLACEMENT"),
-        ("addition", config.additions, "ADDITIONS"),
+    for kind, entries in (
+        ("replacement", config.replacements),
+        ("addition", config.additions),
     ):
+        group = PROMPT_GROUP_LABELS[kind]
         group_trailing = (
             "System default active"
             if kind == "replacement" and config.system_prompt is None
@@ -36,7 +43,7 @@ def prompt_choices(config: PromptConfig) -> tuple[Choice, ...]:
                 )
             )
         choices.append(
-            Choice(f"add:{kind}", "Add", group=group, group_trailing=group_trailing)
+            Choice(f"add:{kind}", "+", group=group, group_trailing=group_trailing)
         )
     return tuple(choices)
 
@@ -50,7 +57,7 @@ class PromptEntryScreen(MultilineEditableChoiceScreen):
         }
         self._enabled = entry.enabled if entry else False
         super().__init__(
-            title=f"{'EDIT' if entry else 'ADD'} {kind.upper()} PROMPT",
+            title=f"{'EDIT' if entry else 'ADD'} {PROMPT_GROUP_LABELS[kind]}",
             placeholder="Filter prompt fields…",
             choices=self._field_choices(),
             on_save=self._save_field,
@@ -105,17 +112,19 @@ class PromptEntryScreen(MultilineEditableChoiceScreen):
                 "enabled",
                 "Disable" if self._enabled else "Enable",
                 description="Enabling overrides OURO's default system prompt."
-                if self._kind == "replacement"
+                if self._kind == "replacement" and self._enabled
                 else "",
                 description_accent=(
-                    theme_for(self).danger if self._kind == "replacement" else None
+                    theme_for(self).danger
+                    if self._kind == "replacement" and self._enabled
+                    else None
                 ),
                 group="ACTIVATION",
             ),
             Choice(
                 "save",
                 "Save",
-                trailing=error or "Applies to the next model request",
+                trailing=error,
                 disabled=bool(error),
                 group="ACTIONS",
             ),

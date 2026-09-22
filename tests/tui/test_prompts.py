@@ -24,7 +24,9 @@ async def test_prompt_editor_requires_content_and_preserves_multiline_and_cancel
         await pilot.pause()
         await pilot.press("enter", "a", "shift+enter", "b", "enter")
         assert form._values["text"] == "a\nb"
-        assert not next(choice for choice in form._choices if choice.value == "save").disabled
+        save = next(choice for choice in form._choices if choice.value == "save")
+        assert not save.disabled
+        assert save.trailing == ""
         await pilot.press("enter")
         form.post_message(events.Paste("\r\n中文"))
         await pilot.pause()
@@ -45,8 +47,11 @@ def test_prompt_choices_use_concise_group_and_add_labels():
         )
     )
 
-    assert {choice.group for choice in choices} == {"REPLACEMENT", "ADDITIONS"}
-    assert [choice.label for choice in choices if choice.value.startswith("add:")] == ["Add", "Add"]
+    assert {choice.group for choice in choices} == {
+        "ASSISTANT BEHAVIOR",
+        "ADDITIONAL GUIDANCE",
+    }
+    assert [choice.label for choice in choices if choice.value.startswith("add:")] == ["+", "+"]
 
 
 def test_prompt_editor_uses_action_label_and_danger_for_replacement_activation():
@@ -56,8 +61,21 @@ def test_prompt_editor_uses_action_label_and_danger_for_replacement_activation()
     activation = next(choice for choice in screen._choices if choice.value == "enabled")
 
     assert description.label == "Description"
+    assert screen.page_title == "ADD ASSISTANT BEHAVIOR"
     assert activation.label == "Enable"
     assert activation.trailing == ""
+    assert activation.description == ""
+    assert activation.description_accent is None
+
+    enabled_screen = PromptEntryScreen(
+        "replacement", PromptEntry(id="base", text="Base", enabled=True)
+    )
+    activation = next(
+        choice for choice in enabled_screen._choices if choice.value == "enabled"
+    )
+
+    assert enabled_screen.page_title == "EDIT ASSISTANT BEHAVIOR"
+    assert activation.label == "Disable"
     assert activation.description == "Enabling overrides OURO's default system prompt."
     assert activation.description_accent == DEFAULT_TUI_THEME.danger
 
@@ -148,7 +166,7 @@ async def test_prompt_creation_and_stale_editor_do_not_overwrite_other_changes(t
         await pilot.press("ctrl+p")
         await pilot.pause()
         await choose("Personal prompts")
-        app.screen.query_one(Input).value = "Add"
+        app.screen.query_one(Input).value = "+"
         await pilot.pause()
         await pilot.press("right", "enter")
         await pilot.pause(0.15)
