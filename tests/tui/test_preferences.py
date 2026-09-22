@@ -29,6 +29,20 @@ def test_tui_theme_catalog_uses_distinct_restrained_palettes() -> None:
         "plum",
         "terracotta",
         "olive",
+        "azure",
+        "jade",
+        "orchid",
+        "coral",
+        "honey",
+        "blossom",
+        "cobalt",
+        "lagoon",
+        "sienna",
+        "lilac",
+        "fern",
+        "indigo",
+        "wisteria",
+        "peony",
     )
     assert DEFAULT_TUI_THEME.theme_id in TUI_THEMES
     assert len({theme.accent for theme in TUI_THEMES.values()}) == len(TUI_THEMES)
