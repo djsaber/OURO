@@ -171,11 +171,6 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 action_id.removeprefix("providers.endpoints."),
                 menu=menu,
             )
-        elif action_id.startswith("providers."):
-            await self._choose_provider_action(
-                action_id.removeprefix("providers."),
-                menu=menu,
-            )
         elif action_id == "plugins.list":
             await self._choose_plugins(menu=menu)
         elif action_id == "plugins.install":

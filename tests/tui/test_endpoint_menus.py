@@ -10,7 +10,7 @@ from tests.tui.helpers import run_ready_app, two_route_application
 
 @pytest.mark.parametrize("scope", ["all", "provider", "default"])
 @pytest.mark.parametrize("selection", ["draft", "session"])
-async def test_endpoint_menus_separate_selected_route_from_default_and_refresh(
+async def test_endpoint_menus_project_global_default_independently_of_session_selection(
     tmp_path, scope, selection
 ):
     configuration = ConfigurationFacade(tmp_path)
@@ -68,9 +68,9 @@ async def test_endpoint_menus_separate_selected_route_from_default_and_refresh(
         choices = {choice.value: choice for choice in menu._choices}
         recent_choice = recent_id if scope == "provider" else recent_key
         default_choice = default_id if scope == "provider" else default_key
-        assert choices[recent_choice].marker == theme_for(app).selected_choice_marker
+        assert choices[recent_choice].marker == ""
         assert choices[recent_choice].trailing == ""
-        assert choices[default_choice].marker == ""
+        assert choices[default_choice].marker == theme_for(app).selected_choice_marker
         assert choices[default_choice].trailing == "default"
         if scope != "provider":
             other_id = provider_ids["other"]
@@ -79,7 +79,7 @@ async def test_endpoint_menus_separate_selected_route_from_default_and_refresh(
             assert choices[other_recent].marker == ""
             assert choices[other_default].marker == ""
             assert choices[other_recent].trailing == ""
-            assert choices[other_default].trailing == "default"
+            assert choices[other_default].trailing == ""
 
         if scope == "default":
             await menu._select_choice(recent_key)
@@ -95,9 +95,9 @@ async def test_endpoint_menus_separate_selected_route_from_default_and_refresh(
         await app._select_model(default_key)
         assert await menu.refresh_choices()
         choices = {choice.value: choice for choice in menu._choices}
-        assert choices[default_choice].marker == theme_for(app).selected_choice_marker
+        assert choices[default_choice].marker == ""
         assert choices[default_choice].trailing == ""
-        assert choices[recent_choice].marker == ""
+        assert choices[recent_choice].marker == theme_for(app).selected_choice_marker
         assert choices[recent_choice].trailing == "default"
 
 
@@ -139,7 +139,6 @@ async def test_endpoint_menu_remains_available_without_a_resolvable_selection(
             raise ConfigError("default model is unavailable")
 
         monkeypatch.setattr(application.runtime, "current_model", unavailable)
-        assert await app._controller.selected_model_key() == selected
         menu = ChoiceScreen(title="ACTIONS", placeholder="Choose an action…", choices=())
         app.push_screen(menu)
         await pilot.pause()
@@ -147,7 +146,5 @@ async def test_endpoint_menu_remains_available_without_a_resolvable_selection(
         assert len(menu._choices) == 1
         assert menu._choices[0].value == f"{provider_id}/{endpoint_id}"
         assert menu._choices[0].marker == ""
-        assert menu._choices[0].trailing == theme_for(app).inline_separator.join(
-            ("default-model", "default")
-        )
+        assert menu._choices[0].trailing == ""
         assert endpoint_id not in menu._choices[0].trailing

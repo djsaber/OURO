@@ -170,134 +170,6 @@ class ProviderConfigurationWorkflows(App[int]):
             )
         )
 
-    async def _choose_provider_action(
-        self,
-        action: str,
-        *,
-        menu: ChoiceScreen | None = None,
-    ) -> None:
-        if action not in {"edit", "toggle", "remove"}:
-            await self.query_one(ConversationView).add_notice(
-                f"Unknown provider action: {action}",
-                error=True,
-            )
-            return
-        try:
-            catalog = await self._controller.provider_catalog()
-        except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
-            return
-        candidates = tuple(catalog.providers)
-        if not candidates:
-            return
-        choices = tuple(
-            _provider_choice(
-                provider,
-                disabled=action == "toggle" and provider.default,
-                theme=theme_for(self),
-            )
-            for provider in candidates
-        )
-        if action == "toggle":
-            providers = {provider.provider_id: provider for provider in candidates}
-
-            async def toggle_provider(provider_id: str) -> tuple[Choice, ...] | None:
-                provider = providers[provider_id]
-                saved = await self._set_provider_enabled(
-                    provider,
-                    enabled=not provider.enabled,
-                )
-                if saved is None:
-                    return None
-                try:
-                    refreshed = await self._controller.provider_catalog()
-                except Exception as exc:  # noqa: BLE001
-                    await self.query_one(ConversationView).add_notice(
-                        str(exc),
-                        error=True,
-                    )
-                    return None
-                providers.clear()
-                providers.update(
-                    {provider.provider_id: provider for provider in refreshed.providers}
-                )
-                return tuple(
-                    _provider_choice(
-                        provider,
-                        disabled=provider.default,
-                        theme=theme_for(self),
-                    )
-                    for provider in providers.values()
-                )
-
-            title = f"{_provider_action_label(action)} PROVIDER"
-            placeholder = "Filter providers…"
-            if menu is not None:
-                menu.push_page(
-                    title=title,
-                    placeholder=placeholder,
-                    choices=choices,
-                    on_select=toggle_provider,
-                )
-            else:
-                await self.push_screen_wait(
-                    ChoiceScreen(
-                        title=title,
-                        placeholder=placeholder,
-                        choices=choices,
-                        on_select=toggle_provider,
-                    )
-                )
-            return
-        if menu is not None:
-            providers = {provider.provider_id: provider for provider in candidates}
-
-            async def refresh_candidates() -> tuple[Choice, ...] | None:
-                try:
-                    refreshed = await self._controller.provider_catalog()
-                except Exception as exc:  # noqa: BLE001
-                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
-                    return None
-                providers.clear()
-                providers.update(
-                    {provider.provider_id: provider for provider in refreshed.providers}
-                )
-                return tuple(
-                    _provider_choice(provider, theme=theme_for(self))
-                    for provider in providers.values()
-                )
-
-            async def select_provider(provider_id: str) -> tuple[Choice, ...] | None:
-                provider = providers[provider_id]
-                if action == "edit":
-                    await self._edit_provider(provider, menu=menu)
-                else:
-                    await self._remove_provider(provider.provider_id, menu=menu)
-                return None
-
-            menu.push_page(
-                title=f"{_provider_action_label(action)} PROVIDER",
-                placeholder="Filter providers…",
-                choices=choices,
-                on_select=select_provider,
-                on_refresh=refresh_candidates,
-            )
-            return
-        selected = await self.push_screen_wait(
-            ChoiceScreen(
-                title=f"{_provider_action_label(action)} PROVIDER",
-                placeholder="Filter providers…",
-                choices=choices,
-            )
-        )
-        if selected is None:
-            return
-        provider = next(item for item in candidates if item.provider_id == selected)
-        if action == "edit":
-            await self._edit_provider(provider)
-        else:
-            await self._remove_provider(provider.provider_id)
-
     async def _manage_provider(
         self,
         provider: ProviderView,
@@ -517,7 +389,7 @@ class ProviderConfigurationWorkflows(App[int]):
         *,
         menu: ChoiceScreen | None = None,
     ) -> None:
-        if action not in {"list", "add", "edit", "use", "remove"}:
+        if action not in {"list", "add", "use"}:
             await self.query_one(ConversationView).add_notice(
                 f"Unknown endpoint action: {action}",
                 error=True,
@@ -636,7 +508,7 @@ class ProviderConfigurationWorkflows(App[int]):
 
             if menu is not None:
                 menu.push_page(
-                    title=_endpoint_action_label(action),
+                    title="SET DEFAULT ENDPOINT",
                     placeholder="Filter endpoints…",
                     choices=choices,
                     on_select=set_default_route,
@@ -645,7 +517,7 @@ class ProviderConfigurationWorkflows(App[int]):
             else:
                 await self.push_screen_wait(
                     ChoiceScreen(
-                        title=_endpoint_action_label(action),
+                        title="SET DEFAULT ENDPOINT",
                         placeholder="Filter endpoints…",
                         choices=choices,
                         on_select=set_default_route,
@@ -658,20 +530,11 @@ class ProviderConfigurationWorkflows(App[int]):
 
             async def select_route(route: str) -> tuple[Choice, ...] | None:
                 provider, endpoint = routes[route]
-                if action == "list":
-                    await self._manage_endpoint(provider, endpoint, menu=menu)
-                elif action == "edit":
-                    await self._edit_endpoint(provider, endpoint, menu=menu)
-                else:
-                    await self._remove_endpoint(
-                        provider,
-                        endpoint,
-                        menu=menu,
-                    )
+                await self._manage_endpoint(provider, endpoint, menu=menu)
                 return None
 
             menu.push_page(
-                title=_endpoint_action_label(action),
+                title="ENDPOINTS",
                 placeholder="Filter endpoints…",
                 choices=choices,
                 on_select=select_route,
@@ -681,7 +544,7 @@ class ProviderConfigurationWorkflows(App[int]):
 
         route = await self.push_screen_wait(
             ChoiceScreen(
-                title=_endpoint_action_label(action),
+                title="ENDPOINTS",
                 placeholder="Filter endpoints…",
                 choices=choices,
             )
@@ -689,25 +552,11 @@ class ProviderConfigurationWorkflows(App[int]):
         if route is None:
             return
         provider, endpoint = routes[route]
-        if action == "list":
-            await self._manage_endpoint(provider, endpoint)
-        elif action == "edit":
-            await self._edit_endpoint(provider, endpoint)
-        else:
-            await self._remove_endpoint(provider, endpoint)
+        await self._manage_endpoint(provider, endpoint)
 
     async def _choose_endpoints(
         self,
         provider: ProviderView,
-        *,
-        menu: ChoiceScreen | None = None,
-    ) -> None:
-        await self._choose_endpoint(provider, "manage", menu=menu)
-
-    async def _choose_endpoint(
-        self,
-        provider: ProviderView,
-        action: str,
         *,
         menu: ChoiceScreen | None = None,
     ) -> None:
@@ -716,17 +565,11 @@ class ProviderConfigurationWorkflows(App[int]):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        candidates = _endpoint_candidates(
-            provider,
-            catalog.endpoints,
-            action=action,
-        )
-        if not candidates and action != "manage":
-            return
+        candidates = _sorted_endpoints(catalog.endpoints)
         choices = _provider_endpoint_choices(
             provider,
             candidates,
-            include_add=action == "manage",
+            include_add=True,
             theme=theme_for(self),
         )
         if menu is not None:
@@ -750,11 +593,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 if current_provider is None:
                     return ()
                 provider = current_provider
-                refreshed_candidates = _endpoint_candidates(
-                    provider,
-                    provider.endpoints,
-                    action=action,
-                )
+                refreshed_candidates = _sorted_endpoints(provider.endpoints)
                 endpoints.clear()
                 endpoints.update(
                     {endpoint.endpoint_id: endpoint for endpoint in refreshed_candidates}
@@ -762,7 +601,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 return _provider_endpoint_choices(
                     provider,
                     refreshed_candidates,
-                    include_add=action == "manage",
+                    include_add=True,
                     theme=theme_for(self),
                 )
 
@@ -771,23 +610,12 @@ class ProviderConfigurationWorkflows(App[int]):
                     await self._edit_endpoint(provider, None, menu=menu)
                     return await refresh_endpoints()
                 endpoint = endpoints[endpoint_id]
-                if action == "manage":
-                    await self._manage_endpoint(provider, endpoint, menu=menu)
-                elif action == "edit":
-                    await self._edit_endpoint(provider, endpoint, menu=menu)
-                elif action == "use":
-                    await self._use_endpoint(provider.provider_id, endpoint.endpoint_id)
-                elif action == "remove":
-                    await self._remove_endpoint(
-                        provider,
-                        endpoint,
-                        menu=menu,
-                    )
+                await self._manage_endpoint(provider, endpoint, menu=menu)
                 return None
 
             menu.push_page(
                 title=theme_for(self).inline_separator.join(
-                    (_endpoint_action_label(action), provider.display_name)
+                    ("ENDPOINTS", provider.display_name)
                 ),
                 placeholder="Filter endpoints…",
                 choices=choices,
@@ -798,7 +626,7 @@ class ProviderConfigurationWorkflows(App[int]):
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title=theme_for(self).inline_separator.join(
-                    (_endpoint_action_label(action), provider.display_name)
+                    ("ENDPOINTS", provider.display_name)
                 ),
                 placeholder="Filter endpoints…",
                 choices=choices,
@@ -810,14 +638,7 @@ class ProviderConfigurationWorkflows(App[int]):
             await self._edit_endpoint(provider, None)
             return
         endpoint = next(item for item in candidates if item.endpoint_id == selected)
-        if action == "manage":
-            await self._manage_endpoint(provider, endpoint)
-        elif action == "edit":
-            await self._edit_endpoint(provider, endpoint)
-        elif action == "use":
-            await self._use_endpoint(provider.provider_id, endpoint.endpoint_id)
-        elif action == "remove":
-            await self._remove_endpoint(provider, endpoint)
+        await self._manage_endpoint(provider, endpoint)
 
     async def _manage_endpoint(
         self,
@@ -986,7 +807,6 @@ class ProviderConfigurationWorkflows(App[int]):
 def _provider_choice(
     provider: ProviderView,
     *,
-    disabled: bool = False,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> Choice:
     return Choice(
@@ -995,7 +815,6 @@ def _provider_choice(
         accent=None if provider.enabled else theme.text_lowlight,
         marker=theme.selected_choice_marker if provider.default else "",
         trailing=provider.provider_type,
-        disabled=disabled,
     )
 
 
@@ -1106,19 +925,12 @@ def _provider_endpoint_choices(
     return (*choices, Choice("add-endpoint", "+")) if include_add else choices
 
 
-def _endpoint_candidates(
-    provider: ProviderView,
+def _sorted_endpoints(
     endpoints: Sequence[ProviderEndpointView],
-    *,
-    action: str,
 ) -> tuple[ProviderEndpointView, ...]:
     return tuple(
         sorted(
-            (
-                endpoint
-                for endpoint in endpoints
-                if action != "use" or not _is_global_default_endpoint(provider, endpoint)
-            ),
+            endpoints,
             key=lambda endpoint: _display_sort_key(
                 endpoint.display_name,
                 fallback=endpoint.model_id,
@@ -1200,22 +1012,3 @@ def _display_sort_key(value: str | None, *, fallback: str) -> tuple[str, str]:
     normalized_fallback = unicodedata.normalize("NFKC", fallback).casefold()
     normalized_value = unicodedata.normalize("NFKC", (value or "").strip()).casefold()
     return (normalized_value or normalized_fallback, normalized_fallback)
-
-
-def _provider_action_label(action: str) -> str:
-    return {
-        "edit": "EDIT",
-        "toggle": "ENABLE OR DISABLE",
-        "remove": "DELETE",
-    }[action]
-
-
-def _endpoint_action_label(action: str) -> str:
-    return {
-        "list": "ENDPOINTS",
-        "add": "ADD ENDPOINT",
-        "edit": "EDIT ENDPOINT",
-        "use": "SET DEFAULT ENDPOINT",
-        "remove": "DELETE ENDPOINT",
-        "manage": "ENDPOINTS",
-    }[action]
