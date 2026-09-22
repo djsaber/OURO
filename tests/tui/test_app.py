@@ -462,17 +462,17 @@ async def test_welcome_providers_show_count_before_dimmed_names(tmp_path: Path) 
         welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
         welcome.set_system_status(
             TuiSystemStatus(
-                provider_ids=("custom", "deepseek", "glm", "openai", "other"),
+                model_names=("Chat", "Reasoner", "Vision", "Coder", "Other"),
                 model_count=13,
             )
         )
         providers = welcome._system._providers.render()
-        assert providers.plain == "13 model(s) • custom, deepseek, glm, +2"
+        assert providers.plain == "13 model(s) • Chat, Reasoner, Vision, +2"
         assert providers.get_style_at_offset(0).foreground == Color.parse(
             DEFAULT_TUI_THEME.text_muted
         )
         assert providers.get_style_at_offset(
-            providers.plain.index("custom")
+            providers.plain.index("Chat")
         ).foreground == Color.parse(DEFAULT_TUI_THEME.text_faint)
         welcome.set_system_status(TuiSystemStatus())
         assert welcome._system._providers.render().plain == "0 model(s)"
@@ -7695,14 +7695,10 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Delete task",
             "Update status",
             "Manage providers",
-            "Add provider",
-            "Edit provider",
-            "Delete provider",
             "Manage endpoints",
-            "Add endpoint",
-            "Edit endpoint",
             "Set default endpoint",
-            "Delete endpoint",
+            "+ provider",
+            "+ endpoint",
             "Manage plugins",
             "Install plugin",
             "Delete plugin",
@@ -7729,7 +7725,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             *("Settings",) * 7,
             *("Session",) * 5,
             *("Task",) * 4,
-            *("Providers",) * 9,
+            *("Provider",) * 5,
             *("Plugins",) * 3,
             *("Tools",) * 2,
             *("Subagents",) * 5,
@@ -8104,7 +8100,7 @@ async def test_actions_opens_provider_scoped_endpoint_configuration(tmp_path: Pa
         await pilot.press("ctrl+p")
         await pilot.pause()
 
-        app.screen.query_one("#choice-filter", Input).value = "Add endpoint"
+        app.screen.query_one("#choice-filter", Input).value = "+ endpoint"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
@@ -8150,7 +8146,7 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
             "PROVIDER • Secondary"
         )
         toggle = next(choice for choice in app.screen._choices if choice.value == "toggle")
-        assert toggle.label == "Enable provider"
+        assert toggle.label == "Enable"
 
         options = app.screen.query_one("#choice-list", OptionList)
         options.highlighted = options.get_option_index("toggle")
@@ -8160,14 +8156,16 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
         assert ConfigurationFacade(tmp_path).provider(provider_id).enabled is True
         assert (
             next(choice for choice in app.screen._choices if choice.value == "toggle").label
-            == "Disable provider"
+            == "Disable"
         )
 
         await pilot.press("escape")
         await pilot.pause()
-        assert next(
+        provider_choice = next(
             choice for choice in app.screen._choices if choice.value == provider_id
-        ).trailing.endswith("• enabled")
+        )
+        assert provider_choice.trailing == "custom"
+        assert provider_choice.accent is None
         await pilot.press("enter")
         await pilot.pause()
         options = app.screen.query_one("#choice-list", OptionList)
@@ -8176,14 +8174,16 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
         assert ConfigurationFacade(tmp_path).provider(provider_id).enabled is False
         assert (
             next(choice for choice in app.screen._choices if choice.value == "toggle").label
-            == "Enable provider"
+            == "Enable"
         )
 
         await pilot.press("escape")
         await pilot.pause()
-        assert next(
+        provider_choice = next(
             choice for choice in app.screen._choices if choice.value == provider_id
-        ).trailing.endswith("• disabled")
+        )
+        assert provider_choice.trailing == "custom"
+        assert provider_choice.accent == app.tui_theme.text_lowlight
         await pilot.press("escape")
 
 
@@ -8217,8 +8217,8 @@ async def test_provider_submenu_updates_from_latest_preset_in_place(tmp_path: Pa
         await pilot.pause()
 
         update = next(choice for choice in app.screen._choices if choice.value == "update-template")
-        assert update.label == "Update from preset"
-        assert update.trailing == f"openai r{initial_revision}"
+        assert update.label == "Update"
+        assert update.trailing == "Apply latest preset"
         options = app.screen.query_one("#choice-list", OptionList)
         options.highlighted = options.get_option_index("update-template")
         options.focus()
@@ -8236,7 +8236,7 @@ async def test_provider_submenu_updates_from_latest_preset_in_place(tmp_path: Pa
         refreshed = next(
             choice for choice in app.screen._choices if choice.value == "update-template"
         )
-        assert refreshed.trailing == f"openai r{initial_revision + 1}"
+        assert refreshed.trailing == "Apply latest preset"
 
 
 @pytest.mark.asyncio
@@ -8252,6 +8252,19 @@ async def test_provider_catalog_refreshes_before_returning_from_submenu(
     )
     provider_id = created.changed_provider_id
     assert provider_id is not None
+    configuration.add_provider(
+        display_name="中文供应商",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        base_url="https://zh.example.invalid/v1",
+        enabled=False,
+    )
+    configuration.add_provider(
+        display_name="alpha",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        base_url="https://alpha.example.invalid/v1",
+    )
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 34)) as pilot:
@@ -8263,6 +8276,15 @@ async def test_provider_catalog_refreshes_before_returning_from_submenu(
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="PROVIDERS")
         menu = app.screen
+        assert [choice.label for choice in menu._choices] == [
+            "alpha",
+            "Custom",
+            "中文供应商",
+            "+",
+        ]
+        assert next(
+            choice for choice in menu._choices if choice.label == "中文供应商"
+        ).accent == app.tui_theme.text_lowlight
         options = menu.query_one(OptionList)
         options.highlighted = options.get_option_index(provider_id)
         options.focus()
@@ -8284,7 +8306,8 @@ async def test_provider_catalog_refreshes_before_returning_from_submenu(
         assert app.screen is menu
         assert menu.query_one(OptionList) is options
         refreshed = next(choice for choice in menu._choices if choice.value == provider_id)
-        assert "• 1 •" in refreshed.trailing
+        assert refreshed.trailing == "custom"
+        assert menu._choices[-1].label == "+"
         await pilot.press("escape")
 
 
@@ -8319,7 +8342,7 @@ async def test_default_provider_submenu_keeps_toggle_visible_but_disabled(
         await pilot.pause()
 
         toggle = next(choice for choice in app.screen._choices if choice.value == "toggle")
-        assert toggle.label == "Disable provider"
+        assert toggle.label == "Disable"
         assert toggle.disabled is True
         option = app.screen.query_one("#choice-list", OptionList).get_option("toggle")
         assert option.disabled is True
@@ -8329,9 +8352,7 @@ async def test_default_provider_submenu_keeps_toggle_visible_but_disabled(
     ("action_label", "title"),
     (
         ("Manage endpoints", "ENDPOINTS"),
-        ("Edit endpoint", "EDIT ENDPOINT"),
         ("Set default endpoint", "SET DEFAULT ENDPOINT"),
-        ("Delete endpoint", "DELETE ENDPOINT"),
     ),
 )
 @pytest.mark.asyncio
@@ -8356,6 +8377,8 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
             provider_id,
             display_name="Shared",
             model=f"{provider_name}-model",
+            supports_vision=True,
+            reasoning=reasoning_preset("openai-chat-completions-effort"),
         )
         endpoint_id = endpoints.changed_endpoint_id
         assert endpoint_id is not None
@@ -8378,14 +8401,15 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
         secondary_key = "/".join(routes["secondary"])
         assert set(choices) == {primary_key, secondary_key}
         assert {choice.label for choice in choices.values()} == {"Shared"}
-        assert all(choice.marker == "" for choice in app.screen._choices)
+        assert choices[primary_key].marker == app.tui_theme.selected_choice_marker
+        assert choices[secondary_key].marker == ""
         assert {choice.group for choice in choices.values()} == {"Primary", "Secondary"}
         assert all(choice.description == "" for choice in app.screen._choices)
         separator = app.tui_theme.inline_separator
-        assert choices[primary_key].trailing == separator.join(("primary-model", "default"))
-        assert choices[secondary_key].trailing == separator.join(
-            ("secondary-model", "default")
+        assert choices[primary_key].trailing == separator.join(
+            ("reasoning", "vision", "default")
         )
+        assert choices[secondary_key].trailing == separator.join(("reasoning", "vision"))
         internal_endpoint_ids = {endpoint_id for _, endpoint_id in routes.values()}
         assert all(
             all(endpoint_id not in choice.trailing for endpoint_id in internal_endpoint_ids)
@@ -8413,15 +8437,15 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
 
 
 @pytest.mark.parametrize(
-    ("action_label", "target_label", "confirm_title"),
+    ("manage_label", "target_label", "confirm_title"),
     (
         (
-            "Delete provider",
+            "Manage providers",
             "Custom",
             "CONFIRM DELETE PROVIDER",
         ),
         (
-            "Delete endpoint",
+            "Manage endpoints",
             "Chat",
             "CONFIRM DELETE ENDPOINT",
         ),
@@ -8430,7 +8454,7 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
 @pytest.mark.asyncio
 async def test_provider_deletions_use_shared_menu_confirmation(
     tmp_path: Path,
-    action_label: str,
+    manage_label: str,
     target_label: str,
     confirm_title: str,
 ) -> None:
@@ -8450,7 +8474,7 @@ async def test_provider_deletions_use_shared_menu_confirmation(
     assert endpoint_id is not None
     message = (
         f"Delete {provider_id} and all of its endpoints from your settings?"
-        if action_label == "Delete provider"
+        if confirm_title == "CONFIRM DELETE PROVIDER"
         else "Delete Chat from Custom?"
     )
     app = OuroTuiApp(application=_application(tmp_path))
@@ -8459,11 +8483,20 @@ async def test_provider_deletions_use_shared_menu_confirmation(
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = action_label
+        app.screen.query_one("#choice-filter", Input).value = manage_label
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
         app.screen.query_one("#choice-filter", Input).value = target_label
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        remove = next(choice for choice in app.screen._choices if choice.value == "remove")
+        assert remove.label == "Delete"
+        assert remove.accent == app.tui_theme.danger
+        assert remove.destructive
+        app.screen.query_one("#choice-filter", Input).value = "Delete"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
@@ -8526,6 +8559,13 @@ async def test_provider_management_returns_to_catalog_after_deletion(tmp_path: P
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="PROVIDER • Custom")
 
+        assert [choice.label for choice in app.screen._choices] == [
+            "Edit",
+            "Authentication",
+            "Disable",
+            "Endpoints",
+            "Delete",
+        ]
         options = app.screen.query_one(OptionList)
         options.highlighted = options.get_option_index("remove")
         options.focus()
@@ -8552,37 +8592,82 @@ async def test_endpoint_management_returns_to_catalog_after_deletion(tmp_path: P
     )
     provider_id = created.changed_provider_id
     assert provider_id is not None
-    chat = configuration.add_endpoint(provider_id, display_name="Chat", model="chat-model")
+    chat = configuration.add_endpoint(
+        provider_id,
+        display_name="Chat",
+        model="chat-model",
+        supports_vision=True,
+        reasoning=reasoning_preset("openai-chat-completions-effort"),
+    )
     keep = configuration.add_endpoint(provider_id, display_name="Keep", model="keep-model")
+    unnamed = configuration.add_endpoint(provider_id, model="alpha-model")
+    chinese = configuration.add_endpoint(
+        provider_id,
+        display_name="中文",
+        model="zh-model",
+    )
     assert chat.changed_endpoint_id is not None and keep.changed_endpoint_id is not None
-    chat_key = f"{provider_id}/{chat.changed_endpoint_id}"
-    keep_key = f"{provider_id}/{keep.changed_endpoint_id}"
+    assert unnamed.changed_endpoint_id is not None and chinese.changed_endpoint_id is not None
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        app.screen.query_one("#choice-filter", Input).value = "Manage endpoints"
+        app.screen.query_one("#choice-filter", Input).value = "Manage providers"
         await pilot.pause()
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="ENDPOINTS")
+        await _wait_for_screen(app, ChoiceScreen, title="PROVIDERS")
+        app.screen.query_one("#choice-filter", Input).value = "Custom"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="PROVIDER • Custom")
+        app.screen.query_one("#choice-filter", Input).value = "Endpoints"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="ENDPOINTS • Custom")
+
+        assert [choice.label for choice in app.screen._choices] == [
+            "alpha-model",
+            "Chat",
+            "Keep",
+            "中文",
+            "+",
+        ]
+        assert next(
+            choice for choice in app.screen._choices if choice.value == chat.changed_endpoint_id
+        ).trailing == app.tui_theme.inline_separator.join(("reasoning", "vision"))
         app.screen.query_one("#choice-filter", Input).value = "Chat"
         await pilot.pause()
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="ENDPOINT • Chat")
 
+        assert [choice.label for choice in app.screen._choices] == [
+            "Edit",
+            "Set as default",
+            "Delete",
+        ]
+        remove = next(choice for choice in app.screen._choices if choice.value == "remove")
+        assert remove.accent == app.tui_theme.danger
+        assert remove.destructive
         options = app.screen.query_one(OptionList)
         options.highlighted = options.get_option_index("remove")
         options.focus()
         await pilot.press("enter")
         await _wait_for_screen(app, ConfirmationScreen, title="CONFIRM DELETE ENDPOINT")
         await pilot.press("down", "enter")
-        await _wait_for_screen(app, ChoiceScreen, title="ENDPOINTS")
+        await _wait_for_screen(app, ChoiceScreen, title="ENDPOINTS • Custom")
 
         values = {choice.value for choice in app.screen._choices}
-        assert chat_key not in values
-        assert keep_key in values
+        assert chat.changed_endpoint_id not in values
+        assert keep.changed_endpoint_id in values
+        assert app.screen._choices[-1].label == "+"
+        app.screen.query_one("#choice-filter", Input).value = "+"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, EndpointConfigurationScreen, title="ADD ENDPOINT")
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="ENDPOINTS • Custom")
 
 
 @pytest.mark.asyncio
@@ -8632,8 +8717,10 @@ async def test_setting_default_endpoint_also_switches_default_provider(tmp_path:
         assert choices[primary_key].label == "Primary chat"
         assert choices[primary_key].marker == ""
         assert choices[secondary_key].label == "Secondary chat"
-        assert choices[secondary_key].marker == ""
-        assert all(choice.trailing.endswith("default") for choice in choices.values())
+        assert choices[secondary_key].marker == app.tui_theme.selected_choice_marker
+        assert choices[primary_key].trailing == ""
+        assert choices[secondary_key].trailing == "default"
+        assert sum(choice.trailing.endswith("default") for choice in choices.values()) == 1
         catalog = ConfigurationFacade(tmp_path).provider_catalog()
         assert catalog.default_provider_id == routes["secondary"][0]
         assert ConfigurationFacade(tmp_path).provider(
@@ -8653,7 +8740,7 @@ async def test_add_provider_flow_integrates_presets_and_custom_profiles(
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Add provider"
+        app.screen.query_one("#choice-filter", Input).value = "+ provider"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
@@ -8691,10 +8778,14 @@ async def test_add_provider_flow_integrates_presets_and_custom_profiles(
 
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Add provider"
+        app.screen.query_one("#choice-filter", Input).value = "Manage providers"
         await pilot.pause()
         await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="PROVIDERS")
+        app.screen.query_one("#choice-filter", Input).value = "+"
         await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="ADD PROVIDER")
         app.screen.query_one("#choice-filter", Input).value = "Anthropic Messages"
         await pilot.pause()
         await pilot.press("enter")
@@ -11535,7 +11626,7 @@ async def test_model_command_refreshes_endpoints_configured_after_tui_start(
         assert popup.argument_command.name == "/model"
         assert popup.selected_argument is not None
         assert popup.selected_argument.value == model_key
-        assert app._system_status.provider_ids == (provider.provider_id,)
+        assert app._system_status.model_names == ("Hot Model",)
         assert app._system_status.model_count == 1
 
         await pilot.press("enter")

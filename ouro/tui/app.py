@@ -216,7 +216,7 @@ _ACTION_GROUP_RANK = {
             "Settings",
             "Session",
             "Task",
-            "Providers",
+            "Provider",
             "Plugins",
             "Tools",
             "Subagents",
@@ -2130,7 +2130,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._models = models
         self._system_status = replace(
             self._system_status,
-            provider_ids=tuple(sorted({model.provider_id for model in models})),
+            model_names=tuple(
+                sorted(
+                    (model.display_name or model.model_id for model in models),
+                    key=str.casefold,
+                )
+            ),
             model_count=len(models),
         )
         if self._surface_available():

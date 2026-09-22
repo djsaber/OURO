@@ -187,6 +187,7 @@ async def test_controller_new_session_reuses_previous_session_workspace(tmp_path
 
         assert workspace == str(selected.resolve())
         assert status.workspace == str(selected.resolve())
+        assert status.model_names == ("default-model", "recent-model")
         assert result.session.workspace == str(selected.resolve())
         with pytest.raises(ValueError, match="before creating a session"):
             await controller.set_workspace(str(tmp_path))

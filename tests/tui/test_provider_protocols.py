@@ -119,7 +119,7 @@ async def test_create_custom_provider_through_protocol_entry_and_preserve_on_edi
     app = OuroTuiApp(application=two_route_application(tmp_path))
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.press("ctrl+p")
-        app.screen.query_one("#choice-filter", Input).value = "Add provider"
+        app.screen.query_one("#choice-filter", Input).value = "+ provider"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()

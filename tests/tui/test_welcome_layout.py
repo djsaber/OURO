@@ -22,7 +22,7 @@ async def test_welcome_sections_stay_within_available_width_when_resized(
             welcome.set_system_status(
                 TuiSystemStatus(
                     workspace="C:/工作区/" + "long-directory/" * 12,
-                    provider_ids=("provider-with-a-long-name",) * 3,
+                    model_names=("model-with-a-long-name",) * 3,
                     usage_request_count=123456,
                     usage_input_tokens=123456789,
                     usage_output_tokens=123456,

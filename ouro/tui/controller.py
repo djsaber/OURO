@@ -151,7 +151,7 @@ class TuiDailyUsage:
 @dataclass(frozen=True)
 class TuiSystemStatus:
     workspace: str | None = None
-    provider_ids: tuple[str, ...] = ()
+    model_names: tuple[str, ...] = ()
     model_count: int = 0
     skill_count: int = 0
     skill_names: tuple[str, ...] = ()
@@ -589,7 +589,12 @@ class TuiController:
                 project_usage_system_status(
                     TuiSystemStatus(
                         workspace=self._draft_workspace or runtime.default_workspace,
-                        provider_ids=tuple(sorted({model.provider_id for model in models})),
+                        model_names=tuple(
+                            sorted(
+                                (model.display_name or model.model_id for model in models),
+                                key=str.casefold,
+                            )
+                        ),
                         model_count=len(models),
                         skill_count=len(skills),
                         skill_names=tuple(sorted(item.name for item in skills)),

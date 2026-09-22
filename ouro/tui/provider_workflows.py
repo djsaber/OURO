@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import unicodedata
+from collections.abc import Sequence
 from typing import cast
 
 from textual.app import App
@@ -38,11 +40,7 @@ class ProviderConfigurationWorkflows(App[int]):
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        if not catalog.providers:
-            return
-        choices = tuple(
-            _provider_choice(provider, theme=theme_for(self)) for provider in catalog.providers
-        )
+        choices = _provider_catalog_choices(catalog.providers, theme=theme_for(self))
         if menu is not None:
 
             async def refresh_providers() -> tuple[Choice, ...] | None:
@@ -51,12 +49,15 @@ class ProviderConfigurationWorkflows(App[int]):
                 except Exception as exc:  # noqa: BLE001
                     await self.query_one(ConversationView).add_notice(str(exc), error=True)
                     return None
-                return tuple(
-                    _provider_choice(provider, theme=theme_for(self))
-                    for provider in refreshed.providers
+                return _provider_catalog_choices(
+                    refreshed.providers,
+                    theme=theme_for(self),
                 )
 
             async def select_provider(provider_id: str) -> tuple[Choice, ...] | None:
+                if provider_id == "add-provider":
+                    await self._add_provider(menu=menu)
+                    return None
                 refreshed = await self._controller.provider_catalog()
                 provider = next(
                     item for item in refreshed.providers if item.provider_id == provider_id
@@ -76,6 +77,9 @@ class ProviderConfigurationWorkflows(App[int]):
             ChoiceScreen(title="PROVIDERS", placeholder="Filter providers…", choices=choices)
         )
         if selected is None:
+            return
+        if selected == "add-provider":
+            await self._add_provider()
             return
         provider = next(item for item in catalog.providers if item.provider_id == selected)
         await self._manage_provider(provider)
@@ -336,9 +340,9 @@ class ProviderConfigurationWorkflows(App[int]):
                     provider = saved
                     catalog = await self._controller.provider_catalog()
                     menu.update_parent_choices(
-                        tuple(
-                            _provider_choice(item, theme=theme_for(self))
-                            for item in catalog.providers
+                        _provider_catalog_choices(
+                            catalog.providers,
+                            theme=theme_for(self),
                         ),
                         initial_value=provider.provider_id,
                     )
@@ -353,17 +357,15 @@ class ProviderConfigurationWorkflows(App[int]):
                     provider = saved
                     catalog = await self._controller.provider_catalog()
                     menu.update_parent_choices(
-                        tuple(
-                            _provider_choice(item, theme=theme_for(self))
-                            for item in catalog.providers
+                        _provider_catalog_choices(
+                            catalog.providers,
+                            theme=theme_for(self),
                         ),
                         initial_value=provider.provider_id,
                     )
                     return _provider_management_choices(provider, theme=theme_for(self))
                 elif selected == "endpoints":
                     await self._choose_endpoints(provider, menu=menu)
-                elif selected == "add-endpoint":
-                    await self._edit_endpoint(provider, None, menu=menu)
                 elif selected == "remove":
                     if await self._remove_provider(provider.provider_id, menu=menu):
                         await menu.pop_page_refreshed()
@@ -394,8 +396,6 @@ class ProviderConfigurationWorkflows(App[int]):
             await self._set_provider_enabled(provider, enabled=not provider.enabled)
         elif selected == "endpoints":
             await self._choose_endpoints(provider)
-        elif selected == "add-endpoint":
-            await self._edit_endpoint(provider, None)
         elif selected == "remove":
             await self._remove_provider(provider.provider_id)
 
@@ -590,14 +590,13 @@ class ProviderConfigurationWorkflows(App[int]):
         }
         if not routes:
             return
-        try:
-            selected_model = await self._controller.selected_model_key()
-        except Exception as exc:  # noqa: BLE001 - selection errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
-            return
+        default_endpoint = _global_default_endpoint(catalog.providers)
         choices = tuple(
             _endpoint_route_choice(
-                provider, endpoint, selected_model=selected_model, theme=theme_for(self)
+                provider,
+                endpoint,
+                default_endpoint=default_endpoint,
+                theme=theme_for(self),
             )
             for provider, endpoint in routes.values()
         )
@@ -605,7 +604,6 @@ class ProviderConfigurationWorkflows(App[int]):
         async def refresh_routes() -> tuple[Choice, ...] | None:
             try:
                 refreshed = await self._controller.provider_catalog()
-                selected_model = await self._controller.selected_model_key()
             except Exception as exc:  # noqa: BLE001
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
@@ -617,9 +615,13 @@ class ProviderConfigurationWorkflows(App[int]):
                     for candidate in item.endpoints
                 }
             )
+            default_endpoint = _global_default_endpoint(refreshed.providers)
             return tuple(
                 _endpoint_route_choice(
-                    item, candidate, selected_model=selected_model, theme=theme_for(self)
+                    item,
+                    candidate,
+                    default_endpoint=default_endpoint,
+                    theme=theme_for(self),
                 )
                 for item, candidate in routes.values()
             )
@@ -711,23 +713,21 @@ class ProviderConfigurationWorkflows(App[int]):
     ) -> None:
         try:
             catalog = await self._controller.provider_endpoints(provider.provider_id)
-            selected_model = await self._controller.selected_model_key()
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        candidates = tuple(
-            endpoint for endpoint in catalog.endpoints if action != "use" or not endpoint.default
+        candidates = _endpoint_candidates(
+            provider,
+            catalog.endpoints,
+            action=action,
         )
-        if not candidates:
+        if not candidates and action != "manage":
             return
-        choices = tuple(
-            _endpoint_choice(
-                endpoint,
-                available=provider.enabled,
-                selected=selected_model == f"{provider.provider_id}/{endpoint.endpoint_id}",
-                theme=theme_for(self),
-            )
-            for endpoint in candidates
+        choices = _provider_endpoint_choices(
+            provider,
+            candidates,
+            include_add=action == "manage",
+            theme=theme_for(self),
         )
         if menu is not None:
             endpoints = {endpoint.endpoint_id: endpoint for endpoint in candidates}
@@ -736,7 +736,6 @@ class ProviderConfigurationWorkflows(App[int]):
                 nonlocal provider
                 try:
                     refreshed = await self._controller.provider_catalog()
-                    selected_model = await self._controller.selected_model_key()
                 except Exception as exc:  # noqa: BLE001
                     await self.query_one(ConversationView).add_notice(str(exc), error=True)
                     return None
@@ -751,26 +750,26 @@ class ProviderConfigurationWorkflows(App[int]):
                 if current_provider is None:
                     return ()
                 provider = current_provider
-                refreshed_candidates = tuple(
-                    endpoint
-                    for endpoint in provider.endpoints
-                    if action != "use" or not endpoint.default
+                refreshed_candidates = _endpoint_candidates(
+                    provider,
+                    provider.endpoints,
+                    action=action,
                 )
                 endpoints.clear()
                 endpoints.update(
                     {endpoint.endpoint_id: endpoint for endpoint in refreshed_candidates}
                 )
-                return tuple(
-                    _endpoint_choice(
-                        endpoint,
-                        available=provider.enabled,
-                        selected=selected_model == f"{provider.provider_id}/{endpoint.endpoint_id}",
-                        theme=theme_for(self),
-                    )
-                    for endpoint in refreshed_candidates
+                return _provider_endpoint_choices(
+                    provider,
+                    refreshed_candidates,
+                    include_add=action == "manage",
+                    theme=theme_for(self),
                 )
 
             async def select_endpoint(endpoint_id: str) -> tuple[Choice, ...] | None:
+                if endpoint_id == "add-endpoint":
+                    await self._edit_endpoint(provider, None, menu=menu)
+                    return await refresh_endpoints()
                 endpoint = endpoints[endpoint_id]
                 if action == "manage":
                     await self._manage_endpoint(provider, endpoint, menu=menu)
@@ -807,6 +806,9 @@ class ProviderConfigurationWorkflows(App[int]):
         )
         if selected is None:
             return
+        if selected == "add-endpoint":
+            await self._edit_endpoint(provider, None)
+            return
         endpoint = next(item for item in candidates if item.endpoint_id == selected)
         if action == "manage":
             await self._manage_endpoint(provider, endpoint)
@@ -824,10 +826,11 @@ class ProviderConfigurationWorkflows(App[int]):
         *,
         menu: ChoiceScreen | None = None,
     ) -> None:
-        choices = [Choice("edit", "Edit endpoint")]
-        if not endpoint.default:
-            choices.append(Choice("use", "Set as default endpoint"))
-        choices.append(Choice("remove", "Delete endpoint"))
+        choices = _endpoint_management_choices(
+            provider,
+            endpoint,
+            theme=theme_for(self),
+        )
         if menu is not None:
 
             async def refresh_endpoint_actions() -> tuple[Choice, ...] | None:
@@ -859,17 +862,18 @@ class ProviderConfigurationWorkflows(App[int]):
                     return ()
                 provider = refreshed_provider
                 endpoint = refreshed_endpoint
-                refreshed_choices = [Choice("edit", "Edit endpoint")]
-                if not endpoint.default:
-                    refreshed_choices.append(Choice("use", "Set as default endpoint"))
-                refreshed_choices.append(Choice("remove", "Delete endpoint"))
-                return tuple(refreshed_choices)
+                return _endpoint_management_choices(
+                    provider,
+                    endpoint,
+                    theme=theme_for(self),
+                )
 
             async def select_action(selected: str) -> tuple[Choice, ...] | None:
                 if selected == "edit":
                     await self._edit_endpoint(provider, endpoint, menu=menu)
                 elif selected == "use":
-                    await self._use_endpoint(provider.provider_id, endpoint.endpoint_id)
+                    if await self._use_endpoint(provider.provider_id, endpoint.endpoint_id):
+                        return await refresh_endpoint_actions()
                 elif selected == "remove":
                     if await self._remove_endpoint(
                         provider,
@@ -884,7 +888,7 @@ class ProviderConfigurationWorkflows(App[int]):
                     ("ENDPOINT", endpoint.display_name or endpoint.model_id)
                 ),
                 placeholder="Choose an action…",
-                choices=tuple(choices),
+                choices=choices,
                 on_select=select_action,
                 on_refresh=refresh_endpoint_actions,
             )
@@ -895,7 +899,7 @@ class ProviderConfigurationWorkflows(App[int]):
                     ("ENDPOINT", endpoint.display_name or endpoint.model_id)
                 ),
                 placeholder="Choose an action…",
-                choices=tuple(choices),
+                choices=choices,
             )
         )
         if selected == "edit":
@@ -985,15 +989,31 @@ def _provider_choice(
     disabled: bool = False,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> Choice:
-    state = "enabled" if provider.enabled else "disabled"
     return Choice(
         provider.provider_id,
         provider.display_name,
+        accent=None if provider.enabled else theme.text_lowlight,
         marker=theme.selected_choice_marker if provider.default else "",
-        trailing=theme.inline_separator.join(
-            (provider.provider_type, str(provider.endpoint_count), state)
-        ),
+        trailing=provider.provider_type,
         disabled=disabled,
+    )
+
+
+def _provider_catalog_choices(
+    providers: Sequence[ProviderView],
+    *,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
+) -> tuple[Choice, ...]:
+    ordered = sorted(
+        providers,
+        key=lambda provider: _display_sort_key(
+            provider.display_name,
+            fallback=provider.provider_id,
+        ),
+    )
+    return (
+        *(_provider_choice(provider, theme=theme) for provider in ordered),
+        Choice("add-provider", "+"),
     )
 
 
@@ -1002,34 +1022,33 @@ def _provider_management_choices(
     *,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[Choice, ...]:
-    choices = [Choice("edit", "Edit provider"), Choice("authentication", "Authentication")]
+    choices = [Choice("edit", "Edit"), Choice("authentication", "Authentication")]
     if provider.notice:
         choices.append(
             Choice("service-notice", "Service limits", description=provider.notice, disabled=True)
         )
     if provider.template_id is not None:
-        template_version = (
-            f"{provider.template_id} r{provider.template_revision}"
-            if provider.template_revision is not None
-            else theme.inline_separator.join((provider.template_id, "untracked"))
-        )
         choices.append(
             Choice(
                 "update-template",
-                "Update from preset",
-                trailing=template_version,
+                "Update",
+                trailing="Apply latest preset",
             )
         )
     choices.extend(
         (
             Choice(
                 "toggle",
-                "Disable provider" if provider.enabled else "Enable provider",
+                "Disable" if provider.enabled else "Enable",
                 disabled=provider.default,
             ),
-            Choice("endpoints", "Manage endpoints", trailing=str(provider.endpoint_count)),
-            Choice("add-endpoint", "Add endpoint"),
-            Choice("remove", "Delete provider"),
+            Choice("endpoints", "Endpoints"),
+            Choice(
+                "remove",
+                "Delete",
+                accent=theme.danger,
+                destructive=True,
+            ),
         )
     )
     return tuple(choices)
@@ -1058,17 +1077,7 @@ def _endpoint_choice(
     selected: bool,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> Choice:
-    trailing = tuple(
-        value
-        for value in (
-            endpoint.model_id
-            if endpoint.display_name
-            and endpoint.display_name.casefold() != endpoint.model_id.casefold()
-            else "",
-            "default" if endpoint.default else "",
-        )
-        if value
-    )
+    trailing = [*_endpoint_capabilities(endpoint), *(('default',) if selected else ())]
     return Choice(
         endpoint.endpoint_id,
         endpoint.display_name or endpoint.model_id,
@@ -1078,17 +1087,77 @@ def _endpoint_choice(
     )
 
 
+def _provider_endpoint_choices(
+    provider: ProviderView,
+    endpoints: Sequence[ProviderEndpointView],
+    *,
+    include_add: bool,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
+) -> tuple[Choice, ...]:
+    choices = tuple(
+        _endpoint_choice(
+            endpoint,
+            available=provider.enabled,
+            selected=_is_global_default_endpoint(provider, endpoint),
+            theme=theme,
+        )
+        for endpoint in endpoints
+    )
+    return (*choices, Choice("add-endpoint", "+")) if include_add else choices
+
+
+def _endpoint_candidates(
+    provider: ProviderView,
+    endpoints: Sequence[ProviderEndpointView],
+    *,
+    action: str,
+) -> tuple[ProviderEndpointView, ...]:
+    return tuple(
+        sorted(
+            (
+                endpoint
+                for endpoint in endpoints
+                if action != "use" or not _is_global_default_endpoint(provider, endpoint)
+            ),
+            key=lambda endpoint: _display_sort_key(
+                endpoint.display_name,
+                fallback=endpoint.model_id,
+            ),
+        )
+    )
+
+
+def _endpoint_management_choices(
+    provider: ProviderView,
+    endpoint: ProviderEndpointView,
+    *,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
+) -> tuple[Choice, ...]:
+    choices = [Choice("edit", "Edit")]
+    if not _is_global_default_endpoint(provider, endpoint):
+        choices.append(Choice("use", "Set as default"))
+    choices.append(
+        Choice(
+            "remove",
+            "Delete",
+            accent=theme.danger,
+            destructive=True,
+        )
+    )
+    return tuple(choices)
+
+
 def _endpoint_route_choice(
     provider: ProviderView,
     endpoint: ProviderEndpointView,
     *,
-    selected_model: str | None,
+    default_endpoint: str | None,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> Choice:
     choice = _endpoint_choice(
         endpoint,
         available=provider.enabled,
-        selected=selected_model == f"{provider.provider_id}/{endpoint.endpoint_id}",
+        selected=default_endpoint == f"{provider.provider_id}/{endpoint.endpoint_id}",
         theme=theme,
     )
     return Choice(
@@ -1100,6 +1169,37 @@ def _endpoint_route_choice(
         group_trailing="" if provider.enabled else "unavailable",
         disabled=choice.disabled,
     )
+
+
+def _endpoint_capabilities(endpoint: ProviderEndpointView) -> tuple[str, ...]:
+    return tuple(
+        capability
+        for capability, supported in (
+            ("reasoning", endpoint.reasoning.capability.activation != "unsupported"),
+            ("vision", endpoint.supports_vision),
+        )
+        if supported
+    )
+
+
+def _global_default_endpoint(providers: Sequence[ProviderView]) -> str | None:
+    provider = next((candidate for candidate in providers if candidate.default), None)
+    if provider is None or provider.default_endpoint is None:
+        return None
+    return f"{provider.provider_id}/{provider.default_endpoint}"
+
+
+def _is_global_default_endpoint(
+    provider: ProviderView,
+    endpoint: ProviderEndpointView,
+) -> bool:
+    return provider.default and provider.default_endpoint == endpoint.endpoint_id
+
+
+def _display_sort_key(value: str | None, *, fallback: str) -> tuple[str, str]:
+    normalized_fallback = unicodedata.normalize("NFKC", fallback).casefold()
+    normalized_value = unicodedata.normalize("NFKC", (value or "").strip()).casefold()
+    return (normalized_value or normalized_fallback, normalized_fallback)
 
 
 def _provider_action_label(action: str) -> str:

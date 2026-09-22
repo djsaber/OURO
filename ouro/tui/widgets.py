@@ -1215,9 +1215,9 @@ class _WelcomeSystemBlock(Vertical):
 
         providers = Text()
         providers.append(f"{status.model_count} model(s)", style=theme.text_muted)
-        if status.provider_ids:
+        if status.model_names:
             providers.append(
-                f"{theme.section_separator}{_compact_names(status.provider_ids)}",
+                f"{theme.section_separator}{_compact_names(status.model_names)}",
                 style=theme.text_faint,
             )
         self._providers.update(providers)
