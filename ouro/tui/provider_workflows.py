@@ -249,7 +249,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 elif selected == "endpoints":
                     await self._choose_endpoints(provider, menu=menu)
                 elif selected == "remove":
-                    if await self._remove_provider(provider.provider_id, menu=menu):
+                    if await self._remove_provider(provider, menu=menu):
                         await menu.pop_page_refreshed()
                 return None
 
@@ -279,7 +279,7 @@ class ProviderConfigurationWorkflows(App[int]):
         elif selected == "endpoints":
             await self._choose_endpoints(provider)
         elif selected == "remove":
-            await self._remove_provider(provider.provider_id)
+            await self._remove_provider(provider)
 
     async def _manage_provider_authentication(
         self,
@@ -292,7 +292,15 @@ class ProviderConfigurationWorkflows(App[int]):
         except Exception as exc:  # noqa: BLE001 - injected runtimes may omit authentication.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        screen = ProviderAuthenticationScreen(service, provider.provider_id, theme=theme_for(self))
+        try:
+            catalog = await self._controller.provider_catalog()
+        except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        provider_names = {item.provider_id: item.display_name for item in catalog.providers}
+        screen = ProviderAuthenticationScreen(
+            service, provider.provider_id, provider_names=provider_names, theme=theme_for(self)
+        )
         if menu is not None:
             await menu.open_child(screen)
         else:
@@ -346,7 +354,7 @@ class ProviderConfigurationWorkflows(App[int]):
         report = catalog.template_update
         if report is None:
             await self.query_one(ConversationView).add_notice(
-                f"Provider has no preset template: {provider.provider_id}",
+                f"Provider has no preset template: {provider.display_name}",
                 error=True,
             )
             return None
@@ -371,13 +379,15 @@ class ProviderConfigurationWorkflows(App[int]):
 
     async def _remove_provider(
         self,
-        provider_id: str,
+        provider: ProviderView,
         *,
         menu: ChoiceScreen | None = None,
     ) -> bool:
         screen = ConfirmationScreen(
             title="DELETE PROVIDER",
-            message=(f"Delete {provider_id} and all of its endpoints from your settings?"),
+            message=(
+                f"Delete {provider.display_name} and all of its endpoints from your settings?"
+            ),
             confirm_label="Delete",
         )
         selected = await (
@@ -386,11 +396,11 @@ class ProviderConfigurationWorkflows(App[int]):
         if not ConfirmationScreen.confirmed(selected):
             return False
         try:
-            await self._controller.remove_provider(provider_id)
+            await self._controller.remove_provider(provider.provider_id)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return False
-        self.notify(f"Provider deleted: {provider_id} (next request)")
+        self.notify(f"Provider deleted: {provider.display_name} (next request)")
         return True
 
     async def _choose_endpoint_action(

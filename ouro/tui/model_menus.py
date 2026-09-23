@@ -17,6 +17,25 @@ REASONING_REQUESTS: dict[str, ReasoningRequest] = {
     "disabled": ReasoningRequest(mode="disabled"),
     **{effort: ReasoningRequest(mode="enabled", effort=effort) for effort in REASONING_EFFORTS},
 }
+UNAVAILABLE_MODEL_LABEL = "Unavailable model"
+
+
+def model_display_label(model: AvailableModel) -> str:
+    return model.display_name or model.model_id
+
+
+def model_selection_label(
+    route: str, models: tuple[AvailableModel, ...], *, theme: TuiTheme = DEFAULT_TUI_THEME
+) -> str:
+    model = next((candidate for candidate in models if candidate.key == route), None)
+    if model is None:
+        return UNAVAILABLE_MODEL_LABEL
+    name = model_display_label(model)
+    return (
+        theme.inline_separator.join((name, model.provider_display_name))
+        if model.provider_display_name
+        else name
+    )
 
 
 def approval_choices(
@@ -69,7 +88,7 @@ def model_choices(
     return tuple(
         Choice(
             model.key,
-            model.display_name or model.model_id,
+            model_display_label(model),
             trailing=(
                 model.model_id
                 if model.display_name
@@ -77,7 +96,7 @@ def model_choices(
                 else ""
             ),
             marker=theme.selected_choice_marker if model.key == selected else "",
-            group=model.provider_display_name or model.provider_id,
+            group=model.provider_display_name or "Other models",
         )
         for model in sorted_models(models)
     )

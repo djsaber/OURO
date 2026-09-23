@@ -37,7 +37,11 @@ from ouro.tui.controller import (
 )
 from ouro.tui.menu_labels import PERMISSION_LABELS, THINKING_LABELS
 from ouro.tui.menu_sorting import sorted_agent_definitions
-from ouro.tui.model_menus import model_choices
+from ouro.tui.model_menus import (
+    UNAVAILABLE_MODEL_LABEL,
+    model_choices,
+    model_selection_label,
+)
 from ouro.tui.screens import Choice, ChoiceScreen, EditableChoiceScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 
@@ -441,12 +445,12 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
         )
         self._model_labels = {
             _RUNTIME_MODEL: "Use conversation model",
-            **{model.key: model.display_name or model.model_id for model in models},
+            **{
+                model.key: model_selection_label(model.key, models, theme=theme) for model in models
+            },
         }
         if configured_model not in self._model_labels:
-            self._model_labels[configured_model] = theme_for(self).inline_separator.join(
-                ("Unavailable", configured_model)
-            )
+            self._model_labels[configured_model] = UNAVAILABLE_MODEL_LABEL
         self._values = {
             "agent-definition-id": existing.agent_id if existing is not None else "",
             "agent-definition-name": existing.name if existing is not None else "",
@@ -690,12 +694,12 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
         )
         self._model_labels = {
             _RUNTIME_MODEL: "Conversation model",
-            **{model.key: model.display_name or model.key for model in models},
+            **{
+                model.key: model_selection_label(model.key, models, theme=theme) for model in models
+            },
         }
         if configured_model not in self._model_labels:
-            self._model_labels[configured_model] = theme_for(self).inline_separator.join(
-                ("Unavailable", configured_model)
-            )
+            self._model_labels[configured_model] = UNAVAILABLE_MODEL_LABEL
         reasoning = _reasoning_value(config.model.reasoning)
         configured_capability = self._model(configured_model)
         reasoning_options = _compaction_reasoning_options(configured_capability)

@@ -296,12 +296,16 @@ async def test_new_task_uses_default_endpoint_independently_of_session_model(tmp
         await choose(pilot, app, "Create task")
         await _wait_for_screen(app, TaskConfigurationScreen, title="CREATE TASK")
         assert app.screen._values["model"] == routes["zeta"]
+        model_row = next(choice for choice in app.screen._choices if choice.value == "model")
+        assert model_row.trailing == "Chat • Zeta"
         await pilot.press("escape")
         alpha_provider, alpha_endpoint = routes["alpha"].split("/", 1)
         configuration.use_endpoint(alpha_provider, alpha_endpoint)
         await choose(pilot, app, "Create task")
         await _wait_for_screen(app, TaskConfigurationScreen, title="CREATE TASK")
         assert app.screen._values["model"] == routes["alpha"]
+        model_row = next(choice for choice in app.screen._choices if choice.value == "model")
+        assert model_row.trailing == "Chat • Alpha"
         await pilot.press("escape")
 
 

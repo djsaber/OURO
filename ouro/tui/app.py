@@ -84,7 +84,9 @@ from ouro.tui.menu_labels import MODEL_THINKING_LABEL, THINKING_LABELS, TOOL_APP
 from ouro.tui.menu_sorting import sorted_models
 from ouro.tui.model_menus import (
     REASONING_REQUESTS,
+    UNAVAILABLE_MODEL_LABEL,
     approval_choices,
+    model_display_label,
     reasoning_choices,
     reasoning_values,
 )
@@ -1315,9 +1317,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _apply_bootstrap(self, bootstrap: TuiBootstrap) -> None:
         self._models = bootstrap.models
         self._sessions = bootstrap.sessions
-        self._active_model = (
-            bootstrap.current_model.display_name or bootstrap.current_model.model_id
-        )
+        self._active_model = model_display_label(bootstrap.current_model)
         status_line = self.query_one(StatusLine)
         status_line.set_model(self._active_model)
         status_line.set_activity("idle")
@@ -2149,7 +2149,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._system_status,
             model_names=tuple(
                 sorted(
-                    (model.display_name or model.model_id for model in models),
+                    (model_display_label(model) for model in models),
                     key=str.casefold,
                 )
             ),
@@ -2794,8 +2794,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 options = tuple(
                     TuiCommandArgument(
                         value=model.key,
-                        description=model.provider_display_name or model.provider_id,
-                        label=model.display_name or model.model_id,
+                        description=model.provider_display_name or "Other models",
+                        label=model_display_label(model),
                     )
                     for model in sorted_models(self._models)
                 )
@@ -3112,7 +3112,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             workspace=self._active_workspace,
         )
         status_line = self.query_one(StatusLine)
-        self._active_model = model.display_name or model.model_id
+        self._active_model = model_display_label(model)
         status_line.set_model(self._active_model)
         status_line.set_activity("idle")
         status_line.set_context(None)
@@ -3930,7 +3930,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception as exc:  # noqa: BLE001
             self.notify(str(exc), severity="error", markup=False)
             return
-        self._active_model = model.display_name or model.model_id
+        self._active_model = model_display_label(model)
         status_line = self.query_one(StatusLine)
         status_line.set_model(self._active_model)
         await self._refresh_reasoning_indicator()
@@ -4865,10 +4865,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
 def _model_display_name(route: str, models: tuple[AvailableModel, ...]) -> str:
     model = next((candidate for candidate in models if candidate.key == route), None)
-    if model is not None:
-        return model.display_name or model.model_id
-    _provider_id, separator, endpoint_id = route.partition("/")
-    return endpoint_id if separator else route
+    return model_display_label(model) if model is not None else UNAVAILABLE_MODEL_LABEL
 
 
 def _runtime_event_frame_prefix(events: Sequence[EventRecord]) -> tuple[EventRecord, ...]:

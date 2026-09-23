@@ -21,6 +21,7 @@ from ouro.tui.model_menus import (
     REASONING_REQUESTS,
     approval_choices,
     model_choices,
+    model_selection_label,
     reasoning_choices,
     reasoning_values,
 )
@@ -322,6 +323,8 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
             )[:80] or ("Required" if key in {"description", "workspace", "model"} else "Default")
             if key == "approval":
                 display = value
+            elif key == "model" and value:
+                display = model_selection_label(value, self._models, theme=theme_for(self))
             elif key == "frequency":
                 display = FREQUENCY_LABELS[value]
             elif key == "reasoning":

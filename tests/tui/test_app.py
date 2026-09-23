@@ -8478,7 +8478,7 @@ async def test_provider_deletions_use_shared_menu_confirmation(
     endpoint_id = endpoints.changed_endpoint_id
     assert endpoint_id is not None
     message = (
-        f"Delete {provider_id} and all of its endpoints from your settings?"
+        "Delete Custom and all of its endpoints from your settings?"
         if confirm_title == "CONFIRM DELETE PROVIDER"
         else "Delete Chat from Custom?"
     )
@@ -11096,8 +11096,7 @@ async def test_compaction_uses_shared_grouped_inline_menu_and_returns_typed_draf
         model_choices = app.screen._choices
         assert model_choices[0].group == "SESSION"
         assert {choice.group for choice in model_choices[1:]} == {
-            unsupported_model.provider_id,
-            "faux",
+            "Other models",
         }
         app.screen.query_one("#choice-filter", Input).value = "Thinking model"
         await pilot.pause()
@@ -11754,6 +11753,8 @@ async def test_model_command_shows_endpoint_and_provider_without_changing_route_
         choices = model_choices(app._models)
         assert [choice.value for choice in choices] == expected_order
         assert choices[5].label == "中文模型"
+        assert choices[3].label == "gpt-10"
+        assert choices[3].group == "Supplier"
 
         await pilot.press(*"model")
         await pilot.pause()

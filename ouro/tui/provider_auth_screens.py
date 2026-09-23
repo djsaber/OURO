@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import webbrowser
+from collections.abc import Mapping
 
 from textual import events, on
 
@@ -12,6 +13,14 @@ from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 
 
+def _provider_label(provider_id: str, names: Mapping[str, str]) -> str:
+    return names.get(provider_id, "Unavailable provider")
+
+
+def _bound_provider_labels(provider_ids: tuple[str, ...], names: Mapping[str, str]) -> str:
+    return ", ".join(_provider_label(provider_id, names) for provider_id in provider_ids)
+
+
 class ProviderAuthenticationScreen(ChoiceScreen):
     """Present application-owned status and methods without inspecting credentials."""
 
@@ -20,13 +29,17 @@ class ProviderAuthenticationScreen(ChoiceScreen):
         service: ProviderAuthService,
         provider_id: str,
         *,
+        provider_names: Mapping[str, str],
         theme: TuiTheme = DEFAULT_TUI_THEME,
     ) -> None:
         self._initial_tui_theme = theme
         self._service = service
         self._provider_id = provider_id
+        self._provider_names = provider_names
         super().__init__(
-            title=theme.inline_separator.join(("AUTHENTICATION", provider_id)),
+            title=theme.inline_separator.join(
+                ("AUTHENTICATION", _provider_label(provider_id, provider_names))
+            ),
             placeholder="Choose an authentication action…",
             choices=(),
             on_select=self._select_authentication,
@@ -61,7 +74,8 @@ class ProviderAuthenticationScreen(ChoiceScreen):
             Choice(
                 "references",
                 "Shared by",
-                trailing=", ".join(status.bound_provider_ids) or "—",
+                trailing=_bound_provider_labels(status.bound_provider_ids, self._provider_names)
+                or "—",
                 disabled=True,
             ),
             *(
@@ -86,12 +100,15 @@ class ProviderAuthenticationScreen(ChoiceScreen):
                         self._service,
                         self._provider_id,
                         selected.removeprefix("login:"),
+                        provider_name=_provider_label(self._provider_id, self._provider_names),
                         theme=theme_for(self),
                     )
                 )
                 return None
             if selected == "credentials":
-                self.show_child(ProviderCredentialsScreen(self._service))
+                self.show_child(
+                    ProviderCredentialsScreen(self._service, provider_names=self._provider_names)
+                )
                 return None
             if selected == "logout":
                 status = await self._service.status(self._provider_id)
@@ -99,7 +116,10 @@ class ProviderAuthenticationScreen(ChoiceScreen):
                     ConfirmationScreen(
                         title="SIGN OUT",
                         message="Clear local authentication shared by: "
-                        + (", ".join(status.bound_provider_ids) or self._provider_id),
+                        + (
+                            _bound_provider_labels(status.bound_provider_ids, self._provider_names)
+                            or _provider_label(self._provider_id, self._provider_names)
+                        ),
                     )
                 )
                 if ConfirmationScreen.confirmed(confirmed):
@@ -119,6 +139,7 @@ class ProviderLoginScreen(ChoiceScreen):
         provider_id: str,
         method_id: str,
         *,
+        provider_name: str,
         theme: TuiTheme = DEFAULT_TUI_THEME,
     ) -> None:
         self._initial_tui_theme = theme
@@ -129,7 +150,7 @@ class ProviderLoginScreen(ChoiceScreen):
         self._login_task: asyncio.Task[None] | None = None
         self.result: LoginOperation | None = None
         super().__init__(
-            title=theme.inline_separator.join(("SIGN IN", provider_id)),
+            title=theme.inline_separator.join(("SIGN IN", provider_name)),
             placeholder="Authorization actions…",
             choices=(
                 Choice("waiting", "Starting authorization…", loading=True, disabled=True),
@@ -271,8 +292,9 @@ class ProviderLoginScreen(ChoiceScreen):
 class ProviderCredentialsScreen(ChoiceScreen):
     """Manage safe credential summaries, including references orphaned by provider removal."""
 
-    def __init__(self, service: ProviderAuthService) -> None:
+    def __init__(self, service: ProviderAuthService, *, provider_names: Mapping[str, str]) -> None:
         self._service = service
+        self._provider_names = provider_names
         super().__init__(
             title="LOCAL CREDENTIALS",
             placeholder="Filter credentials…",
@@ -298,7 +320,8 @@ class ProviderCredentialsScreen(ChoiceScreen):
                 view.credential.credential_id,
                 view.credential.credential_id,
                 trailing=view.credential.state,
-                description="Shared by: " + (", ".join(view.bound_provider_ids) or "none"),
+                description="Shared by: "
+                + (_bound_provider_labels(view.bound_provider_ids, self._provider_names) or "none"),
             )
             for view in credentials
         ) or (Choice("empty", "No local credentials", disabled=True),)

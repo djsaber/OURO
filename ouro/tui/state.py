@@ -12,6 +12,7 @@ from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, RunStatus
+from ouro.tui.model_menus import model_display_label
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
 
 InteractionKind = Literal["approval", "question"]
@@ -204,7 +205,7 @@ def _presented_model_name(
         candidates = tuple(model for model in candidates if model.model_id == model_id)
     if len(candidates) == 1:
         model = candidates[0]
-        return model.display_name or model.model_id
+        return model_display_label(model)
     return model_id or "unknown model"
 
 

@@ -36,6 +36,7 @@ from ouro.tui.controller import (
 )
 from ouro.tui.menu_labels import PERMISSION_LABELS
 from ouro.tui.menu_sorting import sorted_agent_definitions
+from ouro.tui.model_menus import model_selection_label
 from ouro.tui.prompt_workflows import PromptWorkflows
 from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
@@ -286,9 +287,14 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         route = (
             f"{saved.model.provider_id}/{saved.model.endpoint_id}"
             if saved.model.has_dedicated_endpoint
+            else None
+        )
+        label = (
+            model_selection_label(route, models, theme=theme_for(self))
+            if route
             else "conversation model"
         )
-        self.notify(f"Context compaction saved: {route} (restart to apply)")
+        self.notify(f"Context compaction saved: {label} (restart to apply)")
 
     @work(exclusive=True, group="configuration")
     async def _choose_tools(self, *, menu: ChoiceScreen | None = None) -> None:
