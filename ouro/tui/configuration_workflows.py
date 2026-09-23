@@ -53,10 +53,9 @@ class SystemSettingAction:
 
 
 SYSTEM_SETTING_ACTIONS = (
-    SystemSettingAction("tasks.list", "Task list", "Tasks"),
-    SystemSettingAction("tasks.create", "Create task", "Tasks"),
-    SystemSettingAction("tasks.delete", "Delete task", "Tasks"),
+    SystemSettingAction("tasks.list", "Manage tasks", "Tasks"),
     SystemSettingAction("tasks.refresh", "Update status", "Tasks"),
+    SystemSettingAction("tasks.create", "+ task", "Tasks"),
     SystemSettingAction("queued_inputs.delivery", "Queued messages", "Settings"),
     SystemSettingAction("compaction.policy", "Context compaction", "Settings"),
     SystemSettingAction("prompts.manage", "Personal prompts", "Settings"),
@@ -136,8 +135,6 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             await self._choose_tasks(menu=menu)
         elif action_id == "tasks.create":
             await self._edit_task(None, menu=menu)
-        elif action_id == "tasks.delete":
-            await self._choose_tasks(menu=menu, delete=True)
         elif action_id == "tasks.refresh":
             await self._sync_task_status()
             self.notify(

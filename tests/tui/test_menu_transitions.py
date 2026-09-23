@@ -41,7 +41,7 @@ def _parent_frames(
         ("Context compaction", "CONTEXT COMPACTION"),
         ("Rename session", "RENAME SESSION"),
         ("Delete session", "DELETE SESSIONS"),
-        ("Create task", "CREATE TASK"),
+        ("+ task", "CREATE TASK"),
         ("Install plugin", "INSTALL PLUGIN"),
         ("Tool limits & file access", "TOOL LIMITS & FILE ACCESS"),
         ("Subagent permissions", "SUBAGENT PERMISSIONS"),

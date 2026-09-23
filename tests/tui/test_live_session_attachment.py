@@ -209,9 +209,10 @@ async def test_task_owned_by_another_runtime_streams_through_tools_and_session_s
             task = await owner.tasks.get(task.task_id)
             assert app.query_one(ConversationView).showing_welcome
             await pilot.press("ctrl+t")
-            await _wait_for_screen(app, ChoiceScreen, title="TASK LIST")
+            await _wait_for_screen(app, ChoiceScreen, title="Tasks")
             await choose(pilot, app, "Shared background task")
-            await choose(pilot, app, "Open task session")
+            await choose(pilot, app, "History")
+            await pilot.press("enter")
             await visible(pilot, app, "Before")
             assert app._projection.session_id == task.session_id
             assert app._projection.activity.activity == "executing_tools"

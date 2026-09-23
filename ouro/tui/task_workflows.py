@@ -19,7 +19,7 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
     _sync_task_status: Callable[[], Awaitable[None]]
 
     async def _choose_tasks(
-        self, *, menu: ChoiceScreen | None = None, delete: bool = False, switch: bool = False
+        self, *, menu: ChoiceScreen | None = None, switch: bool = False
     ) -> None:
         task_menu: ChoiceScreen
         offset = 0
@@ -33,8 +33,9 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
                     description=_task_schedule_label(task, theme_for(self)),
                     trailing=TASK_STATUS_LABELS[task.status],
                     group="TASKS",
-                    disabled=delete and task.active_execution_id is not None,
-                    destructive=delete,
+                    accent=None
+                    if task.status in {"waiting", "running"}
+                    else theme_for(self).text_lowlight,
                 )
                 for task in records
             ]
@@ -51,9 +52,6 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
             try:
                 if value in {"next", "previous"}:
                     offset += 100 if value == "next" else -100
-                elif delete:
-                    task = await self._controller.task(value)
-                    await self._delete_task(task, menu=task_menu)
                 else:
                     await self._manage_task(value, menu=task_menu)
                     return None
@@ -69,30 +67,21 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
             return
         if menu is not None:
             task_menu = menu
-            if delete:
-                menu.push_page(
-                    title="DELETE TASK",
-                    placeholder="Filter tasks…",
-                    choices=rows,
-                    on_select=select,
-                    on_refresh=choices,
-                )
-            else:
-                navigate = menu.switch_page if switch else menu.push_page
-                navigate(
-                    navigation_id="tasks",
-                    retain_for_switching=True,
-                    title="TASK LIST",
-                    placeholder="Filter tasks…",
-                    choices=rows,
-                    on_select=select,
-                    on_refresh=choices,
-                )
+            navigate = menu.switch_page if switch else menu.push_page
+            navigate(
+                navigation_id="tasks",
+                retain_for_switching=True,
+                title="Tasks",
+                placeholder="Filter tasks…",
+                choices=rows,
+                on_select=select,
+                on_refresh=choices,
+            )
         else:
             task_menu = ChoiceScreen(
-                navigation_id=None if delete else "tasks",
-                retain_for_switching=not delete,
-                title="DELETE TASK" if delete else "TASK LIST",
+                navigation_id="tasks",
+                retain_for_switching=True,
+                title="Tasks",
                 placeholder="Filter tasks…",
                 choices=rows,
                 on_select=select,
@@ -157,38 +146,32 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
                     group="STATUS",
                     disabled=True,
                 ),
-                Choice(
-                    "open", "Open task session", disabled=task.session_id is None, group="SESSION"
-                ),
-                Choice("history", "Execution history", group="SESSION"),
-                Choice(
-                    "interrupt",
-                    "Interrupt execution",
-                    disabled=task.active_execution_id is None,
-                    group="SESSION",
-                ),
-                Choice("edit", "Edit configuration", group="CONFIGURATION"),
+                Choice("history", "History", group="STATUS"),
+                Choice("edit", "Edit", group="CONFIGURATION"),
                 Choice(
                     "toggle",
-                    "Pause schedule" if task.enabled else "Enable schedule",
+                    "Pause" if task.enabled else "Enable",
                     group="CONFIGURATION",
                 ),
                 Choice(
                     "delete",
-                    "Delete task",
+                    "Delete",
+                    accent=theme_for(self).danger,
                     disabled=task.active_execution_id is not None,
                     destructive=True,
                     group="CONFIGURATION",
                 ),
-                Choice("refresh", "Refresh status", group="ACTIONS"),
+                Choice(
+                    "interrupt",
+                    "Interrupt",
+                    disabled=task.active_execution_id is None,
+                    group="ACTIONS",
+                ),
+                Choice("refresh", "Refresh", group="ACTIONS"),
             )
 
         async def select(value: str) -> tuple[Choice, ...] | None:
             try:
-                if value == "open" and task.session_id is not None:
-                    menu.dismiss(None)
-                    await self._open_session(task.session_id)
-                    return None
                 if value == "edit":
                     await self._edit_task(task, menu=menu)
                 elif value == "toggle":

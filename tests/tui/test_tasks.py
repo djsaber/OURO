@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 from rich.text import Text
@@ -103,7 +104,7 @@ async def test_new_task_preselects_configured_system_default_model(tmp_path, mon
     async with run_ready_app(app, size=(120, 40)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
-        await choose(pilot, app, "Create task")
+        await choose(pilot, app, "+ task")
         await _wait_for_screen(app, TaskConfigurationScreen, title="CREATE TASK")
         assert app.screen._values["model"] == "default"
 
@@ -114,7 +115,7 @@ async def test_task_menu_saves_multiline_instructions_and_pauses_schedule(tmp_pa
     async with run_ready_app(app, size=(120, 40)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
-        await choose(pilot, app, "Create task")
+        await choose(pilot, app, "+ task")
         await _wait_for_screen(app, TaskConfigurationScreen, title="CREATE TASK")
         form = app.screen
         assert next(row for row in form._choices if row.value == "title").label == "Title"
@@ -171,11 +172,11 @@ async def test_task_menu_saves_multiline_instructions_and_pauses_schedule(tmp_pa
         assert task.configuration.approval_mode == "afk"
         assert task.configuration.session_mode == "new"
         assert task.configuration.schedule.timezone == "Asia/Shanghai"
-        await choose(pilot, app, "Task list")
-        await _wait_for_screen(app, ChoiceScreen, title="TASK LIST")
+        await choose(pilot, app, "Manage tasks")
+        await _wait_for_screen(app, ChoiceScreen, title="Tasks")
         assert [row.value for row in app.screen._choices] == [task.task_id]
         await choose(pilot, app, "Summarize")
-        await choose(pilot, app, "Pause schedule")
+        await choose(pilot, app, "Pause")
         assert not (await application.tasks.get(task.task_id)).enabled
         await app._sync_task_status()
         assert app._system_status.task_counts.paused == 1
@@ -202,19 +203,71 @@ async def test_task_delete_and_status_actions_stay_on_shared_menu(tmp_path):
         await pilot.press("ctrl+p")
         await choose(pilot, app, "Update status")
         assert app._system_status.task_counts.waiting == 1
-        await choose(pilot, app, "Delete task")
-        await _wait_for_screen(app, ChoiceScreen, title="DELETE TASK")
+        await choose(pilot, app, "Manage tasks")
+        await _wait_for_screen(app, ChoiceScreen, title="Tasks")
         await choose(pilot, app, "Delete this scheduled task")
+        rows = app.screen._choices
+        assert [(row.label, row.group) for row in rows] == [
+            ("Waiting", "STATUS"),
+            ("History", "STATUS"),
+            ("Edit", "CONFIGURATION"),
+            ("Pause", "CONFIGURATION"),
+            ("Delete", "CONFIGURATION"),
+            ("Interrupt", "ACTIONS"),
+            ("Refresh", "ACTIONS"),
+        ]
+        assert next(row for row in rows if row.value == "interrupt").disabled
+        delete_prompt = app.screen.query_one(OptionList).get_option("delete").prompt
+        assert isinstance(delete_prompt, Text)
+        color = delete_prompt.get_style_at_offset(app.console, 0).color
+        assert color is not None and color.triplet.hex == theme_for(app).danger
+        await choose(pilot, app, "Delete")
         await _wait_for_screen(app, ConfirmationScreen, title="CONFIRM DELETE TASK")
         await pilot.press("escape")
         assert await application.tasks.get(task.task_id)
-        await choose(pilot, app, "Delete this scheduled task")
+        await choose(pilot, app, "Delete")
         await _wait_for_screen(app, ConfirmationScreen, title="CONFIRM DELETE TASK")
         await choose(pilot, app, "Delete")
-        await _wait_for_screen(app, ChoiceScreen, title="DELETE TASK")
+        await _wait_for_screen(app, ChoiceScreen, title="Tasks")
         assert not await application.tasks.list()
         assert app._system_status.task_counts.waiting == 0
         assert app.screen._choices[0].label == "No tasks yet"
+
+
+async def test_task_list_lowlight_keeps_inactive_tasks_selectable(tmp_path, monkeypatch):
+    application = _application(tmp_path)
+    app = OuroTuiApp(application=application)
+    async with run_ready_app(app, size=(100, 34)) as pilot:
+        task = await application.tasks.create(
+            TaskConfiguration(
+                description="Paused task",
+                workspace=str(tmp_path),
+                model=(await app._controller.models())[0].key,
+                schedule=TaskSchedule(
+                    frequency="daily", starts_at=datetime.now(UTC) + timedelta(days=1)
+                ),
+            )
+        )
+        await application.tasks.set_enabled(task.task_id, False, expected_revision=task.revision)
+        paused = await application.tasks.get(task.task_id)
+        records = [paused] + [
+            task.model_copy(update={"task_id": status, "status": status})
+            for status in ("waiting", "running", "completed", "failed", "interrupted")
+        ]
+        monkeypatch.setattr(app._controller, "tasks", AsyncMock(return_value=records))
+        await pilot.press("ctrl+t")
+        await _wait_for_screen(app, ChoiceScreen, title="Tasks")
+        for row, record in zip(app.screen._choices, records, strict=True):
+            assert not row.disabled
+            assert row.accent == (
+                None if record.status in {"waiting", "running"} else theme_for(app).text_lowlight
+            )
+        await choose(pilot, app, "Paused task")
+        assert next(row for row in app.screen._choices if row.value == "toggle").label == "Enable"
+        await choose(pilot, app, "Enable")
+        assert (await application.tasks.get(task.task_id)).enabled
+        await choose(pilot, app, "Refresh")
+        assert next(row for row in app.screen._choices if row.value == "toggle").label == "Pause"
 
 
 async def test_welcome_task_counts_show_only_actionable_activity_in_semantic_colors(tmp_path):
@@ -266,7 +319,7 @@ async def test_task_picker_marks_and_focuses_selected_option(tmp_path, field, ti
     app = OuroTuiApp(application=application)
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.press("ctrl+p")
-        await choose(pilot, app, "Create task")
+        await choose(pilot, app, "+ task")
         await _wait_for_screen(app, TaskConfigurationScreen, title="CREATE TASK")
         if field == "Repeat unit":
             await choose(pilot, app, "Schedule")
@@ -319,7 +372,7 @@ async def test_new_task_uses_symbolic_default_independently_of_session_model(tmp
         assert {model.key for model in await app._controller.models()} == set(routes.values())
         await app._controller.select_model(routes["alpha"])
         await pilot.press("ctrl+p")
-        await choose(pilot, app, "Create task")
+        await choose(pilot, app, "+ task")
         await _wait_for_screen(app, TaskConfigurationScreen, title="CREATE TASK")
         assert app.screen._values["model"] == "default"
         assert app.screen._system_default_model.key == routes["zeta"]
@@ -328,7 +381,7 @@ async def test_new_task_uses_symbolic_default_independently_of_session_model(tmp
         await pilot.press("escape")
         alpha_provider, alpha_endpoint = routes["alpha"].split("/", 1)
         configuration.use_endpoint(alpha_provider, alpha_endpoint)
-        await choose(pilot, app, "Create task")
+        await choose(pilot, app, "+ task")
         await _wait_for_screen(app, TaskConfigurationScreen, title="CREATE TASK")
         assert app.screen._values["model"] == "default"
         assert app.screen._system_default_model.key == routes["alpha"]
@@ -341,7 +394,7 @@ async def test_ctrl_t_uses_shared_task_navigation_without_stacking_or_replacing_
     app = OuroTuiApp(application=_application(tmp_path))
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.press("ctrl+t")
-        await _wait_for_screen(app, ChoiceScreen, title="TASK LIST")
+        await _wait_for_screen(app, ChoiceScreen, title="Tasks")
         menu = app.screen
         assert menu.navigation_id == "tasks"
         await pilot.press("ctrl+t", "ctrl+t")
@@ -350,11 +403,11 @@ async def test_ctrl_t_uses_shared_task_navigation_without_stacking_or_replacing_
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is menu
         await pilot.press("ctrl+t")
-        await _wait_for_screen(app, ChoiceScreen, title="TASK LIST")
+        await _wait_for_screen(app, ChoiceScreen, title="Tasks")
         assert app.screen is menu
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        await choose(pilot, app, "Create task")
+        await choose(pilot, app, "+ task")
         await _wait_for_screen(app, TaskConfigurationScreen, title="CREATE TASK")
         form = app.screen
         await choose(pilot, app, "Instruction")
@@ -370,7 +423,7 @@ async def test_tui_composes_selected_task_backend_without_changing_file_sessions
     app = OuroTuiApp(home=tmp_path, task_backend=task_backend, session_backend="files")
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.press("ctrl+t")
-        await _wait_for_screen(app, ChoiceScreen, title="TASK LIST")
+        await _wait_for_screen(app, ChoiceScreen, title="Tasks")
         assert app.screen._choices[0].label == "No tasks yet"
         assert (tmp_path / "tasks.sqlite3").exists() == (task_backend == "sqlite")
         assert (tmp_path / "tasks" / "layout.json").exists() == (task_backend == "files")
@@ -432,7 +485,7 @@ def streaming_application(tmp_path, provider, *, backend="files", model=None):
     return LocalApplication.from_runtime(runtime)
 
 
-@pytest.mark.parametrize("entry", ["sessions", "task", "history"])
+@pytest.mark.parametrize("entry", ["sessions", "history"])
 async def test_background_run_stays_silent_and_attaching_restores_live_stream(tmp_path, entry):
     provider = StreamingTaskProvider()
     application = streaming_application(tmp_path, provider)
@@ -464,13 +517,10 @@ async def test_background_run_stays_silent_and_attaching_restores_live_stream(tm
             await pilot.press("enter")
         else:
             await pilot.press("ctrl+t")
-            await _wait_for_screen(app, ChoiceScreen, title="TASK LIST")
+            await _wait_for_screen(app, ChoiceScreen, title="Tasks")
             await choose(pilot, app, "Background stream")
-            if entry == "task":
-                await choose(pilot, app, "Open task session")
-            else:
-                await choose(pilot, app, "Execution history")
-                await pilot.press("enter")
+            await choose(pilot, app, "History")
+            await pilot.press("enter")
         async with asyncio.timeout(5):
             while app._projection is None or app._projection.session_id != current.session_id:
                 await pilot.pause()
@@ -500,7 +550,8 @@ async def test_background_run_stays_silent_and_attaching_restores_live_stream(tm
         assert len(await application.tasks.executions(task.task_id)) == 1
 
 
-async def test_tui_cancels_a_queued_task_before_it_can_start(tmp_path):
+@pytest.mark.parametrize("entry", ["session", "menu"])
+async def test_tui_cancels_a_queued_task_before_it_can_start(tmp_path, entry):
     provider = StreamingTaskProvider()
     application = streaming_application(tmp_path, provider)
     application.supervisor.max_concurrency = 1
@@ -528,9 +579,17 @@ async def test_tui_cancels_a_queued_task_before_it_can_start(tmp_path):
         async with asyncio.timeout(5):
             while application.supervisor.status(task.session_id).status != "queued":
                 await pilot.pause()
-        await app._open_session(task.session_id)
-        assert app._projection.activity.status == "queued", app._projection
-        app.action_abort()
+        if entry == "session":
+            await app._open_session(task.session_id)
+            assert app._projection.activity.status == "queued", app._projection
+            app.action_abort()
+        else:
+            await pilot.press("ctrl+t")
+            await choose(pilot, app, "Task must never reach the model")
+            rows = {row.value: row for row in app.screen._choices}
+            assert rows["delete"].disabled
+            assert not rows["interrupt"].disabled
+            await choose(pilot, app, "Interrupt")
         async with asyncio.timeout(5):
             while (await application.tasks.get(task.task_id)).active_execution_id is not None:
                 await pilot.pause()

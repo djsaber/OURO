@@ -139,7 +139,9 @@ class TuiTheme:
     saturation_min: float = DEFAULT_THEME_SATURATION_MIN
     saturation_max: float = DEFAULT_THEME_SATURATION_MAX
 
-    _COLOR_FIELDS: ClassVar[tuple[str, ...]] = (
+    # Palette colors follow the user's saturation preference; semantic colors
+    # preserve the meaning and prominence of states and destructive actions.
+    _PALETTE_COLOR_FIELDS: ClassVar[tuple[str, ...]] = (
         "accent",
         "accent_bright",
         "background",
@@ -158,22 +160,24 @@ class TuiTheme:
         "text_detail",
         "text_choice",
         "text_muted",
-        "warning",
         "text_secondary",
-        "danger",
         "text_primary",
-        "failure",
-        "critical",
         "text_highlight",
-        "warning_bright",
-        "running",
-        "success",
         "syntax_comment",
         "syntax_keyword",
         "syntax_string",
         "syntax_number",
         "syntax_operator",
         "syntax_name",
+    )
+    _SEMANTIC_COLOR_FIELDS: ClassVar[tuple[str, ...]] = (
+        "warning",
+        "danger",
+        "failure",
+        "critical",
+        "warning_bright",
+        "running",
+        "success",
         "syntax_error",
     )
     _GLYPH_FIELDS: ClassVar[tuple[str, ...]] = (
@@ -197,7 +201,7 @@ class TuiTheme:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must not be empty")
-        for name in self._COLOR_FIELDS:
+        for name in (*self._PALETTE_COLOR_FIELDS, *self._SEMANTIC_COLOR_FIELDS):
             value = getattr(self, name)
             if not isinstance(value, str) or not _HEX_COLOR.fullmatch(value):
                 raise ValueError(f"{name} must be a #RRGGBB color")
@@ -293,7 +297,7 @@ class TuiTheme:
         return round(ratio * (THEME_SATURATION_LEVELS - 1))
 
     def at_saturation(self, saturation: float) -> TuiTheme:
-        """Resolve every palette color from its source value at ``saturation``."""
+        """Adjust palette saturation while preserving semantic colors."""
 
         if (
             isinstance(saturation, bool)
@@ -413,7 +417,8 @@ def _theme_at_saturation(theme: TuiTheme, saturation: float) -> TuiTheme:
     if saturation == theme.saturation_max and theme.saturation == theme.saturation_max:
         return theme
     colors = {
-        name: _color_at_saturation(getattr(theme, name), saturation) for name in theme._COLOR_FIELDS
+        name: _color_at_saturation(getattr(theme, name), saturation)
+        for name in theme._PALETTE_COLOR_FIELDS
     }
     return replace(theme, saturation=saturation, **cast(Any, colors))
 

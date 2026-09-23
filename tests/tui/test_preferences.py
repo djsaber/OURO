@@ -6,6 +6,7 @@ from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
+from pygments.token import Token
 
 from ouro.core.errors import ConfigError
 from ouro.tui.preferences import (
@@ -90,7 +91,8 @@ def test_custom_tui_theme_is_complete_immutable_and_caches_render_projections() 
     assert muted.saturation == theme.saturation_min
     assert muted.accent == theme.accent_saturation_scale()[-1]
     assert muted.accent != theme.accent
-    assert muted.warning != theme.warning
+    assert muted.panel != theme.panel
+    assert muted.warning == theme.warning
     with pytest.raises(FrozenInstanceError):
         theme.accent = "#ffffff"  # type: ignore[misc]
 
@@ -100,6 +102,8 @@ def test_custom_tui_theme_is_complete_immutable_and_caches_render_projections() 
     (
         ({"theme_id": ""}, "theme_id"),
         ({"accent": "red"}, "accent"),
+        ({"danger": "red"}, "danger"),
+        ({"syntax_error": "red"}, "syntax_error"),
         ({"brand_mark": "XX"}, "brand_mark"),
         ({"brand_mark": "\n"}, "control characters"),
         ({"unselected_choice_marker": "●"}, "must differ"),
@@ -121,6 +125,38 @@ def test_tui_theme_rejects_invalid_token_values(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         replace(DEFAULT_TUI_THEME, **changes)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("theme", TUI_THEMES.values(), ids=TUI_THEMES)
+def test_saturation_preserves_semantic_colors_and_render_projections(theme: TuiTheme) -> None:
+    semantic_fields = (
+        "warning",
+        "warning_bright",
+        "danger",
+        "failure",
+        "critical",
+        "running",
+        "success",
+    )
+    for level in range(THEME_SATURATION_LEVELS):
+        resolved = theme.at_saturation_level(level)
+        for field in semantic_fields:
+            assert getattr(resolved, field) == getattr(theme, field)
+            variable = f"ouro-{field.replace('_', '-')}"
+            assert resolved.css_variables()[variable] == theme.css_variables()[variable]
+        assert resolved.syntax_error == theme.syntax_error
+        assert resolved.syntax_theme().get_style_for_token(Token.Error) == (
+            theme.syntax_theme().get_style_for_token(Token.Error)
+        )
+    assert theme.at_saturation_level(0) is theme
+
+
+def test_custom_semantic_colors_survive_saturation_changes() -> None:
+    theme = replace(DEFAULT_TUI_THEME, danger="#FF1234", syntax_error="#ED2345")
+    muted = theme.at_saturation(theme.saturation_min)
+    assert muted.danger == "#ff1234"
+    assert muted.syntax_error == "#ed2345"
+    assert muted.at_saturation(theme.saturation_max).danger == theme.danger
 
 
 def test_tui_theme_type_exposes_the_complete_builtin_contract() -> None:

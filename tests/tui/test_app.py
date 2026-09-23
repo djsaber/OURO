@@ -7691,10 +7691,9 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Rename session",
             "Archive session",
             "Delete session",
-            "Task list",
-            "Create task",
-            "Delete task",
+            "Manage tasks",
             "Update status",
+            "+ task",
             "Manage providers",
             "Manage endpoints",
             "Set default endpoint",
@@ -7725,7 +7724,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         assert [choice.group for choice in action_choices] == [
             *("Settings",) * 7,
             *("Sessions",) * 5,
-            *("Tasks",) * 4,
+            *("Tasks",) * 3,
             *("Providers",) * 5,
             *("Plugins",) * 3,
             *("Tools",) * 2,
@@ -7738,9 +7737,10 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         assert "Recent" not in {choice.group for choice in action_choices}
         assert all(choice.description == "" for choice in action_choices)
         assert {choice.label: choice.trailing for choice in action_choices if choice.trailing} == {
+            "Theme": app._tui_theme.label,
             "New session": "Ctrl+N",
             "Open session": "Ctrl+S",
-            "Task list": "Ctrl+T",
+            "Manage tasks": "Ctrl+T",
             "Manage plugins": "Alt+P",
             "Keyboard help": "Ctrl+H",
         }
@@ -13067,6 +13067,9 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         )
         coral = TUI_THEMES["coral"].at_saturation_level(1)
         assert app.tui_theme == coral
+        assert app.tui_theme.danger == TUI_THEMES["coral"].danger
+        assert app.tui_theme.warning == TUI_THEMES["coral"].warning
+        assert app.tui_theme.success == TUI_THEMES["coral"].success
         assert TuiPreferencesStore(tmp_path).load().theme_saturation_level == 1
         selected_coral = next(choice for choice in theme_screen._choices if choice.value == "coral")
         assert selected_coral.swatch_marker_index == 1
@@ -13092,6 +13095,7 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
 
     restarted = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
     assert restarted.tui_theme == TUI_THEMES["coral"].at_saturation_level(1)
+    assert restarted.tui_theme.danger == TUI_THEMES["coral"].danger
 
 
 @pytest.mark.asyncio
