@@ -4,7 +4,7 @@ import asyncio
 import math
 import os
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -90,7 +90,7 @@ class FileCredentialStore:
             raise AuthError("credential_store_error") from None
 
     @asynccontextmanager
-    async def lock(self, credential_id: str, *, timeout: float) -> AsyncIterator[None]:
+    async def lock(self, credential_id: str, *, timeout: float) -> AsyncGenerator[None]:
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("credential lock timeout must be positive")
         path = self._path(credential_id, ".lock")

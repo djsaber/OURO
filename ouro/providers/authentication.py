@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
@@ -122,7 +122,7 @@ async def request_authentication(
     headers: Mapping[str, str],
     policy: ProviderRequestPolicy,
     redact_errors: bool = False,
-) -> AsyncIterator[RequestAuthSnapshot]:
+) -> AsyncGenerator[RequestAuthSnapshot]:
     snapshot = await authenticator.acquire(url)
     normalized = {name.lower(): value for name, value in headers.items()}
     auth_headers = {name.lower(): value for name, value in snapshot.headers.items()}
