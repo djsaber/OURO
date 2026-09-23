@@ -14,6 +14,7 @@ from ouro.core.context import ContextView
 from ouro.core.errors import ContextBlockedError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ModelResponseRecord, ProviderContinuationArtifact
+from ouro.core.model_completion import model_completion_failure
 from ouro.core.provider import ProviderCompletion, ToolCallDelta
 from ouro.core.request_context import ProviderRequestContext
 from ouro.core.results import RunResult
@@ -299,17 +300,6 @@ class InnerAgentLoop:
                     ):
                         continue
                     continue
-            if not round_state.parts:
-                return await self._fail(
-                    state,
-                    "provider returned an empty assistant message",
-                    round_parts=None,
-                    round_reasoning_parts=round_state.reasoning_parts,
-                    turn_id=round_state.turn_id,
-                    model_response=round_state.model_response,
-                    provider_continuation=round_state.continuation,
-                )
-
             state.final_parts.extend(round_state.parts)
             if await self._consume_turn_boundary_inputs(
                 state,
@@ -578,11 +568,6 @@ class InnerAgentLoop:
                     )
                 elif provider_event.type == "done":
                     completion = provider_event.completion or ProviderCompletion()
-                    if round_state.tool_call_parts:
-                        round_state.tool_calls = _complete_streamed_tool_calls(
-                            round_state.tool_call_parts
-                        )
-                    _validate_tool_calls(round_state.tool_calls)
                     round_state.saw_model_done = True
                     self._finish_model_response(round_state)
                     state.sequence = await self.ports.emit(
@@ -595,14 +580,38 @@ class InnerAgentLoop:
                             "round": model_round,
                             "turn_id": round_state.turn_id,
                             "context_id": context.context_id,
-                            "tool_call_count": len(round_state.tool_calls),
+                            "tool_call_count": len(round_state.tool_call_parts),
                             "finish_reason": completion.finish_reason,
                             "provider_finish_reason": completion.provider_finish_reason,
+                            "has_reasoning": completion.has_reasoning
+                            or bool(round_state.reasoning_parts),
                             "usage": provider_event.usage.model_dump(mode="json")
                             if provider_event.usage is not None
                             else {},
                         },
                     )
+                    failure = model_completion_failure(
+                        completion,
+                        has_text=any(part.strip() for part in round_state.parts),
+                        has_tool_calls=bool(round_state.tool_call_parts),
+                        has_reasoning=bool(round_state.reasoning_parts),
+                    )
+                    if failure is not None:
+                        # Rejected output must not become replayable provider continuation.
+                        return await self._fail(
+                            state,
+                            failure.message,
+                            round_state.parts,
+                            round_state.reasoning_parts,
+                            round_state.turn_id,
+                            model_response=round_state.model_response,
+                            error_code=failure.code,
+                        )
+                    if round_state.tool_call_parts:
+                        round_state.tool_calls = _complete_streamed_tool_calls(
+                            round_state.tool_call_parts
+                        )
+                    _validate_tool_calls(round_state.tool_calls)
         except Exception as exc:
             self._finish_model_response(round_state)
             return await self._fail(

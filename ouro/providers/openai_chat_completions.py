@@ -21,6 +21,7 @@ from ouro.providers.authentication import (
     request_authentication,
     safe_response_event,
 )
+from ouro.providers.connection_check import check_connection_events
 from ouro.providers.headers import ProviderHeaderResolver
 from ouro.providers.http_transport import (
     HttpxProviderHTTPTransport,
@@ -33,7 +34,6 @@ from ouro.providers.openai_chat_completions_codec import (
     _reasoning_content_to_text,
     _reasoning_field_value,
     _tool_call_deltas,
-    _tool_calls_from_message,
     _tool_to_chat_completions,
     _usage_from_response,
     _usage_from_response_or_none,
@@ -188,26 +188,14 @@ class OpenAIChatCompletionsProvider:
     ) -> ProviderCheckResult:
         request_context = model_request_context(model, request_context, purpose="connection_check")
         check_model = model.model_copy(update={"supports_streaming": False, "max_output_tokens": 1})
-        async for event in self.stream(
-            model=check_model,
-            messages=[ModelMessage.text(role="user", text="ping")],
-            request_context=request_context,
-        ):
-            if event.type == "error":
-                return ProviderCheckResult(
-                    provider_id=self.provider_id,
-                    ok=False,
-                    model_id=model.model_id,
-                    message=event.error or "provider connection check failed",
-                    error_code=event.error_code,
-                    metadata={"endpoint_id": model.endpoint_id} if model.endpoint_id else {},
-                )
-        return ProviderCheckResult(
+        return await check_connection_events(
+            self.stream(
+                model=check_model,
+                messages=[ModelMessage.text(role="user", text="ping")],
+                request_context=request_context,
+            ),
             provider_id=self.provider_id,
-            ok=True,
-            model_id=model.model_id,
-            message="ok",
-            metadata={"endpoint_id": model.endpoint_id} if model.endpoint_id else {},
+            model=model,
         )
 
     async def _post_chat_completion(
@@ -300,6 +288,7 @@ class OpenAIChatCompletionsProvider:
 
         raw_reasoning = _reasoning_field_value(message)
         reasoning = _reasoning_content_to_text(raw_reasoning)
+        has_reasoning = bool(reasoning)
         if model.reasoning.output not in {"summary", "text"}:
             reasoning = ""
         if reasoning:
@@ -308,29 +297,19 @@ class OpenAIChatCompletionsProvider:
         content = _content_to_text(message.get("content"))
         if content:
             yield ProviderStreamEvent(type="text_delta", text=content)
+        refusal = _content_to_text(message.get("refusal"))
+        if refusal:
+            yield ProviderStreamEvent(type="text_delta", text=refusal)
 
-        tool_calls = _tool_calls_from_message(message)
+        tool_calls = _tool_call_deltas(message)
         if tool_calls and not supports_tools:
             yield ProviderStreamEvent(
                 type="error",
                 error="provider returned tool calls for an endpoint without tool support",
             )
             return
-        if not reasoning and not content and not tool_calls:
-            finish_reason = choice.get("finish_reason")
-            reason = (
-                f" finish_reason={finish_reason}"
-                if isinstance(finish_reason, str) and finish_reason
-                else ""
-            )
-            yield ProviderStreamEvent(
-                type="error",
-                error=f"provider returned an empty assistant message{reason}",
-            )
-            return
-
-        for index, tool_call in enumerate(tool_calls):
-            yield ProviderStreamEvent.from_tool_call(tool_call, index=index)
+        for tool_call in tool_calls:
+            yield ProviderStreamEvent(type="tool_call_delta", tool_call_delta=tool_call)
         if tool_calls and reasoning and model.reasoning.continuation == "text":
             yield ProviderStreamEvent(
                 type="continuation",
@@ -344,7 +323,9 @@ class OpenAIChatCompletionsProvider:
         yield ProviderStreamEvent(
             type="done",
             usage=usage,
-            completion=_chat_completions_completion(choice.get("finish_reason")),
+            completion=_chat_completions_completion(
+                choice.get("finish_reason"), has_reasoning=has_reasoning, refused=bool(refusal)
+            ),
         )
 
     async def _events_from_streaming_chunks(
@@ -355,8 +336,8 @@ class OpenAIChatCompletionsProvider:
         supports_tools: bool,
     ) -> AsyncIterator[ProviderStreamEvent]:
         usage: Usage | None = None
-        saw_content = False
         saw_reasoning = False
+        saw_refusal = False
         saw_tool_call = False
         continuation_reasoning: list[str] = []
         provider_finish_reason: str | None = None
@@ -383,16 +364,19 @@ class OpenAIChatCompletionsProvider:
 
             reasoning = _reasoning_content_to_text(_reasoning_field_value(delta))
             if reasoning:
+                saw_reasoning = True
                 if model.reasoning.continuation == "text":
                     continuation_reasoning.append(reasoning)
                 if model.reasoning.output in {"summary", "text"}:
-                    saw_reasoning = True
                     yield ProviderStreamEvent(type="reasoning_delta", reasoning_content=reasoning)
 
             content = _content_to_text(delta.get("content"))
             if content:
-                saw_content = True
                 yield ProviderStreamEvent(type="text_delta", text=content)
+            refusal = _content_to_text(delta.get("refusal"))
+            if refusal:
+                saw_refusal = True
+                yield ProviderStreamEvent(type="text_delta", text=refusal)
 
             for tool_call_delta in _tool_call_deltas(delta):
                 if not supports_tools:
@@ -414,12 +398,6 @@ class OpenAIChatCompletionsProvider:
             )
             return
 
-        if not saw_content and not saw_reasoning and not saw_tool_call:
-            yield ProviderStreamEvent(
-                type="error", error="provider returned an empty assistant message"
-            )
-            return
-
         if saw_tool_call and continuation_reasoning:
             yield ProviderStreamEvent(
                 type="continuation",
@@ -433,11 +411,15 @@ class OpenAIChatCompletionsProvider:
         yield ProviderStreamEvent(
             type="done",
             usage=usage,
-            completion=_chat_completions_completion(provider_finish_reason),
+            completion=_chat_completions_completion(
+                provider_finish_reason, has_reasoning=saw_reasoning, refused=saw_refusal
+            ),
         )
 
 
-def _chat_completions_completion(value: object) -> ProviderCompletion:
+def _chat_completions_completion(
+    value: object, *, has_reasoning: bool = False, refused: bool = False
+) -> ProviderCompletion:
     provider_reason = value if isinstance(value, str) and value else None
     mapping: dict[str, ProviderFinishReason] = {
         "stop": "stop",
@@ -450,6 +432,7 @@ def _chat_completions_completion(value: object) -> ProviderCompletion:
         mapping.get(provider_reason, "other") if provider_reason is not None else "unknown"
     )
     return ProviderCompletion(
-        finish_reason=finish_reason,
+        finish_reason="content_filter" if refused else finish_reason,
         provider_finish_reason=provider_reason,
+        has_reasoning=has_reasoning,
     )

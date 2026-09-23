@@ -771,13 +771,13 @@ async def test_chat_completions_maps_tool_calls_and_schemas() -> None:
             "index": 0,
             "id_delta": "call_1",
             "name_delta": "Read",
-            "arguments_delta": '{"path":"README.md"}',
+            "arguments_delta": '{"path": "README.md"}',
         },
         {
             "index": 1,
             "id_delta": "call_2",
             "name_delta": "Read",
-            "arguments_delta": '{"path":"CHANGELOG.md"}',
+            "arguments_delta": '{"path": "CHANGELOG.md"}',
         },
     ]
     assert transport.requests[0]["payload"]["tools"] == [
@@ -886,7 +886,7 @@ async def test_chat_completions_streams_tool_call_chunks() -> None:
 
 
 @pytest.mark.asyncio
-async def test_chat_completions_reports_empty_assistant_message() -> None:
+async def test_chat_completions_preserves_empty_response_completion() -> None:
     transport = FakeTransport(
         {
             "choices": [
@@ -911,8 +911,56 @@ async def test_chat_completions_reports_empty_assistant_message() -> None:
         )
     ]
 
-    assert [event.type for event in events] == ["error"]
-    assert events[0].error == "provider returned an empty assistant message finish_reason=stop"
+    assert [event.type for event in events] == ["done"]
+    assert events[0].completion is not None
+    assert events[0].completion.finish_reason == "stop"
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("message", "reason", "normalized_reason", "has_reasoning", "text"),
+    [
+        ({}, "stop", "stop", False, ""),
+        ({}, "length", "length", False, ""),
+        ({}, "content_filter", "content_filter", False, ""),
+        ({"reasoning_content": "hidden thinking"}, "stop", "stop", True, ""),
+        ({"refusal": "Cannot comply."}, "stop", "content_filter", False, "Cannot comply."),
+        (
+            {"tool_calls": [{"id": "call_1", "function": {"name": "Read", "arguments": "{"}}]},
+            "length",
+            "length",
+            False,
+            "",
+        ),
+    ],
+)
+async def test_chat_completion_terminal_facts_survive_empty_or_unusable_output(
+    streaming, message, reason, normalized_reason, has_reasoning, text
+) -> None:
+    response = {
+        "choices": [{"delta" if streaming else "message": message, "finish_reason": reason}],
+        "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+    }
+    transport = (
+        FakeStreamingTransport([{"choices": [{"delta": {}}]}, response])
+        if streaming
+        else FakeTransport(response)
+    )
+    provider = OpenAIChatCompletionsProvider(base_url="https://example.test", transport=transport)
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="test", provider_id="test"), messages=[]
+        )
+    ]
+    assert events[-1].type == "done"
+    assert events[-1].completion.finish_reason == normalized_reason
+    assert events[-1].completion.provider_finish_reason == reason
+    assert events[-1].completion.has_reasoning is has_reasoning
+    assert events[-1].usage.output_tokens == 3
+    assert "".join(event.text or "" for event in events) == text
+    assert not any(event.type in {"error", "retry_scheduled"} for event in events)
+    assert len(transport.requests) == 1
 
 
 @pytest.mark.asyncio
@@ -1051,7 +1099,8 @@ async def test_chat_completions_connection_check_reports_status() -> None:
     )
 
     assert empty.ok is False
-    assert empty.message == "provider returned an empty assistant message finish_reason=stop"
+    assert empty.message == "provider returned an empty assistant message"
+    assert empty.error_code == "model_empty_response"
 
 
 @pytest.mark.asyncio

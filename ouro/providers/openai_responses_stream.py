@@ -192,8 +192,15 @@ class OpenAIResponsesStreamDecoder:
                 type="done",
                 usage=usage,
                 completion=ProviderCompletion(
-                    finish_reason="tool_call" if self._tools else "stop",
+                    finish_reason=(
+                        "content_filter"
+                        if any(lane == "refusal" for _, lane, _ in self._text)
+                        else "tool_call"
+                        if self._tools
+                        else "stop"
+                    ),
                     provider_finish_reason="completed",
+                    has_reasoning=any(item["type"] == "reasoning" for item in items),
                 ),
             )
         )

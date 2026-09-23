@@ -64,7 +64,8 @@ scope 由调用者从同次认证快照传入，不含 Token、有效期或 refr
 
 Responses 复用既有工具循环、消息存储、恢复入口、分支和压缩管线。成功的模型轮次保存完整 continuation 与 canonical 工具帧；同一历史执行范围内重建 Runtime 后，managed 认证使用稳定 scope 续接，401 刷新不会改变重放内容或重新执行已完成工具。
 
-不完整响应不提交成功 continuation 或用量，也不能执行已观察到的工具调用。重启后使用现有 continue_run 恢复，只重放已完成历史，后续成功响应才能触发工具执行和用量记录。
+协议以 incomplete、failed 或 error 结束的响应不提交成功 continuation 或用量，也不能执行已观察到的工具调用。
+重启后使用现有 continue_run 恢复，只重放已完成历史，后续成功响应才能触发工具执行和用量记录。
 
 分支保留完整 canonical 工具调用/结果帧，沿用现有规则隔离源执行范围的 opaque 状态；不会把源 Run 的执行许可带入新分支。源消息保持不变。压缩以 canonical 历史生成摘要，不把密文或续接 envelope 发送给摘要模型；主模型请求仅保留未被摘要覆盖的完整帧及其有效 continuation。
 
@@ -78,14 +79,20 @@ ResponsesStreamDecoder 处理一个响应，responses_events 将已有 HTTP/SSE 
 | reasoning_summary_text delta | reasoning_delta；不展示加密 reasoning |
 | function_call item 与 arguments delta | tool_call_delta；工具序号从零连续，不泄漏 output_index |
 | text/arguments done、完整 item、最终快照 | 校验已输出前缀，仅补尚未输出的后缀；重复快照不重复文本、名称、ID 或参数 |
-| completed 且流正常结束 | 完整验证后发一个 continuation（有 output 时），再发一次 done/usage |
+| completed 且流正常结束 | 完整验证后发一个 continuation（有 output 时），再发一次 done/usage；Core 独立判断 Agent 是否可继续 |
 | incomplete、failed、error、提前 EOF | 固定协议错误，不发成功 done 或 continuation |
+
+`done` 表示已验证的协议结束边界，不代表 Agent 已完成任务。完整响应中的 refusal 投影为可见文本，完成原因
+规范化为 `content_filter`；reasoning item 的存在通过 `ProviderCompletion.has_reasoning` 表达，即使没有可见
+摘要也不归为完全空响应。Core 对只有思考、空输出和拒绝响应分别报告失败，保留可见内容和此 `done` 携带的
+usage，不将失败响应的 continuation 提交为可重放状态。
 
 message、reasoning 和 function_call 是当前支持的完整输出类型。未知元数据事件可忽略，未知 output item 不可忽略。完整工具 arguments 必须为 JSON 对象，拒绝重复键、非有限数字、数组和残缺 JSON；同响应 call_id 不得重复。交错工具通过各自 item identity 聚合。
 
 按事件语义应用终态约束：终态后再次收到已识别的输出、生命周期事件或重复终态明确失败；未知事件类型在终态前后均忽略，不按供应商或具体扩展名称设置特例，不从扩展事件推断完成或用量。事件仍须带字符串 type，已知 output item 内的未知类型仍失败。完成事实延迟到输入流正常结束后提交，避免已经发出成功/usage 后又发现矛盾。解码器 finish 后不再接受事件。流的网络超时、总时限和重试预算由 adapter/transport 拥有。消费者提前退出时必须显式关闭外层异步生成器。
 
-不完整响应按失败结束，即使此前已展示了工具参数，也不能触发 Core 的 done 边界执行。当前失败响应不记录 usage；后续若要记录失败尝试的用量，应通过现有账本契约独立设计，不能伪造成功 done。
+缺少有效 completed 终态的响应按协议失败结束，即使此前已展示了工具参数，也不能触发 Core 的 done 边界执行。
+这类协议失败不发 usage；只有经过验证的完成事件才能进入当前用量账本。
 
 usage 只采用供应商实际值，缺失时为 None；input_tokens 包含 cached tokens，reasoning tokens 已包含于 output_tokens，不重复累加。金额保持未知。错误只带固定本地错误码/说明，不附原始 SSE、工具参数或密文。
 

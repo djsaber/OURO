@@ -24,6 +24,7 @@ from ouro.core.provider import (
 )
 from ouro.core.request_context import ProviderRequestContext
 from ouro.providers.authentication import ProviderRequestPolicy, request_authentication
+from ouro.providers.connection_check import check_connection_events
 from ouro.providers.headers import ProviderHeaderResolver
 from ouro.providers.http_transport import (
     HttpxProviderHTTPTransport,
@@ -242,22 +243,12 @@ class OpenAIResponsesProvider:
         request_context = model_request_context(model, request_context, purpose="connection_check")
         # Keep the endpoint's streaming contract and output budget; some models
         # consume reasoning tokens before any visible response.
-        async with aclosing(
+        return await check_connection_events(
             self.stream(
                 model=model,
                 messages=[ModelMessage.text(role="user", text="Reply OK.")],
                 request_context=request_context,
-            )
-        ) as events:
-            async for event in events:
-                if event.type == "error":
-                    return ProviderCheckResult(
-                        provider_id=self.provider_id,
-                        model_id=model.model_id,
-                        ok=False,
-                        message=event.error or "Connection check failed.",
-                        error_code=event.error_code,
-                    )
-        return ProviderCheckResult(
-            provider_id=self.provider_id, model_id=model.model_id, ok=True, message="ok"
+            ),
+            provider_id=self.provider_id,
+            model=model,
         )

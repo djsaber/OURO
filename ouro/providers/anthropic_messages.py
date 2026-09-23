@@ -31,6 +31,7 @@ from ouro.providers.authentication import (
     request_authentication,
     safe_response_event,
 )
+from ouro.providers.connection_check import check_connection_events
 from ouro.providers.headers import ProviderHeaderResolver
 from ouro.providers.http_transport import HttpxProviderHTTPTransport, ProviderHTTPTransport
 from ouro.providers.reasoning import ReasoningPayloadEncoder
@@ -114,26 +115,14 @@ class AnthropicMessagesProvider:
     ) -> ProviderCheckResult:
         request_context = model_request_context(model, request_context, purpose="connection_check")
         check_model = model.model_copy(update={"supports_streaming": False, "max_output_tokens": 1})
-        async for event in self.stream(
-            model=check_model,
-            messages=[ModelMessage.text(role="user", text="ping")],
-            request_context=request_context,
-        ):
-            if event.type == "error":
-                return ProviderCheckResult(
-                    provider_id=self.provider_id,
-                    ok=False,
-                    model_id=model.model_id,
-                    message=event.error or "provider connection check failed",
-                    error_code=event.error_code,
-                    metadata={"endpoint_id": model.endpoint_id} if model.endpoint_id else {},
-                )
-        return ProviderCheckResult(
+        return await check_connection_events(
+            self.stream(
+                model=check_model,
+                messages=[ModelMessage.text(role="user", text="ping")],
+                request_context=request_context,
+            ),
             provider_id=self.provider_id,
-            ok=True,
-            model_id=model.model_id,
-            message="ok",
-            metadata={"endpoint_id": model.endpoint_id} if model.endpoint_id else {},
+            model=model,
         )
 
     async def _stream_once(
@@ -297,14 +286,6 @@ class AnthropicMessagesProvider:
                 error="provider returned tool calls for an endpoint without tool support",
             )
             return
-        if not text_parts and not reasoning_parts and not tool_calls and not continuation_blocks:
-            stop_reason = response.get("stop_reason")
-            suffix = f" stop_reason={stop_reason}" if isinstance(stop_reason, str) else ""
-            yield ProviderStreamEvent(
-                type="error",
-                error=f"provider returned an empty assistant message{suffix}",
-            )
-            return
         for reasoning in reasoning_parts:
             yield ProviderStreamEvent(type="reasoning_delta", reasoning_content=reasoning)
         for text in text_parts:
@@ -324,7 +305,9 @@ class AnthropicMessagesProvider:
         yield ProviderStreamEvent(
             type="done",
             usage=usage_from_anthropic(response.get("usage")),
-            completion=_anthropic_messages_completion(response.get("stop_reason")),
+            completion=_anthropic_messages_completion(
+                response.get("stop_reason"), has_reasoning=bool(continuation_blocks)
+            ),
         )
 
     async def _events_from_stream(
@@ -335,7 +318,7 @@ class AnthropicMessagesProvider:
         supports_tools: bool,
     ) -> AsyncIterator[ProviderStreamEvent]:
         usage = Usage()
-        saw_content = False
+        saw_reasoning = False
         saw_tool_call = False
         continuation_blocks: dict[int, dict[str, Any]] = {}
         tool_call_indices: dict[int, int] = {}
@@ -368,7 +351,6 @@ class AnthropicMessagesProvider:
                     name = block.get("name")
                     call_id = block.get("id")
                     if isinstance(name, str) and name and isinstance(call_id, str) and call_id:
-                        saw_content = True
                         saw_tool_call = True
                         tool_call_index = tool_call_indices.setdefault(
                             index,
@@ -385,7 +367,7 @@ class AnthropicMessagesProvider:
                 elif block.get("type") in {"thinking", "redacted_thinking"}:
                     if model.reasoning.continuation == "opaque":
                         continuation_blocks[index] = dict(block)
-                    saw_content = True
+                    saw_reasoning = True
             elif event_type == "content_block_delta":
                 delta = chunk.get("delta")
                 index = chunk.get("index")
@@ -395,12 +377,11 @@ class AnthropicMessagesProvider:
                 if delta_type == "text_delta" and isinstance(delta.get("text"), str):
                     text = str(delta["text"])
                     if text:
-                        saw_content = True
                         yield ProviderStreamEvent(type="text_delta", text=text)
                 elif delta_type == "thinking_delta" and isinstance(delta.get("thinking"), str):
                     thinking = str(delta["thinking"])
                     if thinking:
-                        saw_content = True
+                        saw_reasoning = True
                         if model.reasoning.output in {"summary", "text"}:
                             yield ProviderStreamEvent(
                                 type="reasoning_delta",
@@ -427,7 +408,6 @@ class AnthropicMessagesProvider:
                         return
                     if not delta.get("partial_json"):
                         continue
-                    saw_content = True
                     yield ProviderStreamEvent(
                         type="tool_call_delta",
                         tool_call_delta=ToolCallDelta(
@@ -443,12 +423,6 @@ class AnthropicMessagesProvider:
                     if isinstance(stop_reason, str) and stop_reason:
                         provider_finish_reason = stop_reason
             elif event_type == "message_stop":
-                if not saw_content:
-                    yield ProviderStreamEvent(
-                        type="error",
-                        error="provider returned an empty assistant message",
-                    )
-                    return
                 if saw_tool_call and continuation_blocks:
                     yield ProviderStreamEvent(
                         type="continuation",
@@ -464,23 +438,21 @@ class AnthropicMessagesProvider:
                 yield ProviderStreamEvent(
                     type="done",
                     usage=usage,
-                    completion=_anthropic_messages_completion(provider_finish_reason),
+                    completion=_anthropic_messages_completion(
+                        provider_finish_reason, has_reasoning=saw_reasoning
+                    ),
                 )
                 return
 
-        if not saw_content:
-            yield ProviderStreamEvent(
-                type="error",
-                error="provider returned an empty assistant message",
-            )
-        else:
-            yield ProviderStreamEvent(
-                type="error",
-                error="provider stream ended without message_stop",
-            )
+        yield ProviderStreamEvent(
+            type="error",
+            error="provider stream ended without message_stop",
+        )
 
 
-def _anthropic_messages_completion(value: object) -> ProviderCompletion:
+def _anthropic_messages_completion(
+    value: object, *, has_reasoning: bool = False
+) -> ProviderCompletion:
     provider_reason = value if isinstance(value, str) and value else None
     mapping: dict[str, ProviderFinishReason] = {
         "end_turn": "stop",
@@ -495,4 +467,5 @@ def _anthropic_messages_completion(value: object) -> ProviderCompletion:
     return ProviderCompletion(
         finish_reason=finish_reason,
         provider_finish_reason=provider_reason,
+        has_reasoning=has_reasoning,
     )

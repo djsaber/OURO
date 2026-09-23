@@ -6,7 +6,6 @@ from typing import Any
 
 from ouro.core.messages import ImageContent, ModelMessage, TextContent, model_visible_message
 from ouro.core.provider import ToolCallDelta, Usage
-from ouro.core.tools import ToolCallRequest
 
 ChatCompletionsMessageContent = str | list[dict[str, Any]]
 
@@ -238,32 +237,6 @@ def _reasoning_content_to_text(reasoning_content: object) -> str:
     return "".join(parts)
 
 
-def _tool_calls_from_message(message: Mapping[str, Any]) -> list[ToolCallRequest]:
-    raw_tool_calls = message.get("tool_calls")
-    if not isinstance(raw_tool_calls, list):
-        return []
-
-    tool_calls: list[ToolCallRequest] = []
-    for source_index, raw_tool_call in enumerate(raw_tool_calls):
-        if not isinstance(raw_tool_call, Mapping):
-            continue
-        function = raw_tool_call.get("function") or {}
-        if not isinstance(function, Mapping):
-            continue
-        name = function.get("name")
-        if not isinstance(name, str) or not name:
-            continue
-        tool_calls.append(
-            ToolCallRequest(
-                id=str(raw_tool_call.get("id") or ""),
-                name=name,
-                arguments=_arguments_to_dict(function.get("arguments")),
-                source_index=source_index,
-            )
-        )
-    return tool_calls
-
-
 def _tool_call_deltas(delta: Mapping[str, Any]) -> list[ToolCallDelta]:
     raw_tool_calls = delta.get("tool_calls")
     if not isinstance(raw_tool_calls, list):
@@ -298,16 +271,6 @@ def _tool_call_deltas(delta: Mapping[str, Any]) -> list[ToolCallDelta]:
             )
         )
     return deltas
-
-
-def _arguments_to_dict(arguments: object) -> dict[str, Any]:
-    if isinstance(arguments, Mapping):
-        return dict(arguments)
-    if isinstance(arguments, str) and arguments.strip():
-        parsed = json.loads(arguments)
-        if isinstance(parsed, dict):
-            return parsed
-    return {}
 
 
 def _usage_from_response_or_none(response: Mapping[str, Any]) -> Usage | None:

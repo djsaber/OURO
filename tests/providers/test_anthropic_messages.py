@@ -70,6 +70,72 @@ class FakeStreamingTransport(FakeTransport):
             yield chunk
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("reason", "normalized_reason", "thinking"),
+    [
+        ("end_turn", "stop", False),
+        ("max_tokens", "length", False),
+        ("refusal", "content_filter", False),
+        ("end_turn", "stop", True),
+    ],
+)
+async def test_anthropic_terminal_facts_survive_empty_or_hidden_output(
+    streaming, reason, normalized_reason, thinking
+) -> None:
+    content = [{"type": "redacted_thinking", "data": "opaque"}] if thinking else []
+    transport = (
+        FakeStreamingTransport(
+            [
+                {"type": "message_start", "message": {"usage": {"input_tokens": 2}}},
+                *[{"type": "content_block_start", "index": 0, "content_block": b} for b in content],
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": reason},
+                    "usage": {"output_tokens": 3},
+                },
+                {"type": "message_stop"},
+            ]
+        )
+        if streaming
+        else FakeTransport(
+            {
+                "type": "message",
+                "content": content,
+                "stop_reason": reason,
+                "usage": {"input_tokens": 2, "output_tokens": 3},
+            }
+        )
+    )
+    provider = AnthropicMessagesProvider(base_url="https://example.test", transport=transport)
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="test", provider_id="test"), messages=[]
+        )
+    ]
+    assert [event.type for event in events] == ["done"]
+    assert events[-1].completion.finish_reason == normalized_reason
+    assert events[-1].completion.provider_finish_reason == reason
+    assert events[-1].completion.has_reasoning is thinking
+    assert events[-1].usage.output_tokens == 3
+    assert len(transport.requests) == 1
+
+
+async def test_anthropic_empty_stream_without_terminal_is_an_interruption() -> None:
+    provider = AnthropicMessagesProvider(
+        base_url="https://example.test", transport=FakeStreamingTransport([])
+    )
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="test", provider_id="test"), messages=[]
+        )
+    ]
+    assert [event.type for event in events] == ["error"]
+    assert events[0].error == "provider stream ended without message_stop"
+
+
 @pytest.mark.asyncio
 async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> None:
     transport = FakeTransport(

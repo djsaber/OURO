@@ -212,9 +212,14 @@ def test_completed_snapshot_differences_cannot_change_content_or_identity(change
         [message(content=[{"type": "refusal", "refusal": "cannot comply"}])],
     ],
 )
-def test_empty_reasoning_only_and_refusal_responses_have_explicit_success(output):
+def test_empty_reasoning_only_and_refusal_responses_preserve_terminal_facts(output):
     result = decode([terminal(output)])
     assert result[-1].type == "done"
+    assert result[-1].completion.has_reasoning == any(
+        item["type"] == "reasoning" for item in output
+    )
+    refused = any(part["type"] == "refusal" for item in output for part in item.get("content", []))
+    assert result[-1].completion.finish_reason == ("content_filter" if refused else "stop")
     assert "".join(event.text or "" for event in result) == (
         "cannot comply"
         if output and output[0].get("content") and output[0]["content"][0]["type"] == "refusal"
