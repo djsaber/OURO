@@ -877,12 +877,12 @@ def _provider_management_choices(
         )
     choices.extend(
         (
+            Choice("endpoints", "Endpoints"),
             Choice(
                 "toggle",
                 "Disable" if provider.enabled else "Enable",
                 disabled=provider.default,
             ),
-            Choice("endpoints", "Endpoints"),
             Choice(
                 "remove",
                 "Delete",

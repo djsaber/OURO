@@ -1212,11 +1212,6 @@ class TuiController:
         )
         endpoint_id = catalog.changed_endpoint_id
         assert endpoint_id is not None
-        providers = configuration.provider_catalog().providers
-        if not any(provider.default and provider.default_endpoint for provider in providers):
-            target = next(provider for provider in providers if provider.provider_id == provider_id)
-            if target.enabled:
-                catalog = configuration.use_endpoint(provider_id, endpoint_id)
         return next(
             endpoint for endpoint in catalog.endpoints if endpoint.endpoint_id == endpoint_id
         )

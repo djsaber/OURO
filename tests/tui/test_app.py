@@ -8632,8 +8632,8 @@ async def test_provider_management_returns_to_catalog_after_deletion(tmp_path: P
         assert [choice.label for choice in app.screen._choices] == [
             "Edit",
             "Authentication",
-            "Disable",
             "Endpoints",
+            "Disable",
             "Delete",
         ]
         options = app.screen.query_one(OptionList)
@@ -11203,7 +11203,7 @@ async def test_compaction_uses_shared_grouped_inline_menu_and_returns_typed_draf
         assert app.screen is not screen
         assert app.screen.query_one("#choice-filter", Input).placeholder == "Filter models…"
         model_choices = app.screen._choices
-        assert model_choices[0].group == "SESSION"
+        assert model_choices[0].group == "MODEL SOURCE"
         assert model_choices[1].group == "MODEL SOURCE"
         assert model_choices[1].disabled is True
         screen._system_default_model = capable_model

@@ -576,6 +576,9 @@ async def test_controller_configures_provider_endpoint_through_application_facad
         assert changed.reasoning == reasoning_preset("none")
         assert changed.request_options == {"seed": 9}
         assert (await controller.use_endpoint(provider_id, endpoint.endpoint_id)).default is True
+        with pytest.raises(ConfigError, match="cannot remove the default endpoint"):
+            await controller.remove_endpoint(provider_id, endpoint.endpoint_id)
+        await controller.use_endpoint(provider_id, base_id)
         await controller.remove_endpoint(provider_id, endpoint.endpoint_id)
         await controller.remove_endpoint(provider_id, duplicate.endpoint_id)
         endpoints = (await controller.provider_endpoints(provider_id)).endpoints
@@ -585,7 +588,7 @@ async def test_controller_configures_provider_endpoint_through_application_facad
 
 
 @pytest.mark.asyncio
-async def test_first_tui_endpoint_becomes_default_when_no_route_is_configured(
+async def test_first_tui_endpoint_does_not_choose_default_provider(
     tmp_path: Path,
 ) -> None:
     configuration = ConfigurationFacade(tmp_path)
@@ -616,7 +619,7 @@ async def test_first_tui_endpoint_becomes_default_when_no_route_is_configured(
             ),
         )
         catalog = await controller.provider_catalog()
-        assert catalog.default_provider_id == provider_id
+        assert catalog.default_provider_id is None
         assert catalog.providers[0].default_endpoint == first.endpoint_id
 
         await controller.add_endpoint(
@@ -629,6 +632,7 @@ async def test_first_tui_endpoint_becomes_default_when_no_route_is_configured(
             ),
         )
         catalog = await controller.provider_catalog()
+        assert catalog.default_provider_id is None
         assert catalog.providers[0].default_endpoint == first.endpoint_id
     finally:
         await controller.close()

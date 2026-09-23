@@ -814,7 +814,7 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
                 _RUNTIME_MODEL,
                 "Conversation model",
                 marker=(theme.selected_choice_marker if selected == _RUNTIME_MODEL else ""),
-                group="SESSION",
+                group="MODEL SOURCE",
             ),
             Choice(
                 DEFAULT_MODEL,
