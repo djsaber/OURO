@@ -598,7 +598,7 @@ async def test_controller_configures_preset_and_custom_providers(
             )
         )
         assert preset.default is True
-        assert preset.endpoint_count == 5
+        assert preset.endpoint_count == 7
         assert preset.credential.reference == "env:PRIVATE_OPENAI_KEY"
         assert preset.provider_options == {"service_tier": "flex"}
         primary_id = preset.provider_id

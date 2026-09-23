@@ -17,7 +17,16 @@ from tests.providers.responses_fixtures import message, terminal
 
 
 @pytest.mark.parametrize(
-    "model_id", ["gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"]
+    "model_id",
+    [
+        "gpt-5.5",
+        "gpt-5.6-luna",
+        "gpt-5.6-terra",
+        "gpt-5.6-sol",
+        "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
+    ],
 )
 async def test_openai_preset_sends_native_responses_tools_and_reasoning(
     tmp_path, monkeypatch, model_id
@@ -94,7 +103,14 @@ def test_model_effort_limits_are_enforced_before_requests(template_id):
     old = template.endpoint("gpt-5.5").reasoning.capability
     with pytest.raises(ValueError, match="not supported"):
         resolve_reasoning(old, ReasoningRequest(effort="max"))
-    for model_id in ("gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+    for model_id in (
+        "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    ):
         capability = template.endpoint(model_id).reasoning.capability
         assert resolve_reasoning(capability, ReasoningRequest(effort="max")).variant == "max"
         with pytest.raises(ValueError, match="not supported"):
@@ -102,11 +118,11 @@ def test_model_effort_limits_are_enforced_before_requests(template_id):
 
 
 def test_api_none_is_not_assumed_to_be_a_subscription_capability():
-    api = get_provider_template("openai").endpoint("gpt-5.6-sol").reasoning
+    api = get_provider_template("openai").endpoint("gpt-6-sol").reasoning
     assert (
         resolve_reasoning(api.capability, ReasoningRequest(mode="disabled")).variant == "disabled"
     )
     assert api.profile.variants["disabled"] == {"reasoning": {"effort": "none"}}
-    subscription = get_provider_template("openai-codex").endpoint("gpt-5.6-sol").reasoning
+    subscription = get_provider_template("openai-codex").endpoint("gpt-6-sol").reasoning
     with pytest.raises(ValueError, match="always on"):
         resolve_reasoning(subscription.capability, ReasoningRequest(mode="disabled"))

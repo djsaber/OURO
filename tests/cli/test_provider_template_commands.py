@@ -261,7 +261,7 @@ def test_duplicate_display_names_create_independent_integrated_providers(tmp_pat
     assert payload["provider"]["provider_id"] == first["provider_id"]
     assert payload["provider"]["display_name"] == "Primary API"
     assert payload["provider"]["provider_type"] == "openai"
-    assert payload["provider"]["endpoint_count"] == 5
+    assert payload["provider"]["endpoint_count"] == 7
     assert ProviderConfigManager(tmp_path).get_provider(second["provider_id"]).provider_type == (
         "openai"
     )

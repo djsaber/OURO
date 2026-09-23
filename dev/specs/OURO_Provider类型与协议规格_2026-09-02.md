@@ -28,7 +28,7 @@ Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它�
 连接声明可携带只读 notice，由 Application 投影到 Provider/Template DTO 并交给 CLI/TUI 展示；不写入用户配置，也不由 Host 判断厂商。
 `openai` 默认使用 Responses + static，保留 Chat Completions + static 备选组合，已有配置不自动改协议。
 `openai-codex` 仅声明 Responses + 同名浏览器认证驱动及服务策略。两套模板提供 GPT-5.5、GPT-5.6 Luna/Terra/Sol
-与 GPT-6 Astra，默认 Sol；模型等级与各自后端能力按官方文档分别声明，详见
+与 GPT-6 Astra/Sol/Luna，默认 GPT-6 Sol；模型等级与各自后端能力按官方文档分别声明，详见
 [预制配置说明](../../docs/OURO_OpenAI预制配置说明_ZH_2026-09-19.md)。订阅上下文和 max_output_tokens 为本地预算，
 服务限制通过连接 notice 和模板描述披露；图像能力仍受 Responses adapter 当前实现约束。
 默认组合自然属于允许集合；组合不能重复，也不能将两组独立允许列表作笛卡尔积。有默认连接的产品在创建时，

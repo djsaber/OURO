@@ -226,7 +226,7 @@ Endpoint 集合、连接地址、凭据环境变量、Endpoint capability、官�
 
 | 模板 | 默认 Endpoint | 其他预置 Endpoint |
 | --- | --- | --- |
-| OpenAI API / Codex 订阅 | `gpt-5.6-sol` | `gpt-5.5`、`gpt-5.6-luna`、`gpt-5.6-terra`、`gpt-6-astra` |
+| OpenAI API / Codex 订阅 | `gpt-6-sol` | `gpt-5.5`、`gpt-5.6-luna`、`gpt-5.6-terra`、`gpt-5.6-sol`、`gpt-6-astra`、`gpt-6-luna` |
 | Anthropic | `claude-sonnet-5` | `claude-opus-4-8`、`claude-haiku-4-5` |
 | Gemini | `gemini-3.5-flash` | `gemini-3.1-pro-preview`、`gemini-3.1-flash-lite` |
 | DeepSeek | `deepseek-v4-pro` | `deepseek-v4-flash` |

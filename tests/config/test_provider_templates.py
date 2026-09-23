@@ -12,12 +12,28 @@ from ouro.core.errors import ConfigError
 
 _EXPECTED_ENDPOINTS = {
     "openai-codex": (
-        "gpt-5.6-sol",
-        {"gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"},
+        "gpt-6-sol",
+        {
+            "gpt-5.5",
+            "gpt-5.6-luna",
+            "gpt-5.6-terra",
+            "gpt-5.6-sol",
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+        },
     ),
     "openai": (
-        "gpt-5.6-sol",
-        {"gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"},
+        "gpt-6-sol",
+        {
+            "gpt-5.5",
+            "gpt-5.6-luna",
+            "gpt-5.6-terra",
+            "gpt-5.6-sol",
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+        },
     ),
     "anthropic": (
         "claude-sonnet-5",
@@ -47,8 +63,8 @@ _EXPECTED_ENDPOINTS = {
 
 # Templates re-verified against provider docs after the shared review date.
 _EXPECTED_VERIFIED_ON = {
-    "openai": "2026-09-19",
-    "openai-codex": "2026-09-19",
+    "openai": "2026-09-23",
+    "openai-codex": "2026-09-23",
     "deepseek": "2026-08-27",
     "kimi": "2026-07-17",
     "glm": "2026-08-27",

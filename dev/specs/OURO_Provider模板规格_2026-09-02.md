@@ -11,7 +11,7 @@
 [Provider 类型与协议](OURO_Provider类型与协议规格_2026-09-02.md)定义。内联模板目录继续由
 `ouro/config/provider_templates.py` 维护。
 
-当前 OpenAI API 模板修订 4、Codex 订阅模板修订 3；模型清单、能力依据与协议更新边界见
+当前 OpenAI API 模板修订 5、Codex 订阅模板修订 6；模型清单、能力依据与协议更新边界见
 [OpenAI 预制配置说明](../../docs/OURO_OpenAI预制配置说明_ZH_2026-09-19.md)。verified_on 表示文档核对日期，
 真实调用的验收范围在使用指南中单独记录。
 

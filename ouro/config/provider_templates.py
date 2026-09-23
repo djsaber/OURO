@@ -298,6 +298,8 @@ _ANTHROPIC_MANUAL_REASONING = toggle_reasoning(
 
 _OPENAI_MODEL_DISPLAY_NAMES = {
     "gpt-6-astra": "GPT-6 Astra",
+    "gpt-6-sol": "GPT-6 Sol",
+    "gpt-6-luna": "GPT-6 Luna",
     "gpt-5.6-sol": "GPT-5.6 Sol",
     "gpt-5.6-terra": "GPT-5.6 Terra",
     "gpt-5.6-luna": "GPT-5.6 Luna",
@@ -314,7 +316,7 @@ _PROVIDER_TEMPLATES = (
             "Availability depends on the account and rollout; "
             "OURO live verification covers GPT-5.5. "
             "GPT-5.5 retires from Codex on 2026-10-14. "
-            "No request output limit; context 128000 and output 8192 are local planning budgets. "
+            "No request output limit; context 1050000 and output 32768 are local planning budgets. "
             "Images and structured output are not declared supported by this integration."
         ),
         provider_type="openai-codex",
@@ -322,20 +324,22 @@ _PROVIDER_TEMPLATES = (
         auth_driver="openai-codex",
         base_url="https://chatgpt.com/backend-api/codex",
         api_path="/responses",
-        default_endpoint="gpt-5.6-sol",
+        default_endpoint="gpt-6-sol",
         endpoints=tuple(
             ProviderEndpointConfig(
                 endpoint_id=model_id,
                 display_name=_OPENAI_MODEL_DISPLAY_NAMES[model_id],
                 model_id=model_id,
-                context_window=128_000,
-                max_output_tokens=8192,
+                context_window=1_050_000,
+                max_output_tokens=32_768,
                 supports_tools=True,
                 supports_streaming=True,
                 reasoning=reasoning,
             )
             for model_id, reasoning in (
                 ("gpt-6-astra", _OPENAI_ALWAYS_ON_REASONING),
+                ("gpt-6-sol", _OPENAI_ALWAYS_ON_REASONING),
+                ("gpt-6-luna", _OPENAI_ALWAYS_ON_REASONING),
                 ("gpt-5.6-sol", _OPENAI_ALWAYS_ON_REASONING),
                 ("gpt-5.6-terra", _OPENAI_ALWAYS_ON_REASONING),
                 ("gpt-5.6-luna", _OPENAI_ALWAYS_ON_REASONING),
@@ -343,16 +347,17 @@ _PROVIDER_TEMPLATES = (
             )
         ),
         documentation_url="https://learn.chatgpt.com/docs/models",
-        verified_on="2026-09-19",
-        revision=3,
+        verified_on="2026-09-23",
+        revision=6,
     ),
     ProviderTemplate(
         template_id="openai",
         display_name="OpenAI",
         description=(
-            "OpenAI Responses API with GPT-5.5, GPT-5.6 Luna/Terra/Sol and GPT-6 Astra. "
+            "OpenAI Responses API with GPT-6 Astra/Sol/Luna, GPT-5.6 Sol/Terra/Luna "
+            "and GPT-5.5. "
             "Documented context 1050000 and output maximum 128000; "
-            "the preset requests an output budget of 32768. Astra tool calling requires Responses. "
+            "the preset requests an output budget of 32768. GPT-6 tool calling requires Responses. "
             "Image input is not yet implemented by the OURO Responses adapter."
         ),
         provider_type="openai",
@@ -360,7 +365,7 @@ _PROVIDER_TEMPLATES = (
         credential_env="OPENAI_API_KEY",
         base_url="https://api.openai.com/v1",
         api_path="/responses",
-        default_endpoint="gpt-5.6-sol",
+        default_endpoint="gpt-6-sol",
         endpoints=tuple(
             ProviderEndpointConfig(
                 endpoint_id=model_id,
@@ -375,16 +380,18 @@ _PROVIDER_TEMPLATES = (
                 reasoning=reasoning,
             )
             for model_id, reasoning in (
-                ("gpt-5.6-sol", _OPENAI_56_REASONING),
                 ("gpt-6-astra", _OPENAI_ALWAYS_ON_REASONING),
+                ("gpt-6-sol", _OPENAI_56_REASONING),
+                ("gpt-6-luna", _OPENAI_56_REASONING),
+                ("gpt-5.6-sol", _OPENAI_56_REASONING),
                 ("gpt-5.6-terra", _OPENAI_56_REASONING),
                 ("gpt-5.6-luna", _OPENAI_56_REASONING),
                 ("gpt-5.5", _OPENAI_55_REASONING),
             )
         ),
         documentation_url="https://developers.openai.com/api/docs/models",
-        verified_on="2026-09-19",
-        revision=4,
+        verified_on="2026-09-23",
+        revision=5,
     ),
     ProviderTemplate(
         template_id="anthropic",

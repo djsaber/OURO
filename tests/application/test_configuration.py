@@ -444,10 +444,12 @@ def test_provider_template_reapply_preserves_other_endpoints_and_credential(tmp_
     assert provider.enabled is False
     assert {endpoint.model_id for endpoint in provider.endpoints} == {
         "gpt-custom",
+        "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
         "gpt-5.5",
         "gpt-6-astra",
+        "gpt-6-luna",
         "gpt-legacy",
     }
     assert provider.default_endpoint is not None
@@ -627,10 +629,12 @@ def test_provider_template_model_override_keeps_generated_endpoint_registry(
     assert provider.default_endpoint.startswith("endpoint_")
     assert {endpoint.model_id for endpoint in provider.endpoints} == {
         "gpt-custom",
+        "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
         "gpt-5.5",
         "gpt-6-astra",
+        "gpt-6-luna",
     }
     assert facade.endpoint(provider_id, provider.default_endpoint).model_id == "gpt-custom"
 
@@ -698,6 +702,8 @@ def test_provider_create_and_explicit_replace_keep_internal_identity(tmp_path) -
         "gpt-5.6-luna",
         "gpt-5.5",
         "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
     }
 
 
