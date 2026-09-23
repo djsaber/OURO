@@ -8321,7 +8321,7 @@ async def test_provider_catalog_refreshes_before_returning_from_submenu(
 
 
 @pytest.mark.asyncio
-async def test_default_provider_submenu_keeps_toggle_visible_but_disabled(
+async def test_default_provider_and_endpoint_show_badges_and_disable_deletion(
     tmp_path: Path,
 ) -> None:
     configuration = ConfigurationFacade(tmp_path)
@@ -8345,6 +8345,25 @@ async def test_default_provider_submenu_keeps_toggle_visible_but_disabled(
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
+        provider_choice = next(
+            choice for choice in app.screen._choices if choice.value == provider_id
+        )
+        assert provider_choice.marker == ""
+        assert provider_choice.trailing_badge == "default"
+        assert provider_choice.trailing == "custom"
+        provider_options = app.screen.query_one(OptionList)
+        assert any(
+            "default" in segment.text
+            and segment.style is not None
+            and segment.style.color == Style(color=app.tui_theme.accent).color
+            for y in range(provider_options.size.height)
+            for segment in provider_options.render_line(y)
+        )
+        assert any(
+            "default" in (line := provider_options.render_line(y)).text
+            and line.text.index("default") < line.text.index("custom")
+            for y in range(provider_options.size.height)
+        )
         app.screen.query_one("#choice-filter", Input).value = "Primary"
         await pilot.pause()
         await pilot.press("enter")
@@ -8355,6 +8374,31 @@ async def test_default_provider_submenu_keeps_toggle_visible_but_disabled(
         assert toggle.disabled is True
         option = app.screen.query_one("#choice-list", OptionList).get_option("toggle")
         assert option.disabled is True
+        remove = next(choice for choice in app.screen._choices if choice.value == "remove")
+        assert remove.disabled is True
+        assert app.screen.query_one("#choice-list", OptionList).get_option("remove").disabled
+        app.screen.query_one("#choice-filter", Input).value = "Delete"
+        await pilot.pause()
+        assert app.screen.query_one(OptionList).highlighted is None
+        await pilot.press("enter")
+        assert app.screen.query_one("#choice-title", Static).render().plain == "PROVIDER • Primary"
+        app.screen.query_one("#choice-filter", Input).value = "Endpoints"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="ENDPOINTS • Primary")
+        endpoint = next(choice for choice in app.screen._choices if choice.label == "Chat")
+        assert endpoint.marker == ""
+        assert endpoint.trailing_badge == "default"
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="ENDPOINT • Chat")
+        remove = next(choice for choice in app.screen._choices if choice.value == "remove")
+        assert remove.disabled is True
+        assert app.screen.query_one("#choice-list", OptionList).get_option("remove").disabled
+        app.screen.query_one("#choice-filter", Input).value = "Delete"
+        await pilot.pause()
+        assert app.screen.query_one(OptionList).highlighted is None
+        await pilot.press("enter")
+        assert app.screen.query_one("#choice-title", Static).render().plain == "ENDPOINT • Chat"
 
 
 @pytest.mark.parametrize(
@@ -8410,13 +8454,15 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
         secondary_key = "/".join(routes["secondary"])
         assert set(choices) == {primary_key, secondary_key}
         assert {choice.label for choice in choices.values()} == {"Shared"}
-        assert choices[primary_key].marker == app.tui_theme.selected_choice_marker
+        assert choices[primary_key].marker == ""
         assert choices[secondary_key].marker == ""
         assert {choice.group for choice in choices.values()} == {"Primary", "Secondary"}
         assert all(choice.description == "" for choice in app.screen._choices)
         separator = app.tui_theme.inline_separator
-        assert choices[primary_key].trailing == separator.join(("reasoning", "vision", "default"))
+        assert choices[primary_key].trailing == separator.join(("reasoning", "vision"))
+        assert choices[primary_key].trailing_badge == "default"
         assert choices[secondary_key].trailing == separator.join(("reasoning", "vision"))
+        assert choices[secondary_key].trailing_badge == ""
         internal_endpoint_ids = {endpoint_id for _, endpoint_id in routes.values()}
         assert all(
             all(endpoint_id not in choice.trailing for endpoint_id in internal_endpoint_ids)
@@ -8434,6 +8480,25 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
         }
         assert endpoint_options[primary_key].disabled is False
         assert endpoint_options[secondary_key].disabled is True
+        assert any(
+            "default" in segment.text
+            and segment.style is not None
+            and segment.style.color == Style(color=app.tui_theme.accent).color
+            for y in range(options.size.height)
+            for segment in options.render_line(y)
+        )
+        assert any(
+            "reasoning" in segment.text
+            and segment.style is not None
+            and segment.style.color == Style(color=app.tui_theme.text_choice).color
+            for y in range(options.size.height)
+            for segment in options.render_line(y)
+        )
+        assert any(
+            "default" in (line := options.render_line(y)).text
+            and line.text.index("default") < line.text.index("reasoning")
+            for y in range(options.size.height)
+        )
         app.screen.query_one("#choice-filter", Input).value = "Secondary"
         await pilot.pause()
         assert app.screen.query_one(OptionList).highlighted is None
@@ -8633,10 +8698,10 @@ async def test_endpoint_management_returns_to_catalog_after_deletion(tmp_path: P
         await _wait_for_screen(app, ChoiceScreen, title="ENDPOINTS • Custom")
 
         assert [choice.label for choice in app.screen._choices] == [
-            "alpha-model",
-            "Chat",
-            "Keep",
             "中文",
+            "Keep",
+            "Chat",
+            "alpha-model",
             "+",
         ]
         assert next(
@@ -8722,10 +8787,12 @@ async def test_setting_default_endpoint_also_switches_default_provider(tmp_path:
         assert choices[primary_key].label == "Primary chat"
         assert choices[primary_key].marker == ""
         assert choices[secondary_key].label == "Secondary chat"
-        assert choices[secondary_key].marker == app.tui_theme.selected_choice_marker
+        assert choices[secondary_key].marker == ""
         assert choices[primary_key].trailing == ""
-        assert choices[secondary_key].trailing == "default"
-        assert sum(choice.trailing.endswith("default") for choice in choices.values()) == 1
+        assert choices[secondary_key].trailing == ""
+        assert choices[primary_key].trailing_badge == ""
+        assert choices[secondary_key].trailing_badge == "default"
+        assert sum(choice.trailing_badge == "default" for choice in choices.values()) == 1
         catalog = ConfigurationFacade(tmp_path).provider_catalog()
         assert catalog.default_provider_id == routes["secondary"][0]
         assert (

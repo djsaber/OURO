@@ -568,6 +568,56 @@ async def test_controller_configures_provider_endpoint_through_application_facad
 
 
 @pytest.mark.asyncio
+async def test_first_tui_endpoint_becomes_default_when_no_route_is_configured(
+    tmp_path: Path,
+) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    created = configuration.add_provider(
+        display_name="Custom",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        base_url="https://example.invalid/v1",
+    )
+    provider_id = created.changed_provider_id
+    assert provider_id is not None
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=LocalApplication.build(tmp_path),
+        configuration=configuration,
+    )
+    await controller.start()
+    try:
+        assert (await controller.provider_catalog()).default_provider_id is None
+        first = await controller.add_endpoint(
+            provider_id,
+            TuiEndpointConfiguration(
+                display_name="First",
+                model_id="first-model",
+                context_window=128_000,
+                max_output_tokens=8192,
+            ),
+        )
+        catalog = await controller.provider_catalog()
+        assert catalog.default_provider_id == provider_id
+        assert catalog.providers[0].default_endpoint == first.endpoint_id
+
+        await controller.add_endpoint(
+            provider_id,
+            TuiEndpointConfiguration(
+                display_name="Second",
+                model_id="second-model",
+                context_window=128_000,
+                max_output_tokens=8192,
+            ),
+        )
+        catalog = await controller.provider_catalog()
+        assert catalog.providers[0].default_endpoint == first.endpoint_id
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
 async def test_controller_configures_preset_and_custom_providers(
     tmp_path: Path,
 ) -> None:

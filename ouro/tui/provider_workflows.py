@@ -383,6 +383,8 @@ class ProviderConfigurationWorkflows(App[int]):
         *,
         menu: ChoiceScreen | None = None,
     ) -> bool:
+        if provider.default:
+            return False
         screen = ConfirmationScreen(
             title="DELETE PROVIDER",
             message=(
@@ -396,6 +398,13 @@ class ProviderConfigurationWorkflows(App[int]):
         if not ConfirmationScreen.confirmed(selected):
             return False
         try:
+            catalog = await self._controller.provider_catalog()
+            if any(
+                item.provider_id == provider.provider_id and item.default
+                for item in catalog.providers
+            ):
+                self.notify("Default provider cannot be deleted", severity="warning")
+                return False
             await self._controller.remove_provider(provider.provider_id)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
@@ -791,6 +800,8 @@ class ProviderConfigurationWorkflows(App[int]):
         *,
         menu: ChoiceScreen | None = None,
     ) -> bool:
+        if _is_global_default_endpoint(provider, endpoint):
+            return False
         endpoint_label = endpoint.display_name or endpoint.model_id
         screen = ConfirmationScreen(
             title="DELETE ENDPOINT",
@@ -803,6 +814,12 @@ class ProviderConfigurationWorkflows(App[int]):
         if not ConfirmationScreen.confirmed(selected):
             return False
         try:
+            catalog = await self._controller.provider_catalog()
+            if _global_default_endpoint(catalog.providers) == (
+                f"{provider.provider_id}/{endpoint.endpoint_id}"
+            ):
+                self.notify("Default endpoint cannot be deleted", severity="warning")
+                return False
             await self._controller.remove_endpoint(
                 provider.provider_id,
                 endpoint.endpoint_id,
@@ -823,8 +840,8 @@ def _provider_choice(
         provider.provider_id,
         provider.display_name,
         accent=None if provider.enabled else theme.text_lowlight,
-        marker=theme.selected_choice_marker if provider.default else "",
         trailing=provider.provider_type,
+        trailing_badge="default" if provider.default else "",
     )
 
 
@@ -869,8 +886,9 @@ def _provider_management_choices(
             Choice(
                 "remove",
                 "Delete",
-                accent=theme.danger,
-                destructive=True,
+                accent=None if provider.default else theme.danger,
+                disabled=provider.default,
+                destructive=not provider.default,
             ),
         )
     )
@@ -897,15 +915,15 @@ def _endpoint_choice(
     endpoint: ProviderEndpointView,
     *,
     available: bool,
-    selected: bool,
+    default: bool,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> Choice:
-    trailing = [*_endpoint_capabilities(endpoint), *(('default',) if selected else ())]
+    trailing = _endpoint_capabilities(endpoint)
     return Choice(
         endpoint.endpoint_id,
         endpoint.display_name or endpoint.model_id,
-        marker=theme.selected_choice_marker if selected else "",
         trailing=theme.inline_separator.join(trailing),
+        trailing_badge="default" if default else "",
         disabled=not available,
     )
 
@@ -921,7 +939,7 @@ def _provider_endpoint_choices(
         _endpoint_choice(
             endpoint,
             available=provider.enabled,
-            selected=_is_global_default_endpoint(provider, endpoint),
+            default=_is_global_default_endpoint(provider, endpoint),
             theme=theme,
         )
         for endpoint in endpoints
@@ -951,14 +969,16 @@ def _endpoint_management_choices(
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[Choice, ...]:
     choices = [Choice("edit", "Edit")]
-    if not _is_global_default_endpoint(provider, endpoint):
+    is_default = _is_global_default_endpoint(provider, endpoint)
+    if not is_default:
         choices.append(Choice("use", "Set as default"))
     choices.append(
         Choice(
             "remove",
             "Delete",
-            accent=theme.danger,
-            destructive=True,
+            accent=None if is_default else theme.danger,
+            disabled=is_default,
+            destructive=not is_default,
         )
     )
     return tuple(choices)
@@ -974,14 +994,14 @@ def _endpoint_route_choice(
     choice = _endpoint_choice(
         endpoint,
         available=provider.enabled,
-        selected=default_endpoint == f"{provider.provider_id}/{endpoint.endpoint_id}",
+        default=default_endpoint == f"{provider.provider_id}/{endpoint.endpoint_id}",
         theme=theme,
     )
     return Choice(
         f"{provider.provider_id}/{endpoint.endpoint_id}",
         choice.label,
-        marker=choice.marker,
         trailing=choice.trailing,
+        trailing_badge=choice.trailing_badge,
         group=provider.display_name,
         group_trailing="" if provider.enabled else "unavailable",
         disabled=choice.disabled,

@@ -50,6 +50,7 @@ class Choice:
     swatch_marker_index: int | None = None
     trailing_accent: str | None = None
     trailing_swatch: str | None = None
+    trailing_badge: str = ""
 
 
 _HELP_SHORTCUTS = (
@@ -212,13 +213,18 @@ def _choice_option(
     if markers:
         label.append(f"{' '.join(markers)} ", style=f"bold {group_accent}")
     label.append(choice.label, style=choice.accent or "")
-    if choice.trailing:
+    if choice.trailing or choice.trailing_badge:
         row = Table.grid(expand=True, padding=0)
         row.add_column(ratio=2, overflow="ellipsis", no_wrap=True)
         row.add_column(ratio=1)
         row.add_column(width=2)
         row.add_column(justify="right", no_wrap=True)
-        trailing = Text(choice.trailing, style=choice.trailing_accent or theme.text_choice)
+        trailing = Text()
+        if choice.trailing_badge:
+            trailing.append(choice.trailing_badge, style=theme.accent)
+            if choice.trailing:
+                trailing.append(theme.inline_separator, style=theme.separator_tone)
+        trailing.append(choice.trailing, style=choice.trailing_accent or theme.text_choice)
         if choice.trailing_swatch is not None:
             trailing.append(theme.inline_separator, style=theme.separator_tone)
             trailing.append(theme.session_node_mark, style=choice.trailing_swatch)
@@ -1163,6 +1169,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             or normalized_needle in choice.description.casefold()
             or normalized_needle in choice.group.casefold()
             or normalized_needle in choice.trailing.casefold()
+            or normalized_needle in choice.trailing_badge.casefold()
         )
 
 
