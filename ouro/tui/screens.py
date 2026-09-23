@@ -389,7 +389,11 @@ class ChoiceScreen(ModalScreen[str | None]):
             yield Static(self._resolved_hint(), id="choice-hint")
 
     def _filter_input(self) -> Input:
-        return TuiInput(placeholder=self._placeholder, id="choice-filter")
+        return TuiInput(
+            placeholder=self._placeholder,
+            id="choice-filter",
+            select_on_focus=False,
+        )
 
     def _choice_list(self) -> OptionList:
         """Build the menu body; specialized screens can replace it without copying the frame."""
@@ -743,6 +747,9 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._child_background = None
         self.styles.background = background
         self.query_one("#choice-panel", Vertical).display = True
+        # Widget display changes queue a layout message. Invalidate the screen
+        # now so its next repaint cannot reuse the hidden parent's compositor.
+        self.refresh(layout=True)
         self.call_after_refresh(self.query_one("#choice-filter", Input).focus)
 
     def _page(self) -> _ChoicePage:
@@ -1608,6 +1615,7 @@ class MultiChoiceScreen(ChoiceScreen):
         return _MultiChoiceFilterInput(
             placeholder=self._placeholder,
             id="choice-filter",
+            select_on_focus=False,
         )
 
     def action_toggle_choice(self) -> None:
