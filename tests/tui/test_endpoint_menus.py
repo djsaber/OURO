@@ -68,6 +68,12 @@ async def test_endpoint_menus_project_global_default_independently_of_session_se
         choices = {choice.value: choice for choice in menu._choices}
         recent_choice = recent_id if scope == "provider" else recent_key
         default_choice = default_id if scope == "provider" else default_key
+        if scope == "provider":
+            assert [choice.value for choice in menu._choices] == [
+                recent_id,
+                default_id,
+                "add-endpoint",
+            ]
         assert choices[recent_choice].marker == ""
         assert choices[recent_choice].trailing == ""
         assert choices[default_choice].marker == theme_for(app).selected_choice_marker
@@ -76,6 +82,12 @@ async def test_endpoint_menus_project_global_default_independently_of_session_se
             other_id = provider_ids["other"]
             other_recent = f"{other_id}/{endpoint_ids[('other', 'recent')]}"
             other_default = f"{other_id}/{endpoint_ids[('other', 'default')]}"
+            assert [choice.value for choice in menu._choices] == [
+                recent_key,
+                default_key,
+                other_recent,
+                other_default,
+            ]
             assert choices[other_recent].marker == ""
             assert choices[other_default].marker == ""
             assert choices[other_recent].trailing == ""

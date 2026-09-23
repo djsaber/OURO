@@ -5,6 +5,7 @@ from dataclasses import replace
 from typing import cast
 
 from ouro.application.plugin_models import PluginDetail, PluginSummary
+from ouro.plugins.semver import SemVer
 from ouro.tui.configuration_screens import PluginConfigurationScreen, PluginInstallScreen
 from ouro.tui.controller import (
     TuiController,
@@ -344,6 +345,9 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         menu: ChoiceScreen | None,
     ) -> None:
         plugin = self._controller.plugin(plugin_id)
+        selected_install = next(
+            (install.package_digest for install in plugin.installs if install.selected), None
+        )
         choices = tuple(
             Choice(
                 install.package_digest,
@@ -351,7 +355,11 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 trailing=("selected" if install.selected else install.package_digest[:12]),
                 marker=theme_for(self).selected_choice_marker if install.selected else "",
             )
-            for install in plugin.installs
+            for install in sorted(
+                plugin.installs,
+                key=lambda item: (SemVer.parse(item.version), item.package_digest),
+                reverse=True,
+            )
         )
 
         async def select_install(package_digest: str) -> tuple[Choice, ...] | None:
@@ -385,6 +393,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 title=theme_for(self).inline_separator.join(("PLUGIN VERSIONS", plugin.name)),
                 placeholder="Filter versions…",
                 choices=choices,
+                initial_value=selected_install,
                 on_select=select_install,
             )
             return
@@ -393,6 +402,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 title=theme_for(self).inline_separator.join(("PLUGIN VERSIONS", plugin.name)),
                 placeholder="Filter versions…",
                 choices=choices,
+                initial_value=selected_install,
                 on_select=select_install,
             )
         )

@@ -127,6 +127,7 @@ from ouro.tui.conversation_history import (
     _ReasoningContent,
 )
 from ouro.tui.input_drafts import TuiInputDrafts, TuiInputDraftStore
+from ouro.tui.model_menus import model_choices
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.provider_screens import (
     EndpointConfigurationScreen,
@@ -8088,6 +8089,12 @@ async def test_subagent_crud_saves_without_success_notifications(tmp_path: Path)
 async def test_actions_opens_provider_scoped_endpoint_configuration(tmp_path: Path) -> None:
     configuration = ConfigurationFacade(tmp_path)
     configuration.add_provider(
+        display_name="Zulu",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        base_url="https://zulu.example.invalid/v1",
+    )
+    configuration.add_provider(
         display_name="Custom",
         provider_type="custom",
         protocol="openai-chat-completions",
@@ -8107,6 +8114,7 @@ async def test_actions_opens_provider_scoped_endpoint_configuration(tmp_path: Pa
         assert app.screen.query_one("#choice-title", Static).render().plain == (
             "ADD ENDPOINT • PROVIDER"
         )
+        assert [choice.label for choice in app.screen._choices] == ["Custom", "Zulu"]
 
         await pilot.press("enter")
         await pilot.pause()
@@ -8752,6 +8760,18 @@ async def test_add_provider_flow_integrates_presets_and_custom_profiles(
             "OpenAI Responses",
             "Anthropic Messages",
         } <= {choice.label for choice in app.screen._choices}
+        ready_labels = [
+            choice.label for choice in app.screen._choices if choice.group == "Ready to use"
+        ]
+        custom_labels = [
+            choice.label for choice in app.screen._choices if choice.group == "Custom connection"
+        ]
+        assert ready_labels == sorted(ready_labels, key=str.casefold)
+        assert custom_labels == [
+            "Anthropic Messages",
+            "OpenAI Chat Completions",
+            "OpenAI Responses",
+        ]
 
         app.screen.query_one("#choice-filter", Input).value = "Google Gemini"
         await pilot.pause()
@@ -10799,9 +10819,18 @@ async def test_subagent_policy_uses_shared_grouped_inline_menu(tmp_path: Path) -
         current = await app._controller.agent_runtime_configuration()
         catalog = await app._controller.agent_definition_catalog()
         models = await app._controller.models()
+        general_definition = catalog.definitions[0]
         screen = AgentDispatchPolicyScreen(
             current,
-            definitions=catalog.definitions,
+            definitions=(
+                general_definition.model_copy(
+                    update={"agent_id": "zulu", "name": "Zulu", "source": "user"}
+                ),
+                general_definition,
+                general_definition.model_copy(
+                    update={"agent_id": "alpha", "name": "Alpha", "source": "user"}
+                ),
+            ),
             models=models,
         )
         app.push_screen(screen, callback=results.append)
@@ -10829,6 +10858,7 @@ async def test_subagent_policy_uses_shared_grouped_inline_menu(tmp_path: Path) -
         options.focus()
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="ALLOWED SUBAGENTS")
+        assert [choice.value for choice in app.screen._choices] == ["general", "alpha", "zulu"]
         general = next(choice for choice in app.screen._choices if choice.value == "general")
         assert general.marker == DEFAULT_TUI_THEME.selected_choice_marker
         await pilot.press("enter")
@@ -10867,7 +10897,7 @@ async def test_subagent_policy_uses_shared_grouped_inline_menu(tmp_path: Path) -
         await pilot.pause()
 
         assert len(results) == 1
-        assert results[0].allowed_agent_id_patterns == ("general",)
+        assert results[0].allowed_agent_id_patterns == ("alpha", "general", "zulu")
         assert results[0].allowed_model_patterns == (models[0].key,)
         assert results[0].allow_write is False
 
@@ -11650,23 +11680,83 @@ async def test_model_command_shows_endpoint_and_provider_without_changing_route_
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
+        model = AvailableModel(
+            key="supplier/model-endpoint",
+            provider_id="supplier",
+            provider_display_name="Supplier",
+            endpoint_id="model-endpoint",
+            model_id="provider-model-id",
+            display_name="Model display",
+        )
         app._models = (
-            AvailableModel(
-                key="supplier/model-endpoint",
-                provider_id="supplier",
-                provider_display_name="Supplier",
-                endpoint_id="model-endpoint",
-                model_id="provider-model-id",
-                display_name="Model display",
+            model,
+            model.model_copy(
+                update={
+                    "key": "other/gpt-20",
+                    "provider_id": "other",
+                    "provider_display_name": "Other",
+                    "endpoint_id": "gpt-20",
+                    "model_id": "gpt-20",
+                    "display_name": "GPT-20",
+                }
+            ),
+            model.model_copy(
+                update={
+                    "key": "supplier/gpt-11",
+                    "endpoint_id": "gpt-11",
+                    "model_id": "lower-id",
+                    "display_name": "GPT-11",
+                }
+            ),
+            model.model_copy(
+                update={
+                    "key": "supplier/gpt-9",
+                    "endpoint_id": "gpt-9",
+                    "model_id": "gpt-9",
+                    "display_name": None,
+                }
+            ),
+            model.model_copy(
+                update={
+                    "key": "supplier/gpt-10",
+                    "endpoint_id": "gpt-10",
+                    "model_id": "gpt-10",
+                    "display_name": "",
+                }
+            ),
+            model.model_copy(
+                update={
+                    "key": "supplier/gpt-8",
+                    "endpoint_id": "gpt-8",
+                    "model_id": "gpt-8",
+                    "display_name": "中文模型",
+                }
             ),
         )
         monkeypatch.setattr(app._controller, "models", models)
         monkeypatch.setattr(app._controller, "select_model", select_model)
-        await pilot.press("slash", *"model", "space", *"model")
+        await pilot.press("slash", *"model", "space")
         await pilot.pause()
 
         composer = app.query_one(Composer)
         popup = app.query_one(CommandPopup)
+        expected_order = [
+            "other/gpt-20",
+            "supplier/model-endpoint",
+            "supplier/gpt-11",
+            "supplier/gpt-10",
+            "supplier/gpt-9",
+            "supplier/gpt-8",
+        ]
+        assert popup.argument_command is not None
+        assert [item.value for item in popup.argument_command.argument_options] == expected_order
+        assert popup.argument_command.argument_options[5].display_label == "中文模型"
+        choices = model_choices(app._models)
+        assert [choice.value for choice in choices] == expected_order
+        assert choices[5].label == "中文模型"
+
+        await pilot.press(*"model")
+        await pilot.pause()
         argument = popup.selected_argument
         assert argument is not None
         assert argument.value == "supplier/model-endpoint"

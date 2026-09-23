@@ -7,6 +7,7 @@ from ouro.core.reasoning import (
     ReasoningRequest,
 )
 from ouro.tui.menu_labels import APPROVAL_DESCRIPTIONS, THINKING_LABELS
+from ouro.tui.menu_sorting import sorted_models
 from ouro.tui.screens import Choice
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
 
@@ -78,5 +79,5 @@ def model_choices(
             marker=theme.selected_choice_marker if model.key == selected else "",
             group=model.provider_display_name or model.provider_id,
         )
-        for model in models
+        for model in sorted_models(models)
     )

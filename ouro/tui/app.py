@@ -81,6 +81,7 @@ from ouro.tui.conversation_history import (
 )
 from ouro.tui.input_drafts import TuiInputDrafts, TuiInputDraftStore
 from ouro.tui.menu_labels import MODEL_THINKING_LABEL, THINKING_LABELS, TOOL_APPROVAL_LABEL
+from ouro.tui.menu_sorting import sorted_models
 from ouro.tui.model_menus import (
     REASONING_REQUESTS,
     approval_choices,
@@ -2796,7 +2797,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                         description=model.provider_display_name or model.provider_id,
                         label=model.display_name or model.model_id,
                     )
-                    for model in self._models
+                    for model in sorted_models(self._models)
                 )
                 catalog[index] = replace(command, argument_options=options)
             elif command.name == "/skill" and argument_owner == command.name:

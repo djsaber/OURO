@@ -36,6 +36,7 @@ from ouro.tui.controller import (
     TuiToolExecutionConfiguration,
 )
 from ouro.tui.menu_labels import PERMISSION_LABELS, THINKING_LABELS
+from ouro.tui.menu_sorting import sorted_agent_definitions
 from ouro.tui.model_menus import model_choices
 from ouro.tui.screens import Choice, ChoiceScreen, EditableChoiceScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
@@ -326,7 +327,7 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
                     else ""
                 ),
             )
-            for definition in self._definitions
+            for definition in sorted_agent_definitions(self._definitions)
         )
 
     def _model_choices(self) -> tuple[Choice, ...]:

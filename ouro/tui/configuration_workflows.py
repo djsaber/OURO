@@ -35,6 +35,7 @@ from ouro.tui.controller import (
     project_mcp_system_status,
 )
 from ouro.tui.menu_labels import PERMISSION_LABELS
+from ouro.tui.menu_sorting import sorted_agent_definitions
 from ouro.tui.prompt_workflows import PromptWorkflows
 from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
@@ -1650,10 +1651,7 @@ def _agent_definition_choices(
             trailing=theme.inline_separator.join((definition.agent_id, definition.compatibility)),
             disabled=not definition.editable,
         )
-        for definition in sorted(
-            definitions,
-            key=lambda item: (item.source != "builtin", item.name.casefold()),
-        )
+        for definition in sorted_agent_definitions(definitions)
     )
 
 

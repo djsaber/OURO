@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import unicodedata
 from collections.abc import Sequence
 from typing import cast
 
@@ -16,6 +15,7 @@ from ouro.tui.controller import (
     TuiEndpointConfiguration,
     TuiProviderConfiguration,
 )
+from ouro.tui.menu_sorting import display_sort_key, model_name_sort_key
 from ouro.tui.provider_auth_screens import ProviderAuthenticationScreen
 from ouro.tui.provider_screens import (
     CUSTOM_PROVIDER_PROFILES,
@@ -105,7 +105,12 @@ class ProviderConfigurationWorkflows(App[int]):
                     trailing=f"{template.endpoint_count} endpoints",
                     group="Ready to use",
                 )
-                for template in templates
+                for template in sorted(
+                    templates,
+                    key=lambda item: display_sort_key(
+                        item.display_name, fallback=item.template_id
+                    ),
+                )
             ),
             *(
                 Choice(
@@ -114,7 +119,12 @@ class ProviderConfigurationWorkflows(App[int]):
                     trailing=profile.protocol,
                     group="Custom connection",
                 )
-                for profile in CUSTOM_PROVIDER_PROFILES
+                for profile in sorted(
+                    CUSTOM_PROVIDER_PROFILES,
+                    key=lambda item: display_sort_key(
+                        item.display_name, fallback=item.protocol
+                    ),
+                )
             ),
         )
         if menu is not None:
@@ -401,7 +411,7 @@ class ProviderConfigurationWorkflows(App[int]):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         if action == "add":
-            providers = tuple(catalog.providers)
+            providers = _sorted_providers(catalog.providers)
             if not providers:
                 return
             if menu is not None:
@@ -419,7 +429,7 @@ class ProviderConfigurationWorkflows(App[int]):
                     )
                     return tuple(
                         _provider_choice(provider, theme=theme_for(self))
-                        for provider in providers_by_id.values()
+                        for provider in _sorted_providers(tuple(providers_by_id.values()))
                     )
 
                 async def select_provider(provider_id: str) -> tuple[Choice, ...] | None:
@@ -455,11 +465,7 @@ class ProviderConfigurationWorkflows(App[int]):
             await self._edit_endpoint(provider, None)
             return
 
-        routes = {
-            f"{provider.provider_id}/{endpoint.endpoint_id}": (provider, endpoint)
-            for provider in catalog.providers
-            for endpoint in provider.endpoints
-        }
+        routes = _endpoint_routes(catalog.providers)
         if not routes:
             return
         default_endpoint = _global_default_endpoint(catalog.providers)
@@ -480,13 +486,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
             routes.clear()
-            routes.update(
-                {
-                    f"{item.provider_id}/{candidate.endpoint_id}": (item, candidate)
-                    for item in refreshed.providers
-                    for candidate in item.endpoints
-                }
-            )
+            routes.update(_endpoint_routes(refreshed.providers))
             default_endpoint = _global_default_endpoint(refreshed.providers)
             return tuple(
                 _endpoint_route_choice(
@@ -823,13 +823,7 @@ def _provider_catalog_choices(
     *,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[Choice, ...]:
-    ordered = sorted(
-        providers,
-        key=lambda provider: _display_sort_key(
-            provider.display_name,
-            fallback=provider.provider_id,
-        ),
-    )
+    ordered = _sorted_providers(providers)
     return (
         *(_provider_choice(provider, theme=theme) for provider in ordered),
         Choice("add-provider", "+"),
@@ -931,10 +925,11 @@ def _sorted_endpoints(
     return tuple(
         sorted(
             endpoints,
-            key=lambda endpoint: _display_sort_key(
-                endpoint.display_name,
-                fallback=endpoint.model_id,
+            key=lambda endpoint: (
+                model_name_sort_key(endpoint.display_name, model_id=endpoint.model_id),
+                endpoint.endpoint_id.casefold(),
             ),
+            reverse=True,
         )
     )
 
@@ -1008,7 +1003,22 @@ def _is_global_default_endpoint(
     return provider.default and provider.default_endpoint == endpoint.endpoint_id
 
 
-def _display_sort_key(value: str | None, *, fallback: str) -> tuple[str, str]:
-    normalized_fallback = unicodedata.normalize("NFKC", fallback).casefold()
-    normalized_value = unicodedata.normalize("NFKC", (value or "").strip()).casefold()
-    return (normalized_value or normalized_fallback, normalized_fallback)
+def _sorted_providers(providers: Sequence[ProviderView]) -> tuple[ProviderView, ...]:
+    return tuple(
+        sorted(
+            providers,
+            key=lambda provider: display_sort_key(
+                provider.display_name, fallback=provider.provider_id
+            ),
+        )
+    )
+
+
+def _endpoint_routes(
+    providers: Sequence[ProviderView],
+) -> dict[str, tuple[ProviderView, ProviderEndpointView]]:
+    return {
+        f"{provider.provider_id}/{endpoint.endpoint_id}": (provider, endpoint)
+        for provider in _sorted_providers(providers)
+        for endpoint in _sorted_endpoints(provider.endpoints)
+    }
