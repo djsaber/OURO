@@ -52,6 +52,7 @@ from ouro.plugins.package import PluginPackageError
 from ouro.plugins.readiness import configuration_errors, plugin_install_readiness
 from ouro.plugins.runtime import PluginRuntimeResource
 from ouro.plugins.scaffold import create_plugin_scaffold
+from ouro.plugins.semver import SemVer
 from ouro.plugins.store import PluginPackageStore
 from ouro.sessions import SessionStore
 
@@ -232,7 +233,14 @@ class PluginService:
             **summary.model_dump(),
             description=manifest.description,
             namespace=manifest.namespace,
-            installs=[self._install_view(item, record) for item in record.installs],
+            installs=[
+                self._install_view(item, record)
+                for item in sorted(
+                    record.installs,
+                    key=lambda item: (SemVer.parse(item.manifest.version), item.package_digest),
+                    reverse=True,
+                )
+            ],
             capabilities=sorted(manifest.contributes.capabilities()),
             permissions=[
                 item.model_dump(mode="json", exclude_none=True) for item in manifest.permissions
@@ -1031,20 +1039,6 @@ class PluginService:
                 ):
                     references.append(f"{session.session_id}/{run.run_id}")
         return references
-
-    def _reject_durable_references(
-        self,
-        plugin_id: str,
-        package_digest: str,
-        *,
-        action: str,
-    ) -> None:
-        references = self._durable_references(plugin_id, package_digest)
-        if references:
-            raise ValueError(
-                f"cannot {action} plugin contract retained by active durable runs: "
-                + ", ".join(references)
-            )
 
 
 def _require_selected(record: PluginRecord) -> InstalledPlugin:

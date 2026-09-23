@@ -102,6 +102,41 @@ def _services(tmp_path, *, max_bytes=1024 * 1024):
     return sessions, resource_store, resources, SessionService(sessions, resources=resources)
 
 
+def test_model_projection_reads_blob_once_and_revalidates_each_request(tmp_path, monkeypatch):
+    _, store, resources, sessions = _services(tmp_path)
+    session_id = sessions.create().session.session_id
+    source = tmp_path / "input.txt"
+    source.write_text("attached text", encoding="utf-8")
+    resource = resources.import_resource(session_id, source).resource
+    message = MessageRecord.text(session_id=session_id, role="user", text="Read this")
+    message.resource_refs = [resource.resource_id]
+    reads = []
+    open_path = type(source).open
+    read_bytes = type(source).read_bytes
+    blob_path = store.blobs_dir / resource.resource_id.removeprefix("res_")
+
+    def tracked_open(path, *args, **kwargs):
+        if path == blob_path and args and args[0] == "rb":
+            reads.append(path)
+        return open_path(path, *args, **kwargs)
+
+    def tracked_read(path):
+        if path == blob_path:
+            reads.append(path)
+        return read_bytes(path)
+
+    monkeypatch.setattr(type(source), "open", tracked_open)
+    monkeypatch.setattr(type(source), "read_bytes", tracked_read)
+    projected = resources.project_model_messages([message], supports_vision=False)
+    assert "attached text" in projected[0].text_content
+    assert message.text_content == "Read this"
+    assert len(reads) == 1
+    # Integrity is checked against the bytes consumed by every request.
+    blob_path.write_bytes(b"corrupt")
+    with pytest.raises(ResourceIntegrityError):
+        resources.project_model_messages([message], supports_vision=False)
+
+
 def test_import_is_content_addressed_deduplicated_and_does_not_expose_source_path(
     tmp_path,
 ) -> None:

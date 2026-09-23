@@ -1,7 +1,5 @@
 # OURO 规格索引
 
-> 索引基线：2026-09-16
-
 本目录保存当前代码契约和未来规格。规格直接描述行为、失败语义、数据边界与验收证据；
 相关使用示例和操作入口见 docs 中的对应指南，规格之间通过链接引用共同契约。
 
@@ -25,9 +23,10 @@
 | [配置与数据传输](OURO_配置与数据传输规格_2026-09-21.md) | 配置分域、统一导入导出、会话树与附件、技能目录、未知依赖与失败边界 | `ouro/application/data_transfer.py`、`ouro/transfer`、`ouro/sessions/portable.py` |
 | [用量与计费](OURO_用量与计费规格_2026-09-17.md) | 请求时计费归属、实际 token、未知/部分金额、账本审计与 CLI/TUI 呈现 | `ouro/core/billing.py`、`ouro/application/usage.py`、`ouro/billing` |
 | [受管理凭据核心](OURO_凭据核心规格_2026-09-16.md) | 受限文件存储、revision、刷新/注销/取消与跨进程互斥；内建浏览器订阅产品复用 | `ouro/auth` |
+| [模型订阅认证](OURO_模型订阅认证规格_2026-09-16.md) | 认证组合、浏览器产品、Responses 与验收矩阵；设备码和其他未验证能力在章节中标注 | `ouro/auth`、`ouro/providers`、`ouro/local_application.py` |
 | [Provider 认证用例](OURO_Provider认证用例规格_2026-09-16.md) | 通用登录、安全状态、凭据管理与配置条件提交；轻量 CLI、通用 TUI 与内建浏览器驱动已接线 | `ouro/application/provider_auth*.py` |
 | [认证驱动与单次授权](OURO_认证驱动与授权规格_2026-09-16.md) | 受管理驱动端口、单次授权与资源清理、内建 OpenAI 浏览器订阅驱动；CLI/TUI 通过通用用例接入 | `ouro/auth/driver_contracts.py`、`ouro/auth/authorization.py`、`ouro/auth/drivers` |
-| [Responses 编解码](OURO_Responses编解码规格_2026-09-19.md) | 协议 adapter/注册、同次认证、SSE 投影与完整 scope/envelope；浏览器订阅产品已接线，真实持久凭据 CLI 闭环已验收 | `ouro/providers/openai_responses.py`、`responses_*.py` |
+| [Responses 编解码](OURO_Responses编解码规格_2026-09-19.md) | 协议 adapter/注册、同次认证、SSE 投影与完整 scope/envelope；浏览器订阅的请求与续接 | `ouro/providers/openai_responses.py`、`openai_responses_*.py` |
 | [模型请求认证](OURO_请求认证规格_2026-09-17.md) | 逐次认证快照、最终目标、统一重试及错误码；三种协议、共享 Runtime、路由重绑定与内建浏览器驱动已接线 | `ouro/auth/request_auth.py`、`ouro/auth/managed_requests.py`、`ouro/providers` |
 | [Provider 模板](OURO_Provider模板规格_2026-09-02.md) | 本地模板、版本、修改感知、内容更新与严格版本边界 | `ouro/config/provider_template_store.py`、`ouro/config/provider_templates.py` |
 | [Provider 类型与协议](OURO_Provider类型与协议规格_2026-09-02.md) | 实例 id、产品配置类型、线协议与冲突策略 | `ouro/config`、`ouro/providers`、`ouro/cli` |
@@ -48,7 +47,6 @@
 
 | 规格 | 目标能力 |
 |---|---|
-| [模型订阅认证](OURO_模型订阅认证规格_2026-09-16.md) | 多厂商认证端口、登录契约、Responses、OpenAI 订阅和验收矩阵；浏览器集成及真实持久凭据 CLI 闭环已验收；设备码、其余能力和平台仍为未来范围 |
 | [个人智能体平台](OURO_未来平台规格_2026-09-02.md) | Desktop、长期记忆、Durable Task/Workflow 与产品化边界 |
 
 ## 规格完成标准

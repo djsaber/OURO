@@ -1159,11 +1159,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._pending_tui_theme_id: str | None = None
         self._pending_tui_theme_saturation_level: int | None = None
         self._theme_switch_revision = 0
-        self._theme_switch_success_revision = 0
         self._theme_switch_active = False
         self._theme_switch_changed = asyncio.Event()
-        self._theme_switch_settled = asyncio.Event()
-        self._theme_switch_settled.set()
         self._theme_picker_ref: ReferenceType[ChoiceScreen] | None = None
         self._theme_picker_revision = 0
 
@@ -4614,11 +4611,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         theme_id: str,
         *,
         saturation_level: int | None = None,
-    ) -> int | None:
+    ) -> None:
         theme = TUI_THEMES.get(theme_id)
         if theme is None:
             self.notify(f"Unknown TUI theme: {theme_id}", severity="error", markup=False)
-            return None
+            return
         level = (
             self._preferences.theme_saturation_level
             if saturation_level is None
@@ -4628,12 +4625,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             theme.saturation_for_level(level)
         except ValueError:
             self.notify("Invalid TUI theme saturation", severity="error", markup=False)
-            return None
+            return
         if (
             theme_id == self._pending_tui_theme_id
             and level == self._pending_tui_theme_saturation_level
         ):
-            return self._theme_switch_revision
+            return
         if (
             self._pending_tui_theme_id is None
             and theme_id == self._tui_theme.theme_id
@@ -4641,13 +4638,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             and self._preferences.theme == theme_id
             and self._preferences.theme_saturation_level == level
         ):
-            return self._theme_switch_success_revision
+            return
 
         self._theme_switch_revision += 1
         self._pending_tui_theme_id = theme_id
         self._pending_tui_theme_saturation_level = level
         self._theme_switch_changed.set()
-        self._theme_switch_settled.clear()
         if not self._theme_switch_active:
             self._theme_switch_active = True
             self.run_worker(
@@ -4655,23 +4651,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 name="tui-theme-switch",
                 group="theme-switch",
             )
-        return self._theme_switch_revision
-
-    async def _set_tui_theme(
-        self,
-        theme_id: str,
-        *,
-        saturation_level: int | None = None,
-    ) -> bool:
-        revision = self._request_tui_theme(
-            theme_id,
-            saturation_level=saturation_level,
-        )
-        if revision is None:
-            return False
-        if self._pending_tui_theme_id is not None:
-            await self._theme_switch_settled.wait()
-        return self._theme_switch_success_revision == revision
 
     async def _switch_tui_themes(self) -> None:
         """Persist and render only the latest requested complete theme."""
@@ -4707,7 +4686,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                         continue
                     self._pending_tui_theme_id = None
                     self._pending_tui_theme_saturation_level = None
-                    self._theme_switch_settled.set()
                     self.notify(str(save_error), severity="error", markup=False)
                     await self._refresh_theme_picker()
                     return
@@ -4725,12 +4703,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
                 self._pending_tui_theme_id = None
                 self._pending_tui_theme_saturation_level = None
-                self._theme_switch_success_revision = revision
-                self._theme_switch_settled.set()
                 await self._refresh_theme_picker()
         finally:
             self._theme_switch_active = False
-            self._theme_switch_settled.set()
 
     async def _wait_for_theme_render_or_request(self) -> None:
         histories = tuple(self.query(ConversationHistory))

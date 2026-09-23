@@ -146,10 +146,14 @@ def project_run_presentation(
         for message in messages
         if message.run_id == run.run_id and (response := message.model_response) is not None
     )
-    model = requests[-1].model if requests else _presented_model_name(
-        available_models,
-        endpoint_id=run.model_endpoint_id,
-        model_id=run.model,
+    model = (
+        requests[-1].model
+        if requests
+        else _presented_model_name(
+            available_models,
+            endpoint_id=run.model_endpoint_id,
+            model_id=run.model,
+        )
     )
     duration = (
         max(0.0, (run.ended_at - run.started_at).total_seconds())

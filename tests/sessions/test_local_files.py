@@ -59,17 +59,18 @@ def test_runtime_snapshot_never_reads_replay_event_journal(monkeypatch, tmp_path
     )
     store.append_ordered_event(EventRecord(session_id=session.session_id, event_type="run_started"))
     read_paths: list[str] = []
-    original = store._read_jsonl
+    original = store._iter_jsonl
 
     def record_read(path):
         read_paths.append(path.name)
         return original(path)
 
-    monkeypatch.setattr(store, "_read_jsonl", record_read)
+    monkeypatch.setattr(store, "_iter_jsonl", record_read)
 
     snapshot = store.load_runtime_session(session.session_id)
 
     assert snapshot.messages[0].text_content == "hello"
+    assert "messages.jsonl" in read_paths
     assert "events.jsonl" not in read_paths
 
 
@@ -156,7 +157,7 @@ def test_latest_event_sequence_reads_only_ordered_journal_tail(monkeypatch, tmp_
     def reject_full_journal_read(path):
         raise AssertionError(f"unexpected full journal read: {path}")
 
-    monkeypatch.setattr(reopened, "_read_jsonl", reject_full_journal_read)
+    monkeypatch.setattr(reopened, "_iter_jsonl", reject_full_journal_read)
 
     assert reopened.latest_event_sequence(session.session_id) == 2
 

@@ -1,25 +1,15 @@
-# 版本能力摘要
+# 当前能力摘要
 
-## 0.1.0
+OURO 是本地优先的 Agent 框架，提供以下能力：
 
-OURO 是本地优先的 Agent 框架，包含：
-
-- 可恢复的 Session/Run、files 与 SQLite 持久化、排队输入、撤销与分支。
-- Host 中立的会话摘要历史查询，支持历次保留结果与当前生效状态；CLI `session summary` 支持文本/JSON，TUI `/summary` 仅显示当前会话最新一次摘要，沿用命令输出样式且不展示会话 ID，只读查询且不调用模型。
-- TUI 会话加载与模型可用性解耦：失效路由不阻断历史恢复与观察，保留历史上下文用量，并允许重新选择有效模型继续对话。
-- TUI 端点菜单按当前会话或待建会话选中的路由显示选择标记，默认端点使用右侧标签；新增自定义供应商的协议固定来自上级连接类型，移除重复协议配置项。
-- TUI 主页 USAGE 栏仅展示用量图、请求数、输入/输出 token 和缓存命中率，移除费用及账单信息。
-- Provider/Endpoint 配置、流式模型调用、工具权限、人工协同、资源与上下文压缩。
-- 配置按职责拆分为基础设置、供应商、供应商模板、MCP、Agent 与个性化提示词文件；CLI `data` 与 TUI 共用应用层导入导出服务；TUI `/export` 仅导出当前会话，其他数据操作通过 Actions → Manage data 分页菜单完成，导入自动识别归档类型，会话多选将 ID 显示为右侧标签，后台传输过程与结果在菜单内动态呈现，支持各领域配置及原生技能文件，会话支持指定 ID 或全量导入导出、完整子智能体树与附件、files/SQLite 跨后端往返。未知插件、工具与模型引用原样保留，历史查询与继续执行的依赖校验分离。
-- CLI/TUI 共用 `openai-responses-effort` 思考预设，将端点等级与开关编码为 Responses 原生 `reasoning.effort`，沿用能力校验与 opaque 续接；配置构造函数支持端点自定义默认等级。
-- Responses 思考展示支持标准 reasoning_text 与 reasoning_summary_text 的流式及完整输出；预设区分接收可见思考和显式请求摘要，允许终态省略已流出的思考文本，并保留原生续接与必要一致性校验。
-- 协议实现、编解码器与思考预设按 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 明确命名；自定义接入统一为 `custom`，CLI 必须显式指定协议，TUI 提供三个协议入口，保留自定义 API 路径与已有供应商协议。
-- Responses 流在完成事件前后均忽略未知扩展事件；已识别的输出与生命周期事件保留严格终态校验，兼容供应商附加元数据而不设置事件名称特例。
-- 请求时的服务计费归属与全局用量账本；CLI/TUI 区分未知、零金额和部分金额，并展示未定价请求数及计费模式。
-- 受管理认证基础：驱动契约、单次授权资源生命周期、受限凭据存储、跨进程刷新协调，以及 Provider/模板的认证引用与组合校验；通用 Application 登录、配置条件提交、安全状态与注销/凭据管理已接入轻量认证 CLI；现有协议已接入逐次请求认证、最终目标检查、共用重试和安全错误码；Runtime 已装配共享认证并支持默认/压缩路由绑定变化；TUI 已支持通用登录、状态、注销及本地凭据管理；首期 OpenAI 浏览器订阅已内建注册，完成持久登录、调用、重启续接与注销验收。
-- Responses 协议适配、完整工具/加密 reasoning 续接、共用认证恢复与服务计费策略；订阅后端保留单一 max_output_tokens 本地预算并明确披露无请求输出硬上限。开发探针仅显式联网，源码与脱敏测试保留在 dev/probes 和 tests/probes，不随运行包发布。
-- OpenAI API 与 Codex 订阅预制配置按官方目录提供 GPT-5.5、GPT-5.6 Luna/Terra/Sol 和 GPT-6 Astra/Sol/Luna，默认 GPT-6 Sol；API 模板使用 Responses，按模型声明 reasoning 等级，保留各后端的预算与能力边界。
+- 可恢复的 Session/Run、文件与 SQLite 存储、排队输入、撤销、分支、摘要查询和附件。
+- Provider/Endpoint 配置，OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages 协议，以及自定义接入。
+- 流式文本、思考与工具参数展示；工具权限、人工协同、上下文预算及压缩。
+- 独立认证驱动、受管理凭据、浏览器订阅登录、刷新、注销和跨进程协调；请求计费归属及全局用量账本。
 - 插件 Catalog 与代次租约、内置 Goal/Plan、Skills、MCP、自动任务和子智能体。
-- 全屏 TUI，以及用于单次运行、配置、管理和脚本集成的 CLI。
+- 全屏 TUI，以及支持单次运行、配置、管理和脚本集成的 CLI。
+- 各领域配置、原生技能和完整会话树的导入导出；会话归档支持附件与 files/SQLite 跨后端往返。
 
-使用方式见 [README](README.md)，接口与数据边界见[现行规格](dev/specs/README.md)。
+TUI 的历史加载独立于模型路由可用性；模型菜单区分当前选择与系统默认值。主页用量区展示请求数、输入/输出 token 和缓存命中率。详细协议、默认配置与支持边界由对应规格负责。
+
+使用方式见 [README](README.md)，数据与接口见[规格索引](dev/specs/README.md)，订阅限制见[订阅支持指南](docs/OURO_订阅支持使用指南_ZH_2026-09-19.md)。

@@ -34,9 +34,9 @@ coverage. Keep generated caches, local OURO homes, credentials, and build artifa
 Before requesting review:
 
 - explain the behavior and compatibility impact;
-- update current specs and the changelog when a public contract changes;
+- keep specs and the capability summary self-contained descriptions of current contracts;
 - run the complete quality gate above;
-- call out migrations, security assumptions, and intentionally deferred work;
+- identify supported data formats, security assumptions, and intentionally deferred work;
 - avoid bundling unrelated refactors into the same change.
 
 The repository does not yet declare a distribution license. Contributors and maintainers must

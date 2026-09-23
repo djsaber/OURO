@@ -108,10 +108,23 @@ class ToolRegistry:
         return tool
 
     def definitions(self) -> list[ToolDefinition]:
-        return [tool.definition for tool in self._tools.values() if self._is_visible(tool)]
+        return [tool.definition for tool in self._visible_tools()]
 
     def names(self) -> list[str]:
-        return sorted(name for name, tool in self._tools.items() if self._is_visible(tool))
+        return sorted(tool.definition.name for tool in self._visible_tools())
+
+    def _visible_tools(self) -> Iterable[Tool]:
+        # One listing uses one current controller snapshot, including when the
+        # callback reads durable Harness state. No state survives this query.
+        active = None
+        for tool in self._tools.values():
+            controller_id = tool.definition.active_when_controller_id
+            if controller_id is not None and self._active_controller_ids is not None:
+                if active is None:
+                    active = self._active_controller_ids()
+                if controller_id not in active:
+                    continue
+            yield tool
 
     def owner_of(self, name: str) -> str | None:
         if name in self._tools and not self._is_visible(self._tools[name]):

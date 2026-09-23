@@ -378,9 +378,7 @@ def mutate_provider_config(
         return 0
     suffix = " and set as default" if public["default"] else ""
     action = {"add": "added", "update": "updated", "replace": "replaced"}[operation]
-    print(
-        f"Provider {action}: {provider.display_name} ({provider.provider_id}){suffix}"
-    )
+    print(f"Provider {action}: {provider.display_name} ({provider.provider_id}){suffix}")
     if provider.notice:
         print(provider.notice)
     if catalog.template_update is not None:

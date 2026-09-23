@@ -255,14 +255,18 @@ def compose_system_prompt(system_prompt: str, *fragments: str) -> str:
 def estimate_text_tokens(text: str) -> int:
     """Estimate mixed ASCII/CJK token usage without provider-specific tokenizers."""
 
-    if not text:
-        return 0
-    ascii_characters = sum(ord(character) < 128 for character in text)
-    non_ascii_characters = len(text) - ascii_characters
+    ascii_characters, non_ascii_characters = text_character_counts(text)
     return estimate_text_tokens_from_character_counts(
         ascii_characters=ascii_characters,
         non_ascii_characters=non_ascii_characters,
     )
+
+
+def text_character_counts(text: str) -> tuple[int, int]:
+    """Count estimator units in native code, without allocating for ASCII input."""
+
+    ascii_characters = len(text) if text.isascii() else len(text.encode("ascii", errors="ignore"))
+    return ascii_characters, len(text) - ascii_characters
 
 
 def estimate_text_tokens_from_character_counts(

@@ -130,6 +130,7 @@ async def test_inflight_request_keeps_old_service_attribution_after_rebinding(
         try:
             await asyncio.wait_for(entered.wait(), 5)
             provider_id = _provider_id(configs)
+            configs.set_default_provider("faux")
             configs.replace_provider(
                 provider_id,
                 display_name="Subscription",
@@ -138,9 +139,7 @@ async def test_inflight_request_keeps_old_service_attribution_after_rebinding(
                 auth_driver="fixture-device",
                 base_url="https://fixture.invalid/api",
             )
-            chat = configs.create_endpoint(
-                provider_id, model_id="chat", supports_streaming=False
-            )
+            chat = configs.create_endpoint(provider_id, model_id="chat", supports_streaming=False)
             configs.set_default_route(provider_id, chat.endpoint_id)
             new_adapter = application.runtime.models.adapter_for(_model_key(configs, "chat"))
             assert new_adapter.model.billing_mode == "usage_based"

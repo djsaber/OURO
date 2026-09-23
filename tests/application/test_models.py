@@ -122,6 +122,7 @@ async def test_default_rebind_preserves_explicit_overrides_and_uses_actual_start
         assert current.model.temperature == 0.25
         auth = await current.provider.authenticator.acquire("https://first.example/v1/responses")
         assert auth.headers["authorization"] == "Bearer override"
+        configs.set_default_provider("faux")
         configs.update_provider(provider_id, enabled=False)
         with pytest.raises(ConfigError, match="unavailable"):
             catalog.adapter_for(selector)

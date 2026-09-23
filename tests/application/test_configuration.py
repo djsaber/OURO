@@ -537,9 +537,7 @@ def test_provider_settings_update_preserves_integrated_endpoint_registry(tmp_pat
 
 def test_provider_settings_reject_disabling_the_default_provider(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
-    created = facade.add_provider(
-        display_name="Primary", provider_type="openai", make_default=True
-    )
+    created = facade.add_provider(display_name="Primary", provider_type="openai", make_default=True)
     provider_id = created.changed_provider_id
     assert provider_id is not None
 
@@ -585,9 +583,7 @@ def test_using_endpoint_atomically_updates_the_default_provider_route(tmp_path) 
 
 def test_using_endpoint_rejects_disabled_provider_without_partial_update(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
-    primary = facade.add_provider(
-        display_name="Primary", provider_type="openai", make_default=True
-    )
+    primary = facade.add_provider(display_name="Primary", provider_type="openai", make_default=True)
     disabled = facade.add_provider(
         display_name="Disabled",
         provider_type="custom",

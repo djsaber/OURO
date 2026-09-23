@@ -32,10 +32,9 @@ def tool_argument_error(
 
     validator_type = validator_for(definition.parameters_schema)
     validator = validator_type(definition.parameters_schema)
-    errors = sorted(validator.iter_errors(arguments), key=_validation_error_key)
-    if not errors:
+    error = min(validator.iter_errors(arguments), key=_validation_error_key, default=None)
+    if error is None:
         return None
-    error = errors[0]
     location = ".".join(str(part) for part in error.absolute_path)
     subject = f"arguments.{location}" if location else "arguments"
     return f"{subject}: {error.message}"

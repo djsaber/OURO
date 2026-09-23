@@ -1583,9 +1583,6 @@ class LocalSessionStore:
         except (OSError, TypeError, ValueError) as exc:
             raise PersistenceError(f"could not append batch to {path}: {exc}") from exc
 
-    def _read_jsonl(self, path: Path) -> list[str]:
-        return list(self._iter_jsonl(path))
-
     def _iter_jsonl(self, path: Path) -> Iterator[str]:
         if not path.exists():
             return

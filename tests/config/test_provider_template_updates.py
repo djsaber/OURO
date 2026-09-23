@@ -59,12 +59,8 @@ def test_template_update_merges_managed_values_and_preserves_user_ownership(
     provider_id = created.provider_id
     assert created.template is not None
     primary_id = created.template.endpoint_binding("primary").configured_endpoint_id
-    removed_managed_id = created.template.endpoint_binding(
-        "removed-managed"
-    ).configured_endpoint_id
-    removed_custom_id = created.template.endpoint_binding(
-        "removed-custom"
-    ).configured_endpoint_id
+    removed_managed_id = created.template.endpoint_binding("removed-managed").configured_endpoint_id
+    removed_custom_id = created.template.endpoint_binding("removed-custom").configured_endpoint_id
     raw = json.loads((tmp_path / "config" / "providers.json").read_text(encoding="utf-8"))
     binding = raw["providers"]["items"][provider_id]["template"]
     assert binding["template_id"] == "openai"
@@ -96,9 +92,7 @@ def test_template_update_merges_managed_values_and_preserves_user_ownership(
     result = manager.update_from_template(latest, provider_id=provider_id)
     provider = result.provider
     assert provider.template is not None
-    new_default_id = provider.template.endpoint_binding(
-        "new-default"
-    ).configured_endpoint_id
+    new_default_id = provider.template.endpoint_binding("new-default").configured_endpoint_id
 
     assert provider.base_url == "https://api-v2.example.test/v1"
     assert provider.default_endpoint == new_default_id

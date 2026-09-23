@@ -144,7 +144,7 @@ class ResourceService:
         *,
         overwrite: bool = False,
     ) -> ResourceExportResult:
-        resource = self.show_resource(session_id, resource_id, verify=True)
+        resource = self.show_resource(session_id, resource_id, verify=False)
         exported = self._store.export_file(resource_id, Path(destination), overwrite=overwrite)
         return ResourceExportResult(resource=resource, destination=exported)
 
@@ -179,16 +179,21 @@ class ResourceService:
         )
 
     def validate_references(self, session_id: str, resource_ids: Iterable[str]) -> None:
+        unique_ids = tuple(dict.fromkeys(resource_ids))
+        self._require_references(session_id, unique_ids)
+        for resource_id in unique_ids:
+            self._store.load_record(resource_id, verify=True)
+
+    def _require_references(self, session_id: str, resource_ids: Iterable[str]) -> None:
         attached = {
             reference.resource_id
             for reference in self._sessions.load_resource_references(session_id)
         }
-        for resource_id in dict.fromkeys(resource_ids):
+        for resource_id in resource_ids:
             if resource_id not in attached:
                 raise ResourceNotFoundError(
                     f"resource {resource_id} is not attached to session {session_id}"
                 )
-            self._store.load_record(resource_id, verify=True)
 
     def validate_model_references(
         self,
@@ -247,7 +252,9 @@ class ResourceService:
                 "model input has too many attachments: "
                 f"{len(unique_ids)} > {self._max_model_attachments}"
             )
-        self.validate_references(session_id, unique_ids)
+        # Materialization verifies the bytes it consumes; a separate full blob
+        # scan here would only duplicate I/O without protecting those bytes.
+        self._require_references(session_id, unique_ids)
         return unique_ids
 
     def _model_blocks(

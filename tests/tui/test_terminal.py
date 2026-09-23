@@ -166,7 +166,7 @@ def test_run_tui_sets_title_before_starting_textual(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(entry, "set_terminal_title", lambda title: calls.append(f"title:{title}"))
     monkeypatch.setattr(entry, "tui_terminal_guard", fake_terminal_guard)
-    monkeypatch.setattr(entry, "OuroTuiApp", FakeApp)
+    monkeypatch.setattr("ouro.tui.app.OuroTuiApp", FakeApp)
 
     assert entry.run_tui() == 0
     assert calls == ["guard:enter", "title:OURO", "app", "run", "guard:exit"]

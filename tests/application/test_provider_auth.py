@@ -239,9 +239,7 @@ async def test_binding_or_revision_change_rejects_old_login(auth_home, change):
     elif change == "base_url":
         config.update_provider(provider_id, base_url="https://other.invalid/v1")
     elif change == "endpoint_target":
-        config.create_endpoint(
-            provider_id, model_id="fixture", base_url="https://other.invalid/v1"
-        )
+        config.create_endpoint(provider_id, model_id="fixture", base_url="https://other.invalid/v1")
     elif change == "logout":
         await service.logout(provider_id)
     else:

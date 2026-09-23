@@ -33,6 +33,41 @@ def _command_tool_name() -> str:
     return shell.tool_name
 
 
+def test_scoped_registry_reads_one_fresh_controller_snapshot_per_listing() -> None:
+    registry = ToolRegistry()
+    for name, controller_id in (("plain", None), ("first", "a"), ("second", "a")):
+        registry.register(
+            Tool(
+                definition=ToolDefinition(
+                    name=name, description=name, active_when_controller_id=controller_id
+                ),
+                handler=lambda *_: "done",
+            )
+        )
+    calls = 0
+    active = {"a"}
+
+    def controllers():
+        nonlocal calls
+        calls += 1
+        return set(active)
+
+    scoped = registry.scoped(controllers)
+    assert scoped.names() == ["first", "plain", "second"]
+    assert calls == 1
+    active.clear()
+    assert [item.name for item in scoped.definitions()] == ["plain"]
+    assert calls == 2
+    with pytest.raises(KeyError, match="inactive"):
+        scoped.get("first")
+    active.add("a")
+    assert scoped.get("first").definition.name == "first"
+    plain = scoped.selected(["plain"])
+    previous_calls = calls
+    assert plain.names() == ["plain"]
+    assert calls == previous_calls
+
+
 def test_terminal_tool_result_without_start_has_zero_duration() -> None:
     ended_at = utc_now()
 

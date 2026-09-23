@@ -39,6 +39,7 @@ from ouro.core.context import (
     estimate_text_tokens,
     estimate_text_tokens_from_character_counts,
     project_recovery_messages,
+    text_character_counts,
 )
 from ouro.core.context_providers import (
     AttributedContextFragment,
@@ -430,7 +431,7 @@ class LLMSummaryCompactionStrategy:
         rendered_prompt = render_summarization_prompt(self.prompt, summary_output_tokens)
         fixed_tokens = estimate_text_tokens(rendered_prompt) + 8
         empty_payload = _summary_payload(previous_summary, [])
-        ascii_characters, non_ascii_characters = _text_character_counts(empty_payload)
+        ascii_characters, non_ascii_characters = text_character_counts(empty_payload)
         if (
             fixed_tokens
             + estimate_text_tokens_from_character_counts(
@@ -449,7 +450,7 @@ class LLMSummaryCompactionStrategy:
         for frame in frames:
             serialized_frame = _serialize_messages(frame)
             separator = "\n" if serialized_frame and has_serialized_messages else ""
-            added_ascii, added_non_ascii = _text_character_counts(f"{separator}{serialized_frame}")
+            added_ascii, added_non_ascii = text_character_counts(f"{separator}{serialized_frame}")
             if (
                 fixed_tokens
                 + estimate_text_tokens_from_character_counts(
@@ -469,16 +470,6 @@ class LLMSummaryCompactionStrategy:
             has_serialized_messages = has_serialized_messages or bool(serialized_frame)
             consumed_frames += 1
         return current, consumed_frames
-
-    def _summary_input_tokens(
-        self,
-        previous_summary: str | None,
-        messages: Sequence[MessageRecord],
-        summary_output_tokens: int,
-    ) -> int:
-        payload = _summary_payload(previous_summary, messages)
-        rendered_prompt = render_summarization_prompt(self.prompt, summary_output_tokens)
-        return estimate_text_tokens(rendered_prompt) + estimate_text_tokens(payload) + 8
 
     async def _summarize_chunk(
         self,
@@ -1683,11 +1674,6 @@ def _summary_payload(
         sections.extend(["<previous_summary>", previous_summary, "</previous_summary>", ""])
     sections.extend(["<conversation>", _serialize_messages(messages), "</conversation>"])
     return "\n".join(sections)
-
-
-def _text_character_counts(text: str) -> tuple[int, int]:
-    ascii_characters = sum(ord(character) < 128 for character in text)
-    return ascii_characters, len(text) - ascii_characters
 
 
 def _merge_usage(

@@ -4576,7 +4576,10 @@ async def test_thought_display_command_applies_to_history_and_live_output_and_pe
         live_turn = app.query_one(AssistantTurn)
         assert live_turn.tail.region.y == live_reasoning.label.region.bottom + 1
 
-        await app._set_tui_theme("blossom")
+        app._request_tui_theme("blossom")
+        await app.workers.wait_for_complete(
+            [worker for worker in app.workers if worker.name == "tui-theme-switch"]
+        )
         assert preferences.load() == TuiPreferences(
             theme="blossom",
             reasoning_expanded=False,
@@ -11721,7 +11724,8 @@ async def test_model_command_selects_from_inline_argument_menu(tmp_path: Path) -
         await pilot.press("enter")
         await pilot.pause()
         assert composer.text == ""
-        assert app._active_model == "faux"
+        assert app._active_model == ""
+        assert app._controller._initial_model == "faux/faux"
         assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
 
 
@@ -12906,20 +12910,21 @@ async def test_preference_writes_do_not_block_the_event_loop(
         watchdog = threading.Timer(1, release.set)
         watchdog.start()
         event_loop_thread = threading.get_ident()
-        saving = asyncio.create_task(app._set_tui_theme("blossom"))
+        app._request_tui_theme("blossom")
+        saving = next(worker for worker in app.workers if worker.name == "tui-theme-switch")
 
         try:
             writer_entered = await asyncio.to_thread(entered.wait, 2)
-            event_loop_remained_responsive = not saving.done()
+            event_loop_remained_responsive = not saving.is_finished
         finally:
             release.set()
             watchdog.cancel()
-        saved = await saving
+        await saving.wait()
 
         assert writer_entered is True
         assert event_loop_remained_responsive is True
         assert writer_threads != [event_loop_thread]
-        assert saved is True
+        assert app._preferences_store.load().theme == "blossom"
         assert app.tui_theme == TUI_THEMES["blossom"]
 
 

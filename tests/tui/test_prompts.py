@@ -70,9 +70,7 @@ def test_prompt_editor_uses_action_label_and_danger_for_replacement_activation()
     enabled_screen = PromptEntryScreen(
         "replacement", PromptEntry(id="base", text="Base", enabled=True)
     )
-    activation = next(
-        choice for choice in enabled_screen._choices if choice.value == "enabled"
-    )
+    activation = next(choice for choice in enabled_screen._choices if choice.value == "enabled")
 
     assert enabled_screen.page_title == "EDIT ASSISTANT BEHAVIOR"
     assert activation.label == "Disable"
@@ -119,9 +117,7 @@ async def test_prompt_actions_manage_order_activation_edit_and_delete(tmp_path):
         assert choices["delete"].label == "Delete"
         assert choices["delete"].accent == DEFAULT_TUI_THEME.danger
         assert choices["delete"].destructive
-        assert choices["toggle"].description == (
-            "Enabling overrides OURO's default system prompt."
-        )
+        assert choices["toggle"].description == ("Enabling overrides OURO's default system prompt.")
         assert choices["toggle"].description_accent == DEFAULT_TUI_THEME.danger
         await choose("Enable")
         config = PromptConfigManager(tmp_path).snapshot().config
@@ -178,9 +174,10 @@ async def test_prompt_creation_and_stale_editor_do_not_overwrite_other_changes(t
         await choose("Content")
         await pilot.press("h", "i", "enter")
         await choose("Enable")
-        assert next(
-            choice for choice in app.screen._choices if choice.value == "enabled"
-        ).label == "Disable"
+        assert (
+            next(choice for choice in app.screen._choices if choice.value == "enabled").label
+            == "Disable"
+        )
         await choose("Save")
         config = facade.system_prompt().config
         assert len(config.additions) == 1

@@ -1,5 +1,7 @@
 """MCP client adapters and lifecycle management."""
 
+from typing import TYPE_CHECKING, Any
+
 from ouro.mcp.client import MCPClientFactory, MCPClientSession
 from ouro.mcp.configuration import (
     MCPConfigSnapshot,
@@ -32,7 +34,19 @@ from ouro.mcp.models import (
     MCPServerRecord,
 )
 from ouro.mcp.runtime import MCPRuntimeResource
-from ouro.mcp.sdk import SDKMCPClientFactory
+
+if TYPE_CHECKING:
+    from ouro.mcp.sdk import SDKMCPClientFactory
+
+
+def __getattr__(name: str) -> Any:
+    if name == "SDKMCPClientFactory":
+        from ouro.mcp.sdk import SDKMCPClientFactory
+
+        globals()[name] = SDKMCPClientFactory
+        return SDKMCPClientFactory
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "MCPClientFactory",

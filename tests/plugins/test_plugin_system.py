@@ -1588,6 +1588,20 @@ def test_same_version_different_content_is_side_by_side_and_diagnostic(tmp_path)
     assert len(service.show("dev.ouro.echo").installs) == 2
 
 
+def test_plugin_detail_orders_installs_by_semantic_version(tmp_path) -> None:
+    service = build_local_plugin_service(tmp_path / "home")
+    for version in ("1.9.0", "1.10.0", "1.10.0-rc.1"):
+        source = tmp_path / version
+        source.mkdir()
+        _write_native_plugin(source, version=version)
+        service.install(source)
+    assert [item.version for item in service.show("dev.ouro.echo").installs] == [
+        "1.10.0",
+        "1.10.0-rc.1",
+        "1.9.0",
+    ]
+
+
 def test_archive_traversal_is_rejected_before_extraction(tmp_path) -> None:
     archive = tmp_path / "bad.zip"
     with zipfile.ZipFile(archive, "w") as output:

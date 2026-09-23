@@ -216,28 +216,29 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
     )
 
     store.path.write_text(json.dumps({"theme": "harbor"}), encoding="utf-8")
-    assert store.load() == TuiPreferences(theme="cobalt", theme_saturation_level=21)
+    with pytest.raises(ConfigError, match="unknown TUI theme"):
+        store.load()
 
 
 @pytest.mark.parametrize(
     "raw",
     (
         {"theme": "neon"},
-        {"theme": "harbor", "theme_saturation_level": -1},
-        {"theme": "harbor", "theme_saturation_level": THEME_SATURATION_LEVELS},
-        {"theme": "harbor", "theme_saturation_level": True},
-        {"theme": "harbor", "reasoning_expanded": "sometimes"},
-        {"theme": "harbor", "input_draft_memory_enabled": "sometimes"},
-        {"theme": "harbor", "recent_actions": ["one", "two", "three", "four"]},
-        {"theme": "harbor", "recent_actions": ["same", "same"]},
+        {"theme": "cobalt", "theme_saturation_level": -1},
+        {"theme": "cobalt", "theme_saturation_level": THEME_SATURATION_LEVELS},
+        {"theme": "cobalt", "theme_saturation_level": True},
+        {"theme": "cobalt", "reasoning_expanded": "sometimes"},
+        {"theme": "cobalt", "input_draft_memory_enabled": "sometimes"},
+        {"theme": "cobalt", "recent_actions": ["one", "two", "three", "four"]},
+        {"theme": "cobalt", "recent_actions": ["same", "same"]},
         {
-            "theme": "harbor",
+            "theme": "cobalt",
             "recent_workspaces": [
                 f"workspace-{index}" for index in range(MAX_RECENT_WORKSPACES + 1)
             ],
         },
-        {"theme": "harbor", "recent_workspaces": ["same", "same"]},
-        {"theme": "harbor", "recent_workspaces": ["  "]},
+        {"theme": "cobalt", "recent_workspaces": ["same", "same"]},
+        {"theme": "cobalt", "recent_workspaces": ["  "]},
     ),
 )
 def test_tui_preferences_reject_invalid_values(tmp_path: Path, raw: dict[str, object]) -> None:

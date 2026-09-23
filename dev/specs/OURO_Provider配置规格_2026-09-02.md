@@ -1,7 +1,6 @@
 # Provider 与配置规格
 
 > 文档类型：现行规格
-> 代码基线：2026-09-02
 
 ## 目标与范围
 
@@ -377,15 +376,16 @@ timeout/HTTP 状态执行有界退避；一旦已经向上游发出任何模型�
 ## 配置分区
 
 Provider/Endpoint 的唯一权威位置是 `config/providers.json`，保留 `providers.default/items` 结构。
-MCP 与 Agent 分别由 `config/mcp.json`、`config/agents.json` 管理。通用 `config/config.json` 包含：`prompts`、`permissions`、`tool_execution`、`run_budget`、`compaction`、
-`skills`。各 manager 只修改自己的分区并保留其他当前分区。
+MCP、Agent 与个性化提示词分别由 `config/mcp.json`、`config/agents.json`、`config/prompts.json` 管理。
+通用 `config/config.json` 包含 `permissions`、`tool_execution`、`run_budget`、`compaction`、`skills`。
+各 manager 只修改自己的分区并保留其他当前分区。
 
 ## 失败语义
 
 - 配置结构错误统一转换为 `ConfigError`。
 - 不支持的思考模式或 effort、profile 覆盖不完整、原生字段归属冲突统一在 HTTP 前失败。
 - 默认 Provider 必须存在、enabled 且有默认 Endpoint；否则不能被设为默认。
-- 删除或禁用当前默认目标时安全回退到内置 Faux。
+- 当前默认 Provider 不能删除、禁用或清空默认 Endpoint；须先显式选择另一有效默认路由。不会隐式回退到 Faux。
 - Provider connection check 返回类型化结果；CLI 以退出码区分连接失败和配置错误。
 
 ## 验收证据

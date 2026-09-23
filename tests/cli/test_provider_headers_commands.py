@@ -84,12 +84,7 @@ def test_cli_header_validation_is_atomic_and_does_not_echo_secrets(tmp_path, cap
     path = ProviderConfigManager(tmp_path).config_path
     before = path.read_bytes()
     headers = {"X-Private": {"source": "literal", "value": "private-secret\n"}}
-    assert (
-        main(
-            ["provider", "update", provider_id, "--headers", json.dumps(headers), *common]
-        )
-        != 0
-    )
+    assert main(["provider", "update", provider_id, "--headers", json.dumps(headers), *common]) != 0
     output = capsys.readouterr()
     assert "private-secret" not in output.out + output.err
     assert path.read_bytes() == before

@@ -15,20 +15,6 @@ from ouro.tui.theme import DEFAULT_TUI_THEME, THEME_SATURATION_LEVELS, TUI_THEME
 
 MAX_RECENT_WORKSPACES = 20
 
-# The levels approximate each retired palette when an older file has no explicit level.
-_LEGACY_THEME_MIGRATIONS: dict[str, tuple[str, int]] = {
-    "harbor": ("cobalt", 21),
-    "sage": ("jade", 25),
-    "iris": ("orchid", 26),
-    "rosewood": ("blossom", 28),
-    "sandstone": ("honey", 25),
-    "fjord": ("lagoon", 25),
-    "slate": ("azure", 30),
-    "plum": ("wisteria", 30),
-    "terracotta": ("sienna", 24),
-    "olive": ("citrine", 25),
-}
-
 
 class TuiPreferences(OuroModel):
     theme: str = DEFAULT_TUI_THEME.theme_id
@@ -93,16 +79,6 @@ class TuiPreferencesStore:
             return TuiPreferences()
         try:
             raw = json.loads(read_text_atomic(self.path))
-            legacy_theme = raw.get("theme") if isinstance(raw, dict) else None
-            migration = (
-                _LEGACY_THEME_MIGRATIONS.get(legacy_theme)
-                if isinstance(legacy_theme, str)
-                else None
-            )
-            if migration is not None:
-                theme, saturation_level = migration
-                raw = {**raw, "theme": theme}
-                raw.setdefault("theme_saturation_level", saturation_level)
             return TuiPreferences.model_validate(raw)
         except json.JSONDecodeError as exc:
             raise ConfigError(f"invalid TUI preferences {self.path}: {exc}") from exc

@@ -9,13 +9,13 @@ publish the package or infer a license from dependencies before that decision is
 
 For a release:
 
-1. Refresh the current version capability summary in `CHANGELOG.md` and the affected specs.
+1. Verify the current capability summary in `CHANGELOG.md` and the affected specs.
 2. Update the version in `pyproject.toml` and regenerate `uv.lock`.
 3. Run the full commands from `CONTRIBUTING.md`, including the coverage floor.
 4. Build with `uv build` and inspect both wheel and source archive for secrets and unintended files.
 5. Test installation and `ouro --help` from a clean environment.
 6. Commit the release metadata, create an annotated `vX.Y.Z` tag, and publish release notes from
-   the version summary and current specs.
+   the capability summary and current specs. Keep repository documentation focused on current behavior.
 
 Package-index publication and signing credentials are intentionally not automated until the
 repository owner selects the destination, trusted-publishing policy, and license.

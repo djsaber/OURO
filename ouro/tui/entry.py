@@ -5,7 +5,6 @@ from pathlib import Path
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.interactions import SessionInteractionMode
 from ouro.deployment import SessionBackend, TaskBackend
-from ouro.tui.app import OuroTuiApp
 from ouro.tui.terminal import set_terminal_title, tui_terminal_guard
 from ouro.tui.theme import TuiTheme
 
@@ -22,6 +21,8 @@ def run_tui(
     theme: TuiTheme | None = None,
 ) -> int:
     """Run the full-screen Textual Host and return its process exit code."""
+
+    from ouro.tui.app import OuroTuiApp
 
     with tui_terminal_guard():
         set_terminal_title("OURO")

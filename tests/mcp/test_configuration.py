@@ -36,7 +36,7 @@ async def test_runtime_resource_exposes_host_lifecycle_without_manager_access() 
 
 
 def test_mcp_config_store_round_trips_without_overwriting_other_sections(tmp_path) -> None:
-    config_path = tmp_path / "config" / "config.json"
+    config_path = tmp_path / "config" / "prompts.json"
     config_path.parent.mkdir()
     config_path.write_text(json.dumps({"prompts": {"system": "keep"}}), encoding="utf-8")
     store = MCPConfigStore(tmp_path)

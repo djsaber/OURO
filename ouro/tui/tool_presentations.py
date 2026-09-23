@@ -235,10 +235,6 @@ def _positive_int(value: JsonValue | None) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
-def _plural(count: int, noun: str) -> str:
-    return f"{count} {_plural_noun(count, noun)}"
-
-
 def _plural_noun(count: int, noun: str) -> str:
     return noun if count == 1 else noun + "s"
 

@@ -1,7 +1,5 @@
 # OURO 文档索引
 
-> 索引基线：2026-09-16
-
 文档直接描述当前 OURO 的使用方式、架构和契约。阅读相应任务所需的指南与领域规格即可；
 尚未实现的能力在目标设计、规划和未来规格中明确标注。实现事实以代码和可重复测试为依据。
 
@@ -43,11 +41,11 @@
 
 | 设计 | 范围 |
 |---|---|
-| [模型订阅认证扩展设计](OURO_模型订阅认证扩展设计_2026-09-16.md) | 订阅接入目标设计；认证核心、配置/模板、通用登录、CLI/TUI 与 Runtime 接线已完成；OpenAI 浏览器订阅已内建注册；Responses 内核、adapter 与通用认证已实现；正式 adapter 真实续接与持久凭据真实 CLI 闭环已通过，设备码及其他能力待验收 |
+| [模型订阅认证扩展设计](OURO_模型订阅认证扩展设计_2026-09-16.md) | 认证核心、登录、请求认证、Responses 与 Host 的职责；浏览器订阅及未验证扩展的范围 |
 | [TUI 视觉样式与 Markdown 渲染设计](OURO_TUI视觉样式与Markdown渲染设计_2026-09-02.md) | 完整 TuiTheme Token 注入、Markdown/Rich 适配、标识符、动画与验收约束 |
 
 ## 文件命名
 
-- OURO 说明、规范和规划：`OURO_<主题>_YYYY-MM-DD.md`；
+- OURO 说明、规范和规划使用稳定的 `OURO_<主题>.md` 路径；文件名中的日期不表示功能或验证状态。
 - `README.md`、`CHANGELOG.md`、`CONTRIBUTING.md`、`SECURITY.md`、`RELEASING.md`、包内 `README.md`
   和技能 `SKILL.md` 保留生态约定名称。

@@ -461,6 +461,63 @@ async def test_controller_start_defers_session_catalog_until_requested(
         await controller.close()
 
 
+async def test_controller_model_queries_do_not_block_startup_or_submission(tmp_path, monkeypatch):
+    application = _reasoning_application(tmp_path)
+    controller = TuiController(lambda _event: None, lambda _status: None, application=application)
+    loop_thread = threading.get_ident()
+    original = application.runtime.current_model
+    queries = []
+
+    def checked_model(*args, **kwargs):
+        queries.append(threading.get_ident())
+        assert queries[-1] != loop_thread
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(application.runtime, "current_model", checked_model)
+    try:
+        await controller.start()
+        result = await controller.submit("first request")
+        await controller.submit("continue the session")
+        assert result.session.session_id == controller.session_id
+        assert len(queries) >= 3
+    finally:
+        await controller.close()
+
+
+async def test_submission_preflight_does_not_follow_a_session_switch(tmp_path, monkeypatch):
+    application = _reasoning_application(tmp_path)
+    controller = TuiController(lambda _event: None, lambda _status: None, application=application)
+    await controller.start()
+    result = await controller.submit("initial session")
+    entered = threading.Event()
+    release = threading.Event()
+    original = application.runtime.available_models
+
+    def delayed_models():
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(5)
+        return original()
+
+    monkeypatch.setattr(application.runtime, "available_models", delayed_models)
+    pending = asyncio.create_task(controller.submit("must not move to a new draft"))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        await controller.new_session()
+        release.set()
+        with pytest.raises(ConfigError, match="session or model changed"):
+            await pending
+        assert controller.session_id is None
+        messages = application.runtime.store.load_runtime_session(
+            result.session.session_id
+        ).messages
+        assert all("must not move" not in message.text_content for message in messages)
+    finally:
+        release.set()
+        await asyncio.gather(pending, return_exceptions=True)
+        await controller.close()
+
+
 class _SkillPromptCapturingProvider(FauxProvider):
     def __init__(self) -> None:
         super().__init__()
@@ -942,6 +999,37 @@ async def test_controller_tool_catalog_includes_search_and_todolist_as_host_buil
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["list", "show"])
+async def test_controller_plugin_queries_run_outside_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, query: str
+) -> None:
+    application = _reasoning_application(tmp_path)
+    controller = TuiController(lambda _event: None, lambda _status: None, application=application)
+    await controller.start()
+    assert application.plugins is not None
+    original = getattr(application.plugins, query)
+    event_loop_thread = threading.get_ident()
+    reader_threads: list[int] = []
+
+    def read(*args):
+        reader_threads.append(threading.get_ident())
+        assert reader_threads[-1] != event_loop_thread
+        return original(*args)
+
+    monkeypatch.setattr(application.plugins, query, read)
+    try:
+        result = (
+            await controller.plugins()
+            if query == "list"
+            else await controller.plugin("dev.ouro.agent_context")
+        )
+        assert result
+        assert len(reader_threads) == 1
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
 async def test_controller_manages_plugins_through_local_application_boundary(
     tmp_path: Path,
 ) -> None:
@@ -955,17 +1043,17 @@ async def test_controller_manages_plugins_through_local_application_boundary(
     await controller.start()
 
     try:
-        plugins = {item.plugin_id: item for item in controller.plugins()}
+        plugins = {item.plugin_id: item for item in await controller.plugins()}
         assert plugins["dev.ouro.agent_context"].plugin_class == "builtin"
         assert plugins["dev.ouro.agent_context"].status == "active"
 
         disabled = await controller.disable_plugin("dev.ouro.agent_context")
         assert disabled.status == "disabled"
-        assert controller.plugin("dev.ouro.agent_context").desired_enabled is False
+        assert (await controller.plugin("dev.ouro.agent_context")).desired_enabled is False
 
         enabled = await controller.enable_plugin("dev.ouro.agent_context")
         assert enabled.status == "active"
-        detail = controller.plugin("dev.ouro.agent_context")
+        detail = await controller.plugin("dev.ouro.agent_context")
         assert detail.desired_enabled is True
         assert detail.configuration_supported is False
 
@@ -1028,7 +1116,7 @@ async def test_controller_installs_and_configures_user_plugin(tmp_path: Path) ->
             TuiPluginInstallConfiguration(source=str(source))
         )
         assert installed.plugin_id == "dev.ouro.tui_config"
-        installed_detail = controller.plugin(installed.plugin_id)
+        installed_detail = await controller.plugin(installed.plugin_id)
         assert installed_detail.configuration_supported is True
 
         configured = await controller.configure_plugin(
@@ -1037,7 +1125,7 @@ async def test_controller_installs_and_configures_user_plugin(tmp_path: Path) ->
             {},
         )
         assert configured.status == "disabled"
-        detail = controller.plugin(installed.plugin_id)
+        detail = await controller.plugin(installed.plugin_id)
         assert detail.configuration_values == {"mode": "safe"}
         assert detail.credential_refs == {}
     finally:
@@ -2238,9 +2326,9 @@ async def test_controller_resets_reasoning_only_when_model_route_changes(
     runtime.models = StaticRouteCatalog(
         {
             original_key: runtime.adapter,
-            "other/limited": RuntimeAdapter(
+            "faux/limited": RuntimeAdapter(
                 FauxProvider(),
-                ModelMetadata(provider_id="other", endpoint_id="limited", model_id="limited-model"),
+                ModelMetadata(provider_id="faux", endpoint_id="limited", model_id="limited-model"),
             ),
         },
         default_key=original_key,
@@ -2258,10 +2346,10 @@ async def test_controller_resets_reasoning_only_when_model_route_changes(
         await controller.select_model(original_key)
         assert (await controller.session_reasoning()).requested == result.session.reasoning_request
 
-        await controller.select_model("other/limited")
+        await controller.select_model("faux/limited")
         assert (await controller.session_reasoning()).requested == ReasoningRequest()
         assert runtime.sessions.open(result.session.session_id).session.current_model == (
-            "other/limited"
+            "faux/limited"
         )
     finally:
         await controller.close()

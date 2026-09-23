@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 
 from ouro.application.configuration import ConfigurationFacade
+from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError
 from ouro.local_application import LocalApplication
+from ouro.providers import FauxProvider
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.controller import TuiController
 from ouro.tui.screens import ChoiceScreen
@@ -92,7 +94,7 @@ async def test_tui_restores_history_and_observation_without_the_old_model(
                 observation.subscription.close()
 
             await app._select_model("faux/default")
-            assert app._active_model == "default-model"
+            assert app._active_model == ""
             assert app._reasoning_state is not None
             assert application.runtime.sessions.open(session_id).session.current_model == (
                 "faux/default"
@@ -102,10 +104,28 @@ async def test_tui_restores_history_and_observation_without_the_old_model(
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
 @pytest.mark.parametrize("change", ["endpoint_removed", "provider_removed", "provider_disabled"])
 async def test_configured_route_changes_do_not_block_session_loading(
-    tmp_path: Path, backend: str, change: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str, change: str
 ) -> None:
-    application = LocalApplication.build(tmp_path, session_backend=backend)
+    from ouro.providers.factory import _ADAPTER_BUILDERS
+
+    monkeypatch.setitem(
+        _ADAPTER_BUILDERS,
+        "openai-chat-completions",
+        lambda context: RuntimeAdapter(FauxProvider(), context.model),
+    )
     configuration = ConfigurationFacade(tmp_path)
+    original = configuration.add_provider(
+        display_name="Local fixture",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        base_url="https://fixture.invalid/v1",
+    )
+    assert original.changed_provider_id is not None
+    configuration.add_endpoint(
+        original.changed_provider_id, display_name="Local", model="local-model"
+    )
+    configuration.use_provider(original.changed_provider_id)
+    application = LocalApplication.build(tmp_path, session_backend=backend)
     controller = TuiController(lambda _event: None, lambda _status: None, application=application)
     await controller.start()
     try:
@@ -121,9 +141,7 @@ async def test_configured_route_changes_do_not_block_session_loading(
         )
         provider_id = created.changed_provider_id
         assert provider_id is not None
-        endpoints = configuration.add_endpoint(
-            provider_id, display_name="Chat", model="test-model"
-        )
+        endpoints = configuration.add_endpoint(provider_id, display_name="Chat", model="test-model")
         endpoint_id = endpoints.changed_endpoint_id
         assert endpoint_id is not None
         route = f"{provider_id}/{endpoint_id}"

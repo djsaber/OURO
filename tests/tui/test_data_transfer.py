@@ -146,7 +146,7 @@ async def test_imported_history_opens_with_missing_dependencies_in_live_sqlite_h
         async with asyncio.timeout(10):
             await app._open_session(session.session_id)
         assert app._visible_session_id() == session.session_id
-        assert app._active_model == "missing-model"
+        assert app._active_model == "Unavailable model"
         assert app._controller._runtime().store.load_session(session.session_id) == before
         assert not (target / "sessions" / session.session_id).exists()
 

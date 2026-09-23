@@ -20,6 +20,7 @@ from ouro.core.compaction import (
     CompactionStrategyError,
     CompactionStrategyRegistry,
 )
+from ouro.core.context import estimate_text_tokens
 from ouro.core.errors import CompactionError
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import (
@@ -409,14 +410,15 @@ def test_summary_chunk_selection_serializes_each_message_once_and_preserves_budg
     capacity = adapter.model.context_window - summary_output_tokens
     expected: list[MessageRecord] = []
     expected_frames = 0
+    prompt_tokens = estimate_text_tokens(
+        compaction_module.render_summarization_prompt(strategy.prompt, summary_output_tokens)
+    )
     for frame in frames:
         candidate = [*expected, *frame]
         if (
-            strategy._summary_input_tokens(
-                previous_summary,
-                candidate,
-                summary_output_tokens,
-            )
+            prompt_tokens
+            + estimate_text_tokens(compaction_module._summary_payload(previous_summary, candidate))
+            + 8
             > capacity
         ):
             break

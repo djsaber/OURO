@@ -107,9 +107,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 )
                 for template in sorted(
                     templates,
-                    key=lambda item: display_sort_key(
-                        item.display_name, fallback=item.template_id
-                    ),
+                    key=lambda item: display_sort_key(item.display_name, fallback=item.template_id),
                 )
             ),
             *(
@@ -121,9 +119,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 )
                 for profile in sorted(
                     CUSTOM_PROVIDER_PROFILES,
-                    key=lambda item: display_sort_key(
-                        item.display_name, fallback=item.protocol
-                    ),
+                    key=lambda item: display_sort_key(item.display_name, fallback=item.protocol),
                 )
             ),
         )
@@ -633,9 +629,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 return None
 
             menu.push_page(
-                title=theme_for(self).inline_separator.join(
-                    ("ENDPOINTS", provider.display_name)
-                ),
+                title=theme_for(self).inline_separator.join(("ENDPOINTS", provider.display_name)),
                 placeholder="Filter endpoints…",
                 choices=choices,
                 on_select=select_endpoint,
@@ -644,9 +638,7 @@ class ProviderConfigurationWorkflows(App[int]):
             return
         selected = await self.push_screen_wait(
             ChoiceScreen(
-                title=theme_for(self).inline_separator.join(
-                    ("ENDPOINTS", provider.display_name)
-                ),
+                title=theme_for(self).inline_separator.join(("ENDPOINTS", provider.display_name)),
                 placeholder="Filter endpoints…",
                 choices=choices,
             )
@@ -781,9 +773,7 @@ class ProviderConfigurationWorkflows(App[int]):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         action = "added" if existing is None else "saved"
-        self.notify(
-            f"Endpoint {action}: {saved.display_name or saved.model_id} (next request)"
-        )
+        self.notify(f"Endpoint {action}: {saved.display_name or saved.model_id} (next request)")
 
     async def _use_endpoint(self, provider_id: str, endpoint_id: str) -> bool:
         try:

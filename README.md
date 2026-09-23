@@ -229,7 +229,8 @@ Provider 保持不变。
 
 受管理 Provider 可在 TUI 的 `Manage providers → Provider → Authentication` 中登录、查看状态和注销，
 或通过 `Manage local credentials` 清理共享及未绑定的本地凭据。登录方法由已注册驱动提供；浏览器只在选择
-`Open browser` 时打开，也可复制授权链接手动操作。通用管理已实现，生产 OAuth 与订阅产品尚未注册。
+`Open browser` 时打开，也可复制授权链接手动操作。内建 OpenAI 浏览器订阅使用同一认证管理入口，
+支持与验证范围见[订阅支持指南](docs/OURO_订阅支持使用指南_ZH_2026-09-19.md)。
 
 需要完全自定义时，Provider 的创建、更新、替换分别使用 `add`、`update`、`replace`，Endpoint 仍由独立命令
 管理，不会隐式创建另一层对象：
@@ -817,4 +818,4 @@ ouro data import --kind sessions --path all-sessions.zip --home ./restored-sqlit
 - [开发架构](docs/OURO_开发架构_2026-09-02.md)：模块职责、依赖方向和关键不变量。
 - [规格索引](dev/specs/README.md)：领域契约、失败/恢复语义和验收证据。
 - [规划索引](dev/plans/README.md)：仅列尚需执行或验证的工作。
-- [贡献指南](CONTRIBUTING.md)、[安全策略](SECURITY.md)、[版本能力摘要](CHANGELOG.md)与[发布流程](RELEASING.md)。
+- [贡献指南](CONTRIBUTING.md)、[安全策略](SECURITY.md)、[当前能力摘要](CHANGELOG.md)与[发布流程](RELEASING.md)。

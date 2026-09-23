@@ -144,18 +144,21 @@ def test_provider_add_grok_installs_latest_reviewed_endpoint(tmp_path, capsys) -
 
 
 def test_provider_update_json_exposes_safe_template_merge_report(tmp_path, capsys) -> None:
-    assert main(
-        [
-            "provider",
-            "add",
-            "Primary",
-            "--type",
-            "openai",
-            "--home",
-            str(tmp_path),
-            "--json",
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "provider",
+                "add",
+                "Primary",
+                "--type",
+                "openai",
+                "--home",
+                str(tmp_path),
+                "--json",
+            ]
+        )
+        == 0
+    )
     provider_id = json.loads(capsys.readouterr().out)["provider"]["provider_id"]
 
     code = main(

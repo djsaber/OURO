@@ -4,6 +4,16 @@
 不要与 pytest 或其他基准争用资源。输出为 JSON Lines，包含环境、原始样本和统计量；需要保存时写入本地忽略目录。
 基准结果只适用于测量环境，不能替代真实终端和网络 Provider 验证，也不作为 CI 的固定时间断言。
 
+## 导入与首屏就绪
+
+```powershell
+uv run --frozen python -m dev.benchmarks.startup --repeat 5
+```
+
+每次使用新 Python 进程与临时 home，显式导入 CLI 和完整 TUI App，在 120×40 headless 窗口等待启动 worker
+完成并确认 Composer 可用。输出导入、从导入开始到首屏就绪、进程与关闭总耗时；`--root` 可指定待测 checkout。
+这是进程冷启动，不清空操作系统文件缓存，不包括真实终端 paint 或首次 MCP 连接。
+
 ## 会话管线与 TUI
 
 ```powershell

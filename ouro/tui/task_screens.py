@@ -67,14 +67,14 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
         schedule = config.schedule if config is not None else None
         timezone = schedule.timezone if schedule else self._local_timezone
         zone = ZoneInfo(timezone)
-        self._values = {
+        self._values: dict[str, str] = {
             "title": config.title or "" if config else "",
             "description": config.description if config else "",
             "workspace": config.workspace if config else workspace or "",
             "model": (
                 config.model
                 if config
-                else default_model
+                else default_model or ""
                 if default_model == DEFAULT_MODEL
                 or any(model.key == default_model for model in models)
                 else ""

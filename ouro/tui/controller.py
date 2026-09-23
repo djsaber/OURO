@@ -542,7 +542,7 @@ class TuiController:
         registration = self._application.runtime.add_event_sink(self._receive_event)
         try:
             await self._application.start()
-        except Exception:
+        except BaseException:
             await registration.close()
             raise
         self._event_sink_registration = registration
@@ -551,27 +551,28 @@ class TuiController:
         self._draft_workspace = runtime.default_workspace
         if self._configuration is None and runtime.environment.home is not None:
             self._configuration = ConfigurationFacade(runtime.environment.home)
-        models = tuple(runtime.available_models())
-        usage = await self.usage_summary()
+        models, current_model, usage = await asyncio.gather(
+            self.models(), self.default_model(), self.usage_summary()
+        )
         mcp_servers = self.mcp_servers()
+        status = await asyncio.to_thread(self._project_system_status, models, usage, mcp_servers)
         return TuiBootstrap(
             models=models,
-            current_model=runtime.current_model(),
+            current_model=current_model,
             sessions=(),
             startup_report=self._application.startup_report,
             mcp_servers=mcp_servers,
-            system_status=await self._with_task_status(
-                self._project_system_status(models, usage, mcp_servers),
-            ),
+            system_status=await self._with_task_status(status),
         )
 
     async def system_status(self) -> TuiSystemStatus:
         """Project current process-owned resources for a newly opened Host view."""
 
         models, usage = await asyncio.gather(self.models(), self.usage_summary())
-        return await self._with_task_status(
-            self._project_system_status(models, usage, self.mcp_servers()),
+        status = await asyncio.to_thread(
+            self._project_system_status, models, usage, self.mcp_servers()
         )
+        return await self._with_task_status(status)
 
     def _project_system_status(
         self,
@@ -626,14 +627,17 @@ class TuiController:
         resource_refs: tuple[str, ...] = (),
     ) -> RunResult:
         runtime = self._runtime()
-        available = runtime.available_models()
+        selection = (self._session_id, self._initial_model)
+        available = await self.models()
         if not available:
             raise ConfigError("add a provider and endpoint before sending a message")
         selected = (
-            runtime.resolve_model(self._initial_model)
-            if self._session_id is None and self._initial_model is not None
-            else runtime.current_model(self._session_id)
+            await asyncio.to_thread(runtime.resolve_model, selection[1])
+            if selection[0] is None and selection[1] is not None
+            else await asyncio.to_thread(runtime.current_model, selection[0])
         )
+        if not self._started or selection != (self._session_id, self._initial_model):
+            raise ConfigError("session or model changed while preparing input; submit again")
         if selected.provider_id == "faux" and any(
             model.provider_id != "faux" for model in available
         ):
@@ -1896,17 +1900,17 @@ class TuiController:
     async def compact(self) -> CompactionCommandResult:
         return await self._runtime().compact(session_id=self._require_session())
 
-    def plugins(self) -> tuple[PluginSummary, ...]:
+    async def plugins(self) -> tuple[PluginSummary, ...]:
         application = self._application
         if application is None or application.plugins is None:
             return ()
-        return tuple(application.plugins.list())
+        return tuple(await asyncio.to_thread(application.plugins.list))
 
-    def plugin(self, plugin_id: str) -> PluginDetail:
+    async def plugin(self, plugin_id: str) -> PluginDetail:
         application = self._application
         if application is None or application.plugins is None:
             raise RuntimeError("plugin management is unavailable")
-        return application.plugins.show(plugin_id)
+        return await asyncio.to_thread(application.plugins.show, plugin_id)
 
     async def install_plugin(
         self,

@@ -162,6 +162,7 @@ def test_update_preserves_binding_replace_generates_new_identity(tmp_path, fixtu
     updated = manager.update_provider(original.provider_id, timeout_seconds=42)
     assert updated.auth_driver == original.auth_driver
     assert updated.credential_ref == original.credential_ref
+    manager.set_default_provider("faux")
     replacement = manager.replace_provider(
         original.provider_id,
         display_name="Replacement Subscription",

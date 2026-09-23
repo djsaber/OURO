@@ -1,7 +1,6 @@
 # Responses 编解码
 
 > 文档类型：现行规格
-> 代码基线：2026-09-19
 > 范围：Responses adapter、配置/工厂注册、请求认证、内容编码、SSE 事件投影与完整续接封装。浏览器订阅产品已内建注册；Windows/browser/gpt-5.5 真实持久凭据 CLI 闭环已验收。
 
 目标与剩余接线见[订阅目标规格](OURO_模型订阅认证规格_2026-09-16.md#s7-responses-与-continuation)和[实施计划](../plans/OURO_模型订阅认证实施计划_2026-09-16.md)。模块位于 `ouro/providers/openai_responses_codec.py`、`openai_responses_items.py`、`openai_responses_stream.py` 与 `openai_responses_errors.py`。它们只依赖 canonical 消息/事件和纯协议数据，不依赖 OAuth、配置、HTTP 客户端或实验目录。

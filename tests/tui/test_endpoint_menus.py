@@ -4,7 +4,6 @@ from ouro.application.configuration import ConfigurationFacade
 from ouro.core.errors import ConfigError
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.screens import ChoiceScreen
-from ouro.tui.theme import theme_for
 from tests.tui.helpers import run_ready_app, two_route_application
 
 
@@ -76,8 +75,9 @@ async def test_endpoint_menus_project_global_default_independently_of_session_se
             ]
         assert choices[recent_choice].marker == ""
         assert choices[recent_choice].trailing == ""
-        assert choices[default_choice].marker == theme_for(app).selected_choice_marker
-        assert choices[default_choice].trailing == "default"
+        assert choices[recent_choice].trailing_badge == ""
+        assert choices[default_choice].marker == ""
+        assert choices[default_choice].trailing_badge == "default"
         if scope != "provider":
             other_id = provider_ids["other"]
             other_recent = f"{other_id}/{endpoint_ids[('other', 'recent')]}"
@@ -92,6 +92,8 @@ async def test_endpoint_menus_project_global_default_independently_of_session_se
             assert choices[other_default].marker == ""
             assert choices[other_recent].trailing == ""
             assert choices[other_default].trailing == ""
+            assert choices[other_recent].trailing_badge == ""
+            assert choices[other_default].trailing_badge == ""
 
         if scope == "default":
             await menu._select_choice(recent_key)
@@ -99,18 +101,18 @@ async def test_endpoint_menus_project_global_default_independently_of_session_se
             await app._controller.use_endpoint(gateway_id, recent_id)
             assert await menu.refresh_choices()
         choices = {choice.value: choice for choice in menu._choices}
-        assert choices[recent_choice].marker == theme_for(app).selected_choice_marker
-        assert choices[recent_choice].trailing == "default"
+        assert choices[recent_choice].marker == ""
+        assert choices[recent_choice].trailing_badge == "default"
         assert choices[default_choice].marker == ""
-        assert choices[default_choice].trailing == ""
+        assert choices[default_choice].trailing_badge == ""
 
         await app._select_model(default_key)
         assert await menu.refresh_choices()
         choices = {choice.value: choice for choice in menu._choices}
         assert choices[default_choice].marker == ""
-        assert choices[default_choice].trailing == ""
-        assert choices[recent_choice].marker == theme_for(app).selected_choice_marker
-        assert choices[recent_choice].trailing == "default"
+        assert choices[default_choice].trailing_badge == ""
+        assert choices[recent_choice].marker == ""
+        assert choices[recent_choice].trailing_badge == "default"
 
 
 @pytest.mark.parametrize("selected", [None, "deleted/endpoint"])
@@ -159,4 +161,5 @@ async def test_endpoint_menu_remains_available_without_a_resolvable_selection(
         assert menu._choices[0].value == f"{provider_id}/{endpoint_id}"
         assert menu._choices[0].marker == ""
         assert menu._choices[0].trailing == ""
+        assert menu._choices[0].trailing_badge == ""
         assert endpoint_id not in menu._choices[0].trailing

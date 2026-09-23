@@ -1,6 +1,6 @@
 # 订阅接入验证
 
-`openai_codex` 是实施计划 A 的独立、显式联网实验。它不注册生产 Provider/driver，
+`openai_codex` 是独立、显式联网的协议验证工具。它不注册生产 Provider/driver，
 不启动 OURO Runtime，不读取其他客户端缓存，也不读写 OURO_HOME、配置或 Session。
 Token 和完整 Responses output 只保留在本进程内存中；退出后必须重新登录。
 浏览器授权和 Token 解码/交换/刷新复用 `ouro/auth/drivers` 的实现；公开上游 client id
@@ -95,29 +95,12 @@ responses 使用 canonical_event_counts（正式 adapter 事件计数），并�
 全部通过后，最后场景的 scope_stable_after_refresh=true 表示前后认证 scope 一致且重放通过。
 encrypted_reasoning_replayed 仅在首轮确实返回加密 reasoning 并跨刷新重放成功时为 true；false 不代表该能力已验收。
 
-真实浏览器登录仍需用户完成；离线测试只证明程序编排和边界行为。用户提供的 Windows/browser/gpt-5.5
-正式 adapter 实测摘要已通过：status=passed，completed_steps 包含 authorization、refresh、responses，
-request_path=production_adapter，max_output_tokens=8192，output_limit_enforced=false，
-expiry_provided=true，refresh_token_rotated=true。四个场景均 validated=true，且各有一次 continuation/done：
+真实浏览器登录须由用户完成；离线测试只证明程序编排和边界行为。验证范围限定于明确的账户、模型、
+授权方式与平台，不由一次探针成功推断其他组合可用。正式产品入口及持久凭据契约见
+[订阅使用指南](../../docs/OURO_订阅支持使用指南_ZH_2026-09-19.md)。
 
-| 场景 | 完整 output 类型 | input / output tokens | 文本字符数 | 加密 reasoning |
-|---|---|---|---|---|
-| adapter_text | reasoning、message | 24 / 18 | 7 | 有 |
-| adapter_tool_1 | function_call | 163 / 20 | 0 | 无 |
-| adapter_tool_2 | function_call | 222 / 20 | 0 | 无 |
-| adapter_continuation | message | 170 / 9 | 13 | 无 |
-
-末轮 scope_stable_after_refresh=true、encrypted_reasoning_replayed=true，确认此账户/模型/授权方式
-下正式 adapter 跨刷新重放首轮加密 reasoning，并完成两轮工具调用/结果续接。末轮本身没有新加密
-reasoning 不影响前序状态已成功重放的事实。工具由探针提供固定无副作用结果，不替代 Runtime 工具执行验收。
-
-参数限制的实测依据为 HTTP 400 的安全诊断：显式 truncation 和 max_output_tokens 分别被拒绝为
-unsupported_parameter。当前正式 adapter 按协议默认行为省略 truncation，按显式服务声明省略输出上限，
-该请求组合已经通过上述验证；默认服务策略仍发送上限，不能将此限制推广到标准 Responses。
-
-这份证据是用户提供的真实运行摘要，不包含原始 SSE/items，不作为可重放协议 fixture。production_support=false
-表示本探针不验收完整产品交付。浏览器产品现已内建注册并完成持久凭据下的真实 CLI 闭环；设备码、其余能力参数及
-实际上下文超限行为仍需独立验收。正式入口及操作见[订阅使用指南](../../docs/OURO_订阅支持使用指南_ZH_2026-09-19.md)。
+当前订阅服务策略声明不支持显式 truncation 和请求级输出上限；adapter 省略这些参数，默认服务策略仍发送
+输出上限。`production_support=false` 表示本探针仅验收协议与 adapter，不承担完整产品验收。
 
 ## 已核验的来源与实验参数
 
@@ -151,22 +134,9 @@ unsupported_parameter。当前正式 adapter 按协议默认行为省略 truncat
 
 ## 验证边界
 
-Windows 浏览器方法已有用户手动执行的脱敏摘要：`authorization`、`refresh` 完成，
-`expiry_provided=true`、`refresh_token_rotated=true`；`gpt-5.5` 四请求验证全部通过，
-总状态为 `passed`：
-
-| 场景 | 完整 output 类型 | input / output / total tokens | reasoning tokens |
-|---|---|---|---|
-| minimal_sse | reasoning、message | 24 / 18 / 42 | 9 |
-| tool_round_1 | function_call | 143 / 20 / 163 | 0 |
-| tool_round_2 | function_call | 202 / 20 / 222 | 0 |
-| tool_continuation | reasoning、message | 158 / 24 / 182 | 13 |
-
-两个文本响应均收到加密 reasoning；两轮工具只返回 function_call，因此这份结果证明完整工具
-item/结果的续接，尚不单独证明跨请求重放加密 reasoning。文本和工具响应均具有成功终态与 usage。
-该后端已观察到终态 output 为空、完整内容位于 item 事件中的行为，不能仅依赖 completed.output。
-这些是用户提供的观察摘要，完整 items 的内容未采集；回归测试使用合成协议数据，
-不将其称为真实 SSE fixture。跨刷新 reasoning 重放已由上文正式 adapter 验证覆盖；设备授权、其他模型及能力限制仍需独立验证。
+完整内容可位于 item 事件中，成功终态的 output 可以为空；验证必须同时检查 item 完整性、终态与 usage。
+两轮工具续接与跨刷新加密 reasoning 重放是独立断言，后者需要首轮确实产生加密 reasoning。
+回归测试使用合成协议数据，不将脱敏结果摘要称为可重放的真实 SSE fixture。
 
 固定 Codex 源码也分别处理
 [`OutputItemDone` 与 `Completed`](https://github.com/openai/codex/blob/04581f96044a9fe6062593c4d557036477aee961/codex-rs/codex-api/src/sse/responses.rs)；
@@ -187,4 +157,4 @@ uv run --frozen mypy --explicit-package-bases ouro/auth dev/probes
 
 其他真实账户/授权方式、首批模型的 reasoning 等级/上下文窗口/显式参数限制、区域与权益错误、图像及结构化
 输出、可重放脱敏 fixture、POSIX 文件保护仍需独立证据。探针的通过只证明某次账户/模型/方法组合，
-不会自动满足实施计划 A 的全部退出条件。
+不自动证明全部产品能力。

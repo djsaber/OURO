@@ -9,7 +9,6 @@ from ouro.tui.inline_editor import MultilineEditableChoiceScreen
 from ouro.tui.screens import Choice
 from ouro.tui.theme import theme_for
 
-
 PROMPT_GROUP_LABELS: dict[PromptKind, str] = {
     "replacement": "ASSISTANT BEHAVIOR",
     "addition": "ADDITIONAL GUIDANCE",
@@ -22,10 +21,8 @@ def prompt_label(entry: PromptEntry) -> str:
 
 def prompt_choices(config: PromptConfig) -> tuple[Choice, ...]:
     choices: list[Choice] = []
-    for kind, entries in (
-        ("replacement", config.replacements),
-        ("addition", config.additions),
-    ):
+    for kind in PROMPT_GROUP_LABELS:
+        entries = config.replacements if kind == "replacement" else config.additions
         group = PROMPT_GROUP_LABELS[kind]
         group_trailing = (
             "System default active"
@@ -42,9 +39,7 @@ def prompt_choices(config: PromptConfig) -> tuple[Choice, ...]:
                     group_trailing=group_trailing,
                 )
             )
-        choices.append(
-            Choice(f"add:{kind}", "+", group=group, group_trailing=group_trailing)
-        )
+        choices.append(Choice(f"add:{kind}", "+", group=group, group_trailing=group_trailing))
     return tuple(choices)
 
 

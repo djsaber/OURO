@@ -97,9 +97,7 @@ def _endpoint_id(configs: ProviderConfigManager, model_id: str) -> str:
     provider = configs.get_provider(_provider_id(configs))
     assert provider is not None
     return next(
-        endpoint.endpoint_id
-        for endpoint in provider.endpoints
-        if endpoint.model_id == model_id
+        endpoint.endpoint_id for endpoint in provider.endpoints if endpoint.model_id == model_id
     )
 
 
@@ -176,6 +174,7 @@ async def test_cached_adapters_observe_new_material_and_binding_changes(tmp_path
         assert (await main.provider.check_connection(main.model)).ok
         assert requests[-1]["headers"]["authorization"] == "Bearer updated"
         # Replace keeps the provider identity but regenerates its endpoint identities.
+        configs.set_default_provider("faux")
         configs.replace_provider(
             provider_id,
             display_name="Subscription",
@@ -356,6 +355,7 @@ async def test_static_product_service_policy_is_applied_without_managed_target_r
         (RequestTarget("https://fixture.invalid", "/api"),),
         ProviderRequestPolicy(frozenset({"fixture-quota"})),
     )
+    configs.set_default_provider("faux")
     configs.replace_provider(
         _provider_id(configs),
         display_name="Subscription",

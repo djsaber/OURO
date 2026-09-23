@@ -158,7 +158,11 @@ def test_instruction_loader_merges_user_and_project_documents_from_broad_to_spec
 
 def test_instruction_loader_uses_workspace_as_boundary_without_git_repository(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The test runner's own temporary directory may live inside a Git checkout.
+    exists = Path.exists
+    monkeypatch.setattr(Path, "exists", lambda path: path.name != ".git" and exists(path))
     parent = tmp_path / "parent"
     workspace = parent / "workspace"
     workspace.mkdir(parents=True)

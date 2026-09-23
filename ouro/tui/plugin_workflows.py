@@ -5,7 +5,6 @@ from dataclasses import replace
 from typing import cast
 
 from ouro.application.plugin_models import PluginDetail, PluginSummary
-from ouro.plugins.semver import SemVer
 from ouro.tui.configuration_screens import PluginConfigurationScreen, PluginInstallScreen
 from ouro.tui.controller import (
     TuiController,
@@ -33,7 +32,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         switch: bool = False,
     ) -> None:
         try:
-            plugins = self._controller.plugins()
+            plugins = await self._controller.plugins()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -44,7 +43,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
 
         async def refresh_plugins() -> tuple[Choice, ...] | None:
             try:
-                return _plugin_choices(self._controller.plugins(), theme=theme_for(self))
+                return _plugin_choices(await self._controller.plugins(), theme=theme_for(self))
             except Exception as exc:  # noqa: BLE001
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
@@ -88,7 +87,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             )
             return
         try:
-            plugins = self._controller.plugins()
+            plugins = await self._controller.plugins()
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -101,7 +100,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
 
         async def refresh_candidates() -> tuple[Choice, ...] | None:
             try:
-                refreshed = self._controller.plugins()
+                refreshed = await self._controller.plugins()
             except Exception as exc:  # noqa: BLE001
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
@@ -122,7 +121,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                     enabled=not plugin.desired_enabled,
                 ):
                     return None
-                refreshed = self._controller.plugins()
+                refreshed = await self._controller.plugins()
                 plugin_catalog.clear()
                 plugin_catalog.update({item.plugin_id: item for item in refreshed})
                 return _plugin_choices(refreshed, theme=theme_for(self))
@@ -170,19 +169,10 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         menu: ChoiceScreen | None = None,
     ) -> None:
         try:
-            plugin = self._controller.plugin(plugin_id)
+            plugin = await self._controller.plugin(plugin_id)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-
-        def cancel_plugin() -> bool:
-            if menu is None:
-                return False
-            menu.pop_page(
-                choices=_plugin_choices(self._controller.plugins(), theme=theme_for(self)),
-                initial_value=plugin_id,
-            )
-            return True
 
         async def select_action(selected: str) -> tuple[Choice, ...] | None:
             if selected in {"enable", "disable"}:
@@ -204,9 +194,9 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 )
                 return None
             if menu is not None:
-                refreshed = self._controller.plugin(plugin_id)
+                refreshed = await self._controller.plugin(plugin_id)
                 menu.update_parent_choices(
-                    _plugin_choices(self._controller.plugins(), theme=theme_for(self)),
+                    _plugin_choices(await self._controller.plugins(), theme=theme_for(self)),
                     initial_value=plugin_id,
                 )
                 return _plugin_action_choices(refreshed)
@@ -217,7 +207,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
 
             async def refresh_plugin_actions() -> tuple[Choice, ...] | None:
                 try:
-                    return _plugin_action_choices(self._controller.plugin(plugin_id))
+                    return _plugin_action_choices(await self._controller.plugin(plugin_id))
                 except Exception as exc:  # noqa: BLE001
                     await self.query_one(ConversationView).add_notice(str(exc), error=True)
                     return None
@@ -228,7 +218,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 choices=choices,
                 on_select=select_action,
                 on_refresh=refresh_plugin_actions,
-                on_cancel=cancel_plugin,
             )
             return
         selected = await self.push_screen_wait(
@@ -256,7 +245,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         except Exception as exc:  # noqa: BLE001
             self.notify(str(exc), severity="error", markup=False)
             return
-        self._refresh_plugin_system_status()
+        await self._refresh_plugin_system_status()
         suffix = "installed" if result.changed else "already installed"
         self.notify(
             theme_for(self).inline_separator.join(
@@ -270,7 +259,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         *,
         menu: ChoiceScreen | None,
     ) -> None:
-        plugin = self._controller.plugin(plugin_id)
+        plugin = await self._controller.plugin(plugin_id)
         if not plugin.configuration_supported:
             self.notify(f"Plugin has no configuration schema: {plugin_id}", severity="warning")
             return
@@ -291,7 +280,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        self._refresh_plugin_system_status()
+        await self._refresh_plugin_system_status()
 
     async def _set_plugin_enabled(self, plugin_id: str, *, enabled: bool) -> bool:
         operation = self._controller.enable_plugin if enabled else self._controller.disable_plugin
@@ -300,7 +289,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return False
-        self._refresh_plugin_system_status()
+        await self._refresh_plugin_system_status()
         await self._refresh_session_controls()
         return True
 
@@ -335,7 +324,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        self._refresh_plugin_system_status()
+        await self._refresh_plugin_system_status()
         await self._refresh_session_controls()
 
     async def _choose_plugin_install(
@@ -344,7 +333,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         *,
         menu: ChoiceScreen | None,
     ) -> None:
-        plugin = self._controller.plugin(plugin_id)
+        plugin = await self._controller.plugin(plugin_id)
         selected_install = next(
             (install.package_digest for install in plugin.installs if install.selected), None
         )
@@ -355,11 +344,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 trailing=("selected" if install.selected else install.package_digest[:12]),
                 marker=theme_for(self).selected_choice_marker if install.selected else "",
             )
-            for install in sorted(
-                plugin.installs,
-                key=lambda item: (SemVer.parse(item.version), item.package_digest),
-                reverse=True,
-            )
+            for install in plugin.installs
         )
 
         async def select_install(package_digest: str) -> tuple[Choice, ...] | None:
@@ -371,7 +356,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             except Exception as exc:  # noqa: BLE001
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
-            self._refresh_plugin_system_status()
+            await self._refresh_plugin_system_status()
             await self._refresh_session_controls()
             return tuple(
                 replace(
@@ -414,7 +399,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         menu: ChoiceScreen | None,
         return_to_catalog: bool,
     ) -> None:
-        plugin = self._controller.plugin(plugin_id)
+        plugin = await self._controller.plugin(plugin_id)
         selected = await (
             menu.open_child(
                 ConfirmationScreen(
@@ -445,18 +430,21 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        self._refresh_plugin_system_status()
+        await self._refresh_plugin_system_status()
         await self._refresh_session_controls()
         if menu is not None:
             if return_to_catalog:
                 menu.pop_page(
-                    choices=_plugin_choices(self._controller.plugins(), theme=theme_for(self)),
+                    choices=_plugin_choices(
+                        await self._controller.plugins(), theme=theme_for(self)
+                    ),
                     initial_value=plugin_id,
                 )
             else:
                 menu.pop_page()
 
-    def _refresh_plugin_system_status(self) -> None:
+    async def _refresh_plugin_system_status(self) -> None:
+        plugins = await self._controller.plugins()
         skill_names = self._controller.runtime_skill_names()
         self._system_status = project_plugin_system_status(
             replace(
@@ -464,7 +452,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 skill_count=len(skill_names),
                 skill_names=skill_names,
             ),
-            self._controller.plugins(),
+            plugins,
         )
         self.query_one(ConversationView).set_system_status(self._system_status)
 

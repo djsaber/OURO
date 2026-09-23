@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -118,6 +119,56 @@ def _remote_tool(name: str = "read") -> MCPRemoteTool:
         output_schema={"type": "object"},
         annotations={"readOnlyHint": True},
     )
+
+
+async def test_default_factory_load_is_lazy_and_off_the_event_loop(monkeypatch):
+    factory = FakeFactory(FakeSession())
+    loop_thread = threading.get_ident()
+    calls = []
+
+    def load_factory():
+        calls.append(threading.get_ident())
+        assert calls[-1] != loop_thread
+        return factory
+
+    monkeypatch.setattr("ouro.mcp.manager._default_client_factory", load_factory)
+    manager = MCPManager()
+    manager.configure(_config())
+    assert calls == []
+    try:
+        assert (await manager.start("fs")).status == "connected"
+        assert len(calls) == 1
+    finally:
+        await manager.close()
+    assert factory.close_count == 1
+
+
+async def test_stop_during_default_factory_load_does_not_open_transport(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    factory = FakeFactory(FakeSession())
+
+    def load_factory():
+        entered.set()
+        assert release.wait(5)
+        return factory
+
+    monkeypatch.setattr("ouro.mcp.manager._default_client_factory", load_factory)
+    manager = MCPManager()
+    manager.configure(_config())
+    try:
+        await manager.start_background("fs")
+        assert await asyncio.to_thread(entered.wait, 5)
+        stopping = asyncio.create_task(manager.stop("fs"))
+        # The stop flag is set before the owner resumes loading the transport.
+        while manager.get("fs").status != "stopping":
+            await asyncio.sleep(0)
+        release.set()
+        await stopping
+        assert factory.open_count == 0
+    finally:
+        release.set()
+        await manager.close()
 
 
 @pytest.mark.asyncio

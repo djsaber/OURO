@@ -24,7 +24,6 @@ from ouro.mcp.models import (
     MCPServerRecord,
     MCPServerStatus,
 )
-from ouro.mcp.sdk import SDKMCPClientFactory
 from ouro.mcp.tool_adapter import adapt_mcp_tool, mcp_tool_result
 from ouro.tools import (
     Tool,
@@ -69,7 +68,7 @@ class MCPManager:
         self._runtimes: dict[str, _ServerRuntime] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._registry = registry
-        self._client_factory = client_factory or SDKMCPClientFactory()
+        self._client_factory = client_factory
         self._resolve_credential = resolve_credential or _default_credential_resolver
         self._diagnostics: dict[str, deque[MCPDiagnostic]] = {}
         self._diagnostic_limit = diagnostic_limit
@@ -317,12 +316,17 @@ class MCPManager:
         config = self.get(server_id).config
         runtime.connection_config = config
         reconnect_attempt = 0
+        client_factory = self._client_factory
         try:
             while not runtime.stop.is_set():
                 status: MCPServerStatus = "reconnecting" if reconnect_attempt else "starting"
                 self._update(server_id, status=status, error=None)
                 try:
-                    async with self._client_factory.open(
+                    if client_factory is None:
+                        client_factory = await asyncio.to_thread(_default_client_factory)
+                    if runtime.stop.is_set():
+                        break
+                    async with client_factory.open(
                         config,
                         resolve_credential=self._resolve_credential,
                         diagnostic=lambda level, message: self._record_diagnostic(
@@ -592,6 +596,14 @@ async def _wait_for_runtime_event(
             if not waiter.done():
                 waiter.cancel()
         await asyncio.gather(*waiters, return_exceptions=True)
+
+
+def _default_client_factory() -> MCPClientFactory:
+    # Loading the SDK belongs to connection startup, not configuration imports
+    # or Hosts with no MCP servers. The owner calls this outside the event loop.
+    from ouro.mcp.sdk import SDKMCPClientFactory
+
+    return SDKMCPClientFactory()
 
 
 def _default_credential_resolver(reference: str) -> str | None:

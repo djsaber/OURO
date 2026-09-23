@@ -91,8 +91,7 @@ def model_choices(
             model_display_label(model),
             trailing=(
                 model.model_id
-                if model.display_name
-                and model.display_name.casefold() != model.model_id.casefold()
+                if model.display_name and model.display_name.casefold() != model.model_id.casefold()
                 else ""
             ),
             marker=theme.selected_choice_marker if model.key == selected else "",

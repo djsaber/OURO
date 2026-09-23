@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from ouro.core.context import ContextBuilder, estimate_message_tokens
+from ouro.core.context import ContextBuilder, estimate_message_tokens, estimate_text_tokens
 from ouro.core.context_providers import ContextFragment
 from ouro.core.messages import (
     ImageContent,
@@ -13,6 +13,14 @@ from ouro.core.messages import (
     ToolResultReference,
 )
 from ouro.core.tools import ToolCallRequest
+
+
+@pytest.mark.parametrize(
+    ("text", "tokens"),
+    [("", 0), ("abcd", 1), ("abcde", 2), ("中文", 2), ("a中😀é", 4), ("\x00\x7f\x80", 2)],
+)
+def test_conservative_estimate_counts_ascii_and_unicode(text, tokens):
+    assert estimate_text_tokens(text) == tokens
 
 
 def test_context_builder_rejects_non_positive_token_budget() -> None:

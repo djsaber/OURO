@@ -40,9 +40,7 @@ async def test_header_editor_preserves_secrets_and_explicitly_replaces_or_clears
         await pilot.pause()
         assert screen._values["provider-headers"] == ""
         assert screen._draft().headers is None
-        await app._controller.update_provider(
-            provider_id, replace(screen._draft(), timeout=17)
-        )
+        await app._controller.update_provider(provider_id, replace(screen._draft(), timeout=17))
         from ouro.config import ProviderConfigManager
 
         configs = ProviderConfigManager(tmp_path)
@@ -171,7 +169,7 @@ async def test_create_custom_provider_through_protocol_entry_and_preserve_on_edi
                         if protocol != "anthropic-messages"
                         else "openai-chat-completions"
                     ),
-                )
+                ),
             )
         assert facade.providers.config_path.read_bytes() == before
 

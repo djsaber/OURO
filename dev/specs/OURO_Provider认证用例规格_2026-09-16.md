@@ -1,7 +1,6 @@
 # Provider 认证用例规格
 
 > 文档类型：现行规格
-> 代码基线：2026-09-16
 > 范围：可注入驱动的 Application 登录与凭据管理，已接入轻量本地组合与 CLI；现有模型协议和 Runtime 共享认证已接线；通用 TUI 认证管理已接线；生产驱动尚未接入。
 
 `application/provider_auth.py` 编排认证用例，`provider_auth_models.py` 定义公开 DTO，`provider_auth_bindings.py` 拥有配置绑定快照与提交检查。持久化及 revision 以[凭据核心规格](OURO_凭据核心规格_2026-09-16.md)为准；网络授权以[认证驱动与授权规格](OURO_认证驱动与授权规格_2026-09-16.md)为准。剩余接入工作见[实施计划](../plans/OURO_模型订阅认证实施计划_2026-09-16.md)。

@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ouro.application.resources import ResourceService
 from ouro.application.session_models import (
     SessionCatalogQuery,
     SessionCatalogStatus,
@@ -658,14 +657,6 @@ def _sessions(
     session_backend: SessionBackend | None,
 ) -> SessionService:
     return build_local_session_services(home, session_backend=session_backend).sessions
-
-
-def _session_resources(
-    home: str | Path | None,
-    session_backend: SessionBackend | None,
-) -> tuple[SessionService, ResourceService]:
-    services = build_local_session_services(home, session_backend=session_backend)
-    return services.sessions, services.resources
 
 
 def _print_error(exc: Exception, *, json_mode: bool) -> None:

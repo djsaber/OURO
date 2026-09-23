@@ -183,9 +183,7 @@ def _choice_option(
     if choice.swatches:
         palette = Text(no_wrap=True)
         leading_mark = (
-            theme.spinner_frames[spinner_frame]
-            if choice.loading
-            else theme.session_node_mark
+            theme.spinner_frames[spinner_frame] if choice.loading else theme.session_node_mark
         )
         palette.append(leading_mark, style=choice.leading_swatch or choice.accent or "")
         palette.append("  ")
