@@ -3,11 +3,13 @@ from __future__ import annotations
 import pytest
 
 from ouro.application.agent_definitions import AgentDefinitionService
+from ouro.application.configuration import ConfigurationFacade
 from ouro.application.runtime import RuntimeService
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import AgentSpawnPolicy, ToolSelection
 from ouro.core.errors import ConfigError
+from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.provider import ModelMetadata
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
@@ -74,6 +76,29 @@ def test_general_and_custom_definitions_share_one_catalog_pipeline(tmp_path) -> 
         "Write",
     }
     assert [item.public_name for item in snapshot.resolve("reader").effective_tools] == ["Read"]
+
+
+def test_default_subagent_model_requires_explicit_system_route(tmp_path) -> None:
+    service = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    options = dict(
+        agent_id="reader",
+        name="Reader",
+        description="Read evidence.",
+        system_prompt="Read carefully.",
+        tool_selection=ToolSelection(mode="all"),
+        model=DEFAULT_MODEL,
+        tools=_registry(),
+        expected_revision=0,
+    )
+    with pytest.raises(ConfigError, match="system default endpoint is not configured"):
+        service.create(**options)
+
+    ConfigurationFacade(tmp_path).add_provider(
+        display_name="Primary", provider_type="openai", make_default=True
+    )
+    catalog = service.create(**options)
+    assert catalog.definitions[1].model == DEFAULT_MODEL
+    assert service.default_model_route().count("/") == 1
 
 
 def test_missing_selected_tool_keeps_definition_but_excludes_it_from_resolution(tmp_path) -> None:

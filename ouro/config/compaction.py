@@ -6,6 +6,7 @@ from pathlib import Path
 from pydantic import Field, field_validator, model_validator
 
 from ouro.config.file import JsonConfigFile, atomic_config_update
+from ouro.config.providers import ProviderConfigManager
 from ouro.core.base import OuroModel
 from ouro.core.compaction import CompactionPolicy
 from ouro.core.errors import ConfigError
@@ -22,6 +23,7 @@ class CompactionModelConfig(OuroModel):
 
     provider_id: str | None = None
     endpoint_id: str | None = None
+    use_default_model: bool = False
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_output_tokens: int | None = Field(default=None, ge=1)
     reasoning: ReasoningRequest | None = None
@@ -40,19 +42,25 @@ class CompactionModelConfig(OuroModel):
             raise ValueError(
                 "compaction model provider_id and endpoint_id must be configured together"
             )
+        if self.use_default_model and self.has_dedicated_endpoint:
+            raise ValueError("default model cannot be combined with a dedicated endpoint")
         has_request_overrides = any(
             value is not None
             for value in (self.temperature, self.max_output_tokens, self.reasoning)
         )
-        if has_request_overrides and not self.has_dedicated_endpoint:
+        if has_request_overrides and not self.has_configured_route:
             raise ValueError(
-                "compaction model request overrides require a dedicated model endpoint"
+                "compaction model request overrides require a default or dedicated model endpoint"
             )
         return self
 
     @property
     def has_dedicated_endpoint(self) -> bool:
         return self.provider_id is not None and self.endpoint_id is not None
+
+    @property
+    def has_configured_route(self) -> bool:
+        return self.use_default_model or self.has_dedicated_endpoint
 
 
 class CompactionConfig(OuroModel):
@@ -91,6 +99,8 @@ class CompactionConfigManager:
             validated = CompactionConfig.model_validate(config.model_dump())
         except ValueError as exc:
             raise ConfigError(f"invalid compaction config: {exc}") from exc
+        if validated.model.use_default_model:
+            ProviderConfigManager(self.file.root).require_default_route()
         raw = self.file.read()
         raw["compaction"] = validated.model_dump(mode="json", exclude_none=True)
         self.file.write(raw)
@@ -107,6 +117,7 @@ class CompactionConfigManager:
         provider_id: str | None = None,
         endpoint_id: str | None = None,
         use_runtime_endpoint: bool = False,
+        use_default_model: bool = False,
         temperature: float | None = None,
         max_output_tokens: int | None = None,
         reasoning: ReasoningRequest | None = None,
@@ -119,6 +130,7 @@ class CompactionConfigManager:
             provider_id=provider_id,
             endpoint_id=endpoint_id,
             use_runtime_endpoint=use_runtime_endpoint,
+            use_default_model=use_default_model,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
             reasoning=reasoning,
@@ -134,6 +146,7 @@ class CompactionConfigManager:
         provider_id: str | None = None,
         endpoint_id: str | None = None,
         use_runtime_endpoint: bool = False,
+        use_default_model: bool = False,
         temperature: float | None = None,
         max_output_tokens: int | None = None,
         reasoning: ReasoningRequest | None = None,
@@ -141,24 +154,31 @@ class CompactionConfigManager:
     ) -> CompactionModelConfig:
         """Build a validated model update without mutating durable configuration."""
 
-        if use_runtime_endpoint and any(
-            value is not None
-            for value in (
-                provider_id,
-                endpoint_id,
-                temperature,
-                max_output_tokens,
-                reasoning,
+        if (
+            use_runtime_endpoint
+            and any(
+                value is not None
+                for value in (
+                    provider_id,
+                    endpoint_id,
+                    temperature,
+                    max_output_tokens,
+                    reasoning,
+                )
             )
+            or (use_runtime_endpoint and use_default_model)
         ):
             raise ConfigError(
                 "use_runtime_endpoint cannot be combined with a model route or request override"
             )
+        if use_default_model and (provider_id is not None or endpoint_id is not None):
+            raise ConfigError("default model cannot be combined with a dedicated endpoint")
         if clear and any(
             (
                 provider_id is not None,
                 endpoint_id is not None,
                 use_runtime_endpoint,
+                use_default_model,
                 temperature is not None,
                 max_output_tokens is not None,
                 reasoning is not None,
@@ -174,16 +194,20 @@ class CompactionConfigManager:
                 {
                     "provider_id": None,
                     "endpoint_id": None,
+                    "use_default_model": False,
                     "temperature": None,
                     "max_output_tokens": None,
                     "reasoning": None,
                 }
             )
+        elif use_default_model:
+            updates.update({"provider_id": None, "endpoint_id": None, "use_default_model": True})
         elif provider_id is not None or endpoint_id is not None:
             updates.update(
                 {
                     "provider_id": provider_id or model.provider_id,
                     "endpoint_id": endpoint_id or model.endpoint_id,
+                    "use_default_model": False,
                 }
             )
         if temperature is not None:

@@ -80,6 +80,32 @@ def test_new_task_uses_system_wall_time_and_edit_preserves_explicit_zone(
     )
     edited = TaskConfigurationScreen(models=(model,), workspace=None, configuration=explicit)
     assert edited.draft().schedule.timezone == "UTC"
+    screen._values["model"] = "default"
+    with pytest.raises(ValueError, match="System default endpoint is not configured"):
+        screen.draft()
+    screen._system_default_model = model
+    assert screen.draft().model == "default"
+    with_default = TaskConfigurationScreen(
+        models=(model,),
+        workspace=str(tmp_path),
+        default_model="default",
+        system_default_model=model,
+    )
+    assert with_default._values["model"] == "default"
+
+
+async def test_new_task_preselects_configured_system_default_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    ConfigurationFacade(tmp_path).add_provider(
+        display_name="Primary", provider_type="openai", make_default=True
+    )
+    app = OuroTuiApp(application=LocalApplication.build(tmp_path))
+    async with run_ready_app(app, size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await choose(pilot, app, "Create task")
+        await _wait_for_screen(app, TaskConfigurationScreen, title="CREATE TASK")
+        assert app.screen._values["model"] == "default"
 
 
 async def test_task_menu_saves_multiline_instructions_and_pauses_schedule(tmp_path):
@@ -266,7 +292,7 @@ async def test_task_picker_marks_and_focuses_selected_option(tmp_path, field, ti
             ]
 
 
-async def test_new_task_uses_default_endpoint_independently_of_session_model(tmp_path):
+async def test_new_task_uses_symbolic_default_independently_of_session_model(tmp_path):
     configuration = ConfigurationFacade(tmp_path)
     routes = {}
     for provider_name in ("alpha", "zeta"):
@@ -295,17 +321,19 @@ async def test_new_task_uses_default_endpoint_independently_of_session_model(tmp
         await pilot.press("ctrl+p")
         await choose(pilot, app, "Create task")
         await _wait_for_screen(app, TaskConfigurationScreen, title="CREATE TASK")
-        assert app.screen._values["model"] == routes["zeta"]
+        assert app.screen._values["model"] == "default"
+        assert app.screen._system_default_model.key == routes["zeta"]
         model_row = next(choice for choice in app.screen._choices if choice.value == "model")
-        assert model_row.trailing == "Chat • Zeta"
+        assert model_row.trailing == "Default model"
         await pilot.press("escape")
         alpha_provider, alpha_endpoint = routes["alpha"].split("/", 1)
         configuration.use_endpoint(alpha_provider, alpha_endpoint)
         await choose(pilot, app, "Create task")
         await _wait_for_screen(app, TaskConfigurationScreen, title="CREATE TASK")
-        assert app.screen._values["model"] == routes["alpha"]
+        assert app.screen._values["model"] == "default"
+        assert app.screen._system_default_model.key == routes["alpha"]
         model_row = next(choice for choice in app.screen._choices if choice.value == "model")
-        assert model_row.trailing == "Chat • Alpha"
+        assert model_row.trailing == "Default model"
         await pilot.press("escape")
 
 

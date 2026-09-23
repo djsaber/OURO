@@ -585,7 +585,12 @@ def build_local_runtime(
         compaction_adapter_error=compaction_adapter_error,
         compaction_adapter_resolver=(
             lambda: model_catalog.adapter_for(
-                f"{resolved.compaction.model.provider_id}/{resolved.compaction.model.endpoint_id}"
+                configuration.default_model_route()
+                if resolved.compaction.model.use_default_model
+                else (
+                    f"{resolved.compaction.model.provider_id}/"
+                    f"{resolved.compaction.model.endpoint_id}"
+                )
             )
         )
         if compaction_adapter is not None
@@ -767,7 +772,7 @@ def _configured_compaction_adapter(
     *,
     adapter_builder: AdapterBuilder,
 ) -> tuple[RuntimeAdapter | None, str | None]:
-    if not config.model.has_dedicated_endpoint:
+    if not config.model.has_configured_route:
         return None, None
     try:
         options = configuration.compaction_provider_options(config)

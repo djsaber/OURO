@@ -101,6 +101,7 @@ from ouro.core.errors import ConfigError, PersistenceError, SessionNotFoundError
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
+from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.reasoning import ReasoningRequest, resolve_reasoning
 from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
@@ -625,6 +626,18 @@ class TuiController:
         resource_refs: tuple[str, ...] = (),
     ) -> RunResult:
         runtime = self._runtime()
+        available = runtime.available_models()
+        if not available:
+            raise ConfigError("add a provider and endpoint before sending a message")
+        selected = (
+            runtime.resolve_model(self._initial_model)
+            if self._session_id is None and self._initial_model is not None
+            else runtime.current_model(self._session_id)
+        )
+        if selected.provider_id == "faux" and any(
+            model.provider_id != "faux" for model in available
+        ):
+            raise ConfigError("select an available model before sending a message")
         is_new_session = self._session_id is None
         if is_new_session:
             self._creating_session = True
@@ -1050,6 +1063,12 @@ class TuiController:
     async def default_model(self) -> AvailableModel:
         """Resolve the deployment default independently of the open Session or draft."""
         return await asyncio.to_thread(self._runtime().current_model)
+
+    async def configured_default_model(self) -> AvailableModel | None:
+        try:
+            return await asyncio.to_thread(self._runtime().configured_default_model)
+        except ConfigError:
+            return None
 
     async def provider_catalog(self) -> ProviderCatalogView:
         configuration = self._require_configuration()
@@ -1837,10 +1856,13 @@ class TuiController:
         provider_id: str | None = None
         endpoint_id: str | None = None
         if draft.model_key is not None:
-            provider_id, separator, endpoint_id = draft.model_key.partition("/")
-            if not separator or not provider_id or not endpoint_id:
-                raise ConfigError(f"invalid compaction model route: {draft.model_key}")
-            model = self._runtime().resolve_model(draft.model_key)
+            if draft.model_key == DEFAULT_MODEL:
+                model = self._runtime().configured_default_model()
+            else:
+                provider_id, separator, endpoint_id = draft.model_key.partition("/")
+                if not separator or not provider_id or not endpoint_id:
+                    raise ConfigError(f"invalid compaction model route: {draft.model_key}")
+                model = self._runtime().resolve_model(draft.model_key)
             if (
                 draft.max_output_tokens is not None
                 and draft.max_output_tokens > model.max_output_tokens
@@ -1858,7 +1880,7 @@ class TuiController:
             for value in (draft.temperature, draft.max_output_tokens, draft.reasoning)
         ):
             raise ConfigError(
-                "compaction model request overrides require a dedicated model endpoint"
+                "compaction model request overrides require a default or dedicated model endpoint"
             )
         return self._require_configuration().save_compaction(
             CompactionConfigInput(
@@ -1869,6 +1891,7 @@ class TuiController:
                 target_ratio=draft.target_ratio,
                 provider_id=provider_id,
                 endpoint_id=endpoint_id,
+                use_default_model=draft.model_key == DEFAULT_MODEL,
                 temperature=draft.temperature,
                 max_output_tokens=draft.max_output_tokens,
                 reasoning=draft.reasoning,

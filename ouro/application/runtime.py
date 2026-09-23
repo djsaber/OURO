@@ -285,7 +285,7 @@ class RuntimeService:
         self.compaction_strategies = compaction_strategies or CompactionStrategyRegistry()
         configured_adapter_error = compaction_adapter_error
         if (
-            self.compaction_config.model.has_dedicated_endpoint
+            self.compaction_config.model.has_configured_route
             and compaction_adapter is None
             and configured_adapter_error is None
         ):
@@ -935,6 +935,11 @@ class RuntimeService:
         """Resolve and validate a model route before it is attached to a session."""
 
         model = self.models.resolve(selector)
+        self.models.adapter_for(model.key)
+        return model
+
+    def configured_default_model(self) -> AvailableModel:
+        model = self.models.configured_default_model()
         self.models.adapter_for(model.key)
         return model
 

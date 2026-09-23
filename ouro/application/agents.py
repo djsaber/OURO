@@ -58,6 +58,7 @@ from ouro.core.agents import (
 from ouro.core.base import new_id, utc_now
 from ouro.core.callbacks import run_blocking
 from ouro.core.errors import DelegationRevisionConflictError, PersistenceError, SessionBusyError
+from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.redaction import redact_text
 from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason
 from ouro.core.run_transitions import plan_run_transition
@@ -217,6 +218,14 @@ class AgentService:
         self._result_locks: dict[str, asyncio.Lock] = {}
         self._closed = False
 
+    def _selected_model(self, configured: str | None, inherited: str | None) -> str | None:
+        if configured == DEFAULT_MODEL:
+            route = self.definitions.default_model_route()
+            if not self.spawn_policy.allows_model(route):
+                raise ValueError("system default model is not allowed by the subagent policy")
+            return route
+        return configured or inherited
+
     def constrain_catalog(self, catalog: AgentCatalogSnapshot) -> AgentCatalogSnapshot:
         """Freeze the exact definitions and tool capabilities this service can spawn."""
 
@@ -232,7 +241,10 @@ class AgentService:
             )
             for entry in catalog.entries
             if self.spawn_policy.allows_agent(entry.definition.agent_id)
-            and self.spawn_policy.allows_model(entry.definition.model)
+            and (
+                entry.definition.model == DEFAULT_MODEL
+                or self.spawn_policy.allows_model(entry.definition.model)
+            )
         )
         return AgentCatalogSnapshot(
             revision=catalog.revision,
@@ -560,6 +572,10 @@ class AgentService:
         entry = self._resolve_parent_catalog(parent_run, request.agent_id)
         assert parent_run.agent_catalog is not None
         policy = parent_run.agent_catalog.spawn_policy
+        if entry.definition.model == DEFAULT_MODEL and not policy.allows_model(
+            self.definitions.default_model_route()
+        ):
+            raise ValueError("system default model is not allowed by the subagent policy")
         if request.execution_mode not in policy.allowed_execution_modes:
             raise ValueError(f"subagent execution mode is not allowed: {request.execution_mode}")
         if request.lifecycle_binding not in policy.allowed_lifecycle_bindings:
@@ -813,7 +829,9 @@ class AgentService:
                 title=relation.nickname or relation.definition.name,
                 workspace=relation.constraints.workspace,
                 workspace_trusted=parent_session.workspace_trusted,
-                current_model=relation.definition.model or parent_session.current_model,
+                current_model=self._selected_model(
+                    relation.definition.model, parent_session.current_model
+                ),
                 approval_mode=relation.approval_mode,
                 interaction_mode=relation.interaction_mode,
             )
@@ -853,7 +871,7 @@ class AgentService:
                 parent_run_id=parent_run.run_id,
                 initiator_id=f"ouro.subagents/{relation.delegation_id}",
                 trigger="subagent",
-                model=(relation.definition.model or parent_run.model),
+                model=self._selected_model(relation.definition.model, parent_run.model),
                 metadata={
                     **self._extension_metadata(parent_run),
                     "delegation_id": relation.delegation_id,
@@ -1086,7 +1104,7 @@ class AgentService:
             parent_run_id=relation.parent_run_id,
             initiator_id=f"ouro.subagents/{relation.delegation_id}",
             trigger="continue" if continuation is not None else "subagent_follow_up",
-            model=relation.definition.model or child.current_model,
+            model=self._selected_model(relation.definition.model, child.current_model),
             metadata={
                 **(self._extension_metadata(previous_run) if continuation is None else {}),
                 "delegation_id": relation.delegation_id,

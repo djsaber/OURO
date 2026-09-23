@@ -441,11 +441,12 @@ class ActivityIndicator(Static):
             theme.danger if self._approval_mode in {"auto", "afk"} else theme.text_faint
         )
         content.append(self._approval_mode, style=approval_style)
-        content.append(
-            theme.section_separator,
-            style=theme.separator_tone,
-        )
-        content.append(self._model, style=theme.text_faint)
+        if self._model:
+            content.append(
+                theme.section_separator,
+                style=theme.separator_tone,
+            )
+            content.append(self._model, style=theme.text_faint)
         if self._reasoning:
             style = f"bold {accent}" if self._reasoning_peak else theme.text_faint
             content.append(

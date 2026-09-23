@@ -53,6 +53,8 @@ class RuntimeAdapterCatalog(Protocol):
 
     def default_model(self) -> AvailableModel: ...
 
+    def configured_default_model(self) -> AvailableModel: ...
+
     def resolve(self, selector: str) -> AvailableModel: ...
 
     def adapter_for(self, selector: str) -> RuntimeAdapter: ...
@@ -72,6 +74,9 @@ class FixedRuntimeAdapterCatalog:
 
     def default_model(self) -> AvailableModel:
         return self._model
+
+    def configured_default_model(self) -> AvailableModel:
+        raise ConfigError("system default endpoint is not configured")
 
     def resolve(self, selector: str) -> AvailableModel:
         normalized = selector.strip()
@@ -176,6 +181,11 @@ class ConfiguredModelCatalog:
                 except ConfigError:
                     pass
         return _available_model(self._default_adapter.model)
+
+    def configured_default_model(self) -> AvailableModel:
+        """Resolve the user-selected system route without startup or Faux fallbacks."""
+
+        return self.resolve(self._configs.require_default_route())
 
     def _configured_default_route(self) -> str | None:
         try:

@@ -294,9 +294,7 @@ class LLMSummaryCompactionStrategy:
                     route="configured",
                 )
             )
-        runtime_route = (
-            "runtime_fallback" if self.model_config.has_dedicated_endpoint else "runtime"
-        )
+        runtime_route = "runtime_fallback" if self.model_config.has_configured_route else "runtime"
         runtime_adapter = (
             self.runtime_adapter_resolver(session_id)
             if self.runtime_adapter_resolver is not None

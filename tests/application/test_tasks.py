@@ -17,6 +17,7 @@ from ouro.automation.models import TaskConfiguration, TaskConflictError, TaskRec
 from ouro.automation.sqlite import SQLiteTaskRepository
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError, PersistenceError
+from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.state import RunRecord
 from ouro.providers import FauxProvider
@@ -125,6 +126,25 @@ async def test_due_task_runs_with_persisted_configuration_through_shared_runtime
         assert len(await tasks.executions(task.task_id)) == 1
         assert not execution._handles
         assert not supervisor._completion_events
+
+
+async def test_default_task_model_is_resolved_at_dispatch_without_freezing_configuration(
+    tmp_path, monkeypatch
+) -> None:
+    async with task_runtime(tmp_path) as (tasks, execution, _, _):
+        config = configuration(tmp_path).model_copy(update={"model": DEFAULT_MODEL})
+        with pytest.raises(ConfigError, match="system default endpoint is not configured"):
+            await tasks.create(config)
+
+        monkeypatch.setattr(
+            tasks.runtime, "configured_default_model", lambda: tasks.runtime.current_model()
+        )
+        task = await tasks.create(config)
+        assert task.configuration.model == DEFAULT_MODEL
+        await execution.tick()
+        completed = await settle(tasks, execution, task.task_id)
+        session = tasks.runtime.store.load_session(completed.session_id)
+        assert session.session.current_model == "faux/task"
 
 
 @pytest.mark.parametrize("mode", ["new", "reuse"])

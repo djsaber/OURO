@@ -272,6 +272,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             models=models,
             strategy_ids=strategies,
             theme=theme_for(self),
+            system_default_model=await self._controller.configured_default_model(),
         )
         draft = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
@@ -290,7 +291,9 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             else None
         )
         label = (
-            model_selection_label(route, models, theme=theme_for(self))
+            "default model"
+            if saved.model.use_default_model
+            else model_selection_label(route, models, theme=theme_for(self))
             if route
             else "conversation model"
         )
@@ -544,7 +547,12 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        screen = AgentDefinitionConfigurationScreen(tools, models, theme=theme_for(self))
+        screen = AgentDefinitionConfigurationScreen(
+            tools,
+            models,
+            theme=theme_for(self),
+            system_default_model=await self._controller.configured_default_model(),
+        )
         draft = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
         )
@@ -632,6 +640,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             models,
             existing,
             theme=theme_for(self),
+            system_default_model=await self._controller.configured_default_model(),
         )
         draft = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)

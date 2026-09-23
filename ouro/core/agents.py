@@ -12,6 +12,7 @@ from pydantic import Field, field_validator, model_validator
 from ouro.core.approvals import PermissionMode, SessionApprovalMode
 from ouro.core.base import OuroModel, VersionedOuroModel, new_id, utc_now
 from ouro.core.interactions import SessionInteractionMode
+from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.run_budget import RunBudgetPolicy
 
 AgentSource = Literal["builtin", "user"]
@@ -199,7 +200,9 @@ class AgentCatalogSnapshot(VersionedOuroModel):
         for entry in self.entries:
             if not self.spawn_policy.allows_agent(entry.definition.agent_id):
                 raise ValueError("agent catalog exceeds its agent_id spawn policy")
-            if not self.spawn_policy.allows_model(entry.definition.model):
+            if entry.definition.model != DEFAULT_MODEL and not self.spawn_policy.allows_model(
+                entry.definition.model
+            ):
                 raise ValueError("agent catalog exceeds its model spawn policy")
             if any(not self.spawn_policy.allows_tool(tool) for tool in entry.effective_tools):
                 raise ValueError("agent catalog exceeds its tool spawn policy")

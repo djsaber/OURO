@@ -101,6 +101,17 @@ class ProviderConfigManager:
         providers = {provider.provider_id: provider for provider in snapshot.providers}
         return providers.get(snapshot.default_provider_id) or builtin_faux_provider()
 
+    def require_default_route(self) -> str:
+        """Return the explicitly selected user route, excluding the Faux fallback."""
+
+        provider = self.default_provider()
+        if provider.provider_id == BUILTIN_FAUX_PROVIDER_ID or not provider.enabled:
+            raise ConfigError("system default endpoint is not configured")
+        endpoint = provider.endpoint()
+        if endpoint is None:
+            raise ConfigError("system default endpoint is not configured")
+        return f"{provider.provider_id}/{endpoint.endpoint_id}"
+
     def resolve_runtime_options(
         self,
         runtime_options: ProviderRuntimeOptions,
@@ -1035,10 +1046,14 @@ class ProviderConfigManager:
                 raise ConfigError("built-in provider cannot be removed: faux")
             raise ConfigError(f"provider not found: {provider_id}")
 
+        if self._default_provider_id(raw, configured) == provider_id:
+            raise ConfigError(
+                f"cannot remove the default provider: {provider_id}; "
+                "select another default provider first"
+            )
+
         del configured[provider_id]
         default_provider_id = self._default_provider_id(raw, configured)
-        if default_provider_id == provider_id:
-            default_provider_id = BUILTIN_FAUX_PROVIDER_ID
         self._save_configured_providers(
             raw,
             configured=configured,
@@ -1055,6 +1070,14 @@ class ProviderConfigManager:
         endpoints = {endpoint.endpoint_id: endpoint for endpoint in provider.endpoints}
         if endpoint_id not in endpoints:
             raise ConfigError(f"endpoint not found: {provider_id}/{endpoint_id}")
+        if (
+            self._default_provider_id(raw, configured) == provider_id
+            and provider.default_endpoint == endpoint_id
+        ):
+            raise ConfigError(
+                f"cannot remove the default endpoint: {provider_id}/{endpoint_id}; "
+                "select another default endpoint first"
+            )
         del endpoints[endpoint_id]
         default_endpoint = provider.default_endpoint
         if default_endpoint == endpoint_id:
@@ -1067,8 +1090,6 @@ class ProviderConfigManager:
         )
         configured[provider_id] = updated_provider
         default_provider_id = self._default_provider_id(raw, configured)
-        if default_provider_id == provider_id and updated_provider.endpoint() is None:
-            default_provider_id = BUILTIN_FAUX_PROVIDER_ID
         self._save_configured_providers(
             raw,
             configured=configured,
@@ -1128,13 +1149,30 @@ class ProviderConfigManager:
         previous_default_provider_id = self._default_provider_id(raw, configured)
         if make_default and (not provider.enabled or provider.endpoint() is None):
             raise ConfigError("a default provider must be enabled and have a default endpoint")
+        previous = configured.get(provider.provider_id)
+        if previous_default_provider_id == provider.provider_id and previous is not None:
+            if not provider.enabled:
+                raise ConfigError(
+                    f"cannot disable the default provider: {provider.provider_id}; "
+                    "select another default provider first"
+                )
+            if not make_default and provider.default_endpoint != previous.default_endpoint:
+                raise ConfigError(
+                    f"cannot change the default endpoint for {provider.provider_id}; "
+                    "select another default endpoint explicitly"
+                )
+            if (
+                previous.default_endpoint is not None
+                and provider.endpoint(previous.default_endpoint) is None
+            ):
+                raise ConfigError(
+                    f"cannot remove the default endpoint: "
+                    f"{provider.provider_id}/{previous.default_endpoint}; "
+                    "select another default endpoint first"
+                )
         configured[provider.provider_id] = provider
         if make_default:
             default_provider_id = provider.provider_id
-        elif previous_default_provider_id == provider.provider_id and (
-            not provider.enabled or provider.endpoint() is None
-        ):
-            default_provider_id = BUILTIN_FAUX_PROVIDER_ID
         else:
             default_provider_id = previous_default_provider_id
         self._save_configured_providers(
@@ -1192,8 +1230,6 @@ class ProviderConfigManager:
                     raise ConfigError("providers.default must be a non-empty string")
                 return default_id.strip()
 
-        if configured:
-            return sorted(configured)[0]
         return BUILTIN_FAUX_PROVIDER_ID
 
     def _save_configured_providers(

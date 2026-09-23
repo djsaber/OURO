@@ -103,10 +103,17 @@ def _validate_templates(raw: dict[str, Any]) -> None:
 
 def _validate_compaction_reference(home: Path, raw: dict[str, Any]) -> None:
     model = CompactionConfigManager(home).snapshot().model
-    if not model.has_dedicated_endpoint:
+    if not model.has_configured_route:
         return
     with TemporaryDirectory(prefix="ouro-route-check-") as directory:
         JsonConfigFile(directory, name="providers.json").write(raw)
-        provider = ProviderConfigManager(directory).get_provider(model.provider_id or "")
+        providers = ProviderConfigManager(directory)
+        if model.use_default_model:
+            try:
+                providers.require_default_route()
+            except ConfigError as exc:
+                raise DataTransferError("import would invalidate the default model") from exc
+            return
+        provider = providers.get_provider(model.provider_id or "")
         if provider is None or provider.endpoint(model.endpoint_id) is None:
             raise DataTransferError("import would invalidate the configured compaction model")

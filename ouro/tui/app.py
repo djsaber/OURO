@@ -1317,7 +1317,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _apply_bootstrap(self, bootstrap: TuiBootstrap) -> None:
         self._models = bootstrap.models
         self._sessions = bootstrap.sessions
-        self._active_model = model_display_label(bootstrap.current_model)
+        self._active_model = _status_model_label(bootstrap.current_model)
         status_line = self.query_one(StatusLine)
         status_line.set_model(self._active_model)
         status_line.set_activity("idle")
@@ -1989,7 +1989,29 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if panel.display and panel.awaiting_freeform:
                 panel.accept_freeform(message.text)
             return
+        try:
+            models = await self._controller.models()
+        except Exception as exc:  # noqa: BLE001 - keep the unsent draft on catalog failures.
+            self._edit_draft(message.text)
+            self.notify(str(exc), severity="error", markup=False)
+            return
+        if not models:
+            self._edit_draft(message.text)
+            self.notify("Add a provider and endpoint to send a message")
+            self._prompt_provider_setup()
+            return
+        if not self._active_model and any(model.provider_id != "faux" for model in models):
+            self._edit_draft(message.text)
+            self.notify("Select an available model with /model before sending")
+            return
         self._submit_run(message.text, message.mode)
+
+    @work(exclusive=True, group="provider-onboarding")
+    async def _prompt_provider_setup(self) -> None:
+        await self._add_provider()
+        models = await self._refresh_models()
+        if models and not self._active_model:
+            self.notify("Select a model with /model before sending your draft")
 
     def _submit_run(
         self,
@@ -3112,7 +3134,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             workspace=self._active_workspace,
         )
         status_line = self.query_one(StatusLine)
-        self._active_model = model_display_label(model)
+        self._active_model = _status_model_label(model)
         status_line.set_model(self._active_model)
         status_line.set_activity("idle")
         status_line.set_context(None)
@@ -3930,7 +3952,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception as exc:  # noqa: BLE001
             self.notify(str(exc), severity="error", markup=False)
             return
-        self._active_model = model_display_label(model)
+        self._active_model = _status_model_label(model)
         status_line = self.query_one(StatusLine)
         status_line.set_model(self._active_model)
         await self._refresh_reasoning_indicator()
@@ -4577,10 +4599,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         screen = self._theme_picker_ref() if self._theme_picker_ref is not None else None
         if screen is None:
             return
-        if (
-            screen.page_revision == self._theme_picker_revision
-            and await screen.refresh_choices()
-        ):
+        if screen.page_revision == self._theme_picker_revision and await screen.refresh_choices():
             return
         if screen.update_choices(
             self._theme_choices(),
@@ -4786,9 +4805,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     ) -> None:
         source_theme = theme if source is None else source
         self._tui_theme_saturation_level = (
-            source_theme.saturation_level()
-            if saturation_level is None
-            else saturation_level
+            source_theme.saturation_level() if saturation_level is None else saturation_level
         )
         if theme == self._tui_theme:
             return
@@ -4864,8 +4881,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
 
 def _model_display_name(route: str, models: tuple[AvailableModel, ...]) -> str:
+    if route.startswith("faux/"):
+        return ""
     model = next((candidate for candidate in models if candidate.key == route), None)
     return model_display_label(model) if model is not None else UNAVAILABLE_MODEL_LABEL
+
+
+def _status_model_label(model: AvailableModel) -> str:
+    return "" if model.provider_id == "faux" else model_display_label(model)
 
 
 def _runtime_event_frame_prefix(events: Sequence[EventRecord]) -> tuple[EventRecord, ...]:

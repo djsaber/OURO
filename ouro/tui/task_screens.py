@@ -9,6 +9,7 @@ from tzlocal import get_localzone_name
 
 from ouro.application.models import AvailableModel
 from ouro.automation.models import TaskConfiguration
+from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.reasoning import ReasoningRequest, resolve_reasoning
 from ouro.tui.controller import TUI_APPROVAL_PRESETS
 from ouro.tui.inline_editor import MultilineEditableChoiceScreen
@@ -56,9 +57,11 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
         models: tuple[AvailableModel, ...],
         workspace: str | None,
         default_model: str | None = None,
+        system_default_model: AvailableModel | None = None,
         configuration: TaskConfiguration | None = None,
     ) -> None:
         self._models = models
+        self._system_default_model = system_default_model
         self._local_timezone = get_localzone_name()
         config = configuration
         schedule = config.schedule if config is not None else None
@@ -68,7 +71,14 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
             "title": config.title or "" if config else "",
             "description": config.description if config else "",
             "workspace": config.workspace if config else workspace or "",
-            "model": config.model if config else default_model or "",
+            "model": (
+                config.model
+                if config
+                else default_model
+                if default_model == DEFAULT_MODEL
+                or any(model.key == default_model for model in models)
+                else ""
+            ),
             "approval": config.approval_mode if config else "afk",
             "session": config.session_mode if config else "new",
             "frequency": schedule.frequency if schedule else "daily",
@@ -128,8 +138,19 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
                 ChoiceScreen(
                     title="TASK MODEL",
                     placeholder="Choose a model…",
-                    choices=model_choices(
-                        self._models, selected=self._values[selected], theme=theme_for(self)
+                    choices=(
+                        Choice(
+                            DEFAULT_MODEL,
+                            "Default model",
+                            marker=theme_for(self).selected_choice_marker
+                            if self._values[selected] == DEFAULT_MODEL
+                            else "",
+                            group="MODEL SOURCE",
+                            disabled=self._system_default_model is None,
+                        ),
+                        *model_choices(
+                            self._models, selected=self._values[selected], theme=theme_for(self)
+                        ),
                     ),
                     initial_value=self._values[selected],
                 )
@@ -151,7 +172,9 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
             if value is not None:
                 self._values[selected] = value
         elif selected == "reasoning":
-            model = next(model for model in self._models if model.key == self._values["model"])
+            model = self._selected_model()
+            if model is None:
+                return
             current = self._reasoning_value()
             choices = reasoning_choices(model.reasoning, selected=current, theme=theme_for(self))
             if not choices:
@@ -209,7 +232,7 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
         return self._task_choices()
 
     def reasoning_options(self) -> dict[str, ReasoningRequest]:
-        model = next((model for model in self._models if model.key == self._values["model"]), None)
+        model = self._selected_model()
         return (
             {value: REASONING_REQUESTS[value] for value in reasoning_values(model.reasoning)}
             if model
@@ -217,7 +240,7 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
         )
 
     def _reasoning_value(self) -> str:
-        model = next((model for model in self._models if model.key == self._values["model"]), None)
+        model = self._selected_model()
         if model is not None:
             try:
                 return resolve_reasoning(model.reasoning, self._reasoning).variant
@@ -269,9 +292,13 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
                 },
             }
         )
-        model = next((model for model in self._models if model.key == config.model), None)
+        model = self._selected_model()
         if model is None:
-            raise ValueError("Select an available model")
+            raise ValueError(
+                "System default endpoint is not configured"
+                if config.model == DEFAULT_MODEL
+                else "Select an available model"
+            )
         resolve_reasoning(model.reasoning, config.reasoning)
         return config
 
@@ -324,7 +351,11 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
             if key == "approval":
                 display = value
             elif key == "model" and value:
-                display = model_selection_label(value, self._models, theme=theme_for(self))
+                display = (
+                    "Default model"
+                    if value == DEFAULT_MODEL
+                    else model_selection_label(value, self._models, theme=theme_for(self))
+                )
             elif key == "frequency":
                 display = FREQUENCY_LABELS[value]
             elif key == "reasoning":
@@ -352,6 +383,12 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
             Choice("save", "Save", description=error, group="ACTIONS", disabled=bool(error))
         )
         return tuple(rows)
+
+    def _selected_model(self) -> AvailableModel | None:
+        key = self._values["model"]
+        if key == DEFAULT_MODEL:
+            return self._system_default_model
+        return next((model for model in self._models if model.key == key), None)
 
 
 def _local_datetime(value: str, zone: ZoneInfo, *, end: bool = False) -> datetime:

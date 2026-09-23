@@ -9,6 +9,7 @@ from ouro.application.agent_models import (
     AgentToolOptionView,
 )
 from ouro.config.agents import AgentDefinitionsConfigManager
+from ouro.config.providers import ProviderConfigManager
 from ouro.core.agents import (
     AGENT_CONTROL_TOOL_NAMES,
     AgentCatalogEntry,
@@ -45,6 +46,10 @@ class AgentDefinitionService:
 
     def __init__(self, config: AgentDefinitionsConfigManager) -> None:
         self.config = config
+        self.providers = ProviderConfigManager(config.file.root)
+
+    def default_model_route(self) -> str:
+        return self.providers.require_default_route()
 
     def list(self, *, tools: ToolRegistry) -> AgentDefinitionCatalogView:
         config = self.config.snapshot()

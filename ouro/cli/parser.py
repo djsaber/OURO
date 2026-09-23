@@ -165,6 +165,13 @@ def _add_agent_parser(subparsers: argparse._SubParsersAction) -> None:
         command.add_argument("--name", required=True)
         command.add_argument("--description", required=True)
         command.add_argument("--system-prompt", required=True)
+        model_selection = command.add_mutually_exclusive_group()
+        model_selection.add_argument(
+            "--model", help="Specific provider/endpoint route or 'default'"
+        )
+        model_selection.add_argument(
+            "--session-model", action="store_true", help="Use the parent conversation model"
+        )
         command.add_argument("--all-tools", action="store_true")
         command.add_argument("--tool", dest="tool_names", action="append", default=[])
         command.add_argument("--expected-revision", type=int, required=True)
@@ -980,12 +987,15 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
   ouro config compaction --clear
 
 The session runtime route inherits each Session's complete model request configuration.
-Temperature, output-token, and thinking overrides require a dedicated model route.
+Temperature, output-token, and thinking overrides require a default or dedicated model route.
 --runtime-endpoint clears the dedicated route and all of its request overrides.""",
     )
     compaction_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     compaction_parser.add_argument("--provider", dest="provider_id", help="Provider id")
     compaction_parser.add_argument("--endpoint", dest="endpoint_id", help="Endpoint id")
+    compaction_parser.add_argument(
+        "--default-model", action="store_true", help="Use the system default endpoint"
+    )
     compaction_parser.add_argument(
         "--runtime-endpoint",
         action="store_true",

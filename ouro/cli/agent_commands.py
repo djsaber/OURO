@@ -58,7 +58,7 @@ async def _definition_command(args: argparse.Namespace) -> tuple[dict[str, Any],
                 description=args.description,
                 system_prompt=args.system_prompt,
                 tool_selection=_tool_selection(args),
-                model=None,
+                model=args.model,
                 tools=tools,
                 expected_revision=args.expected_revision,
             )
@@ -70,7 +70,13 @@ async def _definition_command(args: argparse.Namespace) -> tuple[dict[str, Any],
                 description=args.description,
                 system_prompt=args.system_prompt,
                 tool_selection=_tool_selection(args),
-                model=current.model,
+                model=(
+                    None
+                    if args.session_model
+                    else args.model
+                    if args.model is not None
+                    else current.model
+                ),
                 tools=tools,
                 expected_revision=args.expected_revision,
             )

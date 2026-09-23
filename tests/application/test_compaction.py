@@ -6,9 +6,10 @@ import pytest
 
 import ouro.application.compaction as compaction_module
 from ouro.application.compaction import LLMSummaryCompactionStrategy
+from ouro.application.configuration import ConfigurationFacade
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_configuration import RuntimeConfigurationResolver
-from ouro.config.compaction import CompactionConfig, CompactionModelConfig
+from ouro.config.compaction import CompactionConfig, CompactionConfigManager, CompactionModelConfig
 from ouro.config.prompts import PromptConfigManager, PromptDraft
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.compaction import (
@@ -263,6 +264,26 @@ def _append_turns(
                 sequence=sequence,
             )
         )
+
+
+def test_default_compaction_route_tracks_explicit_system_selection(tmp_path) -> None:
+    facade = ConfigurationFacade(tmp_path)
+    primary = facade.add_provider(display_name="Primary", provider_type="openai", make_default=True)
+    assert primary.changed_provider_id is not None
+    facade.update_compaction_model(use_default_model=True)
+    resolver = RuntimeConfigurationResolver(tmp_path)
+    config = CompactionConfigManager(tmp_path).snapshot()
+
+    first = resolver.compaction_provider_options(config)
+    assert first is not None
+    assert first.provider_id == primary.changed_provider_id
+
+    secondary = facade.add_provider(display_name="Secondary", provider_type="openai")
+    assert secondary.changed_provider_id is not None
+    facade.use_provider(secondary.changed_provider_id)
+    second = resolver.compaction_provider_options(config)
+    assert second is not None
+    assert second.provider_id == secondary.changed_provider_id
 
 
 @pytest.mark.parametrize("manual", [False, True])

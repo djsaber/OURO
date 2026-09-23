@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+from ouro.application.configuration import ConfigurationFacade
 from ouro.cli.main import main
 from ouro.local_application import LocalApplication
 
@@ -16,6 +17,38 @@ async def _host_tree(home: str, root_session_id: str) -> dict[str, object]:
     async with LocalApplication.build(home) as application:
         assert application.agents is not None
         return application.agents.agent_tree_snapshot(root_session_id).model_dump(mode="json")
+
+
+def test_agent_definition_cli_default_model_requires_system_route(tmp_path, capsys) -> None:
+    command = [
+        "agent",
+        "definition",
+        "create",
+        "reader",
+        "--name",
+        "Reader",
+        "--description",
+        "Read evidence.",
+        "--system-prompt",
+        "Read carefully.",
+        "--model",
+        "default",
+        "--expected-revision",
+        "0",
+        "--home",
+        str(tmp_path),
+        "--json",
+    ]
+    code, failed = _json_command(command, capsys)
+    assert code != 0
+    assert "system default endpoint is not configured" in failed["error"]
+
+    ConfigurationFacade(tmp_path).add_provider(
+        display_name="Primary", provider_type="openai", make_default=True
+    )
+    code, created = _json_command(command, capsys)
+    assert code == 0
+    assert created["catalog"]["definitions"][1]["model"] == "default"
 
 
 def test_agent_definition_cli_crud_and_tool_compatibility_without_provider(

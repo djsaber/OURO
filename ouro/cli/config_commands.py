@@ -135,6 +135,7 @@ def show_compaction_config(
     provider_id: str | None = None,
     endpoint_id: str | None = None,
     runtime_endpoint: bool = False,
+    default_model: bool = False,
     temperature: float | None = None,
     max_output_tokens: int | None = None,
     reasoning: ReasoningRequest | None = None,
@@ -149,6 +150,7 @@ def show_compaction_config(
                 provider_id is not None,
                 endpoint_id is not None,
                 runtime_endpoint,
+                default_model,
                 temperature is not None,
                 max_output_tokens is not None,
                 reasoning is not None,
@@ -160,6 +162,7 @@ def show_compaction_config(
                 provider_id=provider_id,
                 endpoint_id=endpoint_id,
                 use_runtime_endpoint=runtime_endpoint,
+                use_default_model=default_model,
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
                 reasoning=reasoning,
@@ -187,11 +190,13 @@ def show_compaction_config(
     route = (
         f"{model.provider_id}/{model.endpoint_id}"
         if model.has_dedicated_endpoint
+        else "system default endpoint"
+        if model.use_default_model
         else "session runtime endpoint"
     )
     thinking_mode: str
     thinking_effort: str
-    if model.has_dedicated_endpoint:
+    if model.has_configured_route:
         thinking_mode = model.reasoning.mode if model.reasoning is not None else "-"
         thinking_effort = (
             model.reasoning.effort

@@ -5,6 +5,7 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
+from ouro.application.models import AvailableModel
 from ouro.application.runtime import RuntimeService
 from ouro.automation.models import (
     TaskConfiguration,
@@ -17,6 +18,7 @@ from ouro.automation.repository import TaskRepository
 from ouro.automation.schedule import next_occurrence
 from ouro.core.base import new_id, utc_now
 from ouro.core.callbacks import run_blocking
+from ouro.core.model_selection import DEFAULT_MODEL
 
 
 class TaskService:
@@ -57,10 +59,21 @@ class TaskService:
         workspace = Path(configuration.workspace).expanduser()
         if not workspace.is_absolute() or not workspace.is_dir():
             raise ValueError("Workspace must be an existing absolute directory")
-        model = self.runtime.model_reasoning(configuration.model, configuration.reasoning).model
+        model = self.resolve_model(configuration)
         return configuration.model_copy(
-            update={"workspace": str(workspace.resolve()), "model": model.key}
+            update={
+                "workspace": str(workspace.resolve()),
+                "model": DEFAULT_MODEL if configuration.model == DEFAULT_MODEL else model.key,
+            }
         )
+
+    def resolve_model(self, configuration: TaskConfiguration) -> AvailableModel:
+        selector = (
+            self.runtime.configured_default_model().key
+            if configuration.model == DEFAULT_MODEL
+            else configuration.model
+        )
+        return self.runtime.model_reasoning(selector, configuration.reasoning).model
 
     async def update(
         self,

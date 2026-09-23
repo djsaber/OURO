@@ -8804,6 +8804,39 @@ async def test_setting_default_endpoint_also_switches_default_provider(tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_empty_model_catalog_opens_provider_setup_without_sending(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=LocalApplication.build(tmp_path))
+
+    async with run_ready_app(app, size=(100, 34)) as pilot:
+        await pilot.pause()
+        assert "faux" not in app.query_one(ActivityIndicator).render().plain.casefold()
+        composer = app.query_one(Composer)
+        composer.load_text("Keep this draft")
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="ADD PROVIDER")
+
+        assert app._controller.session_id is None
+        assert composer.text == "Keep this draft"
+
+
+@pytest.mark.asyncio
+async def test_unselected_real_model_keeps_draft_instead_of_running_faux(tmp_path: Path) -> None:
+    ConfigurationFacade(tmp_path).add_provider(display_name="Primary", provider_type="openai")
+    app = OuroTuiApp(application=LocalApplication.build(tmp_path))
+
+    async with run_ready_app(app, size=(100, 34)) as pilot:
+        await pilot.pause()
+        composer = app.query_one(Composer)
+        composer.load_text("Choose a real model first")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app._controller.session_id is None
+        assert composer.text == "Choose a real model first"
+        assert "faux" not in app.query_one(ActivityIndicator).render().plain.casefold()
+
+
+@pytest.mark.asyncio
 async def test_add_provider_flow_integrates_presets_and_custom_profiles(
     tmp_path: Path,
 ) -> None:
@@ -11014,6 +11047,15 @@ async def test_subagent_definition_editor_does_not_limit_selected_tool_count(
             ).marker
             == DEFAULT_TUI_THEME.selected_choice_marker
         )
+        assert (
+            next(choice for choice in app.screen._choices if choice.value == "default").disabled
+            is True
+        )
+        screen._system_default_model = models[0]
+        assert (
+            next(choice for choice in screen._model_choices() if choice.value == "default").disabled
+            is False
+        )
         model_options = app.screen.query_one("#choice-list", OptionList)
         model_options.highlighted = model_options.get_option_index(models[0].key)
         model_options.focus()
@@ -11162,7 +11204,11 @@ async def test_compaction_uses_shared_grouped_inline_menu_and_returns_typed_draf
         assert app.screen.query_one("#choice-filter", Input).placeholder == "Filter models…"
         model_choices = app.screen._choices
         assert model_choices[0].group == "SESSION"
-        assert {choice.group for choice in model_choices[1:]} == {
+        assert model_choices[1].group == "MODEL SOURCE"
+        assert model_choices[1].disabled is True
+        screen._system_default_model = capable_model
+        assert screen._model_choices()[1].disabled is False
+        assert {choice.group for choice in model_choices[2:]} == {
             "Other models",
         }
         app.screen.query_one("#choice-filter", Input).value = "Thinking model"

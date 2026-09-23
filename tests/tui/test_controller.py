@@ -202,6 +202,23 @@ async def test_controller_new_session_reuses_previous_session_workspace(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_controller_rejects_submission_without_configured_model(tmp_path: Path) -> None:
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=LocalApplication.build(tmp_path),
+    )
+    await controller.start()
+
+    try:
+        with pytest.raises(ConfigError, match="add a provider and endpoint"):
+            await controller.submit("draft")
+        assert controller.session_id is None
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
 async def test_controller_rejects_missing_or_non_directory_workspace(tmp_path: Path) -> None:
     controller = TuiController(
         lambda _event: None,
@@ -552,7 +569,7 @@ async def test_controller_configures_provider_endpoint_through_application_facad
                     "reasoning": reasoning_preset("none"),
                     "request_options": {"seed": 9},
                 }
-            )
+            ),
         )
         assert changed.model_id == "new-model-v2"
         assert changed.supports_structured_output is True
@@ -672,7 +689,7 @@ async def test_controller_configures_preset_and_custom_providers(
                 supports_streaming=target.supports_streaming,
                 supports_structured_output=target.supports_structured_output,
                 reasoning=reasoning_preset("none"),
-            )
+            ),
         )
         assert overridden.reasoning == reasoning_preset("none")
         assert (

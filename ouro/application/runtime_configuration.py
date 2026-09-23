@@ -120,13 +120,20 @@ class RuntimeConfigurationResolver:
         config: CompactionConfig,
     ) -> ProviderRuntimeOptions | None:
         model = config.model
-        if not model.has_dedicated_endpoint:
+        if not model.has_configured_route:
             return None
-        assert model.provider_id is not None
-        assert model.endpoint_id is not None
+        if model.use_default_model:
+            provider_id, endpoint_id = self._providers.require_default_route().split("/", 1)
+        else:
+            assert model.provider_id is not None
+            assert model.endpoint_id is not None
+            provider_id, endpoint_id = model.provider_id, model.endpoint_id
         return self._providers.resolve_runtime_options(
             ProviderRuntimeOptions(
-                provider_id=model.provider_id,
-                endpoint_id=model.endpoint_id,
+                provider_id=provider_id,
+                endpoint_id=endpoint_id,
             )
         )
+
+    def default_model_route(self) -> str:
+        return self._providers.require_default_route()

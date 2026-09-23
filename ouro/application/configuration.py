@@ -444,12 +444,6 @@ class ConfigurationFacade:
         routing, and availability cannot silently rewrite model endpoints.
         """
 
-        current = self.provider(provider_id)
-        if enabled is False and current.default:
-            raise ConfigError(
-                f"cannot disable the default provider: {provider_id}; "
-                "select another default provider first"
-            )
         self.providers.update_provider(
             provider_id,
             display_name=display_name,
@@ -1017,6 +1011,7 @@ class ConfigurationFacade:
         provider_id: str | None = None,
         endpoint_id: str | None = None,
         use_runtime_endpoint: bool = False,
+        use_default_model: bool = False,
         temperature: float | None = None,
         max_output_tokens: int | None = None,
         reasoning: ReasoningRequest | None = None,
@@ -1026,6 +1021,7 @@ class ConfigurationFacade:
             provider_id=provider_id,
             endpoint_id=endpoint_id,
             use_runtime_endpoint=use_runtime_endpoint,
+            use_default_model=use_default_model,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
             reasoning=reasoning,
@@ -1053,6 +1049,7 @@ class ConfigurationFacade:
                 model=CompactionModelConfig(
                     provider_id=draft.provider_id,
                     endpoint_id=draft.endpoint_id,
+                    use_default_model=draft.use_default_model,
                     temperature=draft.temperature,
                     max_output_tokens=draft.max_output_tokens,
                     reasoning=draft.reasoning,
@@ -1069,11 +1066,15 @@ class ConfigurationFacade:
         )
 
     def _validate_compaction_model_capabilities(self, model: CompactionModelConfig) -> None:
-        if not model.has_dedicated_endpoint:
+        if model.use_default_model:
+            provider_id, endpoint_id = self.providers.require_default_route().split("/", 1)
+        elif model.has_dedicated_endpoint:
+            assert model.provider_id is not None
+            assert model.endpoint_id is not None
+            provider_id, endpoint_id = model.provider_id, model.endpoint_id
+        else:
             return
-        assert model.provider_id is not None
-        assert model.endpoint_id is not None
-        endpoint = self.providers.get_endpoint(model.provider_id, model.endpoint_id)
+        endpoint = self.providers.get_endpoint(provider_id, endpoint_id)
         if endpoint is None:
             return
         if (

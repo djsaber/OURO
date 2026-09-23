@@ -8,9 +8,11 @@ from typing import Literal, Self
 from pydantic import Field, ValidationError, model_validator
 
 from ouro.config.file import JsonConfigFile, atomic_config_update
+from ouro.config.providers import ProviderConfigManager
 from ouro.core.agents import AgentDefinition, AgentSpawnPolicy
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
+from ouro.core.model_selection import DEFAULT_MODEL
 
 MAX_USER_AGENT_DEFINITIONS = 32
 RESERVED_AGENT_IDS = frozenset({"general"})
@@ -77,6 +79,8 @@ class AgentDefinitionsConfigManager:
     ) -> AgentDefinitionsConfig:
         if definition.agent_id in RESERVED_AGENT_IDS:
             raise ConfigError(f"agent_id is reserved: {definition.agent_id}")
+        if definition.model == DEFAULT_MODEL:
+            ProviderConfigManager(self._file.root).require_default_route()
         current = self._require_revision(expected_revision)
         if any(item.agent_id == definition.agent_id for item in current.definitions):
             raise ConfigError(f"agent definition already exists: {definition.agent_id}")
@@ -98,6 +102,8 @@ class AgentDefinitionsConfigManager:
     ) -> AgentDefinitionsConfig:
         if definition.agent_id in RESERVED_AGENT_IDS:
             raise ConfigError(f"builtin agent definition is immutable: {definition.agent_id}")
+        if definition.model == DEFAULT_MODEL:
+            ProviderConfigManager(self._file.root).require_default_route()
         current = self._require_revision(expected_revision)
         if not any(item.agent_id == definition.agent_id for item in current.definitions):
             raise ConfigError(f"agent definition not found: {definition.agent_id}")

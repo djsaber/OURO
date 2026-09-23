@@ -5,6 +5,7 @@ from typing import cast
 from zoneinfo import ZoneInfo
 
 from ouro.automation.models import TaskConfiguration, TaskRecord
+from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.tui.plugin_workflows import PluginManagementWorkflows
 from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
 from ouro.tui.task_screens import FREQUENCY_LABELS, TASK_STATUS_LABELS, TaskConfigurationScreen
@@ -103,12 +104,19 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
         self, task: TaskRecord | None, *, menu: ChoiceScreen | None = None
     ) -> None:
         try:
+            models = await self._controller.models()
+            system_default_model = await self._controller.configured_default_model()
             screen = TaskConfigurationScreen(
-                models=await self._controller.models(),
+                models=models,
                 workspace=self._controller.draft_workspace,
-                default_model=(await self._controller.default_model()).key
+                default_model=(
+                    DEFAULT_MODEL
+                    if system_default_model is not None
+                    else (await self._controller.default_model()).key
+                )
                 if task is None
                 else None,
+                system_default_model=system_default_model,
                 configuration=task.configuration if task else None,
             )
             draft = await (

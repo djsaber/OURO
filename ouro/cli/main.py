@@ -469,6 +469,7 @@ def _config_command(args: argparse.Namespace) -> int:
             provider_id=args.provider_id,
             endpoint_id=args.endpoint_id,
             runtime_endpoint=args.runtime_endpoint,
+            default_model=args.default_model,
             temperature=args.temperature,
             max_output_tokens=args.max_output_tokens,
             reasoning=_reasoning_request(args),
@@ -651,17 +652,11 @@ def _provider_endpoint_command(
         )
     if args.endpoint_command in {"add", "update"}:
         command = (
-            create_provider_endpoint
-            if args.endpoint_command == "add"
-            else update_provider_endpoint
+            create_provider_endpoint if args.endpoint_command == "add" else update_provider_endpoint
         )
         return command(
             args.provider_id,
-            *(
-                ()
-                if args.endpoint_command == "add"
-                else (args.endpoint_id,)
-            ),
+            *(() if args.endpoint_command == "add" else (args.endpoint_id,)),
             home=home,
             display_name=args.display_name,
             model=args.model,

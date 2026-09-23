@@ -23,6 +23,7 @@ from ouro.application.configuration_models import (
 from ouro.application.models import AvailableModel
 from ouro.application.plugin_models import PluginDetail
 from ouro.core.agents import AgentDefinition, ExecutionMode, ToolSelection
+from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode, ToolEffect
@@ -433,11 +434,13 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
         existing: AgentDefinitionDetail | None = None,
         *,
         theme: TuiTheme = DEFAULT_TUI_THEME,
+        system_default_model: AvailableModel | None = None,
     ) -> None:
         self._initial_tui_theme = theme
         self._existing = existing
         self._tools = {tool.name: tool for tool in tools}
         self._models = models
+        self._system_default_model = system_default_model
         configured_model = (
             existing.model
             if existing is not None and existing.model is not None
@@ -445,6 +448,7 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
         )
         self._model_labels = {
             _RUNTIME_MODEL: "Use conversation model",
+            DEFAULT_MODEL: "Default model",
             **{
                 model.key: model_selection_label(model.key, models, theme=theme) for model in models
             },
@@ -511,6 +515,11 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
         self.dismiss(draft)  # type: ignore[arg-type]
 
     def _draft(self) -> TuiAgentDefinitionConfiguration:
+        if (
+            self._values["agent-definition-model"] == DEFAULT_MODEL
+            and self._system_default_model is None
+        ):
+            raise ValueError("System default endpoint is not configured")
         required = (
             ("agent-definition-id", "Agent ID"),
             ("agent-definition-name", "Name"),
@@ -648,10 +657,19 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
                 "Use conversation model",
                 marker=(theme.selected_choice_marker if selected == _RUNTIME_MODEL else ""),
                 group="SESSION",
-            )
+            ),
+            Choice(
+                DEFAULT_MODEL,
+                "Default model",
+                marker=theme.selected_choice_marker if selected == DEFAULT_MODEL else "",
+                group="MODEL SOURCE",
+                disabled=self._system_default_model is None,
+            ),
         ]
         choices.extend(model_choices(self._models, selected=selected, theme=theme))
-        if selected != _RUNTIME_MODEL and not any(model.key == selected for model in self._models):
+        if selected not in {_RUNTIME_MODEL, DEFAULT_MODEL} and not any(
+            model.key == selected for model in self._models
+        ):
             choices.append(
                 Choice(
                     selected,
@@ -674,9 +692,11 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
         models: tuple[AvailableModel, ...],
         strategy_ids: tuple[str, ...],
         theme: TuiTheme = DEFAULT_TUI_THEME,
+        system_default_model: AvailableModel | None = None,
     ) -> None:
         self._initial_tui_theme = theme
         self._models = models
+        self._system_default_model = system_default_model
         self._strategy_ids = tuple(
             dict.fromkeys(
                 (
@@ -688,12 +708,15 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
         )
         policy = config.policy
         configured_model = (
-            f"{config.model.provider_id}/{config.model.endpoint_id}"
+            DEFAULT_MODEL
+            if config.model.use_default_model
+            else f"{config.model.provider_id}/{config.model.endpoint_id}"
             if config.model.has_dedicated_endpoint
             else _RUNTIME_MODEL
         )
         self._model_labels = {
             _RUNTIME_MODEL: "Conversation model",
+            DEFAULT_MODEL: "Default model",
             **{
                 model.key: model_selection_label(model.key, models, theme=theme) for model in models
             },
@@ -792,10 +815,17 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
                 "Conversation model",
                 marker=(theme.selected_choice_marker if selected == _RUNTIME_MODEL else ""),
                 group="SESSION",
-            )
+            ),
+            Choice(
+                DEFAULT_MODEL,
+                "Default model",
+                marker=theme.selected_choice_marker if selected == DEFAULT_MODEL else "",
+                group="MODEL SOURCE",
+                disabled=self._system_default_model is None,
+            ),
         ]
         choices.extend(model_choices(self._models, selected=selected, theme=theme))
-        if selected != _RUNTIME_MODEL and self._model(selected) is None:
+        if selected not in {_RUNTIME_MODEL, DEFAULT_MODEL} and self._model(selected) is None:
             choices.append(
                 Choice(
                     selected,
@@ -818,6 +848,8 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
         strategy = self._values["compaction-strategy"]
         fallback = self._values["compaction-fallback"]
         model = self._values["compaction-model"]
+        if model == DEFAULT_MODEL and self._system_default_model is None:
+            raise ValueError("System default endpoint is not configured")
         trigger = _ratio(self._values["compaction-trigger"], "Start at usage (0–1)")
         target = _ratio(self._values["compaction-target"], "Reduce to usage (0–1)")
         if target >= trigger:
@@ -988,6 +1020,8 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
         )
 
     def _model(self, key: str) -> AvailableModel | None:
+        if key == DEFAULT_MODEL:
+            return self._system_default_model
         return next((model for model in self._models if model.key == key), None)
 
 

@@ -791,13 +791,9 @@ def test_provider_commands_manage_config_and_runtime_default(
 
     assert list_code == 0
     assert list_payload["default"] == provider_id
-    assert {provider["provider_id"] for provider in list_payload["providers"]} == {
-        provider_id
-    }
+    assert {provider["provider_id"] for provider in list_payload["providers"]} == {provider_id}
 
-    show_code = main(
-        ["provider", "show", provider_id, "--home", str(tmp_path), "--json"]
-    )
+    show_code = main(["provider", "show", provider_id, "--home", str(tmp_path), "--json"])
     show_output = capsys.readouterr().out
     show_payload = json.loads(show_output)
 
@@ -974,9 +970,9 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
         ]
     )
     remove_payload = json.loads(capsys.readouterr().out)
-    assert remove_code == 0
-    assert remove_payload["default_endpoint"] is None
-    assert remove_payload["default_provider"] is None
+    assert remove_code != 0
+    assert "cannot remove the default endpoint" in remove_payload["error"]
+    assert ConfigurationFacade(tmp_path).provider_catalog().default_provider_id == provider_id
 
 
 @pytest.mark.parametrize(
@@ -1075,7 +1071,7 @@ def test_provider_check_cannot_target_internal_faux(tmp_path, capsys) -> None:
     assert "provider not found: faux" in payload["error"]
 
 
-def test_provider_remove_clears_user_visible_default(tmp_path, capsys) -> None:
+def test_provider_remove_rejects_user_visible_default(tmp_path, capsys) -> None:
     assert (
         main(
             [
@@ -1094,13 +1090,27 @@ def test_provider_remove_clears_user_visible_default(tmp_path, capsys) -> None:
     )
     provider_id = json.loads(capsys.readouterr().out)["provider"]["provider_id"]
 
-    remove_code = main(
-        ["provider", "remove", provider_id, "--home", str(tmp_path), "--json"]
+    disable_code = main(
+        [
+            "provider",
+            "update",
+            provider_id,
+            "--no-enabled",
+            "--home",
+            str(tmp_path),
+            "--json",
+        ]
     )
+    disable_payload = json.loads(capsys.readouterr().out)
+    assert disable_code != 0
+    assert "cannot disable the default provider" in disable_payload["error"]
+
+    remove_code = main(["provider", "remove", provider_id, "--home", str(tmp_path), "--json"])
     remove_payload = json.loads(capsys.readouterr().out)
 
-    assert remove_code == 0
-    assert remove_payload["default"] is None
+    assert remove_code != 0
+    assert "cannot remove the default provider" in remove_payload["error"]
+    assert ConfigurationFacade(tmp_path).provider_catalog().default_provider_id == provider_id
 
 
 def _write_skill(root, skill_name: str, name: str, description: str) -> None:

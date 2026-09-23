@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from ouro.application.configuration import ConfigurationFacade
 from ouro.cli.main import main
 from ouro.config import CompactionConfigManager
 
@@ -149,3 +150,21 @@ def test_config_compaction_displays_inherited_session_reasoning(tmp_path, capsys
     assert code == 0
     assert "Thinking mode: inherited from Session" in captured.out
     assert "Thinking effort: inherited from Session" in captured.out
+
+
+def test_config_compaction_default_model_requires_a_selected_system_endpoint(
+    tmp_path, capsys
+) -> None:
+    code = main(["config", "compaction", "--home", str(tmp_path), "--default-model"])
+    assert code != 0
+    assert "system default endpoint is not configured" in capsys.readouterr().err
+
+    ConfigurationFacade(tmp_path).add_provider(
+        display_name="Primary", provider_type="openai", make_default=True
+    )
+    code = main(["config", "compaction", "--home", str(tmp_path), "--default-model"])
+    assert code == 0
+    assert "system default endpoint" in capsys.readouterr().out
+    model = CompactionConfigManager(tmp_path).snapshot().model
+    assert model.use_default_model is True
+    assert model.has_dedicated_endpoint is False

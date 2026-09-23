@@ -346,8 +346,8 @@ def test_endpoint_config_rejects_noncanonical_fields(field) -> None:
         {
             "providers": {
                 "items": {
-                        "local": {
-                            "display_name": "Local",
+                    "local": {
+                        "display_name": "Local",
                         "provider_type": "custom",
                         "protocol": "openai-chat-completions",
                         "default_model": "model",
@@ -605,21 +605,23 @@ def test_provider_mutations_keep_default_provider_runnable(tmp_path) -> None:
         model_id="glm-test",
         make_default=True,
     )
+    with pytest.raises(ConfigError, match="system default endpoint is not configured"):
+        manager.require_default_route()
     manager.set_default_provider(provider.provider_id)
     assert manager.snapshot().default_provider_id == provider.provider_id
-
-    manager.remove_endpoint(provider.provider_id, default_endpoint.endpoint_id)
-    assert manager.snapshot().default_provider_id == "faux"
-
-    manager.create_endpoint(
-        provider.provider_id,
-        model_id="glm-test",
-        base_url="https://example.test/v1",
-        make_default=True,
+    assert manager.require_default_route() == (
+        f"{provider.provider_id}/{default_endpoint.endpoint_id}"
     )
-    manager.set_default_provider(provider.provider_id)
-    manager.update_provider(provider.provider_id, enabled=False)
-    assert manager.snapshot().default_provider_id == "faux"
+
+    with pytest.raises(ConfigError, match="cannot remove the default endpoint"):
+        manager.remove_endpoint(provider.provider_id, default_endpoint.endpoint_id)
+    with pytest.raises(ConfigError, match="cannot disable the default provider"):
+        manager.update_provider(provider.provider_id, enabled=False)
+    with pytest.raises(ConfigError, match="cannot remove the default provider"):
+        manager.remove_provider(provider.provider_id)
+    assert manager.require_default_route() == (
+        f"{provider.provider_id}/{default_endpoint.endpoint_id}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -888,12 +890,10 @@ def test_removing_default_endpoint_clears_provider_default(tmp_path) -> None:
     assert restored is not None
 
     assert restored.default_endpoint is None
-    assert {endpoint.endpoint_id for endpoint in restored.endpoints} == {
-        reasoning.endpoint_id
-    }
+    assert {endpoint.endpoint_id for endpoint in restored.endpoints} == {reasoning.endpoint_id}
 
 
-def test_removing_default_endpoint_resets_global_default_when_no_endpoint_left(
+def test_removing_system_default_endpoint_requires_a_new_selection(
     tmp_path,
 ) -> None:
     manager = ProviderConfigManager(tmp_path)
@@ -911,9 +911,10 @@ def test_removing_default_endpoint_resets_global_default_when_no_endpoint_left(
     manager.set_default_provider(provider.provider_id)
     assert manager.snapshot().default_provider_id == provider.provider_id
 
-    manager.remove_endpoint(provider.provider_id, endpoint.endpoint_id)
+    with pytest.raises(ConfigError, match="select another default endpoint first"):
+        manager.remove_endpoint(provider.provider_id, endpoint.endpoint_id)
 
-    assert manager.snapshot().default_provider_id == "faux"
+    assert manager.require_default_route() == f"{provider.provider_id}/{endpoint.endpoint_id}"
 
 
 def test_provider_retry_policy_round_trips_into_runtime_options(tmp_path) -> None:
@@ -964,10 +965,7 @@ def test_provider_retry_opt_out_survives_round_trip(tmp_path) -> None:
     manager.create_endpoint(provider.provider_id, model_id="glm-chat", make_default=True)
 
     raw = json.loads((tmp_path / "config" / "providers.json").read_text(encoding="utf-8"))
-    assert (
-        raw["providers"]["items"][provider.provider_id]["retry_policy"]["max_attempts"]
-        == 1
-    )
+    assert raw["providers"]["items"][provider.provider_id]["retry_policy"]["max_attempts"] == 1
 
     restored = ProviderConfigManager(tmp_path).get_provider(provider.provider_id)
     assert restored is not None and restored.retry_policy.max_attempts == 1

@@ -217,6 +217,7 @@ class AgentRuntimeConfigView(ApplicationDTO):
 class CompactionModelConfigView(ApplicationDTO):
     provider_id: str | None = None
     endpoint_id: str | None = None
+    use_default_model: bool = False
     temperature: float | None = None
     max_output_tokens: int | None = None
     reasoning: ReasoningRequest | None = None
@@ -224,6 +225,10 @@ class CompactionModelConfigView(ApplicationDTO):
     @property
     def has_dedicated_endpoint(self) -> bool:
         return self.provider_id is not None and self.endpoint_id is not None
+
+    @property
+    def has_configured_route(self) -> bool:
+        return self.use_default_model or self.has_dedicated_endpoint
 
 
 class CompactionConfigView(ApplicationDTO):
@@ -245,6 +250,7 @@ class CompactionConfigInput(ApplicationDTO):
     target_ratio: float
     provider_id: str | None = None
     endpoint_id: str | None = None
+    use_default_model: bool = False
     temperature: float | None = None
     max_output_tokens: int | None = None
     reasoning: ReasoningRequest | None = None

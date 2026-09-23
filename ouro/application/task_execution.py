@@ -118,6 +118,7 @@ class TaskExecutionCoordinator:
         self._sessions.add(session_id)
         try:
             config = await run_blocking(self.tasks.validate, task.configuration)
+            model_route = (await run_blocking(self.tasks.resolve_model, config)).key
             approval: SessionApprovalMode = (
                 "auto" if config.approval_mode == "afk" else config.approval_mode
             )
@@ -130,7 +131,7 @@ class TaskExecutionCoordinator:
                         title=config.display_title,
                         _session_id=session_id,
                         namespace="task",
-                        initial_model=config.model,
+                        initial_model=model_route,
                         reasoning_request=config.reasoning,
                         workspace=config.workspace,
                         approval_mode=approval,
@@ -146,7 +147,7 @@ class TaskExecutionCoordinator:
                         trigger="scheduled",
                         initiator_id=f"ouro.tasks/{task.task_id}",
                     ),
-                    model=config.model,
+                    model=model_route,
                     reasoning=config.reasoning,
                     workspace=config.workspace,
                     approval_mode=approval,
