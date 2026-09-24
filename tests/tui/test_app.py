@@ -3261,8 +3261,7 @@ async def test_tui_runtime_event_staging_applies_one_bounded_prefix_per_frame(
     app = OuroTuiApp(application=_application(tmp_path))
     applied: list[tuple[EventRecord, ...]] = []
 
-    async def apply(events, *, allow_new_projection=False):
-        del allow_new_projection
+    async def apply(events):
         applied.append(tuple(events))
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
@@ -3296,8 +3295,7 @@ async def test_tui_runtime_event_staging_preserves_a_streamed_tool_frame(
     app = OuroTuiApp(application=_application(tmp_path))
     applied: list[tuple[EventRecord, ...]] = []
 
-    async def apply(events, *, allow_new_projection=False):
-        del allow_new_projection
+    async def apply(events):
         applied.append(tuple(events))
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
@@ -3366,9 +3364,9 @@ async def test_terminal_run_events_reuse_the_bounded_runtime_event_consumer(
         app._projection = TuiSessionProjection(session.session_id)
         apply_events = app._apply_runtime_events
 
-        async def recording_apply(events, *, allow_new_projection=False):
+        async def recording_apply(events):
             prefixes.append(tuple(event.sequence for event in events))
-            await apply_events(events, allow_new_projection=allow_new_projection)
+            await apply_events(events)
 
         monkeypatch.setattr(app, "_apply_runtime_events", recording_apply)
 
@@ -3421,9 +3419,9 @@ async def test_terminal_run_events_skip_live_and_pending_event_prefixes(
         app._pending_runtime_events.append(events[2])
         apply_events = app._apply_runtime_events
 
-        async def recording_apply(events, *, allow_new_projection=False):
+        async def recording_apply(events):
             prefixes.append(tuple(event.sequence for event in events))
-            await apply_events(events, allow_new_projection=allow_new_projection)
+            await apply_events(events)
 
         monkeypatch.setattr(app, "_apply_runtime_events", recording_apply)
 
@@ -5633,7 +5631,8 @@ async def test_plugin_message_event_renders_non_scaffold_user_input(
             for index, item in enumerate((scaffold, visible), start=1)
         )
 
-        await app._apply_runtime_events(events, allow_new_projection=True)
+        app._projection = TuiSessionProjection("ses_plugin_input")
+        await app._apply_runtime_events(events)
 
         entries = app.query_one(ConversationHistory).entries
         assert [(entry.kind, entry.text) for entry in entries] == [("user", "Ship through Goal")]

@@ -503,6 +503,7 @@ class TuiController:
         self._close_application = close_application
         self._started = False
         self._session_id: str | None = None
+        self._selection_revision = 0
         self._session_archived = False
         self._initial_model: str | None = None
         self._draft_workspace: str | None = None
@@ -513,6 +514,12 @@ class TuiController:
     @property
     def session_id(self) -> str | None:
         return self._session_id
+
+    @property
+    def selection_revision(self) -> int:
+        """Identify the current navigation, including an unbound welcome draft."""
+
+        return self._selection_revision
 
     @property
     def draft_workspace(self) -> str | None:
@@ -627,6 +634,7 @@ class TuiController:
         resource_refs: tuple[str, ...] = (),
     ) -> RunResult:
         runtime = self._runtime()
+        revision = self._selection_revision
         selection = (self._session_id, self._initial_model)
         available = await self.models()
         if not available:
@@ -636,7 +644,11 @@ class TuiController:
             if selection[0] is None and selection[1] is not None
             else await asyncio.to_thread(runtime.current_model, selection[0])
         )
-        if not self._started or selection != (self._session_id, self._initial_model):
+        if (
+            not self._started
+            or revision != self._selection_revision
+            or selection != (self._session_id, self._initial_model)
+        ):
             raise ConfigError("session or model changed while preparing input; submit again")
         if selected.provider_id == "faux" and any(
             model.provider_id != "faux" for model in available
@@ -645,6 +657,13 @@ class TuiController:
         is_new_session = self._session_id is None
         if is_new_session:
             self._creating_session = True
+
+        def session_created(session: SessionRecord) -> None:
+            if revision == self._selection_revision:
+                self._session_id = session.session_id
+                self._initial_model = None
+                self._creating_session = False
+
         try:
             result = await runtime.run(
                 prompt,
@@ -657,18 +676,14 @@ class TuiController:
                 approval_mode=self._approval_mode if is_new_session else None,
                 interaction_mode=self._interaction_mode if is_new_session else None,
                 workspace=self._draft_workspace if is_new_session else None,
-                on_session_created=self._bind_created_session,
+                on_session_created=session_created,
             )
-            self._session_id = result.session.session_id
-            self._initial_model = None
-            await self._unarchive_current_session_after_update()
+            if result.session.archived:
+                await self.set_session_archived(result.session.session_id, archived=False)
             return result
         finally:
-            if is_new_session:
+            if is_new_session and revision == self._selection_revision:
                 self._creating_session = False
-
-    def _bind_created_session(self, session: SessionRecord) -> None:
-        self._session_id = session.session_id
 
     def skill_invocation_options(self) -> tuple[TuiSkillInvocationOption, ...]:
         """Project currently invocable Runtime skills for the inline command menu."""
@@ -688,7 +703,8 @@ class TuiController:
 
     async def continue_session(self) -> RunResult:
         result = await self._runtime().continue_run(session_id=self._require_session())
-        await self._unarchive_current_session_after_update()
+        if result.session.archived:
+            await self.set_session_archived(result.session.session_id, archived=False)
         return result
 
     async def undo(self) -> SessionUndoResult:
@@ -808,6 +824,8 @@ class TuiController:
 
         runtime = self._runtime()
         previous_route, previous_workspace = await self._leaving_session_defaults()
+        self._selection_revision += 1
+        self._creating_session = False
         self._session_id = None
         self._session_archived = False
         self._draft_workspace = previous_workspace or runtime.default_workspace
@@ -1998,9 +2016,12 @@ class TuiController:
             return None
         runtime = self._runtime()
 
+        revision = self._selection_revision
+
         def session_created(session_id: str) -> None:
-            self._session_id = session_id
-            self._initial_model = None
+            if revision == self._selection_revision:
+                self._session_id = session_id
+                self._initial_model = None
 
         submission = await submit_plugin_command(
             application.plugins,
@@ -2261,6 +2282,8 @@ class TuiController:
             loaded, control_archived = await asyncio.to_thread(
                 self._read_session_selection, session_id
             )
+        self._selection_revision += 1
+        self._creating_session = False
         self._session_id = loaded.detail.session.agent_root_session_id
         self._session_archived = control_archived
         self._initial_model = None

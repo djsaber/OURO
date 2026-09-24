@@ -293,6 +293,47 @@ async def test_controller_new_session_keeps_welcome_model_selection(
         await controller.close()
 
 
+@pytest.mark.parametrize("destination", ["welcome", "session"])
+async def test_late_session_creation_does_not_replace_navigation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, destination: str
+) -> None:
+    application = two_route_application(tmp_path)
+    controller = TuiController(lambda _event: None, lambda _status: None, application=application)
+    entered, release = asyncio.Event(), asyncio.Event()
+    run = application.runtime.run
+
+    async def delayed_run(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await run(*args, **kwargs)
+
+    await controller.start()
+    monkeypatch.setattr(application.runtime, "run", delayed_run)
+    submission = asyncio.create_task(controller.submit("Background creation"))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        if destination == "welcome":
+            await controller.new_session()
+            await controller.select_model("faux/recent")
+            expected_id = None
+        else:
+            other = application.runtime.sessions.create(title="Selected session").session
+            await controller.load_session(other.session_id)
+            expected_id = other.session_id
+        release.set()
+        result = await asyncio.wait_for(submission, 8)
+        assert result.run.status == "completed"
+        assert result.session.session_id != expected_id
+        assert controller.session_id == expected_id
+        assert controller._creating_session is False
+        if destination == "welcome":
+            assert controller._initial_model == "faux/recent"
+    finally:
+        release.set()
+        await submission
+        await controller.close()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("damaged_payload", [None, "not valid session json"])
 async def test_controller_new_session_ignores_unreadable_previous_session(
@@ -1901,6 +1942,7 @@ async def test_controller_selects_subagent_surface_under_root_control(
 @pytest.mark.asyncio
 async def test_new_primary_session_cannot_be_claimed_by_concurrent_child_events(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     application = _reasoning_application(tmp_path)
     published: list[EventRecord] = []
@@ -1947,13 +1989,19 @@ async def test_new_primary_session_cannot_be_claimed_by_concurrent_child_events(
 
         assert controller.session_id is None
         assert published == []
-        controller._bind_created_session(
-            application.runtime.store.load_session_record(root.session_id)
-        )
-        await controller._receive_event(root_event)
+        run = application.runtime.run
+
+        async def create_bound_session(prompt, *, on_session_created, **kwargs):
+            on_session_created(root)
+            await controller._receive_event(root_event)
+            assert controller.session_id == root.session_id
+            assert published == [root_event]
+            return await run(prompt, session_id=root.session_id)
+
+        monkeypatch.setattr(application.runtime, "run", create_bound_session)
+        await controller.submit("Use the bound root")
 
         assert controller.session_id == root.session_id
-        assert published == [root_event]
     finally:
         await controller.close()
 
