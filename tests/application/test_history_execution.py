@@ -367,12 +367,18 @@ async def test_cancel_and_consume_compete_on_the_exact_queue_identity(store, win
 
 
 @pytest.mark.parametrize("withdraw", [False, True])
-async def test_provider_artifact_is_reused_only_in_its_execution_epoch(store, withdraw):
+@pytest.mark.parametrize("route", ["matching", "other-provider", "other-model"])
+async def test_provider_artifact_budget_and_replay_require_current_route_and_epoch(
+    store, withdraw, route
+):
     runtime = runtime_for(store)
     try:
         first = await runtime.run("task")
         artifact = ProviderContinuationArtifact(
-            provider_id="faux", protocol="test", model_id="test", blocks=({"opaque": "state"},)
+            provider_id="other" if route == "other-provider" else "faux",
+            protocol="test",
+            model_id="other" if route == "other-model" else "test",
+            blocks=({"opaque": "state" if route == "matching" else "x" * 600_000},),
         )
         response = MessageRecord.text(
             session_id=first.session.session_id,
@@ -406,7 +412,10 @@ async def test_provider_artifact_is_reused_only_in_its_execution_epoch(store, wi
         assert canonical.provider_continuation == artifact
         context = store.load_latest_context(first.session.session_id)
         projected = next(m for m in context.source_messages if m.message_id == response.message_id)
-        assert projected.provider_continuation == (None if withdraw else artifact)
+        assert projected.provider_continuation == (
+            artifact if not withdraw and route == "matching" else None
+        )
+        assert not context.metrics.over_budget
     finally:
         await runtime.close()
 

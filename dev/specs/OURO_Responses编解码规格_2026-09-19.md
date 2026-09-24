@@ -29,7 +29,7 @@ reasoning profile 只能声明原生 reasoning 对象，不能复用 Chat Comple
 
 JSON 与 SSE 使用同一 decoder/完成校验。每次网络尝试由 Endpoint timeout 设置总时限；等待流事件时才激活超时，交还消费者处理期间不定时取消消费者任务。显式 check 保留端点的流模式和输出上限，避免用 1 token 限制误判需要思考预算的模型。超时、HTTP 及认证恢复共用既有尝试预算；输出后失败不重试。外层关闭逐层关闭当前尝试、decoder 与 HTTP 流；借用的认证服务/HTTP client 不被关闭。
 
-managed scope 使用稳定服务/账户身份，刷新 revision 不改变 scope。static 无法证明跨重建的账户身份，因此使用认证实例生命周期内的随机绑定标识，不持久化或散列 API Key；同实例可续接，重建 static 认证后旧 opaque 续接明确拒绝。该保守约束不是静默丢弃或降级重放。
+managed scope 使用稳定服务/账户身份，刷新 revision 不改变 scope。static 无法证明跨重建的账户身份，因此使用认证实例生命周期内的随机绑定标识，不持久化或散列 API Key。同实例可原生重放；重建 static 认证后从 canonical 消息帧继续，不发送旧 scope 的 opaque items。
 
 ## 完整续接
 
@@ -56,7 +56,9 @@ ProviderContinuationArtifact 外层保留 provider_id、protocol=`openai-respons
 
 scope 由调用者从同次认证快照传入，不含 Token、有效期或 refresh revision。codec 不重新读凭据。没有 continuation 的普通文本不要求账户 scope；生成或重放 opaque 状态必须有非空稳定 scope。
 
-重放前核对外层路由、envelope 版本/字段和 scope，并重新验证完整 item 结构。路由/账户不符会要求恢复原路由/账户或新建会话，不静默丢弃状态。function_call 的 call_id、name、解析后的 arguments 及次序必须与 canonical tool_calls 一致，防止 opaque 内容与工具帧分离。
+原生重放是请求编码的可选路径。provider/protocol/model 不匹配时，不解释来源 codec 的 blocks，直接编码该消息的 canonical 正文和工具调用。同一路由先校验 envelope 的版本与字段，再比较本次认证 scope；scope 不同同样使用 canonical 消息帧。选择只影响请求投影，不修改持久化附件，也不发送其他路由或账户的 opaque items。
+
+路由与 scope 均兼容时，重新验证完整 item 结构。function_call 的 call_id、name、解析后的 arguments 及次序必须与 canonical tool_calls 一致。损坏的 envelope、未知可执行 item、工具帧矛盾明确失败，不通过退回 canonical 编码掩盖数据错误。
 
 有效 continuation 的 items 原样替换对应 assistant 消息的 canonical 文本和工具调用编码，不重复构造一份；tool_result 仍独立编码。reasoning.encrypted_content、消息 phase、annotations 及其他附加字段保留。OURO envelope 不发送给供应商。未知可执行 item 类型明确拒绝，不能当作普通文本忽略。
 
@@ -65,7 +67,7 @@ scope 由调用者从同次认证快照传入，不含 Token、有效期或 refr
 Responses 复用既有工具循环、消息存储、恢复入口、分支和压缩管线。成功的模型轮次保存完整 continuation 与 canonical 工具帧；同一历史执行范围内重建 Runtime 后，managed 认证使用稳定 scope 续接，401 刷新不会改变重放内容或重新执行已完成工具。
 
 协议以 incomplete、failed 或 error 结束的响应不提交成功 continuation 或用量，也不能执行已观察到的工具调用。
-重启后使用现有 continue_run 恢复，只重放已完成历史，后续成功响应才能触发工具执行和用量记录。
+重启后使用 continue_run 恢复已有任务，不追加提示词，不重复执行已完成工具。当前 Session 模型在通用请求边界绑定；跨模型、协议或账户继续使用 canonical 完整帧，兼容原生附件可随对应消息重放。后续成功响应才能触发新的工具执行和用量记录。
 
 分支保留完整 canonical 工具调用/结果帧，沿用现有规则隔离源执行范围的 opaque 状态；不会把源 Run 的执行许可带入新分支。源消息保持不变。压缩以 canonical 历史生成摘要，不把密文或续接 envelope 发送给摘要模型；主模型请求仅保留未被摘要覆盖的完整帧及其有效 continuation。
 
@@ -98,13 +100,13 @@ usage 只采用供应商实际值，缺失时为 None；input_tokens 包含 cach
 
 ## 验收与证据边界
 
-- `tests/providers/test_openai_responses_codec.py`：请求内容、工具 schema、两轮完整工具/reasoning 续接、MessageRecord JSON 保存/恢复、路由/scope 冲突、工具帧一致性及 usage。
+- `tests/providers/test_openai_responses_codec.py`：请求内容、工具 schema、两轮完整工具/reasoning 续接、MessageRecord JSON 保存/恢复、跨路由/scope 的 canonical 编码、工具帧一致性及 usage。
 - `tests/providers/test_openai_responses_stream.py`：item/最终快照的三种组合、交错工具、增量去重、拒绝/仅 reasoning/空输出、错误/截断/矛盾终态、共享 SSE transport 及关闭/取消。
 - `tests/probes/test_codex_responses.py`：实验与正式收集器共用后的回归；架构测试保护纯协议边界。
 - `tests/probes/test_codex_adapter.py`：正式 adapter 的内存探针，合成 HTTP 验证登录材料首轮请求、跨刷新加密 reasoning 重放、两轮工具、服务声明省略输出上限及预算限制披露、HTTP 失败/取消清理及安全摘要；真实操作见[探针说明](../probes/README.md#正式-adapter-验证)。
 - `tests/providers/test_openai_responses.py`：配置/工厂到请求、原生 reasoning、静态绑定、managed 刷新续接/换账户、超时/取消/显式关闭、隐藏思考后的禁止重试。
 - `tests/providers/test_request_authentication.py`：三种协议共用两种不同头编码的 driver，覆盖 JSON/SSE、注销、共享重试预算及安全错误。
-- `tests/application/test_responses_runtime.py`：完整 LocalApplication + 正式 HTTP adapter，覆盖文件/SQLite 和 JSON/SSE 四种组合下的两轮工具、reasoning、重启后 401 刷新续接、注销、不完整响应恢复、分支与压缩；验证实际 token 入账、订阅计费归属及未知金额。
+- `tests/application/test_responses_runtime.py`：完整 LocalApplication + 正式 HTTP adapter，覆盖文件/SQLite 和 JSON/SSE 四种组合下的两轮工具、reasoning、重启后 401 刷新续接、注销、不完整响应恢复、跨协议/模型切换后的无输入续跑及普通提交、分支与压缩；验证工具只执行一次、原历史保留、实际 token 入账、订阅计费归属及未知金额。
 
 自动测试使用合成认证驱动与服务响应。用户提供的 Windows/browser/gpt-5.5 正式 adapter 真实摘要已验证登录、刷新、两轮工具/结果续接及跨刷新加密 reasoning 重放，scope 保持稳定，见[实测证据](../probes/README.md#正式-adapter-验证)。此结果不包含原始 SSE fixture，也不替代持久凭据下的真实 Host 闭环、其他模型能力或设备码验收。生产组合已注册；持久凭据的真实 CLI 登录、check/run、跨进程续接及注销已单独通过，见[使用指南](../../docs/OURO_订阅支持使用指南_ZH_2026-09-19.md#证据范围)。tests/application/test_codex_subscription.py 使用正式驱动、回调、文件凭据与合成 HTTP 验证登录保存、重建、刷新、工具、续接和注销；CLI/TUI 验证正式产品入口与服务限制披露。
 

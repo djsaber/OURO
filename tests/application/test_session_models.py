@@ -78,6 +78,9 @@ class _StaticCatalog:
     def adapter_for(self, selector: str) -> RuntimeAdapter:
         return self.adapters[self.resolve(selector).key]
 
+    async def close(self) -> None:
+        pass
+
     @staticmethod
     def _model(key: str, adapter: RuntimeAdapter) -> AvailableModel:
         provider_id, endpoint_id = key.split("/", 1)
@@ -222,6 +225,42 @@ async def test_session_model_switch_persists_and_is_used_after_runtime_restart(t
         second.run.run_id,
         third.run.run_id,
     ]
+
+
+@pytest.mark.parametrize("budget_exhausted", [False, True])
+async def test_continue_binds_selected_model_only_when_a_request_can_start(
+    tmp_path, monkeypatch, budget_exhausted
+):
+    runtime, catalog, providers = _runtime(tmp_path)
+    try:
+        first = await runtime.run("original task")
+        metadata = dict(first.run.metadata)
+        if budget_exhausted:
+            metadata["run_budget"] = {"max_model_rounds": 1}
+        runtime.store.save_run(
+            first.run.model_copy(update={"status": "paused", "metadata": metadata})
+        )
+        runtime.switch_session_model(first.session.session_id, "beta/fast")
+        bindings = []
+        adapter_for = catalog.adapter_for
+
+        def bind(selector):
+            bindings.append(selector)
+            return adapter_for(selector)
+
+        monkeypatch.setattr(catalog, "adapter_for", bind)
+        resumed = await runtime.continue_run(session_id=first.session.session_id)
+        assert resumed.run.run_id == first.run.run_id
+        assert resumed.run.status == ("paused" if budget_exhausted else "completed")
+        assert bindings == ([] if budget_exhausted else ["beta/fast"])
+        assert providers["beta"].models == ([] if budget_exhausted else ["beta-model"])
+        assert [
+            m.text_content
+            for m in runtime.store.load_runtime_session(first.session.session_id).messages
+            if m.role == "user"
+        ] == ["original task"]
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio

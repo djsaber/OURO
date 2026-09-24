@@ -1387,21 +1387,26 @@ class ContextPreparationService:
         complete_messages, excluded = project_tool_exchanges(
             project_compacted_messages(messages, active)
         )
-        # Opaque provider state is an execution permit, not rollbackable business state.
-        artifact_runs = {
-            message.run_id
+        # Budget only native state that can belong to this request. Protocol and
+        # account compatibility stay inside the codec; execution epochs stay here.
+        candidate_runs = {
+            message.message_id: message.run_id
             for message in complete_messages
-            if message.provider_continuation is not None and message.run_id is not None
+            if (artifact := message.provider_continuation) is not None
+            and artifact.provider_id == adapter.model.provider_id
+            and artifact.model_id == adapter.model.model_id
+            and message.run_id is not None
         }
         replayable = {
             run_id
-            for run_id in artifact_runs
+            for run_id in set(candidate_runs.values())
             if self.store.load_run(session.session_id, run_id).history_epoch
             == session.history_epoch
         }
         complete_messages = [
             message.model_copy(update={"provider_continuation": None})
-            if message.provider_continuation is not None and message.run_id not in replayable
+            if message.provider_continuation is not None
+            and candidate_runs.get(message.message_id) not in replayable
             else message
             for message in complete_messages
         ]

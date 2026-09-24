@@ -61,7 +61,11 @@ class ToolResultReference(OuroModel):
 
 
 class ProviderContinuationArtifact(OuroModel):
-    """Route-scoped provider state that Core persists but never interprets."""
+    """Native replay data owned by its source route, alongside canonical history.
+
+    Core persists opaque blocks; the target codec decides replay compatibility.
+    Incompatible routes continue from canonical content and complete tool frames.
+    """
 
     provider_id: str
     protocol: str

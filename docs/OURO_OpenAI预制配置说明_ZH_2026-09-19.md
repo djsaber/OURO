@@ -39,8 +39,8 @@ API 的 none 映射到 OURO 的 reasoning disabled；Astra 不提供关闭思考
 各模型的 API 文档均列出图像输入能力，但模板能力必须同时满足当前 adapter 能力，不能仅根据模型目录开启。
 服务预算和能力分别声明，不从 API 模板复制订阅限制。API 价格有长上下文等计费条件，本次不写入无法完整表达的固定价格。
 
-当前 static 认证的 opaque 续接绑定认证实例生命周期；重建 API Key adapter 后不能重放旧 opaque 状态，
-会明确拒绝。浏览器订阅使用稳定账户 scope，已支持跨进程续接。详细边界见
+static 认证的 opaque 重放绑定认证实例生命周期；重建 API Key adapter 后通过通用聊天与工具帧继续任务，
+不发送旧 opaque 状态。浏览器订阅使用稳定账户 scope，跨进程可重放兼容状态。详细边界见
 [Responses 规格](../dev/specs/OURO_Responses编解码规格_2026-09-19.md)。
 
 ## 创建与更新

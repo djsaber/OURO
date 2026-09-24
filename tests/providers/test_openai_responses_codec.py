@@ -8,6 +8,7 @@ from ouro.core.messages import (
     ImageContent,
     MessageRecord,
     ModelMessage,
+    ProviderContinuationArtifact,
     TextContent,
     ToolResultReference,
 )
@@ -156,8 +157,6 @@ def test_function_call_without_optional_item_id_survives_persistence_and_replay(
 @pytest.mark.parametrize(
     "field,value,code",
     [
-        ("scope", ["test-service", "another-account"], "continuation_scope_mismatch"),
-        ("scope", ["another-service", "test-account"], "continuation_scope_mismatch"),
         ("scope", [], "invalid_continuation"),
         ("scope", "test-account", "invalid_continuation"),
         ("format_version", 2, "invalid_continuation"),
@@ -167,7 +166,7 @@ def test_function_call_without_optional_item_id_survives_persistence_and_replay(
         ("extra", True, "invalid_continuation"),
     ],
 )
-def test_unreadable_or_foreign_continuation_is_not_silently_dropped(field, value, code):
+def test_malformed_matching_continuation_is_rejected(field, value, code):
     msg = assistant()
     msg.provider_continuation.blocks[0][field] = value
     with pytest.raises(OpenAIResponsesError) as failure:
@@ -176,13 +175,48 @@ def test_unreadable_or_foreign_continuation_is_not_silently_dropped(field, value
     assert "opaque-ciphertext" not in str(failure.value)
 
 
-@pytest.mark.parametrize("field", ["provider_id", "protocol", "model_id"])
-def test_outer_route_mismatch_requires_restoring_route_or_starting_new_session(field):
+@pytest.mark.parametrize("field", ["provider_id", "protocol", "model_id", "scope"])
+def test_incompatible_continuation_uses_canonical_frame_without_mutating_history(field):
     msg = assistant()
-    msg.provider_continuation = msg.provider_continuation.model_copy(update={field: "different"})
-    with pytest.raises(OpenAIResponsesError, match="Restore the original") as failure:
-        encode([msg])
-    assert failure.value.code == "continuation_route_mismatch"
+    if field == "scope":
+        msg.provider_continuation.blocks[0][field] = ["another-service", "another-account"]
+    else:
+        msg.provider_continuation = msg.provider_continuation.model_copy(
+            update={field: "different"}
+        )
+    result = ModelMessage(
+        role="tool_result",
+        content=[TextContent(text="result")],
+        tool_result=ToolResultReference(tool_call_id="call-1", tool_name="echo"),
+    )
+    saved = msg.model_dump_json()
+    assert encode([msg, result]) == encode(
+        [msg.model_copy(update={"provider_continuation": None}), result]
+    )
+    assert msg.model_dump_json() == saved
+
+
+@pytest.mark.parametrize("protocol", ["openai-chat-completions", "anthropic-messages"])
+def test_foreign_protocol_blocks_are_not_interpreted_as_responses(protocol):
+    msg = assistant().model_copy(
+        update={
+            "provider_continuation": ProviderContinuationArtifact(
+                provider_id="provider",
+                protocol=protocol,
+                model_id="model",
+                blocks=({"private-format": "foreign-state"},),
+            )
+        }
+    )
+    matching = ModelMessage.text(role="assistant", text="hello").model_copy(
+        update={"provider_continuation": artifact([message()])}
+    )
+    encoded = encode([msg, matching])["input"]
+    assert encoded == [
+        *encode([msg.model_copy(update={"provider_continuation": None})])["input"],
+        message(),
+    ]
+    assert "foreign-state" not in str(encoded)
 
 
 @pytest.mark.parametrize(

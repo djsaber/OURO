@@ -13,6 +13,7 @@ from ouro.config import ProviderConfigManager, provider_models
 from ouro.config.compaction import CompactionConfigManager
 from ouro.config.provider_models import ProviderConnectionSpec, ProviderTypeSpec
 from ouro.config.reasoning import mapped_reasoning
+from ouro.core.provider import ProviderRetryPolicy
 from ouro.core.reasoning import ReasoningRequest
 from ouro.local_application import LocalApplication, ProviderServicePolicy, build_local_runtime
 from ouro.providers.authentication import ProviderRequestPolicy
@@ -80,11 +81,13 @@ async def responses_runtime(tmp_path, monkeypatch, request):
 
     def respond(request):
         payload = json.loads(request.content)
-        assert "max_output_tokens" not in payload
         requests.append((payload, dict(request.headers)))
         reply = replies.popleft()
         if isinstance(reply, int):
             return httpx.Response(reply)
+        if request.url.path.endswith("/chat/completions"):
+            return httpx.Response(200, json=reply)
+        assert "max_output_tokens" not in payload
         if not payload["stream"]:
             return httpx.Response(200, json=reply["response"])
         # Exercise the observed SSE form where the terminal has no output snapshot.
@@ -107,6 +110,10 @@ async def responses_runtime(tmp_path, monkeypatch, request):
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         monkeypatch.setattr(
             "ouro.providers.openai_responses.HttpxProviderHTTPTransport",
+            lambda: HttpxProviderHTTPTransport(client),
+        )
+        monkeypatch.setattr(
+            "ouro.providers.openai_chat_completions.HttpxProviderHTTPTransport",
             lambda: HttpxProviderHTTPTransport(client),
         )
 
@@ -264,6 +271,117 @@ async def test_incomplete_tool_response_cannot_execute_and_recovery_uses_complet
             for i in requests[1][0]["input"]
         )
         assert len(result.run.usage_entry_ids) == 2
+    assert not replies
+
+
+@pytest.mark.parametrize("source_protocol", ["openai-chat-completions", "openai-responses"])
+@pytest.mark.parametrize("continue_without_input", [False, True])
+async def test_model_switch_after_failure_preserves_completed_tool_frames(
+    responses_runtime, tmp_path, source_protocol, continue_without_input
+):
+    build, replies, requests, executions = responses_runtime
+    source_route = None
+    if source_protocol == "openai-chat-completions":
+        configs = ProviderConfigManager(tmp_path)
+        source = configs.create_provider(
+            display_name="Source",
+            provider_type="custom",
+            protocol=source_protocol,
+            base_url="https://source.invalid/v1",
+            retry_policy=ProviderRetryPolicy(max_attempts=1),
+        )
+        endpoint = configs.create_endpoint(
+            source.provider_id,
+            model_id="source-model",
+            supports_streaming=False,
+            reasoning=mapped_reasoning(
+                name="source-reasoning",
+                activation="always_on",
+                default=ReasoningRequest(mode="enabled"),
+                variants={"enabled": {}},
+                output="text",
+                continuation="text",
+            ),
+        )
+        source_route = f"{source.provider_id}/{endpoint.endpoint_id}"
+        replies.extend(
+            [
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "Checking the first result.",
+                                "reasoning_content": "source-private-reasoning",
+                                "tool_calls": [
+                                    {
+                                        "id": "call-1",
+                                        "type": "function",
+                                        "function": {"name": "echo", "arguments": '{"round":1}'},
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                },
+                429,
+            ]
+        )
+    else:
+        failure = terminal([], status="failed")
+        failure["type"] = "response.failed"
+        replies.extend([terminal([reasoning(), call(1)]), failure])
+
+    async with build() as app:
+        target = next(m for m in app.runtime.models.list_models() if m.model_id == "summary")
+        auth = app.provider_auth
+        method = (await auth.methods(target.provider_id))[0]
+        started = await auth.begin(target.provider_id, method.method_id)
+        assert (await auth.wait(started.operation_id)).state == "succeeded"
+        failed = await app.runtime.run("Perform two tool rounds.", initial_model=source_route)
+        assert failed.run.status == "failed", failed.run.error
+        assert executions == [1]
+        session_id = failed.session.session_id
+        saved = app.runtime.store.load_session(session_id).messages
+        source_message = next(m for m in saved if m.tool_calls)
+        assert source_message.provider_continuation.protocol == source_protocol
+        app.runtime.switch_session_model(session_id, target.key)
+
+    async with build() as app:
+        replies.extend(
+            [terminal([reasoning(id="target-rs"), call(2)]), terminal([message("done")])]
+        )
+        result = (
+            await app.runtime.continue_run(session_id=session_id)
+            if continue_without_input
+            else await app.runtime.run("Finish the task.", session_id=session_id)
+        )
+        assert result.run.status == "completed", result.run.error
+        assert result.final_text == "done"
+        assert result.run.model == "summary"
+        assert (result.run.run_id == failed.run.run_id) == continue_without_input
+        assert executions == [1, 2]
+        first_target = requests[2][0]
+        assert first_target["model"] == "summary"
+        assert not output_items(first_target)
+        assert "source-private-reasoning" not in json.dumps(first_target)
+        assert "opaque-ciphertext" not in json.dumps(first_target)
+        assert [
+            i["call_id"] for i in first_target["input"] if i.get("type") == "function_call"
+        ] == ["call-1"]
+        assert [i for i in first_target["input"] if i.get("type") == "function_call_output"] == [
+            {"type": "function_call_output", "call_id": "call-1", "output": "result-1"}
+        ]
+        assert output_items(requests[3][0]) == [reasoning(id="target-rs"), call(2)]
+        persisted = app.runtime.store.load_session(session_id).messages
+        assert persisted[: len(saved)] == saved
+        assert len([m for m in persisted if m.role == "user"]) == (
+            1 if continue_without_input else 2
+        )
+        assert (not any(e.event_type == "user_message_added" for e in result.events)) == (
+            continue_without_input
+        )
     assert not replies
 
 

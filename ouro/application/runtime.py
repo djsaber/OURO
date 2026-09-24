@@ -1848,7 +1848,11 @@ class RuntimeService:
     async def continue_run(
         self, *, session_id: str, run_id: str | None = None, history_epoch: int | None = None
     ) -> RunResult:
-        """Continue current history, reusing a checkpoint only in its original epoch."""
+        """Resume retained work without adding input or binding a provider route.
+
+        Execution ownership and history epochs govern checkpoint reuse. The
+        ordinary model loop binds current Session settings at its next request.
+        """
 
         snapshot = await run_blocking(self.session_recovery.recover_runtime, session_id)
         if history_epoch is not None and history_epoch != snapshot.session.history_epoch:
@@ -1884,14 +1888,12 @@ class RuntimeService:
                 raise SessionBusyError(
                     "The latest run changed before continuation acquired ownership"
                 )
-            session, adapter = await run_blocking(self._resolve_session_adapter, snapshot.session)
             if fresh:
-                if session.session_kind == "subagent":
+                if snapshot.session.session_kind == "subagent":
                     if self._agent_controls is None:
                         raise ValueError("Child continuation requires the Agent service")
                     run = await self._agent_controls.prepare_history_continuation(run)
                     snapshot = await run_blocking(self.store.load_runtime_session, session_id)
-                run = run.model_copy(update={"model": adapter.model.model_id})
                 run = await self._attach_extension_snapshot(run)
             else:
                 run = latest_run
@@ -1914,7 +1916,6 @@ class RuntimeService:
                     snapshot, run_ids=frozenset({run.run_id})
                 )
                 run = continuable_run(snapshot)
-                await run_blocking(self.run_lifecycle.finish_run, run)
             previous_status = run.status
             metadata = dict(run.metadata)
             metadata.pop("pause", None)
@@ -1961,7 +1962,7 @@ class RuntimeService:
                 sequence=sequence,
                 emitted=emitted,
                 abort_signal=signal,
-                adapter=adapter,
+                adapter=self.adapter,
             )
         except Exception as exc:  # noqa: BLE001 - continuation owns its durable failure boundary.
             if not started:

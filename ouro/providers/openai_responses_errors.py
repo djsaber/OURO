@@ -18,8 +18,6 @@ OpenAIResponsesErrorCode = Literal[
     "response_failed",
     "response_incomplete",
     "invalid_continuation",
-    "continuation_scope_mismatch",
-    "continuation_route_mismatch",
     "continuation_tool_mismatch",
     "unsupported_input",
     "invalid_tool_schema",
@@ -31,7 +29,4 @@ class OpenAIResponsesError(ValueError):
 
     def __init__(self, code: OpenAIResponsesErrorCode) -> None:
         self.code = code
-        message = "Responses protocol error: " + code
-        if code in {"continuation_scope_mismatch", "continuation_route_mismatch"}:
-            message += ". Restore the original model route/account or start a new session."
-        super().__init__(message)
+        super().__init__("Responses protocol error: " + code)

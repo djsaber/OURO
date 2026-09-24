@@ -1,4 +1,4 @@
-"""Canonical text/tools and route-scoped, complete Responses replay items."""
+"""Portable canonical history with compatible, complete Responses replay items."""
 
 from __future__ import annotations
 
@@ -111,15 +111,20 @@ def continuation_from_output(
     )
 
 
-def _replay(
+def _replay_if_compatible(
     artifact: ProviderContinuationArtifact,
     *,
     provider_id: str,
     model_id: str,
     scope: tuple[str, ...],
-) -> list[dict[str, Any]]:
+) -> list[dict[str, Any]] | None:
+    """Select native replay without making canonical history depend on its origin.
+
+    Foreign artifacts belong to their source codec. A matching route still
+    requires a readable envelope and valid items before any native replay.
+    """
     if not artifact.matches(provider_id=provider_id, protocol=PROTOCOL, model_id=model_id):
-        raise OpenAIResponsesError("continuation_route_mismatch")
+        return None
     if len(artifact.blocks) != 1:
         raise OpenAIResponsesError("invalid_continuation")
     envelope = artifact.blocks[0]
@@ -135,7 +140,7 @@ def _replay(
     ):
         raise OpenAIResponsesError("invalid_continuation")
     if envelope["scope"] != list(scope):
-        raise OpenAIResponsesError("continuation_scope_mismatch")
+        return None
     items = OpenAIResponsesItemAccumulator().finish(envelope["items"])
     return [output_item(item) for item in items]
 
@@ -157,7 +162,8 @@ def responses_input(
             raise OpenAIResponsesError("unsupported_input")
         if message.role == "system":
             instructions.append(message.text_content)
-        elif message.role == "tool_result":
+            continue
+        if message.role == "tool_result":
             if message.tool_result is None or not message.tool_result.tool_call_id:
                 raise OpenAIResponsesError("unsupported_input")
             items.append(
@@ -167,13 +173,18 @@ def responses_input(
                     "output": message.text_content,
                 }
             )
-        elif message.provider_continuation is not None:
-            replay = _replay(
+            continue
+        replay = (
+            _replay_if_compatible(
                 message.provider_continuation,
                 provider_id=provider_id,
                 model_id=model_id,
                 scope=scope,
             )
+            if message.provider_continuation is not None
+            else None
+        )
+        if replay is not None:
             calls = [
                 (item["call_id"], item["name"], tool_arguments(item["arguments"]))
                 for item in replay

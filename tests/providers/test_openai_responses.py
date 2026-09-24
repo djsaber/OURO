@@ -17,7 +17,7 @@ from ouro.config.reasoning import (
 )
 from ouro.core.context import ContextView
 from ouro.core.errors import ConfigError
-from ouro.core.messages import ModelMessage
+from ouro.core.messages import ModelMessage, TextContent
 from ouro.core.provider import ModelMetadata, ProviderRetryPolicy
 from ouro.core.reasoning import ReasoningRequest
 from ouro.providers.factory import build_runtime_adapter
@@ -182,17 +182,24 @@ async def test_static_authorization_lifetime_binds_opaque_state_without_key_deri
     )
     events = await collect(provider)
     artifact = next(event.continuation for event in events if event.type == "continuation")
-    history = [ModelMessage(role="assistant", provider_continuation=artifact)]
+    history = [
+        ModelMessage(
+            role="assistant", content=[TextContent(text="hello")], provider_continuation=artifact
+        )
+    ]
     assert "private-test-key" not in artifact.model_dump_json()
     assert (await collect(provider, history))[-1].type == "done"
     assert transport.requests[-1]["payload"]["input"] == [reasoning(), message()]
     provider.authenticator = StaticRequestAuthenticator({"x-api-key": "private-test-key"})
     events = await collect(provider, history)
-    assert events[-1].error_code == "continuation_scope_mismatch"
-    assert len(transport.requests) == 2
+    assert events[-1].type == "done"
+    assert len(transport.requests) == 3
+    assert transport.requests[-1]["payload"]["input"] == [{"role": "assistant", "content": "hello"}]
 
 
-async def test_managed_refresh_keeps_scope_and_account_change_rejects_before_http(tmp_path):
+async def test_managed_refresh_replays_native_items_and_account_change_uses_canonical_history(
+    tmp_path,
+):
     service, record, auth = await authenticated(tmp_path)
     requests = []
 
@@ -214,7 +221,13 @@ async def test_managed_refresh_keeps_scope_and_account_change_rejects_before_htt
             )
             events = await collect(provider, model=model)
             artifact = next(event.continuation for event in events if event.type == "continuation")
-            history = [ModelMessage(role="assistant", provider_continuation=artifact)]
+            history = [
+                ModelMessage(
+                    role="assistant",
+                    content=[TextContent(text="hello")],
+                    provider_continuation=artifact,
+                )
+            ]
             events = await collect(provider, history, model)
             renewed = next(event.continuation for event in events if event.type == "continuation")
             assert renewed.blocks[0]["scope"] == artifact.blocks[0]["scope"]
@@ -234,9 +247,13 @@ async def test_managed_refresh_keeps_scope_and_account_change_rejects_before_htt
                 expected_revision=2,
             )
             events = await collect(provider, history, model)
-            assert events[-1].error_code == "continuation_scope_mismatch"
-            assert "start a new session" in events[-1].error
-            assert len(requests) == 3
+            assert events[-1].type == "done"
+            assert len(requests) == 4
+            assert requests[-1].headers["authorization"] == "Bearer other-access"
+            assert json.loads(requests[-1].content)["input"] == [
+                {"role": "assistant", "content": "hello"}
+            ]
+            assert history[0].provider_continuation == artifact
     finally:
         await service.close()
 
