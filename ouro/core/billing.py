@@ -30,6 +30,7 @@ class ProviderUsageEntry(VersionedOuroModel):
     endpoint_id: str | None = None
     model_id: str
     session_id: str
+    workspace: str | None = None
     run_id: str
     run_kind: str
     purpose: UsagePurpose
@@ -41,6 +42,7 @@ class ProviderUsageEntry(VersionedOuroModel):
     estimated_cost: float | None = Field(
         default=None,
         ge=0,
+        allow_inf_nan=False,
         description="Provider or manually supplied estimated cost in USD.",
     )
     revision: int = Field(default=1, ge=1)
@@ -50,8 +52,9 @@ class ProviderUsageEntry(VersionedOuroModel):
 
     @field_validator("metadata")
     @classmethod
-    def _validate_billing_mode(cls, value: Metadata) -> Metadata:
+    def _validate_metadata(cls, value: Metadata) -> Metadata:
         _BILLING_MODE.validate_python(value.get("billing_mode", "unknown"))
+        _HARNESS_SCOPES.validate_python(value.get("harness_scopes", {}))
         return value
 
     @property
@@ -75,9 +78,9 @@ class ProviderUsageEntry(VersionedOuroModel):
             raise ValueError("usage identifiers must not be empty")
         return normalized
 
-    @field_validator("endpoint_id")
+    @field_validator("endpoint_id", "workspace")
     @classmethod
-    def _normalize_endpoint(cls, value: str | None) -> str | None:
+    def _normalize_optional_identifier(cls, value: str | None) -> str | None:
         if value is None:
             return None
         return value.strip() or None
@@ -97,7 +100,7 @@ class ProviderUsageEntry(VersionedOuroModel):
 
     @property
     def harness_scopes(self) -> dict[str, tuple[str, ...]]:
-        """Native request attribution; older, unassociated entries contribute to no scope."""
+        """Native request attribution; unassociated entries contribute to no scope."""
         return _HARNESS_SCOPES.validate_python(self.metadata.get("harness_scopes", {}))
 
 
@@ -107,11 +110,13 @@ class UsageFilter(OuroModel):
     occurred_from: datetime | None = None
     occurred_to: datetime | None = None
     provider_ids: frozenset[str] = Field(default_factory=frozenset)
-    endpoint_ids: frozenset[str] = Field(default_factory=frozenset)
+    endpoint_ids: frozenset[str | None] = Field(default_factory=frozenset)
     model_ids: frozenset[str] = Field(default_factory=frozenset)
     session_ids: frozenset[str] = Field(default_factory=frozenset)
     run_ids: frozenset[str] = Field(default_factory=frozenset)
+    workspaces: frozenset[str | None] = Field(default_factory=frozenset)
     purposes: frozenset[UsagePurpose] = Field(default_factory=frozenset)
+    billing_modes: frozenset[BillingMode] = Field(default_factory=frozenset)
 
     @field_validator("occurred_from", "occurred_to")
     @classmethod
@@ -126,6 +131,7 @@ class UsageFilter(OuroModel):
         "model_ids",
         "session_ids",
         "run_ids",
+        "workspaces",
         mode="before",
     )
     @classmethod
@@ -136,7 +142,11 @@ class UsageFilter(OuroModel):
             return frozenset({value.strip()}) if value.strip() else frozenset()
         if not isinstance(value, Iterable):
             return value
-        return frozenset(str(item).strip() for item in value if str(item).strip())
+        return frozenset(
+            None if item is None else str(item).strip()
+            for item in value
+            if item is None or str(item).strip()
+        )
 
     @model_validator(mode="after")
     def _validate_range(self) -> Self:
@@ -147,23 +157,6 @@ class UsageFilter(OuroModel):
         ):
             raise ValueError("occurred_from must be earlier than occurred_to")
         return self
-
-    def matches(self, entry: ProviderUsageEntry) -> bool:
-        if self.occurred_from is not None and entry.occurred_at < self.occurred_from:
-            return False
-        if self.occurred_to is not None and entry.occurred_at >= self.occurred_to:
-            return False
-        if self.provider_ids and entry.provider_id not in self.provider_ids:
-            return False
-        if self.endpoint_ids and entry.endpoint_id not in self.endpoint_ids:
-            return False
-        if self.model_ids and entry.model_id not in self.model_ids:
-            return False
-        if self.session_ids and entry.session_id not in self.session_ids:
-            return False
-        if self.run_ids and entry.run_id not in self.run_ids:
-            return False
-        return not self.purposes or entry.purpose in self.purposes
 
 
 class UsageLedgerEvent(VersionedOuroModel):

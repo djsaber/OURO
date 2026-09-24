@@ -6,10 +6,10 @@ from datetime import UTC, datetime
 import pytest
 
 from ouro.application.queued_inputs import QueuedUserInputView
-from ouro.application.usage_models import UsageSummary, UsageTotals
 from ouro.core.billing import UsageFilter
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ProviderStreamEvent
+from ouro.core.usage_queries import UsageSummary, UsageTotals
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.conversation_history import ConversationHistory
 from ouro.tui.screens import ChoiceScreen
@@ -153,12 +153,12 @@ async def test_welcome_usage_coalesces_concurrent_completions_and_keeps_latest_t
 
     async with run_ready_app(app) as pilot:
         monkeypatch.setattr(app._controller, "usage_summary", summary)
-        refresh = asyncio.create_task(app._refresh_usage_status())
+        refresh = asyncio.create_task(app._refresh_welcome_status())
         try:
             await asyncio.wait_for(entered.wait(), 2)
             for count in range(2, 10):
                 completed = count
-                await app._refresh_usage_status()
+                await app._refresh_welcome_status()
             assert calls == 1
         finally:
             release.set()
@@ -193,12 +193,12 @@ async def test_usage_refresh_does_not_update_hidden_welcome_and_reentry_reads_cu
 
     async with run_ready_app(app) as pilot:
         monkeypatch.setattr(app._controller, "usage_summary", summary)
-        refresh = asyncio.create_task(app._refresh_usage_status())
+        refresh = asyncio.create_task(app._refresh_welcome_status())
         try:
             await asyncio.wait_for(entered.wait(), 2)
             await app._open_session(session.session_id)
             status = app.query_one(WelcomePanel)._status
-            await app._refresh_usage_status()
+            await app._refresh_welcome_status()
             assert calls == 1
             if reenter_before_read:
                 await app._new_session()

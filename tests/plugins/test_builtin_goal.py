@@ -436,7 +436,7 @@ async def test_goal_runs_end_to_end_and_retains_final_usage(tmp_path) -> None:
             PLUGIN_ID: {goal.goal_id: 10}
         }
         # Creation precedes activation; the acknowledgement follows release.
-        assert sum(entry.total_tokens for entry in runtime.usage.ledger.list_entries()) == 20
+        assert runtime.usage.summarize().totals.total_tokens == 20
         status = await application.plugins.execute_command(
             f"{PLUGIN_ID}:goal", "status", session_id=session.session_id
         )

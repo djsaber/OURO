@@ -71,14 +71,14 @@ from ouro.application.supervisor_models import (
     SupervisorStartResult,
 )
 from ouro.application.usage import UsageService
-from ouro.application.usage_models import (
+from ouro.core.results import RunResult
+from ouro.core.usage_queries import (
     UsageAuditLog,
     UsageEntryList,
     UsageMutationResult,
     UsageSummary,
     UsageTotals,
 )
-from ouro.core.results import RunResult
 
 __all__ = [
     "AgentDefinitionCatalogView",

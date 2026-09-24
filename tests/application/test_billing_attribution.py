@@ -44,8 +44,8 @@ def test_attribution_survives_reopen_correction_and_grouping_without_fabricated_
     record(service, "unknown", "unknown")
     zero = record(service, "free-request", "usage_based", 0)
     assert subscription.estimated_cost is None and zero.estimated_cost == 0
-    summary = service.summarize(group_by="billing_mode")
-    assert [group.key for group in summary.groups] == ["subscription", "unknown", "usage_based"]
+    summary = service.summarize(group_by=("billing_mode",))
+    assert [group.key[0] for group in summary.groups] == ["subscription", "unknown", "usage_based"]
     assert summary.totals.billing_modes == ("subscription", "unknown", "usage_based")
     assert summary.totals.priced_request_count == 2 and summary.totals.unpriced_request_count == 2
     assert summary.totals.estimated_cost == 0.2
@@ -191,9 +191,9 @@ async def test_failed_dedicated_compaction_keeps_service_mode_and_actual_tokens(
         await application.runtime.run("second", session_id=first.session.session_id)
         with pytest.raises(CompactionError):
             await application.runtime.compact(session_id=first.session.session_id)
-        entries = LocalUsageLedger(tmp_path).list_entries()
+        entries = LocalUsageLedger(tmp_path).list_entries(UsageFilter()).entries
         compaction = [entry for entry in entries if entry.purpose == "compaction"]
-        assert compaction and compaction[0].endpoint_id == _endpoint_id(configs, "summary")
+        assert any(entry.endpoint_id == _endpoint_id(configs, "summary") for entry in compaction)
         assert all(entry.billing_mode == "subscription" for entry in entries)
         assert all(entry.estimated_cost is None for entry in entries)
         assert all(entry.total_tokens == 14 and entry.cache_read_tokens == 2 for entry in entries)

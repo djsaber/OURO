@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 from textual.widgets import Static
 
-from ouro.application.usage_models import UsageSummary, UsageSummaryGroup, UsageTotals
 from ouro.core.billing import UsageFilter
+from ouro.core.usage_queries import UsageSummary, UsageSummaryGroup, UsageTotals
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.controller import TuiSystemStatus, project_usage_system_status
 from ouro.tui.widgets import WelcomePanel
@@ -60,7 +60,7 @@ async def test_welcome_shows_usage_without_cost_or_billing_information(
 async def test_hovered_day_shows_request_count_without_cost_or_billing_information(tmp_path):
     summary = UsageSummary(
         usage_filter=UsageFilter(),
-        group_by="date",
+        group_by=("date",),
         totals=UsageTotals(
             request_count=2,
             priced_request_count=1,
@@ -70,13 +70,13 @@ async def test_hovered_day_shows_request_count_without_cost_or_billing_informati
         ),
         groups=(
             UsageSummaryGroup(
-                key="2026-09-16",
+                key=("2026-09-16",),
                 totals=UsageTotals(
                     request_count=1, unpriced_request_count=1, billing_modes=("subscription",)
                 ),
             ),
             UsageSummaryGroup(
-                key="2026-09-17",
+                key=("2026-09-17",),
                 totals=UsageTotals(
                     request_count=1,
                     priced_request_count=1,

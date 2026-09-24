@@ -385,13 +385,26 @@ def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
     _add_usage_filter_args(summary)
     summary.add_argument(
         "--group-by",
-        choices=("date", "provider", "endpoint", "model", "purpose", "billing_mode"),
+        choices=(
+            "date",
+            "provider",
+            "endpoint",
+            "model",
+            "workspace",
+            "session",
+            "run",
+            "purpose",
+            "billing_mode",
+        ),
+        action="append",
+        help="Repeat to group by several dimensions",
     )
     _add_usage_output_args(summary)
 
     list_parser = commands.add_parser("list", help="List provider request usage entries")
     _add_usage_filter_args(list_parser)
     list_parser.add_argument("--limit", type=int, default=100)
+    list_parser.add_argument("--before", help="JSON next_cursor returned by usage list")
     _add_usage_output_args(list_parser)
 
     show = commands.add_parser("show", help="Show one usage entry")
@@ -421,6 +434,7 @@ def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
 
     audit = commands.add_parser("audit", help="Show recent ledger mutations")
     audit.add_argument("--limit", type=int, default=100)
+    audit.add_argument("--before", type=int, help="next_cursor returned by usage audit")
     _add_usage_output_args(audit)
 
 
@@ -435,6 +449,13 @@ def _add_usage_filter_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", dest="model_ids", action="append")
     parser.add_argument("--session", dest="session_ids", action="append")
     parser.add_argument("--run", dest="run_ids", action="append")
+    parser.add_argument("--workspace", dest="workspaces", action="append")
+    parser.add_argument(
+        "--billing-mode",
+        dest="billing_modes",
+        action="append",
+        choices=("unknown", "usage_based", "subscription"),
+    )
     parser.add_argument(
         "--purpose",
         dest="purposes",

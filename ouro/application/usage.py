@@ -1,24 +1,23 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Iterable
-from datetime import UTC, datetime
+from collections.abc import Callable
+from datetime import datetime
 
-from ouro.application.usage_models import (
+from ouro.billing import UsageLedger
+from ouro.core.base import utc_now
+from ouro.core.billing import ProviderUsageEntry, UsageFilter, UsagePurpose
+from ouro.core.provider import ModelMetadata, Usage
+from ouro.core.state import RunRecord
+from ouro.core.usage_queries import (
     UsageAuditLog,
+    UsageEntryCursor,
     UsageEntryList,
     UsageGroupBy,
     UsageMutationResult,
     UsageSummary,
-    UsageSummaryGroup,
     UsageTotals,
 )
-from ouro.billing import UsageLedger
-from ouro.core.base import utc_now
-from ouro.core.billing import BillingMode, ProviderUsageEntry, UsageFilter, UsagePurpose
-from ouro.core.errors import PersistenceError
-from ouro.core.provider import ModelMetadata, Usage
-from ouro.core.state import RunRecord
 
 
 class UsageService:
@@ -41,6 +40,7 @@ class UsageService:
         model: ModelMetadata,
         request_id: str,
         purpose: UsagePurpose,
+        workspace: str | None = None,
     ) -> ProviderUsageEntry:
         """Persist only canonical usage supplied by a provider response."""
 
@@ -52,48 +52,6 @@ class UsageService:
             endpoint_id=model.endpoint_id,
             model_id=model.model_id,
         )
-        try:
-            existing = self.ledger.get(entry_id)
-        except KeyError:
-            pass
-        else:
-            if existing.billing_mode != model.billing_mode:
-                raise PersistenceError(
-                    f"provider usage billing mode conflicts with ledger entry: {entry_id}"
-                )
-            expected = (
-                run.session_id,
-                run.run_id,
-                purpose,
-                request_id,
-                model.provider_id,
-                model.endpoint_id,
-                model.model_id,
-                usage.input_tokens,
-                usage.output_tokens,
-                usage.cache_read_tokens,
-                usage.cache_write_tokens,
-                usage.estimated_cost,
-            )
-            actual = (
-                existing.session_id,
-                existing.run_id,
-                existing.purpose,
-                existing.request_id,
-                existing.provider_id,
-                existing.endpoint_id,
-                existing.model_id,
-                existing.input_tokens,
-                existing.output_tokens,
-                existing.cache_read_tokens,
-                existing.cache_write_tokens,
-                existing.estimated_cost,
-            )
-            if actual != expected and existing.revision == 1:
-                raise PersistenceError(
-                    f"provider usage request conflicts with ledger entry: {entry_id}"
-                )
-            return existing
         scopes: dict[str, set[str]] = {}
         for binding in run.control_bindings:
             if binding.usage_scope is not None:
@@ -111,6 +69,7 @@ class UsageService:
             endpoint_id=model.endpoint_id,
             model_id=model.model_id,
             session_id=run.session_id,
+            workspace=workspace,
             run_id=run.run_id,
             run_kind=run.kind,
             purpose=purpose,
@@ -133,21 +92,9 @@ class UsageService:
         usage_filter: UsageFilter | None = None,
         *,
         limit: int = 100,
+        before: UsageEntryCursor | None = None,
     ) -> UsageEntryList:
-        if not 1 <= limit <= 10_000:
-            raise ValueError("usage list limit must be between 1 and 10000")
-        active_filter = usage_filter or UsageFilter()
-        matching = sorted(
-            (entry for entry in self.ledger.list_entries() if active_filter.matches(entry)),
-            key=lambda entry: (entry.occurred_at, entry.entry_id),
-            reverse=True,
-        )
-        return UsageEntryList(
-            usage_filter=active_filter,
-            entries=tuple(matching[:limit]),
-            total_matching=len(matching),
-            truncated=len(matching) > limit,
-        )
+        return self.ledger.list_entries(usage_filter or UsageFilter(), limit=limit, before=before)
 
     def get_entry(self, entry_id: str) -> ProviderUsageEntry:
         return self.ledger.get(entry_id)
@@ -156,23 +103,9 @@ class UsageService:
         self,
         usage_filter: UsageFilter | None = None,
         *,
-        group_by: UsageGroupBy | None = None,
+        group_by: tuple[UsageGroupBy, ...] = (),
     ) -> UsageSummary:
-        active_filter = usage_filter or UsageFilter()
-        entries = [entry for entry in self.ledger.list_entries() if active_filter.matches(entry)]
-        grouped: dict[str, list[ProviderUsageEntry]] = {}
-        if group_by is not None:
-            for entry in entries:
-                grouped.setdefault(_group_key(entry, group_by), []).append(entry)
-        return UsageSummary(
-            usage_filter=active_filter,
-            totals=usage_totals(entries),
-            group_by=group_by,
-            groups=tuple(
-                UsageSummaryGroup(key=key, totals=usage_totals(grouped[key]))
-                for key in sorted(grouped)
-            ),
-        )
+        return self.ledger.summarize(usage_filter or UsageFilter(), group_by=group_by)
 
     def replace_entry(
         self,
@@ -229,7 +162,7 @@ class UsageService:
         return UsageMutationResult(
             action="replace",
             affected_count=1,
-            affected_totals=usage_totals([replaced]),
+            affected_totals=_entry_totals(replaced),
             entry=replaced,
         )
 
@@ -245,20 +178,12 @@ class UsageService:
         removed = self.ledger.reset(usage_filter or UsageFilter(), note=normalized_note)
         return UsageMutationResult(
             action="reset",
-            affected_count=len(removed),
-            affected_totals=usage_totals(removed),
+            affected_count=removed.request_count,
+            affected_totals=removed,
         )
 
-    def audit(self, *, limit: int = 100) -> UsageAuditLog:
-        if not 1 <= limit <= 10_000:
-            raise ValueError("usage audit limit must be between 1 and 10000")
-        events = self.ledger.list_events()
-        selected = list(reversed(events[-limit:]))
-        return UsageAuditLog(
-            events=tuple(selected),
-            total_events=len(events),
-            truncated=len(events) > limit,
-        )
+    def audit(self, *, limit: int = 100, before: int | None = None) -> UsageAuditLog:
+        return self.ledger.audit(limit=limit, before=before)
 
 
 def provider_usage_entry_id(
@@ -274,48 +199,16 @@ def provider_usage_entry_id(
     return f"use_{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:32]}"
 
 
-def usage_totals(entries: Iterable[ProviderUsageEntry]) -> UsageTotals:
-    request_count = 0
-    input_tokens = 0
-    output_tokens = 0
-    cache_read_tokens = 0
-    cache_write_tokens = 0
-    estimated_cost = 0.0
-    priced_request_count = 0
-    billing_modes: set[BillingMode] = set()
-    for entry in entries:
-        billing_modes.add(entry.billing_mode)
-        request_count += 1
-        input_tokens += entry.input_tokens
-        output_tokens += entry.output_tokens
-        cache_read_tokens += entry.cache_read_tokens
-        cache_write_tokens += entry.cache_write_tokens
-        if entry.estimated_cost is not None:
-            estimated_cost += entry.estimated_cost
-            priced_request_count += 1
+def _entry_totals(entry: ProviderUsageEntry) -> UsageTotals:
     return UsageTotals(
-        request_count=request_count,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        total_tokens=input_tokens + output_tokens,
-        cache_read_tokens=cache_read_tokens,
-        cache_write_tokens=cache_write_tokens,
-        estimated_cost=estimated_cost,
-        priced_request_count=priced_request_count,
-        unpriced_request_count=request_count - priced_request_count,
-        billing_modes=tuple(sorted(billing_modes)),
+        request_count=1,
+        input_tokens=entry.input_tokens,
+        output_tokens=entry.output_tokens,
+        total_tokens=entry.total_tokens,
+        cache_read_tokens=entry.cache_read_tokens,
+        cache_write_tokens=entry.cache_write_tokens,
+        estimated_cost=entry.estimated_cost or 0.0,
+        priced_request_count=int(entry.estimated_cost is not None),
+        unpriced_request_count=int(entry.estimated_cost is None),
+        billing_modes=(entry.billing_mode,),
     )
-
-
-def _group_key(entry: ProviderUsageEntry, group_by: UsageGroupBy) -> str:
-    if group_by == "date":
-        return entry.occurred_at.astimezone(UTC).date().isoformat()
-    if group_by == "provider":
-        return entry.provider_id
-    if group_by == "endpoint":
-        return entry.endpoint_id or "<none>"
-    if group_by == "model":
-        return entry.model_id
-    if group_by == "billing_mode":
-        return entry.billing_mode
-    return entry.purpose

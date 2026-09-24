@@ -403,6 +403,7 @@ class RunLifecycle:
             if self.usage_service is not None:
                 entry = self.usage_service.record_provider_usage(
                     run=run,
+                    workspace=self.store.load_session_record(run.session_id).workspace,
                     usage=usage,
                     model=model,
                     request_id=request_id,

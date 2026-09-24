@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import TypedDict, Unpack
 
 from ouro.application.usage import UsageService
-from ouro.application.usage_models import UsageGroupBy, UsageTotals
 from ouro.cli.errors import error_exit_code
-from ouro.core.billing import UsageFilter, UsagePurpose
+from ouro.core.billing import BillingMode, UsageFilter, UsagePurpose
 from ouro.core.errors import OuroError
+from ouro.core.usage_queries import UsageEntryCursor, UsageGroupBy, UsageTotals
 from ouro.local_application import build_local_usage_service
 
 
@@ -23,12 +23,14 @@ class UsageFilterArgs(TypedDict, total=False):
     session_ids: list[str] | None
     run_ids: list[str] | None
     purposes: list[UsagePurpose] | None
+    workspaces: list[str] | None
+    billing_modes: list[BillingMode] | None
 
 
 def summarize_usage(
     *,
     home: str | Path | None = None,
-    group_by: UsageGroupBy | None = None,
+    group_by: tuple[UsageGroupBy, ...] = (),
     json_mode: bool = False,
     **filters: Unpack[UsageFilterArgs],
 ) -> int:
@@ -43,11 +45,15 @@ def summarize_usage(
     print("Usage summary:")
     _print_totals(result.totals, prefix="  ")
     if result.groups:
-        print(f"By {result.group_by}:")
+        print(f"By {', '.join(result.group_by)}:")
         for group in result.groups:
             totals = group.totals
+            label = ", ".join(
+                f"{name}={value if value is not None else '<none>'}"
+                for name, value in zip(result.group_by, group.key, strict=True)
+            )
             print(
-                f"  {group.key}: {totals.request_count} requests, "
+                f"  {label}: {totals.request_count} requests, "
                 f"{totals.total_tokens} tokens "
                 f"({totals.input_tokens} input, {totals.output_tokens} output)"
             )
@@ -58,11 +64,16 @@ def list_usage(
     *,
     home: str | Path | None = None,
     limit: int = 100,
+    before: str | None = None,
     json_mode: bool = False,
     **filters: Unpack[UsageFilterArgs],
 ) -> int:
     try:
-        result = _usage(home).list_entries(_usage_filter(**filters), limit=limit)
+        result = _usage(home).list_entries(
+            _usage_filter(**filters),
+            limit=limit,
+            before=UsageEntryCursor.model_validate_json(before) if before else None,
+        )
     except (OuroError, ValueError) as exc:
         return _print_error(exc, json_mode=json_mode)
     if json_mode:
@@ -79,10 +90,12 @@ def list_usage(
             f"{entry.entry_id} {entry.occurred_at.isoformat()} {entry.purpose} {route} "
             f"in={entry.input_tokens} out={entry.output_tokens} "
             f"cache_read={entry.cache_read_tokens} cache_write={entry.cache_write_tokens} "
-            f"billing_mode={entry.billing_mode}"
+            f"billing_mode={entry.billing_mode} workspace={entry.workspace or '<none>'}"
         )
     if result.truncated:
         print(f"Showing {len(result.entries)} of {result.total_matching} matching entries.")
+        assert result.next_cursor is not None
+        print(f"Next cursor: {result.next_cursor.model_dump_json()}")
     return 0
 
 
@@ -176,10 +189,11 @@ def audit_usage(
     *,
     home: str | Path | None = None,
     limit: int = 100,
+    before: int | None = None,
     json_mode: bool = False,
 ) -> int:
     try:
-        result = _usage(home).audit(limit=limit)
+        result = _usage(home).audit(limit=limit, before=before)
     except (OuroError, ValueError) as exc:
         return _print_error(exc, json_mode=json_mode)
     if json_mode:
@@ -194,6 +208,7 @@ def audit_usage(
         print(line.rstrip())
     if result.truncated:
         print(f"Showing {len(result.events)} of {result.total_events} events.")
+        print(f"Next cursor: {result.next_cursor}")
     return 0
 
 
@@ -207,6 +222,8 @@ def _usage_filter(
     session_ids: list[str] | None = None,
     run_ids: list[str] | None = None,
     purposes: list[UsagePurpose] | None = None,
+    workspaces: list[str] | None = None,
+    billing_modes: list[BillingMode] | None = None,
 ) -> UsageFilter:
     return UsageFilter(
         occurred_from=_parse_boundary(since, inclusive_date_end=False),
@@ -217,6 +234,8 @@ def _usage_filter(
         session_ids=frozenset(session_ids or ()),
         run_ids=frozenset(run_ids or ()),
         purposes=frozenset(purposes or ()),
+        workspaces=frozenset(str(Path(value).expanduser().resolve()) for value in workspaces or ()),
+        billing_modes=frozenset(billing_modes or ()),
     )
 
 

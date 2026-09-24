@@ -1140,8 +1140,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._active_workspace: str | None = None
         self._reasoning_state: ModelReasoningState | None = None
         self._system_status = TuiSystemStatus()
-        self._usage_refresh_lock = asyncio.Lock()
-        self._usage_refresh_requested = False
+        self._welcome_refresh_lock = asyncio.Lock()
+        self._welcome_refresh_requested: Literal["usage", "system"] | None = None
         self._host_closing = False
         self._waiting_for_session_event = False
         self._dismissed_command_text: str | None = None
@@ -1623,26 +1623,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.query_one(BrandHeader).set_context(workspace=self._active_workspace)
         self.query_one(ConversationView).set_system_status(self._system_status)
 
-    async def _refresh_system_status(self) -> bool:
-        try:
-            status = await self._controller.system_status()
-        except Exception as exc:  # noqa: BLE001 - retain the last valid Host projection.
-            if self._surface_available():
-                self.notify(
-                    f"Could not refresh system status: {exc}",
-                    severity="warning",
-                    markup=False,
-                )
-            return False
-        if not self._surface_available():
-            return False
-        self._system_status = status
-        self.query_one(ConversationView).set_system_status(status)
-        return True
-
     async def _show_welcome(self, *, refresh_status: bool = True) -> None:
-        if refresh_status:
-            await self._refresh_system_status()
         if not self._surface_available():
             return
         await self.query_one(ConversationView).show_welcome()
@@ -1650,6 +1631,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         self._restore_input_draft(self._controller.session_id)
         self._set_welcome_mode(True)
+        if refresh_status:
+            self.call_after_refresh(self._start_welcome_status_refresh)
+
+    def _start_welcome_status_refresh(self) -> None:
+        if self._welcome_status_visible():
+            self.run_worker(self._refresh_welcome_status(full=True), group="welcome-status")
 
     def _set_welcome_mode(self, enabled: bool) -> None:
         self.query_one(BrandHeader).display = not enabled
@@ -2083,7 +2070,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     async def _apply_run_result(self, result: RunResult) -> None:
         if not self._owns_session_surface(result.session.session_id):
-            await self._refresh_usage_status()
+            await self._refresh_welcome_status()
             return
         await self._flush_pending_runtime_events()
         await self._apply_run_result_events(result.events)
@@ -2112,7 +2099,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 session_title=self._active_title,
                 workspace=self._active_workspace,
             )
-        await self._refresh_usage_status()
+        await self._refresh_welcome_status()
         await self._refresh_interaction()
         await self._refresh_session_controls()
 
@@ -2171,25 +2158,47 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 return
             await self.wait_for_refresh()
 
-    async def _refresh_usage_status(self) -> None:
-        # Opening welcome reads current system status, so hidden completions need
-        # no query or retained invalidation. Visible concurrent completions share
-        # one reader and request a final read if usage changed while it yielded.
+    async def _refresh_welcome_status(self, *, full: bool = False) -> None:
+        # Entry and completion notifications share one reader. A full snapshot
+        # includes usage; notifications during a read request one follow-up read.
         if not self._welcome_status_visible():
             return
-        self._usage_refresh_requested = True
-        if self._usage_refresh_lock.locked():
+        if full or self._welcome_refresh_requested != "system":
+            self._welcome_refresh_requested = "system" if full else "usage"
+        if self._welcome_refresh_lock.locked():
             return
-        async with self._usage_refresh_lock:
-            while self._usage_refresh_requested and self._welcome_status_visible():
-                self._usage_refresh_requested = False
+        async with self._welcome_refresh_lock:
+            while self._welcome_refresh_requested and self._welcome_status_visible():
+                requested = self._welcome_refresh_requested
+                self._welcome_refresh_requested = None
                 revision = self._controller.selection_revision
-                usage = await self._controller.usage_summary()
+                previous = self._system_status
+                try:
+                    if requested == "system":
+                        status = await self._controller.system_status()
+                    else:
+                        usage = await self._controller.usage_summary()
+                        status = project_usage_system_status(self._system_status, usage)
+                except Exception as exc:  # noqa: BLE001 - retain the last valid Host projection.
+                    if (
+                        self._welcome_status_visible()
+                        and revision == self._controller.selection_revision
+                    ):
+                        self.notify(
+                            f"Could not refresh {requested} status: {exc}",
+                            severity="warning",
+                            markup=False,
+                        )
+                    continue
                 if not self._welcome_status_visible():
                     return
                 if revision != self._controller.selection_revision:
                     continue
-                status = project_usage_system_status(self._system_status, usage)
+                if requested == "system" and previous != self._system_status:
+                    # Live workspace, model and service updates take precedence
+                    # over a snapshot captured before they were applied.
+                    self._welcome_refresh_requested = "system"
+                    continue
                 if status != self._system_status:
                     self._system_status = status
                     self.query_one(ConversationView).set_system_status(status)
@@ -3081,7 +3090,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             result = await self._controller.execute_plugin_command(selector, argument.strip())
             if revision != self._controller.selection_revision:
-                await self._refresh_usage_status()
+                await self._refresh_welcome_status()
                 return
             if result is None:
                 self.notify(
@@ -3157,7 +3166,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             result = await self._controller.compact()
             await self._flush_pending_runtime_events()
             await self._apply_runtime_events(result.events)
-            await self._refresh_usage_status()
+            await self._refresh_welcome_status()
         except Exception as exc:  # noqa: BLE001 - compaction errors are user-visible.
             self.query_one(StatusLine).set_activity("failed")
             self.notify(str(exc), severity="error", markup=False)
@@ -3170,7 +3179,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception as exc:  # noqa: BLE001 - keep the current view on failure.
             self.notify(str(exc), severity="error", markup=False)
             return
-        await self._refresh_system_status()
         async with self._runtime_event_apply_lock:
             with self.batch_update():
                 self._remember_visible_session_history()
@@ -3205,7 +3213,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await self._refresh_approval_indicator()
                 await self._refresh_reasoning_indicator()
                 self.query_one(QueuedInputPanel).set_inputs(())
-                await self._show_welcome(refresh_status=False)
+                await self._show_welcome()
 
     def action_new_session(self) -> None:
         menu = self._active_navigation_menu()

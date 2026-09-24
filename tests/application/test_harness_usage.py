@@ -9,6 +9,7 @@ from ouro.application.runtime import RuntimeService
 from ouro.application.usage import UsageService
 from ouro.billing import LocalUsageLedger
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.billing import UsageFilter
 from ouro.core.harness import HarnessState
 from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
@@ -110,7 +111,7 @@ async def test_native_usage_survives_undo_and_keeps_request_attribution(store, t
         result = await app.run("work", session_id=session.session_id)
         assert result.run.status == "completed"
         assert usage.session_scope_tokens(session.session_id) == {OWNER: {"goal-a": 5}}
-        recorded = ledger.list_entries()[0]
+        recorded = ledger.list_entries(UsageFilter()).entries[0]
         original_run = store.load_run(session.session_id, result.run.run_id)
         assert original_run.control_bindings[0].usage_scope == "goal-a"
 
@@ -122,7 +123,7 @@ async def test_native_usage_survives_undo_and_keeps_request_attribution(store, t
         )
         assert store.load_messages_tail(session.session_id) == []
         assert usage.session_scope_tokens(session.session_id) == {OWNER: {"goal-a": 5}}
-        assert ledger.list_entries() == [recorded]
+        assert ledger.list_entries(UsageFilter()).entries == (recorded,)
 
         # A new goal has a different scope. A late result still belongs to its captured request.
         store.commit_session(
@@ -159,7 +160,7 @@ async def test_native_usage_survives_undo_and_keeps_request_attribution(store, t
         assert usage.session_scope_tokens(session.session_id) == {
             OWNER: {"goal-a": 15, "goal-b": 3}
         }
-        assert len(ledger.list_entries()) == 3
+        assert len(ledger.list_entries(UsageFilter()).entries) == 3
 
         reopened = UsageService(LocalUsageLedger(tmp_path / "home"))
         call = capture_harness(store, session.session_id, run=latest, usage_service=reopened)

@@ -11,7 +11,6 @@ from ouro.application.configuration import ConfigurationFacade
 from ouro.application.plugin_models import PluginCommandExecutionView, PluginCommandView
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
-from ouro.application.usage_models import UsageSummary, UsageSummaryGroup, UsageTotals
 from ouro.config import reasoning_preset
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import ToolSelection
@@ -24,6 +23,7 @@ from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.core.session_controls import AttributedSessionInput, AttributedSessionInputBatch
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolInvocation
+from ouro.core.usage_queries import UsageSummary, UsageSummaryGroup, UsageTotals
 from ouro.local_application import LocalApplication
 from ouro.mcp import MCPServerConfigUpdate
 from ouro.providers import FauxProvider
@@ -49,7 +49,7 @@ from tests.tui.helpers import StaticRouteCatalog, two_route_application
 def test_usage_status_projects_cache_totals_and_complete_recent_daily_detail() -> None:
     groups = tuple(
         UsageSummaryGroup(
-            key=f"2026-08-{day:02d}",
+            key=(f"2026-08-{day:02d}",),
             totals=UsageTotals(
                 request_count=day,
                 input_tokens=day * 100,
@@ -69,7 +69,7 @@ def test_usage_status_projects_cache_totals_and_complete_recent_daily_detail() -
             output_tokens=660,
             cache_read_tokens=1_650,
         ),
-        group_by="date",
+        group_by=("date",),
         groups=groups,
     )
 

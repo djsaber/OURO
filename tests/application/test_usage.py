@@ -71,7 +71,7 @@ def test_usage_service_filters_and_groups_provider_entries(tmp_path) -> None:
             occurred_from=datetime(2026, 7, 1, tzinfo=UTC),
             occurred_to=datetime(2026, 7, 3, tzinfo=UTC),
         ),
-        group_by="model",
+        group_by=("model",),
     )
 
     assert summary.totals.request_count == 2
@@ -79,7 +79,7 @@ def test_usage_service_filters_and_groups_provider_entries(tmp_path) -> None:
     assert summary.totals.total_tokens == 39
     assert summary.totals.estimated_cost == 0.2
     assert summary.totals.unpriced_request_count == 1
-    assert [group.key for group in summary.groups] == ["model-a", "model-b"]
+    assert [group.key[0] for group in summary.groups] == ["model-a", "model-b"]
 
 
 def test_usage_service_records_only_supplied_provider_usage(tmp_path) -> None:
@@ -116,7 +116,7 @@ def test_usage_service_records_only_supplied_provider_usage(tmp_path) -> None:
     assert first.input_tokens == 7
     assert first.output_tokens == 3
     assert first.metadata == {"token_source": "provider_response", "billing_mode": "unknown"}
-    assert len(ledger.list_events()) == 1
+    assert len(ledger.audit().events) == 1
 
     with pytest.raises(PersistenceError, match="conflicts"):
         service.record_provider_usage(

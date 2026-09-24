@@ -745,7 +745,7 @@ def _usage_command(args: argparse.Namespace) -> int:
             home=args.home,
             json_mode=args.json,
             **_usage_filters(args),
-            group_by=args.group_by,
+            group_by=tuple(args.group_by or ()),
         )
     if command == "list":
         return list_usage(
@@ -753,6 +753,7 @@ def _usage_command(args: argparse.Namespace) -> int:
             json_mode=args.json,
             **_usage_filters(args),
             limit=args.limit,
+            before=args.before,
         )
     if command == "show":
         return show_usage_entry(args.entry_id, **common)
@@ -777,7 +778,7 @@ def _usage_command(args: argparse.Namespace) -> int:
             note=args.note,
         )
     if command == "audit":
-        return audit_usage(**common, limit=args.limit)
+        return audit_usage(**common, limit=args.limit, before=args.before)
     raise AssertionError(f"unknown usage command: {command}")
 
 
@@ -791,6 +792,8 @@ def _usage_filters(args: argparse.Namespace) -> UsageFilterArgs:
         "session_ids": args.session_ids,
         "run_ids": args.run_ids,
         "purposes": args.purposes,
+        "workspaces": args.workspaces,
+        "billing_modes": args.billing_modes,
     }
 
 

@@ -78,7 +78,6 @@ from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.supervisor import RuntimeSubscription
 from ouro.application.supervisor_models import RunHandle
 from ouro.application.tasks import TaskService
-from ouro.application.usage_models import UsageSummary, UsageTotals
 from ouro.automation.models import TaskConfiguration, TaskCounts, TaskExecution, TaskRecord
 from ouro.config import (
     EndpointReasoningConfig,
@@ -107,6 +106,7 @@ from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode, ToolEffect, ToolSource
+from ouro.core.usage_queries import UsageSummary, UsageTotals
 from ouro.deployment import SessionBackend, TaskBackend
 from ouro.local_application import LocalApplication
 from ouro.mcp import MCPServerConfig
@@ -189,7 +189,7 @@ def project_usage_system_status(
         usage_cache_read_tokens=totals.cache_read_tokens,
         usage_daily=tuple(
             TuiDailyUsage(
-                date=group.key,
+                date=cast(str, group.key[0]),
                 request_count=group.totals.request_count,
                 input_tokens=group.totals.input_tokens,
                 output_tokens=group.totals.output_tokens,
@@ -2100,12 +2100,12 @@ class TuiController:
     def _usage_summary(self) -> UsageSummary:
         usage = self._runtime().usage
         return (
-            usage.summarize(group_by="date")
+            usage.summarize(group_by=("date",))
             if usage is not None
             else UsageSummary(
                 usage_filter=UsageFilter(),
                 totals=UsageTotals(),
-                group_by="date",
+                group_by=("date",),
             )
         )
 
