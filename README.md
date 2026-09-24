@@ -363,7 +363,7 @@ TUI 的 `/undo` 撤回最近一条直接用户输入；有待消费的排队输�
 撤销后则基于保留消息和恢复后的 Harness 创建新 Run，不重复追加保留输入，也不复用旧代次的审批或工具执行。
 不完整工具交换由 Provider 请求投影处理，不再隐式裁剪 canonical 消息。约束仍未满足时显示具体原因。
 
-使用方式与边界说明见 [消息撤销与会话继续](docs/OURO_消息撤销与会话继续.md)。
+使用方式与边界说明见 [消息撤销与会话继续](docs/OURO_消息撤销与会话继续_2026-09-24.md)。
 
 ```bash
 uv run ouro session list --home ./.ouro-dev --search auth --no-archived
