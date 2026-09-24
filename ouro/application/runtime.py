@@ -16,6 +16,7 @@ from ouro.application.compaction import (
 )
 from ouro.application.dto import Diagnostic
 from ouro.application.events import (
+    RuntimeEventFilter,
     RuntimeEventRecorder,
     RuntimeEventSink,
     RuntimeEventSinkRegistration,
@@ -581,8 +582,13 @@ class RuntimeService:
         self._run_tool_coordinators[run_id] = coordinator
         return coordinator
 
-    def add_event_sink(self, event_sink: RuntimeEventSink) -> RuntimeEventSinkRegistration:
-        return self.event_recorder.add_event_sink(event_sink)
+    def add_event_sink(
+        self,
+        event_sink: RuntimeEventSink,
+        *,
+        event_filter: RuntimeEventFilter | None = None,
+    ) -> RuntimeEventSinkRegistration:
+        return self.event_recorder.add_event_sink(event_sink, event_filter=event_filter)
 
     async def drain_events(self) -> None:
         """Wait until every event observer has processed the published prefix."""

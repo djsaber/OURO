@@ -6,11 +6,20 @@ from datetime import UTC, datetime
 import pytest
 
 from ouro.application.queued_inputs import QueuedUserInputView
+from ouro.application.usage_models import UsageSummary, UsageTotals
+from ouro.core.billing import UsageFilter
+from ouro.core.messages import MessageRecord
 from ouro.core.provider import ProviderStreamEvent
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.conversation_history import ConversationHistory
 from ouro.tui.screens import ChoiceScreen
-from ouro.tui.widgets import Composer, ConversationView, InteractionBar, QueuedInputPanel
+from ouro.tui.widgets import (
+    Composer,
+    ConversationView,
+    InteractionBar,
+    QueuedInputPanel,
+    WelcomePanel,
+)
 from tests.tui.helpers import run_ready_app
 from tests.tui.test_app import (
     _application,
@@ -61,11 +70,18 @@ async def submit(app, pilot, provider, prompt):
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
 @pytest.mark.parametrize("destination", ["welcome", "session"])
 async def test_background_completion_preserves_destination_and_draft(
-    tmp_path, backend, destination
+    tmp_path, backend, destination, monkeypatch
 ):
     provider = NavigationProvider()
     application = streaming_application(tmp_path, provider, backend=backend)
     other = application.runtime.sessions.create(title="Other session").session
+    application.runtime.store.append_messages(
+        [
+            MessageRecord.text(
+                session_id=other.session_id, sequence=1, role="user", text="Other history"
+            )
+        ]
+    )
     app = OuroTuiApp(application=application)
     async with run_ready_app(app, size=(100, 32)) as pilot:
         session_id, worker = await submit(app, pilot, provider, "Alpha")
@@ -89,6 +105,15 @@ async def test_background_completion_preserves_destination_and_draft(
         app.query_one(Composer).load_text("Destination draft")
         await pilot.pause()
         projection = app._projection
+        usage_queries = 0
+        summary = app._controller.usage_summary
+
+        async def count_usage():
+            nonlocal usage_queries
+            usage_queries += 1
+            return await summary()
+
+        monkeypatch.setattr(app._controller, "usage_summary", count_usage)
         provider.text("Alpha", "Finished in background.")
         provider.finish("Alpha")
         await asyncio.wait_for(worker.wait(), 8)
@@ -100,12 +125,92 @@ async def test_background_completion_preserves_destination_and_draft(
         assert not app.query_one(Composer).disabled
         assert "Finished" not in app.export_screenshot()
         assert not app.query_one(QueuedInputPanel).display
+        assert usage_queries == (1 if destination == "welcome" else 0)
         await app._open_session(session_id)
         await visible(pilot, app, "Finished")
         assert app.query_one(Composer).text == "Alpha draft"
         assert app._projection.activity.status == "completed"
         entries = app.query_one(ConversationHistory).entries
         assert sum(entry.kind == "run" for entry in entries) == 1
+
+
+async def test_welcome_usage_coalesces_concurrent_completions_and_keeps_latest_totals(
+    tmp_path, monkeypatch
+):
+    app = OuroTuiApp(application=_application(tmp_path))
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+    completed = 1
+
+    async def summary():
+        nonlocal calls
+        calls += 1
+        value = completed
+        if calls == 1:
+            entered.set()
+            await release.wait()
+        return UsageSummary(usage_filter=UsageFilter(), totals=UsageTotals(request_count=value))
+
+    async with run_ready_app(app) as pilot:
+        monkeypatch.setattr(app._controller, "usage_summary", summary)
+        refresh = asyncio.create_task(app._refresh_usage_status())
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            for count in range(2, 10):
+                completed = count
+                await app._refresh_usage_status()
+            assert calls == 1
+        finally:
+            release.set()
+        await refresh
+        await pilot.pause()
+        assert calls == 2
+        assert app._system_status.usage_request_count == 9
+        assert app.query_one(WelcomePanel)._status.usage_request_count == 9
+
+
+@pytest.mark.parametrize("reenter_before_read", [False, True])
+async def test_usage_refresh_does_not_update_hidden_welcome_and_reentry_reads_current_totals(
+    tmp_path, monkeypatch, reenter_before_read
+):
+    application = _application(tmp_path)
+    session = application.runtime.sessions.create(title="Selected").session
+    application.runtime.store.append_messages(
+        [MessageRecord.text(session_id=session.session_id, sequence=1, role="user", text="History")]
+    )
+    app = OuroTuiApp(application=application)
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def summary():
+        nonlocal calls
+        calls += 1
+        value = calls
+        if calls == 1:
+            entered.set()
+            await release.wait()
+        return UsageSummary(usage_filter=UsageFilter(), totals=UsageTotals(request_count=value))
+
+    async with run_ready_app(app) as pilot:
+        monkeypatch.setattr(app._controller, "usage_summary", summary)
+        refresh = asyncio.create_task(app._refresh_usage_status())
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            await app._open_session(session.session_id)
+            status = app.query_one(WelcomePanel)._status
+            await app._refresh_usage_status()
+            assert calls == 1
+            if reenter_before_read:
+                await app._new_session()
+        finally:
+            release.set()
+        await refresh
+        if not reenter_before_read:
+            assert app.query_one(WelcomePanel)._status is status
+            await app._new_session()
+        await pilot.pause()
+        assert calls == 2
+        assert app.query_one(WelcomePanel)._status.usage_request_count == 2
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])

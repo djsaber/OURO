@@ -123,6 +123,56 @@ def _reasoning_application(tmp_path: Path) -> LocalApplication:
 
 
 @pytest.mark.asyncio
+async def test_controller_filters_background_content_before_sink_delivery(tmp_path, monkeypatch):
+    application = _reasoning_application(tmp_path)
+    published = []
+    received = []
+    controller = TuiController(published.append, lambda _status: None, application=application)
+    receive = controller._receive_event
+
+    async def observe_delivery(event):
+        received.append(event)
+        await receive(event)
+
+    monkeypatch.setattr(controller, "_receive_event", observe_delivery)
+    await controller.start()
+    try:
+        selected = application.runtime.sessions.create(title="Selected").session
+        background = application.runtime.sessions.create(title="Background").session
+        await controller.load_session(selected.session_id)
+        for kind, payload in (
+            ("model_text_delta", {"text": "Background"}),
+            ("model_reasoning_delta", {"reasoning_content": "Reasoning"}),
+            ("model_tool_call_delta", {"tool_call_id": "call_1", "arguments_delta": "{}"}),
+            ("run_started", {"trigger": "user"}),
+        ):
+            await application.runtime.event_recorder.publish(
+                session_id=background.session_id, run_id=None, event_type=kind, payload=payload
+            )
+        foreground = await application.runtime.event_recorder.publish(
+            session_id=selected.session_id,
+            run_id=None,
+            event_type="model_text_delta",
+            payload={"text": "Visible"},
+        )
+        await application.runtime.drain_events()
+        assert received == [foreground]
+        assert published == [foreground]
+
+        await controller.new_session()
+        await application.runtime.event_recorder.publish(
+            session_id=selected.session_id,
+            run_id=None,
+            event_type="run_completed",
+            payload={},
+        )
+        await application.runtime.drain_events()
+        assert received == [foreground]
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
 async def test_controller_detaches_event_sink_when_shared_application_stays_open(
     tmp_path: Path,
 ) -> None:
@@ -1821,9 +1871,11 @@ async def test_controller_load_session_does_not_block_the_event_loop(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("navigate", [False, True])
 async def test_controller_event_ancestry_lookup_does_not_block_the_event_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    navigate: bool,
 ) -> None:
     published: list[EventRecord] = []
     controller = TuiController(
@@ -1860,6 +1912,8 @@ async def test_controller_event_ancestry_lookup_does_not_block_the_event_loop(
         try:
             lookup_entered = await asyncio.to_thread(entered.wait, 2)
             event_loop_remained_responsive = not receiving.done()
+            if navigate:
+                await controller.new_session()
         finally:
             release.set()
             watchdog.cancel()
@@ -1868,7 +1922,7 @@ async def test_controller_event_ancestry_lookup_does_not_block_the_event_loop(
         assert lookup_entered is True
         assert event_loop_remained_responsive is True
         assert lookup_threads != [event_loop_thread]
-        assert published == [event]
+        assert published == ([] if navigate else [event])
     finally:
         await controller.close()
 
@@ -2030,23 +2084,19 @@ async def test_controller_filters_child_stream_but_forwards_child_control_events
         )
         application.runtime.store.create_session(child)
         controller._session_id = root.session_id
-        delta = EventRecord(
+        await application.runtime.event_recorder.publish(
             session_id=child.session_id,
-            run_id="run_child",
+            run_id=None,
             event_type="model_text_delta",
             payload={"text": "high-volume child stream"},
-            sequence=1,
         )
-        approval = EventRecord(
+        approval = await application.runtime.event_recorder.publish(
             session_id=child.session_id,
-            run_id="run_child",
+            run_id=None,
             event_type="approval_requested",
             payload={"tool_call_id": "call_1", "approval_id": "approval_1"},
-            sequence=2,
         )
-
-        await controller._receive_event(delta)
-        await controller._receive_event(approval)
+        await application.runtime.drain_events()
 
         assert published == [approval]
     finally:

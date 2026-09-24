@@ -1140,6 +1140,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._active_workspace: str | None = None
         self._reasoning_state: ModelReasoningState | None = None
         self._system_status = TuiSystemStatus()
+        self._usage_refresh_lock = asyncio.Lock()
+        self._usage_refresh_requested = False
         self._host_closing = False
         self._waiting_for_session_event = False
         self._dismissed_command_text: str | None = None
@@ -2170,14 +2172,30 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self.wait_for_refresh()
 
     async def _refresh_usage_status(self) -> None:
-        usage = await self._controller.usage_summary()
-        if not self._surface_available():
+        # Opening welcome reads current system status, so hidden completions need
+        # no query or retained invalidation. Visible concurrent completions share
+        # one reader and request a final read if usage changed while it yielded.
+        if not self._welcome_status_visible():
             return
-        self._system_status = project_usage_system_status(
-            self._system_status,
-            usage,
-        )
-        self.query_one(ConversationView).set_system_status(self._system_status)
+        self._usage_refresh_requested = True
+        if self._usage_refresh_lock.locked():
+            return
+        async with self._usage_refresh_lock:
+            while self._usage_refresh_requested and self._welcome_status_visible():
+                self._usage_refresh_requested = False
+                revision = self._controller.selection_revision
+                usage = await self._controller.usage_summary()
+                if not self._welcome_status_visible():
+                    return
+                if revision != self._controller.selection_revision:
+                    continue
+                status = project_usage_system_status(self._system_status, usage)
+                if status != self._system_status:
+                    self._system_status = status
+                    self.query_one(ConversationView).set_system_status(status)
+
+    def _welcome_status_visible(self) -> bool:
+        return self._surface_available() and self.query_one(WelcomePanel).has_class("welcome-page")
 
     async def _refresh_models(self) -> tuple[AvailableModel, ...]:
         """Synchronize the Host's model projection with the live Runtime catalog."""

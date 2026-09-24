@@ -546,7 +546,9 @@ class TuiController:
                     detail="",
                 )
             )
-        registration = self._application.runtime.add_event_sink(self._receive_event)
+        registration = self._application.runtime.add_event_sink(
+            self._receive_event, event_filter=self._accepts_event
+        )
         try:
             await self._application.start()
         except BaseException:
@@ -2436,22 +2438,32 @@ class TuiController:
             error=record.error,
         )
 
+    def _accepts_event(self, event: EventRecord) -> bool:
+        """Select content and control candidates without I/O before Host enqueue."""
+
+        return self._session_id is not None and (
+            event.session_id == self._session_id or event.event_type in _CHILD_CONTROL_EVENT_TYPES
+        )
+
     async def _receive_event(self, event: EventRecord) -> None:
         """Cross one persisted Runtime event into Textual's message pump."""
 
         controlled_session_id = self._session_id
-        if controlled_session_id is None:
+        revision = self._selection_revision
+        # Selection can change while an accepted event is waiting in the mailbox.
+        if not self._accepts_event(event):
             return
         if event.session_id != controlled_session_id:
             if (
-                event.event_type not in _CHILD_CONTROL_EVENT_TYPES
-                or await asyncio.to_thread(
+                await asyncio.to_thread(
                     self._event_root_session_id,
                     event.session_id,
                 )
                 != controlled_session_id
             ):
                 return
+        if revision != self._selection_revision:
+            return
         self._publish_event(event)
 
     def _event_root_session_id(self, session_id: str) -> str | None:

@@ -17,6 +17,94 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore
 
 
+async def test_host_sink_filter_excludes_events_from_backlog_without_affecting_persistence(
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    foreground, background = SessionRecord(title="Foreground"), SessionRecord(title="Background")
+    for session in (foreground, background):
+        store.create_session(session)
+    recorder = RuntimeEventRecorder(
+        store=store, observers=ObserverRegistry(), observer_queue_size=2
+    )
+    entered, release = asyncio.Event(), asyncio.Event()
+    selected = foreground.session_id
+    seen = []
+
+    async def consume(event):
+        seen.append(event)
+        entered.set()
+        await release.wait()
+
+    recorder.add_event_sink(consume, event_filter=lambda event: event.session_id == selected)
+    try:
+        first = await recorder.publish(
+            session_id=foreground.session_id,
+            run_id=None,
+            event_type="model_text_delta",
+            payload={"text": "Foreground"},
+        )
+        await asyncio.wait_for(entered.wait(), 1)
+        background_events = [
+            await recorder.publish(
+                session_id=background.session_id,
+                run_id=None,
+                event_type="model_text_delta",
+                payload={"text": str(index)},
+            )
+            for index in range(5)
+        ]
+        selected = background.session_id
+        last = await recorder.publish(
+            session_id=background.session_id,
+            run_id=None,
+            event_type="model_text_delta",
+            payload={"text": "Selected after navigation"},
+        )
+        release.set()
+        await recorder.drain()
+
+        assert seen == [first, last]
+        assert store.load_session(background.session_id).events == [*background_events, last]
+        assert store.load_session(foreground.session_id).events == [first]
+    finally:
+        release.set()
+        await recorder.close()
+
+
+async def test_host_sink_filter_failure_isolated_from_persistence_and_other_sinks(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Filter failure")
+    store.create_session(session)
+    recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
+    seen = []
+
+    def fail(_event):
+        raise ValueError("invalid host filter")
+
+    recorder.add_event_sink(
+        lambda _event: pytest.fail("Rejected event was delivered"), event_filter=fail
+    )
+    recorder.add_event_sink(seen.append)
+    try:
+        event = await recorder.publish(
+            session_id=session.session_id,
+            run_id=None,
+            event_type="model_text_delta",
+            payload={"text": "Durable"},
+        )
+        await recorder.drain()
+        persisted = store.load_session(session.session_id).events
+        assert persisted[0] == event
+        assert persisted[1].event_type == "event_sink_failed"
+        assert persisted[1].payload["error_type"] == "ValueError"
+        assert event in seen
+    finally:
+        await recorder.close()
+
+
 @pytest.mark.asyncio
 async def test_event_recorder_persists_event_and_dispatches_runtime_event_observer(
     tmp_path,

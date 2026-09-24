@@ -29,6 +29,7 @@ from ouro.core.turn_policies import TurnPolicyFailure
 from ouro.sessions import SessionRepository
 
 RuntimeEventSink = Callable[[EventRecord], None | Awaitable[None]]
+RuntimeEventFilter = Callable[[EventRecord], bool]
 ObserverRegistryResolver = Callable[
     [Observation],
     tuple[ObserverRegistry, Callable[[], None]],
@@ -51,6 +52,7 @@ class ApplicationEventPublisher(Protocol):
 class _SinkObserver:
     callback: RuntimeEventSink
     queue: asyncio.Queue[EventRecord | None]
+    event_filter: RuntimeEventFilter | None = None
     task: asyncio.Task[None] | None = None
     enabled: bool = True
 
@@ -111,12 +113,25 @@ class RuntimeEventRecorder:
         if event_sink is not None:
             self.add_event_sink(event_sink)
 
-    def add_event_sink(self, event_sink: RuntimeEventSink) -> RuntimeEventSinkRegistration:
+    def add_event_sink(
+        self,
+        event_sink: RuntimeEventSink,
+        *,
+        event_filter: RuntimeEventFilter | None = None,
+    ) -> RuntimeEventSinkRegistration:
+        """Register a Host consumer with an optional pre-enqueue selection.
+
+        Filters run synchronously on committed event metadata and must not block
+        or perform I/O. A rejected event remains durable and available to other
+        consumers; a failing filter disables only its own sink.
+        """
+
         if self._closed:
             raise RuntimeError("event recorder is closed")
         observer = _SinkObserver(
             callback=event_sink,
             queue=asyncio.Queue(maxsize=self._observer_queue_size),
+            event_filter=event_filter,
         )
         self._sink_observers.append(observer)
         return RuntimeEventSinkRegistration(self, observer)
@@ -348,6 +363,8 @@ class RuntimeEventRecorder:
             if not observer.enabled:
                 continue
             try:
+                if observer.event_filter is not None and not observer.event_filter(event):
+                    continue
                 observer.queue.put_nowait(event)
             except asyncio.QueueFull:
                 self._disable_sink(
@@ -357,6 +374,13 @@ class RuntimeEventRecorder:
                     error_message=(
                         f"event sink exceeded its {self._observer_queue_size}-event backlog"
                     ),
+                )
+            except Exception as exc:  # noqa: BLE001 - isolate Host selection failures.
+                self._disable_sink(
+                    observer,
+                    event=event,
+                    error_type=type(exc).__name__,
+                    error_message=redact_text(str(exc)),
                 )
         if notify_observers and self._has_runtime_event_observer(event):
             await self.observe(_runtime_event_observation(event))
