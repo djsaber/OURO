@@ -4,7 +4,7 @@ import json
 import re
 import sqlite3
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from types import TracebackType
@@ -27,7 +27,7 @@ from ouro.core.harness import HarnessState, HarnessVersion
 from ouro.core.message_frames import MessageTruncation
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
-from ouro.core.resources import SessionResourceReference
+from ouro.core.resources import ResourceRecord, SessionResourceReference
 from ouro.core.session_commits import (
     SessionCommit,
     SessionCommitConflict,
@@ -38,6 +38,11 @@ from ouro.core.session_controls import SessionControlState
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.local_locks import FileMutationLock, is_lock_held
+from ouro.resources.files import (
+    session_resource_directory,
+    verify_resource_files,
+    write_resource_contents,
+)
 from ouro.sessions.base import (
     RuntimeSessionSnapshot,
     SessionObservationState,
@@ -55,7 +60,7 @@ from ouro.sessions.portable import SessionBundle, populate_sessions
 from ouro.sessions.sqlite_commits import SQLiteSessionCommits
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
-SQLITE_SCHEMA_VERSION = 6
+SQLITE_SCHEMA_VERSION = 7
 
 
 class SQLiteSessionStore:
@@ -67,15 +72,21 @@ class SQLiteSessionStore:
         self._transaction_state = threading.local()
 
     def import_bundle(
-        self, bundle: SessionBundle, *, replace_session_ids: tuple[str, ...] = ()
+        self,
+        bundle: SessionBundle,
+        *,
+        replace_session_ids: tuple[str, ...] = (),
+        resource_contents: Mapping[str, Mapping[str, bytes]] | None = None,
     ) -> None:
         with self.session_mutation("data-import"):
             connection = self._transaction_connection()
+            for identity in replace_session_ids:
+                self._retire_resource_directory(identity, new_id("replacement"))
             connection.executemany(
                 "DELETE FROM sessions WHERE session_id = ?",
                 ((identity,) for identity in replace_session_ids),
             )
-            populate_sessions(self, bundle)
+            populate_sessions(self, bundle, resource_contents=resource_contents)
             for identity in sorted(
                 set(replace_session_ids)
                 | {item.snapshot.session.session_id for item in bundle.sessions}
@@ -419,6 +430,7 @@ class SQLiteSessionStore:
         harness_versions: list[HarnessVersion] | None = None,
         compactions: list[CompactionRecord] | None = None,
         commits: list[SessionCommitResult] | None = None,
+        resource_contents: Iterable[tuple[ResourceRecord, bytes]] = (),
     ) -> None:
         with self.session_mutation(session.session_id):
             connection = self._transaction_connection()
@@ -491,6 +503,14 @@ class SQLiteSessionStore:
                             compaction.model_dump_json(),
                         ),
                     )
+                write_resource_contents(
+                    session_resource_directory(self.database.parent, session.session_id),
+                    resource_contents,
+                )
+                verify_resource_files(
+                    session_resource_directory(self.database.parent, session.session_id),
+                    resource_references or (),
+                )
                 for reference in resource_references or ():
                     self._insert_resource_reference(connection, session.session_id, reference)
             except sqlite3.IntegrityError as exc:
@@ -570,6 +590,8 @@ class SQLiteSessionStore:
                 f"DELETE FROM sessions WHERE session_id IN ({placeholders})",  # noqa: S608
                 normalized,
             )
+            for session_id in normalized:
+                self._retire_resource_directory(session_id, trash_id)
             return trash_id
 
     def append_message(self, message: MessageRecord) -> None:
@@ -1062,16 +1084,6 @@ class SQLiteSessionStore:
                     f"resource {resource_id} is not attached to session {session_id}"
                 )
 
-    def is_resource_referenced(self, resource_id: str) -> bool:
-        with self._read_connection() as connection:
-            return (
-                connection.execute(
-                    "SELECT 1 FROM resource_references WHERE resource_id = ? LIMIT 1",
-                    (resource_id,),
-                ).fetchone()
-                is not None
-            )
-
     def load_session_extension_states(self, session_id: str) -> list[SessionExtensionStateRecord]:
         return list(self.load_harness(session_id).state.states)
 
@@ -1454,6 +1466,18 @@ class SQLiteSessionStore:
             if connection is not None:
                 connection.close()
 
+    def _retire_resource_directory(self, session_id: str, trash_id: str) -> None:
+        source = session_resource_directory(self.database.parent, session_id).parent
+        if not source.exists():
+            return
+        target = self.database.parent / "trash" / "sessions" / trash_id / session_id / "resources"
+        if any(path.is_symlink() or path.is_junction() for path in (source, *source.parents)):
+            raise PersistenceError("Session resource directory contains a symbolic link")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source.rename(target)
+        state: _TransactionState = self._transaction_state.value
+        state.file_moves.append((source, target))
+
     def _transaction_connection(self) -> sqlite3.Connection:
         state = getattr(self._transaction_state, "value", None)
         if state is None:
@@ -1469,6 +1493,15 @@ class _TransactionState:
         self.connection = connection
         self.depth = 1
         self.failed = False
+        self.file_moves: list[tuple[Path, Path]] = []
+
+    def restore_files(self) -> None:
+        for source, target in reversed(self.file_moves):
+            if source.exists():
+                # Keep uncommitted replacement bytes for diagnosis without touching old data.
+                source.rename(target.with_name(new_id("uncommitted")))
+            source.parent.mkdir(parents=True, exist_ok=True)
+            target.rename(source)
 
 
 class _SQLiteMutation(AbstractContextManager[object, None]):
@@ -1523,10 +1556,12 @@ class _SQLiteMutation(AbstractContextManager[object, None]):
         try:
             if state.failed:
                 state.connection.rollback()
+                state.restore_files()
             else:
                 state.connection.commit()
         except sqlite3.Error as error:
             state.connection.rollback()
+            state.restore_files()
             raise PersistenceError(f"SQLite transaction failed: {error}") from error
         finally:
             state.connection.close()

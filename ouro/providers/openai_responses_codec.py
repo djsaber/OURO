@@ -7,6 +7,7 @@ from copy import deepcopy
 from typing import Any
 
 from ouro.core.messages import (
+    ImageContent,
     ModelMessage,
     ProviderContinuationArtifact,
     TextContent,
@@ -152,13 +153,17 @@ def responses_input(
     provider_id: str,
     model_id: str,
     scope: tuple[str, ...],
+    supports_vision: bool = False,
 ) -> dict[str, Any]:
     """Encode only content fields. Service capabilities and model options belong to the adapter."""
     instructions = [system_prompt] if system_prompt else []
     items: list[dict[str, Any]] = []
     for original in messages:
         message = model_visible_message(original)
-        if any(not isinstance(part, TextContent) for part in message.content):
+        has_image = any(isinstance(part, ImageContent) for part in message.content)
+        if any(not isinstance(part, TextContent | ImageContent) for part in message.content):
+            raise OpenAIResponsesError("unsupported_input")
+        if has_image and (not supports_vision or message.role != "user"):
             raise OpenAIResponsesError("unsupported_input")
         if message.role == "system":
             instructions.append(message.text_content)
@@ -197,7 +202,16 @@ def responses_input(
             items.extend(replay)
         else:
             if message.content or not message.tool_calls:
-                items.append({"role": message.role, "content": message.text_content})
+                content: str | list[dict[str, Any]] = message.text_content
+                if has_image:
+                    content = [
+                        {"type": "input_text", "text": part.text}
+                        if isinstance(part, TextContent)
+                        else {"type": "input_image", "image_url": part.uri, "detail": "auto"}
+                        for part in message.content
+                        if isinstance(part, TextContent | ImageContent)
+                    ]
+                items.append({"role": message.role, "content": content})
             for call in message.tool_calls:
                 items.append(
                     {

@@ -22,7 +22,7 @@
 
 `DataTransferService` 接受 `DataTransferRequest` 并返回 `DataTransferResult`。它编排配置、技能与会话传输，
 不依赖 argparse、Textual、控制台输出或 Host 生命周期。配置验证及跨域引用检查归属 application，
-归档格式和技能文件发布归属 `ouro.transfer`。会话业务编排使用 `SessionStore` 与 `BlobStore` 端口，
+归档格式和技能文件发布归属 `ouro.transfer`。会话业务编排使用 `SessionStore` 与 `ResourceStore` 端口，
 文件和 SQLite adapter 各自实现发布边界。
 
 组合根延迟装配会话服务；只传输配置或技能时不初始化、不读取 Session 数据库。
@@ -49,7 +49,8 @@ kind 取 `providers`、`provider-templates`、`mcp`、`agents`、`prompts`、`se
 - Provider 导入不能使当前压缩模型的专用 Provider/Endpoint 引用失效。
 - 会话 export/import 均支持重复 `--id`。省略则处理全部源会话或全部归档会话；子会话 ID 解析为所属
   primary tree，包含其全部子会话与 Delegation。普通 fork 的来源仅作历史 provenance，不强制传输来源。
-- 会话导入保留 ID。目标发生任一 ID 冲突即拒绝所选批次，不能用 `--replace` 覆盖。
+- 会话导入保留 ID。默认跳过存在任一 ID 冲突的完整 primary tree；显式 `--replace` 替换所选整树，
+  包括其子会话和附件。已有会话必须空闲或失败且没有活跃 Run；同一 ID 的树归属与会话类型必须一致。
 - 技能传输原生用户目录 `OURO_HOME/skills` 中的完整内容；export 可重复指定技能名称。导入同名冲突
   可显式替换，不删除未选中技能。保留脚本执行位，排除版本控制、虚拟环境及常见缓存目录。
   不传输 discovery policy；替换成功后清除目标同名技能的旧安装来源，保留启停等策略。
@@ -62,11 +63,11 @@ kind 取 `providers`、`provider-templates`、`mcp`、`agents`、`prompts`、`se
 
 ZIP 根部 `manifest.json` 包含 `format=ouro-data`、`version=1`、kind 与领域 data。
 配置原样保留当前权威 JSON 结构。会话 data 使用后端无关的 `SessionBundle`，包含当前 Session data layout
-version；内容文件由清单中的类型化引用关联。技能内容位于 `skills/<name>/…`，资源内容位于 `resources/<id>`。
+version；内容文件由清单中的类型化引用关联。技能内容位于 `skills/<name>/…`，资源内容位于 `sessions/<session_id>/resources/files/<filename>`。
 
 读取前检查数量与声明解压体积，上限 10,000 条目与 512 MiB。拒绝路径穿越、绝对路径、Windows 特殊路径、
 符号链接、非普通文件、加密条目和大小写冲突路径；只向新建 staging 写入已校验的条目，不使用 `extractall`。
-会话资源逐一校验 SHA-256、大小、清单闭包；未知 kind、版本、无效结构、重复 identity、外部 Session 引用、
+会话资源逐一校验 SHA-256、大小，以及消息文件项、资源引用、队列和请求源消息的清单闭包；未知 kind、版本、无效结构、重复 identity、外部 Session 引用、
 断裂的 parent/child 关系与缺失 Harness checkpoint 都会明确失败。
 
 归档是私密数据载体，不是脱敏的查询输出：配置中原有字面量、请求头、环境配置与对话正文会保留。
@@ -103,8 +104,9 @@ SessionBundle 在文件后端先写入私有 staging store，校验完整快照�
 文件后端的多目录发布不承诺掉电级的整批原子性；各会话目录本身以完整 staging 单元发布，不能把它描述为
 跨文件数据库事务。目录/数据库布局知识留在对应 adapter 中。
 
-资源是不可变共享对象，在 Session 引用之前发布；会话发布失败可能留下无引用 blob，但不会留下缺内容的
-已提交引用，也不会删除其他会话共享的数据。可重建索引继续沿用现有后端维护边界。
+资源是会话拥有的独立文件，在元信息提交前发布并校验。失败可能留下无引用文件，但不提交缺少内容的引用。
+SQLite 替换把已有资源目录移到备份，事务回滚恢复原目录；文件与数据库不具备掉电级联合事务。
+原路径引用不打包外部文件，导入返回外部文件依赖说明；实际请求中的文本和图片保留，新请求解析目标会话附件地址。
 
 ## 验收证据
 

@@ -31,18 +31,16 @@ OURO_HOME/
       runs/<run_id>.json
       delegations/<delegation_id>.json
       resources/index.json
+      resources/files/<filename>
+      resources/.staging/
       harness/<version_id>.json
       operations/<operation_id>.json
       commit.json  # 仅存在于未完成的原生提交期间
-  resources/
-    records/<resource_id>.json
-    blobs/sha256/<digest>
-    index.json
-    staging/
   trash/sessions/<trash_id>/
 ```
 
-当前 `data_layout_version` 为 8，SQLite schema 为 6，Session/Run/Message/Event schema 为 2。
+当前 `data_layout_version` 为 9，SQLite schema 为 7；各持久记录的版本见下文 Canonical 数据与投影。
+SQLite 同样使用会话文件目录保存附件，资源元信息保存在数据库；跨后端传输使用统一归档。
 初始化只接受当前格式；不支持或缺失的版本抛出 `UnsupportedDataVersionError`，不扫描或转换历史记录。
 空数据目录/数据库初始化为当前格式。已有数据不自动清空，由用户选择新目录或清理失效测试数据。
 
@@ -63,6 +61,7 @@ Canonical 数据包括：
 - `runs/*.json`；
 - root Session 下的 `delegations/*.json`；
 - `compactions.jsonl`；
+- 所属会话的资源元信息与不可变附件文件；
 - 不可变 Harness 版本、Session 的当前版本引用和消息前版本锚点；
 - 原生提交回执及文件后端的未完成提交决定。
 
@@ -74,9 +73,9 @@ canonical Session 不可读或隐藏事件。派生索引维护是 best-effort �
 offset 0 由索引缺失隐式表达，只有游标能跳过非空历史前缀时才落盘。
 
 Session、Run、Message、Event、Compaction、ContextSnapshot 和 Delegation 是独立持久化根记录。每个 payload
-必须显式携带各自当前 `schema_version`：Session/Run/Message/Event 为 2，其余上述记录为 1。
+必须显式携带各自当前 `schema_version`：Session/Run/Event 为 2，Message/ContextSnapshot 为 3，Compaction/Delegation 为 1。
 缺失、非整数、旧版本或未来版本均由共享 versioned decoder 在 adapter
-读取边界抛出 `UnsupportedDataVersionError`。领域模型的版本字段使用封闭字面量类型，未知版本不能被验证为当前记录。
+读取边界抛出 `UnsupportedDataVersionError`。领域模型校验各自版本，未知版本不能被验证为当前记录。
 Store 不通过字段默认值猜测旧格式，也不提供历史版本转换。
 
 `data_layout_version`、SQLite schema version 和插件 manifest/state schema 是独立版本域，不能因为当前数字相同
@@ -265,8 +264,9 @@ Local backend 使用 tree staging 后原子发布到
 必须回滚全部 Session，或明确报告数据保留位置。初始化负责完成可判定安全的中断 tree publish。
 Harness 版本和提交回执随同一 Session tree 或外键事务封存，不依赖 Observer 做事后状态清理。
 
-发布 trash 后，ResourceService 对该 Session 原引用执行可达性清理；共享资源仍被其他活动 Session 引用时
-不得删除。清理失败只形成可重试 diagnostic，不破坏已经完成的 trash 事务。
+附件随所属会话回收：文件后端将资源目录包含在上述会话目录内；SQLite 将资源文件移至
+`trash/sessions/<trash_id>/<session_id>/resources`，并在数据库封存资源记录。普通事务失败恢复已移动的目录；
+文件与数据库不承诺掉电级联合事务。其他会话拥有的独立副本保持可用。
 
 Host 可以继续用“已归档或存在索引/canonical 错误”限制普通删除菜单的可见范围；一旦用户明确确认删除，确认本身就是
 破坏性操作授权。Application 的 Catalog-scope trash 不再读取目标 canonical observation，也不以 `catalog_error`、health

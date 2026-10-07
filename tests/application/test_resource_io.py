@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 
 import pytest
@@ -16,22 +15,22 @@ def _store(tmp_path, *contents):
     store.initialize()
     records = [
         ResourceRecord(
-            resource_id=f"res_{hashlib.sha256(content).hexdigest()}",
+            filename=f"fixture-{index}.txt",
             digest=f"sha256:{hashlib.sha256(content).hexdigest()}",
             size=len(content),
             media_type="text/plain",
             source=ResourceSource(name="fixture.txt"),
         )
-        for content in contents
+        for index, content in enumerate(contents)
     ]
-    store.import_contents(zip(records, contents, strict=True))
+    store.import_contents("ses_test", zip(records, contents, strict=True))
     return store, records
 
 
 def test_export_reads_blob_once_and_publishes_verified_content(tmp_path, monkeypatch):
     content = b"verified content\n" * 100_000
     store, (record,) = _store(tmp_path, content)
-    blob = store._blob_path(record)
+    blob = store.path_for("ses_test", record)
     original_open = Path.open
     reads = []
 
@@ -42,7 +41,7 @@ def test_export_reads_blob_once_and_publishes_verified_content(tmp_path, monkeyp
 
     monkeypatch.setattr(Path, "open", tracked_open)
     destination = tmp_path / "export" / "copy.txt"
-    assert store.export_file(record.resource_id, destination, overwrite=False) == destination
+    assert store.export_file("ses_test", record, destination, overwrite=False) == destination
     assert destination.read_bytes() == content
     assert len(reads) == 1
     assert list(destination.parent.iterdir()) == [destination]
@@ -51,7 +50,7 @@ def test_export_reads_blob_once_and_publishes_verified_content(tmp_path, monkeyp
 @pytest.mark.parametrize("damage", [b"bad", b"same size", None])
 def test_export_failure_preserves_destination_and_cleans_temp(tmp_path, damage):
     store, (record,) = _store(tmp_path, b"canonical")
-    blob = store._blob_path(record)
+    blob = store.path_for("ses_test", record)
     if damage is None:
         blob.unlink()
     else:
@@ -61,45 +60,34 @@ def test_export_failure_preserves_destination_and_cleans_temp(tmp_path, damage):
     destination.write_bytes(b"original")
 
     with pytest.raises(ResourceIntegrityError):
-        store.export_file(record.resource_id, destination, overwrite=True)
+        store.export_file("ses_test", record, destination, overwrite=True)
     assert destination.read_bytes() == b"original"
     assert list(destination.parent.iterdir()) == [destination]
 
 
-def test_delete_batch_scans_catalog_once_and_preserves_other_blobs(tmp_path, monkeypatch):
+def test_delete_batch_preserves_unselected_files_and_other_sessions(tmp_path):
     store, records = _store(tmp_path, b"first", b"second", b"retained")
-    original_scan = store._scan_records
-    scans = []
-
-    def scan():
-        scans.append(True)
-        return original_scan()
-
-    monkeypatch.setattr(store, "_scan_records", scan)
-    selected = [records[0].resource_id, records[1].resource_id, records[0].resource_id]
-    assert store.delete_resources(selected) == selected[:2]
-    assert store.load_content(records[2].resource_id) == (records[2], b"retained")
-    assert list(store.blobs_dir.iterdir()) == [store._blob_path(records[2])]
-    catalog = json.loads(store.index_path.read_text("utf-8"))
-    assert [entry["resource_id"] for entry in catalog["resources"]] == [records[2].resource_id]
-    assert len(scans) == 1
+    store.import_contents("ses_other", ((records[0], b"first"),))
+    assert store.delete_resources("ses_test", (records[0], records[1], records[0])) == [
+        r.resource_id for r in records[:2]
+    ]
+    assert store.load_content("ses_test", records[2]) == b"retained"
+    assert store.load_content("ses_other", records[0]) == b"first"
 
 
-def test_resource_record_identity_must_match_requested_file(tmp_path):
-    store, records = _store(tmp_path, b"first", b"second")
-    first_path = store.records_dir / f"{records[0].resource_id}.json"
-    first_path.write_text(records[1].model_dump_json(), encoding="utf-8")
-
-    with pytest.raises(ResourceIntegrityError):
-        store.delete_resources([records[0].resource_id])
-    assert first_path.exists()
-    assert store.load_content(records[1].resource_id) == (records[1], b"second")
+def test_resource_filename_cannot_escape_session_directory(tmp_path):
+    store, (record,) = _store(tmp_path, b"first")
+    for name in ("../escape.txt", "C:/escape.txt", "CON", "evil."):
+        invalid = record.model_copy(update={"filename": name})
+        with pytest.raises(ValueError):
+            store.delete_resources("ses_test", (invalid,))
+    assert store.load_content("ses_test", record) == b"first"
 
 
-def test_partial_delete_failure_refreshes_catalog(tmp_path, monkeypatch):
+def test_partial_delete_failure_preserves_unprocessed_files(tmp_path, monkeypatch):
     store, records = _store(tmp_path, b"first", b"second")
     original_unlink = Path.unlink
-    blocked = store.records_dir / f"{records[1].resource_id}.json"
+    blocked = store.path_for("ses_test", records[1])
 
     def unlink(path, *args, **kwargs):
         if path == blocked:
@@ -108,6 +96,5 @@ def test_partial_delete_failure_refreshes_catalog(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "unlink", unlink)
     with pytest.raises(OSError, match="injected deletion failure"):
-        store.delete_resources(record.resource_id for record in records)
-    catalog = json.loads(store.index_path.read_text("utf-8"))
-    assert [entry["resource_id"] for entry in catalog["resources"]] == [records[1].resource_id]
+        store.delete_resources("ses_test", records)
+    assert store.load_content("ses_test", records[1]) == b"second"

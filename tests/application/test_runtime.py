@@ -944,7 +944,7 @@ async def test_prompt_policy_denies_before_active_run_queue_persistence(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_runtime_projects_resource_content_but_persists_only_reference(tmp_path) -> None:
+async def test_runtime_persists_prepared_resource_content_in_attachment_scaffold(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     resource_store = LocalResourceStore(store.root)
@@ -975,9 +975,10 @@ async def test_runtime_projects_resource_content_but_persists_only_reference(tmp
     assert result.run.status == "completed"
     assert "projected attachment" in provider.messages[0].text_content
     assert not hasattr(provider.messages[0], "resource_refs")
-    assert snapshot.messages[0].text_content == "Use the brief"
+    assert snapshot.messages[0].semantic_tag == "attachments"
+    assert snapshot.messages[1].text_content == "Use the brief"
     assert snapshot.messages[0].resource_refs == [resource.resource_id]
-    assert "projected attachment" not in snapshot.messages[0].model_dump_json()
+    assert "projected attachment" in snapshot.messages[0].text_content
     prepared = runtime.sessions.context(session.session_id)
     assert prepared is not None
     assert prepared.status.completed_at is not None

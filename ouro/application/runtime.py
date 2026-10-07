@@ -76,6 +76,7 @@ from ouro.core.agents import (
     EffectiveToolRef,
 )
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
+from ouro.core.attachment_input import separate_attachments
 from ouro.core.base import new_id, utc_now
 from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal, settle_owned_tasks
@@ -107,11 +108,11 @@ from ouro.core.inner_loop import (
     TurnBoundaryInputResult,
     TurnCompletionPolicyResult,
 )
+from ouro.core.input_content import InputAttachment, InputContent, InputFile, InputFileReference
 from ouro.core.interactions import (
     SESSION_INTERACTION_MODES,
     SessionInteractionMode,
 )
-from ouro.core.message_roles import MessageRole
 from ouro.core.messages import (
     MessageRecord,
     ModelResponseRecord,
@@ -574,6 +575,7 @@ class RuntimeService:
                 else None
             ),
             is_aborted=self.run_ownership.is_aborted,
+            readable_directory=self.resources.directory_for if self.resources else None,
             tool_policies=self._tool_policies_for_run(run_id),
             session_controls=self.session_controls,
             session_controllers=self._session_controllers_for_run(run_id),
@@ -1277,6 +1279,7 @@ class RuntimeService:
         interaction_mode: SessionInteractionMode | None = None,
         workspace: str | Path | None = None,
         resource_refs: list[str] | tuple[str, ...] | None = None,
+        attachments: tuple[InputFile, ...] = (),
         _drain_queued_inputs: bool = True,
         _queued_inputs: list[QueuedInput] | None = None,
         _input_attribution: (
@@ -1285,6 +1288,7 @@ class RuntimeService:
         _prepared_run: RunRecord | None = None,
         _on_provider_stream_start: Callable[[], None] | None = None,
         on_session_created: Callable[[SessionRecord], None] | None = None,
+        on_input_accepted: Callable[[], None] | None = None,
     ) -> RunResult:
         if approval_mode is not None and approval_mode not in SESSION_APPROVAL_MODES:
             raise ValueError(f"invalid session approval mode: {approval_mode}")
@@ -1303,7 +1307,13 @@ class RuntimeService:
         queued_skill_activation = any(
             item.skill_activation is not None for item in (_queued_inputs or ())
         )
-        if not prompt.strip() and skill_invocation is None and not queued_skill_activation:
+        if (
+            not prompt.strip()
+            and skill_invocation is None
+            and not queued_skill_activation
+            and not resource_refs
+            and not attachments
+        ):
             raise ValueError("run input requires a prompt or skill invocation")
         if skill_invocation is not None and _input_attribution is not None:
             raise ValueError("skill invocation is only valid on direct user input")
@@ -1322,7 +1332,12 @@ class RuntimeService:
                 _prepared_run.metadata.get("delegation_id") != _input_attribution.delegation_id
             ):
                 raise ValueError("prepared child run does not match delegated task identity")
-        input_resource_refs = tuple(dict.fromkeys(resource_refs or ()))
+        content = InputContent(text=prompt, attachments=attachments)
+        if len(attachments) > 16:
+            raise ResourceAttachmentError("A message can contain at most 16 attachments")
+        input_resource_refs = tuple(dict.fromkeys(resource_refs or content.resource_refs))
+        if attachments and input_resource_refs != content.resource_refs:
+            raise ResourceAttachmentError("Attachment identities must match resource references")
         if input_resource_refs and session_id is None:
             raise ResourceAttachmentError(
                 "resource attachments require an existing session; import the resource "
@@ -1351,6 +1366,12 @@ class RuntimeService:
                     approval_mode=approval_mode or "inherit",
                     interaction_mode=interaction_mode or "interactive",
                 )
+                if attachments:
+                    if self.resources is None:
+                        raise ResourceAttachmentError(
+                            "File inputs require a configured ResourceService"
+                        )
+                    self.resources.validate_file_inputs(attachments, candidate_session.workspace)
                 preapproved_new_run = RunRecord(
                     session_id=candidate_session.session_id,
                     status="running",
@@ -1382,6 +1403,8 @@ class RuntimeService:
                             QueuedInput(
                                 queue_id=new_id("queued"),
                                 prompt=prompt,
+                                attachments=attachments,
+                                resource_refs=input_resource_refs,
                                 title=title,
                                 mode="follow_up",
                                 queued_at=utc_now(),
@@ -1464,7 +1487,7 @@ class RuntimeService:
             self._validate_model_resource_refs(
                 session,
                 input_resource_refs,
-                message_role=_input_role(_input_attribution),
+                attachments,
             )
             if active_run is not None and (
                 _prepared_run is None or active_run.run_id != _prepared_run.run_id
@@ -1482,7 +1505,9 @@ class RuntimeService:
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
+                    attachments=attachments,
                     attribution=_input_attribution,
+                    on_input_accepted=on_input_accepted,
                 )
                 return RunResult(session=queued_session, run=active_run, events=queued_events)
         if isinstance(_input_attribution, DelegatedTaskInput) and (
@@ -1553,7 +1578,7 @@ class RuntimeService:
             self._validate_model_resource_refs(
                 snapshot.session,
                 input_resource_refs,
-                message_role=_input_role(_input_attribution),
+                attachments,
             )
             if active_run is not None and (
                 _prepared_run is None or active_run.run_id != _prepared_run.run_id
@@ -1571,7 +1596,9 @@ class RuntimeService:
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
+                    attachments=attachments,
                     attribution=_input_attribution,
+                    on_input_accepted=on_input_accepted,
                 )
                 return RunResult(session=queued_session, run=active_run, events=queued_events)
             raise SessionBusyError(f"session is already locked: {session.session_id}")
@@ -1611,7 +1638,9 @@ class RuntimeService:
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
+                    attachments=attachments,
                     attribution=_input_attribution,
+                    on_input_accepted=on_input_accepted,
                 )
                 return RunResult(
                     session=queued_session,
@@ -1657,6 +1686,7 @@ class RuntimeService:
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
+                    attachments=attachments,
                     queued_at=utc_now(),
                     source=(
                         _attributed_input_source(_input_attribution)
@@ -1708,8 +1738,7 @@ class RuntimeService:
                 self._validate_model_resource_refs(
                     session,
                     pending_input.resource_refs,
-                    adapter=active_adapter,
-                    message_role=pending_input.role,
+                    pending_input.attachments,
                 )
             if preapproved_new_run is None and not (
                 _queued_inputs and _queued_inputs[0].prompt_policy_checked
@@ -1751,11 +1780,15 @@ class RuntimeService:
                 payload={"trigger": run.trigger, "origin": run.origin},
             )
 
-            for index, queued_input in enumerate(pending_inputs):
+            for queued_input in pending_inputs:
                 if is_queued_run:
-                    input_message = input_messages[index]
+                    input_message = next(
+                        message
+                        for message in input_messages
+                        if message.metadata.get("queued_input_id") == queued_input.queue_id
+                    )
                 else:
-                    input_message = await run_blocking(
+                    added_messages = await run_blocking(
                         self._append_session_input,
                         session=session,
                         run=run,
@@ -1763,7 +1796,10 @@ class RuntimeService:
                         sequence=len(existing_messages) + len(input_messages) + 1,
                         is_queued=False,
                     )
-                    input_messages.append(input_message)
+                    input_messages.extend(added_messages)
+                    input_message = added_messages[-1]
+                if on_input_accepted is not None:
+                    on_input_accepted()
                 sequence = await self.event_recorder.emit(
                     emitted,
                     sequence,
@@ -1774,9 +1810,9 @@ class RuntimeService:
                         "message_id": input_message.message_id,
                         "queued_input_id": (queued_input.queue_id if is_queued_run else None),
                         "source": queued_input.source,
-                        "role": queued_input.role,
-                        "scaffold": queued_input.scaffold,
-                        "semantic_tag": queued_input.semantic_tag,
+                        "role": input_message.role,
+                        "scaffold": input_message.scaffold,
+                        "semantic_tag": input_message.semantic_tag,
                         "host_source_id": queued_input.host_source_id,
                         "plugin_id": queued_input.plugin_id,
                         "contribution_id": queued_input.contribution_id,
@@ -2414,7 +2450,6 @@ class RuntimeService:
         self._validate_model_resource_refs(
             session,
             session_input.resource_refs,
-            message_role=session_input.role,
         )
         receipt, item, session = await run_blocking(
             self.queued_inputs.accept_host,
@@ -2487,7 +2522,9 @@ class RuntimeService:
         title: str | None,
         mode: QueuedInputMode,
         resource_refs: tuple[str, ...] = (),
+        attachments: tuple[InputFile, ...] = (),
         attribution: (AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None) = None,
+        on_input_accepted: Callable[[], None] | None = None,
     ) -> tuple[SessionRecord, QueuedInput, list[EventRecord]]:
         if (
             isinstance(attribution, HostSessionInput)
@@ -2545,6 +2582,7 @@ class RuntimeService:
                             title=title,
                             mode=mode,
                             resource_refs=resource_refs,
+                            attachments=attachments,
                             queued_at=utc_now(),
                             source=source,
                             role=role,
@@ -2584,6 +2622,7 @@ class RuntimeService:
                 title=title,
                 mode=mode,
                 resource_refs=resource_refs,
+                attachments=attachments,
                 queue_id=queue_id,
                 source=source,
                 role=role,
@@ -2644,6 +2683,8 @@ class RuntimeService:
             )
             if retained is not extension_snapshot:
                 extension_snapshot.close()
+        if on_input_accepted is not None:
+            on_input_accepted()
         emitted: list[EventRecord] = []
         event_type = (
             "follow_up_input_queued"
@@ -2866,7 +2907,12 @@ class RuntimeService:
             if not consumed:
                 continue
             appended.extend(consumed)
-            for item, input_message in zip(unit, consumed, strict=True):
+            for item in unit:
+                input_message = next(
+                    message
+                    for message in consumed
+                    if message.metadata.get("queued_input_id") == item.queue_id
+                )
                 self._release_queued_extension_snapshot(item.queue_id)
                 sequence = await self.event_recorder.emit(
                     emitted,
@@ -2998,16 +3044,16 @@ class RuntimeService:
         item: QueuedInput,
         sequence: int,
         is_queued: bool,
-    ) -> MessageRecord:
-        message = self._create_session_input_message(
+    ) -> list[MessageRecord]:
+        messages = self._create_session_input_messages(
             session=session,
             run=run,
             item=item,
             sequence=sequence,
             is_queued=is_queued,
         )
-        self.run_lifecycle.append_messages(session=session, run=run, messages=[message])
-        return message
+        self.run_lifecycle.append_messages(session=session, run=run, messages=messages)
+        return messages
 
     def _persist_session_policy_updates(
         self,
@@ -3030,7 +3076,7 @@ class RuntimeService:
         self.store.refresh_catalog(session_id)
         return session
 
-    def _create_session_input_message(
+    def _create_session_input_messages(
         self,
         *,
         session: SessionRecord,
@@ -3038,7 +3084,7 @@ class RuntimeService:
         item: QueuedInput,
         sequence: int,
         is_queued: bool,
-    ) -> MessageRecord:
+    ) -> list[MessageRecord]:
         metadata: dict[str, object] = {
             "session_input_source": item.source,
             "session_input_mode": item.mode,
@@ -3077,7 +3123,7 @@ class RuntimeService:
                     "continuation_decision_id": item.continuation_decision_id,
                 }
             )
-        return self.run_lifecycle.create_input_message(
+        message = self.run_lifecycle.create_input_message(
             session=session,
             run=run,
             prompt=item.prompt,
@@ -3089,6 +3135,36 @@ class RuntimeService:
             metadata=metadata,
             semantic_tag=item.semantic_tag,
         )
+
+        attachments = item.attachments
+        if item.source == "user" and (item.resource_refs or attachments):
+            assert self.resources is not None
+            if not attachments:
+                attachments = tuple(
+                    InputAttachment(
+                        resource_id=resource_id,
+                        name=self.resources.show_resource(
+                            session.session_id, resource_id, verify=False
+                        ).source.name,
+                        text_offset=len(item.prompt),
+                    )
+                    for resource_id in item.resource_refs
+                )
+            messages = separate_attachments(message, attachments)
+            constraints = self._run_delegated_constraints.get(run.run_id)
+            workspace_only = self._tool_execution_config.workspace_only or (
+                constraints is not None and not constraints.allow_external_paths
+            )
+            messages[0] = self.resources.prepare_input(
+                messages[0],
+                supports_vision=self._adapter_for_session_id(
+                    session.session_id
+                ).model.supports_vision,
+                workspace=session.workspace,
+                workspace_only=workspace_only,
+            )
+            return messages
+        return [message]
 
     def _start_queued_run(
         self,
@@ -3108,16 +3184,17 @@ class RuntimeService:
             }
             if any(current.get(item.queue_id) != item for item in inputs):
                 raise _QueuedInputSelectionChanged
-            messages = [
-                self._create_session_input_message(
-                    session=latest_session,
-                    run=run,
-                    item=item,
-                    sequence=existing_message_count + index + 1,
-                    is_queued=True,
+            messages: list[MessageRecord] = []
+            for item in inputs:
+                messages.extend(
+                    self._create_session_input_messages(
+                        session=latest_session,
+                        run=run,
+                        item=item,
+                        sequence=existing_message_count + len(messages) + 1,
+                        is_queued=True,
+                    )
                 )
-                for index, item in enumerate(inputs)
-            ]
             started_session, started_run = self.run_lifecycle.start(
                 session=latest_session,
                 run=run,
@@ -3142,16 +3219,17 @@ class RuntimeService:
             current = {item.queue_id: item for item in self.queued_inputs.eligible_session(latest)}
             if any(current.get(item.queue_id) != item for item in inputs):
                 return []
-            messages = [
-                self._create_session_input_message(
-                    session=latest,
-                    run=run,
-                    item=item,
-                    sequence=sequence + index,
-                    is_queued=True,
+            messages: list[MessageRecord] = []
+            for item in inputs:
+                messages.extend(
+                    self._create_session_input_messages(
+                        session=latest,
+                        run=run,
+                        item=item,
+                        sequence=sequence + len(messages),
+                        is_queued=True,
+                    )
                 )
-                for index, item in enumerate(inputs)
-            ]
             self.run_lifecycle.append_messages(
                 session=latest,
                 run=run,
@@ -3164,28 +3242,16 @@ class RuntimeService:
         self,
         session: SessionRecord,
         resource_refs: tuple[str, ...],
-        *,
-        adapter: RuntimeAdapter | None = None,
-        message_role: MessageRole = "user",
+        attachments: tuple[InputFile, ...] = (),
     ) -> None:
-        if not resource_refs:
+        if not resource_refs and not attachments:
             return
         if self.resources is None:
             raise ResourceAttachmentError(
                 "resource attachments require a configured ResourceService"
             )
-        active_adapter = adapter
-        if active_adapter is None:
-            selection = self.models.resolve(
-                session.current_model or self.models.default_model().key
-            )
-            active_adapter = self.models.adapter_for(selection.key)
-        self.resources.validate_model_references(
-            session.session_id,
-            resource_refs,
-            supports_vision=active_adapter.model.supports_vision,
-            message_role=message_role,
-        )
+        self.resources.validate_file_inputs(attachments, session.workspace)
+        self.resources.validate_model_references(session.session_id, resource_refs)
 
     async def _evaluate_prompt_policies(
         self,
@@ -3232,6 +3298,7 @@ class RuntimeService:
                         resource_id=resource.resource_id,
                         media_type=resource.media_type,
                         size=resource.size,
+                        name=resource.source.name,
                     )
                     for resource in (
                         self.resources.show_resource(
@@ -3242,6 +3309,18 @@ class RuntimeService:
                         for resource_id in item.resource_refs
                     )
                 )
+            attachments += tuple(
+                PromptAttachmentMetadata(
+                    kind="reference",
+                    resource_id=None,
+                    media_type=None,
+                    size=None,
+                    name=file.name,
+                    path=file.path,
+                )
+                for file in item.attachments
+                if isinstance(file, InputFileReference)
+            )
             evaluation = await registry.evaluate(
                 PromptPolicyCall(
                     harness=harness,
@@ -3249,7 +3328,7 @@ class RuntimeService:
                     prospective_run_id=run.run_id,
                     prompt=item.prompt,
                     input_source=item.source,
-                    workspace=self.default_workspace,
+                    workspace=session.workspace or self.default_workspace,
                     attachments=attachments,
                     skill_activation=(
                         PromptSkillActivationMetadata(
@@ -4398,6 +4477,8 @@ def _queued_user_input_view(item: QueuedInput) -> QueuedUserInputView:
         mode=item.mode,
         queued_at=item.queued_at,
         skill_name=(item.skill_activation.name if item.skill_activation is not None else None),
+        attachments=item.attachments,
+        resource_refs=item.resource_refs,
     )
 
 

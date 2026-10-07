@@ -89,9 +89,13 @@ def test_resource_cli_round_trip_and_session_export_manifest(tmp_path, capsys) -
         == 0
     )
     assert json.loads(capsys.readouterr().out)["status"] == "ok"
-    exported_session = read_archive(archive, "sessions").manifest.data
+    exported = read_archive(archive, "sessions")
+    exported_session = exported.manifest.data["bundle"]["sessions"][0]
     assert exported_session["resources"][0]["resource_id"] == resource_id
     assert "path" not in exported_session["resources"][0]["source"]
+    assert exported.files == {
+        f"sessions/{session.session_id}/resources/files/source.txt": b"resource body"
+    }
 
     assert (
         main(

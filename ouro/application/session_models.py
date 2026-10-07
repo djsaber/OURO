@@ -12,6 +12,7 @@ from ouro.core.context import ContextMetrics, ProviderContext
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessVersion
+from ouro.core.input_content import InputFile
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.reasoning import ReasoningRequest
@@ -40,6 +41,7 @@ class SessionUndoResult(ApplicationDTO):
     session: SessionRecord
     input: ModelMessage
     resource_refs: tuple[str, ...] = ()
+    attachments: tuple[InputFile, ...] = ()
     message_id: str | None = None
     queue_id: str | None = None
     run_id: str | None = None

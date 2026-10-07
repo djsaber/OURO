@@ -10,46 +10,6 @@ from ouro.core.harness_calls import HarnessCallSnapshot, accept_state_changes
 from ouro.tools import Tool, ToolExecutionContext, ToolInvocation, builtin_grep, builtin_tools
 
 
-class _ExecutionContext:
-    """Minimal tool execution context rooted at the test workspace."""
-
-    def __init__(self, workspace: Path) -> None:
-        self._workspace = workspace.resolve()
-
-    @property
-    def workspace(self) -> str:
-        return str(self._workspace)
-
-    @property
-    def workspace_only(self) -> bool:
-        return False
-
-    @property
-    def is_aborted(self) -> bool:
-        return False
-
-    @property
-    def abort_reason(self) -> str:
-        return ""
-
-    def raise_if_aborted(self) -> None:
-        return None
-
-    async def sleep(self, seconds: float) -> None:
-        del seconds
-
-    def resolve_path(self, path: str) -> str:
-        candidate = Path(path)
-        if not candidate.is_absolute():
-            candidate = self._workspace / candidate
-        return str(candidate.resolve())
-
-    def resolve_working_directory(self, cwd: str | None = None) -> str | None:
-        if cwd is not None:
-            return self.resolve_path(cwd)
-        return str(self._workspace)
-
-
 def _tools() -> dict[str, Tool]:
     return {tool.definition.name: tool for tool in builtin_tools()}
 
@@ -84,8 +44,8 @@ def workspace(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def context(workspace: Path) -> _ExecutionContext:
-    return _ExecutionContext(workspace)
+def context(workspace: Path) -> ToolExecutionContext:
+    return ToolExecutionContext(workspace=workspace)
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +140,7 @@ def test_grep_multiline_empty_file_has_no_matched_lines(context, workspace, sing
 
 async def test_glob_bare_pattern_matches_recursively_sorted_by_mtime(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     old = _write(workspace, "src/old.py", "old", mtime=1_000)
     new = _write(workspace, "new.py", "new", mtime=2_000)
@@ -196,7 +156,7 @@ async def test_glob_bare_pattern_matches_recursively_sorted_by_mtime(
 
 async def test_glob_anchored_pattern_matches_one_level(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(workspace, "src/top.py", "a")
     _write(workspace, "src/pkg/nested.py", "b")
@@ -209,7 +169,7 @@ async def test_glob_anchored_pattern_matches_one_level(
 
 async def test_glob_brace_expansion(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(workspace, "a/main.ts", "a")
     _write(workspace, "b/main.tsx", "b")
@@ -223,7 +183,7 @@ async def test_glob_brace_expansion(
 
 async def test_glob_respects_gitignore_and_include_ignored(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(workspace, ".gitignore", "build/\n")
     _write(workspace, "src/app.py", "a")
@@ -242,7 +202,7 @@ async def test_glob_respects_gitignore_and_include_ignored(
 
 async def test_glob_respects_nested_gitignore(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(workspace, "src/.gitignore", "generated/\n")
     _write(workspace, "src/kept.py", "a")
@@ -256,7 +216,7 @@ async def test_glob_respects_nested_gitignore(
 
 async def test_glob_always_excludes_sensitive_files_and_vcs_metadata(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(workspace, ".env", "SECRET=1")
     _write(workspace, ".env.local", "SECRET=2")
@@ -274,7 +234,7 @@ async def test_glob_always_excludes_sensitive_files_and_vcs_metadata(
 
 async def test_glob_truncates_at_hundred_matches(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     for index in range(105):
         _write(workspace, f"files/file_{index:03}.txt", "x")
@@ -292,7 +252,7 @@ async def test_glob_truncates_at_hundred_matches(
 
 async def test_glob_reports_empty_result_and_rejects_file_root(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     target = _write(workspace, "plain.txt", "x")
     tools = _tools()
@@ -314,7 +274,7 @@ async def test_glob_reports_empty_result_and_rejects_file_root(
 
 async def test_grep_content_mode_formats_path_line_and_text(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(workspace, "src/main.py", "def main():\n    return 1\n")
     tools = _tools()
@@ -330,7 +290,7 @@ async def test_grep_content_mode_formats_path_line_and_text(
 
 async def test_grep_case_insensitive_and_without_line_numbers(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(workspace, "notes.txt", "Hello World\n")
     tools = _tools()
@@ -348,7 +308,7 @@ async def test_grep_case_insensitive_and_without_line_numbers(
 
 async def test_grep_context_lines_merge_and_separate_blocks(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(
         workspace,
@@ -375,7 +335,7 @@ async def test_grep_context_lines_merge_and_separate_blocks(
 
 async def test_grep_glob_filter_matches_basename_and_anchored_path(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(workspace, "src/main.py", "needle\n")
     _write(workspace, "docs/guide.md", "needle\n")
@@ -396,7 +356,7 @@ async def test_grep_glob_filter_matches_basename_and_anchored_path(
 
 async def test_grep_type_filter_and_unknown_type(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(workspace, "src/main.py", "needle\n")
     _write(workspace, "src/main.ts", "needle\n")
@@ -414,7 +374,7 @@ async def test_grep_type_filter_and_unknown_type(
 
 async def test_grep_files_with_matches_sorted_by_mtime(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(workspace, "old.py", "needle\n", mtime=1_000)
     _write(workspace, "new.py", "needle\n", mtime=2_000)
@@ -427,7 +387,7 @@ async def test_grep_files_with_matches_sorted_by_mtime(
 
 async def test_grep_count_matches_reports_aggregate_and_per_file_counts(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(workspace, "a.py", "needle\nneedle\n")
     _write(workspace, "b.py", "needle\n")
@@ -443,7 +403,7 @@ async def test_grep_count_matches_reports_aggregate_and_per_file_counts(
 
 async def test_grep_head_limit_and_offset_paginate_content(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(workspace, "big.txt", "".join(f"hit {index}\n" for index in range(10)))
     tools = _tools()
@@ -472,7 +432,7 @@ async def test_grep_head_limit_and_offset_paginate_content(
 
 async def test_grep_invalid_regex_is_a_clear_error(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(workspace, "a.txt", "x\n")
     tools = _tools()
@@ -483,7 +443,7 @@ async def test_grep_invalid_regex_is_a_clear_error(
 
 async def test_grep_skips_binary_and_sensitive_files(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(workspace, "binary.bin", b"needle\x00needle\n")
     _write(workspace, ".env", "needle\n")
@@ -500,7 +460,7 @@ async def test_grep_skips_binary_and_sensitive_files(
 
 async def test_grep_multiline_pattern_spans_lines(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(workspace, "code.py", "def f():\n    pass\n")
     tools = _tools()
@@ -518,7 +478,7 @@ async def test_grep_multiline_pattern_spans_lines(
 
 async def test_grep_searches_hidden_files_by_default(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(workspace, ".github/workflows/ci.yml", "needle\n")
     tools = _tools()
@@ -530,7 +490,7 @@ async def test_grep_searches_hidden_files_by_default(
 
 async def test_grep_explicit_file_path_and_sensitive_refusal(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     target = _write(workspace, "one.txt", "needle\n")
     env = _write(workspace, ".env", "needle\n")
@@ -552,7 +512,7 @@ async def test_grep_explicit_file_path_and_sensitive_refusal(
 
 async def test_grep_reports_no_matches(
     workspace: Path,
-    context: _ExecutionContext,
+    context: ToolExecutionContext,
 ) -> None:
     _write(workspace, "a.txt", "x\n")
     tools = _tools()

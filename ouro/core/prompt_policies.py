@@ -16,9 +16,12 @@ PromptPolicyAction = Literal["allow", "deny"]
 
 
 class PromptAttachmentMetadata(OuroModel):
-    resource_id: str
-    media_type: str
-    size: int = Field(ge=0)
+    resource_id: str | None
+    media_type: str | None
+    size: int | None = Field(ge=0)
+    kind: Literal["upload", "reference"] = "upload"
+    name: str | None = None
+    path: str | None = None
 
 
 class PromptSkillActivationMetadata(OuroModel):
@@ -44,7 +47,7 @@ class PromptPolicyCall(OuroModel):
 
     @model_validator(mode="after")
     def validate_input(self) -> PromptPolicyCall:
-        if not self.prompt.strip() and self.skill_activation is None:
+        if not self.prompt.strip() and self.skill_activation is None and not self.attachments:
             raise ValueError("prompt policy input requires a prompt or skill activation")
         return self
 

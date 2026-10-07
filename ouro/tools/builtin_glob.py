@@ -115,7 +115,7 @@ def _directory_arg(arguments: Mapping[str, object], context: ToolExecutionContex
     else:
         if not isinstance(raw, str) or not raw:
             raise ValueError("tool argument 'path' must be a non-empty string")
-        root = Path(context.resolve_path(raw))
+        root = Path(context.resolve_path(raw, read_only=True))
     if not root.is_dir():
         raise ValueError(f"search root is not a directory: {root}")
     return root

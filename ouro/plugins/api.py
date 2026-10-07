@@ -1156,6 +1156,9 @@ def _adapt_prompt_policy(
                         resource_id=item.resource_id,
                         media_type=item.media_type,
                         size=item.size,
+                        kind=item.kind,
+                        name=item.name,
+                        path=item.path,
                     )
                     for item in call.attachments
                     if isinstance(item, PromptAttachmentMetadata)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
@@ -13,80 +12,46 @@ from ouro.application.runs import RunLifecycle
 from ouro.application.sessions import SessionService
 from ouro.core.errors import (
     PersistenceError,
-    ResourceAttachmentError,
     ResourceIntegrityError,
     ResourceInUseError,
     ResourceNotFoundError,
     SessionBusyError,
     UnsafeResourcePathError,
-    UnsupportedDataVersionError,
     UnsupportedMediaTypeError,
 )
 from ouro.core.messages import ImageContent, MessageRecord
 from ouro.core.observers import ObserverRegistry
-from ouro.core.resources import ResourceRecord, ResourceSource
 from ouro.core.state import RunRecord
 from ouro.core.tools import ToolResult
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore
 
 
-def test_blob_batch_failure_keeps_published_catalog_and_cleans_staging(tmp_path, monkeypatch):
+def test_file_batch_failure_keeps_only_verified_published_files(tmp_path):
+    from tests.resource_fixtures import resource_record
+
     store = LocalResourceStore(tmp_path)
-    store.initialize()
-    items = []
-    for content in (b"first", b"second"):
-        digest = hashlib.sha256(content).hexdigest()
-        items.append(
-            (
-                ResourceRecord(
-                    resource_id=f"res_{digest}",
-                    digest=f"sha256:{digest}",
-                    size=len(content),
-                    media_type="text/plain",
-                    source=ResourceSource(name="test.txt"),
-                ),
-                content,
-            )
-        )
-    publish = store._publish_blob_and_record
-
-    def fail_second(staged, record):
-        if record == items[1][0]:
-            raise OSError("injected blob publication failure")
-        return publish(staged, record)
-
-    monkeypatch.setattr(store, "_publish_blob_and_record", fail_second)
-    with pytest.raises(OSError, match="injected"):
-        store.import_contents(iter(items))
-    assert store.load_content(items[0][0].resource_id) == items[0]
-    assert not list(store.staging_dir.iterdir())
-    catalog = json.loads(store.index_path.read_text("utf-8"))
-    assert [item["resource_id"] for item in catalog["resources"]] == [items[0][0].resource_id]
-    with pytest.raises(ResourceNotFoundError):
-        store.load_record(items[1][0].resource_id)
+    first = resource_record(content=b"first", filename="first.txt")
+    second = resource_record(content=b"second", filename="second.txt")
+    with pytest.raises(ResourceIntegrityError):
+        store.import_contents("ses_test", ((first, b"first"), (second, b"bad")))
+    assert store.load_content("ses_test", first) == b"first"
+    assert not store.path_for("ses_test", second).exists()
+    assert list(store.directory_for("ses_test").iterdir()) == [store.path_for("ses_test", first)]
 
 
-def test_blob_batch_checks_existing_and_incoming_content(tmp_path):
+def test_file_batch_checks_existing_and_incoming_content(tmp_path):
+    from tests.resource_fixtures import resource_record
+
     store = LocalResourceStore(tmp_path)
-    store.initialize()
-    content = b"verified"
-    digest = hashlib.sha256(content).hexdigest()
-    record = ResourceRecord(
-        resource_id=f"res_{digest}",
-        digest=f"sha256:{digest}",
-        size=len(content),
-        media_type="text/plain",
-        source=ResourceSource(name="test.txt"),
-    )
-    store.import_contents([(record, content)])
+    record = resource_record(content=b"verified")
+    store.import_contents("ses_test", ((record, b"verified"),))
     with pytest.raises(ResourceIntegrityError):
-        store.import_contents([(record, b"modified")])
-    assert store.load_content(record.resource_id) == (record, content)
-    (store.blobs_dir / digest).write_bytes(b"corrupt")
+        store.import_contents("ses_test", ((record, b"modified"),))
+    assert store.load_content("ses_test", record) == b"verified"
+    store.path_for("ses_test", record).write_bytes(b"corrupt")
     with pytest.raises(ResourceIntegrityError):
-        store.import_contents([(record, content)])
-    assert not list(store.staging_dir.iterdir())
+        store.import_contents("ses_test", ((record, b"verified"),))
 
 
 def _services(tmp_path, *, max_bytes=1024 * 1024):
@@ -102,18 +67,21 @@ def _services(tmp_path, *, max_bytes=1024 * 1024):
     return sessions, resource_store, resources, SessionService(sessions, resources=resources)
 
 
-def test_model_projection_reads_blob_once_and_revalidates_each_request(tmp_path, monkeypatch):
+@pytest.mark.parametrize("image", (False, True))
+def test_model_projection_reads_file_once_and_revalidates_each_request(
+    tmp_path, monkeypatch, image
+):
     _, store, resources, sessions = _services(tmp_path)
     session_id = sessions.create().session.session_id
-    source = tmp_path / "input.txt"
-    source.write_text("attached text", encoding="utf-8")
+    source = tmp_path / ("image.png" if image else "input.txt")
+    source.write_bytes(b"\x89PNG\r\n\x1a\nimage-bytes" if image else b"attached text")
     resource = resources.import_resource(session_id, source).resource
     message = MessageRecord.text(session_id=session_id, role="user", text="Read this")
     message.resource_refs = [resource.resource_id]
     reads = []
     open_path = type(source).open
     read_bytes = type(source).read_bytes
-    blob_path = store.blobs_dir / resource.resource_id.removeprefix("res_")
+    blob_path = resources.resource_path(session_id, resource.resource_id)
 
     def tracked_open(path, *args, **kwargs):
         if path == blob_path and args and args[0] == "rb":
@@ -127,8 +95,11 @@ def test_model_projection_reads_blob_once_and_revalidates_each_request(tmp_path,
 
     monkeypatch.setattr(type(source), "open", tracked_open)
     monkeypatch.setattr(type(source), "read_bytes", tracked_read)
-    projected = resources.project_model_messages([message], supports_vision=False)
-    assert "attached text" in projected[0].text_content
+    projected = resources.project_model_messages([message], supports_vision=image)
+    if image:
+        assert any(isinstance(block, ImageContent) for block in projected[0].content)
+    else:
+        assert "attached text" in projected[0].text_content
     assert message.text_content == "Read this"
     assert len(reads) == 1
     # Integrity is checked against the bytes consumed by every request.
@@ -137,7 +108,46 @@ def test_model_projection_reads_blob_once_and_revalidates_each_request(tmp_path,
         resources.project_model_messages([message], supports_vision=False)
 
 
-def test_import_is_content_addressed_deduplicated_and_does_not_expose_source_path(
+def test_projection_loads_session_manifest_once_per_request(tmp_path, monkeypatch):
+    store, _, resources, service = _services(tmp_path)
+    session_id = service.create().session.session_id
+    source = tmp_path / "input.txt"
+    source.write_text("data", encoding="utf-8")
+    records = [resources.import_resource(session_id, source).resource for _ in range(3)]
+    message = MessageRecord.text(session_id=session_id, role="user", text="Read these")
+    message.resource_refs = [record.resource_id for record in records]
+    reads = []
+    load = store.load_resource_references
+
+    def tracked_load(identity):
+        reads.append(identity)
+        return load(identity)
+
+    monkeypatch.setattr(store, "load_resource_references", tracked_load)
+    for _ in range(2):
+        resources.project_model_messages([message], supports_vision=False)
+    assert reads == [session_id, session_id]
+
+
+def test_failed_file_removal_preserves_resource_ownership(tmp_path, monkeypatch):
+    sessions, store, resources, service = _services(tmp_path)
+    session_id = service.create().session.session_id
+    source = tmp_path / "locked.txt"
+    source.write_text("data", encoding="utf-8")
+    record = resources.import_resource(session_id, source).resource
+    original = sessions.load_resource_references(session_id)
+
+    def deny_removal(_session_id, _records):
+        raise PermissionError("File is locked")
+
+    monkeypatch.setattr(store, "delete_resources", deny_removal)
+    with pytest.raises(PermissionError, match="File is locked"):
+        resources.remove_resource(session_id, record.resource_id)
+    assert sessions.load_resource_references(session_id) == original
+    assert resources.resource_path(session_id, record.resource_id).read_bytes() == b"data"
+
+
+def test_import_keeps_independent_named_copies_without_source_path(
     tmp_path,
 ) -> None:
     sessions, resource_store, resources, session_service = _services(tmp_path)
@@ -152,29 +162,33 @@ def test_import_is_content_addressed_deduplicated_and_does_not_expose_source_pat
     shared = resources.import_resource(second_session.session_id, source)
 
     assert first.created is True
-    assert repeated.created is False
-    assert shared.resource.resource_id == first.resource.resource_id
-    assert len(list(resource_store.blobs_dir.iterdir())) == 1
-    assert resources.session_resource_ids(first_session.session_id) == (first.resource.resource_id,)
+    assert repeated.created is True
+    assert (
+        len(
+            {shared.resource.resource_id, first.resource.resource_id, repeated.resource.resource_id}
+        )
+        == 3
+    )
+    assert [first.resource.filename, repeated.resource.filename] == ["notes.txt", "notes (2).txt"]
+    assert len(resources.session_resource_ids(first_session.session_id)) == 2
     assert str(source.parent) not in json.dumps(first.model_dump(mode="json"))
     catalog = {entry.session_id: entry for entry in session_service.catalog().entries}
-    assert catalog[first_session.session_id].resource_count == 1
+    assert catalog[first_session.session_id].resource_count == 2
     assert catalog[second_session.session_id].resource_count == 1
 
 
-def test_resource_store_rejects_record_without_explicit_schema_version(tmp_path) -> None:
-    _, resource_store, resources, session_service = _services(tmp_path)
-    session = session_service.create(title="Versioned resource").session
+def test_session_resource_metadata_rejects_unsupported_version(tmp_path):
+    sessions, _, resources, service = _services(tmp_path)
+    session = service.create().session
     source = tmp_path / "versioned.txt"
     source.write_text("versioned", encoding="utf-8")
-    imported = resources.import_resource(session.session_id, source)
-    record_path = resource_store.records_dir / f"{imported.resource.resource_id}.json"
+    resources.import_resource(session.session_id, source)
+    record_path = sessions.sessions_dir / session.session_id / "resources" / "index.json"
     raw = json.loads(record_path.read_text("utf-8"))
-    raw.pop("schema_version")
+    raw["resources"][0]["schema_version"] = 1
     record_path.write_text(json.dumps(raw), encoding="utf-8")
-
-    with pytest.raises(UnsupportedDataVersionError, match="found missing, expected 1"):
-        resource_store.load_record(imported.resource.resource_id)
+    with pytest.raises(PersistenceError):
+        resources.list_resources(session.session_id)
 
 
 def test_failed_oversized_import_leaves_no_visible_reference_or_staging_file(tmp_path) -> None:
@@ -187,8 +201,10 @@ def test_failed_oversized_import_leaves_no_visible_reference_or_staging_file(tmp
         resources.import_resource(session.session_id, source)
 
     assert resources.list_resources(session.session_id).resources == ()
-    assert list(resource_store.staging_dir.iterdir()) == []
-    assert list(resource_store.records_dir.iterdir()) == []
+    assert (
+        list((resource_store.directory_for(session.session_id).parent / ".staging").iterdir()) == []
+    )
+    assert list(resource_store.directory_for(session.session_id).iterdir()) == []
     assert sessions.load_session(session.session_id).messages == []
 
 
@@ -209,36 +225,24 @@ def test_reference_publish_failure_rolls_back_new_canonical_record(
     with pytest.raises(OSError, match="injected reference failure"):
         resources.import_resource(session.session_id, source)
 
-    assert list(resource_store.records_dir.iterdir()) == []
-    assert list(resource_store.blobs_dir.iterdir()) == []
+    assert list(resource_store.directory_for(session.session_id).iterdir()) == []
+    assert list(resource_store.directory_for(session.session_id).iterdir()) == []
     assert resources.list_resources(session.session_id).resources == ()
 
 
-def test_index_failure_keeps_canonical_import_and_returns_diagnostic(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    _, resource_store, resources, session_service = _services(tmp_path)
-    session = session_service.create(title="Index").session
+def test_index_failure_keeps_canonical_import_and_returns_diagnostic(monkeypatch, tmp_path):
+    sessions, _, resources, service = _services(tmp_path)
+    session = service.create().session
     source = tmp_path / "index.txt"
     source.write_text("canonical", encoding="utf-8")
-    original_scan = resource_store._scan_records
-
-    def fail_scan():
-        raise PersistenceError("injected resource index failure")
-
-    monkeypatch.setattr(resource_store, "_scan_records", fail_scan)
-
+    monkeypatch.setattr(sessions, "refresh_catalog", lambda _sid: "injected index failure")
     imported = resources.import_resource(session.session_id, source)
-
-    assert imported.diagnostics[0].code == "resource_index_refresh_failed"
+    assert imported.diagnostics[0].code == "session_index_update_failed"
     assert resources.show_resource(session.session_id, imported.resource.resource_id).size == 9
-    assert len(list(resource_store.records_dir.iterdir())) == 1
-    assert resource_store.index_dirty_path.is_file()
-
-    monkeypatch.setattr(resource_store, "_scan_records", original_scan)
-    resource_store.rebuild_index()
-    assert not resource_store.index_dirty_path.exists()
+    assert (
+        resources.resource_path(session.session_id, imported.resource.resource_id).read_bytes()
+        == b"canonical"
+    )
 
 
 def test_invalid_media_type_and_non_file_source_use_typed_errors(tmp_path) -> None:
@@ -258,7 +262,7 @@ def test_invalid_media_type_and_non_file_source_use_typed_errors(tmp_path) -> No
         resources.import_resource(session.session_id, tmp_path)
 
 
-def test_concurrent_imports_to_distinct_sessions_share_one_blob(tmp_path) -> None:
+def test_concurrent_imports_allocate_independent_session_copies(tmp_path) -> None:
     _, resource_store, resources, session_service = _services(tmp_path)
     first = session_service.create(title="First").session
     second = session_service.create(title="Second").session
@@ -272,12 +276,15 @@ def test_concurrent_imports_to_distinct_sessions_share_one_blob(tmp_path) -> Non
         ]
         results = [future.result() for future in futures]
 
-    assert results[0].resource.resource_id == results[1].resource.resource_id
-    assert len(list(resource_store.records_dir.iterdir())) == 1
-    assert len(list(resource_store.blobs_dir.iterdir())) == 1
+    assert results[0].resource.resource_id != results[1].resource.resource_id
+    for session, result in zip((first, second), results, strict=True):
+        assert (
+            resources.resource_path(session.session_id, result.resource.resource_id).read_bytes()
+            == b"concurrent"
+        )
 
 
-def test_resource_mutation_respects_session_lifecycle_lock(tmp_path) -> None:
+def test_import_allows_preparing_follow_up_while_removal_respects_run_lock(tmp_path) -> None:
     sessions, _, resources, session_service = _services(tmp_path)
     session = session_service.create(title="Busy").session
     source = tmp_path / "busy.txt"
@@ -285,12 +292,13 @@ def test_resource_mutation_respects_session_lifecycle_lock(tmp_path) -> None:
     lock = sessions.acquire_session_lock(session.session_id, "run_active")
     assert lock is not None
     try:
+        resource = resources.import_resource(session.session_id, source).resource
         with pytest.raises(SessionBusyError, match="active run"):
-            resources.import_resource(session.session_id, source)
+            resources.remove_resource(session.session_id, resource.resource_id)
     finally:
         lock.release()
 
-    assert resources.list_resources(session.session_id).resources == ()
+    assert len(resources.list_resources(session.session_id).resources) == 1
 
 
 def test_integrity_mismatch_is_detected_before_show_or_export(tmp_path) -> None:
@@ -299,8 +307,8 @@ def test_integrity_mismatch_is_detected_before_show_or_export(tmp_path) -> None:
     source = tmp_path / "data.bin"
     source.write_bytes(b"canonical")
     imported = resources.import_resource(session.session_id, source)
-    record = resource_store.load_record(imported.resource.resource_id)
-    resource_store._blob_path(record).write_bytes(b"corrupt")
+    record = imported.resource
+    resources.resource_path(session.session_id, record.resource_id).write_bytes(b"corrupt")
 
     with pytest.raises(ResourceIntegrityError, match="integrity mismatch"):
         resources.show_resource(session.session_id, record.resource_id)
@@ -349,10 +357,10 @@ def test_branch_publish_precedes_concurrent_source_trash(monkeypatch, tmp_path) 
     allow_branch = Event()
     original_branch_references = resources.branch_references
 
-    def blocked_branch_references(source_session_id, target_session_id, resource_ids):
+    def blocked_branch_references(source_session_id, resource_ids):
         branch_validating.set()
         assert allow_branch.wait(timeout=2)
-        return original_branch_references(source_session_id, target_session_id, resource_ids)
+        return original_branch_references(source_session_id, resource_ids)
 
     monkeypatch.setattr(resources, "branch_references", blocked_branch_references)
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -369,7 +377,10 @@ def test_branch_publish_precedes_concurrent_source_trash(monkeypatch, tmp_path) 
         trash_future.result(timeout=2)
 
     assert resources.session_resource_ids(branch.session.session_id) == (resource.resource_id,)
-    assert resource_store.load_record(resource.resource_id).resource_id == resource.resource_id
+    assert (
+        resources.resource_path(branch.session.session_id, resource.resource_id).read_bytes()
+        == source_file.read_bytes()
+    )
 
 
 def test_remove_rejects_canonical_message_reference(tmp_path) -> None:
@@ -386,33 +397,28 @@ def test_remove_rejects_canonical_message_reference(tmp_path) -> None:
     ).model_copy(update={"resource_refs": [imported.resource_id]})
     sessions.append_message(message)
 
-    with pytest.raises(ResourceInUseError, match=message.message_id):
+    with pytest.raises(ResourceInUseError, match="canonical message"):
         resources.remove_resource(session.session_id, imported.resource_id)
 
     assert resources.session_resource_ids(session.session_id) == (imported.resource_id,)
 
 
-def test_remove_collects_content_only_after_last_session_reference(tmp_path) -> None:
-    _, resource_store, resources, session_service = _services(tmp_path)
-    first = session_service.create(title="First").session
-    second = session_service.create(title="Second").session
+def test_remove_collects_only_the_owning_sessions_copy(tmp_path):
+    _, _, resources, service = _services(tmp_path)
+    first, second = service.create().session, service.create().session
     source = tmp_path / "shared.txt"
-    source.write_text("shared", encoding="utf-8")
-    imported = resources.import_resource(first.session_id, source).resource
-    resources.import_resource(second.session_id, source)
-
-    first_removed = resources.remove_resource(first.session_id, imported.resource_id)
-    assert first_removed.content_collected is False
-    assert resource_store.load_record(imported.resource_id).resource_id == imported.resource_id
-
-    second_removed = resources.remove_resource(second.session_id, imported.resource_id)
-    assert second_removed.content_collected is True
-    assert list(resource_store.records_dir.iterdir()) == []
-    assert list(resource_store.blobs_dir.iterdir()) == []
+    source.write_bytes(b"shared")
+    one = resources.import_resource(first.session_id, source).resource
+    two = resources.import_resource(second.session_id, source).resource
+    first_path = resources.resource_path(first.session_id, one.resource_id)
+    assert resources.remove_resource(first.session_id, one.resource_id).content_collected
+    assert not first_path.exists()
+    assert resources.resource_path(second.session_id, two.resource_id).read_bytes() == b"shared"
+    assert resources.remove_resource(second.session_id, two.resource_id).content_collected
 
 
 @pytest.mark.parametrize("scope_source", ("canonical", "catalog"))
-def test_trashing_session_collects_unreachable_content_after_canonical_publish(
+def test_trashing_session_retains_owned_files_with_its_metadata(
     tmp_path,
     scope_source: str,
 ) -> None:
@@ -420,7 +426,7 @@ def test_trashing_session_collects_unreachable_content_after_canonical_publish(
     session = session_service.create(title="Trash").session
     source = tmp_path / "trash.txt"
     source.write_text("trash", encoding="utf-8")
-    resource_id = resources.import_resource(session.session_id, source).resource.resource_id
+    resources.import_resource(session.session_id, source)
 
     result = (
         session_service.trash(session.session_id)
@@ -428,10 +434,10 @@ def test_trashing_session_collects_unreachable_content_after_canonical_publish(
         else session_service.trash_from_catalog(session.session_id)
     )
 
-    assert (resource_store.root / "trash" / "sessions" / result.trash_id).is_dir()
-    assert list(resource_store.records_dir.iterdir()) == []
-    assert list(resource_store.blobs_dir.iterdir()) == []
-    assert resource_id not in resource_store.index_path.read_text("utf-8")
+    trash = resource_store.root / "trash" / "sessions" / result.trash_id
+    assert trash.is_dir()
+    assert not resource_store.directory_for(session.session_id).exists()
+    assert next(trash.rglob("trash.txt")).read_bytes() == b"trash"
 
 
 def test_symbolic_link_import_is_rejected_when_platform_supports_links(tmp_path) -> None:
@@ -568,9 +574,13 @@ def test_text_resource_is_projected_with_source_label_without_mutating_canonical
 
     assert canonical.text_content == "Summarize this"
     assert canonical.resource_refs == [resource.resource_id]
-    assert "Attached resource: notes.txt" in projected.text_content
-    assert resource.resource_id in projected.text_content
-    assert projected.text_content.endswith("important context")
+    assert 'File: "notes.txt"' in projected.text_content
+    assert resource.resource_id not in projected.text_content
+    assert "important context" in projected.text_content
+    assert (
+        resources.resource_path(session.session_id, resource.resource_id).as_posix()
+        in projected.text_content
+    )
 
 
 def test_image_resource_projection_is_request_local_data_uri(tmp_path) -> None:
@@ -596,34 +606,21 @@ def test_image_resource_projection_is_request_local_data_uri(tmp_path) -> None:
     assert all(not isinstance(block, ImageContent) for block in canonical.content)
 
 
-def test_model_attachment_rejects_unsupported_media_and_non_vision_endpoint(tmp_path) -> None:
+def test_model_attachment_accepts_binary_and_non_vision_images_as_references(tmp_path):
     _, _, resources, session_service = _services(tmp_path)
-    session = session_service.create(title="Unsupported").session
-    binary = tmp_path / "archive.bin"
-    binary.write_bytes(b"binary")
-    binary_resource = resources.import_resource(
-        session.session_id,
-        binary,
-        media_type="application/octet-stream",
-    ).resource
-
-    with pytest.raises(UnsupportedMediaTypeError, match="not supported for model input"):
-        resources.validate_model_references(
-            session.session_id,
-            [binary_resource.resource_id],
-            supports_vision=False,
+    session = session_service.create(title="References").session
+    for name, data, media in (
+        ("archive.bin", b"\x00\xff", "application/octet-stream"),
+        ("image.png", b"\x89PNG\r\n\x1a\nimage-bytes", "image/png"),
+    ):
+        path = tmp_path / name
+        path.write_bytes(data)
+        resource = resources.import_resource(session.session_id, path, media_type=media).resource
+        assert resources.validate_model_references(session.session_id, [resource.resource_id]) == (
+            resource.resource_id,
         )
-
-    image = tmp_path / "image.png"
-    image.write_bytes(b"image")
-    image_resource = resources.import_resource(
-        session.session_id,
-        image,
-        media_type="image/png",
-    ).resource
-    with pytest.raises(ResourceAttachmentError, match="does not support image attachment"):
-        resources.validate_model_references(
-            session.session_id,
-            [image_resource.resource_id],
-            supports_vision=False,
-        )
+        message = MessageRecord.text(session_id=session.session_id, role="user", text="")
+        message.resource_refs = [resource.resource_id]
+        projected = resources.project_model_messages([message], supports_vision=False)[0]
+        assert "Representation: reference only" in projected.text_content
+        assert not any(isinstance(block, ImageContent) for block in projected.content)

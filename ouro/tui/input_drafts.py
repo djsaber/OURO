@@ -7,19 +7,18 @@ import os
 from collections.abc import Iterable
 from pathlib import Path
 
-from pydantic import ValidationError, field_validator
+from pydantic import Field, ValidationError, field_validator
 
-from ouro.core.base import OuroModel, VersionedOuroModel
+from ouro.core.base import VersionedOuroModel
 from ouro.core.errors import ConfigError
+from ouro.core.input_content import InputContent, InputFile
 from ouro.local_io import read_text_atomic, write_model_atomic
 
 MAX_SESSION_DRAFTS = 20
 
 
-class TuiSessionDraft(OuroModel):
+class TuiSessionDraft(InputContent):
     session_id: str
-    text: str
-    resource_refs: tuple[str, ...] = ()
 
     @field_validator("session_id")
     @classmethod
@@ -32,8 +31,8 @@ class TuiSessionDraft(OuroModel):
 class TuiInputDrafts(VersionedOuroModel):
     """Welcome draft plus an MRU window of Session-owned drafts."""
 
-    schema_version: int = 2
-    welcome: str = ""
+    schema_version: int = 4
+    welcome: InputContent = Field(default_factory=InputContent)
     sessions: tuple[TuiSessionDraft, ...] = ()
 
     @field_validator("sessions")
@@ -47,32 +46,43 @@ class TuiInputDrafts(VersionedOuroModel):
         session_ids = tuple(draft.session_id for draft in value)
         if len(set(session_ids)) != len(session_ids):
             raise ValueError("sessions must contain unique session IDs")
-        if any(not draft.text and not draft.resource_refs for draft in value):
+        if any(not draft.text and not draft.attachments for draft in value):
             raise ValueError("session drafts must not be empty")
         return value
 
     def draft_for(self, session_id: str | None) -> str:
         if session_id is None:
-            return self.welcome
+            return self.welcome.text
         return next(
             (draft.text for draft in self.sessions if draft.session_id == session_id),
             "",
         )
 
     def resources_for(self, session_id: str | None) -> tuple[str, ...]:
+        return self.content_for(session_id).resource_refs
+
+    def content_for(self, session_id: str | None) -> InputContent:
+        if session_id is None:
+            return self.welcome
         return next(
-            (draft.resource_refs for draft in self.sessions if draft.session_id == session_id), ()
+            (
+                InputContent(text=draft.text, attachments=draft.attachments)
+                for draft in self.sessions
+                if draft.session_id == session_id
+            ),
+            InputContent(),
         )
 
     def remember(
-        self, session_id: str | None, text: str, *, resource_refs: tuple[str, ...] | None = None
+        self, session_id: str | None, text: str, *, attachments: tuple[InputFile, ...] = ()
     ) -> TuiInputDrafts:
         """Return state with one draft updated and empty drafts removed."""
 
         if session_id is None:
-            if text == self.welcome:
+            content = InputContent(text=text, attachments=attachments)
+            if content == self.welcome:
                 return self
-            return TuiInputDrafts(welcome=text, sessions=self.sessions)
+            return TuiInputDrafts(welcome=content, sessions=self.sessions)
 
         if not session_id.strip():
             raise ValueError("session_id must not be empty")
@@ -80,19 +90,15 @@ class TuiInputDrafts(VersionedOuroModel):
             (draft for draft in self.sessions if draft.session_id == session_id),
             None,
         )
-        refs = (
-            (current.resource_refs if current is not None else ())
-            if resource_refs is None
-            else resource_refs
-        )
-        if current is not None and current.text == text and current.resource_refs == refs:
+        if current is not None and current.text == text and current.attachments == attachments:
             return self
         remaining = tuple(draft for draft in self.sessions if draft.session_id != session_id)
         sessions = (
-            (TuiSessionDraft(session_id=session_id, text=text, resource_refs=refs), *remaining)[
-                :MAX_SESSION_DRAFTS
-            ]
-            if text or refs
+            (
+                TuiSessionDraft(session_id=session_id, text=text, attachments=attachments),
+                *remaining,
+            )[:MAX_SESSION_DRAFTS]
+            if text or attachments
             else remaining
         )
         return TuiInputDrafts(welcome=self.welcome, sessions=sessions)

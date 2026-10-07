@@ -8,9 +8,9 @@ import pytest
 
 from ouro.core.errors import PersistenceError
 from ouro.core.messages import MessageRecord
-from ouro.core.resources import SessionResourceReference
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from tests.resource_fixtures import resource_record
 
 
 @pytest.mark.parametrize("backend", ("files", "sqlite"))
@@ -79,8 +79,10 @@ def test_catalog_uses_bounded_projection_without_loading_runtime_history(
         last_message_id=latest.message_id,
         last_run_id=run.run_id,
     )
-    reference = SessionResourceReference(resource_id="res_" + "d" * 64)
-    store.create_session_snapshot(session, [first, latest], [reference])
+    reference = resource_record(resource_id="res_" + "d" * 32)
+    store.create_session_snapshot(
+        session, [first, latest], [reference], resource_contents=((reference, b"fixture"),)
+    )
     store.save_run(run)
     assert store.refresh_catalog(session.session_id) is None
     if isinstance(store, LocalSessionStore):
@@ -107,6 +109,7 @@ def test_catalog_uses_bounded_projection_without_loading_runtime_history(
     assert entry.message_count == 2
     assert entry.run_count == 1
     assert entry.resource_count == 1
+    assert entry.health == "ok"
     assert entry.last_message_preview == "bounded latest preview"
     assert "historical-needle" not in catalog.model_dump_json()
 

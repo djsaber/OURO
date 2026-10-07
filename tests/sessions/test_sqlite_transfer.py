@@ -5,15 +5,16 @@ import pytest
 from ouro.core.agents import AgentDefinition, DelegationRecord
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
-from ouro.core.resources import SessionResourceReference
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.resources import LocalResourceStore
 from ouro.sessions import (
     LocalSessionStore,
     SQLiteSessionStore,
     import_sessions_to_sqlite,
 )
 from tests.harness_state import replace_harness_state
+from tests.resource_fixtures import resource_record
 
 
 def test_import_sessions_to_sqlite_is_exact_and_verified(tmp_path) -> None:
@@ -28,8 +29,10 @@ def test_import_sessions_to_sqlite_is_exact_and_verified(tmp_path) -> None:
         sequence=1,
     )
     run = RunRecord(session_id=first.session_id, status="completed")
-    reference = SessionResourceReference(resource_id="res_" + "c" * 64)
-    source.create_session_snapshot(first, [message], [reference])
+    reference = resource_record(resource_id="res_" + "c" * 32)
+    source.create_session_snapshot(
+        first, [message], [reference], resource_contents=((reference, b"fixture"),)
+    )
     replace_harness_state(
         source,
         SessionExtensionStateRecord(
@@ -65,7 +68,7 @@ def test_import_sessions_to_sqlite_is_exact_and_verified(tmp_path) -> None:
     source.create_delegation(delegation)
     target = SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
 
-    report = import_sessions_to_sqlite(source, target)
+    report = import_sessions_to_sqlite(source, target, resources=LocalResourceStore(source.root))
 
     assert report.session_ids == sorted([first.session_id, second.session_id])
     assert report.message_count == 1

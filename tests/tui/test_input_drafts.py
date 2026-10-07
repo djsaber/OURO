@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from ouro.core.errors import ConfigError
+from ouro.core.input_content import InputAttachment, InputFileReference
 from ouro.tui.input_drafts import (
     MAX_SESSION_DRAFTS,
     TuiInputDrafts,
@@ -46,14 +47,17 @@ def test_input_drafts_round_trip_and_keep_a_bounded_session_mru(tmp_path: Path) 
 
 def test_editing_and_reloading_a_draft_preserves_its_attachment_selection(tmp_path):
     store = TuiInputDraftStore(tmp_path)
-    draft = TuiInputDrafts().remember("ses_1", "/skill demo original", resource_refs=("res_1",))
-    store.save(draft.remember("ses_1", "/skill demo edited"))
+    attachments = (InputAttachment(resource_id="res_1", name="notes.txt"),)
+    draft = TuiInputDrafts().remember("ses_1", "/skill demo original", attachments=attachments)
+    store.save(draft.remember("ses_1", "/skill demo edited", attachments=attachments))
     loaded = store.load()
     assert loaded.resources_for("ses_1") == ("res_1",)
     assert loaded.draft_for("ses_1") == "/skill demo edited"
     assert loaded.resources_for("ses_2") == ()
-    assert loaded.remember("ses_1", "").resources_for("ses_1") == ("res_1",)
-    assert loaded.remember("ses_1", "", resource_refs=()).resources_for("ses_1") == ()
+    assert loaded.remember("ses_1", "", attachments=attachments).resources_for("ses_1") == (
+        "res_1",
+    )
+    assert loaded.remember("ses_1", "").resources_for("ses_1") == ()
 
 
 def test_old_draft_format_is_diagnosed_without_rewriting_it(tmp_path):
@@ -66,20 +70,35 @@ def test_old_draft_format_is_diagnosed_without_rewriting_it(tmp_path):
     assert store.path.read_text(encoding="utf-8") == original
 
 
+def test_welcome_reference_survives_restart_with_its_workspace_binding(tmp_path):
+    reference = InputFileReference(
+        name="SECURITY.md",
+        path=str(tmp_path / "SECURITY.md"),
+        workspace=str(tmp_path),
+    )
+    drafts = TuiInputDrafts().remember(None, "", attachments=(reference,))
+    store = TuiInputDraftStore(tmp_path / "home")
+    store.save(drafts)
+    restored = store.load().content_for(None)
+    assert restored.attachments == (reference,)
+    assert restored.attachments[0].label == "@SECURITY.md"
+    assert not restored.is_empty and restored.resource_refs == ()
+
+
 @pytest.mark.parametrize(
     "raw",
     (
-        {"schema_version": 2, "sessions": [{"session_id": "", "text": "draft"}]},
-        {"schema_version": 2, "sessions": [{"session_id": "ses_1", "text": ""}]},
+        {"schema_version": 4, "sessions": [{"session_id": "", "text": "draft"}]},
+        {"schema_version": 4, "sessions": [{"session_id": "ses_1", "text": ""}]},
         {
-            "schema_version": 2,
+            "schema_version": 4,
             "sessions": [
                 {"session_id": "ses_1", "text": "first"},
                 {"session_id": "ses_1", "text": "second"},
             ],
         },
         {
-            "schema_version": 2,
+            "schema_version": 4,
             "sessions": [
                 {"session_id": f"ses_{index}", "text": "draft"}
                 for index in range(MAX_SESSION_DRAFTS + 1)

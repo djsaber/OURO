@@ -241,17 +241,19 @@ Supervisor 待执行的继续请求绑定接受时的 history_epoch；开始执�
 应用入口支持 message_id 或 queue_id 定位直接用户输入；默认 /undo 优先最后一条待消费直接用户输入，
 否则选当前历史最后一条直接用户消息。来源依据 canonical provenance，不仅检查 role=user 或 scaffold=false。
 其他角色和插件/Host 代发的用户角色消息不能通过用户撤销入口获得直接用户身份。
+有正文的附件输入以正文定位，撤回整个输入时一并移除配对骨架；该骨架不能单独作为用户撤销目标。
+仅含文件的输入以附件骨架定位，撤回时恢复完整文件项。
 
 返回完整编辑输入，包括内容块、资源引用和技能激活内容；Host 的纯文本输入框能力不是底层拒绝理由。
 TUI 必须保留这些内容的现有表示，不能静默丢附件或技能。重新提交走正常输入链，产生新消息身份。
 
-现行应用结果为 SessionUndoResult：包含 Session、完整 ModelMessage、resource_refs、message_id、queue_id、
+现行应用结果为 SessionUndoResult：包含 Session、完整 ModelMessage、resource_refs、attachments、message_id、queue_id、
 原 run_id、removed_count 与 cancelled_queue_ids。运行时入口在返回前结算该操作拥有的输入租约和子工作。
 
 TUI 由同一份 Session 草稿保存正文和资源选择；技能沿用 `/skill <name> <task>` 表示。
 空正文不等于空输入，不能因 Composer 的清空事件删除仍选中的附件。正常提交取出并清除该草稿，
-失败时在没有更新用户输入的情况下恢复；草稿记忆关闭时只保留当前界面的内存状态。
-草稿文件使用 schema 2，旧格式明确诊断，不设置双格式读取路径。
+接受前失败时与已有新草稿合并恢复；接受后失败不重复插回。草稿记忆关闭时只保留当前界面的内存状态。
+草稿文件使用 schema 4；不支持的格式明确诊断并保留源文件。附件元素及其骨架撤回见[附件规格](attachments.md)。
 
 ## 7. 排队输入与跨会话交付
 
@@ -338,7 +340,7 @@ TUI 在撤销成功后重载标准会话投影并恢复输入草稿；失败保�
 ### DV-01：单一当前格式
 
 当前实现只支持当前格式，不提供旧布局、旧记录、旧插件状态、旧 API 的兼容或迁移路径。
-Session/Run/Message/Event 使用 schema 2，File layout 8，SQLite schema 6；各版本域独立校验。
+Session/Run/Event 使用 schema 2，Message schema 3，File layout 9，SQLite schema 7；各版本域独立校验。
 不支持或缺失的存储版本在读取边界明确拒绝，不扫描历史文件、补默认值或转换后重试。
 由用户选择新目录或显式数据维护，不在运行时自动删除 canonical 数据。
 

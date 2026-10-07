@@ -231,17 +231,7 @@ class SessionService:
         record = self._store.load_latest_context(session_id)
         if record is None:
             return None
-        if any(message.resource_refs for message in record.source_messages):
-            if self._resources is None:
-                raise PersistenceError(
-                    "session context contains resources but no ResourceService is available"
-                )
-            source_messages = self._resources.project_model_messages(
-                record.source_messages,
-                supports_vision=record.supports_vision,
-            )
-        else:
-            source_messages = record.source_messages
+        source_messages = record.source_messages
         context = ContextView(
             context_id=record.context_id,
             system_prompt=record.system_prompt,
@@ -570,7 +560,6 @@ class SessionService:
         )
         locks: list[SessionLock] = []
         diagnostics: list[Diagnostic] = []
-        resource_ids: list[str] = []
         lock_owner = new_id("trash_tree")
         try:
             for record in records:
@@ -581,7 +570,6 @@ class SessionService:
                     )
                 locks.append(lock)
 
-            resource_ids = self._trash_resource_ids(session_ids, diagnostics)
             trash_id = self._store.trash_session_tree(root_session_id, session_ids)
         finally:
             for lock in reversed(locks):
@@ -603,7 +591,6 @@ class SessionService:
                     metadata={"session_ids": list(active_session_ids)},
                 )
             )
-        self._collect_trashed_resources(root_session_id, resource_ids, diagnostics)
         return SessionTrashResult(
             session_id=root_session_id,
             trash_id=trash_id,
@@ -631,7 +618,6 @@ class SessionService:
         session_ids = tuple(sorted(scoped_ids, key=lambda item: (item != session_id, item)))
         locks: list[SessionLock] = []
         diagnostics: list[Diagnostic] = []
-        resource_ids: list[str] = []
         lock_owner = new_id("trash_catalog_tree")
         try:
             for scoped_session_id in session_ids:
@@ -641,7 +627,6 @@ class SessionService:
                         f"cannot remove Session tree while a live runtime owns {scoped_session_id}"
                     )
                 locks.append(lock)
-            resource_ids = self._trash_resource_ids(session_ids, diagnostics)
             trash_id = self._store.trash_session_tree(session_id, session_ids)
         finally:
             for lock in reversed(locks):
@@ -649,64 +634,12 @@ class SessionService:
 
         for removed_session_id in session_ids:
             diagnostics.extend(self._refresh_index_diagnostics(removed_session_id))
-        self._collect_trashed_resources(session_id, resource_ids, diagnostics)
         return SessionTrashResult(
             session_id=session_id,
             trash_id=trash_id,
             session_ids=session_ids,
             diagnostics=tuple(diagnostics),
         )
-
-    def _trash_resource_ids(
-        self,
-        session_ids: tuple[str, ...],
-        diagnostics: list[Diagnostic],
-    ) -> list[str]:
-        resource_ids: list[str] = []
-        if self._resources is None:
-            return resource_ids
-        for session_id in session_ids:
-            try:
-                resource_ids.extend(self._resources.session_resource_ids(session_id))
-            except (FileNotFoundError, PersistenceError) as exc:
-                diagnostics.append(
-                    Diagnostic(
-                        code="session_resource_index_incompatible",
-                        severity="warning",
-                        component="sessions.lifecycle",
-                        message=(
-                            "Resource references could not be inspected before the "
-                            f"Session was moved to trash: {exc}"
-                        ),
-                        session_id=session_id,
-                        recoverable=True,
-                        suggested_action="Run resource garbage collection later.",
-                    )
-                )
-        return resource_ids
-
-    def _collect_trashed_resources(
-        self,
-        session_id: str,
-        resource_ids: list[str],
-        diagnostics: list[Diagnostic],
-    ) -> None:
-        if self._resources is None or not resource_ids:
-            return
-        try:
-            self._resources.collect_after_session_trash(resource_ids)
-        except Exception as exc:  # noqa: BLE001 - trash is durable; GC is retryable.
-            diagnostics.append(
-                Diagnostic(
-                    code="resource_collection_deferred",
-                    severity="warning",
-                    component="resources.gc",
-                    message=f"resource collection deferred ({type(exc).__name__})",
-                    session_id=session_id,
-                    recoverable=True,
-                    suggested_action="Retry resource garbage collection.",
-                )
-            )
 
     def _trash_scope_records(
         self,
@@ -952,7 +885,6 @@ class SessionService:
         resource_references = (
             self._resources.branch_references(
                 source_session_id,
-                branch.session_id,
                 resource_ids,
             )
             if self._resources is not None
@@ -964,6 +896,9 @@ class SessionService:
             resource_references=resource_references,
             harness_versions=versions,
             compactions=copied_compactions,
+            resource_contents=self._resources.contents_for(source_session_id, resource_references)
+            if self._resources is not None
+            else (),
         )
         return SessionBranchResult(
             session=SessionView.from_record(branch),

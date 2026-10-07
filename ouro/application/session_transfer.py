@@ -3,14 +3,16 @@ from __future__ import annotations
 import hashlib
 from contextlib import ExitStack
 
-from pydantic import ConfigDict, Field, ValidationError
+from pydantic import ConfigDict, ValidationError
 
 from ouro.application.dto import ApplicationDTO, Diagnostic
+from ouro.application.queued_inputs import QUEUED_INPUTS_KEY, QueuedInput
 from ouro.core.base import OuroModel
 from ouro.core.errors import SessionBusyError
+from ouro.core.input_content import InputAttachment, InputFileReference
 from ouro.core.resources import ResourceRecord
 from ouro.core.state import ACTIVE_RUN_STATUSES
-from ouro.resources.base import BlobStore
+from ouro.resources.base import ResourceStore
 from ouro.sessions.base import SessionStore
 from ouro.sessions.portable import PortableSession, SessionBundle
 from ouro.transfer.archive import (
@@ -27,7 +29,6 @@ class SessionArchiveData(OuroModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     bundle: SessionBundle
-    resources: list[ResourceRecord] = Field(default_factory=list)
 
 
 class SessionImportResult(ApplicationDTO):
@@ -40,7 +41,7 @@ class SessionImportResult(ApplicationDTO):
 class SessionTransferService:
     """Transfer inactive Session trees and their immutable resource closure."""
 
-    def __init__(self, sessions: SessionStore, resources: BlobStore) -> None:
+    def __init__(self, sessions: SessionStore, resources: ResourceStore) -> None:
         self.sessions = sessions
         self.resources = resources
 
@@ -96,18 +97,16 @@ class SessionTransferService:
                     "Sessions must be inactive and consistent before export"
                 ) from exc
             files: dict[str, bytes] = {}
-            resource_records: list[ResourceRecord] = []
             size = 0
-            for identity in sorted(_resource_ids(bundle)):
-                resource_record, content = self.resources.load_content(
-                    identity, max_bytes=MAX_ARCHIVE_BYTES
+            for name, (session_id, resource) in _resource_files(bundle).items():
+                content = self.resources.load_content(
+                    session_id, resource, max_bytes=MAX_ARCHIVE_BYTES
                 )
                 size += len(content)
                 if size > MAX_ARCHIVE_BYTES:
                     raise DataTransferError("Session resources exceed the archive size limit")
-                resource_records.append(resource_record)
-                files[f"resources/{identity}"] = content
-        data = SessionArchiveData(bundle=bundle, resources=resource_records)
+                files[name] = content
+        data = SessionArchiveData(bundle=bundle)
         manifest = ArchiveManifest(kind="sessions", data=data.model_dump(mode="json"))
         return DataArchive(manifest, files, session_archive_index(manifest))
 
@@ -124,14 +123,11 @@ class SessionTransferService:
             raise DataTransferError("invalid or unsupported Session archive data") from exc
         if archive.index is not None and archive.index != session_archive_index(archive.manifest):
             raise DataTransferError("archive index does not match its manifest")
-        resources = {record.resource_id: record for record in data.resources}
-        expected = _resource_ids(data.bundle)
-        if len(resources) != len(data.resources) or set(resources) != expected:
-            raise DataTransferError("Session archive resource references are incomplete")
-        if set(archive.files) != {f"resources/{identity}" for identity in resources}:
+        resources = _resource_files(data.bundle)
+        if set(archive.files) != set(resources):
             raise DataTransferError("Session archive resource files do not match its manifest")
-        for identity, record in resources.items():
-            content = archive.files[f"resources/{identity}"]
+        for name, (_session_id, record) in resources.items():
+            content = archive.files[name]
             if (
                 len(content) != record.size
                 or f"sha256:{hashlib.sha256(content).hexdigest()}" != record.digest
@@ -211,15 +207,14 @@ class SessionTransferService:
                         f"stop the active Session before replacement: {identity}"
                     )
             if bundle.sessions:
-                required = _resource_ids(bundle)
-                # Publish immutable blobs before references; failed publication
-                # may leave unreachable blobs, never broken Session references.
-                self.resources.import_contents(
-                    (record, archive.files[f"resources/{record.resource_id}"])
-                    for record in data.resources
-                    if record.resource_id in required
+                contents: dict[str, dict[str, bytes]] = {}
+                for name, (session_id, resource) in _resource_files(bundle).items():
+                    contents.setdefault(session_id, {})[resource.filename] = archive.files[name]
+                self.sessions.import_bundle(
+                    bundle,
+                    replace_session_ids=tuple(sorted(replaced_ids)),
+                    resource_contents=contents,
                 )
-                self.sessions.import_bundle(bundle, replace_session_ids=tuple(sorted(replaced_ids)))
         return SessionImportResult(
             count=len(bundle.sessions),
             skipped=selected_count - len(bundle.sessions),
@@ -295,6 +290,28 @@ def _external_reference_diagnostics(bundle: SessionBundle) -> tuple[Diagnostic, 
             if message.tool_result is not None
         )
         model = snapshot.session.current_model
+        paths = sorted(
+            {
+                file.path
+                for message in snapshot.messages
+                for file in message.input_attachments
+                if isinstance(file, InputFileReference)
+            }
+        )
+        if paths:
+            diagnostics.append(
+                Diagnostic(
+                    code="session_file_references_preserved",
+                    severity="info",
+                    component="data_transfer",
+                    message=(
+                        "Original file references require the source workspace; "
+                        "files were not copied."
+                    ),
+                    session_id=snapshot.session.session_id,
+                    metadata={"paths": paths},
+                )
+            )
         if plugins or tools or model:
             diagnostics.append(
                 Diagnostic(
@@ -312,25 +329,36 @@ def _external_reference_diagnostics(bundle: SessionBundle) -> tuple[Diagnostic, 
     return tuple(diagnostics)
 
 
-def _resource_ids(bundle: SessionBundle) -> set[str]:
-    identities: set[str] = set()
+def _resource_files(bundle: SessionBundle) -> dict[str, tuple[str, ResourceRecord]]:
+    files: dict[str, tuple[str, ResourceRecord]] = {}
+    seen: set[str] = set()
     for item in bundle.sessions:
-        identities.update(reference.resource_id for reference in item.resources)
-        for message in item.snapshot.messages:
-            identities.update(message.resource_refs)
-        for commit in item.snapshot.commits:
-            for message in commit.messages:
-                identities.update(message.resource_refs)
-        for run in item.snapshot.runs:
-            if run.active_tool_batch is not None:
-                for call in run.active_tool_batch.calls:
-                    if call.result is not None:
-                        identities.update(call.result.resource_refs)
+        session_id = item.snapshot.session.session_id
+        ids = {record.resource_id for record in item.resources}
+        messages = list(item.snapshot.messages)
         if item.latest_context is not None:
-            for message in item.latest_context.source_messages:
-                identities.update(message.resource_refs)
-    for delegation in bundle.delegations:
-        identities.update(delegation.task_resource_refs)
-        if delegation.result is not None:
-            identities.update(delegation.result.resource_refs)
-    return identities
+            messages.extend(item.latest_context.source_messages)
+        required = {identity for message in messages for identity in message.resource_refs}
+        required.update(
+            attachment.resource_id
+            for message in messages
+            for attachment in message.input_attachments
+            if isinstance(attachment, InputAttachment)
+        )
+        if len(ids) != len(item.resources):
+            raise DataTransferError("Session archive contains duplicate resource identities")
+        for raw in item.snapshot.session.metadata.get(QUEUED_INPUTS_KEY, []):
+            try:
+                queued = QueuedInput.model_validate(raw)
+            except ValidationError as exc:
+                raise DataTransferError("Session archive has an invalid queued input") from exc
+            required.update(queued.resource_refs)
+        if not required.issubset(ids):
+            raise DataTransferError("Session archive resource references are incomplete")
+        for record in item.resources:
+            name = f"sessions/{session_id}/resources/files/{record.filename}"
+            if name.casefold() in seen:
+                raise DataTransferError("Session archive resource filenames collide")
+            seen.add(name.casefold())
+            files[name] = (session_id, record)
+    return files

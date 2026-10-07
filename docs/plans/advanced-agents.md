@@ -11,7 +11,7 @@
 
 ## 前置条件
 
-- ResourceService 能保存结果引用和可达性。
+- ResourceService 能保存会话拥有的结果文件与引用。
 - RuntimeSupervisor 能管理并发、订阅、取消和关闭。
 - Desktop 或等价 Host 能展示候选、进度和控制项。
 - ContextBuilder 提供明确的外部上下文贡献边界。

@@ -4,53 +4,45 @@
 
 ## 目标与范围
 
-ResourceService 为本地附件提供稳定身份、不可变内容存储和 Session 可达性；RuntimeSupervisor 为多个
+ResourceService 为本地附件提供会话范围的稳定身份、不可变文件和所有权校验；RuntimeSupervisor 为多个
 Session 的 Run 提供进程内调度、订阅和 Host 生命周期。二者都是 application 边界，不改变 core 的依赖
 方向，也不引入远程对象存储、分布式队列或后台 daemon。
 
-## ResourceRecord 与身份
+## ResourceRecord 与会话归属
 
-- resource id 由完整 SHA-256 digest 构成，消息只保存 resource id。
-- `ResourceRecord` 保存 digest、media type、size、安全来源名和创建时间，不保存导入绝对路径。
-- blob 与 record 是 canonical 数据；全局资源 index 是可重建投影。
-- Session 的 `resources/index.json` 保存 canonical 引用关系；分支引用记录可追踪来源 Session。
-- 独立 `ResourceRecord` payload 必须显式携带当前核心 `schema_version`，缺失或不匹配时拒绝读取并要求迁移；
-  可重建 resource index 不替代 record 的版本检查。
+- 内部资源身份是会话范围的稳定 ID，与完整性 SHA-256 摘要解耦；模型使用真实路径。
+- `SessionResourceReference` 保存完整 `ResourceRecord` 元信息：ID、原名称、安全文件名、类型、大小、摘要、时间及复制来源。
+- 上传文件位于 `OURO_HOME/sessions/<session_id>/resources/files/`，不自动写入会话工作目录。
+- 文件后端的 `resources/index.json`、SQLite 的资源记录分别是所属会话的元信息权威；无全局资源目录或重复元信息库。
+- ResourceRecord schema 为 2；不支持的布局和记录版本明确拒绝，不自动迁移或清空用户数据。
 
 ## 导入、读取与删除
 
-导入先拒绝符号链接和非普通文件，再流式复制到 staging，同时计算 digest 并执行大小限制。发布使用同文件
-系统原子替换；相同内容复用 canonical record/blob，并为目标 Session 幂等附加引用。失败 staging 会清理，
-引用发布失败时不会留下新 record。
+导入拒绝符号链接、特殊文件及无效媒体类型，在会话 mutation 内分配可读名称，使用会话私有 staging
+流式复制、限制大小并计算摘要，校验后原子发布文件，再提交元信息。名称按跨平台安全规则处理，
+大小写冲突分配编号；相同字节仍保留各自文件名和会话副本。引用提交失败撤回新文件。
+导入允许活跃 Run 准备后续输入，history_epoch 限制迟到结果的归属。
 
-show/export 在返回内容前校验 digest 和 size。读取 record 时核对文件身份与请求的 resource id 一致。
-导出不经过符号链接，在一次分块复制中计算 digest 和 size，校验通过后同步并原子发布目标目录内临时文件；
-缺失或损坏的 blob 不覆盖已有目标，失败临时文件清理。
-remove 在 canonical message 仍引用资源时抛出 `ResourceInUseError`；引用移除后，仅当所有活动 Session 均
-不可达时删除 record/blob。Session 进入 trash 后触发同一可达性清理，清理失败形成可重试 diagnostic，
-不回滚已经发布的 Session trash 事务。
+show/export 和模型读取校验摘要与大小。导出使用一次分块复制，验证后原子发布目标；失败不覆盖既有目标。
+remove 遵循执行锁，拒绝 canonical 消息或待消费队列仍使用的资源，仅删除当前会话持有的文件。
+会话回收保留附件：文件后端随会话目录移动；SQLite 将文件移到对应 trash_id 目录并在数据库保留回收记录。
+SQLite 普通事务失败会恢复已移动目录；跨介质发布不承诺掉电原子性，失败可保留无引用文件供诊断。
+Session 查询索引更新失败通过 diagnostic 暴露，不使已提交资源失效。
 
-ResourceRecord 的 id 与 digest 一一对应，资源回收按 id 直接删除所属 blob；批量回收只在末尾重建一次目录索引，
-部分删除失败时也更新已经完成的变更或留下 dirty marker。
+## 分支、迁移与工具结果
 
-资源索引更新失败不回滚 canonical 导入或引用变更，而是写 dirty marker 并通过 application diagnostic 暴露。
+分支校验源文件，复制所需文件并与目标消息、元信息一起发布；子会话显式接收资源时也保存自己的副本。
+源会话被删除或进入回收站后，目标仍可读取与导出。导入归档校验文件名、大小、摘要和消息/队列/请求引用闭包，
+提交的元信息必须具有完整文件。目标地址从目标会话清单生成；历史请求快照保留实际使用的地址。
 
-## 分支与工具结果
+工具结果的 `resource_refs` 在 canonical 提交前经 ResourceService 校验；内置文件工具不把普通路径伪装成资源 ID。
+资源服务不提供模型专用工具。CLI 显式导出继续保留；模型通过既有文件工具读取真实路径。
 
-- 分支先验证选中消息的全部 resource id 在源 Session 存在且内容完整。
-- 消息、分支 Session 和复制后的资源引用在同一 staging 目录中原子发布。
-- 工具结果的 `resource_refs` 在写入 canonical message 前通过 ResourceService 校验。
-- 内置文件工具返回工作区操作结果，不把裸文件路径伪装成 resource id。
+## 模型文件投影
 
-## 模型附件投影
-
-用户消息只持久化 `resource_refs`，不写入展开内容或本地路径。Runtime 在 Run/Message 提交前验证资源属于目标
-Session、digest/size 完整、数量和媒体类型受支持；随后只在本次模型请求中投影资源内容，并纳入上下文 token
-预算与压缩计算。
-
-- UTF-8 文本、JSON 和 XML 以带来源标签的文本投影，单项上限 1 MiB；
-- PNG、JPEG、GIF 和 WebP 仅在 Endpoint 声明 vision 能力时以内存 data URI 投影，单项上限 20 MiB；
-- 单次最多 16 个附件；PDF 和任意二进制格式在没有专用解析 adapter 时明确拒绝。
+上传副本与 `@` 原路径引用共用文本预览、原生图片和引用降级算法，并分别标明来源。
+独立 `attachments` 骨架和原用户正文属于同一输入单位；前者持有文件事实，后者不混入元信息。
+骨架 content 保存已输入的文本和图片，请求快照保存适配后的实际请求；查询历史直接读取持久记录。默认限额、路径权限与 TUI 见[附件规格](attachments.md)。
 
 ## RuntimeSupervisor 生命周期
 
@@ -95,7 +87,7 @@ Session stream 按 event cursor 增量读取。关闭树或 child stream 只是 
 ## CLI 与 Host 边界
 
 CLI 提供 `resource import/list/show/export/remove`，并通过 `run --session ... --resource ...` 将已导入资源附加到
-本次用户输入；Session export 包含无本地路径的资源 manifest。
+本次用户输入；Session export 的资源清单使用会话内文件名，归档携带对应文件。原路径引用与请求快照保留各自实际地址。
 Supervisor 与 AgentService 只暴露 application API，并由非交互 Host 测试覆盖；CLI/未来 Desktop 不实现
 cascade、permission、delivery 或树状态迁移。当前不提供后台 daemon 命令。
 

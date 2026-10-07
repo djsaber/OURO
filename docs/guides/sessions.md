@@ -54,11 +54,16 @@ trash entry. It first requests canonical abort for genuinely live Runs and waits
 then acquires the complete tree lock set and discards stale unfinished records. Tree scope never
 depends on deserializing historical Run or Delegation records.
 
-模型附件当前支持有大小上限的 UTF-8 文本/JSON/XML，以及 vision Endpoint 上的 PNG、JPEG、GIF、WebP。
-PDF 可存储和导出，但在接入专用解析 adapter 前不能直接投影给模型。
+附件提供全文、首尾预览、原生图片或引用。PNG、JPEG、GIF、WebP 在 vision Endpoint 与预算允许时提供像素；
+PDF、Office、压缩包等以元信息和引用提交，不自动解析。模型获得原名称、来源与真实路径，自主使用现有 Read 等工具读取或处理。引用降级会明确说明尚未读取的内容。
 
 资源通过 `resource import` 导入会话，再由 `run --resource <resource_id>` 附加到输入。TUI 可以恢复撤销消息的
-资源引用；手动选择新附件的 Composer 界面尚未提供。
+资源引用，也可将多个文件拖入终端，或在输入位置键入 `@` 打开与输入框衔接的目录菜单：继续键入名称过滤，
+Enter 进入目录或引用文件，Space 多选文件，`../` 返回上一级，Esc 恢复草稿和光标。名称左对齐，文件选择标记在右侧，目录不显示多选标记。
+目录读取期间保留原列表；欢迎页上传附件后仍停留在欢迎页，发送消息后才进入会话页。
+拖入附件显示主题色文件名，`@` 引用显示原路径，Backspace 整体删除。上传副本保存在
+`OURO_HOME/sessions/<session_id>/resources/files/`，不自动写入工作目录；`@` 保留原文件位置，不复制为会话附件。
+带附件输入可照常排队；`/unqueue` 恢复文字和附件元素，保留已有草稿。细节与限额见[附件规格](../specs/attachments.md)。
 
 `run --queue-mode follow-up|steer` 选择排队交付边界。follow-up 在当前 Run 结束后进入后续 Run，steer 在当前
 完整 model turn 结束后进入同一 Run。TUI 在 Composer 中提供同一输入交付模式。

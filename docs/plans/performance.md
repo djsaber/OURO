@@ -38,7 +38,7 @@ Windows Terminal/PowerShell 与 POSIX 终端分别覆盖以下场景，每场景
 |---|---|---|
 | Context/Compaction 边界查询 | 保留历史读取与 covered-prefix 验证主导请求准备 | 保持原子帧、lineage 与动态 Context Provider 新鲜度 |
 | 不可变摘要或估算复用 | digest、token estimate 或快照序列化持续主导成本 | key 覆盖内容、模型、工具、lineage 和投影参数；正负命中测试完整 |
-| 资源投影复用 | 多轮文本/图片的读取、校验和编码主导请求准备 | 不替代可达性、完整性和 capability 校验；有界 immutable 缓存 |
+| 资源投影复用 | 多轮文本/图片的读取、校验和编码主导请求准备 | 仅在即时资源输出存在重复成本时评估；会话归属、完整性和 capability 校验保持有效 |
 | 文件 catalog 分片或索引 | 现实目录大小下单体 JSON 刷新持续超预算 | 先合并刷新，保持 canonical 恢复与跨进程一致性 |
 | 文件锁 deadline | live holder 等待构成可复现的操作阻塞 | 明确 holder/operation 诊断与失败语义，保持原子提交 |
 | SQLite Compaction 索引 | 查询计划证明 Session 范围扫描主导耗时 | 真实数据分布验证索引收益与写入成本 |

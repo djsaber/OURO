@@ -143,6 +143,7 @@ class OpenAIResponsesProvider:
                         provider_id=self.provider_id,
                         model_id=model.model_id,
                         scope=snapshot.scope,
+                        supports_vision=model.supports_vision,
                     )
                 )
                 chunks = self._chunks(url, snapshot.headers, payload, model.supports_streaming)
@@ -208,8 +209,6 @@ class OpenAIResponsesProvider:
             self.request_options,
             supports_structured_output=model.supports_structured_output,
         )
-        if model.supports_vision:
-            raise ValueError("Responses image input is not implemented")
         if tools and not model.supports_tools:
             raise ValueError("endpoint does not support tools")
         profile = self.reasoning_encoder.profile

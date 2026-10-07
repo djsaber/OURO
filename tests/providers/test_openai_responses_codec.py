@@ -35,6 +35,26 @@ def encode(messages, **kwargs):
     )
 
 
+def test_user_image_blocks_keep_order_and_native_data_uri():
+    uri = "data:image/png;base64,aW1hZ2U="
+    message = ModelMessage(
+        role="user",
+        content=[TextContent(text="before"), ImageContent(uri=uri), TextContent(text="after")],
+    )
+    assert encode([message], supports_vision=True)["input"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "before"},
+                {"type": "input_image", "image_url": uri, "detail": "auto"},
+                {"type": "input_text", "text": "after"},
+            ],
+        }
+    ]
+    with pytest.raises(OpenAIResponsesError):
+        encode([message.model_copy(update={"role": "system"})], supports_vision=True)
+
+
 def artifact(items):
     return continuation_from_output(items, provider_id="provider", model_id="model", scope=SCOPE)
 

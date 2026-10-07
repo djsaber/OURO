@@ -13,7 +13,8 @@
 | [会话撤销、Harness 状态与插件交互](session-undo.md) | 原生状态版本、精确撤销、插件调用/提交、队列竞争、恢复与验收证据 | `ouro/core/harness.py`、`ouro/sessions`、`ouro/application`、`ouro/plugins/harness_calls.py` |
 | [上下文与压缩](context-and-compaction.md) | ContextView、原子帧、预算、摘要、投影与 lineage | `ouro/core/context.py`、`ouro/application/compaction.py` |
 | [会话观察](session-observation.md) | Host-neutral snapshot/live 衔接、父子关系与只读 child 导航 | `ouro/application`、`ouro/sessions`、`ouro/tui` |
-| [资源与运行监督](resources-and-supervision.md) | 内容寻址资源、引用可达性、RuntimeSupervisor 调度与订阅 | `ouro/resources`、`ouro/application/resources.py`、`ouro/application/supervisor.py` |
+| [资源与运行监督](resources-and-supervision.md) | 会话资源归属、完整性、RuntimeSupervisor 调度与订阅 | `ouro/resources`、`ouro/application/resources.py`、`ouro/application/supervisor.py` |
+| [附件输入与 TUI 交互](attachments.md) | 附件元素、批量导入、@ 目录选择、排队撤回和模型投影 | `ouro/core`、`ouro/application`、`ouro/tui` |
 | [子智能体](subagents.md) | AgentDefinition、Delegation、控制工具、HITL、权限、交付与恢复 | `ouro/core/agents.py`、`ouro/application/agents.py`、`ouro/sessions` |
 | [自动任务](automated-tasks.md) | 计划与时区、原子领取、任务/执行状态、后台会话、恢复与 TUI 管理 | `ouro/automation`、`ouro/application/tasks.py`、`ouro/application/task_execution.py`、`ouro/tui/task_workflows.py` |
 

@@ -11,6 +11,7 @@ from ouro.core.base import new_id, utc_now
 from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
+from ouro.core.resources import SessionResourceReferences
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.local_io import write_model_atomic
 from ouro.local_locks import FileOwnerLock
@@ -272,13 +273,11 @@ class LocalSessionIndex:
         resources = raw.get("resources") if isinstance(raw, dict) else None
         if not isinstance(resources, list):
             return 0, True
-        missing = any(
-            not isinstance(item, dict)
-            or not isinstance((resource_id := item.get("resource_id")), str)
-            or re.fullmatch(r"res_[0-9a-f]{64}", resource_id) is None
-            for item in resources
-        )
-        return len(resources), missing
+        try:
+            SessionResourceReferences.model_validate(raw)
+        except ValidationError:
+            return len(resources), True
+        return len(resources), False
 
     def _write(self, index: SessionIndex) -> SessionIndex:
         write_model_atomic(self.index_path, index)

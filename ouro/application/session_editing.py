@@ -99,6 +99,7 @@ def undo_user_input(
                     session=committed.session,
                     input=ModelMessage(role="user", content=content),
                     resource_refs=pending.resource_refs,
+                    attachments=pending.attachments,
                     queue_id=pending.queue_id,
                     cancelled_queue_ids=(pending.queue_id,),
                 )
@@ -136,19 +137,25 @@ def undo_user_input(
                     if len(tail) < limit:
                         raise ValueError("There is no user message to undo")
                     limit *= 2
+            attachment_id = selected.metadata.get("attachment_message_id")
+            boundary = (
+                store.load_message(session_id, attachment_id)
+                if isinstance(attachment_id, str)
+                else selected
+            )
             after, cancelled = queue.after_withdrawal(session)
             committed = _commit_undo(
                 store,
                 SessionCommit(
                     before=session,
                     after=after,
-                    before_message_id=selected.message_id,
+                    before_message_id=boundary.message_id,
                     events=(
                         EventRecord(
                             session_id=session_id,
                             event_type="session_history_withdrawn",
                             payload={
-                                "before_message_id": selected.message_id,
+                                "before_message_id": boundary.message_id,
                                 "history_epoch": session.history_epoch + 1,
                                 "cancelled_queue_ids": list(cancelled),
                             },
@@ -160,8 +167,12 @@ def undo_user_input(
         assert committed.truncation is not None
         return SessionUndoResult(
             session=committed.session,
-            input=ModelMessage(role="user", content=selected.content),
-            resource_refs=tuple(selected.resource_refs),
+            input=ModelMessage(
+                role="user",
+                content=[] if selected.semantic_tag == "attachments" else selected.content,
+            ),
+            resource_refs=tuple(boundary.resource_refs),
+            attachments=selected.input_attachments,
             message_id=selected.message_id,
             queue_id=selected.metadata.get("queued_input_id"),
             run_id=selected.run_id,
@@ -173,10 +184,13 @@ def undo_user_input(
 
 
 def _direct_user_message(message: MessageRecord) -> bool:
-    return (
-        message.role == "user"
-        and not message.scaffold
-        and message.metadata.get("session_input_source") == "user"
+    return message.role == "user" and (
+        (not message.scaffold and message.metadata.get("session_input_source") == "user")
+        or (
+            message.semantic_tag == "attachments"
+            and bool(message.input_attachments)
+            and message.metadata.get("session_input_batch_size") == 1
+        )
     )
 
 

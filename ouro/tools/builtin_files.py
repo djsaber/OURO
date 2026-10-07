@@ -181,7 +181,7 @@ def _read(
     *,
     context: ToolExecutionContext,
 ) -> ToolResult:
-    path = _path_arg(invocation, context)
+    path = _path_arg(invocation, context, read_only=True)
     if path.is_dir():
         raise IsADirectoryError(f"path is a directory, not a text file: {path}")
     offset = _integer_arg(invocation, "offset", default=1)
@@ -433,11 +433,13 @@ def _is_pure_crlf(text: str) -> bool:
     return crlf_count > 0 and text.count("\n") == crlf_count
 
 
-def _path_arg(invocation: ToolInvocation, context: ToolExecutionContext) -> Path:
+def _path_arg(
+    invocation: ToolInvocation, context: ToolExecutionContext, *, read_only: bool = False
+) -> Path:
     path = invocation.arguments.get("path")
     if not isinstance(path, str) or not path:
         raise ValueError("tool argument 'path' must be a non-empty string")
-    return context.resolve_path(path)
+    return context.resolve_path(path, read_only=read_only)
 
 
 def _text_arg(invocation: ToolInvocation, name: str) -> str:

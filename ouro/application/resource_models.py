@@ -9,6 +9,7 @@ from ouro.core.resources import ResourceRecord, ResourceSource
 
 class ResourceView(ApplicationDTO):
     resource_id: str
+    filename: str
     digest: str
     media_type: str
     size: int

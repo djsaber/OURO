@@ -6,7 +6,7 @@ import re
 import shutil
 import struct
 from collections import OrderedDict
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, closing, suppress
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -30,7 +30,7 @@ from ouro.core.harness import HarnessState, HarnessVersion
 from ouro.core.message_frames import MessageTruncation
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
-from ouro.core.resources import SessionResourceReference, SessionResourceReferences
+from ouro.core.resources import ResourceRecord, SessionResourceReference, SessionResourceReferences
 from ouro.core.session_commits import (
     SessionCommit,
     SessionCommitConflict,
@@ -49,6 +49,7 @@ from ouro.local_io import (
     write_model_atomic,
 )
 from ouro.local_locks import is_lock_held
+from ouro.resources.files import verify_resource_files, write_resource_contents
 from ouro.sessions.base import (
     RuntimeSessionSnapshot,
     SessionObservationState,
@@ -105,7 +106,11 @@ class LocalSessionStore:
         self.create_session_snapshot(session, [])
 
     def import_bundle(
-        self, bundle: SessionBundle, *, replace_session_ids: tuple[str, ...] = ()
+        self,
+        bundle: SessionBundle,
+        *,
+        replace_session_ids: tuple[str, ...] = (),
+        resource_contents: Mapping[str, Mapping[str, bytes]] | None = None,
     ) -> None:
         temporary = TemporaryDirectory(prefix=".session-import-", dir=self.root, delete=False)
         staging = Path(temporary.name)
@@ -113,7 +118,7 @@ class LocalSessionStore:
         try:
             staged = LocalSessionStore(staging)
             staged.initialize()
-            populate_sessions(staged, bundle)
+            populate_sessions(staged, bundle, resource_contents=resource_contents)
             identities = sorted(item.snapshot.session.session_id for item in bundle.sessions)
             affected = sorted(set(identities) | set(replace_session_ids))
             published: list[str] = []
@@ -290,6 +295,7 @@ class LocalSessionStore:
         harness_versions: list[HarnessVersion] | None = None,
         compactions: list[CompactionRecord] | None = None,
         commits: list[SessionCommitResult] | None = None,
+        resource_contents: Iterable[tuple[ResourceRecord, bytes]] = (),
     ) -> None:
         with self.session_mutation(session.session_id):
             self._create_session_snapshot(
@@ -299,6 +305,7 @@ class LocalSessionStore:
                 harness_versions,
                 compactions,
                 commits,
+                resource_contents,
             )
 
     def _create_session_snapshot(
@@ -309,6 +316,7 @@ class LocalSessionStore:
         harness_versions: list[HarnessVersion] | None,
         compactions: list[CompactionRecord] | None,
         commits: list[SessionCommitResult] | None,
+        resource_contents: Iterable[tuple[ResourceRecord, bytes]],
     ) -> None:
         session_dir = self._session_dir(session.session_id)
         if session_dir.exists():
@@ -382,6 +390,8 @@ class LocalSessionStore:
                     mode="json"
                 ),
             )
+            write_resource_contents(staging_dir / "resources" / "files", resource_contents)
+            verify_resource_files(staging_dir / "resources" / "files", resource_references or ())
             replace_path_with_retry(staging_dir, session_dir)
             self._event_sequence_cache[session.session_id] = (0, 0)
             self._event_sequence_index_cache[session.session_id] = None
@@ -1045,18 +1055,6 @@ class LocalSessionStore:
                     resources=[item for item in references if item.resource_id != resource_id]
                 ),
             )
-
-    def is_resource_referenced(self, resource_id: str) -> bool:
-        for path in self.sessions_dir.glob("*/resources/index.json"):
-            try:
-                references = self.load_resource_references(path.parent.parent.name)
-            except (OSError, ValidationError, ValueError) as exc:
-                raise PersistenceError(
-                    f"could not load session resource references {path}: {exc}"
-                ) from exc
-            if any(reference.resource_id == resource_id for reference in references):
-                return True
-        return False
 
     def load_session_extension_states(self, session_id: str) -> list[SessionExtensionStateRecord]:
         return list(self.load_harness(session_id).state.states)

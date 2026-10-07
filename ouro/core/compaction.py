@@ -318,7 +318,13 @@ def conversation_turns(messages: Sequence[MessageRecord]) -> list[list[MessageRe
     turns: list[list[MessageRecord]] = []
     current: list[MessageRecord] = []
     for message in messages:
-        if message.role == "user" and current:
+        same_input = bool(
+            current
+            and message.metadata.get("session_input_batch_id")
+            and message.metadata.get("session_input_batch_id")
+            == current[-1].metadata.get("session_input_batch_id")
+        )
+        if message.role == "user" and current and not same_input:
             turns.append(current)
             current = []
         current.append(message)

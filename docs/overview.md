@@ -22,7 +22,7 @@ OURO 是本地优先的个人智能体运行时。会话历史、运行状态、
 | 工具与交互 | Read、Write、Edit、Glob、Grep、TodoList、宿主 Shell、AskUser；权限、审批、结构化输入和 AFK | [工具与交互](specs/tools-and-interactions.md)、[AFK](specs/afk.md) |
 | 子智能体 | 内置 general 与用户定义、冻结派遣目录、单层 sync / async 子会话、结果交付、根交互路由和恢复对账 | [子智能体](specs/subagents.md) |
 | 扩展 | 插件安装与版本选择、不可变包、Catalog 租约、13 类贡献、Goal / Plan；Skills 发现与管理；MCP 连接与工具调用 | [插件](specs/plugins.md)、[Skills](specs/skills.md)、[MCP](specs/mcp.md) |
-| 资源 | 内容寻址 blob、导入去重、校验、引用复制、导出、可达性清理及受模型能力约束的文本 / 图片投影 | [资源与监督](specs/resources-and-supervision.md) |
+| 资源 | 会话独立附件、原路径引用、完整性校验、复制与导出，以及有界文本 / 原生图片输入 | [资源与监督](specs/resources-and-supervision.md) |
 | 自动任务 | 时区和日历计划、原子领取、新建或复用会话、审批挂起、执行历史与恢复；文件 / SQLite 任务后端 | [自动任务](specs/automated-tasks.md) |
 | 用量 | 请求级 token / 费用账本、计费归属、过滤汇总、审计修改和选择性重置 | [用量与计费](specs/usage-and-billing.md) |
 | 数据传输 | 各配置域、原生 Skills、完整会话树和附件的验证导入导出及跨会话后端传输 | [数据传输](specs/data-transfer.md) |
@@ -38,7 +38,7 @@ OURO 是本地优先的个人智能体运行时。会话历史、运行状态、
 | Run | 一次有界执行；拥有运行、工具批次、等待、取消和终结事实 |
 | Model turn | 一次模型响应及对应工具处理边界，保证工具请求 / 结果成帧 |
 | Provider / Endpoint | 供应商连接与具体模型目标；实例 ID、产品类型和线协议彼此独立 |
-| Resource | 不可变内容及元数据；会话只保存引用，模型请求按能力投影 |
+| Resource | 会话拥有的不可变文件及元数据；模型请求通过可读路径访问 |
 | ExtensionCatalogLease | Run 持有的扩展目录租约，冻结代次与执行契约 |
 | Compaction | 覆盖一段历史前缀的持久摘要，不改写原始消息 |
 | Delegation | 父子会话关系、能力上限和结果交付身份；child Run 保持执行状态的唯一来源 |

@@ -70,8 +70,19 @@ def test_sqlite_sessions_compose_with_local_blob_store(tmp_path) -> None:
     assert copied_reference.copied_from_session_id == source_session.session_id
     service.trash(copied.session_id)
     service.trash(branch.session.session_id)
-    assert blobs.load_record(imported.resource.resource_id).resource_id == (
-        imported.resource.resource_id
+    source_path = resources.resource_path(source_session.session_id, imported.resource.resource_id)
+    assert source_path.read_bytes() == source.read_bytes()
+    result = service.trash(source_session.session_id)
+    assert not source_path.exists()
+    retired = (
+        tmp_path
+        / "data"
+        / "trash"
+        / "sessions"
+        / result.trash_id
+        / source_session.session_id
+        / "resources"
+        / "files"
+        / source.name
     )
-    service.trash(source_session.session_id)
-    assert not (blobs.records_dir / f"{imported.resource.resource_id}.json").exists()
+    assert retired.read_bytes() == source.read_bytes()

@@ -454,7 +454,7 @@ def _path_arg(arguments: Mapping[str, object], context: ToolExecutionContext) ->
         return Path(resolved)
     if not isinstance(raw, str) or not raw:
         raise ValueError("tool argument 'path' must be a non-empty string")
-    return Path(context.resolve_path(raw))
+    return Path(context.resolve_path(raw, read_only=True))
 
 
 @dataclass(frozen=True)

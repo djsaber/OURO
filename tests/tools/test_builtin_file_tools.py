@@ -25,6 +25,34 @@ def _invocation(tool_name: str, arguments: dict[str, object]) -> ToolInvocation:
     )
 
 
+async def test_readable_session_directory_does_not_grant_write_or_sibling_access(tmp_path):
+    workspace = tmp_path / "workspace"
+    files = tmp_path / "sessions" / "current" / "resources" / "files"
+    workspace.mkdir()
+    files.mkdir(parents=True)
+    target = files / "SECURITY.md"
+    target.write_text("security policy", encoding="utf-8")
+    sibling = tmp_path / "sessions" / "another.txt"
+    sibling.write_text("other session", encoding="utf-8")
+    context = ToolExecutionContext(
+        workspace=workspace, workspace_only=True, readable_roots=(files,)
+    )
+    executor = ToolExecutor(_registry())
+    read = await executor.execute(_invocation("Read", {"path": str(target)}), context=context)
+    assert read.result is not None and not read.result.is_error
+    assert "security policy" in read.result.content
+    for tool_name, arguments in (
+        ("Read", {"path": str(sibling)}),
+        ("Write", {"path": str(target), "content": "changed"}),
+    ):
+        result = await executor.execute(
+            _invocation(tool_name, arguments), context=context, approved=True
+        )
+        assert result.result is not None and result.result.is_error
+        assert result.result.structured["error_type"] == "ToolPolicyError"
+    assert target.read_text("utf-8") == "security policy"
+
+
 def test_file_tool_schema_exposes_paging_and_mutation_options() -> None:
     definitions = {item.name: item for item in _registry().definitions()}
     read = definitions["Read"]

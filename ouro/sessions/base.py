@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Protocol
 
@@ -13,7 +14,7 @@ from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessVersion
 from ouro.core.message_frames import MessageTruncation
 from ouro.core.messages import MessageRecord
-from ouro.core.resources import SessionResourceReference
+from ouro.core.resources import ResourceRecord, SessionResourceReference
 from ouro.core.session_commits import SessionCommit, SessionCommitResult
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
@@ -108,6 +109,7 @@ class SessionRepository(Protocol):
         harness_versions: list[HarnessVersion] | None = None,
         compactions: list[CompactionRecord] | None = None,
         commits: list[SessionCommitResult] | None = None,
+        resource_contents: Iterable[tuple[ResourceRecord, bytes]] = (),
     ) -> None: ...
 
     def save_session(self, session: SessionRecord) -> None: ...
@@ -234,8 +236,6 @@ class SessionRepository(Protocol):
 
     def remove_resource_reference(self, session_id: str, resource_id: str) -> None: ...
 
-    def is_resource_referenced(self, resource_id: str) -> bool: ...
-
     def load_session_extension_states(
         self,
         session_id: str,
@@ -266,7 +266,11 @@ class SessionStore(SessionRepository, SessionCatalogStore, Protocol):
     """Complete in-process store composed from canonical and catalog ports."""
 
     def import_bundle(
-        self, bundle: SessionBundle, *, replace_session_ids: tuple[str, ...] = ()
+        self,
+        bundle: SessionBundle,
+        *,
+        replace_session_ids: tuple[str, ...] = (),
+        resource_contents: Mapping[str, Mapping[str, bytes]] | None = None,
     ) -> None:
         """Publish a bundle, replacing explicitly selected trees with failure rollback.
 

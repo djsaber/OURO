@@ -126,6 +126,7 @@ class ToolExecutionContext:
     poll_interval: float = 0.05
     workspace: str | Path | None = None
     artifact_root: str | Path | None = None
+    readable_roots: tuple[Path, ...] = ()
     workspace_only: bool = False
     max_output_chars: int | None = _DEFAULT_PROCESS_OUTPUT_LIMIT
 
@@ -150,7 +151,7 @@ class ToolExecutionContext:
                 return
             await asyncio.sleep(min(self.poll_interval, remaining))
 
-    def resolve_path(self, path: str) -> Path:
+    def resolve_path(self, path: str, *, read_only: bool = False) -> Path:
         """Resolve a tool path and enforce the Host-configured path boundaries."""
 
         candidate = Path(path).expanduser()
@@ -161,6 +162,8 @@ class ToolExecutionContext:
         if self.workspace_only:
             artifact_root = self._resolved_artifact_root()
             allowed_roots = tuple(root for root in (workspace, artifact_root) if root is not None)
+            if read_only:
+                allowed_roots += tuple(root.resolve() for root in self.readable_roots)
             if not allowed_roots:
                 raise ToolPolicyError(
                     "workspace-only tool execution requires a configured workspace or artifact root"

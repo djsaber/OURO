@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, field_validator, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
+from ouro.core.input_content import InputContent, InputFile
 from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import (
     SemanticTag,
@@ -180,7 +181,7 @@ class ModelMessage(OuroModel):
 
 
 class MessageRecord(VersionedOuroModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     message_id: str = Field(default_factory=lambda: new_id("msg"))
     before_harness_version: str | None = None
     session_id: str
@@ -193,6 +194,7 @@ class MessageRecord(VersionedOuroModel):
     scaffold: bool = False
     semantic_tag: SemanticTag | None = None
     resource_refs: list[str] = Field(default_factory=list)
+    input_attachments: tuple[InputFile, ...] = ()
     tool_calls: list[ToolCallRequest] = Field(default_factory=list)
     tool_result: ToolResultReference | None = None
     reasoning_content: str = ""
@@ -238,6 +240,13 @@ class MessageRecord(VersionedOuroModel):
         ):
             raise ValueError("tool execution timing requires a tool_result message")
         _validate_skill_activation_blocks(self.role, self.content)
+        if self.input_attachments:
+            if self.role != "user":
+                raise ValueError("input attachments require a user-role message")
+            InputContent(
+                text="" if self.semantic_tag == "attachments" else self.text_content,
+                attachments=self.input_attachments,
+            )
         return self
 
     @classmethod

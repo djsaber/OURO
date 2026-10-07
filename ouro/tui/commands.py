@@ -13,6 +13,8 @@ class TuiCommandArgument:
     argument_hint: str | None = None
     label: str | None = None
     accent: str | None = None
+    trailing_badge: str = ""
+    checked: bool | None = None
 
     @property
     def display_label(self) -> str:

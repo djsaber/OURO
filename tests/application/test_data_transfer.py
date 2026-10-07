@@ -207,7 +207,7 @@ def test_session_round_trip_across_backends_with_attachments(
     session, _run = _create_session(services._store)
     attachment = tmp_path / "attachment.txt"
     attachment.write_bytes(b"portable attachment")
-    resource = services.resources.import_resource(session.session_id, attachment).resource
+    services.resources.import_resource(session.session_id, attachment)
     _create_session(services._store, "ses_other")
     archive = tmp_path / "sessions.zip"
     assert transfer(source, "export", "sessions", archive, backend=source_backend).count == 2
@@ -220,45 +220,38 @@ def test_session_round_trip_across_backends_with_attachments(
         session.session_id
     ) == services._store.load_resource_references(session.session_id)
     assert (
-        LocalResourceStore(target).load_content(resource.resource_id)[1] == b"portable attachment"
+        LocalResourceStore(target).load_content(
+            session.session_id, imported._store.load_resource_references(session.session_id)[0]
+        )
+        == b"portable attachment"
     )
     repeated = transfer(target, "import", "sessions", archive, backend=target_backend)
     assert repeated.count == 0 and repeated.skipped == 2 and repeated.replaced == 0
     assert len(imported.sessions.catalog().entries) == 2
 
 
-def test_session_attachment_import_rebuilds_resource_catalog_once(tmp_path, monkeypatch):
+def test_session_attachment_import_keeps_complete_named_files(tmp_path):
     source, target = tmp_path / "source", tmp_path / "target"
     services = build_local_session_services(source)
     session, _ = _create_session(services._store)
     expected = []
     for index in range(8):
         path = tmp_path / f"attachment-{index}.txt"
-        path.write_bytes(f"attachment {index}".encode())
-        resource = services.resources.import_resource(session.session_id, path).resource
-        expected.append(LocalResourceStore(source).load_record(resource.resource_id))
+        content = f"attachment {index}".encode()
+        path.write_bytes(content)
+        services.resources.import_resource(session.session_id, path)
+        expected.append(content)
     archive = tmp_path / "sessions.zip"
     transfer(source, "export", "sessions", archive)
-    imported = build_local_session_services(target)
-    original = LocalResourceStore._rebuild_index_locked
-    rebuilds = 0
-
-    def count_rebuild(store):
-        nonlocal rebuilds
-        rebuilds += 1
-        return original(store)
-
-    monkeypatch.setattr(LocalResourceStore, "_rebuild_index_locked", count_rebuild)
     transfer(target, "import", "sessions", archive)
-    assert rebuilds == 1
-    assert len(imported._store.load_resource_references(session.session_id)) == len(expected)
-    resources = LocalResourceStore(target)
-    for record in expected:
-        assert resources.load_record(record.resource_id, verify=True) == record
-    catalog = json.loads(resources.index_path.read_text("utf-8"))
-    assert {item["resource_id"] for item in catalog["resources"]} == {
-        record.resource_id for record in expected
-    }
+    imported = build_local_session_services(target)
+    records = imported._store.load_resource_references(session.session_id)
+    assert len(records) == len(expected)
+    store = LocalResourceStore(target)
+    for record in records:
+        assert store.load_content(session.session_id, record) in expected
+        assert store.path_for(session.session_id, record).name.startswith("attachment-")
+    assert not (target / "resources").exists()
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -605,6 +598,25 @@ def test_skill_replacement_rolls_back_files_and_preserves_policy_on_failure(tmp_
     assert policy.snapshot().config.installed == {}
     assert policy.snapshot().config.disabled == {"first"}
     assert all("New skill" in path.read_text(encoding="utf-8") for path in original_files)
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+def test_missing_attachment_item_resource_is_rejected_before_import(tmp_path, backend):
+    services = build_local_session_services(tmp_path / "source")
+    _create_session(services._store)
+    archive_path = tmp_path / "invalid.zip"
+    transfer(tmp_path / "source", "export", "sessions", archive_path)
+    archive = read_archive(archive_path, "sessions")
+    message = archive.manifest.data["bundle"]["sessions"][0]["snapshot"]["messages"][0]
+    message["input_attachments"] = [
+        {"kind": "upload", "resource_id": "res_" + "a" * 32, "name": "lost.txt", "text_offset": 0}
+    ]
+    write_archive(archive_path, archive, replace=True)
+    with pytest.raises(DataTransferError, match="resource references are incomplete"):
+        transfer(tmp_path / "target", "import", "sessions", archive_path, backend=backend)
+    assert not build_local_session_services(
+        tmp_path / "target", session_backend=backend
+    )._store.list_sessions()
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])

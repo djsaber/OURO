@@ -9,6 +9,7 @@ from collections import Counter, OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import date, datetime
+from functools import partial
 from pathlib import Path
 from typing import Literal
 from weakref import ReferenceType, ref
@@ -43,12 +44,16 @@ from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import OuroError, PersistenceError
 from ouro.core.events import EventRecord
+from ouro.core.input_content import InputContent, InputFile
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import REASONING_EFFORTS, ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend, TaskBackend
 from ouro.local_application import LocalApplication
+from ouro.tui.attachment_editor import file_count_label
+from ouro.tui.attachment_paths import pasted_files
+from ouro.tui.attachment_picker import AttachmentPicker
 from ouro.tui.clipboard import ClipboardWriteError, write_system_clipboard
 from ouro.tui.commands import (
     TUI_COMMANDS,
@@ -1145,6 +1150,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._host_closing = False
         self._waiting_for_session_event = False
         self._dismissed_command_text: str | None = None
+        self._attachment_picker: AttachmentPicker | None = None
         self._pending_runtime_events: list[EventRecord] = []
         self._runtime_event_buffer_lagged: set[str] = set()
         self._runtime_events_ready_posted = False
@@ -1219,6 +1225,44 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _resize_input_surface(self, size: Size) -> None:
         if self._input_surface is not None:
             self._input_surface.set_viewport_size(size)
+
+    async def on_event(self, event: events.Event) -> None:
+        # A terminal drop is a Paste even when AppBlur has cleared widget focus.
+        # Recognize files before Textual routes the event to the focused widget.
+        if (
+            isinstance(event, events.Paste)
+            and not event.is_forwarded
+            and self._surface_available()
+            and len(self.screen_stack) == 1
+        ):
+            composer = self.query_one(Composer)
+            if (
+                composer.attachments_enabled
+                and not composer.disabled
+                and not composer.read_only
+                and not composer.import_pending
+            ):
+                revision = self._controller.selection_revision
+                paths = await asyncio.to_thread(pasted_files, event.text)
+                if paths:
+                    if not composer.consume_paste(event):
+                        return
+                    if (
+                        revision != self._controller.selection_revision
+                        or not self._surface_available()
+                        or len(self.screen_stack) != 1
+                        or self._visible_read_only
+                        or self._interaction is not None
+                        or composer.import_pending
+                    ):
+                        self.notify("Input changed while checking files; drop the files again")
+                        return
+                    self.app_focus = True
+                    self._close_attachment_menu()
+                    composer.import_pending = True
+                    self._attach_files(paths)
+                    return
+        await super().on_event(event)
 
     def on_mount(self) -> None:
         self.query_one(StatusLine).set_activity("starting")
@@ -1516,8 +1560,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if snapshot.root_activity is not None:
             self._agent_root_status = snapshot.root_activity.status
         self._sync_subagent_navigation_panel(root_session_id=root_session_id)
-        self.run_worker(
-            self._consume_agent_tree(subscription),
+
+        _worker: Worker[None] = self.run_worker(
+            partial(self._consume_agent_tree, subscription),
             name=f"agent-tree-{root_session_id}",
             group="agent-tree",
             exclusive=True,
@@ -1981,22 +2026,215 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if panel.display and panel.awaiting_freeform:
                 panel.accept_freeform(message.text)
             return
+        revision = self._controller.selection_revision
+        origin_session_id = self._controller.session_id
         try:
             models = await self._controller.models()
         except Exception as exc:  # noqa: BLE001 - keep the unsent draft on catalog failures.
-            self._edit_draft(message.text)
+            self._restore_unsent_input(message.content, revision, origin_session_id)
             self.notify(str(exc), severity="error", markup=False)
             return
+        if revision != self._controller.selection_revision:
+            self._restore_unsent_input(message.content, revision, origin_session_id)
+            self.notify("Session changed while preparing input; the original draft was restored")
+            return
         if not models:
-            self._edit_draft(message.text)
+            self._restore_unsent_input(message.content, revision, origin_session_id)
             self.notify("Add a provider and endpoint to send a message")
             self._prompt_provider_setup()
             return
         if not self._active_model and any(model.provider_id != "faux" for model in models):
-            self._edit_draft(message.text)
+            self._restore_unsent_input(message.content, revision, origin_session_id)
             self.notify("Select an available model with /model before sending")
             return
-        self._submit_run(message.text, message.mode)
+        self._submit_run(message.text, message.mode, attachments=message.content.attachments)
+
+    def on_composer_attachment_requested(self, message: Composer.AttachmentRequested) -> None:
+        if self._visible_read_only or self._interaction is not None:
+            self.query_one(Composer).import_pending = False
+            self._close_attachment_menu()
+            return
+        if message.paste is None:
+            composer = self.query_one(Composer)
+            composer.begin_attachment_menu()
+            directory = Path(
+                self._active_workspace or self._controller.draft_workspace or Path.cwd()
+            )
+            self._attachment_picker = AttachmentPicker(
+                directory, limit=max(0, 16 - len(composer.draft_content.attachments))
+            )
+            self._load_attachment_directory(directory)
+        else:
+            self._attach_files(message.paste)
+
+    @work(exclusive=True, group="attachment-directory")
+    async def _load_attachment_directory(self, directory: Path) -> None:
+        picker = self._attachment_picker
+        if picker is None:
+            return
+        revision = self._controller.selection_revision
+        composer = self.query_one(Composer)
+        query = composer.text
+        picker.loading = True
+        self._show_attachment_menu()
+        try:
+            entries = await asyncio.to_thread(picker.read_directory, directory)
+        except OSError as exc:
+            if (
+                picker is self._attachment_picker
+                and revision == self._controller.selection_revision
+            ):
+                picker.loading = False
+                self._show_attachment_menu()
+                self.notify(str(exc), severity="error", markup=False)
+            return
+        if picker is self._attachment_picker and revision == self._controller.selection_revision:
+            with self.batch_update():
+                # Publish a complete directory view without collapsing the existing menu.
+                # A filter typed during the read belongs to the newly opened directory.
+                if picker.loaded and composer.text == query:
+                    composer.set_attachment_query("")
+                picker.directory, picker.entries = directory, entries
+                picker.loading, picker.loaded = False, True
+                self._show_attachment_menu()
+
+    def _show_attachment_menu(self) -> None:
+        if not self._surface_available():
+            return
+        picker = self._attachment_picker
+        composer = self.query_one(Composer)
+        context = composer.command_context()
+        if picker is None or not composer.attachment_menu_open:
+            return
+        if context is None or not context[0].startswith("@"):
+            self._close_attachment_menu()
+            return
+        if picker.loading and picker.loaded:
+            return
+        arguments = () if picker.loading else picker.arguments(context[0][1:], self._tui_theme)
+        self.query_one(CommandPopup).show_arguments(
+            TuiCommand(
+                "@", "Loading files…" if picker.loading else "No matching files", "Reference files"
+            ),
+            arguments,
+            heading=str(picker.directory),
+            hint=self._tui_theme.inline_separator.join(
+                ("↑/↓ move", "Space select", "Enter open / reference", "Esc close")
+            ),
+        )
+        composer.suggestion = ""
+
+    def on_composer_attachment_toggled(self, _message: Composer.AttachmentToggled) -> None:
+        picker = self._attachment_picker
+        argument = self.query_one(CommandPopup).selected_argument
+        if picker is not None and not picker.loading and argument is not None:
+            try:
+                picker.toggle(argument.value)
+            except ValueError as exc:
+                self.notify(str(exc), severity="warning", markup=False)
+            self._show_attachment_menu()
+
+    def _choose_attachment(self) -> None:
+        picker = self._attachment_picker
+        argument = self.query_one(CommandPopup).selected_argument
+        if picker is None or picker.loading or argument is None:
+            return
+        directory = picker.directory_for(argument.value)
+        if directory is not None:
+            self._load_attachment_directory(directory)
+            return
+        paths = picker.files_for(argument.value)
+        if paths:
+            self._close_attachment_menu()
+            self.query_one(Composer).import_pending = True
+            self._reference_files(paths)
+
+    @work(exclusive=True, group="attachment-reference")
+    async def _reference_files(self, paths: tuple[Path, ...]) -> None:
+        composer = self.query_one(Composer)
+        revision = self._controller.selection_revision
+        composer.import_pending = True
+        composer.disabled = True
+        try:
+            items = await self._controller.reference_files(paths)
+            if revision != self._controller.selection_revision:
+                return
+            composer.insert_attachments(items)
+            content = composer.input_content
+            self._remember_input_draft(
+                self._controller.session_id, content.text, attachments=content.attachments
+            )
+        except (OSError, ValueError) as exc:
+            self.notify(str(exc), severity="error", markup=False)
+        finally:
+            composer.import_pending = False
+            if self._surface_available():
+                self._sync_interaction_focus(self._interaction)
+
+    def _close_attachment_menu(self) -> None:
+        self._attachment_picker = None
+        composer = self.query_one(Composer)
+        if composer.attachment_menu_open:
+            composer.finish_attachment_menu()
+            self.query_one(CommandPopup).hide()
+
+    @work(exclusive=True, group="attachment-import")
+    async def _attach_files(self, paste: str | tuple[Path, ...]) -> None:
+        composer = self.query_one(Composer)
+        revision = self._controller.selection_revision
+        original_session = self._controller.session_id
+        original = composer.input_content
+        selection = composer.selection
+        insert_into_original = composer.prepare_attachment_insertion()
+        composer.import_pending = True
+        composer.disabled = True
+        try:
+            if isinstance(paste, str):
+                paths = await asyncio.to_thread(pasted_files, paste)
+                if not paths:
+                    if revision == self._controller.selection_revision:
+                        composer.insert_plain_paste(paste)
+                    return
+            else:
+                paths = paste
+            if revision != self._controller.selection_revision:
+                return
+            if len(original.attachments) + len(paths) > 16:
+                self.notify("A message can contain at most 16 attachments", severity="warning")
+                return
+            session = await self._controller.attachment_session()
+            imported: list[InputFile] = []
+            for path in paths:
+                try:
+                    imported.append(await self._controller.import_attachment(session, path))
+                except Exception as exc:  # noqa: BLE001 - report each failed file and retain successes.
+                    self.notify(f"{path.name}: {exc}", severity="error", markup=False)
+            await self._controller.validate_attachment_session(session)
+            if revision != self._controller.selection_revision:
+                # The import belongs to its captured Session, never to a later navigation.
+                restored = insert_into_original(tuple(imported)) if imported else original
+                self._remember_input_draft(
+                    session.session_id, restored.text, attachments=restored.attachments
+                )
+                return
+            if original_session is None:
+                self._remember_input_draft(None, "")
+                self._remember_input_draft(
+                    session.session_id, original.text, attachments=original.attachments
+                )
+            composer.load_input(original)
+            composer.selection = selection
+            composer.insert_attachments(tuple(imported))
+            content = composer.input_content
+            self._remember_input_draft(
+                session.session_id, content.text, attachments=content.attachments
+            )
+        except Exception as exc:  # noqa: BLE001 - keep the unsent draft on import failures.
+            self.notify(str(exc), severity="error", markup=False)
+        finally:
+            composer.import_pending = False
+            if self._surface_available():
+                self._sync_interaction_focus(self._interaction)
 
     @work(exclusive=True, group="provider-onboarding")
     async def _prompt_provider_setup(self) -> None:
@@ -2011,6 +2249,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         queue_mode: QueuedInputMode,
         *,
         skill_invocation: SkillInvocationRequest | None = None,
+        attachments: tuple[InputFile, ...] | None = None,
     ) -> None:
         if self._visible_read_only:
             return
@@ -2021,10 +2260,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._projection is None:
             self.query_one(Composer).disabled = True
             self._waiting_for_session_event = True
-        resource_refs = self._input_drafts.resources_for(self._controller.session_id)
-        self._remember_input_draft(self._controller.session_id, "", resource_refs=())
+        attachments = (
+            attachments
+            if attachments is not None
+            else self._input_drafts.content_for(self._controller.session_id).attachments
+        )
+        self._remember_input_draft(self._controller.session_id, "")
         self._run_prompt(
-            prompt, queue_mode, skill_invocation=skill_invocation, resource_refs=resource_refs
+            prompt, queue_mode, skill_invocation=skill_invocation, attachments=attachments
         )
 
     @work(group="run")
@@ -2034,39 +2277,67 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         queue_mode: QueuedInputMode,
         *,
         skill_invocation: SkillInvocationRequest | None = None,
-        resource_refs: tuple[str, ...] = (),
+        attachments: tuple[InputFile, ...] = (),
     ) -> None:
         revision = self._controller.selection_revision
+        origin_session_id = self._controller.session_id
+        accepted = False
+
+        def input_accepted() -> None:
+            nonlocal accepted
+            accepted = True
+
         try:
             result = await self._controller.submit(
                 prompt,
                 queue_mode=queue_mode,
                 skill_invocation=skill_invocation,
-                resource_refs=resource_refs,
+                resource_refs=InputContent(text=prompt, attachments=attachments).resource_refs,
+                attachments=attachments,
+                on_input_accepted=input_accepted,
             )
             await self._apply_run_result(result)
             await self._sync_queued_inputs(result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - providers and tools fail across this boundary.
-            if revision != self._controller.selection_revision:
-                self.notify(str(exc), severity="error", markup=False)
-                return
-            if not self.query_one(Composer).text:
+            same_selection = revision == self._controller.selection_revision
+            if not accepted:
                 restored = (
                     f"/skill {skill_invocation.name} {prompt}".rstrip()
                     if skill_invocation
                     else prompt
                 )
-                self._remember_input_draft(
-                    self._controller.session_id, restored, resource_refs=resource_refs
+                offset = len(restored) - len(prompt)
+                content = InputContent(
+                    text=restored,
+                    attachments=tuple(
+                        item.model_copy(update={"text_offset": item.text_offset + offset})
+                        for item in attachments
+                    ),
                 )
-                self._edit_draft(restored)
-            self.query_one(StatusLine).set_activity("failed")
+                self._restore_unsent_input(content, revision, origin_session_id)
+            if same_selection:
+                self.query_one(StatusLine).set_activity("failed")
             self.notify(str(exc), severity="error", markup=False)
         finally:
             if revision == self._controller.selection_revision:
                 self._waiting_for_session_event = False
                 if not self._host_closing and self.query(Composer):
                     self._sync_interaction_focus(self._interaction)
+
+    def _restore_unsent_input(
+        self, content: InputContent, revision: int, origin_session_id: str | None
+    ) -> None:
+        same_selection = revision == self._controller.selection_revision
+        target_session = self._controller.session_id if same_selection else origin_session_id
+        current = (
+            self.query_one(Composer).input_content
+            if same_selection
+            else self._input_drafts.content_for(target_session)
+        )
+        restored = current.followed_by(content)
+        self._remember_input_draft(target_session, restored.text, attachments=restored.attachments)
+        if same_selection:
+            self._edit_draft(restored)
 
     async def _apply_run_result(self, result: RunResult) -> None:
         if not self._owns_session_surface(result.session.session_id):
@@ -2240,19 +2511,24 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self.query_one(QueuedInputPanel).set_inputs(inputs)
 
     async def on_text_area_changed(self, message: TextArea.Changed) -> None:
+        if not self._surface_available():
+            return
         if message.text_area is not self.query_one(Composer):
             return
         composer = message.text_area
         value = composer.text
         command_context = composer.observe_command_change()
         if not self._visible_read_only:
-            persisted_value = (
-                command_context[1] if command_context is not None and command_context[1] else value
+            content = composer.draft_content
+            self._remember_input_draft(
+                self._controller.session_id, content.text, attachments=content.attachments
             )
-            self._remember_input_draft(self._controller.session_id, persisted_value)
         popup = self.query_one(CommandPopup)
         ask_user = self.query_one(AskUserPanel)
         plan_panel = self.query_one(PlanConfirmationPanel)
+        if composer.attachment_menu_open:
+            self._show_attachment_menu()
+            return
         if (ask_user.display and ask_user.awaiting_freeform) or (
             plan_panel.display and plan_panel.awaiting_feedback
         ):
@@ -2306,6 +2582,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._sync_command_suggestion(composer, popup, command_catalog=command_catalog)
 
     def on_text_area_selection_changed(self, message: TextArea.SelectionChanged) -> None:
+        if not self._surface_available():
+            return
         composer = self.query_one(Composer)
         if message.text_area is composer:
             self._sync_command_suggestion(composer, self.query_one(CommandPopup))
@@ -2363,6 +2641,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._visible_read_only:
             self.notify("Subagent sessions are read-only", severity="warning")
             return
+        if self.query_one(Composer).attachment_menu_open:
+            self._choose_attachment()
+            return
         popup = self.query_one(CommandPopup)
         composer = self.query_one(Composer)
         interaction = self._interaction
@@ -2410,8 +2691,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     return
                 value = selected_value
         value = selected.name if selected is not None else value
+        submitted = composer.input_content
+        if value.startswith("/skill ") and not message.draft:
+            composer.restore_command_draft("")
+            popup.hide()
+            await self._submit_skill(
+                value.removeprefix("/skill "), attachments=submitted.attachments
+            )
+            return
         composer.restore_command_draft(message.draft)
-        self._remember_input_draft(self._controller.session_id, message.draft)
+        content = composer.input_content
+        self._remember_input_draft(
+            self._controller.session_id, content.text, attachments=content.attachments
+        )
         popup.hide()
         self._dismissed_command_text = None
         await self._dispatch_command(value)
@@ -2426,6 +2718,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def on_composer_command_dismissed(self, _message: Composer.CommandDismissed) -> None:
         composer = self.query_one(Composer)
+        if composer.attachment_menu_open:
+            self._close_attachment_menu()
+            return
         context = composer.command_context()
         if context is not None and context[1]:
             composer.restore_command_draft(context[1])
@@ -2624,6 +2919,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._host_closing or not self.query(Composer):
             return
         composer = self.query_one(Composer)
+        composer.attachments_enabled = not self._visible_read_only and interaction is None
+        if not composer.attachments_enabled:
+            self._close_attachment_menu()
+        if composer.import_pending:
+            composer.disabled = True
+            return
         if self._visible_read_only:
             composer.disabled = True
             return
@@ -2674,34 +2975,36 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self.query_one(Composer).set_plain_placeholder(placeholder)
 
     def _edit_command(self, value: str, *, draft: str = "") -> None:
+        self._close_attachment_menu()
         composer = self.query_one(Composer)
         composer.load_command(value, draft=draft)
         composer.focus()
 
-    def _edit_draft(self, value: str) -> None:
+    def _edit_draft(self, value: str | InputContent) -> None:
+        self._close_attachment_menu()
         composer = self.query_one(Composer)
-        composer.load_text(value)
+        composer.load_input(value if isinstance(value, InputContent) else InputContent(text=value))
         composer.move_cursor((composer.document.line_count - 1, len(composer.document.lines[-1])))
         composer.focus()
 
     def _restore_input_draft(self, session_id: str | None) -> None:
+        self._close_attachment_menu()
+        self.query_one(Composer).bind_history(session_id)
         draft = (
-            self._input_drafts.draft_for(session_id)
+            self._input_drafts.content_for(session_id)
             if self._preferences.input_draft_memory_enabled
-            else ""
+            else InputContent()
         )
         if not self._preferences.input_draft_memory_enabled:
-            self._remember_input_draft(session_id, "", resource_refs=())
-        self.query_one(Composer).restore_command_draft(draft)
-        count = len(self._input_drafts.resources_for(session_id))
-        if count:
-            self.notify(f"Restored {count} attachment(s) to this input")
+            self._remember_input_draft(session_id, "")
+        self.query_one(Composer).restore_command_draft("")
+        self.query_one(Composer).load_input(draft)
 
     def _remember_input_draft(
-        self, session_id: str | None, text: str, *, resource_refs: tuple[str, ...] | None = None
+        self, session_id: str | None, text: str, *, attachments: tuple[InputFile, ...] = ()
     ) -> None:
         self._set_input_drafts(
-            self._input_drafts.remember(session_id, text, resource_refs=resource_refs)
+            self._input_drafts.remember(session_id, text, attachments=attachments)
         )
 
     def _forget_input_drafts(self, session_ids: Sequence[str]) -> None:
@@ -2718,6 +3021,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if drafts == self._input_drafts and not force_persist:
             return
         self._input_drafts = drafts
+        # A rejected on-disk artifact must survive until explicit data maintenance.
+        if self._input_drafts_error is not None:
+            return
         if not self._preferences.input_draft_memory_enabled and not force_persist:
             return
         self._input_draft_revision += 1
@@ -2938,6 +3244,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     "Follow-up message" if item.mode == "follow_up" else "Active-run guidance"
                 ),
                 label=f"{index}. {_queued_input_preview(item)}",
+                trailing_badge=file_count_label(item.attachments, item.resource_refs),
             )
             for index, item in enumerate(inputs, start=1)
         )
@@ -2956,7 +3263,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             for skill in skills
         )
 
-    async def _submit_skill(self, argument: str) -> None:
+    async def _submit_skill(
+        self, argument: str, *, attachments: tuple[InputFile, ...] = ()
+    ) -> None:
         name, separator, task = argument.lstrip().partition(" ")
         if not name:
             return
@@ -2976,12 +3285,25 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             invocation.arguments,
             "follow_up",
             skill_invocation=invocation,
+            attachments=tuple(
+                item.model_copy(
+                    update={
+                        "text_offset": max(
+                            0,
+                            item.text_offset
+                            - (len(argument) - len(invocation.arguments) + len("/skill ")),
+                        )
+                    }
+                )
+                for item in attachments
+            ),
         )
 
     async def _unqueue_message(self, queue_id: str) -> None:
+        session_id = self._controller.session_id
+        revision = self._controller.selection_revision
         try:
             cancelled = await self._controller.cancel_queued_user_input(queue_id)
-            await self._sync_queued_inputs()
         except Exception as exc:  # noqa: BLE001 - surface application boundary failures.
             self.notify(str(exc), severity="error", markup=False)
             return
@@ -2992,7 +3314,33 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 markup=False,
             )
             return
-        self._edit_draft(_queued_input_draft(cancelled))
+        text = _queued_input_draft(cancelled)
+        offset = len(text) - len(cancelled.prompt)
+        attachments = cancelled.attachments or await self._controller.input_attachments(
+            session_id or "", cancelled.resource_refs
+        )
+        content = InputContent(
+            text=text,
+            attachments=tuple(
+                item.model_copy(update={"text_offset": item.text_offset + offset})
+                for item in attachments
+            ),
+        )
+        current = (
+            self.query_one(Composer).draft_content
+            if revision == self._controller.selection_revision
+            else self._input_drafts.content_for(session_id)
+        )
+        restored = current.followed_by(content)
+        self._remember_input_draft(session_id, restored.text, attachments=restored.attachments)
+        if revision == self._controller.selection_revision:
+            self._edit_draft(restored)
+        if not current.is_empty:
+            self.notify("Restored queued input after the current draft")
+        try:
+            await self._sync_queued_inputs()
+        except Exception as exc:  # noqa: BLE001 - cancellation and restoration already succeeded.
+            self.notify(f"Could not refresh queued inputs: {exc}", severity="warning", markup=False)
 
     def _navigate_options(
         self,
@@ -3874,13 +4222,23 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if command == "/undo":
                 selected = await self._controller.undo()
                 text = user_message_text(selected.input)
+                attachments = selected.attachments or await self._controller.input_attachments(
+                    selected.session.session_id, selected.resource_refs
+                )
+                prefix = len(text) - len(selected.input.text_content)
+                attachments = tuple(
+                    item.model_copy(
+                        update={"text_offset": min(len(text), item.text_offset + prefix)}
+                    )
+                    for item in attachments
+                )
                 self._remember_input_draft(
-                    selected.session.session_id, text, resource_refs=selected.resource_refs
+                    selected.session.session_id, text, attachments=attachments
                 )
                 if not self._owns_session_surface(session_id):
                     return
                 await self._show_main_session()
-                self._edit_draft(text)
+                self._edit_draft(InputContent(text=text, attachments=attachments))
                 if selected.resource_refs:
                     self.notify(
                         f"Restored {len(selected.resource_refs)} attachment(s) to this input"
@@ -4848,8 +5206,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if not self._visible_read_only and self.query(Composer):
             drafts = drafts.remember(
                 self._controller.session_id,
-                self.query_one(Composer).text,
-                resource_refs=self._input_drafts.resources_for(self._controller.session_id),
+                self.query_one(Composer).input_content.text,
+                attachments=self.query_one(Composer).input_content.attachments,
             )
         self._set_input_drafts(drafts, force_persist=True)
         return True

@@ -7,45 +7,45 @@ from typing import Protocol
 from ouro.core.resources import ResourceRecord, ResourceSource
 
 
-class BlobStore(Protocol):
-    """Persistence port for immutable content, independent from Session ownership."""
+class ResourceStore(Protocol):
+    """Named immutable files; canonical metadata belongs to the Session repository."""
 
     def infer_media_type(self, path: Path) -> str: ...
 
-    def import_content(self, record: ResourceRecord, content: bytes) -> None: ...
-
-    def import_contents(self, items: Iterable[tuple[ResourceRecord, bytes]]) -> None:
-        """Publish immutable blobs, maintaining their catalog once per batch."""
-        ...
-
     def import_file(
         self,
+        session_id: str,
         source_path: Path,
         *,
         source: ResourceSource,
         media_type: str,
         max_bytes: int,
-    ) -> tuple[ResourceRecord, bool]: ...
+    ) -> ResourceRecord: ...
 
-    def load_record(self, resource_id: str, *, verify: bool = False) -> ResourceRecord: ...
+    def import_contents(
+        self, session_id: str, items: Iterable[tuple[ResourceRecord, bytes]]
+    ) -> None: ...
+
+    def directory_for(self, session_id: str) -> Path: ...
+
+    def path_for(self, session_id: str, record: ResourceRecord) -> Path: ...
 
     def load_content(
         self,
-        resource_id: str,
+        session_id: str,
+        record: ResourceRecord,
         *,
         max_bytes: int | None = None,
-    ) -> tuple[ResourceRecord, bytes]: ...
+    ) -> bytes: ...
 
-    def export_file(self, resource_id: str, destination: Path, *, overwrite: bool) -> Path: ...
+    def verify(self, session_id: str, record: ResourceRecord) -> None: ...
 
-    def delete_resources(self, resource_ids: Iterable[str]) -> list[str]: ...
+    def export_file(
+        self, session_id: str, record: ResourceRecord, destination: Path, *, overwrite: bool
+    ) -> Path: ...
 
+    def read_ranges(
+        self, session_id: str, record: ResourceRecord, ranges: tuple[tuple[int, int], ...]
+    ) -> tuple[bytes, ...]: ...
 
-class ResourceCatalogStore(Protocol):
-    """Best-effort disposable catalog maintenance for blob records."""
-
-    def try_update_index(self) -> str | None: ...
-
-
-class ResourceStore(BlobStore, ResourceCatalogStore, Protocol):
-    """Complete resource persistence composed from blob and catalog ports."""
+    def delete_resources(self, session_id: str, records: Iterable[ResourceRecord]) -> list[str]: ...

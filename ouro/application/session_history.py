@@ -34,6 +34,13 @@ def select_branch_messages(
 
     source_message = messages[requested_index]
     branch_end = requested_index
+    batch_id = source_message.metadata.get("session_input_batch_id")
+    if batch_id is not None:
+        while (
+            branch_end + 1 < len(messages)
+            and messages[branch_end + 1].metadata.get("session_input_batch_id") == batch_id
+        ):
+            branch_end += 1
     for start, end, complete in _tool_exchange_ranges(messages):
         if not start <= requested_index <= end:
             continue
@@ -63,6 +70,11 @@ def copy_branch_messages(
             metadata["source_run_id"] = message.run_id
         if message.turn_id is not None:
             metadata["source_turn_id"] = message.turn_id
+        attachment_id = metadata.get("attachment_message_id")
+        if isinstance(attachment_id, str):
+            if attachment_id not in message_id_map:
+                raise SessionBranchError("attachment input is missing its receipt")
+            metadata["attachment_message_id"] = message_id_map[attachment_id]
         copied.append(
             message.model_copy(
                 update={

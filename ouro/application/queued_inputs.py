@@ -9,6 +9,7 @@ from pydantic import Field, ValidationError, field_validator, model_validator
 from ouro.application.dto import ApplicationDTO
 from ouro.application.supervisor_models import HostInputReceipt
 from ouro.core.base import OuroModel, new_id, utc_now
+from ouro.core.input_content import InputContent, InputFile
 from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import SkillActivationContent
@@ -33,6 +34,8 @@ class QueuedUserInputView(ApplicationDTO):
     mode: QueuedInputMode
     queued_at: datetime
     skill_name: str | None = None
+    attachments: tuple[InputFile, ...] = Field(default=(), max_length=16)
+    resource_refs: tuple[str, ...] = ()
 
 
 class QueuedInput(OuroModel):
@@ -44,6 +47,7 @@ class QueuedInput(OuroModel):
     mode: QueuedInputMode
     title: str | None = None
     resource_refs: tuple[str, ...] = ()
+    attachments: tuple[InputFile, ...] = Field(default=(), max_length=16)
     queued_at: datetime
     source: QueuedInputSource
     role: MessageRole
@@ -143,7 +147,16 @@ class QueuedInput(OuroModel):
             raise ValueError("prompt-policy checked input requires a prospective run id")
         if self.extension_generations and not self.extension_catalog_id:
             raise ValueError("queued extension generations require a catalog id")
-        if not self.prompt.strip() and self.skill_activation is None:
+        if self.attachments:
+            content = InputContent(text=self.prompt, attachments=self.attachments)
+            if content.resource_refs != self.resource_refs:
+                raise ValueError("Attachment identities must match resource references")
+        if (
+            not self.prompt.strip()
+            and self.skill_activation is None
+            and not self.resource_refs
+            and not self.attachments
+        ):
             raise ValueError("queued input requires a prompt or skill activation")
         if self.skill_activation is not None:
             if self.source != "user" or self.role != "user" or self.scaffold:
@@ -260,6 +273,7 @@ class QueuedInputQueue:
         mode: QueuedInputMode = "follow_up",
         title: str | None,
         resource_refs: tuple[str, ...] = (),
+        attachments: tuple[InputFile, ...] = (),
         queue_id: str | None = None,
         source: QueuedInputSource = "user",
         role: MessageRole,
@@ -292,6 +306,7 @@ class QueuedInputQueue:
             mode=mode,
             title=title,
             resource_refs=resource_refs,
+            attachments=attachments,
             queued_at=utc_now(),
             source=source,
             role=role,

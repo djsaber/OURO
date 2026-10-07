@@ -17,11 +17,11 @@ from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import ReasoningRequest
-from ouro.core.resources import SessionResourceReference
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore, SessionStore, SQLiteSessionStore
 from tests.harness_state import remove_harness_state, replace_harness_state
+from tests.resource_fixtures import resource_record
 
 
 @pytest.fixture(params=("files", "sqlite"))
@@ -78,13 +78,14 @@ def test_session_store_round_trip_and_pages(session_store: SessionStore) -> None
         context_metrics_after=ContextBuilder().build(messages=[message], tools=[]).metrics,
     )
     session = session.model_copy(update={"active_compaction_id": compaction.compaction_id})
-    reference = SessionResourceReference(resource_id="res_" + "a" * 64)
+    reference = resource_record(resource_id="res_" + "a" * 32)
 
     session_store.create_session_snapshot(
         session,
         [message],
         [reference],
         compactions=[compaction],
+        resource_contents=((reference, b"fixture"),),
     )
     session_store.save_run(run)
     first = session_store.append_ordered_event(
@@ -343,27 +344,35 @@ def test_session_store_loads_runs_without_reading_journals(session_store: Sessio
 def test_session_store_resource_reference_ownership(session_store: SessionStore) -> None:
     first = SessionRecord(title="First")
     second = SessionRecord(title="Second")
-    resource_id = "res_" + "b" * 64
+    resource_id = "res_" + "b" * 32
     session_store.create_session(first)
     session_store.create_session(second)
 
     session_store.attach_resource_reference(
         first.session_id,
-        SessionResourceReference(resource_id=resource_id),
+        resource_record(resource_id=resource_id),
     )
     session_store.attach_resource_reference(
         second.session_id,
-        SessionResourceReference(
+        resource_record(
             resource_id=resource_id,
             copied_from_session_id=first.session_id,
         ),
     )
-    assert session_store.is_resource_referenced(resource_id)
+    assert [
+        item.resource_id for item in session_store.load_resource_references(first.session_id)
+    ] == [resource_id]
+    assert [
+        item.resource_id for item in session_store.load_resource_references(second.session_id)
+    ] == [resource_id]
 
     session_store.remove_resource_reference(first.session_id, resource_id)
-    assert session_store.is_resource_referenced(resource_id)
+    assert session_store.load_resource_references(first.session_id) == []
+    assert [
+        item.resource_id for item in session_store.load_resource_references(second.session_id)
+    ] == [resource_id]
     session_store.remove_resource_reference(second.session_id, resource_id)
-    assert not session_store.is_resource_referenced(resource_id)
+    assert session_store.load_resource_references(second.session_id) == []
 
 
 def test_session_store_owns_extension_state_lifecycle(session_store: SessionStore) -> None:

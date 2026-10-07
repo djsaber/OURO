@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import warnings
 from datetime import UTC, datetime
 
 import pytest
@@ -29,6 +31,35 @@ from tests.tui.test_app import (
 )
 from tests.tui.test_live_session_attachment import visible
 from tests.tui.test_tasks import choose, streaming_application
+
+
+async def test_agent_tree_cancelled_before_start_closes_without_coroutine_warning(
+    tmp_path, monkeypatch
+):
+    application = _application(tmp_path)
+    session = application.runtime.sessions.create().session
+    app = OuroTuiApp(application=application)
+    async with run_ready_app(app) as pilot:
+        run_worker = app.run_worker
+
+        def cancel_tree_immediately(work, **kwargs):
+            worker = run_worker(work, **kwargs)
+            if kwargs.get("group") == "agent-tree":
+                worker.cancel()
+            return worker
+
+        monkeypatch.setattr(app, "run_worker", cancel_tree_immediately)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", RuntimeWarning)
+            await app._replace_agent_tree(session.session_id)
+            subscription = app._agent_tree_subscription
+            await app._replace_agent_tree(None)
+            await pilot.pause()
+            gc.collect()
+        assert subscription is not None
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.wait_for(subscription.get(), timeout=1)
+        assert not [warning for warning in caught if "_consume_agent_tree" in str(warning.message)]
 
 
 class NavigationProvider:
@@ -101,6 +132,9 @@ async def test_background_completion_preserves_destination_and_draft(
             await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
             await choose(pilot, app, "Other session")
             expected_id = other.session_id
+        async with asyncio.timeout(5):
+            while app._controller.session_id != expected_id or not subscription.closed:
+                await pilot.pause()
         assert subscription.closed
         app.query_one(Composer).load_text("Destination draft")
         await pilot.pause()

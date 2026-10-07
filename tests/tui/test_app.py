@@ -256,7 +256,12 @@ async def _wait_for_active_session(
     timeout: float = 5.0,
 ) -> None:
     deadline = asyncio.get_running_loop().time() + timeout
-    while app._controller.session_id != session_id or app.query_one(Composer).disabled:
+    while (
+        app._controller.session_id != session_id
+        or app._projection is None
+        or app._projection.session_id != session_id
+        or app.query_one(Composer).disabled
+    ):
         if asyncio.get_running_loop().time() >= deadline:
             raise AssertionError(f"Timed out waiting for active Session {session_id}")
         await asyncio.sleep(0.01)
@@ -4124,10 +4129,13 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         original_display = app._display
 
         def capture_root_frames(screen, renderable) -> None:
-            rendered_history = app.query_one(ConversationHistory).rendered_text
-            displayed_root_frames.append(
-                (rendered_history, app.query_one(ConversationView).scroll_y)
-            )
+            # Match Textual's display gate: batched and empty updates never
+            # reach the terminal and cannot count as intermediate frames.
+            if renderable is not None and not app._batch_count:
+                rendered_history = app.query_one(ConversationHistory).rendered_text
+                displayed_root_frames.append(
+                    (rendered_history, app.query_one(ConversationView).scroll_y)
+                )
             original_display(screen, renderable)
 
         monkeypatch.setattr(app, "_display", capture_root_frames)
@@ -4193,10 +4201,11 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         )
 
         def capture_child_frames(screen, renderable) -> None:
-            rendered_history = app.query_one(ConversationHistory).rendered_text
-            displayed_child_frames.append(
-                (rendered_history, app.query_one(ConversationView).scroll_y)
-            )
+            if renderable is not None and not app._batch_count:
+                rendered_history = app.query_one(ConversationHistory).rendered_text
+                displayed_child_frames.append(
+                    (rendered_history, app.query_one(ConversationView).scroll_y)
+                )
             original_display(screen, renderable)
 
         monkeypatch.setattr(app, "_display", capture_child_frames)
@@ -4223,6 +4232,13 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             ("Root history paragraph 79" in rendered and scroll_y == held_root_scroll_y)
             or ("first child paragraph 29" in rendered and scroll_y == held_child_scroll_y)
             for rendered, scroll_y in displayed_child_frames
+        ), (
+            held_root_scroll_y,
+            held_child_scroll_y,
+            [
+                ("Root history paragraph 79" in rendered, "first child paragraph 29" in rendered, y)
+                for rendered, y in displayed_child_frames
+            ],
         )
         monkeypatch.setattr(app, "_display", original_display)
 
@@ -9236,6 +9252,14 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Agent Context")
         assert app.screen is plugin_screen
+        await _wait_until(
+            lambda: any(
+                choice.value == "enable" and choice.trailing == "disabled"
+                for choice in plugin_screen._choices
+            ),
+            pilot,
+            description="disabled plugin actions",
+        )
         lifecycle = {choice.value: choice for choice in plugin_screen._choices}
         assert lifecycle["enable"].trailing == "disabled"
         assert lifecycle["restart"].disabled is True
@@ -9252,6 +9276,14 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         options = plugin_screen.query_one("#choice-list", OptionList)
         await pilot.click(options, offset=(4, 1))
         await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Agent Context")
+        await _wait_until(
+            lambda: any(
+                choice.value == "disable" and choice.trailing == "active"
+                for choice in plugin_screen._choices
+            ),
+            pilot,
+            description="enabled plugin actions",
+        )
         assert (
             next(choice for choice in plugin_screen._choices if choice.value == "disable").trailing
             == "active"

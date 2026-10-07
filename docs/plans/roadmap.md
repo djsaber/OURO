@@ -26,6 +26,11 @@ Marketplace、签名/publisher trust root、worker OS sandbox、每插件依赖�
 
 ## 近期：Host 产品面
 
+### 多附件输入与资源输出
+
+当前契约见[附件规格](../specs/attachments.md)，职责与设计依据见[文件输入架构](../architecture/file-input.md)。
+[附件输入验收](attachment-validation.md)覆盖 Windows Terminal / POSIX 终端真实拖入、视觉端点限制和跨平台会话传输。
+
 ### TUI 产品化增强
 
 TUI 的目标增量集中在历史规模、资源输入和终端体验：
@@ -33,12 +38,12 @@ TUI 的目标增量集中在历史规模、资源输入和终端体验：
 范围：
 
 - 用 Session 消息 cursor 构建冷历史分页和视口窗口，使首屏工作量受页大小约束；
-- 为文本、图片资源提供与 canonical resource reference 一致的附件草稿、检查和移除交互；
+- 在真实终端验证附件草稿、目录选择与原子编辑的显示和键盘行为；
 - 在 Windows Terminal、常见 POSIX 终端和窄屏环境建立首反馈、持续流、长代码块和长历史响应性基线；
 - 保持用户离开底部后的视口锚定，并对持续事件过载采用有界降级和持久化追赶；
 - 补齐发布级键盘兼容、颜色降级、复制与链接体验。
 
-完成条件：冷加载成本与页大小相关，附件只通过 ResourceService/Session 引用进入 Run，TUI 继续只负责渲染和
+完成条件：冷加载成本与页大小相关，文件输入通过 Application 校验来源并进入 Run，TUI 继续只负责渲染和
 输入映射，不解析 Session 文件或 SQLite，也不复制 application 状态机。
 
 ### Desktop Host

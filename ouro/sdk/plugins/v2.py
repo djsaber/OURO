@@ -330,9 +330,12 @@ PromptPolicyAction = Literal["allow", "deny"]
 
 @dataclass(frozen=True)
 class PromptAttachmentMetadata:
-    resource_id: str
-    media_type: str
-    size: int
+    resource_id: str | None
+    media_type: str | None
+    size: int | None
+    kind: Literal["upload", "reference"] = "upload"
+    name: str | None = None
+    path: str | None = None
 
 
 @dataclass(frozen=True)

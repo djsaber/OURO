@@ -9,6 +9,7 @@ from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
+from ouro.core.input_content import InputAttachment, InputContent
 from ouro.core.messages import MessageRecord, SkillActivationContent
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
@@ -75,11 +76,11 @@ async def test_undo_skill_and_attachment_survive_navigation_restart_and_submissi
     app = OuroTuiApp(application=application, resume_session_id=session.session_id)
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await command(app, pilot, "/undo")
-        assert app.query_one(Composer).text == "/skill demo original"
+        assert app.query_one(Composer).input_content.text == "/skill demo original"
         await app._open_session(other.session_id)
         assert app._input_drafts.resources_for(other.session_id) == ()
         await app._open_session(session.session_id)
-        assert app.query_one(Composer).text == "/skill demo original"
+        assert app.query_one(Composer).input_content.text == "/skill demo original"
         assert app._input_drafts.resources_for(session.session_id) == (resource.resource_id,)
     assert TuiInputDraftStore(tmp_path).load().resources_for(session.session_id) == (
         resource.resource_id,
@@ -87,16 +88,26 @@ async def test_undo_skill_and_attachment_survive_navigation_restart_and_submissi
     restarted_application = application_at(tmp_path, backend=backend)
     restarted = OuroTuiApp(application=restarted_application, resume_session_id=session.session_id)
     async with run_ready_app(restarted, size=(100, 32)) as pilot:
-        assert restarted.query_one(Composer).text == "/skill demo original"
-        await command(restarted, pilot, "/skill demo edited")
+        assert restarted.query_one(Composer).input_content.text == "/skill demo original"
+        await command(
+            restarted,
+            pilot,
+            "/skill demo edited",
+            attachments=restarted.query_one(Composer).input_content.attachments,
+        )
         async with asyncio.timeout(10):
             workers = tuple(w for w in restarted.workers if w.group == "run")
             if workers:
                 await restarted.workers.wait_for_complete(workers)
         messages = restarted_application.runtime.store.load_messages_tail(session.session_id)
-        user = next(message for message in messages if message.role == "user")
+        user = next(
+            message for message in messages if message.role == "user" and not message.scaffold
+        )
         assert user.text_content == "edited"
-        assert user.resource_refs == [resource.resource_id]
+        assert user.input_attachments[0].resource_id == resource.resource_id
+        assert next(
+            message for message in messages if message.semantic_tag == "attachments"
+        ).resource_refs == [resource.resource_id]
         assert any(
             isinstance(block, SkillActivationContent) and block.name == "demo"
             for block in user.content
@@ -104,14 +115,21 @@ async def test_undo_skill_and_attachment_survive_navigation_restart_and_submissi
         assert user.run_id != original.run.run_id
 
 
-async def command(app, pilot, value):
+async def command(app, pilot, value, *, attachments=()):
     async with asyncio.timeout(10):
         startup = tuple(worker for worker in app.workers if worker.name == "tui-start")
         if startup:
             await app.workers.wait_for_complete(startup)
     composer = app.query_one(Composer)
     assert not composer.disabled
-    composer.load_text(value)
+    composer.load_input(
+        InputContent(
+            text=value,
+            attachments=tuple(
+                item.model_copy(update={"text_offset": len(value)}) for item in attachments
+            ),
+        )
+    )
     composer.focus()
     await pilot.pause()
     await pilot.press("enter")
@@ -131,24 +149,33 @@ async def test_failed_undo_and_submit_keep_text_and_resources(tmp_path, monkeypa
     app = OuroTuiApp(application=application, resume_session_id=first.session.session_id)
     async with run_ready_app(app, size=(100, 32)) as pilot:
         app._remember_input_draft(
-            first.session.session_id, "draft", resource_refs=("res_selected",)
+            first.session.session_id,
+            "draft",
+            attachments=(
+                InputAttachment(resource_id="res_selected", name="selected.txt", text_offset=5),
+            ),
         )
-        app._edit_draft("draft")
+        app._edit_draft(app._input_drafts.content_for(first.session.session_id))
 
         async def fail(*args, **kwargs):
             raise PersistenceError("injected failure")
 
         monkeypatch.setattr(app._controller, "undo", fail)
         await app._edit_session_history("/undo").wait()
-        assert app.query_one(Composer).text == "draft"
+        assert app.query_one(Composer).input_content.text == "draft"
         assert app._input_drafts.resources_for(first.session.session_id) == ("res_selected",)
         monkeypatch.setattr(app._controller, "submit", fail)
-        await command(app, pilot, "edited draft")
+        await command(
+            app,
+            pilot,
+            "edited draft",
+            attachments=app.query_one(Composer).input_content.attachments,
+        )
         async with asyncio.timeout(10):
             workers = tuple(w for w in app.workers if w.group == "run")
             if workers:
                 await app.workers.wait_for_complete(workers)
-        assert app.query_one(Composer).text == "edited draft"
+        assert app.query_one(Composer).input_content.text == "edited draft"
         assert app._input_drafts.resources_for(first.session.session_id) == ("res_selected",)
     stored = TuiInputDraftStore(tmp_path).load()
     assert stored.resources_for(first.session.session_id) == (("res_selected",) if remember else ())

@@ -47,7 +47,10 @@ from ouro.core.context_providers import (
     ContextProviderCall,
     ContextProviderRegistry,
 )
-from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
+from ouro.core.context_snapshots import (
+    ContextSnapshotRecord,
+    context_view_digest,
+)
 from ouro.core.errors import (
     CompactionError,
     ConfigError,
@@ -83,6 +86,7 @@ class ModelMessageProjector(Protocol):
         messages: list[MessageRecord],
         *,
         supports_vision: bool,
+        input_budget_tokens: int | None = None,
     ) -> list[MessageRecord]: ...
 
 
@@ -1434,7 +1438,7 @@ class ContextPreparationService:
                 ),
             }
         )
-        return source_messages, view.model_copy(update={"context_metadata": metadata})
+        return effective_messages, view.model_copy(update={"context_metadata": metadata})
 
     def _build_view(
         self,
@@ -1473,6 +1477,7 @@ class ContextPreparationService:
         return self.project_model_messages(
             messages,
             supports_vision=adapter.model.supports_vision,
+            input_budget_tokens=self._input_budget(adapter),
         )
 
     def _input_budget(self, adapter: RuntimeAdapter) -> int:

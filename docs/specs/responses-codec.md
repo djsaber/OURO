@@ -9,7 +9,11 @@
 
 `responses_input` 返回 instructions 和 input：system_prompt 与 system 消息依次合并为 instructions；普通 user/assistant 文本转为消息输入。先复用 model_visible_message，保留 OURO 的语义标签与技能内容投影。
 
-canonical tool calls 转成 function_call，其 call_id 来自 ToolCallRequest.id；工具结果转成 function_call_output，其 call_id 来自 ToolResultReference。供应商 item id 不用作工具结果关联。工具 JSON 不允许非有限数字；图片和缺少引用的工具结果明确失败，不静默降为文本或丢弃。
+canonical tool calls 转成 function_call，其 call_id 来自 ToolCallRequest.id；工具结果转成 function_call_output，其 call_id 来自 ToolResultReference。供应商 item id 不用作工具结果关联。工具 JSON 不允许非有限数字；缺少引用的工具结果明确失败。
+
+Endpoint 声明 vision 时，用户消息的图片按顺序编码为 `input_image`，data URI 使用 `image_url`，图片前后文字为
+`input_text`。非视觉端点或其他消息角色的原生图片仍明确失败；Application 先按[附件规格](attachments.md)
+处理引用降级。协议字段核对于 2026-10-07，依据 [OpenAI Images and vision](https://developers.openai.com/api/docs/guides/images-vision)。
 
 `responses_tools` 将现有 parameters_schema 原样放入平铺 function 工具声明，显式 strict=false；不为了满足 strict schema 改写可选参数、required 或 additionalProperties。内置工具、结构化输出、图像和模型参数能力不由这一内容 codec 承诺。
 
@@ -25,7 +29,7 @@ adapter 借用 `RequestAuthenticator`，每次尝试重新 acquire；用同次�
 
 max_output_tokens 保持端点配置的正整数和本地上下文预算语义。adapter 依据注入的 ProviderRequestPolicy.supports_output_limit 决定是否将其发送为请求输出上限，默认 true。明确声明 false 的服务不发送该字段，实际输出可能超过本地预算，使用入口必须披露限制。该能力不由认证方式、计费类型、URL 或模型名推断；request_options 不能覆盖，HTTP 失败后不自动调整。Codex 探针基于实测参数拒绝声明 false，省略后的正式路径已在 Windows/browser/gpt-5.5 真实实验中通过文本、刷新及工具续接；标准 Responses 继续支持发送上限。
 
-reasoning profile 只能声明原生 reasoning 对象，不能复用 Chat Completions 的 reasoning_effort。text.format 需要结构化输出能力；图像尚未支持，声明 vision 或输入图像均明确失败。未声明工具能力时拒绝工具输入及工具输出。展示层可隐藏 reasoning_delta，但隐藏发生在共享重试边界之后，已收到思考输出仍禁止重放。完整 reasoning item 的保存不受展示开关影响。
+reasoning profile 只能声明原生 reasoning 对象，不能复用 Chat Completions 的 reasoning_effort。text.format 需要结构化输出能力；原生图片需 Endpoint 声明 vision。未声明工具能力时拒绝工具输入及工具输出。展示层可隐藏 reasoning_delta，但隐藏发生在共享重试边界之后，已收到思考输出仍禁止重放。完整 reasoning item 的保存不受展示开关影响。
 
 JSON 与 SSE 使用同一 decoder/完成校验。每次网络尝试由 Endpoint timeout 设置总时限；等待流事件时才激活超时，交还消费者处理期间不定时取消消费者任务。显式 check 保留端点的流模式和输出上限，避免用 1 token 限制误判需要思考预算的模型。超时、HTTP 及认证恢复共用既有尝试预算；输出后失败不重试。外层关闭逐层关闭当前尝试、decoder 与 HTTP 流；借用的认证服务/HTTP client 不被关闭。
 

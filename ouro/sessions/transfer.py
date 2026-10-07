@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from pydantic import Field
 
 from ouro.core.base import OuroModel
 from ouro.core.errors import PersistenceError
-from ouro.core.resources import SessionResourceReference
+from ouro.core.resources import ResourceRecord, SessionResourceReference
+from ouro.resources import ResourceStore
 from ouro.sessions.base import SessionRepository, SessionSnapshot
 from ouro.sessions.sqlite import SQLiteSessionStore
 
@@ -25,6 +28,8 @@ class SQLiteImportReport(OuroModel):
 def import_sessions_to_sqlite(
     source: SessionRepository,
     target: SQLiteSessionStore,
+    *,
+    resources: ResourceStore | None = None,
 ) -> SQLiteImportReport:
     """Copy all active Sessions into an empty SQLite store and verify before commit.
 
@@ -46,7 +51,17 @@ def import_sessions_to_sqlite(
                 with source.session_mutation(session.session_id):
                     snapshot = source.load_session(session.session_id)
                     references = source.load_resource_references(session.session_id)
-                _copy_snapshot(target, snapshot, references)
+                    if references and resources is None:
+                        raise PersistenceError("Session file transfer requires a resource store")
+                    contents = (
+                        (
+                            (record, resources.load_content(session.session_id, record))
+                            for record in references
+                        )
+                        if resources is not None
+                        else ()
+                    )
+                    _copy_snapshot(target, snapshot, references, contents)
                 _verify_snapshot(target, snapshot, references)
                 report = report.model_copy(
                     update={
@@ -96,11 +111,13 @@ def _copy_snapshot(
     target: SQLiteSessionStore,
     snapshot: SessionSnapshot,
     references: list[SessionResourceReference],
+    contents: Iterable[tuple[ResourceRecord, bytes]],
 ) -> None:
     target.create_session_snapshot(
         snapshot.session,
         snapshot.messages,
         resource_references=references,
+        resource_contents=contents,
         harness_versions=snapshot.harness_versions,
         commits=snapshot.commits,
         compactions=snapshot.compactions,

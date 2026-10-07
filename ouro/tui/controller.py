@@ -98,11 +98,13 @@ from ouro.core.compaction import CompactionCommandResult, CompactionRecord
 from ouro.core.context import ContextMetrics
 from ouro.core.errors import ConfigError, PersistenceError, SessionNotFoundError
 from ouro.core.events import EventRecord
+from ouro.core.input_content import InputAttachment, InputFile, InputFileReference
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
 from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.reasoning import ReasoningRequest, resolve_reasoning
 from ouro.core.results import RunResult
+from ouro.core.session_commits import SessionCommitConflict
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode, ToolEffect, ToolSource
@@ -629,6 +631,88 @@ class TuiController:
         if application is not None and self._close_application:
             await application.close()
 
+    async def attachment_session(self) -> SessionRecord:
+        """Bind a welcome draft to an idle Session without starting model work."""
+        runtime = self._runtime()
+        revision = self._selection_revision
+        if self._session_id is not None:
+            return await asyncio.to_thread(runtime.store.load_session_record, self._session_id)
+        session = await asyncio.to_thread(
+            runtime.create_session,
+            title="New conversation",
+            initial_model=self._initial_model,
+            reasoning_request=self._reasoning_request,
+            approval_mode=self._approval_mode,
+            interaction_mode=self._interaction_mode,
+            workspace=self._draft_workspace,
+        )
+        if revision == self._selection_revision:
+            self._session_id = session.session_id
+            self._initial_model = None
+        return session
+
+    async def import_attachment(self, session: SessionRecord, path: Path) -> InputAttachment:
+        resources = self._runtime().resources
+        if resources is None:
+            raise ConfigError("Resource storage is unavailable")
+        result = await asyncio.to_thread(
+            resources.import_resource,
+            session.session_id,
+            path,
+            history_epoch=session.history_epoch,
+        )
+        return InputAttachment(resource_id=result.resource.resource_id, name=path.name)
+
+    async def reference_files(self, paths: tuple[Path, ...]) -> tuple[InputFile, ...]:
+        """Capture selected paths and their workspace without creating a Session."""
+        workspace = self._draft_workspace
+        if self._session_id is not None:
+            session = await asyncio.to_thread(
+                self._runtime().store.load_session_record, self._session_id
+            )
+            workspace = session.workspace
+
+        def capture() -> tuple[InputFile, ...]:
+            items = []
+            root = Path(workspace).resolve() if workspace is not None else None
+            for path in paths:
+                resolved = path.resolve(strict=True)
+                if not resolved.is_file():
+                    raise ValueError(f"Not a regular file: {path}")
+                items.append(
+                    InputFileReference(
+                        name=path.name,
+                        path=str(resolved),
+                        workspace=str(root)
+                        if root is not None and resolved.is_relative_to(root)
+                        else None,
+                    )
+                )
+            return tuple(items)
+
+        return await asyncio.to_thread(capture)
+
+    async def validate_attachment_session(self, session: SessionRecord) -> None:
+        latest = await asyncio.to_thread(
+            self._runtime().store.load_session_record, session.session_id
+        )
+        if latest.history_epoch != session.history_epoch:
+            raise SessionCommitConflict(
+                "Session history changed while importing attachments; select the files again"
+            )
+
+    async def input_attachments(
+        self, session_id: str, resource_refs: tuple[str, ...]
+    ) -> tuple[InputFile, ...]:
+        resources = self._runtime().resources
+        if resources is None:
+            return ()
+        items = []
+        for resource_id in resource_refs:
+            resource = await asyncio.to_thread(resources.show_resource, session_id, resource_id)
+            items.append(InputAttachment(resource_id=resource_id, name=resource.source.name))
+        return tuple(items)
+
     async def submit(
         self,
         prompt: str,
@@ -636,6 +720,8 @@ class TuiController:
         queue_mode: QueuedInputMode = "follow_up",
         skill_invocation: SkillInvocationRequest | None = None,
         resource_refs: tuple[str, ...] = (),
+        attachments: tuple[InputFile, ...] = (),
+        on_input_accepted: Callable[[], None] | None = None,
     ) -> RunResult:
         runtime = self._runtime()
         revision = self._selection_revision
@@ -674,6 +760,7 @@ class TuiController:
                 skill_invocation=skill_invocation,
                 session_id=self._session_id,
                 resource_refs=resource_refs,
+                attachments=attachments,
                 queue_mode=queue_mode,
                 initial_model=self._initial_model if is_new_session else None,
                 initial_reasoning_request=(self._reasoning_request if is_new_session else None),
@@ -681,6 +768,7 @@ class TuiController:
                 interaction_mode=self._interaction_mode if is_new_session else None,
                 workspace=self._draft_workspace if is_new_session else None,
                 on_session_created=session_created,
+                on_input_accepted=on_input_accepted,
             )
             if result.session.archived:
                 await self.set_session_archived(result.session.session_id, archived=False)

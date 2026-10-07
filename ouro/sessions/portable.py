@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Self
 
 from pydantic import ConfigDict, Field, model_validator
@@ -139,7 +140,12 @@ class SessionBundle(OuroModel):
         return self
 
 
-def populate_sessions(target: SessionRepository, bundle: SessionBundle) -> None:
+def populate_sessions(
+    target: SessionRepository,
+    bundle: SessionBundle,
+    *,
+    resource_contents: Mapping[str, Mapping[str, bytes]] | None = None,
+) -> None:
     """Write into a private staging store or a backend transaction, then verify."""
     for item in bundle.sessions:
         snapshot = item.snapshot
@@ -150,6 +156,12 @@ def populate_sessions(target: SessionRepository, bundle: SessionBundle) -> None:
             harness_versions=snapshot.harness_versions,
             commits=snapshot.commits,
             compactions=snapshot.compactions,
+            resource_contents=(
+                (record, resource_contents[snapshot.session.session_id][record.filename])
+                for record in item.resources
+            )
+            if resource_contents is not None
+            else (),
         )
         for run in snapshot.runs:
             target.save_run(run)

@@ -40,7 +40,9 @@ from ouro.builtin_plugins.plan.interaction import (
 )
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextMetrics
+from ouro.core.input_content import InputContent, InputFile
 from ouro.core.messages import MessageRecord, ModelMessage, SkillActivationContent, TextContent
+from ouro.tui.attachment_editor import AttachmentTextArea, file_count_label
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import TuiCommand, TuiCommandArgument
 from ouro.tui.controller import TuiApprovalPreset, TuiSystemStatus
@@ -65,7 +67,6 @@ from ouro.tui.state import (
     format_duration,
 )
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
-from ouro.tui.text_inputs import TuiTextArea
 from ouro.tui.theme import (
     DEFAULT_TUI_THEME,
     TuiTheme,
@@ -1601,6 +1602,9 @@ def _presents_message(
 ) -> bool:
     if not message.scaffold:
         return True
+    if message.semantic_tag == "attachments" and message.input_attachments:
+        # A text-bearing input presents its file chips on the user body instead.
+        return message.metadata.get("session_input_batch_size") == 1
     return (
         visible_scaffold_delegation_id is not None
         and message.role == "user"
@@ -2983,6 +2987,8 @@ class CommandPopup(VerticalScroll):
         self._arguments: tuple[TuiCommandArgument, ...] = ()
         self._selected = 0
         self._content = Static(id="command-popup-content")
+        self._heading = ""
+        self._hint = ""
 
     def compose(self) -> ComposeResult:
         yield self._content
@@ -3014,6 +3020,7 @@ class CommandPopup(VerticalScroll):
             self._commands = commands
             self._argument_command = None
             self._arguments = ()
+            self._heading = self._hint = ""
             self._selected = next(
                 (index for index, item in enumerate(commands) if item.name == selected_name),
                 0,
@@ -3025,6 +3032,9 @@ class CommandPopup(VerticalScroll):
         self,
         command: TuiCommand,
         arguments: tuple[TuiCommandArgument, ...],
+        *,
+        heading: str = "",
+        hint: str = "",
     ) -> None:
         with self.app.batch_update():
             selected_value = (
@@ -3033,6 +3043,7 @@ class CommandPopup(VerticalScroll):
             self._commands = ()
             self._argument_command = command
             self._arguments = arguments
+            self._heading, self._hint = heading, hint
             self._selected = next(
                 (index for index, item in enumerate(arguments) if item.value == selected_value),
                 0,
@@ -3055,6 +3066,7 @@ class CommandPopup(VerticalScroll):
             self._argument_command = None
             self._arguments = ()
             self._selected = 0
+            self._heading = self._hint = ""
 
     def navigate(self, offset: int) -> None:
         items = self._arguments if self._argument_command is not None else self._commands
@@ -3093,7 +3105,13 @@ class CommandPopup(VerticalScroll):
             rows.append(row)
         self._render_rows(tuple(rows))
 
-    def _render_arguments(self) -> None:
+    def on_resize(self, event: events.Resize) -> None:
+        if self._argument_command is not None:
+            self._render_arguments()
+        elif self._commands:
+            self._render_commands()
+
+    def _render_arguments(self, *, retry_after_layout: bool = True) -> None:
         command = self._argument_command
         if command is None:
             return
@@ -3102,7 +3120,7 @@ class CommandPopup(VerticalScroll):
             content = Text()
             content.append("› ", style=theme.accent)
             content.append(command.title, style=theme.text_primary)
-            self._content.update(content)
+            self._render_rows((content,))
             return
         value_width = max(len(argument.display_label) for argument in self._arguments)
         rows: list[Text] = []
@@ -3121,10 +3139,30 @@ class CommandPopup(VerticalScroll):
                     f"  {argument.description}",
                     style=(theme.text_secondary if selected else theme.text_lowlight),
                 )
+            if argument.trailing_badge:
+                row = _trailing_badge(
+                    row, argument.trailing_badge, self.scrollable_content_region.width, theme.accent
+                )
+            elif argument.checked is not None:
+                row = _trailing_label(
+                    row,
+                    theme.selected_choice_marker
+                    if argument.checked
+                    else theme.unselected_choice_marker,
+                    self.scrollable_content_region.width,
+                    theme.accent if argument.checked else theme.text_lowlight,
+                )
             rows.append(row)
         self._render_rows(tuple(rows))
+        if retry_after_layout and self.scrollable_content_region.width <= 0:
+            self.call_after_refresh(self._render_arguments, retry_after_layout=False)
 
     def _render_rows(self, rows: tuple[Text, ...]) -> None:
+        theme = theme_for(self)
+        if self._heading:
+            rows = (Text(self._heading, style=theme.text_lowlight), *rows)
+        if self._hint:
+            rows = (*rows, Text(self._hint, style=theme.text_faint))
         self._render_rows_at_width(rows, retry_after_layout=True)
 
     def _render_rows_at_width(
@@ -3152,7 +3190,8 @@ class CommandPopup(VerticalScroll):
         self.call_after_refresh(self._scroll_selected_into_view, fitted_rows)
 
     def _scroll_selected_into_view(self, rows: tuple[Text, ...]) -> None:
-        if not rows or self._selected >= len(rows):
+        selected = self._selected + bool(self._heading)
+        if not rows or selected >= len(rows):
             return
         width = self.scrollable_content_region.width
         if width <= 0:
@@ -3164,9 +3203,9 @@ class CommandPopup(VerticalScroll):
         heights = tuple(max(1, len(row.wrap(self.app.console, width))) for row in rows)
         selected_region = Region(
             0,
-            sum(heights[: self._selected]),
+            sum(heights[:selected]),
             width,
-            heights[self._selected],
+            heights[selected],
         )
         self.scroll_to_region(
             selected_region,
@@ -3196,6 +3235,9 @@ class QueuedInputPanel(VerticalScroll):
     def refresh_theme(self) -> None:
         self.set_inputs(self._inputs)
 
+    def on_resize(self, event: events.Resize) -> None:
+        self.set_inputs(self._inputs)
+
     def set_inputs(self, inputs: tuple[QueuedUserInputView, ...]) -> None:
         with self.app.batch_update():
             self._inputs = inputs
@@ -3211,19 +3253,25 @@ class QueuedInputPanel(VerticalScroll):
                 prompt = " ↵ ".join(line.strip() for line in item.prompt.splitlines())
                 if item.skill_name is not None:
                     prompt = f"/skill {item.skill_name}{f' {prompt}' if prompt else ''}"
-                content.append(f"{index}. {label}", style=tone)
-                content.append(
+                row = Text(f"{index}. {label}", style=tone)
+                row.append(
                     theme.inline_separator,
                     style=theme.separator_tone,
                 )
-                content.append(prompt, style=theme.text_lowlight)
+                row.append(prompt, style=theme.text_lowlight)
+                badge = file_count_label(item.attachments, item.resource_refs)
+                if badge:
+                    row = _trailing_badge(
+                        row, badge, self.scrollable_content_region.width, theme.accent
+                    )
+                content.append_text(row)
                 if index < len(inputs):
                     content.append("\n")
             self._content.update(content)
             self.scroll_end(animate=False)
 
 
-class Composer(TuiTextArea):
+class Composer(AttachmentTextArea):
     DEFAULT_PLACEHOLDER = "Ask anything..."
     ACTIVE_RUN_PLACEHOLDER = DEFAULT_TUI_THEME.inline_separator.join(
         ("Enter queues a follow-up", "Ctrl+Enter guides the active run…")
@@ -3243,10 +3291,21 @@ class Composer(TuiTextArea):
     ]
 
     class Submitted(Message):
-        def __init__(self, text: str, mode: QueuedInputMode) -> None:
+        def __init__(
+            self, text: str, mode: QueuedInputMode, attachments: tuple[InputFile, ...] = ()
+        ) -> None:
             super().__init__()
             self.text = text
             self.mode = mode
+            self.content = InputContent(text=text, attachments=attachments)
+
+    class AttachmentRequested(Message):
+        def __init__(self, paste: str | None = None) -> None:
+            super().__init__()
+            self.paste = paste
+
+    class AttachmentToggled(Message):
+        pass
 
     class CommandSubmitted(Message):
         def __init__(self, text: str, *, command_text: str, draft: str) -> None:
@@ -3275,17 +3334,29 @@ class Composer(TuiTextArea):
             show_line_numbers=False,
             compact=True,
         )
-        self._history: list[str] = []
+        self._history: list[InputContent] = []
         self._history_index = 0
         self._clipboard_reader = clipboard_reader
         self._observed_text = ""
         self._command_draft: str | None = None
+        self._attachment_draft: InputContent | None = None
+        self._attachment_display = ""
+        self._attachment_selection = self.selection
         self._suggestion_resolver: Callable[[], str] | None = None
         self._placeholder_parts: tuple[_PlaceholderPart, ...] = ()
         self._placeholder_kind: Literal["active_run", "subagent"] | None = None
         # Some terminals emit Paste alongside the right-click mouse event.
         self._right_click_paste_pending = False
         self._right_click_paste_handled = False
+        self.attachments_enabled = True
+        self.import_pending = False
+        self._history_session_id: str | None = None
+
+    def bind_history(self, session_id: str | None) -> None:
+        if session_id != self._history_session_id:
+            self._history.clear()
+            self._history_index = 0
+            self._history_session_id = session_id
 
     @property
     def projected_height(self) -> int:
@@ -3437,12 +3508,60 @@ class Composer(TuiTextArea):
         if draft is not None:
             if self.text.endswith(draft):
                 command_text = self.text[: len(self.text) - len(draft)]
-                if command_text.startswith("/") and "\n" not in command_text:
+                if (
+                    command_text.startswith("/")
+                    or (self.attachment_menu_open and command_text.startswith("@"))
+                ) and "\n" not in command_text:
                     return command_text, draft
             self._command_draft = None
         if self.text.startswith("/") and "\n" not in self.text:
-            return self.text, ""
+            return self.input_content.text, ""
+        if self.attachment_menu_open and self.text.startswith("@") and "\n" not in self.text:
+            return self.input_content.text, ""
         return None
+
+    @property
+    def attachment_menu_open(self) -> bool:
+        return self._attachment_draft is not None
+
+    def begin_attachment_menu(self) -> None:
+        if self.attachment_menu_open:
+            return
+        self._attachment_draft = self.input_content
+        self._attachment_display = self.text
+        self._attachment_selection = self.selection
+        self.set_attachment_query("")
+
+    def set_attachment_query(self, value: str) -> None:
+        self.load_command("@" + value, draft=self._attachment_display)
+
+    def finish_attachment_menu(self) -> None:
+        content = self._attachment_draft
+        if content is None:
+            return
+        self._attachment_draft = None
+        self._command_draft = None
+        self.load_input(content)
+        self._observed_text = self.text
+        self.selection = self._attachment_selection
+        self._attachment_display = ""
+
+    @property
+    def draft_content(self) -> InputContent:
+        if self._attachment_draft is not None:
+            return self._attachment_draft
+        context = self.command_context()
+        content = self.input_content
+        if context is None or not context[1]:
+            return content
+        prefix = len(context[0])
+        return InputContent(
+            text=content.text[prefix:],
+            attachments=tuple(
+                item.model_copy(update={"text_offset": max(0, item.text_offset - prefix)})
+                for item in content.attachments
+            ),
+        )
 
     def command_cursor_at_end(self) -> bool:
         """Return whether a suggestion may be inserted at the command boundary."""
@@ -3461,18 +3580,32 @@ class Composer(TuiTextArea):
     def load_command(self, command_text: str, *, draft: str = "") -> None:
         """Edit a command while keeping an existing user draft intact."""
 
+        content = (
+            self.draft_content if draft and self.text.endswith(draft) else InputContent(text=draft)
+        )
         value = f"{command_text}{draft}"
         self._command_draft = draft or None
         self._observed_text = value
-        self.load_text(value)
+        self.load_input(
+            InputContent(
+                text=command_text + content.text,
+                attachments=tuple(
+                    item.model_copy(update={"text_offset": item.text_offset + len(command_text)})
+                    for item in content.attachments
+                ),
+            )
+        )
         self.move_cursor((0, len(command_text)))
 
     def restore_command_draft(self, draft: str) -> None:
         """Finish a transient command and restore its original user draft."""
 
+        content = (
+            self.draft_content if draft and self.text.endswith(draft) else InputContent(text=draft)
+        )
         self._command_draft = None
         self._observed_text = draft
-        self.load_text(draft)
+        self.load_input(content)
         self.move_cursor((self.document.line_count - 1, len(self.document.lines[-1])))
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
@@ -3497,13 +3630,19 @@ class Composer(TuiTextArea):
             self._paste_system_clipboard()
 
     def on_paste(self, event: events.Paste) -> None:
+        if self.consume_paste(event):
+            self._insert_paste(event.text)
+
+    def consume_paste(self, event: events.Paste) -> bool:
+        """Claim a paste once, including the terminal's right-click paste event."""
+
         event.prevent_default()
         event.stop()
         if self._right_click_paste_pending:
             if self._right_click_paste_handled:
-                return
+                return False
             self._right_click_paste_handled = True
-        self._insert_paste(event.text)
+        return True
 
     @work(group="composer-clipboard")
     async def _paste_system_clipboard(self) -> None:
@@ -3517,12 +3656,54 @@ class Composer(TuiTextArea):
     def _insert_paste(self, text: str) -> None:
         if not text or self.read_only:
             return
+        if self.import_pending:
+            return
+        if self.attachment_menu_open:
+            self.insert_plain_paste(text)
+            return
+        if (
+            self.attachments_enabled
+            and text.lstrip().startswith(("/", '"', "'", "file:"))
+            or (self.attachments_enabled and len(text) > 2 and text[1:3] in (":\\", ":/"))
+        ):
+            self.import_pending = True
+            self.post_message(self.AttachmentRequested(text))
+            return
+        self.insert_plain_paste(text)
+
+    def insert_plain_paste(self, text: str) -> None:
         result = self.replace(
             text,
             *self.selection,
             maintain_selection_offset=False,
         )
         self.move_cursor(result.end_location)
+
+    async def _on_key(self, event: events.Key) -> None:
+        if self.import_pending:
+            event.stop()
+            event.prevent_default()
+            return
+        if self.attachment_menu_open and event.character == " ":
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.AttachmentToggled())
+            return
+        position = self.plain_document.get_index_from_location(self.selection.end)
+        if (
+            event.character == "@"
+            and self.attachments_enabled
+            and not self.read_only
+            and (position == 0 or self.text[position - 1].isspace())
+            and self.command_context() is None
+            and not self.attachment_menu_open
+        ):
+            event.stop()
+            event.prevent_default()
+            self.begin_attachment_menu()
+            self.post_message(self.AttachmentRequested())
+            return
+        await super()._on_key(event)
 
     def action_submit(self) -> None:
         self._submit("follow_up")
@@ -3531,8 +3712,9 @@ class Composer(TuiTextArea):
         self._submit("steer")
 
     def _submit(self, mode: QueuedInputMode) -> None:
-        value = self.text.strip()
-        if not value:
+        content = self.input_content
+        value = content.text
+        if content.is_empty or self.import_pending:
             return
         context = self.command_context()
         if context is not None:
@@ -3545,10 +3727,10 @@ class Composer(TuiTextArea):
                 )
             )
             return
-        self._history.append(value)
+        self._history.append(content)
         self._history_index = len(self._history)
         self.clear()
-        self.post_message(self.Submitted(value, mode))
+        self.post_message(self.Submitted(value, mode, content.attachments))
 
     def action_newline(self) -> None:
         self.insert("\n")
@@ -3567,7 +3749,7 @@ class Composer(TuiTextArea):
             return
         if self._history_index > 0:
             self._history_index -= 1
-            self.load_text(self._history[self._history_index])
+            self.load_input(self._history[self._history_index])
             self.move_cursor((self.document.line_count - 1, len(self.document.lines[-1])))
 
     def action_history_next(self) -> None:
@@ -3579,7 +3761,7 @@ class Composer(TuiTextArea):
             return
         if self._history_index < len(self._history) - 1:
             self._history_index += 1
-            self.load_text(self._history[self._history_index])
+            self.load_input(self._history[self._history_index])
         elif self._history_index < len(self._history):
             self._history_index = len(self._history)
             self.clear()
@@ -3670,6 +3852,14 @@ class StatusLine(Horizontal):
 
 
 def user_message_text(message: MessageRecord | ModelMessage) -> str:
+    if isinstance(message, MessageRecord) and message.input_attachments:
+        names = " · ".join(item.label for item in message.input_attachments)
+        text = (
+            ""
+            if message.semantic_tag == "attachments"
+            else user_message_text(ModelMessage.from_record(message))
+        )
+        return f"{text}\n{names}".lstrip("\n")
     activations = tuple(
         block for block in message.content if isinstance(block, SkillActivationContent)
     )
@@ -3677,3 +3867,16 @@ def user_message_text(message: MessageRecord | ModelMessage) -> str:
         return message.text_content
     task = message.text_content.strip()
     return f"/skill {activations[0].name}{f' {task}' if task else ''}"
+
+
+def _trailing_badge(row: Text, label: str, width: int, accent: str) -> Text:
+    return _trailing_label(row, f"[{label}]", width, accent)
+
+
+def _trailing_label(row: Text, label: str, width: int, accent: str) -> Text:
+    badge = Text(label, style=accent)
+    if width > 0:
+        row.truncate(max(0, width - badge.cell_len - 1), overflow="ellipsis", pad=True)
+    row.append(" ")
+    row.append_text(badge)
+    return row

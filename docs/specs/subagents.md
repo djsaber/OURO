@@ -623,7 +623,7 @@ initial_message_id 与 prompt_digest，不复制 prompt。child 的文本上下�
 Session mutation boundary 时重新验证不可变内容并把带 `copied_from_session_id` 的引用附加到 child。child 初始
 delegated-task user message 携带这些引用，因而资源内容和 Agent 专用 system prompt 一并进入正常 ContextView token 预算。
 child 结果只收集 assistant/tool-result 输出引用，不回显初始输入引用；结果经 Host list、sync ToolResult 或 async delivery
-进入父 Session 前，再从 child 到 parent 执行同样的可达性验证和显式引用复制，随后才写入父 canonical message。
+进入父 Session 前，校验 child 的资源归属与完整性，将所需文件复制为 parent 拥有的副本，随后写入父 canonical message。
 
 child final result 建议结构化包含：
 

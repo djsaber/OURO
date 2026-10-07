@@ -6,7 +6,7 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
-from ouro.core.base import OuroModel, VersionedOuroModel, utc_now
+from ouro.core.base import OuroModel, VersionedOuroModel, new_id, utc_now
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _MEDIA_TYPE = re.compile(r"[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+\Z")
@@ -33,9 +33,11 @@ class ResourceSource(OuroModel):
 
 
 class ResourceRecord(VersionedOuroModel):
-    """Canonical identity and metadata for one immutable content blob."""
+    """Metadata for one named file owned by a Session."""
 
-    resource_id: str
+    schema_version: int = 2
+    resource_id: str = Field(default_factory=lambda: new_id("res"))
+    filename: str
     digest: str
     media_type: str
     size: int = Field(ge=0)
@@ -46,17 +48,25 @@ class ResourceRecord(VersionedOuroModel):
     def validate_identity(self) -> Self:
         if not _DIGEST.fullmatch(self.digest):
             raise ValueError("resource digest must be a lowercase sha256 digest")
-        if self.resource_id != f"res_{self.digest.removeprefix('sha256:')}":
-            raise ValueError("resource id must match its sha256 digest")
+        if not re.fullmatch(r"res_[0-9a-f]{32}", self.resource_id):
+            raise ValueError("invalid resource identity")
+        if (
+            not self.filename
+            or self.filename in {".", ".."}
+            or any(char in self.filename for char in '/\\<>:"|?*')
+            or any(ord(char) < 32 for char in self.filename)
+            or self.filename[-1] in " ."
+            or re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", self.filename)
+        ):
+            raise ValueError("resource filename must be a portable single file name")
         if not _MEDIA_TYPE.fullmatch(self.media_type):
             raise ValueError("resource media_type must use type/subtype syntax")
         return self
 
 
-class SessionResourceReference(OuroModel):
-    """Canonical relationship between a Session and a shared resource identity."""
+class SessionResourceReference(ResourceRecord):
+    """Session-owned resource metadata, including its optional copy provenance."""
 
-    resource_id: str
     attached_at: datetime = Field(default_factory=utc_now)
     copied_from_session_id: str | None = None
 
