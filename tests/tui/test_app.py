@@ -3810,10 +3810,23 @@ async def test_unqueue_command_selects_message_and_returns_it_to_composer(
 
 
 @pytest.mark.asyncio
-async def test_queued_input_does_not_hide_or_block_subagent_approval(tmp_path: Path) -> None:
+async def test_queued_input_does_not_hide_or_block_subagent_approval(
+    tmp_path: Path, monkeypatch
+) -> None:
     provider = QueuedSubagentApprovalProvider()
     application = _queued_subagent_approval_application(tmp_path, provider)
     app = OuroTuiApp(application=application)
+    checkpoint_waiting = threading.Event()
+    release_checkpoint = threading.Event()
+    save_batch = application.runtime.run_lifecycle.save_batch_state
+
+    def delayed_checkpoint(**kwargs):
+        if kwargs["session"].session_kind == "subagent" and kwargs["status"] == "waiting_approval":
+            checkpoint_waiting.set()
+            assert release_checkpoint.wait(10), "child checkpoint was not released"
+        return save_batch(**kwargs)
+
+    monkeypatch.setattr(application.runtime.run_lifecycle, "save_batch_state", delayed_checkpoint)
 
     async with run_ready_app(app, size=(100, 38)) as pilot:
         await pilot.pause()
@@ -3833,6 +3846,18 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(tmp_path: P
             assert app.query_one(QueuedInputPanel).display is True
         finally:
             provider.release_child.set()
+        try:
+            await _wait_until(
+                checkpoint_waiting.is_set, pilot, description="child approval checkpoint"
+            )
+            # Preflight publishes approval_requested before its batch checkpoint.
+            # Consume that notification while the canonical interaction is absent.
+            await application.runtime.drain_events()
+            await app._flush_pending_runtime_events()
+            async with app._runtime_event_apply_lock:
+                assert app._interaction is None
+        finally:
+            release_checkpoint.set()
         await _wait_until(
             lambda: app._interaction is not None and app._interaction.is_subagent,
             pilot,
@@ -10577,7 +10602,16 @@ async def test_skill_directory_sources_use_shared_menu_and_persist_toggles(tmp_p
         action_screen.query_one("#choice-filter", Input).value = "ouro • user"
         await pilot.pause()
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_until(
+            lambda: (
+                next(
+                    choice for choice in action_screen._choices if choice.value == "ouro.user"
+                ).trailing
+                == "disabled"
+            ),
+            pilot,
+            description="skill source update",
+        )
 
         policy = ConfigurationFacade(tmp_path).skill_policy()
         assert policy.disabled_sources == ["ouro.user"]
@@ -10592,7 +10626,16 @@ async def test_skill_directory_sources_use_shared_menu_and_persist_toggles(tmp_p
         action_screen.query_one("#choice-filter", Input).value = "Find skills in folders"
         await pilot.pause()
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_until(
+            lambda: (
+                next(
+                    choice for choice in action_screen._choices if choice.value == "discovery"
+                ).trailing
+                == "disabled"
+            ),
+            pilot,
+            description="skill discovery update",
+        )
 
         policy = ConfigurationFacade(tmp_path).skill_policy()
         assert policy.enabled is False
@@ -10645,11 +10688,13 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         app.screen.query_one("#choice-filter", Input).value = "Manage skills"
         await pilot.pause()
-        await pilot.press("enter", "enter")
-        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="SKILLS")
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="SKILL • demo")
 
         assert app.screen.query_one("#choice-title", Static).render().plain == "SKILL • demo"
         assert {choice.value for choice in app.screen._choices} == {"disable", "validate"}
@@ -10658,7 +10703,11 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
         options = app.screen.query_one("#choice-list", OptionList)
         options.focus()
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_until(
+            lambda: app.screen._choices[0].value == "enable",
+            pilot,
+            description="skill disable completion",
+        )
         assert app._controller.runtime_skill_names() == ()
         assert app.screen._choices[0].label == "Enable"
         assert {choice.value for choice in app.screen._choices} == {"enable", "validate"}
@@ -10670,10 +10719,14 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
             == "ouro • user • disabled"
         )
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="SKILL • demo")
         options = app.screen.query_one("#choice-list", OptionList)
         await pilot.click(options, offset=(4, 0))
-        await pilot.pause()
+        await _wait_until(
+            lambda: app.screen._choices[0].value == "disable",
+            pilot,
+            description="skill enable completion",
+        )
         assert app._controller.runtime_skill_names() == ("demo",)
         assert app.screen._choices[0].label == "Disable"
 

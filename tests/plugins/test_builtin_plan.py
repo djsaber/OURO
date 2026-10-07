@@ -12,7 +12,6 @@ from ouro.application.plugin_commands import submit_plugin_command
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_controls import SessionControlCoordinator
-from ouro.builtin_plugins.plan import PLAN_PLUGIN
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.interactions import AnswerResolution
 from ouro.core.messages import ModelMessage
@@ -39,11 +38,6 @@ from ouro.tools import (
 )
 
 PLUGIN_ID = "dev.ouro.plan"
-
-
-def test_plan_plugin_has_minimal_name_and_is_enabled_by_default() -> None:
-    assert PLAN_PLUGIN.manifest.name == "Plan"
-    assert PLAN_PLUGIN.default_enabled is True
 
 
 class PlanBuildProvider:

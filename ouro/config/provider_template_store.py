@@ -3,7 +3,7 @@
 The inline catalog in ``provider_templates`` stays the single source of truth.
 This store materializes it into ``config/provider-templates.json`` and keeps
 that file synchronized under the rules of
-``dev/specs/provider-templates-local.md``: the file is a materialized copy plus
+``docs/specs/provider-templates.md``: the file is a materialized copy plus
 a user overlay, content is compared per template revision, and templates the
 user modified or took over are never overwritten.
 """

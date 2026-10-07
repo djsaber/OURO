@@ -195,6 +195,7 @@ async def test_method_challenge_success_logout_and_no_challenge_in_terminal_ui(
         assert (await service.status(provider_id)).state == "ready"
         await choose(app, pilot, "Sign out")
         await choose(app, pilot, "Confirm")
+        await eventually(lambda: choices(menu)["status"].trailing == "logged_out")
         assert (await service.status(provider_id)).state == "logged_out"
         # Authentication UI never creates conversation notices or model events.
         assert "fixture-access" not in repr(menu._choices)
@@ -291,6 +292,7 @@ async def test_local_credentials_list_allows_clearing_orphan_without_false_cance
         assert (await service.credentials())[0].credential.state == "active"
         await choose(app, pilot, credential_id)
         await choose(app, pilot, "Confirm")
+        await eventually(lambda: choices(screen)[credential_id].trailing == "logged_out")
         assert (await service.credentials())[0].credential.state == "logged_out"
 
 

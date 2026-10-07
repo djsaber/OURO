@@ -2096,9 +2096,15 @@ async def test_controller_filters_child_stream_but_forwards_child_control_events
             event_type="approval_requested",
             payload={"tool_call_id": "call_1", "approval_id": "approval_1"},
         )
+        checkpoint = await application.runtime.event_recorder.publish(
+            session_id=child.session_id,
+            run_id=None,
+            event_type="run_status_changed",
+            payload={"to_status": "waiting_approval", "status": "waiting_approval"},
+        )
         await application.runtime.drain_events()
 
-        assert published == [approval]
+        assert published == [approval, checkpoint]
     finally:
         await controller.close()
 

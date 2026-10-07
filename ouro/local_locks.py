@@ -86,7 +86,7 @@ class FileMutationLock:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._key = str(path.resolve())
+        self._key = _mutation_lock_key(path)
         with _LOCAL_LOCKS_GUARD:
             self._local_lock = _LOCAL_MUTATION_LOCKS.setdefault(self._key, threading.RLock())
         self._descriptor: int | None = None
@@ -237,6 +237,18 @@ def _ensure_lock_byte(descriptor: int) -> None:
     os.lseek(descriptor, 0, os.SEEK_SET)
     os.write(descriptor, b"\0")
     os.fsync(descriptor)
+
+
+def _mutation_lock_key(path: Path) -> str:
+    key = os.path.normcase(str(path.resolve()))
+    if os.name == "nt":
+        # Windows may retain the extended prefix while a peer creates/locks
+        # the file. Both spellings must share the same reentrant thread lock.
+        if key.startswith("\\\\?\\unc\\"):
+            key = "\\\\" + key[8:]
+        elif key.startswith("\\\\?\\"):
+            key = key[4:]
+    return key
 
 
 def _mutation_depths() -> dict[str, int]:

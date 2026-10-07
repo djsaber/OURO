@@ -244,6 +244,8 @@ _CHILD_CONTROL_EVENT_TYPES = frozenset(
         "approval_resolved",
         "ask_user_requested",
         "ask_user_resolved",
+        # Preflight interaction events can precede the persisted batch checkpoint.
+        "run_status_changed",
         "run_completed",
         "run_aborted",
         "run_failed",

@@ -177,11 +177,12 @@ def load_skill_from_metadata(
 
 def _resource_paths(skill_dir: Path) -> list[str]:
     resources: list[str] = []
-    for path in sorted(skill_dir.rglob("*"), key=lambda item: str(item).casefold()):
-        if not path.is_file() or path.name == "SKILL.md":
-            continue
-        relative = path.relative_to(skill_dir)
-        if any(part in _SKIP_DIRECTORIES for part in relative.parts):
-            continue
-        resources.append(relative.as_posix())
-    return resources
+    for directory, subdirectories, filenames in skill_dir.walk():
+        subdirectories[:] = [name for name in subdirectories if name not in _SKIP_DIRECTORIES]
+        for name in filenames:
+            if name == "SKILL.md" or name in _SKIP_DIRECTORIES:
+                continue
+            path = directory / name
+            if path.is_file():
+                resources.append(path.relative_to(skill_dir).as_posix())
+    return sorted(resources, key=str.casefold)

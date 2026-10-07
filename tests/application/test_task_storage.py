@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
@@ -55,6 +56,24 @@ def receipt(task, number, *, status="completed"):
         status=status,
         ended_at=NOW + timedelta(hours=number) if status in {"completed", "failed"} else None,
     )
+
+
+def test_sqlite_concurrent_initialization_preserves_all_tasks(tmp_path):
+    barrier = Barrier(8)
+
+    def create(index):
+        repository = SQLiteTaskRepository(tmp_path)
+        barrier.wait(timeout=5)
+        repository.initialize()
+        task = task_record(tmp_path, task_id=f"task_{index}")
+        repository.commit(task, expected_revision=None)
+        return task
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        created = list(executor.map(create, range(8)))
+    repository = SQLiteTaskRepository(tmp_path)
+    repository.initialize()
+    assert {task.task_id for task in repository.list()} == {task.task_id for task in created}
 
 
 def test_backends_keep_history_counts_and_atomic_revision_contract(repository, tmp_path):

@@ -31,28 +31,30 @@ class ToolBatchExecutor:
         on_start: Callable[[ToolInvocation], Awaitable[None]] | None = None,
         on_outcome: Callable[[ToolExecutionOutcome], Awaitable[None]] | None = None,
     ) -> list[ToolExecutionOutcome]:
+        async def execute_one(invocation: ToolInvocation) -> ToolExecutionOutcome:
+            prepared = (
+                await pre_execute(invocation)
+                if pre_execute is not None
+                else ToolExecutionOutcome(status="ready", invocation=invocation)
+            )
+            if prepared.status == "ready" and (signal is None or not signal.is_aborted()):
+                if on_start is not None:
+                    await on_start(prepared.invocation)
+            outcome = (
+                await self.executor.execute_prepared(
+                    prepared.invocation,
+                    signal=signal,
+                    context=context,
+                )
+                if prepared.status == "ready"
+                else prepared
+            )
+            return await resolve_outcome(outcome) if resolve_outcome is not None else outcome
+
         if mode == "sequential":
             outcomes: list[ToolExecutionOutcome] = []
             for invocation in invocations:
-                prepared = (
-                    await pre_execute(invocation)
-                    if pre_execute is not None
-                    else ToolExecutionOutcome(status="ready", invocation=invocation)
-                )
-                if prepared.status == "ready" and (signal is None or not signal.is_aborted()):
-                    if on_start is not None:
-                        await on_start(prepared.invocation)
-                outcome = (
-                    await self.executor.execute_prepared(
-                        prepared.invocation,
-                        signal=signal,
-                        context=context,
-                    )
-                    if prepared.status == "ready"
-                    else prepared
-                )
-                if resolve_outcome is not None:
-                    outcome = await resolve_outcome(outcome)
+                outcome = await execute_one(invocation)
                 if on_outcome is not None:
                     await on_outcome(outcome)
                 outcomes.append(outcome)
@@ -71,25 +73,7 @@ class ToolBatchExecutor:
             async with semaphore:
                 if interaction_requested.is_set():
                     return None
-                prepared = (
-                    await pre_execute(invocation)
-                    if pre_execute is not None
-                    else ToolExecutionOutcome(status="ready", invocation=invocation)
-                )
-                if prepared.status == "ready" and (signal is None or not signal.is_aborted()):
-                    if on_start is not None:
-                        await on_start(prepared.invocation)
-                outcome = (
-                    await self.executor.execute_prepared(
-                        prepared.invocation,
-                        signal=signal,
-                        context=context,
-                    )
-                    if prepared.status == "ready"
-                    else prepared
-                )
-                if resolve_outcome is not None:
-                    outcome = await resolve_outcome(outcome)
+                outcome = await execute_one(invocation)
                 if outcome.status in {
                     "approval_required",
                     "waiting_user",

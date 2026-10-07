@@ -64,3 +64,18 @@ def test_atomic_text_write_preserves_exact_utf8_bytes(tmp_path, payload):
     target = tmp_path / "messages.jsonl"
     local_io.write_text_atomic(target, payload)
     assert target.read_bytes() == payload.encode("utf-8")
+
+
+def test_atomic_write_cleans_temporary_file_when_sync_fails(tmp_path, monkeypatch):
+    target = tmp_path / "session.json"
+    target.write_text("original", encoding="utf-8")
+
+    def fail_sync(_fd):
+        raise OSError("injected sync failure")
+
+    monkeypatch.setattr(local_io.os, "fsync", fail_sync)
+    with pytest.raises(PersistenceError, match="injected sync failure"):
+        local_io.write_text_atomic(target, "replacement")
+
+    assert target.read_text("utf-8") == "original"
+    assert list(tmp_path.iterdir()) == [target]

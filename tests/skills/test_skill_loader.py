@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +16,26 @@ from ouro.skills import (
     discover_skill_catalog,
     skill_catalog_from_roots,
 )
+
+
+def test_activation_prunes_ignored_resource_directories(tmp_path, monkeypatch):
+    root = tmp_path / "writer"
+    _write_skill(root, "writer", "Write documents.")
+    (root / "references").mkdir()
+    (root / "references" / "style.txt").write_text("style", encoding="utf-8")
+    for name in (".git", ".venv", "node_modules"):
+        (root / name / "deep").mkdir(parents=True)
+        (root / name / "deep" / "ignored.txt").write_text("ignored", encoding="utf-8")
+    loader = SkillLoader(root)
+    loader.load_metadata()
+    original_scandir = os.scandir
+
+    def scandir(path):
+        assert not any(part in {".git", ".venv", "node_modules"} for part in Path(path).parts)
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    assert loader.load_content("writer").resources == ["references/style.txt"]
 
 
 def test_loader_uses_skill_md_as_the_manifest_and_loads_body_on_activation(tmp_path) -> None:

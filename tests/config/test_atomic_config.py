@@ -11,6 +11,51 @@ from ouro.config.queued_inputs import QueuedInputConfigManager
 from ouro.core.errors import ConfigError
 
 
+def test_config_write_retries_sharing_conflict_and_preserves_data_on_sync_failure(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    import ouro.local_io as local_io
+
+    config = JsonConfigFile(tmp_path)
+    config.write({"original": True})
+    replace = Path.replace
+    attempts = []
+
+    def transient_replace(source, target):
+        attempts.append(True)
+        if len(attempts) == 1:
+            error = PermissionError("sharing conflict")
+            error.winerror = 32
+            raise error
+        return replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", transient_replace)
+    monkeypatch.setattr(local_io, "sleep", lambda _: None)
+    config.write({"replacement": True})
+    assert config.read() == {"replacement": True}
+    assert len(attempts) == 2
+
+    def fail_sync(_fd):
+        raise OSError("injected sync failure")
+
+    monkeypatch.setattr(local_io.os, "fsync", fail_sync)
+    with pytest.raises(ConfigError, match="could not write config"):
+        config.write({"discarded": True})
+    assert config.read() == {"replacement": True}
+    assert list(config.path.parent.iterdir()) == [config.path]
+
+
+def test_config_serialization_failure_preserves_existing_file(tmp_path):
+    config = JsonConfigFile(tmp_path)
+    config.write({"original": True})
+    with pytest.raises(ConfigError, match="could not serialize config"):
+        config.write({"invalid": object()})
+    assert config.read() == {"original": True}
+    assert list(config.path.parent.iterdir()) == [config.path]
+
+
 def test_config_commands_preserve_concurrent_section_updates(tmp_path) -> None:
     queued_inputs = QueuedInputConfigManager(tmp_path)
     permissions = PermissionConfigManager(tmp_path)

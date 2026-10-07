@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime, timedelta
@@ -109,6 +110,43 @@ def test_local_usage_ledger_serializes_concurrent_writers(tmp_path) -> None:
     ledger.initialize()
     assert len(ledger.list_entries(UsageFilter()).entries) == 40
     assert len(ledger.audit().events) == 40
+
+
+def test_concurrent_first_open_initializes_wal_once(tmp_path, monkeypatch):
+    readers = threading.Barrier(8)
+    local = threading.local()
+    has_schema = LocalUsageLedger._has_schema
+    connect = sqlite3.connect
+    wal_switches = []
+
+    def simultaneous_empty_reads(connection):
+        result = has_schema(connection)
+        if not getattr(local, "checked", False):
+            local.checked = True
+            assert not result
+            readers.wait(timeout=5)
+        return result
+
+    def traced_connect(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        connection.set_trace_callback(
+            lambda sql: wal_switches.append(sql) if sql == "PRAGMA journal_mode=WAL" else None
+        )
+        return connection
+
+    monkeypatch.setattr(LocalUsageLedger, "_has_schema", staticmethod(simultaneous_empty_reads))
+    monkeypatch.setattr(sqlite3, "connect", traced_connect)
+
+    def write(index):
+        LocalUsageLedger(tmp_path).record(_entry(index))
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(write, range(8)))
+    monkeypatch.setattr(LocalUsageLedger, "_has_schema", staticmethod(has_schema))
+    ledger = LocalUsageLedger(tmp_path)
+    assert ledger.summarize(UsageFilter()).totals.request_count == 8
+    assert ledger.audit().total_events == 8
+    assert len(wal_switches) == 1
 
 
 def test_local_usage_ledger_returns_detached_records(tmp_path) -> None:

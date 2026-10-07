@@ -1067,7 +1067,19 @@ def create_plugin(context): return Plugin()
 
 
 @pytest.mark.asyncio
-async def test_declarative_skill_is_projected_into_immutable_catalog(tmp_path) -> None:
+async def test_declarative_skill_is_projected_into_immutable_catalog(tmp_path, monkeypatch) -> None:
+    import threading
+
+    from ouro.skills import SkillLoader
+
+    loop_thread = threading.get_ident()
+    load_catalog = SkillLoader.load_catalog
+
+    def load_off_loop(loader):
+        assert threading.get_ident() != loop_thread
+        return load_catalog(loader)
+
+    monkeypatch.setattr(SkillLoader, "load_catalog", load_off_loop)
     source = tmp_path / "skill-plugin"
     (source / "skills" / "calendar").mkdir(parents=True)
     _write_native_plugin(

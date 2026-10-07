@@ -19,6 +19,7 @@ from ouro.core.usage_queries import (
     UsageSummary,
     UsageTotals,
 )
+from ouro.local_locks import FileMutationLock
 
 _SCHEMA_VERSION = 1
 _APPLICATION_ID = 0x4F555242
@@ -79,14 +80,25 @@ class LocalUsageLedger:
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 with self._connect() as connection:
-                    if not self._has_schema(connection):
-                        connection.execute("PRAGMA journal_mode=WAL")
-                        connection.execute("BEGIN IMMEDIATE")
-                        if not self._has_schema(connection):
-                            for statement in _SCHEMA:
-                                connection.execute(statement)
-                            connection.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
-                            connection.execute(f"PRAGMA application_id={_APPLICATION_ID}")
+                    ready = self._has_schema(connection)
+                if not ready:
+                    # WAL mode changes precede the SQL transaction and need their
+                    # own cross-instance owner. Existing databases stay lock-free here.
+                    lock = FileMutationLock(self.path.with_suffix(".init.lock"))
+                    if not lock.acquire(timeout=5):
+                        raise PersistenceError(f"usage initialization lock timed out: {self.path}")
+                    try:
+                        with self._connect() as connection:
+                            if not self._has_schema(connection):
+                                connection.execute("PRAGMA journal_mode=WAL")
+                                connection.execute("BEGIN IMMEDIATE")
+                                if not self._has_schema(connection):
+                                    for statement in _SCHEMA:
+                                        connection.execute(statement)
+                                    connection.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+                                    connection.execute(f"PRAGMA application_id={_APPLICATION_ID}")
+                    finally:
+                        lock.release()
             except OSError as exc:
                 raise PersistenceError(f"could not initialize usage ledger: {self.path}") from exc
             self._initialized = True

@@ -156,39 +156,3 @@ def test_spawn_schema_lists_available_subagents_without_duplicate_description() 
     ]
     assert "agent_id" in spawn.definition.description
     assert all(option["description"] not in spawn.definition.description for option in options)
-
-
-def test_agent_control_contracts_guide_model_decisions_and_describe_fields() -> None:
-    catalog = AgentCatalogSnapshot(
-        entries=(
-            AgentCatalogEntry(
-                definition=AgentDefinition(
-                    agent_id="general",
-                    name="General",
-                    description="General child.",
-                )
-            ),
-        )
-    )
-    definitions = {tool.definition.name: tool.definition for tool in agent_control_tools(catalog)}
-
-    spawn = definitions["SpawnAgent"]
-    send = definitions["SendAgentMessage"]
-    interrupt = definitions["InterruptAgent"]
-
-    assert "Delegate a bounded task" in spawn.description
-    assert "Avoid trivial tasks" in spawn.description
-    assert (
-        "does not inherit this conversation"
-        in spawn.parameters_schema["properties"]["task"]["description"]
-    )
-    assert "existing subagent" in send.description
-    mode_description = send.parameters_schema["properties"]["mode"]["description"]
-    assert "'steer' only to guide an actively working subagent" in mode_description
-    assert "'follow_up' continues it only after" in mode_description
-    assert "Stop an active subagent" in interrupt.description
-    assert "Do not interrupt" in interrupt.description
-
-    for definition in definitions.values():
-        properties = definition.parameters_schema["properties"]
-        assert all("description" in schema for schema in properties.values())

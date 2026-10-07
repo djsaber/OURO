@@ -5,6 +5,7 @@ import sqlite3
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from threading import Barrier
 
 import pytest
 
@@ -31,6 +32,27 @@ def session_store(request: pytest.FixtureRequest, tmp_path) -> Iterator[SessionS
         store = SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
     store.initialize()
     yield store
+
+
+def test_sqlite_concurrent_initialization_preserves_all_sessions(tmp_path):
+    barrier = Barrier(8)
+    database = tmp_path / "ouro.db"
+
+    def create(index):
+        store = SQLiteSessionStore(database)
+        barrier.wait(timeout=5)
+        store.initialize()
+        session = SessionRecord(title=f"Concurrent {index}")
+        store.create_session(session)
+        return session
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        created = list(executor.map(create, range(8)))
+    store = SQLiteSessionStore(database)
+    store.initialize()
+    assert {session.session_id for session in store.list_sessions()} == {
+        session.session_id for session in created
+    }
 
 
 def test_session_store_round_trip_and_pages(session_store: SessionStore) -> None:

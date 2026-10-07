@@ -63,5 +63,5 @@ Worker 基准通过真实 handler 测量合成响应解码、构造次数及独�
 命令基准临时安装真实 SDK 插件，覆盖查询、预建会话、输出后创建会话及已有 120 条历史的会话。
 `--mode application|tui|all` 分别测 Application 命令用例与 headless TUI；输入批次由合成 Provider 和工具完成。
 输出包含提交、首段文本、完整消费、消息摘要、Run 终态和响应性指标；安装、启动与初始历史准备不计时。
-首个模型 delta 不等于终端 paint，TUI 帧、按键和网络性能须按[性能规划](../plans/OURO_性能优化规划_2026-09-02.md)
+首个模型 delta 不等于终端 paint，TUI 帧、按键和网络性能须按[性能规划](../../docs/plans/performance.md)
 单独验证。

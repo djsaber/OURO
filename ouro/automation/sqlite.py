@@ -10,7 +10,7 @@ from pydantic import BaseModel, ValidationError
 
 from ouro.automation.models import TaskConflictError, TaskCounts, TaskExecution, TaskRecord
 from ouro.core.errors import PersistenceError
-from ouro.local_locks import FileOwnerLock
+from ouro.local_locks import FileMutationLock, FileOwnerLock
 
 
 class SQLiteTaskRepository:
@@ -38,6 +38,15 @@ class SQLiteTaskRepository:
                 connection.close()
 
     def initialize(self) -> None:
+        lock = FileMutationLock(self.path.with_suffix(".init.lock"))
+        if not lock.acquire(timeout=5):
+            raise PersistenceError(f"task initialization lock timed out: {self.path}")
+        try:
+            self._initialize_schema()
+        finally:
+            lock.release()
+
+    def _initialize_schema(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]

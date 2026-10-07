@@ -35,15 +35,15 @@ def write_text_atomic(path: Path, text: str) -> None:
             dir=path.parent,
             delete=False,
         ) as tmp:
+            temp_path = Path(tmp.name)
             tmp.write(text)
             tmp.flush()
             os.fsync(tmp.fileno())
-            temp_path = Path(tmp.name)
         replace_path_with_retry(temp_path, path)
     except (OSError, TypeError, ValueError) as exc:
         raise PersistenceError(f"could not write {path}: {exc}") from exc
     finally:
-        if temp_path is not None and temp_path.exists():
+        if temp_path is not None:
             with suppress(OSError):
                 temp_path.unlink()
 

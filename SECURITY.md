@@ -2,8 +2,9 @@
 
 ## Supported code
 
-Security fixes target the current default branch and the latest `0.1.x` release while the
-project remains pre-1.0. Older snapshots are not maintained as separate security branches.
+Security fixes target the current default branch. Any maintained release branches must be
+explicitly identified in their release notes; this policy does not infer support from the package
+version or a completed feature milestone. Older snapshots are not maintained as separate security branches.
 
 ## Reporting a vulnerability
 

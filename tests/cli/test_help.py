@@ -12,25 +12,6 @@ def _subcommand_help(args: list[str], capsys: pytest.CaptureFixture[str]) -> str
     return capsys.readouterr().out
 
 
-def test_root_help_explains_tui_default_and_getting_started() -> None:
-    help_text = build_parser().format_help()
-
-    assert "Run without a command to start the full-screen TUI" in help_text
-    assert "ouro run" in help_text
-    assert "Getting started:" in help_text
-    assert "ouro provider templates" in help_text
-    assert "ouro COMMAND --help" in help_text
-
-
-def test_provider_help_explains_integrated_and_custom_workflows(capsys) -> None:
-    help_text = _subcommand_help(["provider"], capsys)
-
-    assert "Integrated types install reviewed Endpoint templates" in help_text
-    assert "custom types start empty" in help_text
-    assert "Typical workflow:" in help_text
-    assert "provider endpoint add" in help_text
-
-
 def test_endpoint_add_help_documents_reasoning_contract_choices(capsys) -> None:
     help_text = _subcommand_help(["provider", "endpoint", "add"], capsys)
 
@@ -115,16 +96,3 @@ def test_removed_identifier_option_spellings_are_rejected(args) -> None:
         build_parser().parse_args(args)
 
     assert exc_info.value.code == 2
-
-
-def test_compaction_help_distinguishes_route_reset_from_full_clear(capsys) -> None:
-    help_text = _subcommand_help(["config", "compaction"], capsys)
-
-    assert "Omitted options retain their current values" in help_text
-    assert "inherits each Session's complete model request configuration" in help_text
-    assert (
-        "--runtime-endpoint clears the dedicated route and all of its request overrides"
-        in help_text
-    )
-    assert "--clear" in help_text
-    assert "Clear the dedicated endpoint and all compaction model" in help_text

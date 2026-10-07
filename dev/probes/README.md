@@ -97,7 +97,7 @@ encrypted_reasoning_replayed 仅在首轮确实返回加密 reasoning 并跨刷�
 
 真实浏览器登录须由用户完成；离线测试只证明程序编排和边界行为。验证范围限定于明确的账户、模型、
 授权方式与平台，不由一次探针成功推断其他组合可用。正式产品入口及持久凭据契约见
-[订阅使用指南](../../docs/OURO_订阅支持使用指南_ZH_2026-09-19.md)。
+[订阅使用指南](../../docs/guides/subscriptions.md)。
 
 当前订阅服务策略声明不支持显式 truncation 和请求级输出上限；adapter 省略这些参数，默认服务策略仍发送
 输出上限。`production_support=false` 表示本探针仅验收协议与 adapter，不承担完整产品验收。

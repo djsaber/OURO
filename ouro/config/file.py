@@ -7,10 +7,10 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Any
 
-from ouro.core.errors import ConfigError
+from ouro.core.errors import ConfigError, PersistenceError
+from ouro.local_io import read_text_atomic, write_text_atomic
 from ouro.local_locks import FileMutationLock
 
 DOMAIN_CONFIG_FILES = {
@@ -42,7 +42,7 @@ class JsonConfigFile:
         if not self.path.exists():
             return {}
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            raw = json.loads(read_text_atomic(self.path))
         except json.JSONDecodeError as exc:
             raise ConfigError(f"invalid config file {self.path}: {exc}") from exc
         except UnicodeError as exc:
@@ -84,27 +84,14 @@ class JsonConfigFile:
             lock.release()
 
     def _write_unlocked(self, raw: Mapping[str, Any]) -> None:
-        temp_path: Path | None = None
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
             text = json.dumps(raw, ensure_ascii=False, indent=2, sort_keys=True)
-            with NamedTemporaryFile(
-                "w",
-                encoding="utf-8",
-                dir=self.path.parent,
-                delete=False,
-            ) as temp:
-                temp.write(text)
-                temp.write("\n")
-                temp_path = Path(temp.name)
-            temp_path.replace(self.path)
-        except OSError as exc:
-            raise ConfigError(f"could not write config file {self.path}: {exc}") from exc
         except (TypeError, ValueError) as exc:
             raise ConfigError(f"could not serialize config file {self.path}: {exc}") from exc
-        finally:
-            if temp_path is not None and temp_path.exists():
-                temp_path.unlink()
+        try:
+            write_text_atomic(self.path, text + "\n")
+        except PersistenceError as exc:
+            raise ConfigError(f"could not write config file {self.path}: {exc}") from exc
 
 
 def atomic_config_update[**P, R](operation: Callable[P, R]) -> Callable[P, R]:

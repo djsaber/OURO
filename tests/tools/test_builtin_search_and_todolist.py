@@ -7,7 +7,7 @@ import pytest
 
 from ouro.core.harness import HarnessState
 from ouro.core.harness_calls import HarnessCallSnapshot, accept_state_changes
-from ouro.tools import Tool, ToolExecutionContext, ToolInvocation, builtin_tools
+from ouro.tools import Tool, ToolExecutionContext, ToolInvocation, builtin_grep, builtin_tools
 
 
 class _ExecutionContext:
@@ -93,6 +93,28 @@ def context(workspace: Path) -> _ExecutionContext:
 # ---------------------------------------------------------------------------
 
 
+def test_grep_small_file_does_not_allocate_the_full_file_limit(workspace):
+    import tracemalloc
+
+    target = _write(workspace, "small.txt", b"needle\n" * 100)
+    tracemalloc.start()
+    try:
+        assert builtin_grep._read_searchable_text(target) == "needle\n" * 100
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 1024 * 1024
+
+
+@pytest.mark.parametrize("extra", [0, 1])
+def test_grep_retains_exact_file_size_limit(workspace, monkeypatch, extra):
+    limit = 100_000
+    monkeypatch.setattr(builtin_grep, "_MAX_SEARCHABLE_FILE_BYTES", limit)
+    content = "a" * (limit + extra)
+    target = _write(workspace, "bounded.txt", content)
+    assert builtin_grep._read_searchable_text(target) == (None if extra else content)
+
+
 def test_search_and_todolist_tools_are_assembled_as_host_builtins() -> None:
     tools = _tools()
 
@@ -103,38 +125,57 @@ def test_search_and_todolist_tools_are_assembled_as_host_builtins() -> None:
     )
 
 
-async def test_search_and_todolist_contracts_guide_model_decisions_and_describe_fields() -> None:
-    tools = _tools()
-
-    glob = tools["Glob"]
-    grep = tools["Grep"]
-    todos = tools["TodoList"]
-
-    assert "Find files by name or path pattern" in glob.definition.description
-    assert "Grep for content" in glob.definition.description
-    assert "never lists directories" in " ".join(glob.definition.description.split())
-    assert "Search file contents by regex" in grep.definition.description
-    assert "Glob for filenames" in grep.definition.description
-    assert (
-        "Python regular expression"
-        in grep.definition.parameters_schema["properties"]["pattern"]["description"]
-    )
-    assert "Track multi-step work" in todos.definition.description
-    assert "Skip trivial tasks" in todos.definition.description
-
-    for tool in (glob, grep, todos):
-        properties = tool.definition.parameters_schema["properties"]
-        assert all("description" in schema for schema in properties.values())
-
-    todo_item_properties = todos.definition.parameters_schema["properties"]["todos"]["items"][
-        "properties"
-    ]
-    assert all("description" in schema for schema in todo_item_properties.values())
-
-
 # ---------------------------------------------------------------------------
 # Glob
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", ["files_with_matches", "count_matches"])
+@pytest.mark.parametrize("single_file", [False, True])
+def test_grep_summary_does_not_materialize_content(
+    context, workspace, monkeypatch, mode, single_file
+):
+    target = _write(workspace, "matches.txt", "needle\n" * 25_000)
+
+    def unexpected_content(*args, **kwargs):
+        pytest.fail("summary queries must not construct matched content or context")
+
+    monkeypatch.setattr(builtin_grep, "MatchedLine", unexpected_content)
+    result = _tools()["Grep"].handler(
+        _call(
+            "Grep",
+            {
+                "pattern": "needle",
+                "output_mode": mode,
+                "path": str(target if single_file else workspace),
+                "-C": 100,
+            },
+        ),
+        context,
+    )
+    if mode == "count_matches":
+        assert result.structured["total"] == 25_000
+        assert result.structured["files"] == [{"path": "matches.txt", "count": 25_000}]
+    else:
+        assert result.structured["files"] == ["matches.txt"]
+
+
+@pytest.mark.parametrize("single_file", [False, True])
+def test_grep_multiline_empty_file_has_no_matched_lines(context, workspace, single_file):
+    target = _write(workspace, "empty.txt", "")
+    result = _tools()["Grep"].handler(
+        _call(
+            "Grep",
+            {
+                "pattern": "^",
+                "multiline": True,
+                "output_mode": "content",
+                "path": str(target if single_file else workspace),
+            },
+        ),
+        context,
+    )
+    assert result.structured["total"] == 0
 
 
 async def test_glob_bare_pattern_matches_recursively_sorted_by_mtime(

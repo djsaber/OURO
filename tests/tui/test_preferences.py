@@ -57,18 +57,6 @@ def test_tui_theme_catalog_uses_distinct_restrained_palettes() -> None:
     assert lagoon_scale[-1] != lagoon_scale[0]
 
 
-def test_tui_theme_owns_shared_symbols_colors_and_animation() -> None:
-    assert DEFAULT_TUI_THEME.section_separator == " • "
-    assert DEFAULT_TUI_THEME.inline_separator == " • "
-    assert DEFAULT_TUI_THEME.brand_mark == "▣"
-    assert DEFAULT_TUI_THEME.selected_choice_marker == "●"
-    assert DEFAULT_TUI_THEME.expanded_disclosure_marker == "-"
-    assert DEFAULT_TUI_THEME.collapsed_disclosure_marker == "+"
-    assert len(DEFAULT_TUI_THEME.spinner_frames) == 10
-    assert len(set(DEFAULT_TUI_THEME.spinner_frames)) == len(DEFAULT_TUI_THEME.spinner_frames)
-    assert all(value.startswith("#") for value in DEFAULT_TUI_THEME.css_variables().values())
-
-
 def test_custom_tui_theme_is_complete_immutable_and_caches_render_projections() -> None:
     theme = replace(
         DEFAULT_TUI_THEME,

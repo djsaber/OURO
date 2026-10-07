@@ -1,0 +1,60 @@
+# 受管理凭据核心规格
+
+> 文档类型：现行规格
+> 范围：凭据存储与生命周期，由 Application 通用登录、CLI/TUI 管理和三种模型协议共用；Runtime 装配同一 home 的共享认证服务。
+
+本规格定义 `ouro.auth` 的供应商中立核心。内建浏览器订阅产品的接入契约见[模型订阅认证规格](subscription-authentication.md)，实际支持与验证范围见[订阅指南](../guides/subscriptions.md#证据范围)，待验证能力见[验证计划](../plans/subscription-validation.md)。
+
+## 所有权与端口
+
+- `auth/contracts.py` 定义凭据记录、授权结果、安全摘要、错误码、Store port 和刷新/提交回调；不导入具体实现。
+- `CredentialService` 唯一编排 revision 条件提交、刷新、注销和操作收尾，不读取 Provider 配置，不调用 HTTP。
+- `FileCredentialStore` 提供原子文件快照、受限写入和同 credential 跨进程互斥；复用 `local_io` 的读取/替换及 `local_locks` 的描述符锁原语。
+- `auth/file_permissions.py` 集中实现权限控制，driver、Application 和 Host 无需处理 ACL。
+
+依赖限于 `auth → core/local_io/local_locks`。刷新通过调用方注入的异步 `RefreshCredential(record) → CredentialGrant` 完成；驱动端口和单次授权资源生命周期见[认证驱动与授权规格](authorization.md)。具体驱动由本地组合注册；静态与受管理请求认证使用同一端口，见[请求认证规格](request-authentication.md)。
+
+## 持久化与安全摘要
+
+记录位于 `<OURO_HOME>/credentials/<credential_id>.json`，锁文件为同目录下的 `<credential_id>.lock`。credential id 只接受 `cred_` 加 32 位小写十六进制字符；创建方使用现有 `new_id("cred")`，引用不是路径。
+
+`CredentialRecord` 保存严格的 `format_version=1`、credential id、driver id、正整数 revision、`active | reauth_required | logged_out`、可选带时区的 expires_at、可选身份摘要和 driver 所属的 secret payload。持久化读取拒绝未知/缺失版本、未知字段、无效状态、文件名与内部 id 不一致及损坏 JSON，不修改原文件。
+
+active 必须有秘密材料；logged_out 不保留秘密、有效期或账户摘要。身份摘要仅含显示名、账户/工作区标识，不代表服务端权益。秘密不参与对象 repr，`CredentialSummary` 没有秘密字段。`status` 和 `list_credentials` 只读本地记录，不建目录、不执行网络或刷新；缺失记录返回 `None`，损坏记录返回安全错误。目录不存在时列表为空，目录不可读时明确失败。ready/refresh_needed 等驱动相关投影留给接入层，不持久化镜像状态。
+
+文件采用明文受限存储。目录在创建/写入时限制访问；临时文件仍为空时落实权限，随后写入、flush/fsync 并原子替换。POSIX 目录/文件模式为 0700/0600；Windows 用当前进程用户 SID 建立受保护 DACL，替换既有及继承授权。权限失败不写秘密，替换失败保留旧记录并清理临时文件。凭据目录和文件拒绝符号链接、Windows reparse point，凭据文件拒绝多硬链接。
+
+## 提交、刷新与注销
+
+`commit` 以预期 revision 条件保存完整 `CredentialGrant`，不存在的记录版本视为 0；已有记录的 driver id 必须一致。获胜提交递增 revision，冲突不覆盖。取消等待保留原记录；原子写入已开始时完成保存并返回实际结果，不在写入仍运行时释放锁或报告取消成功。
+
+`commit` 可接收 Application 提供的 `binding_guard(timeout, cancel_event)` 同步上下文工厂。Service 先取得 credential 锁，再由同一个工作线程进入 guard、重读凭据、核对 revision、保存并退出 guard；不能跨 await 持有线程可重入配置锁。传入的 timeout 是共享提交截止时间的剩余预算。guard 拥有配置锁及绑定检查，不压制保存异常，退出只释放资源；auth 不解释 Provider。
+
+`auth/commit.py` 的 CommitAdmission 用一个线程互斥边界裁决取消/关闭与开始保存的先后。取消先行则通过 cancel_event 中止锁等待，并在开始保存前再次检查；保存先行则完成写入并返回实际结果。外层协程必须等待工作线程终结才释放 credential 锁，不能只取消 await 留下迟到提交。未提供 guard 的调用只提供凭据 CAS；完整登录通过[Provider 认证用例](provider-authentication.md)接入实际配置事务。
+
+`refresh` 接收失败/过期请求观察到的 revision，取得 credential 锁后重读：
+
+| 当前事实 | 行为 |
+|---|---|
+| 缺失、logged_out 或 reauth_required | authentication_required，不调用刷新回调 |
+| driver 不同或 revision 小于预期 | credential_conflict |
+| revision 已大于预期 | 返回新的 active 记录，不再次交换旧材料 |
+| revision 相同 | 在锁内执行一次回调并原子保存完整结果 |
+
+锁内重读负责跨请求/进程去重，不建立第二份 Token 缓存。刷新回调拥有 secret payload 的解码和供应商轮换规则，必须返回完整替换材料，包括按协议应保留的 refresh token。Service 不猜 Token 形状、不自行重试网络。
+
+回调报告 authentication_required 时，原子写入递增 revision 的 reauth_required；临时网络错误、超时或保存失败不清空原材料。未知回调异常统一转换为安全的 credential_refresh_failed，不传播原始响应或异常文本。远端已轮换但本地保存失败时允许需要重新登录，不承诺跨系统事务。
+
+`logout` 与 `forget` 的底层语义相同：等待该 credential 锁，清空材料并递增 revision，保留 logged_out 无秘密记录。缺失记录也建立该记录，阻止先前捕获 revision 0 的操作复活秘密；重复注销不递增。多个 Provider 引用同一 credential 时共享此效果，配置删除不属于本服务。
+
+## 取消与关闭
+
+锁竞争使用异步、有界、可取消等待。一次请求取消只停止等待刷新结果；Service 拥有已经接受的刷新及保存任务，刷新有自己的总时限。不同 credential 不共享全局锁。
+
+Service 跟踪完整 mutation 的生命周期。`close` 停止接收新操作，阻止尚未开始保存的登录提交，等待已接收操作，有界等待后取消未完成的交换/锁等待；已经开始的本地原子写入必须收尾并释放锁。线程文件写入不能被协程取消强行中断，网络/锁时限不构成任意磁盘故障下的硬关闭时限承诺。重复或并发 close 复用同一收尾任务。
+
+## 验收证据
+
+`tests/auth` 覆盖格式/损坏记录、脱敏、写入前权限、失败替换、条件提交、注销幂等、双进程刷新和提交竞争、异常退出释放锁、请求取消、关闭、绑定 guard、失效与临时错误以及轮换后的保存失败。两种测试驱动复用该核心的证据见认证驱动与授权规格；Application 实际配置事务的集成证据见 Provider 认证用例规格；协议请求认证见[请求认证规格](request-authentication.md)。
+
+本机已执行 Windows ACL 的目录、临时文件及替换后文件检查；POSIX mode 测试已提供，仍需在 POSIX CI 执行。所有测试使用构造材料，不读取真实客户端凭据或执行真实账户调用。

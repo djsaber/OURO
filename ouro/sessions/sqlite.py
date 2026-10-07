@@ -37,7 +37,7 @@ from ouro.core.session_commits import (
 from ouro.core.session_controls import SessionControlState
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.local_locks import is_lock_held
+from ouro.local_locks import FileMutationLock, is_lock_held
 from ouro.sessions.base import (
     RuntimeSessionSnapshot,
     SessionObservationState,
@@ -83,6 +83,15 @@ class SQLiteSessionStore:
                 self.refresh_catalog(identity)
 
     def initialize(self) -> None:
+        lock = FileMutationLock(self._locks_dir / "initialize.lock")
+        if not lock.acquire(timeout=5):
+            raise PersistenceError(f"SQLite initialization lock timed out: {self.database}")
+        try:
+            self._initialize_schema()
+        finally:
+            lock.release()
+
+    def _initialize_schema(self) -> None:
         self.database.parent.mkdir(parents=True, exist_ok=True)
         self._locks_dir.mkdir(parents=True, exist_ok=True)
         connection: sqlite3.Connection | None = None

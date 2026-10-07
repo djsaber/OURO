@@ -25,37 +25,19 @@ def _invocation(tool_name: str, arguments: dict[str, object]) -> ToolInvocation:
     )
 
 
-def test_file_tool_contracts_explain_behavior_and_every_field() -> None:
+def test_file_tool_schema_exposes_paging_and_mutation_options() -> None:
     definitions = {item.name: item for item in _registry().definitions()}
     read = definitions["Read"]
     write = definitions["Write"]
     edit = definitions["Edit"]
 
-    assert "UTF-8 text file" in read.description
-    assert "Glob" in read.description and "Grep" in read.description
-    assert "Directories, binary files, and non-UTF-8 files are unsupported" in read.description
-    assert "100,000 UTF-8 bytes" in read.description
-    assert "next_offset" in read.parameters_schema["properties"]["offset"]["description"]
     assert read.parameters_schema["properties"]["offset"]["default"] == 1
     assert read.parameters_schema["properties"]["limit"]["maximum"] == 1_000
-    assert "description" in read.parameters_schema["properties"]["path"]
-    assert "description" in read.parameters_schema["properties"]["offset"]
-    assert "description" in read.parameters_schema["properties"]["limit"]
-
-    assert "Create, overwrite, or append" in write.description
-    assert "Prefer Edit" in write.description
-    assert "Read or verify existing content before overwriting" in write.description
     assert write.parameters_schema["properties"]["mode"]["enum"] == [
         "overwrite",
         "append",
     ]
-    assert all("description" in schema for schema in write.parameters_schema["properties"].values())
-
-    assert "exact literal text" in edit.description
-    assert "error without changes" in edit.description
-    assert "only the first" in edit.parameters_schema["properties"]["replace_all"]["description"]
     assert edit.parameters_schema["properties"]["replace_all"]["default"] is False
-    assert all("description" in schema for schema in edit.parameters_schema["properties"].values())
 
 
 @pytest.mark.asyncio

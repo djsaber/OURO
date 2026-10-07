@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -165,3 +166,13 @@ def test_cancellation_racing_os_acquisition_releases_descriptor(tmp_path, monkey
         with pytest.raises(InterruptedError):
             FileMutationLock(path).acquire(timeout=0.2, cancel_event=cancelled)
     assert not is_lock_held(path)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended paths")
+def test_mutation_lock_reentry_accepts_extended_path_alias(tmp_path):
+    path = tmp_path / "mutation.lock"
+    extended = Path("\\\\?\\" + str(path))
+    with FileMutationLock(extended):
+        nested = FileMutationLock(path)
+        assert nested.acquire(timeout=0)
+        nested.release()

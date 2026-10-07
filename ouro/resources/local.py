@@ -4,7 +4,6 @@ import hashlib
 import mimetypes
 import os
 import re
-import shutil
 import time
 from collections.abc import Iterable
 from contextlib import suppress
@@ -23,7 +22,12 @@ from ouro.core.resources import (
     ResourceRecord,
     ResourceSource,
 )
-from ouro.local_io import read_text_atomic, write_json_atomic, write_model_atomic
+from ouro.local_io import (
+    read_text_atomic,
+    replace_path_with_retry,
+    write_json_atomic,
+    write_model_atomic,
+)
 from ouro.local_locks import FileOwnerLock
 
 _RESOURCE_ID = re.compile(r"res_[0-9a-f]{64}\Z")
@@ -104,6 +108,8 @@ class LocalResourceStore:
             raise ResourceNotFoundError(f"resource not found: {resource_id}") from exc
         except (OSError, ValueError) as exc:
             raise PersistenceError(f"could not load resource {resource_id}: {exc}") from exc
+        if record.resource_id != resource_id:
+            raise ResourceIntegrityError(f"resource record identity mismatch: {resource_id}")
         if verify:
             self._verify_blob(record)
         return record
@@ -171,7 +177,7 @@ class LocalResourceStore:
         return record, content
 
     def export_file(self, resource_id: str, destination: Path, *, overwrite: bool) -> Path:
-        record = self.load_record(resource_id, verify=True)
+        record = self.load_record(resource_id)
         destination = self._safe_export_path(destination)
         if destination.exists() and not overwrite:
             raise FileExistsError(destination)
@@ -181,11 +187,24 @@ class LocalResourceStore:
             destination.parent.mkdir(parents=True, exist_ok=True)
             with NamedTemporaryFile(dir=destination.parent, delete=False) as target:
                 temp_path = Path(target.name)
-                with blob_path.open("rb") as source_file:
-                    shutil.copyfileobj(source_file, target, length=_CHUNK_SIZE)
+                try:
+                    source_file = blob_path.open("rb")
+                except FileNotFoundError as exc:
+                    raise ResourceIntegrityError(
+                        f"resource blob is missing: {resource_id}"
+                    ) from exc
+                with source_file:
+                    digest = hashlib.sha256()
+                    size = 0
+                    while chunk := source_file.read(_CHUNK_SIZE):
+                        digest.update(chunk)
+                        size += len(chunk)
+                        target.write(chunk)
+                if f"sha256:{digest.hexdigest()}" != record.digest or size != record.size:
+                    raise ResourceIntegrityError(f"resource integrity mismatch: {resource_id}")
                 target.flush()
                 os.fsync(target.fileno())
-            temp_path.replace(destination)
+            replace_path_with_retry(temp_path, destination)
             return destination
         except OSError as exc:
             raise PersistenceError(f"could not export resource {resource_id}: {exc}") from exc
@@ -199,24 +218,21 @@ class LocalResourceStore:
 
         with self._catalog_lock():
             removed: list[str] = []
-            for resource_id in dict.fromkeys(resource_ids):
-                resource_id = _validated_resource_id(resource_id)
-                record = self._load_optional_record(resource_id)
-                if record is None:
-                    continue
-                with suppress(FileNotFoundError):
-                    (self.records_dir / f"{resource_id}.json").unlink()
-                digest = record.digest.removeprefix("sha256:")
-                if not any(
-                    candidate.digest == record.digest
-                    for candidate in self._scan_records()
-                    if candidate.resource_id != resource_id
-                ):
+            try:
+                for resource_id in dict.fromkeys(resource_ids):
+                    resource_id = _validated_resource_id(resource_id)
+                    record = self._load_optional_record(resource_id)
+                    if record is None:
+                        continue
                     with suppress(FileNotFoundError):
-                        (self.blobs_dir / digest).unlink()
-                removed.append(resource_id)
-            if removed:
-                self._try_update_index_or_mark_dirty()
+                        (self.records_dir / f"{resource_id}.json").unlink()
+                    removed.append(resource_id)
+                    # A validated content-addressed id owns exactly one blob.
+                    with suppress(FileNotFoundError):
+                        self._blob_path(record).unlink()
+            finally:
+                if removed:
+                    self._try_update_index_or_mark_dirty()
             return removed
 
     def rebuild_index(self) -> None:

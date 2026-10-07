@@ -1,0 +1,666 @@
+# Goal 插件规格
+
+> 文档类型：现行规格
+> 本文直接描述 builtin Goal 插件（`dev.ouro.goal`）的行为。
+>
+> 适用范围：`ouro/builtin_plugins/goal/`、其使用的 Plugin SDK 能力、以及 Application/Runtime
+> 为其提供的最小通用输入能力。
+>
+> 规范性约束见[插件系统规格](plugins.md)与
+> [核心运行时规格](runtime.md)。
+
+## 1. 定位
+
+Goal 模式解决一个问题：让一个用户定义的最终目标跨越多个有界 Agent 执行持续推进，直到被显式完成、
+阻塞、暂停或取消，同时目标状态、Token 预算和控制权始终可持久化、可恢复、可审计。
+
+Goal 插件完全复用 OURO 现有的 Session、Run、工具、排队输入、Session 控制权、扩展状态和恢复机制，
+不引入 Goal 专用主循环、后台轮询器、目标队列或工作流引擎。插件只组合公开 Plugin SDK 与通用
+Application 契约表达类型化意图；创建 Run、入队输入、仲裁冲突和持久化全部由 Host 完成。
+
+核心决定：
+
+1. 每个主 Session 维护一个容量最多为 1 的“最新 Goal”槽位；不保存可查询的 Goal 历史列表。
+2. Goal 直接保存用户原始 `objective`，不编译为结构化契约；`objective` 不由模型扩写、缩写或改写。
+3. 用户拥有 pause、resume、replace、cancel 和预算控制；模型只能创建 Goal 与声明终态。
+4. 模型自然结束一次回答只表示本 Run 结束；Goal 完成或阻塞必须通过 `UpdateGoal` 显式声明并附带报告。
+5. 所有 Goal 脚手架消息都是用户角色消息；脚手架语义由独立 semantic tag 表达，producer provenance
+   仍标识插件来源。
+6. Token 预算在每个完整 Goal turn 结算后检查；可以有最后一轮 overshoot，但不会再启动新的 Goal turn。
+7. “同一阻塞连续三次”是模型行为规则，插件不解析错误文本、不维护阻塞计数器。
+8. 三个模型工具（`GetGoal`、`CreateGoal`、`UpdateGoal`）始终同时暴露，工具列表不随 Goal 状态变化。
+
+## 2. 范围与非目标
+
+### 2.1 范围
+
+- Goal record、状态和权限边界；
+- `/goal` 命令语义；
+- `CreateGoal`、`GetGoal`、`UpdateGoal` 模型接口；
+- 创建、控制和自动继续时的脚手架用户消息；
+- Token budget、最终用量结算和恢复；
+- 旧执行对新 Goal 的隔离；
+- 为上述行为使用的最小通用 Host 能力（`SessionInputBatch`、semantic tag、控制投影 coalescing）。
+
+### 2.2 非目标
+
+- 多 Goal 并行、Goal 历史列表或归档库；
+- 子目标树、DAG、重试工作流或定时调度；
+- 由插件判断任务是否真的完成；
+- 由插件理解错误文本、比较阻塞语义或强制验证“三次相同阻塞”；
+- Goal 专用 Session API、Goal Manager 或第二套 Agent Loop；
+- 精确阻止单次模型请求超过剩余 Token；
+- 让 Goal 提高工具权限、跳过审批或改变安全策略。
+
+## 3. 术语
+
+### 3.1 Goal turn
+
+一次由 Goal 创建输入或自动继续输入触发的有界 Agent 执行（一个 Run）。它可以包含完整的模型响应、
+工具调用、工具结果和必要的后续模型交互。Goal turn 必须在完整消息帧边界结束，不能留下孤立的工具请求
+或工具结果。
+
+### 3.2 脚手架用户消息
+
+由 Goal 插件生成、以 `role=user` 进入模型上下文的控制消息。`role` 只表示模型协议角色；消息实际由用户、
+插件还是 Host 产生，继续由 provenance 表达。Goal 提供方为控制消息显式声明 `scaffold=true`，并可独立选择
+`semantic_tag`，两者都与 role 正交。
+
+当前 Goal 引导消息显式使用 `scaffold=true` 和对应 semantic tag，metadata 保留完整插件 attribution。
+`/goal` 同批提交的用户原始 objective 则显式使用 `role=user, scaffold=false, semantic_tag=None`，表示对用户原文
+的忠实投影而非插件生成的引导。框架不根据是否有标签判定 scaffold。
+
+当前使用的 semantic tags：`goal-create`、`goal-continue`、`goal-paused`、`goal-resumed`、
+`goal-updated`、`goal-cancelled`。
+
+### 3.3 最新 Goal 槽位
+
+每个主 Session 保存零个或一个 Goal record。完成后保留最新记录；创建新 Goal 时覆盖已完成记录；取消时
+槽位变空。历史交付仍可从 canonical conversation 和 usage ledger 中审计。
+
+## 4. Goal record
+
+### 4.1 公开统一结构
+
+`CreateGoal`、`GetGoal` 和 `/goal status` 成功时都返回同一种 Goal 结构：
+
+```json
+{
+  "objective": "用户要求推进的原始目标",
+  "status": "active",
+  "token_budget": 50000,
+  "tokens_used": 12000,
+  "tokens_remaining": 38000,
+  "created_at": "2026-08-16T10:00:00+08:00",
+  "updated_at": "2026-08-16T10:20:00+08:00",
+  "report": null
+}
+```
+
+字段语义：
+
+| 字段 | 语义 |
+|---|---|
+| `objective` | 用户原始目标文本，不由模型扩写、缩写或编译成另一份目标 |
+| `status` | 唯一 Goal 生命周期状态 |
+| `token_budget` | Goal 累计总预算；`null` 表示无预算限制 |
+| `tokens_used` | 原生账本中归属当前 goal_id 的 Provider input + output Token；账本不可用时为 null |
+| `tokens_remaining` | 计算字段；无预算或用量不可用时为 `null`，否则为 `max(token_budget - tokens_used, 0)` |
+| `created_at` | 当前 Goal 创建时间 |
+| `updated_at` | objective、预算、状态或报告最后变更时间；用量变化不重写业务状态 |
+| `report` | complete、blocked 或 runtime 停止时的状态报告；active 时为 `null` |
+
+所有时间和 Token 数由程序维护。模型不得猜测这些值并把猜测当作权威状态。
+
+### 4.2 业务状态与原生事实
+
+owner-bound Harness 状态使用 schema 4，只保存 `goal_id`、objective、status、token_budget、
+created_at、updated_at 和 report。`goal_id` 在创建时分配，pause、resume、replace 与撤销恢复保持该身份；
+新建另一目标使用新身份。状态声明 `reset` branch policy 和 Goal semantic tag 投影集合。
+
+当前 activation 来自调用视图 `controls()`，请求绑定来自 `run_controls()`，真实消耗来自
+`usage_tokens()`。插件不持久化 activation、run_binding、累计 tokens_used、last_accounted_run_id，
+也不维护第二份存储 revision。业务状态和控制关系由同一次原生提交发布。
+
+Goal 只读取 schema 4，不转换旧状态或猜测旧用量归属；格式不符时明确诊断。
+
+## 5. 状态模型
+
+```python
+GoalStatus = Literal[
+    "active",
+    "paused",
+    "blocked",
+    "budget_exhausted",
+    "complete",
+]
+```
+
+| 状态 | 设置者 | 含义 | 是否自动继续 |
+|---|---|---|---|
+| `active` | 用户意图或创建流程 | Goal 可以继续推进 | 是 |
+| `paused` | 用户或 Runtime | 用户主动暂停，或执行异常后有界停止 | 否 |
+| `blocked` | 模型 | 同一阻碍经过足够尝试后仍需用户输入或外部变化 | 否 |
+| `budget_exhausted` | Runtime | 累计 Token 已达到或超过总预算 | 否 |
+| `complete` | 模型 | 目标已经完成，且没有剩余必需工作 | 否 |
+
+取消不是状态。`/goal cancel` 删除当前 Goal record 并释放 Goal 对当前 Session 行为的控制。
+
+### 5.1 状态转换
+
+```text
+empty ── CreateGoal ───────────────→ active
+
+active ── UpdateGoal(complete) ────→ complete
+active ── UpdateGoal(blocked) ─────→ blocked
+active ── /goal pause ─────────────→ paused
+active ── Run 异常终止 ────────────→ paused（runtime_paused）
+active ── budget boundary ─────────→ budget_exhausted
+
+paused ── /goal resume ────────────→ active
+blocked ── /goal resume ───────────→ active
+budget_exhausted ── /goal resume ─→ active（预算被清除或提高）
+
+unfinished ── /goal replace ───────→ active
+any Goal ── /goal cancel ──────────→ empty
+complete ── new CreateGoal ────────→ active（覆盖旧记录）
+```
+
+所有自动调度只依据一个条件：
+
+```python
+should_continue = goal is not None and goal.status == "active"
+```
+
+Session control claim、activation 和执行绑定继续存在，但不另存一份可能与 `Goal.status` 冲突的
+Goal 生命周期枚举。
+
+## 6. 用户命令
+
+### 6.1 语法
+
+```text
+/goal [--token-budget N] <objective>
+/goal status
+/goal pause
+/goal resume [--token-budget N]
+/goal replace [--token-budget N] <new-objective>
+/goal cancel
+```
+
+`--token-budget` 是 Runtime 硬控制字段的唯一 slash-command 来源：
+
+- 提供该参数时，`N` 必须是正整数，且（resume/replace 时）必须大于已使用的 `tokens_used`；
+- 省略该参数即表示不设置预算（无限制）；`unlimited` 不是有效参数值；
+- objective 中出现的预算文字仍属于目标内容，不自动改变硬预算。
+
+命令在 Manifest 中声明 `requires_session: true`；TUI 经 Application 按需创建目标 Session，
+普通 CLI 的插件命令通过 `--session` 指定已有目标。
+
+### 6.2 命令前置条件
+
+| 命令 | 前置条件 |
+|---|---|
+| 创建 | 不存在 unfinished Goal；空槽位或 `complete` 均可 |
+| status | 任意状态；空槽位返回无 Goal |
+| pause | 当前状态必须为 `active` |
+| resume | 当前状态必须为 `paused`、`blocked` 或 `budget_exhausted` |
+| replace | 当前 Goal 必须存在且未完成 |
+| cancel | 当前 Goal 必须存在 |
+
+校验失败时不改变 Goal、不创建脚手架消息，也不启动模型执行。
+
+### 6.3 创建
+
+创建命令不直接伪造已创建状态，而是提交一个有序 `SessionInputBatch`：
+
+```text
+1. role=user, semantic_tag=goal-create
+   告知模型：用户明确要求创建 Goal，并说明 CreateGoal 的调用要求和精确预算。
+
+2. role=user, semantic_tag=None
+   用户原始 objective，内容保持不变。
+```
+
+两条消息必须原子进入同一次 Goal turn，不能受全局逐条队列配置影响而拆成两次执行。模型只有在看到这次
+明确授权后才可调用 `CreateGoal`；工具成功后由 controller activation 持久化 Goal record。
+
+若当前槽位保存的是 `complete` Goal，新 Goal 成功创建后覆盖旧记录，并重置 Token、时间和报告。
+
+### 6.4 暂停
+
+`/goal pause`：
+
+- 立即把 `active` 改为 `paused`；
+- 旋转 activation，阻止旧工作随后改变 Goal；
+- 在 turn 边界追加一条 `role=user, semantic_tag=goal-paused` 的脚手架消息；
+- 不要求模型调用 `UpdateGoal`；
+- 停止自动开始新的 Goal turn。
+
+### 6.5 恢复
+
+`/goal resume`：
+
+- 把 `paused`、`blocked` 或 `budget_exhausted` 改回 `active`；
+- 生成新的 `activation_id`，开始新的执行绑定；
+- 对曾经 blocked 的 Goal 开始一轮全新的阻塞审查；
+- 预算语义遵循统一规则：省略 `--token-budget` 即清除预算限制；显式 `--token-budget N` 要求
+  `N > tokens_used`，否则整条命令原子拒绝。
+
+恢复 `budget_exhausted` Goal 有两种方式：直接 `/goal resume`（清除预算边界），或
+`/goal resume --token-budget N` 提高总预算。不存在只恢复状态而保留一个已耗尽预算的路径。
+
+### 6.6 替换
+
+replace 的语义是编辑当前 Goal，而不是创建另一个 Goal：
+
+- 插件直接以用户原文更新 `objective`，不调用 `CreateGoal`；
+- 保留 `created_at` 和 `tokens_used`；
+- 清空旧 report，设置 `status=active`，更新 `updated_at`；
+- 旋转 `activation_id`，使旧执行无法完成或阻塞更新后的 Goal；
+- 预算语义与 resume 相同：省略 `--token-budget` 即清除预算，显式整数替换总预算且必须大于
+  `tokens_used`；
+- 在 turn 边界追加 `role=user, semantic_tag=goal-updated` 脚手架消息，明确给出更新后的 objective 和预算。
+
+如果用户希望重新计算 Token、创建时间和报告，应当取消后重新创建，或在已完成 Goal 上创建新 Goal。
+
+### 6.7 取消
+
+`/goal cancel` 删除当前 Goal，释放长期控制，并追加 `role=user, semantic_tag=goal-cancelled`
+脚手架消息，通知模型 Goal 槽位为空。取消后的普通用户输入恢复正常行为。
+
+### 6.8 同一 turn 内的重复命令
+
+状态变更按命令到达顺序立即校验和应用；尚未消费的生命周期脚手架按 Session、Goal owner 和当前 turn
+使用稳定 coalesce key（`goal-lifecycle`）。后续命令原子替换先前未消费的脚手架，而不是继续追加：
+
+- pause 后立即 resume，只留下最终 resume 脚手架；
+- 连续 replace，只留下最终 objective 和预算；
+- pause/replace 后 cancel，只留下 cancel 脚手架；
+- 已经形成的 canonical message 保持不可变。
+
+coalescing 只用于同一 owner 在同一安全边界前生成的可替换控制投影，不扩展为通用优先级或依赖队列。
+
+## 7. 模型工具
+
+模型只看到三个简单工具，并且三者始终同时暴露：工具不声明 `active_when`，可见性不依赖 Goal 状态或
+mode controller activation。这样任意两次模型请求的工具列表保持一致，不会因创建 Goal 前后的差异破坏
+Provider 前缀缓存。无 Active Goal 时调用 `UpdateGoal` 返回明确的 `goal_not_active` 错误，而不是隐藏工具。
+
+工具描述不得出现 Session Controller、Run binding、continuation policy、plugin state、Host transaction
+等模型不可见的实现概念。
+
+### 7.1 CreateGoal
+
+参数：
+
+```json
+{
+  "objective": "string, required",
+  "token_budget": "positive integer, optional"
+}
+```
+
+工具描述：
+
+```text
+Create a goal only when the user or system/developer instructions explicitly ask for one.
+Do not create goals for ordinary tasks, even when they are long or difficult.
+Preserve the requested objective without expanding, narrowing, or inventing intent.
+Set token_budget only when an explicit budget was provided, and use the exact requested value.
+Fails when an unfinished goal already exists. A completed goal does not prevent creating a new one.
+```
+
+行为：
+
+- 只接受当前明确创建授权（`goal-create` 脚手架）；
+- objective 必须与授权消息中的用户原文一致；
+- 预算只复制明确参数或明确的 system/developer 要求，不能自主估算；未提供预算时省略 `token_budget`；
+- 成功后请求 acquire `mode` controller；activation 时持久化 `active` Goal record；
+- 空槽位或当前 `complete` 时可创建；unfinished Goal 存在时拒绝；
+- 是否批准 state-changing tool 继续服从既有权限规则（`permission_control=host`，默认需审批）。
+
+### 7.2 GetGoal
+
+参数：无。
+
+工具描述：
+
+```text
+Get the most recent goal for this conversation, including its objective, status, token budget,
+token usage, remaining budget, timestamps, and latest report.
+```
+
+Goal 完成后仍可读取。只有空槽位时返回 `goal_not_found`。
+
+### 7.3 UpdateGoal
+
+参数：
+
+```json
+{
+  "status": "complete | blocked",
+  "report": "non-empty string"
+}
+```
+
+工具描述：
+
+```text
+Update the current goal only to report that it is complete or genuinely blocked.
+
+Set status to complete only when the objective has been achieved, the result has been checked,
+and no required work remains. The report must summarize the delivered result and the evidence
+that it is complete.
+
+Set status to blocked only when the same obstacle has prevented meaningful progress in at least
+three consecutive attempts, including the initial attempt and retries, and progress now requires
+user input or an external change. The report must summarize completed progress, attempted
+approaches, and the exact obstacle.
+
+After the user asks to continue a blocked goal, begin a fresh assessment of repeated obstacles.
+Do not use blocked because the work is difficult, slow, uncertain, incomplete, or merely easier
+with clarification.
+
+Do not use this tool to pause, resume, replace the objective, change the token budget, or report
+that you are stopping. Usage and timestamps are tracked automatically; do not guess them.
+```
+
+`UpdateGoal` 不包含 goal identity 参数。工具调用自身所属的执行由程序隐式绑定到当前 Goal activation。
+`complete` 通过 release transition 结束控制；`blocked` 通过 replace transition 保持可恢复。
+
+## 8. 旧执行隔离
+
+模型参数中没有 goal identity 不等于没有内部身份校验。
+
+最小规则：
+
+1. Goal 创建、pause、replace 或 resume 使用原生控制转换，更新 activation；
+2. 框架在每轮模型请求开始时保存控制绑定及 usage_scope，Context 不写入；
+3. `UpdateGoal` 读取调用所属请求的原生绑定；
+4. Goal 必须 active，绑定 activation 必须匹配当前控制关系，usage_scope 必须匹配 goal_id；
+5. 提交由原生 Harness 版本、history_epoch 和消息头检查裁决，插件不复制存储并发检查；
+6. 旧绑定返回 `stale_goal_update`。创建 Goal 的原请求没有新目标绑定，后续请求才可更新它。
+
+示例：
+
+```text
+旧 objective A：activation E1，旧执行绑定 E1
+用户 replace 为 B：activation 旋转到 E2
+旧执行随后 UpdateGoal(complete)：E1 != E2，拒绝
+新执行 UpdateGoal(complete)：E2 == E2，接受
+```
+
+脚手架负责让模型在下一次请求中知道目标已更新；activation 校验负责处理极少数已经在途的旧工具调用。二者
+不能互相替代。
+
+## 9. 自动继续与输入控制
+
+一个 Goal turn 完整结算后（Run 进入 `completed`、`aborted`、`failed`、`paused` 或 `recoverable`），
+continuation policy（`goal-continuation`，`active_when=mode`）按以下顺序决策：
+
+1. 框架已记录 Provider 请求用量，插件不再次累计；
+2. Goal 完成并释放控制后不再要求目标续跑，框架正常结束；
+3. Goal 为 `paused`、`blocked`、`budget_exhausted` → 停止续跑；
+4. 活跃 Goal 的请求绑定不匹配当前 activation/goal_id → 忽略；
+5. Run 非正常完成 → 以 `runtime_paused` 有界停止并保存报告；
+6. 有预算但原生账本或 Provider usage 不可用 → 暂停，缺失用量不当作零；
+7. 原生 `tokens_used >= token_budget` → 以 `budget_exhausted` 停止；
+8. 其余情况 → 追加 `role=user, semantic_tag=goal-continue` 脚手架。普通续跑不改写 Goal 状态。
+
+继续脚手架包含当前 objective、预算、已使用 Token、剩余预算，以及以下通用要求：继续取得可验证进展；
+不要因为一次回答结束而宣布 Goal 完成；只有满足工具规则时才调用 `UpdateGoal`。
+
+当 Goal 处于 `paused`、`blocked` 或 `budget_exhausted` 时，prompt policy（`goal-input-gate`，
+`active_when=mode`）拒绝普通用户输入，并引导用户使用 `/goal resume`、`/goal replace` 或
+`/goal cancel`。普通输入不能静默把 Goal 恢复成 `active`；Goal 对主行为的控制保持到 resume、replace、
+cancel 或 complete。自动续跑是最低优先级的自动输入：新用户输入、排队输入、活动 Run、审批和控制器释放
+都优先于它。
+
+## 10. Token budget
+
+### 10.1 权限与语义
+
+- budget 是 Goal 累计总预算，不是“从现在起再增加 N”；
+- 只有用户显式命令或明确 system/developer 创建要求可以设置预算；
+- 模型不能通过 `UpdateGoal` 修改预算；
+- create、replace 和 resume 使用同一参数规则：提供 `--token-budget N` 即设置总预算，省略即无预算；
+- `tokens_used` 不因 replace、pause 或 resume 清零；
+- 新建 Goal 覆盖 complete Goal 时从零开始统计；
+- 无预算的 Goal 不做预算边界检查；状态展示层把无预算显示为 `unlimited`。
+
+### 10.2 结算边界
+
+原生账本按 Provider 请求身份记录、去重，并保留请求开始时的目标归属。创建目标之前发出的请求、释放控制后
+发出的确认回复不归入该目标。迟到结果仍归属原目标；暂停控制不携带 usage_scope。插件只读原生消耗，
+不用本地上下文估算替代缺失用量，也不因撤销、重新进入会话或重复续跑裁决而清零或重复累计。
+
+结算顺序：
+
+```text
+1. 完成当前 Goal turn 的模型响应和工具帧
+2. 读取已按请求归属落盘的原生 Token 消耗
+3. 若 Goal 已 complete 或 blocked，保留该状态（同 turn 内的显式终态优先于预算边界）
+4. 若 Goal 仍 active 且 tokens_used >= token_budget，设为 budget_exhausted
+5. budget_exhausted 时不创建新的 Goal turn
+```
+
+预算是 turn 间软边界。单次请求的最终用量无法提前精确知道，因此 `tokens_used` 可以超过 `token_budget`；
+不得为追求精确上限而截断流式响应、工具参数或工具结果。
+
+### 10.3 budget_exhausted
+
+进入该状态时：
+
+- Runtime 生成包含预算、实际用量和停止原因的 report；
+- 保留 Goal、Token 和最后一个完整消息帧；
+- 不自动继续，也不允许普通输入启动新的模型执行；
+- `/goal status`、resume（清除或提高预算）和 cancel 仍可用。
+
+恢复路径见 6.5：省略 `--token-budget` 即清除预算；显式预算必须满足 `N > tokens_used`。恢复后旋转
+activation，并开始新的 Goal turn。
+
+### 10.4 complete 后的最终用量
+
+`UpdateGoal(complete)` 保存终态报告并释放控制，不删除 Goal。发出该工具调用的请求按原绑定记账；
+释放后发出的确认回复没有目标用量归属。原生请求身份去重防止恢复重放造成重复计费。
+
+新建 Goal 使用新 goal_id，旧请求的迟到用量仍记入旧身份，不依赖当前槽位是否已被覆盖。
+不需要 pending-completion、tombstone 或 Goal 历史表。
+
+## 11. blocked 的行为规则
+
+“同一阻碍连续出现至少三次”由模型根据当前上下文中的错误、工具结果、已尝试方案和恢复消息自行判断。
+
+插件不实现：
+
+- 错误字符串归一化；
+- 相似度比较；
+- blocker hash；
+- 连续阻塞计数器；
+- 对模型 report 的语义裁决。
+
+因此三次规则是模型行为约束，不是 Host 强一致性不变量。插件只检查：
+
+- 当前 Goal 为 `active`；
+- 调用的原生请求绑定匹配当前 activation 和 goal_id；
+- status 为 `complete | blocked`；
+- report 非空。
+
+从 blocked 恢复时，`goal-resumed` 脚手架明确说明旧计数已经结束，应从新的初始尝试开始判断。Compaction
+必须保留或概括足以理解近期错误与尝试的信息，但不因此新增结构化 blocker 状态机。
+
+## 12. 插件架构集成
+
+Goal 作为 builtin plugin 发布，只依赖公共 Plugin SDK 和通用 Application 协议：
+
+- plugin id：`dev.ouro.goal`（默认启用）
+- Session Controller local id：`mode`；claim `ouro.session.primary_behavior`，`exclusive`
+- Command：`goal`
+- Continuation Policy：`goal-continuation`（`active_when=mode`）
+- Prompt Policy：`goal-input-gate`（`active_when=mode`）
+- Tools：`get-goal`（只读、auto）、`create-goal`（state-changing、host 审批、exclusive 批次）、
+  `update-goal`（state-changing、exclusive 批次、始终暴露）
+
+### 12.1 贡献映射
+
+| 语义 | OURO 贡献点 | 说明 |
+|---|---|---|
+| 用户控制面 | Command | `/goal ...` 始终可见 |
+| 模型控制面 | Tool | 三个工具始终同时暴露，不随 Goal 状态变化 |
+| 长期行为所有权 | Session Controller | Host 持久化 activation 并仲裁冲突 |
+| 执行身份绑定 | 原生模型请求快照 | 每轮记录控制 activation 与 usage_scope，SDK 只读 |
+| 跨 Run 续跑 | Continuation Policy | 只返回类型化决策，可携带控制权 transition |
+| 停止状态输入门禁 | Prompt Policy | paused/blocked/budget_exhausted 拒绝普通输入 |
+| 权限限制 | 现有 Host Tool/Approval | Goal 不新增 Tool Policy，不改变 permission |
+
+Goal 不需要 Turn Policy：一次正常 Run 就是一个有界工作片段。Goal 也不收紧或放宽一般工具；所有工具
+继续遵循 Session 原有 permission、approval 和 interaction mode。
+
+### 12.2 数据所有权
+
+| 数据 | Owner |
+|---|---|
+| active activation、claim、activation revision | Host SessionStore |
+| Run、RunOutcome、continuation checkpoint、queued input、provenance | Host Runtime/Application |
+| goal_id、objective、status、预算、终态报告与时间 | Goal owner 的 Harness 业务值 |
+| 请求绑定、请求归属、真实累计消耗 | 原生 Run 快照与 usage ledger |
+| worktree、测试结果、外部系统事实 | 对应真实系统，不复制成 Goal 真相 |
+
+插件不能直接写 SessionStore，Host 也不解释 objective、completion report 或 blocked reason 的业务含义。
+
+### 12.3 与 Plan 的关系
+
+Goal 与 Plan 共同 claim `ouro.session.primary_behavior`（exclusive）：一侧激活时另一侧启动会得到明确的
+`SessionControlConflictError`，不按优先级、加载顺序或“最近一次命令”自动覆盖。`/control status` 观察
+统一 activation，`/control release` 仍是 owner 不可用时的通用逃生口。
+
+### 12.4 权限
+
+插件声明且只声明三个权限：
+
+- `sessions.write`：持久化 Goal 状态并提交带来源的 Goal 输入；
+- `background.run`：在每次有界 Run 结算后继续 active Goal；
+- `sessions.prompt.inspect`：阻止普通输入隐式恢复已停止的 Goal。
+
+Goal 不因自身申请 shell、network 或 filesystem 权限。
+
+## 13. 最小通用 Host 能力
+
+Goal 依赖三个与 Goal 无关的通用输入契约。
+
+### 13.1 SessionInputBatch
+
+一个有序、不可拆分的输入单元，字段示意如下：
+
+```text
+SessionInputBatch(
+    inputs: tuple[SessionInput, ...],
+    coalesce_key: str | None = None,
+)
+```
+
+不变量：
+
+- `inputs` 非空；
+- 同一批次使用相同 delivery mode；
+- 整批校验、整批入队或整批拒绝；
+- 顺序持久化，消费时不能拆分或与其他消息交错；
+- `one_by_one` 以一个 batch 为一个消费单位；`all_at_once` 可以消费多个完整兼容单位，但不能拆开 batch；
+- 整批进入同一 Run 或同一安全 turn 边界；
+- 进程恢复后仍保持批次 identity、顺序和 exact-once 消费；
+- 单条 `SessionInput` 的行为不变。
+
+队列内部只需稳定 batch identity 和组内顺序，不增加批次状态机、优先级、依赖关系或嵌套批次。
+
+### 13.2 role、scaffold、semantic tag 与 provenance 正交
+
+`SessionInput` 分别携带封闭的 `role`、显式 `scaffold` 和可选 `semantic_tag`。模型投影只在标签存在时使用统一
+semantic envelope renderer；标签对模型可见，但不改变消息 role 或 scaffold。
+
+安全不变量：
+
+- role 不证明消息由真人产生；
+- role 只表示 `system | user | assistant | tool_result` 模型身份；任意 role 都可以是脚手架；
+- producer/provenance 不因 role、scaffold 或 tag 改变；
+- user-role 脚手架可以投影当前明确用户命令，也可以在已有 Goal 授权范围内表达自动继续；两者都保留插件来源；
+- Goal 创建指令与生命周期输入显式声明 `scaffold=true`；同批的用户 objective 显式声明 `scaffold=false`；
+- semantic tag 可以存在于非脚手架消息，也可以不出现在脚手架消息上；框架不以标签反推 scaffold；
+- `role=user` 本身不构成创建 Goal、修改预算或扩大目标范围的授权；
+- 标签只能描述语义，不能提升权限或伪造 system/developer role；
+- 普通用户原文不因为和脚手架同批就自动获得脚手架标签。
+
+### 13.3 未消费控制投影的最小 coalescing
+
+批次可选携带 owner-scoped `coalesce_key`。同一 Session、owner、delivery boundary 下，新批次可以原子
+替换具有同 key 且尚未消费的旧批次。已经成为 canonical message 的批次不可撤回。
+
+该能力只解决“最终状态投影替换尚未消费的旧投影”，不增加任意消息搜索、重排、优先级或跨 owner 撤回。
+
+## 14. 持久化与恢复不变量
+
+- Goal record 使用原生 Harness 中 owner-bound schema 4，保存稳定 goal_id、业务状态与预算；
+  控制关系和请求绑定由原生视图读取，真实 usage 由账本读取，不复制到可撤销 payload；
+- 同一 goal_id 撤销再恢复后保留实际消耗，新的 Goal 使用新 identity；undo 不重计或删除已经发生的费用；
+- 只接受 schema 4，不保留历史兼容或迁移入口；
+- branch/export/trash 不把 Goal state 与其 canonical 脚手架投影分离；
+- create、replace、resume 旋转 activation 后，旧工具调用永远不能命中新 activation；
+- usage 按 Provider 请求身份幂等，并固定请求开始时的目标归属；
+- complete record 的业务状态与真实 usage 分离，新目标不吸收旧目标的迟到消耗；
+- queued input batch 必须整批 durable 或整批不存在；
+- coalescing 必须在同一 Session mutation 中选择旧批次并写入新批次；
+- 恢复只依据 canonical Session、Run、queue、Harness 和 usage 事实，不依据内存定时器；
+- active Goal 没有 queued continuation 时不会仅因 Host boot 自动创建新 Run；
+- Goal 插件关闭或状态损坏时 fail closed，不自动创建新 Goal 或继续未知工作。
+
+## 15. 安全不变量
+
+1. Goal 不修改 Session permission mode。
+2. Goal 不自动批准 Tool，不降低 Tool Policy，不绕过 approval。
+3. `/goal` 不等于“允许执行任何命令”；无人值守能力仍由现有 permission/interaction 配置决定。
+4. 新建路径统一经过 state-changing `CreateGoal` 和 Host approval；`/goal` 不拥有旁路激活权限。
+5. `CreateGoal` 只能响应当前用户的明确 Goal 创建请求；普通任务不能触发自主调用。
+6. objective、report、外部文件内容都按不可信数据处理；Goal 内容不产生新权限。
+7. 安全策略、内容过滤、资源限制可以暂停/阻塞 Goal，但不能被 Goal continuation 覆盖。
+8. Goal 只适用于 primary Session；subagent 不创建或继承 Session Goal（activation 时按 `session_kind` 拒绝）。
+
+## 16. 验收范围
+
+### 16.1 Host
+
+- 空闲 Session 提交两条输入的 batch，只启动一次执行并保持顺序；
+- active Run 中提交 batch，只在合法边界整批消费；
+- `one_by_one` 不拆 batch；入队失败不留下半个 batch；
+- crash/recovery 不重复或丢失组内消息；
+- user-role semantic tag 进入模型可见 envelope，同时保留 plugin provenance；
+- user-role 脚手架消息持久化为 `scaffold=true`，用户原文投影保持 `scaffold=false`；
+- 相同 coalesce key 的未消费控制批次只保留最后一个；
+- 不同 owner 或已经消费的批次不能互相覆盖。
+
+### 16.2 Goal lifecycle
+
+- 创建请求按 `goal-create` 脚手架、原始 objective 的顺序进入同一次执行；
+- 三个工具始终同时暴露，工具列表不随 Goal 状态或 controller activation 变化；
+- 三个工具共享统一 Goal wrapper；
+- complete Goal 可读取且包含最后一轮 Token；
+- complete 后创建新 Goal 会覆盖并重置统计；
+- replace 直接编辑 Goal，不调用 `CreateGoal`，保留 `tokens_used`；
+- 省略 `--token-budget` 时 create/resume/replace 均不设置预算；显式预算必须大于 `tokens_used`；
+  `unlimited` 不是有效参数值；
+- 无效预算使整个 replace/resume 失败且不产生脚手架；
+- pause、resume、replace、cancel 严格执行状态前置条件；
+- 同一 turn 的抵消命令只留下最终脚手架；
+- 旧 activation 的 `UpdateGoal` 无法完成或阻塞新 objective；
+- `UpdateGoal` 只能写 complete/blocked，且 report 必填；
+- 插件不维护三次阻塞计数器；恢复 blocked 后脚手架声明重新审查；
+- budget overshoot 只在完整 turn 后结算，不产生下一 Goal turn；同 turn 显式终态优先；
+- budget_exhausted 拒绝普通执行，只允许 status、resume（清除或提高预算）或 cancel；
+- resume 旋转 activation，Token accounting 不重复。
+
+### 16.3 模型可见文本
+
+- 工具名称、参数、描述和错误只使用 objective、status、budget、usage、attempt、report 等通用概念；
+- 不向模型解释 Session Controller、Run binding、activation revision、continuation policy、plugin
+  generation、Host transaction；
+- 脚手架可以说明“当前目标”“下一次尝试”“用户已暂停/恢复/更新”，但不泄漏框架实现；
+- usage 与时间由工具结果提供，提示模型不得猜测。

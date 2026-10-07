@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from ouro.core.callbacks import run_blocking
 from ouro.plugins.candidates import PluginRuntimeCandidate
 from ouro.plugins.mcp import PluginMCPResource
 from ouro.plugins.models import (
@@ -69,6 +70,11 @@ class PluginSkillResourceAdapter:
         self,
         request: GenerationResourceRequest,
     ) -> PreparedGenerationResources:
+        if not request.candidate.manifest.contributes.skills:
+            return PreparedGenerationResources()
+        return await run_blocking(self._prepare, request)
+
+    def _prepare(self, request: GenerationResourceRequest) -> PreparedGenerationResources:
         skills: list[SkillMetadata] = []
         degraded_reasons: list[str] = []
         contracts: dict[str, object] = {}

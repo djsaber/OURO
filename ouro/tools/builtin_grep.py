@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_right
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -212,6 +212,7 @@ def _grep(
             context_before=context_before,
             context_after=context_after,
             check_cancelled=context.raise_if_aborted,
+            collect_content=output_mode == "content",
         )
     else:
         if not target.is_dir():
@@ -227,6 +228,7 @@ def _grep(
             context_before=context_before,
             context_after=context_after,
             check_cancelled=context.raise_if_aborted,
+            collect_content=output_mode == "content",
         )
     return _render_grep(
         invocation,
@@ -403,10 +405,7 @@ def _render_file_block(
 def _page(items, *, head_limit: int, offset: int):
     if offset >= len(items):
         return ()
-    selected = items[offset:]
-    if head_limit > 0:
-        selected = selected[:head_limit]
-    return tuple(selected)
+    return tuple(items[offset : offset + head_limit if head_limit > 0 else None])
 
 
 def _optional_string_arg(arguments: Mapping[str, object], name: str) -> str | None:
@@ -528,47 +527,70 @@ def search_grep(
     context_before: int,
     context_after: int,
     check_cancelled: Callable[[], None] | None = None,
+    collect_content: bool = True,
 ) -> GrepResult:
     regex = _compile_search_regex(pattern, ignore_case=ignore_case, multiline=multiline)
+    entries = (
+        entry
+        for entry in iter_files(
+            root, include_ignored=include_ignored, check_cancelled=check_cancelled
+        )
+        if (name_filter is None or name_filter.matches(entry))
+        and (type_filter is None or _matches_any(type_filter, entry.path.name))
+    )
+    return _search_entries(
+        entries,
+        regex,
+        multiline=multiline,
+        context_before=context_before,
+        context_after=context_after,
+        collect_content=collect_content,
+        check_cancelled=check_cancelled,
+    )
+
+
+def _search_entries(
+    entries: Iterable[FileEntry],
+    regex: re.Pattern[str],
+    *,
+    multiline: bool,
+    context_before: int,
+    context_after: int,
+    collect_content: bool,
+    check_cancelled: Callable[[], None] | None,
+) -> GrepResult:
     matches: list[MatchedLine] = []
     file_counts: list[FileMatchCount] = []
     total = 0
-    collection_capped = False
-    for entry in iter_files(
-        root,
-        include_ignored=include_ignored,
-        check_cancelled=check_cancelled,
-    ):
-        if name_filter is not None and not name_filter.matches(entry):
-            continue
-        if type_filter is not None and not _matches_any(type_filter, entry.path.name):
-            continue
+    for entry in entries:
+        if check_cancelled is not None:
+            check_cancelled()
         text = _read_searchable_text(entry.path)
+        if check_cancelled is not None:
+            check_cancelled()
         if text is None:
             continue
         lines = text.splitlines()
-        matched_numbers = _matched_line_numbers(lines, regex, multiline=multiline)
-        if not matched_numbers:
-            continue
-        file_counts.append(FileMatchCount(entry=entry, count=len(matched_numbers)))
-        total += len(matched_numbers)
-        for number in matched_numbers:
-            if len(matches) >= _MAX_COLLECTED_MATCHES:
-                collection_capped = True
-                break
-            matches.append(
-                MatchedLine(
-                    entry=entry,
-                    number=number,
-                    text=lines[number - 1],
-                    before=_context(lines, number, -context_before),
-                    after=_context(lines, number, context_after),
+        count = 0
+        for number in _matched_line_numbers(lines, regex, multiline=multiline):
+            count += 1
+            if collect_content and len(matches) < _MAX_COLLECTED_MATCHES:
+                matches.append(
+                    MatchedLine(
+                        entry=entry,
+                        number=number,
+                        text=lines[number - 1],
+                        before=_context(lines, number, -context_before),
+                        after=_context(lines, number, context_after),
+                    )
                 )
-            )
+        if count:
+            file_counts.append(FileMatchCount(entry=entry, count=count))
+            total += count
     return GrepResult(
         matches=tuple(matches),
         total=total,
-        collection_capped=collection_capped,
+        collection_capped=collect_content and total > len(matches),
         file_counts=tuple(file_counts),
     )
 
@@ -582,6 +604,7 @@ def grep_single_file(
     context_before: int,
     context_after: int,
     check_cancelled: Callable[[], None] | None = None,
+    collect_content: bool = True,
 ) -> GrepResult:
     """Search one explicitly named file; ignore rules and glob filters do not apply."""
 
@@ -597,31 +620,14 @@ def grep_single_file(
         relative=path.name,
         mtime=stat.st_mtime if stat is not None else 0.0,
     )
-    text = _read_searchable_text(path)
-    if check_cancelled is not None:
-        check_cancelled()
-    if text is None:
-        return GrepResult(matches=(), total=0, collection_capped=False, file_counts=())
-    lines = text.splitlines()
-    matched_numbers = _matched_line_numbers(lines, regex, multiline=multiline)
-    matches = tuple(
-        MatchedLine(
-            entry=entry,
-            number=number,
-            text=lines[number - 1],
-            before=_context(lines, number, -context_before),
-            after=_context(lines, number, context_after),
-        )
-        for number in matched_numbers[:_MAX_COLLECTED_MATCHES]
-    )
-    file_counts = (
-        (FileMatchCount(entry=entry, count=len(matched_numbers)),) if matched_numbers else ()
-    )
-    return GrepResult(
-        matches=matches,
-        total=len(matched_numbers),
-        collection_capped=len(matched_numbers) > _MAX_COLLECTED_MATCHES,
-        file_counts=file_counts,
+    return _search_entries(
+        (entry,),
+        regex,
+        multiline=multiline,
+        context_before=context_before,
+        context_after=context_after,
+        collect_content=collect_content,
+        check_cancelled=check_cancelled,
     )
 
 
@@ -640,9 +646,12 @@ def _matched_line_numbers(
     regex: re.Pattern[str],
     *,
     multiline: bool,
-) -> list[int]:
+) -> Iterator[int]:
     if not multiline:
-        return [index + 1 for index, line in enumerate(lines) if regex.search(line) is not None]
+        yield from (index + 1 for index, line in enumerate(lines) if regex.search(line) is not None)
+        return
+    if not lines:
+        return
     offsets = _line_start_offsets(lines)
     matched: set[int] = set()
     text = "\n".join(lines)
@@ -650,7 +659,7 @@ def _matched_line_numbers(
         first = bisect_right(offsets, hit.start())
         last = bisect_right(offsets, max(hit.start(), hit.end() - 1))
         matched.update(range(first, last + 1))
-    return sorted(matched)
+    yield from sorted(matched)
 
 
 def _line_start_offsets(lines: list[str]) -> list[int]:
@@ -682,10 +691,12 @@ def _read_searchable_text(path: Path) -> str | None:
             head = stream.read(_BINARY_SNIFF_BYTES)
             if b"\x00" in head:
                 return None
-            rest = stream.read(_MAX_SEARCHABLE_FILE_BYTES + 1 - len(head))
-            if len(rest) + len(head) > _MAX_SEARCHABLE_FILE_BYTES:
-                return None
-        return (head + rest).decode("utf-8", errors="replace")
+            content = bytearray(head)
+            while chunk := stream.read(64 * 1024):
+                content.extend(chunk)
+                if len(content) > _MAX_SEARCHABLE_FILE_BYTES:
+                    return None
+        return content.decode("utf-8", errors="replace")
     except OSError:
         return None
 

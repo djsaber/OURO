@@ -1,0 +1,87 @@
+# 桌面 Host 计划
+
+> 文档类型：未来规划
+
+## 目标
+
+实现一个本地桌面 Host，复用 `LocalApplication` 暴露的 application services/DTO、RuntimeSupervisor 和
+ResourceService。
+Desktop 只拥有界面状态和交互，不复制运行规则或解析 canonical 文件。
+
+## 前置条件
+
+- `ConfigurationFacade` 与 Host DTO 保持稳定。
+- RuntimeSupervisor submit/subscribe/abort/shutdown 稳定。
+- 附件与资源视图复用现有 ResourceService；新增预览需求先检查公开 DTO 是否足够。
+- Host DTO 对 Session、Run、Tool batch 和 diagnostics 足够完整。
+
+## 里程碑 A：Host adapter
+
+- [ ] 定义 Desktop application client 接口，不依赖具体 UI framework 类型。
+- [ ] 订阅 Supervisor 事件并映射为 UI projection。
+- [ ] 处理窗口关闭、后台 Run、重新连接和进程退出。
+- [ ] 对慢 UI consumer 做合并/背压，不阻塞 runtime event sink。
+
+验收：无真实窗口的 adapter 测试可完成运行、断开、重连和终止。
+
+## 里程碑 B：会话工作区
+
+- [ ] Catalog、搜索、筛选、归档、置顶和标签。
+- [ ] Session detail、消息增量加载、events/replay 和 lineage。
+- [ ] Rename、branch、export 和 trash 确认。
+- [ ] Corrupt/dirty/recoverable diagnostic 可见。
+
+验收：大 Session 不需要全量加载即可显示目录和最近消息。
+
+## 里程碑 C：运行视图
+
+- [ ] Prompt 提交、模型选择和 follow-up queue 状态。
+- [ ] Text/reasoning streaming；reasoning 默认可折叠。
+- [ ] Tool batch、每项状态、参数和结果。
+- [ ] Approval approve/reject/modify，AskUser 和 abort。
+- [ ] Paused/recoverable Run 的明确恢复指导。
+
+验收：所有 waiting/terminal 状态均有可达 UI 操作，关闭窗口不造成隐式 completed。
+
+## 里程碑 D：资源与 diff
+
+- [ ] 文件导入、resource card、预览和导出。
+- [ ] Tool 生成文件与 Message resource refs 展示。
+- [ ] Write/Edit 的 before/after diff；审批修改参数后刷新 diff。
+- [ ] 不支持格式使用安全外部打开或下载，不在 UI 内任意执行内容。
+
+## 里程碑 E：设置与扩展
+
+- [ ] Provider/Endpoint 编辑、连接检查和默认模型。
+- [ ] 权限、工具并发、预算、压缩和 Skills。
+- [ ] 通过现有 Application 用例接入 MCP server 和插件状态管理。
+- [ ] credential 只显示引用状态，不显示值。
+
+## 里程碑 F：可用性与发布
+
+- [ ] 键盘导航、焦点、复制、无障碍标签和高 DPI。
+- [ ] 空态、loading、失败、重试和离线状态。
+- [ ] 本地日志/diagnostic 导出前脱敏。
+- [ ] 打包后仍使用统一 OURO_HOME 和 data layout。
+
+## 测试策略
+
+- View-model/adapter 单元测试覆盖所有状态转换。
+- 用 fake Supervisor/Facade 测 UI，不 mock core 业务规则。
+- 关键用户流做端到端测试：新会话、工具审批、AskUser、abort、branch、设置。
+- 故障测试：持久化失败、Provider 断线、插件失败、Host detach。
+- 性能测试：大 catalog、长消息历史、高频 delta。
+
+## 风险与控制
+
+- UI 直接读文件：架构测试禁止 Desktop import `sessions.local_*` 和 config manager。
+- 高频事件卡顿：仅 delta projection 可合并，durable event 不丢失。
+- 状态重复：UI projection 以 application snapshot/event sequence 为准。
+- 首版范围膨胀：先完成会话与运行闭环，再接资源和扩展管理。
+
+## 退出条件
+
+- Desktop 不包含业务状态转换或本地数据解析。
+- CLI 与 Desktop 对同一 Session/Run 显示一致结果。
+- 后台运行、窗口关闭和进程退出语义有自动化证据。
+- 敏感配置、工具参数和日志满足脱敏要求。
