@@ -369,9 +369,35 @@ Anthropic Messages 实现负责 Messages API 的顶层 system、content blocks�
 usage/error 与 SSE event 映射，并在工具续接边界原样保存/重放同路由的签名 thinking blocks。协议差异留在
 各自 codec/adapter 中。
 
-Endpoint 声明 structured output 能力后才接受结构化 `response_format`。Transport 只对明确可重试的
-timeout/HTTP 状态执行有界退避；一旦已经向上游发出任何模型流事件，就不再重放请求。每次重试形成可持久化
+Endpoint 声明 structured output 能力后才接受结构化 `response_format`。共享请求重试只对明确可重试的
+timeout/HTTP 状态执行有界退避；一旦已经收到模型输出，就不再重放请求。每次重试形成可持久化
 的 `run_retry_scheduled` 事件。
+
+### 请求等待、错误与资源生命周期
+
+`Provider.timeout_seconds`（默认 60 秒）是等待响应进展的预算，必须为正有限数。
+三种 HTTP 协议统一由 `HttpxProviderHTTPTransport` 执行，协议 adapter 不持有总生成时限：
+
+- SSE 每次等待下一条完整 JSON 事件时启动新预算；首次等待包括连接、发送请求和响应头。
+  文本、工具参数、思考、生命周期与扩展事件均属于响应进展，不依赖该事件是否产生可见输出。
+  持续有事件到达的生成可以超过 timeout；SSE 注释心跳或未完成的数据片段不刷新预算。
+- 向消费者交出事件后解除计时；解码、持久化、展示与队列背压不消耗下一次等待预算。
+  协议仍需要读取结束标记或 EOF 时，该等待也有独立预算。
+- 非流式 JSON 没有中间响应事件，以完整响应为一次等待。HTTP 连接、写入和连接池等待继续保留阶段超时。
+- 等待预算耗尽统一抛出 `ProviderResponseTimeout`，经共享请求边界转换为
+  `provider_response_timeout` 与 `Model response timed out after … seconds of inactivity.`。
+  已知网络异常按实际异常类型保留连接、读取、写入、连接池等错误码；这些安全诊断与认证方式、
+  协议或模型名无关。HTTP、认证和协议内容错误各自保留所属边界的分类，未知敏感响应仍须脱敏。
+
+`stream_with_retries` 统一拥有模型尝试预算和退避，认证恢复最多一次且共享该预算。
+只允许在模型输出之前重试；隐藏的思考输出也会禁止重放，展示过滤发生在该判断之后。
+流式工具参数是尚未获执行许可的增量；失败不会补造成功完成事件，也不会执行部分工具调用。
+超时、取消、协议提前结束和显式关闭均逐层关闭当前流，借用的 HTTP client 与认证服务保持可用。
+替换 HTTP transport 的实现必须遵守同一等待和关闭契约；协议 adapter 不补设另一套计时器。
+
+跨协议验证见 `tests/providers/test_model_request_timeout.py` 与
+`tests/providers/test_transport_diagnostics.py`；完整工具执行边界见
+`tests/application/test_responses_runtime.py`。
 
 ## 配置分区
 

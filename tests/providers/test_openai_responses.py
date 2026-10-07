@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from contextlib import aclosing
 
@@ -91,85 +90,6 @@ async def test_closing_outer_stream_immediately_releases_transport():
         assert (await anext(events)).text == "partial"
         assert not transport.closed
     assert transport.closed
-
-
-@pytest.mark.parametrize("cancel", [False, True])
-@pytest.mark.parametrize("private_headers", [False, True])
-async def test_stalled_stream_times_out_or_cancels_and_closes_without_replay(
-    cancel, private_headers
-):
-    started = asyncio.Event()
-
-    class StalledTransport(StreamTransport):
-        async def stream_json(self, **kwargs):
-            self.requests.append(kwargs)
-            try:
-                yield PARTIAL
-                started.set()
-                await asyncio.Event().wait()
-            finally:
-                self.closed = True
-
-    transport = StalledTransport([])
-    provider = OpenAIResponsesProvider(
-        base_url="https://fixture.invalid",
-        transport=transport,
-        timeout=10 if cancel else 0.03,
-        headers=(
-            {"x-conversation-id": {"source": "literal", "value": "private-session"}}
-            if private_headers
-            else None
-        ),
-    )
-    task = asyncio.create_task(collect(provider))
-    await asyncio.wait_for(started.wait(), 1)
-    if cancel:
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-    else:
-        events = await asyncio.wait_for(task, 1)
-        assert [event.type for event in events] == ["text_delta", "error"]
-        assert "timed out" in events[-1].error
-        assert events[-1].error_code == "provider_response_timeout"
-        if private_headers:
-            assert events[-1].error == (
-                "Model response timed out after 0.03 seconds (total request timeout)."
-            )
-        assert "private-session" not in repr(events)
-    assert transport.closed and len(transport.requests) == 1
-
-
-async def test_timeout_does_not_cancel_consumer_while_it_processes_an_event():
-    transport = StreamTransport([PARTIAL, terminal([message("partial")])])
-    provider = OpenAIResponsesProvider(
-        base_url="https://fixture.invalid",
-        transport=transport,
-        timeout=0.01,
-    )
-    async with aclosing(provider.stream(model=MODEL, messages=[])) as events:
-        await anext(events)
-        await asyncio.sleep(0.03)
-    assert transport.closed
-
-
-async def test_timeout_before_output_uses_shared_bounded_retry_budget():
-    class StalledTransport(StreamTransport):
-        async def stream_json(self, **kwargs):
-            self.requests.append(kwargs)
-            await asyncio.Event().wait()
-            yield {}  # Makes this a streaming transport.
-
-    transport = StalledTransport([])
-    provider = OpenAIResponsesProvider(
-        base_url="https://fixture.invalid",
-        transport=transport,
-        timeout=0.01,
-        retry_policy=ProviderRetryPolicy(max_attempts=2, initial_backoff_seconds=0),
-    )
-    events = await asyncio.wait_for(collect(provider), 1)
-    assert [event.type for event in events] == ["retry_scheduled", "error"]
-    assert len(transport.requests) == 2
 
 
 async def test_static_authorization_lifetime_binds_opaque_state_without_key_derivation():

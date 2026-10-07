@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -81,8 +82,8 @@ def build_runtime_adapter(
         raise ConfigError(f"--model is required for {protocol} protocol")
 
     timeout = 60.0 if options.timeout is None else options.timeout
-    if timeout <= 0:
-        raise ConfigError("timeout must be greater than 0")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ConfigError("timeout must be positive and finite")
 
     api_key = None
     if protocol != "faux" and authenticator is None:

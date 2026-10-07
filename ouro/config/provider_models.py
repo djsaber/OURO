@@ -416,7 +416,7 @@ class ProviderConfig(OuroModel):
     base_url: str | None = None
     api_path: str | None = None
     enabled: bool = True
-    timeout_seconds: float = Field(default=60.0, gt=0)
+    timeout_seconds: float = Field(default=60.0, gt=0, allow_inf_nan=False)
     retry_policy: ProviderRetryPolicy = Field(default_factory=ProviderRetryPolicy)
     headers: dict[str, ProviderHeaderValue] = Field(default_factory=dict, repr=False)
     extra: Metadata = MetadataField

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import math
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import aclosing
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
@@ -38,17 +40,19 @@ class ProviderTransportError(RuntimeError):
 
 
 class ProviderResponseTimeout(ProviderTransportError):
-    """The adapter's total request deadline, distinct from HTTP read/connect timeouts."""
+    """No response event arrived within the transport's wait budget."""
 
     def __init__(self, timeout_seconds: float) -> None:
         self.timeout_seconds = timeout_seconds
         super().__init__(
-            f"Model response timed out after {timeout_seconds:g} seconds (total request timeout).",
+            f"Model response timed out after {timeout_seconds:g} seconds of inactivity.",
             retryable=True,
         )
 
 
 class ProviderHTTPTransport(Protocol):
+    """Bound response waits; streaming transports renew the budget for each SSE item."""
+
     async def post_json(
         self,
         *,
@@ -124,6 +128,7 @@ class HttpxProviderHTTPTransport:
         payload: Mapping[str, Any],
         timeout: float,
     ) -> dict[str, Any]:
+        _validate_timeout(timeout)
         request_headers = {
             "content-type": "application/json",
             "accept": "application/json",
@@ -133,13 +138,14 @@ class HttpxProviderHTTPTransport:
         failures: list[tuple[str, httpx.RequestError]] = []
         for index, (route, client) in enumerate(routes):
             try:
-                response = await client.post(
-                    url,
-                    headers=dict(request_headers),
-                    json=dict(payload),
-                    timeout=timeout,
-                    follow_redirects=False,
-                )
+                async with asyncio.timeout(timeout):
+                    response = await client.post(
+                        url,
+                        headers=dict(request_headers),
+                        json=dict(payload),
+                        timeout=timeout,
+                        follow_redirects=False,
+                    )
                 response.raise_for_status()
                 break
             except httpx.HTTPStatusError as exc:
@@ -156,6 +162,8 @@ class HttpxProviderHTTPTransport:
                 if index + 1 < len(routes):
                     continue
                 raise _provider_network_error(failures) from exc
+            except TimeoutError:
+                raise ProviderResponseTimeout(timeout) from None
         else:  # pragma: no cover - every failed route raises above.
             raise AssertionError("provider request exhausted network routes")
 
@@ -182,32 +190,30 @@ class HttpxProviderHTTPTransport:
         headers: Mapping[str, str],
         payload: Mapping[str, Any],
         timeout: float,
-    ) -> AsyncIterator[Mapping[str, Any]]:
+    ) -> AsyncGenerator[Mapping[str, Any]]:
+        _validate_timeout(timeout)
         request_headers = {
             "content-type": "application/json",
             "accept": "text/event-stream",
             **headers,
         }
-        stream_timeout = httpx.Timeout(
-            connect=timeout,
-            read=None,
-            write=timeout,
-            pool=timeout,
-        )
         routes = self._clients_for_request()
         failures: list[tuple[str, httpx.RequestError]] = []
         for index, (route, client) in enumerate(routes):
             emitted_item = False
             try:
-                async with client.stream(
-                    "POST",
-                    url,
-                    headers=dict(request_headers),
-                    json=dict(payload),
-                    timeout=stream_timeout,
-                    follow_redirects=False,
-                ) as response:
-                    async for item in _stream_sse_json(response):
+                async with aclosing(
+                    _stream_request(client, url, request_headers, payload, timeout)
+                ) as items:
+                    while True:
+                        # Time only the next complete SSE item, including opening
+                        # the response on the first pull. Decoding and consumer
+                        # backpressure must not spend the provider's wait budget.
+                        try:
+                            async with asyncio.timeout(timeout):
+                                item = await anext(items)
+                        except StopAsyncIteration:
+                            break
                         emitted_item = True
                         yield item
                 return
@@ -216,6 +222,35 @@ class HttpxProviderHTTPTransport:
                 if not emitted_item and index + 1 < len(routes):
                     continue
                 raise _provider_network_error(failures) from exc
+            except TimeoutError:
+                raise ProviderResponseTimeout(timeout) from None
+
+
+def _validate_timeout(timeout: float) -> None:
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be positive and finite")
+
+
+async def _stream_request(
+    client: httpx.AsyncClient,
+    url: str,
+    headers: Mapping[str, str],
+    payload: Mapping[str, Any],
+    timeout: float,
+) -> AsyncGenerator[Mapping[str, Any]]:
+    # Complete SSE events, not socket bytes or comment heartbeats, establish
+    # response progress. The caller owns that wait timer; httpx bounds setup I/O.
+    async with client.stream(
+        "POST",
+        url,
+        headers=dict(headers),
+        json=dict(payload),
+        timeout=httpx.Timeout(connect=timeout, read=None, write=timeout, pool=timeout),
+        follow_redirects=False,
+    ) as response:
+        async with aclosing(_stream_sse_json(response)) as items:
+            async for item in items:
+                yield item
 
 
 def _compact_body(body: str) -> str:
@@ -270,7 +305,7 @@ def _profile_has_http_proxy(profile: _ProxyProfile) -> bool:
     return any(key in _HTTP_PROXY_KEYS for key, _ in profile)
 
 
-async def _stream_sse_json(response: httpx.Response) -> AsyncIterator[Mapping[str, Any]]:
+async def _stream_sse_json(response: httpx.Response) -> AsyncGenerator[Mapping[str, Any]]:
     if response.status_code >= 300:
         body = (await response.aread()).decode(errors="replace")
         raise ProviderTransportError(

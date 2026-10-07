@@ -31,7 +31,11 @@ max_output_tokens 保持端点配置的正整数和本地上下文预算语义�
 
 reasoning profile 只能声明原生 reasoning 对象，不能复用 Chat Completions 的 reasoning_effort。text.format 需要结构化输出能力；原生图片需 Endpoint 声明 vision。未声明工具能力时拒绝工具输入及工具输出。展示层可隐藏 reasoning_delta，但隐藏发生在共享重试边界之后，已收到思考输出仍禁止重放。完整 reasoning item 的保存不受展示开关影响。
 
-JSON 与 SSE 使用同一 decoder/完成校验。每次网络尝试由 Endpoint timeout 设置总时限；等待流事件时才激活超时，交还消费者处理期间不定时取消消费者任务。显式 check 保留端点的流模式和输出上限，避免用 1 token 限制误判需要思考预算的模型。超时、HTTP 及认证恢复共用既有尝试预算；输出后失败不重试。外层关闭逐层关闭当前尝试、decoder 与 HTTP 流；借用的认证服务/HTTP client 不被关闭。
+JSON 与 SSE 使用同一 decoder/完成校验。等待预算、错误分类、重试与关闭遵循
+[跨协议公共契约](provider-configuration.md#请求等待错误与资源生命周期)，不设置响应总生成时限。
+SSE 在等待下一条完整事件时启用 Provider timeout，持续到达的工具参数、思考及生命周期事件均刷新等待预算。
+显式 check 保留端点的流模式和输出上限，避免用 1 token 限制误判需要思考预算的模型。
+外层关闭逐层关闭当前尝试、decoder 与 HTTP 流；借用的认证服务/HTTP client 不被关闭。
 
 managed scope 使用稳定服务/账户身份，刷新 revision 不改变 scope。static 无法证明跨重建的账户身份，因此使用认证实例生命周期内的随机绑定标识，不持久化或散列 API Key。同实例可原生重放；重建 static 认证后从 canonical 消息帧继续，不发送旧 scope 的 opaque items。
 
@@ -95,7 +99,7 @@ usage，不将失败响应的 continuation 提交为可重放状态。
 
 message、reasoning 和 function_call 是当前支持的完整输出类型。未知元数据事件可忽略，未知 output item 不可忽略。完整工具 arguments 必须为 JSON 对象，拒绝重复键、非有限数字、数组和残缺 JSON；同响应 call_id 不得重复。交错工具通过各自 item identity 聚合。
 
-按事件语义应用终态约束：终态后再次收到已识别的输出、生命周期事件或重复终态明确失败；未知事件类型在终态前后均忽略，不按供应商或具体扩展名称设置特例，不从扩展事件推断完成或用量。事件仍须带字符串 type，已知 output item 内的未知类型仍失败。完成事实延迟到输入流正常结束后提交，避免已经发出成功/usage 后又发现矛盾。解码器 finish 后不再接受事件。流的网络超时、总时限和重试预算由 adapter/transport 拥有。消费者提前退出时必须显式关闭外层异步生成器。
+按事件语义应用终态约束：终态后再次收到已识别的输出、生命周期事件或重复终态明确失败；未知事件类型在终态前后均忽略，不按供应商或具体扩展名称设置特例，不从扩展事件推断完成或用量。事件仍须带字符串 type，已知 output item 内的未知类型仍失败。完成事实延迟到输入流正常结束后提交，避免已经发出成功/usage 后又发现矛盾。解码器 finish 后不再接受事件。网络等待由公共 transport 计时，重试预算由共享请求策略拥有。消费者提前退出时必须显式关闭外层异步生成器。
 
 缺少有效 completed 终态的响应按协议失败结束，即使此前已展示了工具参数，也不能触发 Core 的 done 边界执行。
 这类协议失败不发 usage；只有经过验证的完成事件才能进入当前用量账本。
@@ -108,7 +112,8 @@ usage 只采用供应商实际值，缺失时为 None；input_tokens 包含 cach
 - `tests/providers/test_openai_responses_stream.py`：item/最终快照的三种组合、交错工具、增量去重、拒绝/仅 reasoning/空输出、错误/截断/矛盾终态、共享 SSE transport 及关闭/取消。
 - `tests/probes/test_codex_responses.py`：实验与正式收集器共用后的回归；架构测试保护纯协议边界。
 - `tests/probes/test_codex_adapter.py`：正式 adapter 的内存探针，合成 HTTP 验证登录材料首轮请求、跨刷新加密 reasoning 重放、两轮工具、服务声明省略输出上限及预算限制披露、HTTP 失败/取消清理及安全摘要；真实操作见[探针说明](../../dev/probes/README.md#正式-adapter-验证)。
-- `tests/providers/test_openai_responses.py`：配置/工厂到请求、原生 reasoning、静态绑定、managed 刷新续接/换账户、超时/取消/显式关闭、隐藏思考后的禁止重试。
+- `tests/providers/test_openai_responses.py`：配置/工厂到请求、原生 reasoning、静态绑定、managed 刷新续接/换账户、显式关闭、隐藏思考后的禁止重试。
+- `tests/providers/test_model_request_timeout.py`：三种协议的持续输出、无输出进度事件、消费者背压、停滞、超时重试、隐藏思考后的禁止重放、取消及显式关闭。
 - `tests/providers/test_request_authentication.py`：三种协议共用两种不同头编码的 driver，覆盖 JSON/SSE、注销、共享重试预算及安全错误。
 - `tests/application/test_responses_runtime.py`：完整 LocalApplication + 正式 HTTP adapter，覆盖文件/SQLite 和 JSON/SSE 四种组合下的两轮工具、reasoning、重启后 401 刷新续接、注销、不完整响应恢复、跨协议/模型切换后的无输入续跑及普通提交、分支与压缩；验证工具只执行一次、原历史保留、实际 token 入账、订阅计费归属及未知金额。
 

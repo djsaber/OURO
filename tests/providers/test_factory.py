@@ -28,6 +28,22 @@ from tests.providers.responses_fixtures import message, terminal
 
 
 @pytest.mark.parametrize(
+    "protocol", ["openai-responses", "openai-chat-completions", "anthropic-messages"]
+)
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf")])
+def test_all_protocols_reject_invalid_timeout_before_building_adapter(protocol, timeout):
+    with pytest.raises(ConfigError, match="positive and finite"):
+        build_runtime_adapter(
+            ProviderRuntimeOptions(
+                protocol=protocol,
+                model="fixture",
+                base_url="https://fixture.invalid",
+                timeout=timeout,
+            )
+        )
+
+
+@pytest.mark.parametrize(
     ("protocol", "module", "limit_field"),
     [
         ("openai-responses", "openai_responses", "max_output_tokens"),

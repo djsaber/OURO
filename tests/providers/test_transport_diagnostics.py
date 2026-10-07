@@ -19,6 +19,7 @@ HEADERS = {"x-conversation-id": {"source": "literal", "value": SECRET}}
 
 @pytest.mark.parametrize("provider", PROVIDERS)
 @pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("private_headers", [False, True])
 @pytest.mark.parametrize(
     "exception_type,code,description",
     [
@@ -35,15 +36,16 @@ HEADERS = {"x-conversation-id": {"source": "literal", "value": SECRET}}
         (ssl.SSLError, "provider_connection_failed", "ConnectError"),
     ],
 )
-async def test_private_header_network_failures_keep_safe_types_through_retries(
-    provider, streaming, exception_type, code, description
+async def test_network_failures_keep_common_safe_types_through_retries(
+    provider, streaming, private_headers, exception_type, code, description
 ):
     attempts = 0
 
     def handler(request):
         nonlocal attempts
         attempts += 1
-        assert request.headers["x-conversation-id"] == SECRET
+        if private_headers:
+            assert request.headers["x-conversation-id"] == SECRET
         if exception_type is ssl.SSLError:
             raise httpx.ConnectError(SECRET, request=request) from ssl.SSLError(SECRET)
         raise exception_type(SECRET, request=request)
@@ -51,7 +53,7 @@ async def test_private_header_network_failures_keep_safe_types_through_retries(
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         adapter = provider(
             base_url="https://fixture.invalid",
-            headers=HEADERS,
+            headers=HEADERS if private_headers else None,
             transport=HttpxProviderHTTPTransport(client),
             retry_policy=ProviderRetryPolicy(max_attempts=2, initial_backoff_seconds=0),
         )

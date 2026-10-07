@@ -73,9 +73,7 @@ def request_failure(
     )
     safe_failure = _safe_transport_failure(error)
     if safe_failure is not None:
-        code, safe_message = safe_failure
-        if redact_errors:
-            message = safe_message
+        code, message = safe_failure
     retryable = error.retryable
     if error.status_code == 401:
         code, message, retryable = (
@@ -102,8 +100,7 @@ def request_failure(
 def _safe_transport_failure(error: ProviderTransportError) -> tuple[str, str] | None:
     if isinstance(error, ProviderResponseTimeout):
         return "provider_response_timeout", (
-            f"Model response timed out after {error.timeout_seconds:g} seconds "
-            "(total request timeout)."
+            f"Model response timed out after {error.timeout_seconds:g} seconds of inactivity."
         )
     # The transport chains the actual httpx failure, including the final route
     # after fallback. Expose only known class names, never messages or URLs.

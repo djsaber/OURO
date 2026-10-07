@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import deque
 from datetime import UTC, datetime
@@ -21,7 +22,7 @@ from ouro.providers.http_transport import HttpxProviderHTTPTransport
 from ouro.tools import Tool, ToolDefinition, ToolResult
 from tests.application.test_runtime_authentication import login
 from tests.auth import test_driver_contracts as auth_fixtures
-from tests.providers.responses_fixtures import call, item_event, message, reasoning, terminal
+from tests.providers.responses_fixtures import call, delta, item_event, message, reasoning, terminal
 
 
 @pytest.fixture(params=[("files", False), ("files", True), ("sqlite", False), ("sqlite", True)])
@@ -85,6 +86,8 @@ async def responses_runtime(tmp_path, monkeypatch, request):
         reply = replies.popleft()
         if isinstance(reply, int):
             return httpx.Response(reply)
+        if isinstance(reply, httpx.Response):
+            return reply
         if request.url.path.endswith("/chat/completions"):
             return httpx.Response(200, json=reply)
         assert "max_output_tokens" not in payload
@@ -117,7 +120,9 @@ async def responses_runtime(tmp_path, monkeypatch, request):
             lambda: HttpxProviderHTTPTransport(client),
         )
 
-        def build():
+        def build(*, timeout=None):
+            if timeout is not None:
+                configs.update_provider(provider.provider_id, timeout_seconds=timeout)
             runtime = build_local_runtime(
                 tmp_path,
                 session_backend=backend,
@@ -143,6 +148,59 @@ async def responses_runtime(tmp_path, monkeypatch, request):
             return LocalApplication.from_runtime(runtime)
 
         yield build, replies, requests, executions
+
+
+@pytest.mark.parametrize("responses_runtime", [("files", True), ("sqlite", True)], indirect=True)
+@pytest.mark.parametrize("stall", [False, True])
+async def test_long_tool_arguments_execute_only_after_successful_completion(
+    responses_runtime, stall
+):
+    build, replies, requests, executions = responses_runtime
+    output = call()
+    chunks = [item_event(0, {**output, "arguments": ""}, complete=False)] + [
+        delta("response.function_call_arguments.delta", 0, output["id"], part)
+        for part in output["arguments"]
+    ]
+
+    class ToolBody(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self):
+            for chunk in chunks:
+                await asyncio.sleep(0.04)
+                assert executions == []
+                yield f"data: {json.dumps(chunk)}\n\n".encode()
+            if stall:
+                await asyncio.Event().wait()
+            yield f"data: {json.dumps(terminal([output]))}\n\n".encode()
+
+        async def aclose(self):
+            self.closed = True
+
+    body = ToolBody()
+    async with build(timeout=0.2) as app:
+        await login(app.provider_auth)
+        replies.extend([httpx.Response(200, stream=body), terminal([message("finished")])])
+        result = await app.runtime.run("Call echo once.")
+        assert body.closed
+        assert (
+            "".join(
+                event.payload["arguments_delta"]
+                for event in result.events
+                if event.event_type == "model_tool_call_delta"
+            )
+            == output["arguments"]
+        )
+        if stall:
+            assert result.run.status == "failed"
+            assert "inactivity" in result.run.error
+            assert executions == [] and len(requests) == 1
+            assert not result.run.usage_entry_ids
+        else:
+            assert result.run.status == "completed", result.run.error
+            assert result.final_text == "finished"
+            assert executions == [1] and len(requests) == 2
+            assert len(result.run.usage_entry_ids) == 2
 
 
 async def tool_run(app, replies):

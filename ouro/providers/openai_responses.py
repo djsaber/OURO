@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import math
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import aclosing
 from copy import deepcopy
@@ -29,7 +27,6 @@ from ouro.providers.headers import ProviderHeaderResolver
 from ouro.providers.http_transport import (
     HttpxProviderHTTPTransport,
     ProviderHTTPTransport,
-    ProviderResponseTimeout,
 )
 from ouro.providers.openai_responses_codec import responses_input, responses_tools
 from ouro.providers.openai_responses_errors import OpenAIResponsesError
@@ -61,8 +58,6 @@ class OpenAIResponsesProvider:
     ) -> None:
         if authenticator is not None and api_key is not None:
             raise ValueError("provide either an API Key or a request authenticator")
-        if not math.isfinite(timeout) or timeout <= 0:
-            raise ValueError("timeout must be positive and finite")
         self.provider_id = provider_id or self.provider_id
         self.base_url = base_url.rstrip("/")
         self.api_path = api_path if api_path.startswith("/") else "/" + api_path
@@ -104,16 +99,10 @@ class OpenAIResponsesProvider:
                 headers=headers,
             ),
             self.retry_policy,
+            include_reasoning=model.reasoning.output in {"summary", "text"},
         )
         async with aclosing(attempts):
             async for event in attempts:
-                # Visibility is separate from the retry boundary: hidden
-                # reasoning still means the model has started responding.
-                if event.type == "reasoning_delta" and model.reasoning.output not in {
-                    "summary",
-                    "text",
-                }:
-                    continue
                 yield event
 
     async def _stream_once(
@@ -153,16 +142,8 @@ class OpenAIResponsesProvider:
                     model_id=model.model_id,
                     scope=snapshot.scope,
                 )
-                deadline = asyncio.get_running_loop().time() + self.timeout
                 async with aclosing(events):
-                    while True:
-                        # Do not leave a timeout armed while control belongs to
-                        # the consumer of this generator.
-                        try:
-                            async with asyncio.timeout_at(deadline):
-                                event = await anext(events)
-                        except StopAsyncIteration:
-                            break
+                    async for event in events:
                         if event.type == "tool_call_delta" and not model.supports_tools:
                             raise OpenAIResponsesError("unsupported_output_item")
                         yield event
@@ -170,8 +151,6 @@ class OpenAIResponsesProvider:
                 # Codec errors are already fixed local facts, including actionable
                 # continuation mismatches; never replace them with raw service text.
                 yield ProviderStreamEvent(type="error", error=str(error), error_code=error.code)
-            except TimeoutError:
-                raise ProviderResponseTimeout(self.timeout) from None
 
     async def _chunks(
         self, url: str, headers: Mapping[str, str], payload: dict[str, Any], streaming: bool

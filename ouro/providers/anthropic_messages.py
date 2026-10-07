@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+from contextlib import aclosing
 from typing import Any
 
 from ouro.auth.request_auth import RequestAuthenticator, StaticRequestAuthenticator
@@ -95,10 +96,10 @@ class AnthropicMessagesProvider:
         messages: list[ModelMessage],
         tools: list[dict[str, Any]] | None = None,
         request_context: ProviderRequestContext | None = None,
-    ) -> AsyncIterator[ProviderStreamEvent]:
+    ) -> AsyncGenerator[ProviderStreamEvent]:
         request_context = model_request_context(model, request_context)
         headers = self.header_resolver.resolve(request_context, defaults=self._headers())
-        async for event in stream_with_retries(
+        attempts = stream_with_retries(
             lambda: self._stream_once(
                 model=model,
                 system_prompt=system_prompt,
@@ -107,8 +108,11 @@ class AnthropicMessagesProvider:
                 headers=headers,
             ),
             self.retry_policy,
-        ):
-            yield event
+            include_reasoning=model.reasoning.output in {"summary", "text"},
+        )
+        async with aclosing(attempts):
+            async for event in attempts:
+                yield event
 
     async def check_connection(
         self, model: ModelMetadata, *, request_context: ProviderRequestContext | None = None
@@ -133,7 +137,7 @@ class AnthropicMessagesProvider:
         messages: list[ModelMessage],
         tools: list[dict[str, Any]] | None,
         headers: Mapping[str, str],
-    ) -> AsyncIterator[ProviderStreamEvent]:
+    ) -> AsyncGenerator[ProviderStreamEvent]:
         async with request_authentication(
             self.authenticator,
             url=f"{self.base_url}{self.api_path}",
@@ -141,14 +145,16 @@ class AnthropicMessagesProvider:
             redact_errors=self.redact_errors,
             policy=self.request_policy,
         ) as snapshot:
-            async for event in self._stream_response(
+            events = self._stream_response(
                 model=model,
                 system_prompt=system_prompt,
                 messages=messages,
                 tools=tools,
                 headers=snapshot.headers,
-            ):
-                yield safe_response_event(event, snapshot, redact_errors=self.redact_errors)
+            )
+            async with aclosing(events):
+                async for event in events:
+                    yield safe_response_event(event, snapshot, redact_errors=self.redact_errors)
 
     async def _stream_response(
         self,
@@ -158,7 +164,7 @@ class AnthropicMessagesProvider:
         system_prompt: str,
         messages: list[ModelMessage],
         tools: list[dict[str, Any]] | None,
-    ) -> AsyncIterator[ProviderStreamEvent]:
+    ) -> AsyncGenerator[ProviderStreamEvent]:
         stream_json = getattr(self.transport, "stream_json", None)
         if model.supports_streaming and callable(stream_json):
             payload = self._message_payload(
@@ -174,12 +180,13 @@ class AnthropicMessagesProvider:
                 payload=payload,
                 timeout=self.timeout,
             )
-            async for event in self._events_from_stream(
-                chunks,
-                model=model,
-                supports_tools=model.supports_tools,
-            ):
-                yield event
+            async with aclosing(chunks):
+                events = self._events_from_stream(
+                    chunks, model=model, supports_tools=model.supports_tools
+                )
+                async with aclosing(events):
+                    async for event in events:
+                        yield event
             return
 
         response = await self._post_message(
@@ -278,8 +285,6 @@ class AnthropicMessagesProvider:
 
         text_parts, reasoning_parts, tool_calls = content_blocks_from_response(response)
         continuation_blocks = continuation_blocks_from_response(response)
-        if model.reasoning.output not in {"summary", "text"}:
-            reasoning_parts = []
         if tool_calls and not supports_tools:
             yield ProviderStreamEvent(
                 type="error",
@@ -316,7 +321,7 @@ class AnthropicMessagesProvider:
         *,
         model: ModelMetadata,
         supports_tools: bool,
-    ) -> AsyncIterator[ProviderStreamEvent]:
+    ) -> AsyncGenerator[ProviderStreamEvent]:
         usage = Usage()
         saw_reasoning = False
         saw_tool_call = False
@@ -382,11 +387,10 @@ class AnthropicMessagesProvider:
                     thinking = str(delta["thinking"])
                     if thinking:
                         saw_reasoning = True
-                        if model.reasoning.output in {"summary", "text"}:
-                            yield ProviderStreamEvent(
-                                type="reasoning_delta",
-                                reasoning_content=thinking,
-                            )
+                        yield ProviderStreamEvent(
+                            type="reasoning_delta",
+                            reasoning_content=thinking,
+                        )
                     if isinstance(index, int) and index in continuation_blocks:
                         current = str(continuation_blocks[index].get("thinking") or "")
                         continuation_blocks[index]["thinking"] = current + thinking
