@@ -2985,7 +2985,7 @@ class CommandPopup(VerticalScroll):
         self._commands: tuple[TuiCommand, ...] = ()
         self._argument_command: TuiCommand | None = None
         self._arguments: tuple[TuiCommandArgument, ...] = ()
-        self._selected = 0
+        self._selected: int | None = 0
         self._content = Static(id="command-popup-content")
         self._heading = ""
         self._hint = ""
@@ -2995,7 +2995,7 @@ class CommandPopup(VerticalScroll):
 
     @property
     def selected_command(self) -> TuiCommand | None:
-        if self._argument_command is not None or not self._commands:
+        if self._argument_command is not None or not self._commands or self._selected is None:
             return None
         return self._commands[self._selected]
 
@@ -3005,7 +3005,7 @@ class CommandPopup(VerticalScroll):
 
     @property
     def selected_argument(self) -> TuiCommandArgument | None:
-        if self._argument_command is None or not self._arguments:
+        if self._argument_command is None or not self._arguments or self._selected is None:
             return None
         return self._arguments[self._selected]
 
@@ -3033,9 +3033,12 @@ class CommandPopup(VerticalScroll):
         command: TuiCommand,
         arguments: tuple[TuiCommandArgument, ...],
         *,
+        query: str = "",
         heading: str = "",
         hint: str = "",
     ) -> None:
+        """Show matches without implicitly accepting suggestions over typed input."""
+
         with self.app.batch_update():
             selected_value = (
                 self.selected_argument.value if self.selected_argument is not None else None
@@ -3044,10 +3047,12 @@ class CommandPopup(VerticalScroll):
             self._argument_command = command
             self._arguments = arguments
             self._heading, self._hint = heading, hint
-            self._selected = next(
-                (index for index, item in enumerate(arguments) if item.value == selected_value),
-                0,
-            )
+            self._selected = None
+            if not query.strip() or not any(item.is_suggestion for item in arguments):
+                self._selected = next(
+                    (index for index, item in enumerate(arguments) if item.value == selected_value),
+                    0,
+                )
             self.display = True
             self._render_arguments()
 
@@ -3072,7 +3077,10 @@ class CommandPopup(VerticalScroll):
         items = self._arguments if self._argument_command is not None else self._commands
         if not items:
             return
-        self._selected = (self._selected + offset) % len(items)
+        if self._selected is None:
+            self._selected = 0 if offset > 0 else len(items) - 1
+        else:
+            self._selected = (self._selected + offset) % len(items)
         if self._argument_command is not None:
             self._render_arguments()
         else:
@@ -3190,6 +3198,8 @@ class CommandPopup(VerticalScroll):
         self.call_after_refresh(self._scroll_selected_into_view, fitted_rows)
 
     def _scroll_selected_into_view(self, rows: tuple[Text, ...]) -> None:
+        if self._selected is None:
+            return
         selected = self._selected + bool(self._heading)
         if not rows or selected >= len(rows):
             return

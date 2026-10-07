@@ -2578,7 +2578,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._sync_command_suggestion(composer, popup, command_catalog=command_catalog)
             return
         arguments = matching_arguments(command, argument)
-        popup.show_arguments(command, arguments)
+        popup.show_arguments(command, arguments, query=argument)
         self._sync_command_suggestion(composer, popup, command_catalog=command_catalog)
 
     def on_text_area_selection_changed(self, message: TextArea.SelectionChanged) -> None:
@@ -3214,7 +3214,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._preferences.recent_workspaces if self._controller.session_id is None else ()
         )
         return (
-            *(TuiCommandArgument(workspace, "") for workspace in recent_workspaces),
+            *(
+                TuiCommandArgument(workspace, "", is_suggestion=True)
+                for workspace in recent_workspaces
+            ),
             TuiCommandArgument(
                 _CLEAR_WORKSPACE_HISTORY_ARGUMENT,
                 "",

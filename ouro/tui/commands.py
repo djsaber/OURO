@@ -15,6 +15,8 @@ class TuiCommandArgument:
     accent: str | None = None
     trailing_badge: str = ""
     checked: bool | None = None
+    # Free-form suggestions require explicit acceptance when input is present.
+    is_suggestion: bool = False
 
     @property
     def display_label(self) -> str:

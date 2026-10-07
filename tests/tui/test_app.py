@@ -11573,11 +11573,11 @@ async def test_command_and_approval_menus_fit_resized_terminal(tmp_path: Path) -
 async def test_workspace_command_selects_paths_only_before_session_and_keeps_clear_available(
     tmp_path: Path,
 ) -> None:
-    historical = tmp_path / "historical"
+    historical = tmp_path / "parent" / "historical"
     freeform = tmp_path / "custom workspace"
     rejected = tmp_path / "rejected"
     for workspace in (historical, freeform, rejected):
-        workspace.mkdir()
+        workspace.mkdir(parents=True)
     preferences = TuiPreferencesStore(tmp_path)
     preferences.save(TuiPreferences(recent_workspaces=(str(historical.resolve()),)))
     application = _application(tmp_path)
@@ -11621,6 +11621,52 @@ async def test_workspace_command_selects_paths_only_before_session_and_keeps_cle
         )
 
         composer = app.query_one(Composer)
+        for parent in (historical.parent, tmp_path):
+            composer.load_text(f"/workspace {parent}")
+            composer.move_cursor((0, len(composer.document.lines[0])))
+            await pilot.pause()
+            assert str(historical.resolve()) in [item.value for item in popup._arguments]
+            assert popup.selected_argument is None
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app._active_workspace == str(parent.resolve())
+            assert preferences.load().recent_workspaces[0] == str(parent.resolve())
+
+        composer.load_text(f"/workspace {historical.parent}")
+        composer.move_cursor((0, len(composer.document.lines[0])))
+        await pilot.pause()
+        await pilot.press("up")
+        assert popup.selected_argument is not None
+        assert popup.selected_argument.value == str(historical.resolve())
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app._active_workspace == str(historical.resolve())
+
+        composer.load_text(f"/workspace {historical.parent}")
+        composer.move_cursor((0, len(composer.document.lines[0])))
+        await pilot.pause()
+        await pilot.press("down")
+        assert popup.selected_argument is not None
+        assert popup.selected_argument.value == str(historical.resolve())
+        await pilot.press("right")
+        await pilot.pause()
+        assert composer.text == f"/workspace {historical}"
+        assert popup.selected_argument is None
+        await pilot.press(*("backspace" for _ in historical.name))
+        await pilot.pause()
+        assert popup.selected_argument is None
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app._active_workspace == str(historical.parent.resolve())
+
+        composer.load_text(f"/workspace {historical}")
+        composer.move_cursor((0, len(composer.document.lines[0])))
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app._active_workspace == str(historical.resolve())
+
         composer.load_text(f"/workspace {freeform}")
         composer.move_cursor((0, len(composer.document.lines[0])))
         await pilot.pause()
@@ -11631,9 +11677,10 @@ async def test_workspace_command_selects_paths_only_before_session_and_keeps_cle
         await pilot.press("enter")
         await pilot.pause()
         assert app._active_workspace == str(freeform.resolve())
-        assert preferences.load().recent_workspaces[:3] == (
+        assert preferences.load().recent_workspaces[:4] == (
             str(freeform.resolve()),
             str(historical.resolve()),
+            str(historical.parent.resolve()),
             str(tmp_path.resolve()),
         )
 
@@ -12062,9 +12109,11 @@ Create the requested image.
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("is_suggestion", (False, True))
 async def test_command_selection_executes_complete_argument(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    is_suggestion: bool,
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
     executed: list[tuple[str, str]] = []
@@ -12097,6 +12146,22 @@ async def test_command_selection_executes_complete_argument(
         )
         monkeypatch.setattr(app._controller, "execute_plugin_command", execute)
 
+        catalog = app._command_catalog()
+        monkeypatch.setattr(
+            app,
+            "_command_catalog",
+            lambda: tuple(
+                replace(
+                    command,
+                    argument_options=tuple(
+                        replace(option, is_suggestion=is_suggestion)
+                        for option in command.argument_options
+                    ),
+                )
+                for command in catalog
+            ),
+        )
+
         await pilot.press("slash", "p", "l", "a", "n", "enter")
         await pilot.pause()
 
@@ -12114,6 +12179,19 @@ async def test_command_selection_executes_complete_argument(
         await pilot.pause()
         assert composer.text == ""
         assert executed == [("plan", "off")]
+
+        composer.load_text("/plan o")
+        composer.move_cursor((0, len(composer.text)))
+        await pilot.pause()
+        if is_suggestion:
+            assert popup.selected_argument is None
+        else:
+            assert popup.selected_argument is not None
+            assert popup.selected_argument.value == "on"
+        assert composer.suggestion == "n"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert executed[-1] == ("plan", "o" if is_suggestion else "on")
 
 
 @pytest.mark.asyncio
