@@ -2176,7 +2176,7 @@ async def test_controller_keeps_archive_policy_in_tui_and_unarchives_after_updat
 
 
 @pytest.mark.asyncio
-async def test_controller_session_catalog_only_projects_primary_sessions(
+async def test_controller_session_catalog_includes_subagents_only_when_requested(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2230,6 +2230,12 @@ async def test_controller_session_catalog_only_projects_primary_sessions(
         assert entries[0].session_kind is None
         assert entries[0].health is None
         assert entries[0].catalog_error is not None
+        all_entries = {
+            entry.session_id: entry for entry in await controller.sessions(include_subagents=True)
+        }
+        assert set(all_entries) == {root.session_id, child.session_id}
+        assert all_entries[child.session_id].session_kind == "subagent"
+        assert all_entries[child.session_id].root_session_id == root.session_id
     finally:
         await controller.close()
 

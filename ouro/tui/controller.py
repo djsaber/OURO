@@ -979,13 +979,13 @@ class TuiController:
 
         return await asyncio.to_thread(read)
 
-    async def sessions(self) -> tuple[SessionCatalogEntry, ...]:
+    async def sessions(self, *, include_subagents: bool = False) -> tuple[SessionCatalogEntry, ...]:
         runtime = self._runtime()
         return await asyncio.to_thread(
             lambda: tuple(
                 entry
                 for entry in runtime.sessions.catalog().entries
-                if entry.session_kind != "subagent"
+                if include_subagents or entry.session_kind != "subagent"
             )
         )
 
@@ -1177,6 +1177,22 @@ class TuiController:
     async def default_model(self) -> AvailableModel:
         """Resolve the deployment default independently of the open Session or draft."""
         return await asyncio.to_thread(self._runtime().current_model)
+
+    async def selected_model_key(self) -> str | None:
+        """Resolve the current draft or controlled Session's endpoint identity."""
+
+        runtime = self._runtime()
+        session_id, initial_model = self._session_id, self._initial_model
+
+        def resolve() -> str:
+            if session_id is None and initial_model is not None:
+                return runtime.resolve_model(initial_model).key
+            return runtime.current_model(session_id).key
+
+        try:
+            return await asyncio.to_thread(resolve)
+        except ConfigError:
+            return None
 
     async def configured_default_model(self) -> AvailableModel | None:
         try:

@@ -6217,6 +6217,21 @@ async def test_session_picker_reads_only_the_catalog_projection(
         ).session
         for index in range(3)
     )
+    children = tuple(
+        SessionRecord(
+            session_id=f"ses_index_child_{index}",
+            title=f"Indexed child {index}",
+            namespace="task" if index == 1 else "default",
+            session_kind="subagent",
+            root_session_id=sessions[index % 2].session_id,
+            parent_session_id=("ses_index_child_0" if index == 2 else sessions[index].session_id),
+            delegation_id=f"dlg_index_child_{index}",
+        )
+        for index in range(3)
+    )
+    for child in children:
+        application.runtime.store.create_session(child)
+        assert application.runtime.store.refresh_catalog(child.session_id) is None
     app = OuroTuiApp(application=application)
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
@@ -6238,10 +6253,17 @@ async def test_session_picker_reads_only_the_catalog_projection(
             )
             await pilot.press("ctrl+s")
             await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
-
-        assert {choice.value for choice in app.screen._choices} == {
-            session.session_id for session in sessions
-        }
+            assert {choice.value for choice in app.screen._choices} == {
+                session.session_id for session in sessions
+            }
+            await pilot.press("tab")
+            await _wait_for_screen(app, ChoiceScreen, title="SESSION • TASK")
+            assert not app.screen._choices
+            await pilot.press("tab")
+            await _wait_for_screen(app, ChoiceScreen, title="SESSION • SUBAGENT")
+            assert {choice.value for choice in app.screen._choices} == {
+                child.session_id for child in children
+            }
 
 
 @pytest.mark.asyncio
@@ -6318,7 +6340,7 @@ async def test_session_picker_closes_modal_before_rendering_selected_history(
 
 
 @pytest.mark.asyncio
-async def test_session_picker_hides_child_and_agent_tree_keeps_it_navigable(
+async def test_session_picker_groups_child_and_agent_tree_keeps_it_navigable(
     tmp_path: Path,
 ) -> None:
     application = _application(tmp_path)
@@ -6334,18 +6356,17 @@ async def test_session_picker_hides_child_and_agent_tree_keeps_it_navigable(
         await pilot.press("ctrl+s")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         assert [choice.value for choice in app.screen._choices] == [root_session_id]
+        await pilot.press("tab")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSION • TASK")
+        assert not app.screen._choices
+        await pilot.press("tab")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSION • SUBAGENT")
+        assert [choice.value for choice in app.screen._choices] == [child_session_id]
         await pilot.press("enter")
-        await _wait_until(
-            lambda: app._visible_session_id() == root_session_id,
-            pilot,
-            description="root session surface",
-        )
-
-        app.post_message(events.Key("alt+right", None))
         await _wait_until(
             lambda: app._visible_session_id() == child_session_id,
             pilot,
-            description="direct child session surface from Agent tree",
+            description="direct child session surface from session picker",
         )
 
         panel = app.query_one(SubagentNavigationPanel)
@@ -6359,6 +6380,10 @@ async def test_session_picker_hides_child_and_agent_tree_keeps_it_navigable(
         assert panel.display is True
         assert panel.current_session_id == child_session_id
         assert panel.visible_session_ids == (child_session_id,)
+        await pilot.press("ctrl+s")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSION • SUBAGENT")
+        assert app.screen._choices[0].marker == DEFAULT_TUI_THEME.selected_choice_marker
+        await pilot.press("escape")
 
         app.post_message(events.Key("alt+up", None))
         await _wait_until(
@@ -9561,6 +9586,7 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         }
         assert shortcuts["Alt+T"] == "cycle model thinking"
         assert shortcuts["Alt+A"] == "cycle tool approval"
+        assert shortcuts["Tab"] == "user / task / subagent sessions"
         assert shortcuts["Alt+← / Alt+→"] == "switch agent"
         assert shortcuts["Alt+↑ / Alt+↓"] == "main / recent agent"
         files = next(choice for choice in menu._choices if choice.value == "command:@")

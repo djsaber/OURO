@@ -57,7 +57,7 @@ _HELP_SHORTCUTS = (
     ("Enter", "send / queue", "Shift+Enter", "new line"),
     ("Ctrl+Enter / Ctrl+J", "guide current task", "↑ / ↓", "input history"),
     ("Ctrl+N", "new session", "Ctrl+S", "sessions"),
-    ("Ctrl+T", "tasks", "Tab", "user / task sessions"),
+    ("Ctrl+T", "tasks", "Tab", "user / task / subagent sessions"),
     ("Alt+T", "cycle model thinking", "Alt+A", "cycle tool approval"),
     ("Alt+← / Alt+→", "switch agent", "Alt+↑ / Alt+↓", "main / recent agent"),
     ("Alt+P", "plugins", "Ctrl+P", "actions"),

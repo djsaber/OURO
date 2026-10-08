@@ -222,6 +222,7 @@ _MENU_ACTIONS: MenuDestination = "actions"
 _MENU_PLUGINS: MenuDestination = "plugins"
 _MENU_SESSIONS: MenuDestination = "sessions"
 _MENU_TASKS: MenuDestination = "tasks"
+_SESSION_GROUP_LABELS = {"default": "USER", "task": "TASK", "subagent": "SUBAGENT"}
 _ACTION_GROUP_RANK = {
     group: rank
     for rank, group in enumerate(
@@ -950,7 +951,7 @@ _OURO_TUI_CSS = """
 
 
 class OuroTuiApp(ConfigurationWorkflowsApp):
-    _session_namespace = "default"
+    _session_group = "default"
     TITLE = "OURO"
     SUB_TITLE = "Agent"
     ENABLE_COMMAND_PALETTE = False
@@ -3805,7 +3806,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     async def on_choice_screen_tab_requested(self, message: ChoiceScreen.TabRequested) -> None:
         message.stop()
-        self._session_namespace = "task" if self._session_namespace == "default" else "default"
+        self._session_group = _next_cycle_value(tuple(_SESSION_GROUP_LABELS), self._session_group)
         await self._choose_session(menu=message.menu, switch=True)
 
     async def _sync_task_status(self) -> None:
@@ -3822,17 +3823,30 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         menu: ChoiceScreen | None = None,
         switch: bool = False,
     ) -> None:
-        if not await self._refresh_sessions():
+        if not await self._refresh_sessions(include_subagents=True):
             return
         choices = _session_choices(
-            tuple(item for item in self._sessions if item.namespace == self._session_namespace),
+            tuple(
+                item
+                for item in self._sessions
+                if (
+                    item.session_kind == "subagent"
+                    if self._session_group == "subagent"
+                    else item.session_kind != "subagent" and item.namespace == self._session_group
+                )
+            ),
             selected_session_id=self._visible_session_id(),
             theme=self._tui_theme,
         )
-        domain = "TASK" if self._session_namespace == "task" else "USER"
+        domain = _SESSION_GROUP_LABELS[self._session_group]
         title = self._tui_theme.section_separator.join(("SESSION", domain))
         hint = self._tui_theme.inline_separator.join(
-            ("Tab USER/TASK", "↑/↓ move", "Enter select", "Esc back")
+            (
+                "Tab " + "/".join(_SESSION_GROUP_LABELS.values()),
+                "↑/↓ move",
+                "Enter select",
+                "Esc back",
+            )
         )
         session_menu: ChoiceScreen
 
@@ -4016,9 +4030,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
         await menu.open_child(delete_screen)
 
-    async def _refresh_sessions(self) -> bool:
+    async def _refresh_sessions(self, *, include_subagents: bool = False) -> bool:
         try:
-            self._sessions = await self._controller.sessions()
+            self._sessions = await self._controller.sessions(include_subagents=include_subagents)
         except Exception as exc:  # noqa: BLE001
             self.notify(str(exc), severity="error", markup=False)
             return False

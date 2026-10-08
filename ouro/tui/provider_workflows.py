@@ -484,11 +484,13 @@ class ProviderConfigurationWorkflows(App[int]):
         if not routes:
             return
         default_endpoint = _global_default_endpoint(catalog.providers)
+        selected_endpoint = await self._controller.selected_model_key()
         choices = tuple(
             _endpoint_route_choice(
                 provider,
                 endpoint,
                 default_endpoint=default_endpoint,
+                selected_endpoint=selected_endpoint,
                 theme=theme_for(self),
             )
             for provider, endpoint in routes.values()
@@ -503,11 +505,13 @@ class ProviderConfigurationWorkflows(App[int]):
             routes.clear()
             routes.update(_endpoint_routes(refreshed.providers))
             default_endpoint = _global_default_endpoint(refreshed.providers)
+            selected_endpoint = await self._controller.selected_model_key()
             return tuple(
                 _endpoint_route_choice(
                     item,
                     candidate,
                     default_endpoint=default_endpoint,
+                    selected_endpoint=selected_endpoint,
                     theme=theme_for(self),
                 )
                 for item, candidate in routes.values()
@@ -584,6 +588,7 @@ class ProviderConfigurationWorkflows(App[int]):
         choices = _provider_endpoint_choices(
             provider,
             candidates,
+            selected_endpoint=await self._controller.selected_model_key(),
             include_add=True,
             theme=theme_for(self),
         )
@@ -616,6 +621,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 return _provider_endpoint_choices(
                     provider,
                     refreshed_candidates,
+                    selected_endpoint=await self._controller.selected_model_key(),
                     include_add=True,
                     theme=theme_for(self),
                 )
@@ -906,6 +912,7 @@ def _endpoint_choice(
     *,
     available: bool,
     default: bool,
+    selected: bool,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> Choice:
     trailing = _endpoint_capabilities(endpoint)
@@ -914,6 +921,7 @@ def _endpoint_choice(
         endpoint.display_name or endpoint.model_id,
         trailing=theme.inline_separator.join(trailing),
         trailing_badge="default" if default else "",
+        marker=theme.selected_choice_marker if selected else "",
         disabled=not available,
     )
 
@@ -922,6 +930,7 @@ def _provider_endpoint_choices(
     provider: ProviderView,
     endpoints: Sequence[ProviderEndpointView],
     *,
+    selected_endpoint: str | None,
     include_add: bool,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[Choice, ...]:
@@ -930,6 +939,7 @@ def _provider_endpoint_choices(
             endpoint,
             available=provider.enabled,
             default=_is_global_default_endpoint(provider, endpoint),
+            selected=selected_endpoint == f"{provider.provider_id}/{endpoint.endpoint_id}",
             theme=theme,
         )
         for endpoint in endpoints
@@ -979,12 +989,14 @@ def _endpoint_route_choice(
     endpoint: ProviderEndpointView,
     *,
     default_endpoint: str | None,
+    selected_endpoint: str | None,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> Choice:
     choice = _endpoint_choice(
         endpoint,
         available=provider.enabled,
         default=default_endpoint == f"{provider.provider_id}/{endpoint.endpoint_id}",
+        selected=selected_endpoint == f"{provider.provider_id}/{endpoint.endpoint_id}",
         theme=theme,
     )
     return Choice(
@@ -992,6 +1004,7 @@ def _endpoint_route_choice(
         choice.label,
         trailing=choice.trailing,
         trailing_badge=choice.trailing_badge,
+        marker=choice.marker,
         group=provider.display_name,
         group_trailing="" if provider.enabled else "unavailable",
         disabled=choice.disabled,

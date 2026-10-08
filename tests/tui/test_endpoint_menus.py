@@ -73,7 +73,7 @@ async def test_endpoint_menus_project_global_default_independently_of_session_se
                 default_id,
                 "add-endpoint",
             ]
-        assert choices[recent_choice].marker == ""
+        assert choices[recent_choice].marker == app.tui_theme.selected_choice_marker
         assert choices[recent_choice].trailing == ""
         assert choices[recent_choice].trailing_badge == ""
         assert choices[default_choice].marker == ""
@@ -101,7 +101,7 @@ async def test_endpoint_menus_project_global_default_independently_of_session_se
             await app._controller.use_endpoint(gateway_id, recent_id)
             assert await menu.refresh_choices()
         choices = {choice.value: choice for choice in menu._choices}
-        assert choices[recent_choice].marker == ""
+        assert choices[recent_choice].marker == app.tui_theme.selected_choice_marker
         assert choices[recent_choice].trailing_badge == "default"
         assert choices[default_choice].marker == ""
         assert choices[default_choice].trailing_badge == ""
@@ -109,7 +109,7 @@ async def test_endpoint_menus_project_global_default_independently_of_session_se
         await app._select_model(default_key)
         assert await menu.refresh_choices()
         choices = {choice.value: choice for choice in menu._choices}
-        assert choices[default_choice].marker == ""
+        assert choices[default_choice].marker == app.tui_theme.selected_choice_marker
         assert choices[default_choice].trailing_badge == ""
         assert choices[recent_choice].marker == ""
         assert choices[recent_choice].trailing_badge == "default"
@@ -149,7 +149,7 @@ async def test_endpoint_menu_remains_available_without_a_resolvable_selection(
 
     async with run_ready_app(app) as pilot:
 
-        def unavailable():
+        def unavailable(*_args):
             raise ConfigError("default model is unavailable")
 
         monkeypatch.setattr(application.runtime, "current_model", unavailable)
