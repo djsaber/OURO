@@ -162,7 +162,7 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
         assert (await auth.wait(challenge.operation_id)).state == "succeeded"
         assert (await auth.status(provider_id)).credential.revision == 1
 
-    def echo(invocation):
+    def echo(invocation, context):
         executions.append(invocation.arguments["round"])
         return ToolResult(
             tool_call_id=invocation.tool_call_id, tool_name="echo", content="fixture result"

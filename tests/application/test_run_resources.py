@@ -286,6 +286,85 @@ async def test_recovery_cancellation_does_not_retain_an_unacquired_lease(runtime
     assert catalog.lease_count == 0
 
 
+async def test_failed_recovery_does_not_retain_the_runs_agent_catalog(runtime):
+    app, catalog, source = runtime
+    app.bind_extensions(catalog=source)
+
+    async def unavailable(*args, **kwargs):
+        raise RuntimeError("catalog unavailable")
+
+    source.snapshot_for = unavailable
+    run = delegated_run()
+    reference = weakref.ref(run.agent_catalog)
+    with pytest.raises(RuntimeError, match="catalog unavailable"):
+        await app._ensure_extension_snapshot(run)
+    del run
+    gc.collect()
+    assert reference() is None
+    assert catalog.lease_count == 0
+
+
+async def test_failed_queued_binding_releases_transferred_lease(runtime):
+    from ouro.application.queued_inputs import QueuedInput
+    from ouro.core.base import utc_now
+
+    app, catalog, source = runtime
+    app.bind_extensions(catalog=source)
+    run = delegated_run()
+    run.metadata["effective_tool_refs"] = "invalid"
+    queued = QueuedInput(
+        queue_id="queued",
+        prompt="hello",
+        mode="follow_up",
+        queued_at=utc_now(),
+        prompt_policy_checked=True,
+        prospective_run_id=run.run_id,
+        source="user",
+        role="user",
+        scaffold=False,
+        semantic_tag=None,
+    )
+    app._queued_extension_snapshots[queued.queue_id] = catalog.acquire()
+    with pytest.raises(ValueError, match="effective tool references"):
+        await app._attach_queued_extension_snapshot(run, [queued])
+    assert catalog.lease_count == 0
+
+
+async def test_failed_queue_lease_cleanup_keeps_the_primary_lease_owned(runtime):
+    from ouro.application.queued_inputs import QueuedInput
+    from ouro.core.base import utc_now
+
+    app, catalog, source = runtime
+    app.bind_extensions(catalog=source)
+    run = delegated_run()
+    first = QueuedInput(
+        queue_id="first",
+        prompt="hello",
+        mode="follow_up",
+        queued_at=utc_now(),
+        prompt_policy_checked=True,
+        prospective_run_id=run.run_id,
+        source="user",
+        role="user",
+        scaffold=False,
+        semantic_tag=None,
+    )
+    second = first.model_copy(update={"queue_id": "second"})
+
+    def fail(_catalog):
+        raise ValueError("lease cleanup failed")
+
+    primary = catalog.acquire()
+    app._queued_extension_snapshots[first.queue_id] = primary
+    app._queued_extension_snapshots[second.queue_id] = catalog.acquire(on_close=fail)
+    with pytest.raises(ValueError, match="lease cleanup failed"):
+        await app._attach_queued_extension_snapshot(run, [first, second])
+    assert app._queued_extension_snapshots[first.queue_id] is primary
+    assert catalog.lease_count == 1
+    await app.close()
+    assert catalog.lease_count == 0
+
+
 @pytest.mark.parametrize("failing_owner", ["run", "queue"])
 async def test_close_finishes_other_resources_when_a_lease_callback_fails(runtime, failing_owner):
     app, catalog, source = runtime

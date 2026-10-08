@@ -26,6 +26,7 @@ from ouro.tools.builtin_shell import (
     builtin_command_tool,
     detect_command_shell,
 )
+from ouro.tools.schema import tool_argument_error
 
 
 def _resolver(commands: dict[str, str]):
@@ -39,6 +40,29 @@ def _invocation(shell: CommandShell, command: str) -> ToolInvocation:
         tool_name=shell.tool_name,
         arguments={"command": command},
     )
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"timeout_seconds": True},
+        {"timeout_seconds": "30"},
+        {"timeout_seconds": 0},
+        {"timeout_seconds": -1},
+        {"timeout_seconds": None},
+        {"cwd": 12},
+        {"cwd": ""},
+    ],
+)
+async def test_command_rejects_invalid_options_before_starting_a_process(tmp_path, options):
+    shell = CommandShell("bash", str(tmp_path / "unavailable-shell"), "Bash", "Bash")
+    tool = builtin_command_tool(shell)
+    invocation = _invocation(shell, "ignored")
+    invocation.arguments.update(options)
+
+    assert tool_argument_error(tool.definition, invocation.arguments) is not None
+    with pytest.raises(ValueError):
+        await tool.execute(invocation, context=ToolExecutionContext(workspace=tmp_path))
 
 
 def _python_command(script: str) -> str:

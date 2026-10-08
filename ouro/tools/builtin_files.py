@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal, TextIO
+
+from pydantic import Field
 
 from ouro.core.base import utc_now
 from ouro.tools.base import (
@@ -12,13 +13,12 @@ from ouro.tools.base import (
     ToolInvocation,
     ToolResult,
 )
+from ouro.tools.builtin_common import BuiltinArguments, JsonInteger
 
 _MAX_READ_LINES = 1_000
 _MAX_READ_BYTES = 100_000
 _LINE_READ_CHARS = _MAX_READ_BYTES + 1
 _DISCARD_CHUNK_CHARS = 64 * 1_024
-
-WriteMode = Literal["overwrite", "append"]
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,63 @@ class _TextLine:
     truncated: bool
 
 
+class _ReadArguments(BuiltinArguments):
+    path: str = Field(
+        min_length=1,
+        description=("Absolute or workspace-relative file path."),
+    )
+    offset: JsonInteger = Field(
+        default=1,
+        ge=1,
+        description=(
+            "1-based starting line; use next_offset from a previous result to continue reading."
+        ),
+    )
+    limit: JsonInteger = Field(
+        default=_MAX_READ_LINES,
+        ge=1,
+        le=_MAX_READ_LINES,
+        description=("Maximum lines to return; the byte cap may shorten the page."),
+    )
+
+
+class _WriteArguments(BuiltinArguments):
+    path: str = Field(
+        min_length=1,
+        description=("Absolute or workspace-relative destination file path."),
+    )
+    content: str = Field(
+        description=("Exact text to write; no text or newlines are added."),
+    )
+    mode: Literal["overwrite", "append"] = Field(
+        default="overwrite",
+        description=(
+            "'overwrite' replaces the entire file; 'append' adds to its end. Both create a "
+            "missing file."
+        ),
+    )
+
+
+class _EditArguments(BuiltinArguments):
+    path: str = Field(
+        min_length=1,
+        description=("Absolute or workspace-relative path of the existing file."),
+    )
+    old: str = Field(
+        min_length=1,
+        description=(
+            "Literal text to match, not regex. Include context to distinguish repeated occurrences."
+        ),
+    )
+    new: str = Field(
+        description=("Replacement text; an empty string deletes the match."),
+    )
+    replace_all: bool = Field(
+        default=False,
+        description=("Set true only to replace every occurrence; false replaces only the first."),
+    )
+
+
 def builtin_file_tools() -> list[Tool]:
     return [
         Tool(
@@ -50,36 +107,7 @@ def builtin_file_tools() -> list[Tool]:
                     "are unsupported. Returns '<line number>\\t<content>', capped at 1,000 "
                     "lines or 100,000 UTF-8 bytes per call."
                 ),
-                parameters_schema={
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "minLength": 1,
-                            "description": "Absolute or workspace-relative file path.",
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "default": 1,
-                            "description": (
-                                "1-based starting line; use next_offset from a previous result "
-                                "to continue reading."
-                            ),
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": _MAX_READ_LINES,
-                            "default": _MAX_READ_LINES,
-                            "description": (
-                                "Maximum lines to return; the byte cap may shorten the page."
-                            ),
-                        },
-                    },
-                    "required": ["path"],
-                    "additionalProperties": False,
-                },
+                parameters_schema=_ReadArguments.model_json_schema(),
                 permission_mode="auto",
                 effect="read_only",
             ),
@@ -93,33 +121,7 @@ def builtin_file_tools() -> list[Tool]:
                     "targeted changes. Read or verify existing content before overwriting "
                     "a file whose contents matter. Creates missing parent directories."
                 ),
-                parameters_schema={
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "minLength": 1,
-                            "description": (
-                                "Absolute or workspace-relative destination file path."
-                            ),
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "Exact text to write; no text or newlines are added.",
-                        },
-                        "mode": {
-                            "type": "string",
-                            "enum": ["overwrite", "append"],
-                            "default": "overwrite",
-                            "description": (
-                                "'overwrite' replaces the entire file; 'append' adds to its end. "
-                                "Both create a missing file."
-                            ),
-                        },
-                    },
-                    "required": ["path", "content"],
-                    "additionalProperties": False,
-                },
+                parameters_schema=_WriteArguments.model_json_schema(),
                 permission_mode="approval",
                 effect="state_changing",
             ),
@@ -134,40 +136,7 @@ def builtin_file_tools() -> list[Tool]:
                     "rewrites. If old is absent, returns an error without changes. Matching "
                     "normalizes line endings to LF; CRLF files retain CRLF."
                 ),
-                parameters_schema={
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "minLength": 1,
-                            "description": (
-                                "Absolute or workspace-relative path of the existing file."
-                            ),
-                        },
-                        "old": {
-                            "type": "string",
-                            "minLength": 1,
-                            "description": (
-                                "Literal text to match, not regex. Include context to distinguish "
-                                "repeated occurrences."
-                            ),
-                        },
-                        "new": {
-                            "type": "string",
-                            "description": "Replacement text; an empty string deletes the match.",
-                        },
-                        "replace_all": {
-                            "type": "boolean",
-                            "default": False,
-                            "description": (
-                                "Set true only to replace every occurrence; false replaces "
-                                "only the first."
-                            ),
-                        },
-                    },
-                    "required": ["path", "old", "new"],
-                    "additionalProperties": False,
-                },
+                parameters_schema=_EditArguments.model_json_schema(),
                 permission_mode="approval",
                 effect="state_changing",
             ),
@@ -176,16 +145,12 @@ def builtin_file_tools() -> list[Tool]:
     ]
 
 
-def _read(
-    invocation: ToolInvocation,
-    *,
-    context: ToolExecutionContext,
-) -> ToolResult:
-    path = _path_arg(invocation, context, read_only=True)
+def _read(invocation: ToolInvocation, context: ToolExecutionContext) -> ToolResult:
+    arguments = _ReadArguments.model_validate(invocation.arguments)
+    path = context.resolve_path(arguments.path, read_only=True)
     if path.is_dir():
         raise IsADirectoryError(f"path is a directory, not a text file: {path}")
-    offset = _integer_arg(invocation, "offset", default=1)
-    limit = _integer_arg(invocation, "limit", default=_MAX_READ_LINES)
+    offset, limit = arguments.offset, arguments.limit
     with path.open("r", encoding="utf-8", newline=None) as stream:
         page = _read_text_page(
             stream,
@@ -212,14 +177,10 @@ def _read(
     )
 
 
-def _write(
-    invocation: ToolInvocation,
-    *,
-    context: ToolExecutionContext,
-) -> ToolResult:
-    path = _path_arg(invocation, context)
-    content = _text_arg(invocation, "content")
-    mode = _write_mode_arg(invocation)
+def _write(invocation: ToolInvocation, context: ToolExecutionContext) -> ToolResult:
+    arguments = _WriteArguments.model_validate(invocation.arguments)
+    path = context.resolve_path(arguments.path)
+    content, mode = arguments.content, arguments.mode
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w" if mode == "overwrite" else "a", encoding="utf-8", newline="") as file:
         file.write(content)
@@ -234,15 +195,11 @@ def _write(
     )
 
 
-def _edit(
-    invocation: ToolInvocation,
-    *,
-    context: ToolExecutionContext,
-) -> ToolResult:
-    path = _path_arg(invocation, context)
-    old = _to_lf(_text_arg(invocation, "old"))
-    new = _to_lf(_text_arg(invocation, "new"))
-    replace_all = _boolean_arg(invocation, "replace_all", default=False)
+def _edit(invocation: ToolInvocation, context: ToolExecutionContext) -> ToolResult:
+    arguments = _EditArguments.model_validate(invocation.arguments)
+    path = context.resolve_path(arguments.path)
+    old, new = _to_lf(arguments.old), _to_lf(arguments.new)
+    replace_all = arguments.replace_all
     with path.open("r", encoding="utf-8", newline="") as file:
         raw = file.read()
     # Match against the same universal-newline view the Read tool presents, so
@@ -431,40 +388,3 @@ def _is_pure_crlf(text: str) -> bool:
     """Return True when every line feed in the text is part of a CRLF sequence."""
     crlf_count = text.count("\r\n")
     return crlf_count > 0 and text.count("\n") == crlf_count
-
-
-def _path_arg(
-    invocation: ToolInvocation, context: ToolExecutionContext, *, read_only: bool = False
-) -> Path:
-    path = invocation.arguments.get("path")
-    if not isinstance(path, str) or not path:
-        raise ValueError("tool argument 'path' must be a non-empty string")
-    return context.resolve_path(path, read_only=read_only)
-
-
-def _text_arg(invocation: ToolInvocation, name: str) -> str:
-    value = invocation.arguments.get(name)
-    if not isinstance(value, str):
-        raise ValueError(f"tool argument '{name}' must be a string")
-    return value
-
-
-def _integer_arg(invocation: ToolInvocation, name: str, *, default: int) -> int:
-    value = invocation.arguments.get(name, default)
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise ValueError(f"tool argument '{name}' must be an integer")
-    return value
-
-
-def _boolean_arg(invocation: ToolInvocation, name: str, *, default: bool) -> bool:
-    value = invocation.arguments.get(name, default)
-    if not isinstance(value, bool):
-        raise ValueError(f"tool argument '{name}' must be a boolean")
-    return value
-
-
-def _write_mode_arg(invocation: ToolInvocation) -> WriteMode:
-    value = invocation.arguments.get("mode", "overwrite")
-    if value not in ("overwrite", "append"):
-        raise ValueError("tool argument 'mode' must be 'overwrite' or 'append'")
-    return value

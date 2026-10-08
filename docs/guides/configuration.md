@@ -13,8 +13,10 @@
 | `agents.json` | `agents.revision`、`agents.definitions`、`agents.runtime` |
 | `provider-templates.json` | Provider 模板及本地覆盖元数据 |
 
-各文件独立加锁并原子写入。当前实现只接受现行结构：主文件中出现 `providers`、`mcp`、`agents` 或 `prompts`
-会明确报错，不自动迁移；使用新 home 或清理失效配置后重新配置。托管凭据继续保存在独立的 `credentials/`。
+各文件独立读取、加锁并原子写入。查看或修改一个领域的配置，不受无关文件中的错误阻断；需要组合配置的
+运行与跨域引用检查仍会读取并校验所需文件，失败时明确报错，不静默使用默认配置。
+当前实现只接受现行结构：读取主文件时发现 `providers`、`mcp`、`agents` 或 `prompts` 会明确报错，
+不自动迁移；使用新 home 或显式修复失效配置。托管凭据继续保存在独立的 `credentials/`。
 
 个性化提示词通过 `ouro config prompt` 或 TUI `Actions > Personal prompts` 管理。替换项最多启用一项；
 启用另一项会原子关闭原项，全部关闭时使用默认系统提示词。追加项可独立启停，按数组顺序在基础提示词之后、

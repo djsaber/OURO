@@ -271,7 +271,7 @@ async def test_steering_waits_for_tool_results_before_entering_model_context(tmp
     provider = ToolTurnGateProvider()
     tools = ToolRegistry()
 
-    def echo(invocation):
+    def echo(invocation, context):
         return ToolResult(
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,
@@ -321,7 +321,7 @@ async def test_steering_is_consumed_before_model_resume_after_approval(tmp_path)
     provider.release_first.set()
     tools = ToolRegistry()
 
-    def echo(invocation):
+    def echo(invocation, context):
         return ToolResult(
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,

@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import Literal, cast
 
-from pydantic import JsonValue
+from pydantic import ConfigDict, Field, JsonValue
 
 from ouro.core.harness_calls import HarnessInvocation
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.tools.base import Tool, ToolDefinition, ToolExecutionContext, ToolInvocation, ToolResult
-from ouro.tools.builtin_common import _tool_result
+from ouro.tools.builtin_common import BuiltinArguments, _tool_result
 
 _TODOLIST_STATE_OWNER = "ouro.host"
 
@@ -33,68 +31,29 @@ _TODOLIST_GUIDANCE = (
 )
 
 
-_TODOLIST_SCHEMA: Mapping[str, object] = {
-    "type": "object",
-    "properties": {
-        "todos": {
-            "type": "array",
-            "description": "Full replacement list. Omit to read without changes; [] clears it.",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Short action describing one verifiable task.",
-                    },
-                    "status": {
-                        "type": "string",
-                        "enum": ["pending", "in_progress", "done"],
-                        "description": (
-                            "pending: not started; in_progress: active; done: fully completed."
-                        ),
-                    },
-                },
-                "required": ["title", "status"],
-                "additionalProperties": False,
-            },
-        }
-    },
-    "additionalProperties": False,
-}
-
-
-_MISSING = object()
-
-
 _STATE_SCHEMA_VERSION = 1
 
 
 TodoStatus = Literal["pending", "in_progress", "done"]
 
 
-_TODO_STATUSES = frozenset({"pending", "in_progress", "done"})
+class TodoItem(BuiltinArguments):
+    model_config = ConfigDict(frozen=True)
 
-
-@dataclass(frozen=True)
-class TodoItem:
-    title: str
-    status: TodoStatus = "pending"
-
-    @classmethod
-    def from_json(cls, raw: object) -> TodoItem:
-        if not isinstance(raw, dict):
-            raise ValueError("TodoList items must be objects")
-        title = raw.get("title")
-        if not isinstance(title, str) or not title:
-            raise ValueError("TodoList item title must be a non-empty string")
-        status = raw.get("status")
-        if status not in _TODO_STATUSES:
-            raise ValueError("TodoList item status must be one of: pending, in_progress, done")
-        return cls(title=title, status=cast(TodoStatus, status))
+    title: str = Field(min_length=1, description="Short action describing one verifiable task.")
+    status: TodoStatus = Field(
+        description="pending: not started; in_progress: active; done: fully completed.",
+    )
 
     def to_json(self) -> dict[str, object]:
         return {"title": self.title, "status": self.status}
+
+
+class _TodoListArguments(BuiltinArguments):
+    todos: list[TodoItem] = Field(
+        default_factory=list,
+        description="Full replacement list. Omit to read without changes; [] clears it.",
+    )
 
 
 class TodoListRepository:
@@ -123,7 +82,7 @@ class TodoListRepository:
         todos = raw.get("todos")
         if not isinstance(todos, list):
             raise ValueError("TodoList state todos must be a list")
-        return tuple(TodoItem.from_json(item) for item in todos)
+        return tuple(TodoItem.model_validate(item) for item in todos)
 
     def save(self, todos: tuple[TodoItem, ...]) -> None:
         if not todos:
@@ -148,7 +107,7 @@ def builtin_todolist_tool() -> Tool:
         definition=ToolDefinition(
             name="TodoList",
             description=TODOLIST_DESCRIPTION,
-            parameters_schema=dict(_TODOLIST_SCHEMA),
+            parameters_schema=_TodoListArguments.model_json_schema(),
             permission_mode="auto",
             effect="state_changing",
             batch_behavior="exclusive",
@@ -161,6 +120,7 @@ def _todolist(
     invocation: ToolInvocation,
     context: ToolExecutionContext,
 ) -> ToolResult:
+    arguments = _TodoListArguments.model_validate(invocation.arguments)
     if context.harness is None:
         raise RuntimeError("TodoList requires an active Session state")
     state = HarnessInvocation(
@@ -175,8 +135,7 @@ def _todolist(
             session_id=invocation.session_id,
             owner_id=_TODOLIST_STATE_OWNER,
         )
-        raw = invocation.arguments.get("todos", _MISSING)
-        if raw is _MISSING:
+        if "todos" not in arguments.model_fields_set:
             todos = repository.load()
             content = _render_todos(todos) if todos else "Todo list is empty."
             return _tool_result(
@@ -185,9 +144,7 @@ def _todolist(
                 structured={"todos": [item.to_json() for item in todos]},
                 harness_change=state.finish(),
             )
-        if not isinstance(raw, list):
-            raise ValueError("tool argument 'todos' must be a list")
-        todos = tuple(TodoItem.from_json(item) for item in raw)
+        todos = tuple(arguments.todos)
         if not todos:
             repository.clear()
             return _tool_result(

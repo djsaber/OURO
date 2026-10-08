@@ -95,7 +95,7 @@ class LiveToolProvider:
             if event.type == "done":
                 return
 
-    async def probe(self, invocation):
+    async def probe(self, invocation, context):
         self.started.set()
         await self.release.wait()
         return ToolResult(

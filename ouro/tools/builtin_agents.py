@@ -4,7 +4,7 @@ from typing import Any
 
 from ouro.core.agents import AgentCatalogSnapshot, AgentControlRequest
 from ouro.core.tools import ToolInvocation, ToolResult
-from ouro.tools.base import Tool, ToolDefinition
+from ouro.tools.base import Tool, ToolDefinition, ToolExecutionContext
 
 
 def agent_control_tools(catalog: AgentCatalogSnapshot) -> tuple[Tool, ...]:
@@ -197,7 +197,7 @@ def _intent_result(invocation: ToolInvocation, request: AgentControlRequest) -> 
     )
 
 
-def _spawn(invocation: ToolInvocation) -> ToolResult:
+def _spawn(invocation: ToolInvocation, context: ToolExecutionContext) -> ToolResult:
     arguments = invocation.arguments
     execution_mode = arguments.get("execution_mode", "sync")
     return _intent_result(
@@ -215,7 +215,7 @@ def _spawn(invocation: ToolInvocation) -> ToolResult:
     )
 
 
-def _send(invocation: ToolInvocation) -> ToolResult:
+def _send(invocation: ToolInvocation, context: ToolExecutionContext) -> ToolResult:
     arguments = invocation.arguments
     return _intent_result(
         invocation,
@@ -229,7 +229,7 @@ def _send(invocation: ToolInvocation) -> ToolResult:
     )
 
 
-def _interrupt(invocation: ToolInvocation) -> ToolResult:
+def _interrupt(invocation: ToolInvocation, context: ToolExecutionContext) -> ToolResult:
     arguments = invocation.arguments
     return _intent_result(
         invocation,

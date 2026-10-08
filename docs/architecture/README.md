@@ -62,6 +62,7 @@ Host 需要新增能力时先扩展 Application 用例。其他基础设施不�
 | 所有者 | 权威职责 | 与其他层的关系 |
 |---|---|---|
 | Runtime / RunLifecycle | 会话运行事务与持久状态转换 | Supervisor 调用它，不直接改写状态 |
+| Runtime / RunResources | 单个 Run 的进程内绑定与工具协调器 | 一个资源对象对应一个 Run；队列与 Observer 独立持有租约 |
 | RunExecutionOwnership | 进程内执行锁与 AbortSignal | 跨进程 Session execution lock 仍是唯一执行屏障 |
 | RuntimeSupervisor | 进程内 FIFO、并发许可、订阅和 shutdown | 不另建持久化调度状态机 |
 | SessionRepository / Commit / Harness | 原子变更、检查点、撤销与恢复 | 文件和 SQLite 实现同一领域契约 |
@@ -71,6 +72,10 @@ Host 需要新增能力时先扩展 Application 用例。其他基础设施不�
 | Host | UI 任务、草稿、选择与渲染投影 | 通过快照和事件游标追赶，不成为业务事实来源 |
 
 `run_blocking` 拥有已开始的同步工作及取消收尾。线程重入的配置 mutation 必须在同一工作线程完成，不能持有它跨越 `await`。持久状态、锁、网络授权和 Host 等待各有所有者，不能用额外轮询状态镜像彼此的结果。
+
+`RunResources` 聚合生命周期一致的 Catalog lease、控制器身份、Agent 目录、工具范围及协调器，由 Runtime
+统一登记和移除。资源对象先退出 Run 索引，再调用租约释放回调，使释放错误不会保留整组 Run 引用。
+持久化 Run 是恢复事实的来源；进程内对象只承载当前执行所需的绑定，精确生命周期见[运行时规格](../specs/runtime.md#run-进程内资源)。
 
 ## 跨领域边界
 

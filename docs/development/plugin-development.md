@@ -120,7 +120,8 @@ Strategy、Skill、MCP Server、Background Service、Continuation Policy、Tool 
 证明前，Host 不增加第 14 类 contribution，也不复制 SDK/worker/prepare/contract/projection adapter 链。
 
 Tool 可选择接收 Host-owned `ToolExecutionContext`，使用其中的 workspace、Host artifact 受约束路径解析、取消与
-输出限制。Command、
+输出限制。Tool / resume 以及 Compaction 的可选上下文回调在 contribution 装配时绑定；签名不满足调用契约时
+装配失败，执行期间不重复探测签名。Command、
 Continuation 不直接写 Session/Run，而是返回类型化意图；application 层负责 attributed input、队列和持久化。
 Compaction Strategy handler 同样可以把 `CancellationContext` 作为第二个参数；长时间运行的进程内同步 handler 必须
 周期性调用 `raise_if_aborted`，异步 handler 和 worker 调用则由 Host task cancellation 传播。Host 不会强杀或遗弃仍在

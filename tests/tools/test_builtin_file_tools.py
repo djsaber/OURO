@@ -7,6 +7,7 @@ from ouro.tools import (
     ToolRegistry,
     builtin_tools,
 )
+from ouro.tools.schema import tool_argument_error
 
 
 def _registry() -> ToolRegistry:
@@ -66,6 +67,52 @@ def test_file_tool_schema_exposes_paging_and_mutation_options() -> None:
         "append",
     ]
     assert edit.parameters_schema["properties"]["replace_all"]["default"] is False
+
+
+@pytest.mark.parametrize(
+    "tool_name, arguments",
+    [
+        ("Read", {"path": "sample.txt", "offset": 1.0, "limit": 1.0}),
+        (
+            "Grep",
+            {
+                "pattern": "alpha",
+                "path": "sample.txt",
+                "offset": 0.0,
+                "head_limit": 1.0,
+                "-C": 0.0,
+                "output_mode": "content",
+            },
+        ),
+    ],
+)
+async def test_integer_arguments_have_the_same_meaning_in_schema_and_execution(
+    tmp_path,
+    tool_name,
+    arguments,
+):
+    (tmp_path / "sample.txt").write_text("alpha\nbravo\n", encoding="utf-8")
+    registry = _registry()
+    tool = registry.get(tool_name)
+    invocation = _invocation(tool_name, arguments)
+    context = ToolExecutionContext(workspace=tmp_path)
+
+    assert tool_argument_error(tool.definition, arguments) is None
+    direct = await tool.execute(invocation, context=context)
+    outcome = await ToolExecutor(registry).execute(invocation, context=context)
+
+    assert not direct.is_error and "alpha" in direct.content
+    assert outcome.result is not None and not outcome.result.is_error
+    assert outcome.result.content == direct.content
+
+
+@pytest.mark.parametrize("value", [True, "1", 1.5, 0, None])
+async def test_read_rejects_invalid_integer_arguments_at_both_entry_points(tmp_path, value):
+    tool = _registry().get("Read")
+    invocation = _invocation("Read", {"path": "sample.txt", "offset": value})
+    assert tool_argument_error(tool.definition, invocation.arguments) is not None
+    with pytest.raises(ValueError):
+        await tool.execute(invocation, context=ToolExecutionContext(workspace=tmp_path))
 
 
 @pytest.mark.asyncio

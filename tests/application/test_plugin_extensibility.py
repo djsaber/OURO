@@ -532,7 +532,7 @@ async def test_tool_controlled_tool_bypasses_host_permission_but_not_tool_policy
     store.initialize()
     tools = ToolRegistry()
 
-    async def control_harness(invocation) -> ToolResult:
+    async def control_harness(invocation, context) -> ToolResult:
         return ToolResult(
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,
@@ -616,7 +616,7 @@ async def test_tool_policy_is_rechecked_at_the_execution_boundary(tmp_path) -> N
     tools = ToolRegistry()
     executed: list[str] = []
 
-    async def guarded_tool(invocation) -> ToolResult:
+    async def guarded_tool(invocation, context) -> ToolResult:
         executed.append(invocation.tool_call_id)
         return ToolResult(
             tool_call_id=invocation.tool_call_id,
@@ -705,7 +705,7 @@ async def test_execution_boundary_can_park_for_a_new_durable_approval(tmp_path) 
     tools = ToolRegistry()
     executed: list[str] = []
 
-    async def guarded_tool(invocation) -> ToolResult:
+    async def guarded_tool(invocation, context) -> ToolResult:
         executed.append(invocation.tool_call_id)
         return ToolResult(
             tool_call_id=invocation.tool_call_id,

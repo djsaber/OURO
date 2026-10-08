@@ -77,7 +77,7 @@ def test_tool_override_takes_precedence_over_plugin_override() -> None:
                 source="third_party_plugin",
                 metadata={"plugin_id": "dev.ouro.deploy"},
             ),
-            handler=lambda invocation: ToolResult(
+            handler=lambda invocation, context: ToolResult(
                 tool_call_id=invocation.tool_call_id,
                 tool_name=invocation.tool_name,
             ),
@@ -178,7 +178,7 @@ def test_tool_controlled_permission_bypasses_host_mode_but_not_tool_policy(
     expected_status,
     expected_mode,
 ) -> None:
-    async def execute(_invocation):
+    async def execute(_invocation, context):
         return "unused"
 
     registry = ToolRegistry()
@@ -221,7 +221,7 @@ def test_tool_controlled_permission_bypasses_host_mode_but_not_tool_policy(
 )
 @pytest.mark.parametrize("permission_mode", ["auto", "approval", "deny"])
 def test_session_deny_mode_blocks_every_tool_source(source, permission_mode) -> None:
-    async def execute(_invocation):
+    async def execute(_invocation, context):
         return "unused"
 
     registry = ToolRegistry()
@@ -270,7 +270,7 @@ def test_extension_tools_use_shared_overrides_and_session_approval_modes(
     expected_status,
     expected_permission,
 ) -> None:
-    async def execute(_invocation):
+    async def execute(_invocation, context):
         return "unused"
 
     registry = ToolRegistry()
@@ -370,7 +370,7 @@ def test_delegated_permission_floor_cannot_be_relaxed_by_current_configuration()
 
 
 def test_persisted_plugin_tool_requires_the_same_execution_contract() -> None:
-    async def execute(_invocation):
+    async def execute(_invocation, context):
         return "unused"
 
     registry = ToolRegistry()
@@ -411,7 +411,7 @@ def test_persisted_plugin_tool_requires_the_same_execution_contract() -> None:
 
 
 def test_incomplete_user_plugin_tool_contract_is_rejected() -> None:
-    async def execute(_invocation):
+    async def execute(_invocation, context):
         return "unused"
 
     registry = ToolRegistry()

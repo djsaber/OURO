@@ -8,11 +8,10 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from functools import partial
-from inspect import Parameter, signature
+from inspect import signature
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, ValidationInfo, field_validator
 
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_owned_callback
@@ -415,14 +414,32 @@ async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
 
 
 ToolExecutionResult = ToolResult | ToolInputRequest
-ToolHandler = Callable[..., ToolExecutionResult | Awaitable[ToolExecutionResult]]
-ToolResumeHandler = Callable[..., ToolExecutionResult | Awaitable[ToolExecutionResult]]
+ToolHandler = Callable[
+    [ToolInvocation, ToolExecutionContext], ToolExecutionResult | Awaitable[ToolExecutionResult]
+]
+ToolResumeHandler = Callable[
+    [ToolInvocation, ToolInputResolution, ToolInputRequest, ToolExecutionContext],
+    ToolExecutionResult | Awaitable[ToolExecutionResult],
+]
 
 
 class Tool(OuroModel):
     definition: ToolDefinition
     handler: ToolHandler = Field(exclude=True)
     resume_handler: ToolResumeHandler | None = Field(default=None, exclude=True)
+
+    @field_validator("handler", "resume_handler")
+    @classmethod
+    def validate_callback_signature(
+        cls, handler: ToolHandler | ToolResumeHandler | None, info: ValidationInfo
+    ) -> ToolHandler | ToolResumeHandler | None:
+        if handler is not None:
+            arguments = (None, None) if info.field_name == "handler" else (None, None, None, None)
+            try:
+                signature(handler).bind(*arguments)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid {info.field_name} signature: {exc}") from exc
+        return handler
 
     async def execute(
         self,
@@ -432,8 +449,7 @@ class Tool(OuroModel):
         signal: AbortSignal | None = None,
     ) -> ToolExecutionResult:
         context = context or ToolExecutionContext(signal=signal)
-        args, kwargs = _handler_arguments(self.handler, invocation, context)
-        return await invoke_owned_callback(partial(self.handler, *args, **kwargs))
+        return await invoke_owned_callback(self.handler, invocation, context)
 
     async def resume(
         self,
@@ -447,60 +463,6 @@ class Tool(OuroModel):
         if self.resume_handler is None:
             raise RuntimeError(f"tool does not support resume: {self.definition.name}")
         context = context or ToolExecutionContext(signal=signal)
-        args, kwargs = _resume_handler_arguments(
-            self.resume_handler,
-            invocation,
-            resolution,
-            request,
-            context,
+        return await invoke_owned_callback(
+            self.resume_handler, invocation, resolution, request, context
         )
-        return await invoke_owned_callback(partial(self.resume_handler, *args, **kwargs))
-
-
-def _handler_arguments(
-    handler: ToolHandler,
-    invocation: ToolInvocation,
-    context: ToolExecutionContext,
-) -> tuple[tuple[object, ...], dict[str, object]]:
-    try:
-        parameters = tuple(signature(handler).parameters.values())
-    except TypeError, ValueError:
-        return (invocation,), {}
-
-    if any(parameter.kind == Parameter.VAR_KEYWORD for parameter in parameters):
-        return (invocation,), {"context": context, "signal": context.signal}
-    if any(parameter.name == "context" for parameter in parameters):
-        return (invocation,), {"context": context}
-    if any(parameter.name == "signal" for parameter in parameters):
-        return (invocation,), {"signal": context.signal}
-    positional = [
-        parameter
-        for parameter in parameters
-        if parameter.kind in (Parameter.POSITIONAL_ONLY, Parameter.POSITIONAL_OR_KEYWORD)
-    ]
-    if len(positional) >= 2:
-        return (invocation, context), {}
-    return (invocation,), {}
-
-
-def _resume_handler_arguments(
-    handler: ToolResumeHandler,
-    invocation: ToolInvocation,
-    resolution: ToolInputResolution,
-    request: ToolInputRequest,
-    context: ToolExecutionContext,
-) -> tuple[tuple[object, ...], dict[str, object]]:
-    try:
-        parameters = tuple(signature(handler).parameters.values())
-    except TypeError, ValueError:
-        return (invocation, resolution, request), {}
-
-    keyword_arguments: dict[str, object] = {}
-    names = {parameter.name for parameter in parameters}
-    if "request" in names:
-        keyword_arguments["request"] = request
-    if "context" in names:
-        keyword_arguments["context"] = context
-    if "signal" in names:
-        keyword_arguments["signal"] = context.signal
-    return (invocation, resolution), keyword_arguments

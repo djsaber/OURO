@@ -93,7 +93,7 @@ def test_runtime_publishes_permission_updates_to_existing_and_future_coordinator
     registry.register(
         Tool(
             definition=ToolDefinition(name="Deploy", description="Deploy changes."),
-            handler=lambda invocation: _result(invocation, "deployed"),
+            handler=lambda invocation, context: _result(invocation, "deployed"),
         )
     )
     runtime = _runtime(tmp_path, registry=registry, first_calls=[])
@@ -126,13 +126,13 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(
     first_started = asyncio.Event()
     second_completed = asyncio.Event()
 
-    async def first(invocation) -> ToolResult:
+    async def first(invocation, context) -> ToolResult:
         first_started.set()
         await asyncio.wait_for(second_completed.wait(), timeout=1.0)
         completed.append("first")
         return _result(invocation, "first result")
 
-    async def second(invocation) -> ToolResult:
+    async def second(invocation, context) -> ToolResult:
         await asyncio.wait_for(first_started.wait(), timeout=1.0)
         completed.append("second")
         second_completed.set()
@@ -225,7 +225,7 @@ async def test_exclusive_tool_rejects_mixed_batch_before_any_handler_runs(tmp_pa
     registry = ToolRegistry()
     executed: list[str] = []
 
-    def execute(invocation) -> ToolResult:
+    def execute(invocation, context) -> ToolResult:
         executed.append(invocation.tool_name)
         return _result(invocation, "must not execute")
 
@@ -354,7 +354,7 @@ async def test_unattended_session_resumes_capable_tool_without_waiting(
             structured={"resolved_by": call.resolution.resolved_by},
         )
 
-    def after_request(invocation) -> ToolResult:
+    def after_request(invocation, context) -> ToolResult:
         executed_after_request.append(invocation.tool_call_id)
         return _result(invocation, "continued batch")
 
@@ -677,7 +677,7 @@ async def test_sequential_batch_stops_after_input_request_until_answer(tmp_path)
     def request_input(_invocation):
         return sdk.ToolInputRequest(data={"type": "choice", "options": ["a", "b"]})
 
-    def after_request(invocation) -> ToolResult:
+    def after_request(invocation, context) -> ToolResult:
         executed_after_request.append(invocation.tool_call_id)
         return _result(invocation, "continued")
 
@@ -736,7 +736,7 @@ async def test_parallel_batch_does_not_start_queued_calls_after_input_request(tm
         started.append(call.tool_call_id)
         return sdk.ToolInputRequest(data={"type": "confirm"})
 
-    async def complete(invocation) -> ToolResult:
+    async def complete(invocation, context) -> ToolResult:
         started.append(invocation.tool_call_id)
         await asyncio.sleep(0)
         return _result(invocation, "done")
@@ -796,7 +796,7 @@ async def test_parallel_batch_marks_only_handlers_that_actually_started(tmp_path
     release = asyncio.Event()
     started: list[str] = []
 
-    async def blocking(invocation) -> ToolResult:
+    async def blocking(invocation, context) -> ToolResult:
         started.append(invocation.tool_call_id)
         if len(started) == 2:
             two_started.set()
@@ -847,7 +847,7 @@ async def test_batch_waits_for_every_approval_and_marks_running_before_execution
     release = asyncio.Event()
     executed: list[str] = []
 
-    async def protected(invocation) -> ToolResult:
+    async def protected(invocation, context) -> ToolResult:
         executed.append(invocation.tool_call_id)
         started.set()
         await release.wait()
@@ -922,10 +922,10 @@ async def test_tool_failure_does_not_cancel_sibling_call(tmp_path) -> None:
     registry = ToolRegistry()
     completed: list[str] = []
 
-    async def broken(invocation) -> ToolResult:
+    async def broken(invocation, context) -> ToolResult:
         raise RuntimeError("broken tool")
 
-    async def healthy(invocation) -> ToolResult:
+    async def healthy(invocation, context) -> ToolResult:
         completed.append(invocation.tool_call_id)
         return _result(invocation, "healthy")
 
@@ -957,12 +957,12 @@ async def test_tool_definition_can_force_parallel_batch_to_run_sequentially(tmp_
     registry = ToolRegistry()
     order: list[str] = []
 
-    async def first(invocation) -> ToolResult:
+    async def first(invocation, context) -> ToolResult:
         await asyncio.sleep(0.02)
         order.append(invocation.tool_call_id)
         return _result(invocation, "first")
 
-    async def second(invocation) -> ToolResult:
+    async def second(invocation, context) -> ToolResult:
         order.append(invocation.tool_call_id)
         return _result(invocation, "second")
 

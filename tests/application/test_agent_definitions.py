@@ -16,7 +16,7 @@ from ouro.sessions import LocalSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 
 
-async def _handler(invocation):
+async def _handler(invocation, context):
     return ToolResult(
         tool_call_id=invocation.tool_call_id,
         tool_name=invocation.tool_name,

@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_right
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
+
+from pydantic import Field
 
 from ouro.tools.base import Tool, ToolDefinition, ToolExecutionContext, ToolInvocation, ToolResult
-from ouro.tools.builtin_common import _boolean_arg, _string_arg, _tool_result
+from ouro.tools.builtin_common import BuiltinArguments, JsonInteger, _tool_result
 from ouro.tools.builtin_ignore import is_sensitive_file
 from ouro.tools.builtin_search import FileEntry, _matches_any, _translate, iter_files
 
@@ -57,100 +59,99 @@ files, and files over 32 MiB. Directory searches also skip version-control metad
 symlinks. Narrow the search if results are truncated."""
 
 
-_GREP_SCHEMA: Mapping[str, object] = {
-    "type": "object",
-    "properties": {
-        "pattern": {
-            "type": "string",
-            "minLength": 1,
-            "description": (
-                "Python regular expression; escape metacharacters to match them literally."
-            ),
-        },
-        "path": {
-            "type": "string",
-            "description": (
-                "File or root directory, absolute or workspace-relative. Defaults to the "
-                "workspace; required if none is configured. An explicit file bypasses ignore "
-                "rules and glob/type filters."
-            ),
-        },
-        "glob": {
-            "type": "string",
-            "description": (
-                "Case-sensitive file filter: '*.ts' matches basenames; patterns with / match "
-                "absolute paths, so use '**/src/**/*.ts', not 'src/**/*.ts'. Use path to "
-                "scope a directory."
-            ),
-        },
-        "type": {
-            "type": "string",
-            "description": (
-                "File type filter; prefer over glob for languages. Supported: c, cpp, css, "
-                "go, html, java, js, json, md, py, rust, sh, sql, toml, ts, txt, xml, yaml."
-            ),
-        },
-        "output_mode": {
-            "type": "string",
-            "enum": ["content", "files_with_matches", "count_matches"],
-            "description": (
-                "'files_with_matches' (default): paths, newest modified first. 'content': "
-                "matching lines and context. 'count_matches': matching-line counts as "
-                "path:count plus totals, not individual regex occurrence counts."
-            ),
-        },
-        "-A": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Context lines after each match; content mode only. Default 0.",
-        },
-        "-B": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Context lines before each match; content mode only. Default 0.",
-        },
-        "-C": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Context lines on both sides; content mode only. Overrides -A and -B.",
-        },
-        "-i": {
-            "type": "boolean",
-            "description": "Ignore case in content matching. Default false.",
-        },
-        "-n": {
-            "type": "boolean",
-            "description": "Show line numbers in content mode. Default true.",
-        },
-        "head_limit": {
-            "type": "integer",
-            "minimum": 0,
-            "description": (
-                "Maximum entries after offset: matching lines in content mode (excluding "
-                "context), files otherwise. Default 250; 0 removes the page limit. Content "
-                "collection is capped at 20,000 matching lines."
-            ),
-        },
-        "offset": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Entries to skip before head_limit; use for pagination. Default 0.",
-        },
-        "include_ignored": {
-            "type": "boolean",
-            "description": (
-                "Bypass .gitignore, .ignore, and .rgignore when ignored files are needed. "
-                "Default false; other exclusions still apply."
-            ),
-        },
-        "multiline": {
-            "type": "boolean",
-            "description": "Allow matches across lines and let . match newlines. Default false.",
-        },
-    },
-    "required": ["pattern"],
-    "additionalProperties": False,
-}
+class _GrepArguments(BuiltinArguments):
+    pattern: str = Field(
+        min_length=1,
+        description=("Python regular expression; escape metacharacters to match them literally."),
+    )
+    path: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "File or root directory, absolute or workspace-relative. Defaults to the "
+            "workspace; required if none is configured. An explicit file bypasses ignore "
+            "rules and glob/type filters."
+        ),
+    )
+    glob: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Case-sensitive file filter: '*.ts' matches basenames; patterns with / match "
+            "absolute paths, so use '**/src/**/*.ts', not 'src/**/*.ts'. Use path to scope "
+            "a directory."
+        ),
+    )
+    file_type: str | None = Field(
+        default=None,
+        alias="type",
+        min_length=1,
+        description=(
+            "File type filter; prefer over glob for languages. Supported: c, cpp, css, go, "
+            "html, java, js, json, md, py, rust, sh, sql, toml, ts, txt, xml, yaml."
+        ),
+    )
+    output_mode: Literal["content", "files_with_matches", "count_matches"] = Field(
+        default="files_with_matches",
+        description=(
+            "'files_with_matches' (default): paths, newest modified first. 'content': "
+            "matching lines and context. 'count_matches': matching-line counts as "
+            "path:count plus totals, not individual regex occurrence counts."
+        ),
+    )
+    after: JsonInteger = Field(
+        default=0,
+        alias="-A",
+        ge=0,
+        description=("Context lines after each match; content mode only. Default 0."),
+    )
+    before: JsonInteger = Field(
+        default=0,
+        alias="-B",
+        ge=0,
+        description=("Context lines before each match; content mode only. Default 0."),
+    )
+    context: JsonInteger | None = Field(
+        default=None,
+        alias="-C",
+        ge=0,
+        description=("Context lines on both sides; content mode only. Overrides -A and -B."),
+    )
+    ignore_case: bool = Field(
+        default=False,
+        alias="-i",
+        description=("Ignore case in content matching. Default false."),
+    )
+    show_numbers: bool = Field(
+        default=True,
+        alias="-n",
+        description=("Show line numbers in content mode. Default true."),
+    )
+    head_limit: JsonInteger = Field(
+        default=_DEFAULT_HEAD_LIMIT,
+        ge=0,
+        description=(
+            "Maximum entries after offset: matching lines in content mode (excluding "
+            "context), files otherwise. Default 250; 0 removes the page limit. Content "
+            "collection is capped at 20,000 matching lines."
+        ),
+    )
+    offset: JsonInteger = Field(
+        default=0,
+        ge=0,
+        description=("Entries to skip before head_limit; use for pagination. Default 0."),
+    )
+    include_ignored: bool = Field(
+        default=False,
+        description=(
+            "Bypass .gitignore, .ignore, and .rgignore when ignored files are needed. "
+            "Default false; other exclusions still apply."
+        ),
+    )
+    multiline: bool = Field(
+        default=False,
+        description=("Allow matches across lines and let . match newlines. Default false."),
+    )
 
 
 def builtin_grep_tool() -> Tool:
@@ -158,7 +159,7 @@ def builtin_grep_tool() -> Tool:
         definition=ToolDefinition(
             name="Grep",
             description=GREP_DESCRIPTION,
-            parameters_schema=dict(_GREP_SCHEMA),
+            parameters_schema=_GrepArguments.model_json_schema(),
             permission_mode="auto",
             effect="read_only",
         ),
@@ -170,33 +171,19 @@ def _grep(
     invocation: ToolInvocation,
     context: ToolExecutionContext,
 ) -> ToolResult:
-    arguments = invocation.arguments
-    pattern = _string_arg(arguments, "pattern")
-    context_span = _optional_int_arg(arguments, "-C")
-    context_before = (
-        context_span if context_span is not None else _optional_int_arg(arguments, "-B") or 0
+    arguments = _GrepArguments.model_validate(invocation.arguments)
+    pattern = arguments.pattern
+    context_before = arguments.context if arguments.context is not None else arguments.before
+    context_after = arguments.context if arguments.context is not None else arguments.after
+    ignore_case, show_numbers = arguments.ignore_case, arguments.show_numbers
+    multiline, include_ignored = arguments.multiline, arguments.include_ignored
+    output_mode = arguments.output_mode
+    head_limit, offset = arguments.head_limit, arguments.offset
+    name_filter = compile_name_glob(arguments.glob) if arguments.glob is not None else None
+    type_filter = (
+        compile_type_filter(arguments.file_type) if arguments.file_type is not None else None
     )
-    context_after = (
-        context_span if context_span is not None else _optional_int_arg(arguments, "-A") or 0
-    )
-    ignore_case = _boolean_arg(arguments, "-i", default=False)
-    show_numbers = _boolean_arg(arguments, "-n", default=True)
-    multiline = _boolean_arg(arguments, "multiline", default=False)
-    include_ignored = _boolean_arg(arguments, "include_ignored", default=False)
-    output_mode = _output_mode_arg(arguments)
-    head_limit = _int_arg(arguments, "head_limit", default=_DEFAULT_HEAD_LIMIT)
-    offset = _int_arg(arguments, "offset", default=0)
-
-    name_filter = None
-    raw_glob = _optional_string_arg(arguments, "glob")
-    if raw_glob is not None:
-        name_filter = compile_name_glob(raw_glob)
-    type_filter = None
-    raw_type = _optional_string_arg(arguments, "type")
-    if raw_type is not None:
-        type_filter = compile_type_filter(raw_type)
-
-    target = _path_arg(arguments, context)
+    target = _path_arg(arguments.path, context)
     if target.is_file():
         if is_sensitive_file(target.name):
             return _tool_result(
@@ -408,52 +395,12 @@ def _page(items, *, head_limit: int, offset: int):
     return tuple(items[offset : offset + head_limit if head_limit > 0 else None])
 
 
-def _optional_string_arg(arguments: Mapping[str, object], name: str) -> str | None:
-    value = arguments.get(name)
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"tool argument '{name}' must be a non-empty string")
-    return value
-
-
-def _int_arg(arguments: Mapping[str, object], name: str, *, default: int) -> int:
-    value = arguments.get(name, default)
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ValueError(f"tool argument '{name}' must be a non-negative integer")
-    return value
-
-
-def _optional_int_arg(arguments: Mapping[str, object], name: str) -> int | None:
-    value = arguments.get(name)
-    if value is None:
-        return None
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ValueError(f"tool argument '{name}' must be a non-negative integer")
-    return value
-
-
-def _output_mode_arg(
-    arguments: Mapping[str, object],
-) -> Literal["content", "files_with_matches", "count_matches"]:
-    value = arguments.get("output_mode", "files_with_matches")
-    if value not in ("content", "files_with_matches", "count_matches"):
-        raise ValueError(
-            "tool argument 'output_mode' must be 'content', 'files_with_matches', "
-            "or 'count_matches'"
-        )
-    return cast("Literal['content', 'files_with_matches', 'count_matches']", value)
-
-
-def _path_arg(arguments: Mapping[str, object], context: ToolExecutionContext) -> Path:
-    raw = arguments.get("path")
+def _path_arg(raw: str | None, context: ToolExecutionContext) -> Path:
     if raw is None:
         resolved = context.resolve_working_directory(None)
         if resolved is None:
             raise ValueError("tool argument 'path' is required when no workspace is configured")
         return Path(resolved)
-    if not isinstance(raw, str) or not raw:
-        raise ValueError("tool argument 'path' must be a non-empty string")
     return Path(context.resolve_path(raw, read_only=True))
 
 

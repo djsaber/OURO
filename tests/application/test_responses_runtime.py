@@ -102,7 +102,7 @@ async def responses_runtime(tmp_path, monkeypatch, request):
             text="".join(f"data: {json.dumps(event)}\n\n" for event in events),
         )
 
-    def echo(invocation):
+    def echo(invocation, context):
         executions.append(invocation.arguments["round"])
         return ToolResult(
             tool_call_id=invocation.tool_call_id,

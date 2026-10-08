@@ -1044,7 +1044,7 @@ async def test_controller_rejects_overrides_for_contract_controlled_plugin_tools
                 source="third_party_plugin",
                 metadata={"plugin_id": "dev.ouro.controlled"},
             ),
-            handler=lambda invocation: ToolResult(
+            handler=lambda invocation, context: ToolResult(
                 tool_call_id=invocation.tool_call_id,
                 tool_name=invocation.tool_name,
             ),

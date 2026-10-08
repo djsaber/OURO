@@ -71,7 +71,7 @@ from ouro.core.turn_policies import (
 )
 from ouro.plugins.candidates import PluginRuntimeCandidate
 from ouro.plugins.contributions import PluginContributions
-from ouro.plugins.harness_calls import invoke_plugin_callback
+from ouro.plugins.harness_calls import bind_context_callback, invoke_plugin_callback
 from ouro.plugins.models import PluginDiagnostic, PluginGenerationRecord
 from ouro.plugins.paths import portable_relative_path
 from ouro.plugins.registry import (
@@ -504,6 +504,13 @@ class SDKContributionAdapter:
 
 
 def _adapt_tool(contribution: sdk.ToolContribution, *, owner_id: str) -> Tool:
+    execute_callback = bind_context_callback(contribution.handler)
+    resume_callback = (
+        bind_context_callback(contribution.resume_handler)
+        if contribution.resume_handler is not None
+        else None
+    )
+
     async def handler(
         invocation: ToolInvocation,
         context: ToolExecutionContext,
@@ -518,7 +525,7 @@ def _adapt_tool(contribution: sdk.ToolContribution, *, owner_id: str) -> Tool:
             workspace_only=context.workspace_only,
         )
         raw, change = await invoke_plugin_callback(
-            contribution.handler,
+            execute_callback,
             call,
             snapshot=context.harness,
             owner_id=owner_id,
@@ -557,11 +564,10 @@ def _adapt_tool(contribution: sdk.ToolContribution, *, owner_id: str) -> Tool:
     async def resume_handler(
         invocation: ToolInvocation,
         resolution: ToolInputResolution,
-        *,
         request: ToolInputRequest,
         context: ToolExecutionContext,
     ) -> ToolResult | ToolInputRequest:
-        if contribution.resume_handler is None:
+        if resume_callback is None:
             raise RuntimeError(f"tool does not support resume: {contribution.exposed_name}")
         call = sdk.ToolResumeCall(
             tool_call_id=invocation.tool_call_id,
@@ -575,7 +581,7 @@ def _adapt_tool(contribution: sdk.ToolContribution, *, owner_id: str) -> Tool:
             workspace_only=context.workspace_only,
         )
         raw, change = await invoke_plugin_callback(
-            contribution.resume_handler,
+            resume_callback,
             call,
             snapshot=context.harness,
             owner_id=owner_id,
@@ -962,7 +968,7 @@ class _SDKCompactionStrategy:
         self._owner_id = owner_id
         self.strategy_id = contribution.id
         self.version = contribution.version
-        self._handler = contribution.handler
+        self._handler = bind_context_callback(contribution.handler)
 
     async def compact(
         self,

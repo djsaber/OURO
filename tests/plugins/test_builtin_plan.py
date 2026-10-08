@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
@@ -305,9 +306,35 @@ async def test_plan_command_creates_and_binds_a_session(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["documentation", "implementation", "runtime_resource"])
 async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes_after_restart(
     tmp_path,
+    monkeypatch,
+    change,
 ) -> None:
+    import ouro.local_application as local_application
+    from ouro.builtin_plugins import LOCAL_BUILTIN_PLUGINS
+    from ouro.builtin_plugins.plan import PLAN_PLUGIN
+    from ouro.plugins.builtin import BuiltinPluginRegistry
+    from ouro.plugins.runtime import PluginExecutionContractUnavailableError
+
+    plugin_root = tmp_path / "plan-plugin"
+    shutil.copytree(PLAN_PLUGIN.root, plugin_root)
+    (plugin_root / "instructions.md").write_text("Runtime instructions", encoding="utf-8")
+
+    def publish_plugin():
+        monkeypatch.setattr(
+            local_application,
+            "LOCAL_BUILTIN_PLUGINS",
+            BuiltinPluginRegistry(
+                replace(item, root=plugin_root, runtime_resources=("instructions.md",))
+                if item.plugin_id == PLUGIN_ID
+                else item
+                for item in LOCAL_BUILTIN_PLUGINS.list()
+            ),
+        )
+
+    publish_plugin()
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -360,10 +387,39 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
     assert requested.payload["plugin_class"] == "builtin"
     await first_application.close()
 
+    changed_path = (
+        plugin_root
+        / {
+            "documentation": "README.md",
+            "implementation": "plan_plugin.py",
+            "runtime_resource": "instructions.md",
+        }[change]
+    )
+    changed_path.write_text(
+        changed_path.read_text(encoding="utf-8") + "\n# Changed content\n", encoding="utf-8"
+    )
+    publish_plugin()
+
     final_provider = FinalProvider()
     second_runtime, second_store = _runtime(home, workspace, final_provider)
     second_application = LocalApplication.from_runtime(second_runtime, home=home)
     await second_application.start()
+
+    if change != "documentation":
+        try:
+            with pytest.raises(PluginExecutionContractUnavailableError):
+                await second_runtime.answer_user(
+                    session_id=waiting.session.session_id,
+                    run_id=waiting.run.run_id,
+                    answer={"action": "accept", "option": "Direct implementation"},
+                )
+            assert second_store.load_run(waiting.session.session_id, waiting.run.run_id).status == (
+                "waiting_user"
+            )
+            assert not final_provider.messages
+        finally:
+            await second_application.close()
+        return
 
     completed = await second_runtime.answer_user(
         session_id=waiting.session.session_id,
@@ -763,7 +819,7 @@ async def test_plan_mode_denies_other_state_changing_tools_without_running_them(
     runtime, _ = _runtime(home, workspace, provider)
     invoked: list[str] = []
 
-    def mutate(invocation: ToolInvocation) -> ToolResult:
+    def mutate(invocation: ToolInvocation, context) -> ToolResult:
         invoked.append(invocation.tool_call_id)
         return ToolResult(
             tool_call_id=invocation.tool_call_id,
@@ -808,7 +864,7 @@ async def test_plan_mode_allows_any_declared_read_only_tool(tmp_path) -> None:
     runtime, _ = _runtime(home, workspace, provider)
     invoked: list[str] = []
 
-    def read(invocation: ToolInvocation) -> ToolResult:
+    def read(invocation: ToolInvocation, context) -> ToolResult:
         invoked.append(invocation.tool_call_id)
         return ToolResult(
             tool_call_id=invocation.tool_call_id,

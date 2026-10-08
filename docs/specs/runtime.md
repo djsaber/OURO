@@ -102,10 +102,10 @@ application 用例仍负责取得 mutation lock、准备业务字段、先保存
 
 ## Run 进程内资源
 
-`RuntimeService` 持有 Run 的 Catalog lease、有效控制器身份、Agent Catalog、委派工具范围与契约引用、
-委派约束和惰性创建的工具协调器。各自的按 Run 查询表保留直接读取，清理时由同一私有清单列出全部 Run 资源，
-终态、异常退出、detach 和 Runtime 关闭复用同一个移除入口；增加资源时须将其纳入该清单。
-不新增持久状态或另一套 Run 状态机，也不接管 `RunExecutionOwnership` 的锁和 abort signal。
+`RuntimeService` 用单一 `run_id -> RunResources` 索引持有 Run 的 Catalog lease、有效控制器身份、Agent Catalog、
+委派工具范围与契约引用、委派约束和惰性创建的工具协调器。终态、异常退出、detach 和 Runtime 关闭统一移除整个
+资源对象，再关闭或转交租约。它只承载进程内绑定，持久化事实归属 Run，执行锁和 abort signal 归属
+`RunExecutionOwnership`。
 资源归属与释放不依赖 TUI、Textual worker 或界面事件消费；无界面的 Runtime 用例使用相同边界。
 TUI 通过既有 Application 接口观察和操作运行，不接管这些资源的业务生命周期。
 
@@ -116,12 +116,13 @@ TUI 通过既有 Application 接口观察和操作运行，不接管这些资源
   队列消费、合并、撤销和 Runtime 关闭各自释放其拥有的租约。Observer 通过 fork 独立保留代次，待观察工作结束
   才释放，不随 Run 终态提前卸载。
 - 新绑定或恢复入口解释已有工具 metadata；工具范围、契约引用与委派约束全部验证成功后一起登记。
-  Catalog 恢复时先验证原有控制快照，再登记取得的租约；验证失败即关闭该租约，后续重试仍须经过验证。
-  当前落盘字段与 schema 不变，不增加全局 metadata 缓存。
+  新绑定统一接管取得的租约，绑定失败或取消时移除其 Run 资源并释放租约，包括从队列转入的租约。
+  Catalog 恢复先在局部资源对象中验证原有控制快照，再登记完整绑定；失败时关闭已取得的租约，不登记部分恢复
+  的 Agent 目录或工具绑定，后续重试仍须经过验证。落盘 metadata 与 Agent Catalog 继续作为恢复来源。
 - 每轮模型请求仍按当时 Session 控制状态重建有效控制器身份；工具执行契约、权限下限和实时权限更新仍在原有
   边界生效，不以进程内绑定替代执行前检查。
 - Runtime 关闭时尝试释放全部 Run、排队租约、Observer 和模型资源，并汇总关闭错误；单个租约回调失败不能
-  中断其他资源的收尾。没有 Catalog lease 的 Run 引用也必须清理。
+  中断其他资源的收尾，也不能通过异常栈保留已经移除的 Run 资源对象。没有 Catalog lease 的 Run 引用也必须清理。
 
 ## Inner loop 边界
 

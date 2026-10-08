@@ -107,7 +107,7 @@ def test_plugin_and_mcp_cannot_spoof_reserved_agent_control_tools(source) -> Non
             source=source,
             metadata={"ouro_agent_control": True},
         ),
-        handler=lambda invocation: ToolResult(
+        handler=lambda invocation, context: ToolResult(
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,
         ),

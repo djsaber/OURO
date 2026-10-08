@@ -84,12 +84,19 @@ def test_invalid_prompt_file_is_rejected_without_modification(tmp_path, raw):
 
 
 @pytest.mark.parametrize("raw", [{"prompts": {"system": "old"}}, {"system_prompt": "old"}])
-def test_shared_prompt_configuration_is_explicitly_rejected(tmp_path, raw):
+def test_shared_prompt_configuration_is_rejected_at_its_own_boundary(tmp_path, raw):
     path = tmp_path / "config" / "config.json"
     path.parent.mkdir()
     path.write_text(json.dumps(raw), encoding="utf-8")
+    manager = PromptConfigManager(tmp_path)
+    saved = manager.save_entry(
+        "addition", PromptDraft(text="Current prompt", enabled=True), expected_revision=0
+    )
+    assert manager.snapshot().config == saved.config
+    assert saved.config.additional_system_prompt == "Current prompt"
+    assert json.loads(path.read_text(encoding="utf-8")) == raw
     with pytest.raises(ConfigError, match="prompts.json"):
-        PromptConfigManager(tmp_path).snapshot()
+        JsonConfigFile(tmp_path).read()
 
 
 def test_prompt_content_is_required_and_description_is_optional():

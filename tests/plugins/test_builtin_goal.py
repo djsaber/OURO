@@ -468,7 +468,7 @@ async def test_cold_abort_restores_goal_snapshot_and_pauses_goal(tmp_path) -> No
     provider = _AbortableGoalProvider()
     tools = ToolRegistry()
 
-    def hold_goal(invocation: ToolInvocation) -> ToolResult:
+    def hold_goal(invocation: ToolInvocation, context) -> ToolResult:
         return ToolResult(
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,

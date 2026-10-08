@@ -1,12 +1,29 @@
-"""Shared argument validation and result construction for built-in tools."""
+"""Shared parameter contracts and result construction for built-in tools."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from typing import Annotated
+
+from pydantic import BaseModel, BeforeValidator, ConfigDict
 
 from ouro.core.base import utc_now
 from ouro.core.harness_calls import HarnessStateChange
 from ouro.tools.base import ToolInvocation, ToolResult
+
+
+class BuiltinArguments(BaseModel):
+    """The parameter contract used for both tool schemas and handler inputs."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+
+def _json_integer(value: object) -> object:
+    # JSON Schema integers include numbers with a zero fractional part. Python
+    # handlers need int values for indexing and iteration; booleans stay invalid.
+    return int(value) if isinstance(value, float) and value.is_integer() else value
+
+
+JsonInteger = Annotated[int, BeforeValidator(_json_integer)]
 
 
 def _tool_result(
@@ -26,17 +43,3 @@ def _tool_result(
         harness_change=harness_change,
         ended_at=utc_now(),
     )
-
-
-def _string_arg(arguments: Mapping[str, object], name: str) -> str:
-    value = arguments.get(name)
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"tool argument '{name}' must be a non-empty string")
-    return value
-
-
-def _boolean_arg(arguments: Mapping[str, object], name: str, *, default: bool) -> bool:
-    value = arguments.get(name, default)
-    if not isinstance(value, bool):
-        raise ValueError(f"tool argument '{name}' must be a boolean")
-    return value

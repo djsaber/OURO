@@ -196,7 +196,7 @@ async def test_runtime_durable_boundaries_do_not_block_the_event_loop(
     store.initialize()
     tools = ToolRegistry()
 
-    def probe(invocation: ToolInvocation) -> ToolResult:
+    def probe(invocation: ToolInvocation, context) -> ToolResult:
         return ToolResult(
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,
@@ -324,7 +324,7 @@ async def test_runtime_produces_each_public_observation_type(tmp_path) -> None:
     store.initialize()
     tools = ToolRegistry()
 
-    def inspect_tool(invocation: ToolInvocation) -> ToolResult:
+    def inspect_tool(invocation: ToolInvocation, context) -> ToolResult:
         return ToolResult(
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,
@@ -2802,11 +2802,7 @@ async def test_runtime_aborts_plugin_tool_through_execution_context(tmp_path) ->
     registry = _tools()
     started = asyncio.Event()
 
-    async def wait_tool(
-        invocation,
-        *,
-        context: ToolExecutionContext,
-    ) -> ToolResult:
+    async def wait_tool(invocation, context: ToolExecutionContext) -> ToolResult:
         started.set()
         await context.sleep(5)
         return ToolResult(
@@ -2873,7 +2869,7 @@ async def test_runtime_abort_owns_tool_cancellation_across_runtime_instances(tmp
     started = asyncio.Event()
     finalized = asyncio.Event()
 
-    async def wait_tool(invocation) -> ToolResult:
+    async def wait_tool(invocation, context) -> ToolResult:
         started.set()
         try:
             await asyncio.Event().wait()

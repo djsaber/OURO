@@ -2,14 +2,75 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from unittest.mock import patch
 
 import pytest
 
 from ouro.core.cancellation import AbortSignal
+from ouro.core.interactions import AnswerResolution
 from ouro.core.tools import ToolInvocation
 from ouro.plugins.api import adapt_sdk_contributions
 from ouro.sdk.plugins import v2 as sdk
 from ouro.tools import ToolExecutionContext, ToolExecutor, ToolRegistry
+
+
+async def test_sdk_callback_forms_are_bound_before_execution_and_resume(tmp_path):
+    seen = []
+
+    async def execute(call):
+        seen.append(call.tool_call_id)
+        return sdk.ToolInputRequest(data={"type": "question"})
+
+    def resume(call, *, context):
+        seen.append(context.workspace)
+        return sdk.ToolOutput(content=call.resolution.value)
+
+    tool = adapt_sdk_contributions(
+        sdk.ContributionSet(
+            tools=[
+                sdk.ToolContribution(
+                    id="question",
+                    exposed_name="Question",
+                    description="Question",
+                    handler=execute,
+                    resume_handler=resume,
+                )
+            ]
+        ),
+        owner_id="example.plugin",
+    ).tools[0]
+    invocation = ToolInvocation(tool_name="Question", session_id="session", run_id="run")
+    context = ToolExecutionContext(workspace=tmp_path)
+    with patch("ouro.plugins.harness_calls.signature", side_effect=AssertionError("inspected")):
+        request = await tool.execute(invocation, context=context)
+        result = await tool.resume(
+            invocation,
+            AnswerResolution(value="answered"),
+            request=request,
+            context=context,
+        )
+    assert result.content == "answered"
+    assert seen == [invocation.tool_call_id, str(tmp_path)]
+
+
+def test_sdk_callback_with_missing_required_argument_fails_during_adaptation():
+    def invalid(call, context, unexpected):
+        pytest.fail("invalid callback must not run")
+
+    with pytest.raises(TypeError, match="unexpected"):
+        adapt_sdk_contributions(
+            sdk.ContributionSet(
+                tools=[
+                    sdk.ToolContribution(
+                        id="invalid",
+                        exposed_name="Invalid",
+                        description="Invalid",
+                        handler=invalid,
+                    )
+                ]
+            ),
+            owner_id="example.plugin",
+        )
 
 
 @pytest.mark.asyncio

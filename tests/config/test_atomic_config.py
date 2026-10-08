@@ -5,10 +5,31 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from ouro.config.file import JsonConfigFile
+from ouro.config.file import DOMAIN_CONFIG_FILES, JsonConfigFile
 from ouro.config.permissions import PermissionConfigManager
 from ouro.config.queued_inputs import QueuedInputConfigManager
 from ouro.core.errors import ConfigError
+
+
+@pytest.mark.parametrize("name", sorted(set(DOMAIN_CONFIG_FILES.values())))
+@pytest.mark.parametrize("shared_content", ['{"mcp": {}}', '{"invalid":'])
+def test_domain_config_reads_and_updates_only_its_own_file(tmp_path, name, shared_content):
+    shared = JsonConfigFile(tmp_path)
+    shared.path.parent.mkdir(parents=True)
+    shared.path.write_text(shared_content, encoding="utf-8")
+    domain = JsonConfigFile(tmp_path, name=name)
+
+    assert domain.read() == {}
+    domain.write({"keep": True})
+    with domain.mutation():
+        value = domain.read()
+        value["added"] = 1
+        domain.write(value)
+
+    assert domain.read() == {"keep": True, "added": 1}
+    assert shared.path.read_text(encoding="utf-8") == shared_content
+    with pytest.raises(ConfigError):
+        shared.read()
 
 
 def test_config_write_retries_sharing_conflict_and_preserves_data_on_sync_failure(

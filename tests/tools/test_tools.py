@@ -41,7 +41,7 @@ def test_scoped_registry_reads_one_fresh_controller_snapshot_per_listing() -> No
                 definition=ToolDefinition(
                     name=name, description=name, active_when_controller_id=controller_id
                 ),
-                handler=lambda *_: "done",
+                handler=lambda invocation, context: "done",
             )
         )
     calls = 0
@@ -231,7 +231,7 @@ async def test_tool_output_is_truncated_at_executor_boundary() -> None:
     registry.register(
         Tool(
             definition=ToolDefinition(name="Verbose", description="verbose"),
-            handler=lambda invocation: ToolResult(
+            handler=lambda invocation, context: ToolResult(
                 tool_call_id=invocation.tool_call_id,
                 tool_name=invocation.tool_name,
                 content="x" * 200,
@@ -348,7 +348,7 @@ async def test_any_tool_can_request_structured_user_input() -> None:
     registry.register(
         Tool(
             definition=ToolDefinition(name="ConfirmPlan", description="Confirm a plan."),
-            handler=lambda _invocation: ToolInputRequest(data=request),
+            handler=lambda _invocation, context: ToolInputRequest(data=request),
         )
     )
 
@@ -367,11 +367,7 @@ async def test_plugin_style_tool_receives_execution_context() -> None:
     registry = ToolRegistry()
     seen_contexts: list[ToolExecutionContext] = []
 
-    async def handler(
-        invocation: ToolInvocation,
-        *,
-        context: ToolExecutionContext,
-    ) -> ToolResult:
+    async def handler(invocation: ToolInvocation, context: ToolExecutionContext) -> ToolResult:
         seen_contexts.append(context)
         return ToolResult(
             tool_call_id=invocation.tool_call_id,
@@ -405,7 +401,7 @@ async def test_plugin_style_tool_receives_execution_context() -> None:
 async def test_async_tool_exception_returns_error_result() -> None:
     registry = ToolRegistry()
 
-    async def failing_handler(invocation: ToolInvocation) -> ToolResult:
+    async def failing_handler(invocation: ToolInvocation, context) -> ToolResult:
         raise RuntimeError("async handler failure token=tool-secret")
 
     registry.register(
@@ -433,7 +429,7 @@ async def test_async_tool_exception_returns_error_result() -> None:
 async def test_sync_tool_exception_returns_error_result() -> None:
     registry = ToolRegistry()
 
-    def failing_handler(invocation: ToolInvocation) -> ToolResult:
+    def failing_handler(invocation: ToolInvocation, context) -> ToolResult:
         raise ValueError("sync handler failure")
 
     registry.register(
@@ -461,7 +457,7 @@ async def test_tool_result_identity_mismatch_becomes_current_call_error() -> Non
     registry.register(
         Tool(
             definition=ToolDefinition(name="BrokenIdentity", description="Returns the wrong id."),
-            handler=lambda _invocation: ToolResult(
+            handler=lambda _invocation, context: ToolResult(
                 tool_call_id="different_call",
                 tool_name="DifferentTool",
                 content="invalid",
@@ -491,7 +487,7 @@ async def test_invalid_tool_return_becomes_model_readable_error() -> None:
     registry.register(
         Tool(
             definition=ToolDefinition(name="InvalidReturn", description="Returns no result."),
-            handler=lambda _invocation: None,
+            handler=lambda _invocation, context: None,
         )
     )
     invocation = ToolInvocation(
@@ -518,7 +514,7 @@ async def test_sync_tool_handler_does_not_block_the_event_loop() -> None:
     release = threading.Event()
     handler_threads: list[int] = []
 
-    def blocking_handler(invocation: ToolInvocation) -> ToolResult:
+    def blocking_handler(invocation: ToolInvocation, context) -> ToolResult:
         handler_threads.append(threading.get_ident())
         entered.set()
         release.wait()
@@ -564,7 +560,7 @@ async def test_tool_execution_aborted_still_returns_aborted_outcome() -> None:
 
     registry = ToolRegistry()
 
-    async def aborting_handler(invocation: ToolInvocation) -> ToolResult:
+    async def aborting_handler(invocation: ToolInvocation, context) -> ToolResult:
         raise ToolExecutionAborted("cancelled by signal")
 
     registry.register(
@@ -590,7 +586,7 @@ async def test_aborted_signal_prevents_tool_handler_from_starting() -> None:
     registry = ToolRegistry()
     started = False
 
-    async def handler(invocation: ToolInvocation) -> ToolResult:
+    async def handler(invocation: ToolInvocation, context) -> ToolResult:
         nonlocal started
         started = True
         return ToolResult(
@@ -623,7 +619,7 @@ async def test_executor_cancels_async_tool_without_handler_polling() -> None:
     started = asyncio.Event()
     finalized = asyncio.Event()
 
-    async def handler(invocation: ToolInvocation) -> ToolResult:
+    async def handler(invocation: ToolInvocation, context) -> ToolResult:
         started.set()
         try:
             await asyncio.Event().wait()
@@ -664,7 +660,7 @@ async def test_executor_owns_sync_tool_until_cancel_outcome_is_known() -> None:
     entered = threading.Event()
     release = threading.Event()
 
-    def handler(invocation: ToolInvocation) -> ToolResult:
+    def handler(invocation: ToolInvocation, context) -> ToolResult:
         entered.set()
         release.wait(timeout=2)
         return ToolResult(
@@ -753,13 +749,13 @@ async def test_parallel_batch_waits_for_siblings_when_checkpoint_fails() -> None
     registry = ToolRegistry()
     slow_finished = asyncio.Event()
 
-    async def fast(invocation: ToolInvocation) -> ToolResult:
+    async def fast(invocation: ToolInvocation, context) -> ToolResult:
         return ToolResult(
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,
         )
 
-    async def slow(invocation: ToolInvocation) -> ToolResult:
+    async def slow(invocation: ToolInvocation, context) -> ToolResult:
         await asyncio.sleep(0.02)
         slow_finished.set()
         return ToolResult(
@@ -832,7 +828,7 @@ def test_registry_rejects_invalid_tool_schema() -> None:
             description="Invalid schema.",
             parameters_schema={"type": "not-a-json-schema-type"},
         ),
-        handler=lambda invocation: ToolResult(
+        handler=lambda invocation, context: ToolResult(
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,
         ),
@@ -845,7 +841,7 @@ def test_registry_rejects_invalid_tool_schema() -> None:
 def test_registry_replacement_is_atomic_when_new_contribution_conflicts() -> None:
     registry = ToolRegistry()
 
-    def handler(invocation: ToolInvocation) -> ToolResult:
+    def handler(invocation: ToolInvocation, context) -> ToolResult:
         return ToolResult(
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,

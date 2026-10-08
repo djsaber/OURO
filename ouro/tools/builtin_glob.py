@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from pydantic import Field
+
 from ouro.tools.base import Tool, ToolDefinition, ToolExecutionContext, ToolInvocation, ToolResult
-from ouro.tools.builtin_common import _boolean_arg, _string_arg, _tool_result
+from ouro.tools.builtin_common import BuiltinArguments, _tool_result
 from ouro.tools.builtin_search import FileEntry, _matches_any, _translate, iter_files
 
 _GLOB_MAX_RESULTS = 100
@@ -22,36 +24,30 @@ Narrow truncated searches; use specific subpaths in dependency or build director
 Includes hidden files; always skips .env, .env.*, version-control metadata, and symlinks."""
 
 
-_GLOB_SCHEMA: Mapping[str, object] = {
-    "type": "object",
-    "properties": {
-        "pattern": {
-            "type": "string",
-            "minLength": 1,
-            "description": (
-                "Case-sensitive glob: '*.py' matches at any depth, 'src/*.py' one level, "
-                "'src/**/*.py' recursively. Use / separators; braces such as '*.{ts,tsx}' "
-                "or '{src,test}/**/*.ts' expand alternatives."
-            ),
-        },
-        "path": {
-            "type": "string",
-            "description": (
-                "Root directory, absolute or workspace-relative. Defaults to the workspace "
-                "or, if unset, the current working directory."
-            ),
-        },
-        "include_ignored": {
-            "type": "boolean",
-            "description": (
-                "Bypass .gitignore, .ignore, and .rgignore when ignored files are needed. "
-                "Default false; other exclusions still apply."
-            ),
-        },
-    },
-    "required": ["pattern"],
-    "additionalProperties": False,
-}
+class _GlobArguments(BuiltinArguments):
+    pattern: str = Field(
+        min_length=1,
+        description=(
+            "Case-sensitive glob: '*.py' matches at any depth, 'src/*.py' one level, "
+            "'src/**/*.py' recursively. Use / separators; braces such as '*.{ts,tsx}' or "
+            "'{src,test}/**/*.ts' expand alternatives."
+        ),
+    )
+    path: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Root directory, absolute or workspace-relative. Defaults to the workspace or, "
+            "if unset, the current working directory."
+        ),
+    )
+    include_ignored: bool = Field(
+        default=False,
+        description=(
+            "Bypass .gitignore, .ignore, and .rgignore when ignored files are needed. "
+            "Default false; other exclusions still apply."
+        ),
+    )
 
 
 def builtin_glob_tool() -> Tool:
@@ -59,7 +55,7 @@ def builtin_glob_tool() -> Tool:
         definition=ToolDefinition(
             name="Glob",
             description=GLOB_DESCRIPTION,
-            parameters_schema=dict(_GLOB_SCHEMA),
+            parameters_schema=_GlobArguments.model_json_schema(),
             permission_mode="auto",
             effect="read_only",
         ),
@@ -71,9 +67,10 @@ def _glob(
     invocation: ToolInvocation,
     context: ToolExecutionContext,
 ) -> ToolResult:
-    pattern = _string_arg(invocation.arguments, "pattern")
-    include_ignored = _boolean_arg(invocation.arguments, "include_ignored", default=False)
-    root = _directory_arg(invocation.arguments, context)
+    arguments = _GlobArguments.model_validate(invocation.arguments)
+    pattern = arguments.pattern
+    include_ignored = arguments.include_ignored
+    root = _directory_arg(arguments.path, context)
     result = search_glob(
         root,
         pattern,
@@ -107,14 +104,11 @@ def _glob(
     )
 
 
-def _directory_arg(arguments: Mapping[str, object], context: ToolExecutionContext) -> Path:
-    raw = arguments.get("path")
+def _directory_arg(raw: str | None, context: ToolExecutionContext) -> Path:
     if raw is None:
         resolved = context.resolve_working_directory(None)
         root = Path(resolved) if resolved is not None else Path.cwd()
     else:
-        if not isinstance(raw, str) or not raw:
-            raise ValueError("tool argument 'path' must be a non-empty string")
         root = Path(context.resolve_path(raw, read_only=True))
     if not root.is_dir():
         raise ValueError(f"search root is not a directory: {root}")

@@ -286,7 +286,7 @@ async def test_active_session_model_switch_applies_to_the_next_model_request(tmp
                 name="Continue",
                 description="Continue to the next model round.",
             ),
-            handler=lambda invocation: ToolResult(
+            handler=lambda invocation, context: ToolResult(
                 tool_call_id=invocation.tool_call_id,
                 tool_name=invocation.tool_name,
                 content="continued",
@@ -344,7 +344,7 @@ async def test_active_session_reasoning_switch_applies_to_the_next_model_request
                 name="Continue",
                 description="Continue to the next model round.",
             ),
-            handler=lambda invocation: ToolResult(
+            handler=lambda invocation, context: ToolResult(
                 tool_call_id=invocation.tool_call_id,
                 tool_name=invocation.tool_name,
                 content="continued",

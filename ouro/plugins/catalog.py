@@ -530,20 +530,16 @@ def _gated_session_controller(
 def _gated_tool(tool: Tool, gate: GenerationGate) -> Tool:
     async def invoke(
         invocation,
-        *,
-        context: ToolExecutionContext | None = None,
-        signal=None,
+        context: ToolExecutionContext,
     ) -> ToolResult | ToolInputRequest:
         async with gate.invocation():
-            return await tool.execute(invocation, context=context, signal=signal)
+            return await tool.execute(invocation, context=context)
 
     async def resume(
         invocation,
         resolution,
-        *,
         request,
-        context: ToolExecutionContext | None = None,
-        signal=None,
+        context: ToolExecutionContext,
     ):
         async with gate.invocation():
             return await tool.resume(
@@ -551,7 +547,6 @@ def _gated_tool(tool: Tool, gate: GenerationGate) -> Tool:
                 resolution,
                 request=request,
                 context=context,
-                signal=signal,
             )
 
     return Tool(

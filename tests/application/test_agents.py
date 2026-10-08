@@ -585,7 +585,7 @@ class ConcurrentAskUserProvider:
         )
 
 
-async def _handler(invocation):
+async def _handler(invocation, context):
     return ToolResult(
         tool_call_id=invocation.tool_call_id,
         tool_name=invocation.tool_name,
@@ -627,7 +627,9 @@ def _ask_tools() -> ToolRegistry:
                 batch_behavior="exclusive",
                 kind="user_input",
             ),
-            handler=lambda invocation: ToolInputRequest(data=invocation.arguments["question"]),
+            handler=lambda invocation, context: ToolInputRequest(
+                data=invocation.arguments["question"]
+            ),
         )
     )
     return registry

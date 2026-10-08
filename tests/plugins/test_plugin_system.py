@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 
@@ -338,7 +339,7 @@ def test_host_tool_effect_and_batch_behavior_participate_in_catalog_contract_has
                     effect=effect,
                     batch_behavior=batch_behavior,
                 ),
-                handler=lambda _invocation: ToolResult(
+                handler=lambda _invocation, context: ToolResult(
                     tool_call_id="unused",
                     tool_name="WorkflowControl",
                 ),
@@ -586,6 +587,28 @@ def test_builtin_contract_hash_covers_implementation_content(tmp_path) -> None:
     second = _builtin_plugin(root, plugin_id="dev.ouro.example")
 
     assert first.contract_hash != second.contract_hash
+
+
+def test_builtin_contract_covers_declared_runtime_resources_and_excludes_documentation(tmp_path):
+    root = tmp_path / "builtin"
+    root.mkdir()
+    (root / "example_plugin.py").write_text("VALUE = 1\n", encoding="utf-8")
+    resource = root / "instructions.md"
+    resource.write_text("Runtime instructions", encoding="utf-8")
+    documentation = root / "guide.txt"
+    documentation.write_text("Documentation", encoding="utf-8")
+    definition = replace(
+        _builtin_plugin(root, plugin_id="dev.ouro.example"),
+        runtime_resources=("instructions.md",),
+    )
+
+    documentation.write_text("Edited documentation", encoding="utf-8")
+    assert replace(definition).contract_hash == definition.contract_hash
+    resource.write_text("Changed runtime instructions", encoding="utf-8")
+    assert replace(definition).contract_hash != definition.contract_hash
+    resource.unlink()
+    with pytest.raises(FileNotFoundError):
+        replace(definition)
 
 
 @pytest.mark.asyncio
@@ -1429,7 +1452,7 @@ def test_candidate_catalog_failure_does_not_mutate_host_registries(tmp_path) -> 
             tools=[
                 Tool(
                     definition=ToolDefinition(name="echo__run", description="Run."),
-                    handler=lambda invocation: ToolResult(
+                    handler=lambda invocation, context: ToolResult(
                         tool_call_id=invocation.tool_call_id,
                         tool_name=invocation.tool_name,
                     ),
@@ -1459,7 +1482,7 @@ def test_failed_candidate_catalog_leaves_previous_catalog_immutable() -> None:
     tools.register(
         Tool(
             definition=ToolDefinition(name="host__run", description="Host run."),
-            handler=lambda invocation: ToolResult(
+            handler=lambda invocation, context: ToolResult(
                 tool_call_id=invocation.tool_call_id,
                 tool_name=invocation.tool_name,
             ),
@@ -1500,7 +1523,7 @@ def test_failed_candidate_catalog_leaves_previous_catalog_immutable() -> None:
                     tools=(
                         Tool(
                             definition=ToolDefinition(name="echo__run", description="Run."),
-                            handler=lambda invocation: ToolResult(
+                            handler=lambda invocation, context: ToolResult(
                                 tool_call_id=invocation.tool_call_id,
                                 tool_name=invocation.tool_name,
                             ),
@@ -1522,7 +1545,7 @@ def test_failed_candidate_catalog_leaves_previous_catalog_immutable() -> None:
         tools=(
             Tool(
                 definition=ToolDefinition(name="host__run", description="Conflict."),
-                handler=lambda invocation: ToolResult(
+                handler=lambda invocation, context: ToolResult(
                     tool_call_id=invocation.tool_call_id,
                     tool_name=invocation.tool_name,
                 ),
@@ -1563,7 +1586,7 @@ async def test_new_catalog_lease_rebases_changed_host_tools_without_mutating_old
                     description="Search through a live MCP connection.",
                     source="mcp",
                 ),
-                handler=lambda invocation: ToolResult(
+                handler=lambda invocation, context: ToolResult(
                     tool_call_id=invocation.tool_call_id,
                     tool_name=invocation.tool_name,
                 ),

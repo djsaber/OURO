@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
+
 from ouro.core.base import utc_now
 from ouro.tools.base import (
     Tool,
@@ -21,6 +23,7 @@ from ouro.tools.base import (
     ToolProcessResult,
     ToolResult,
 )
+from ouro.tools.builtin_common import BuiltinArguments
 
 ShellKind = Literal["bash", "powershell", "windows_powershell", "cmd", "sh"]
 ExecutableResolver = Callable[[str], str | None]
@@ -127,12 +130,31 @@ def detect_command_shell(
     return None
 
 
+class _ShellArguments(BuiltinArguments):
+    command: str = Field(min_length=1, description="Non-interactive command in the selected shell.")
+    cwd: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Existing working directory, absolute or workspace-relative. "
+            "Defaults to the workspace; applies only to this call."
+        ),
+    )
+    timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description=(
+            "Time limit in seconds. Increase only for expected long-running "
+            "commands, not interactive or hung programs."
+        ),
+    )
+
+
 def builtin_command_tool(shell: CommandShell) -> Tool:
-    async def execute(
-        invocation: ToolInvocation,
-        *,
-        context: ToolExecutionContext,
-    ) -> ToolResult:
+    parameters = _ShellArguments.model_json_schema()
+    parameters["properties"]["command"]["description"] = _command_description(shell)
+
+    async def execute(invocation: ToolInvocation, context: ToolExecutionContext) -> ToolResult:
         return await _execute_command(shell, invocation, context=context)
 
     return Tool(
@@ -140,35 +162,7 @@ def builtin_command_tool(shell: CommandShell) -> Tool:
             name=shell.tool_name,
             display_name=shell.display_name,
             description=_shell_description(shell),
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": _command_description(shell),
-                    },
-                    "cwd": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": (
-                            "Existing working directory, absolute or workspace-relative. "
-                            "Defaults to the workspace; applies only to this call."
-                        ),
-                    },
-                    "timeout_seconds": {
-                        "type": "number",
-                        "exclusiveMinimum": 0,
-                        "default": 30,
-                        "description": (
-                            "Time limit in seconds. Increase only for expected long-running "
-                            "commands, not interactive or hung programs."
-                        ),
-                    },
-                },
-                "required": ["command"],
-                "additionalProperties": False,
-            },
+            parameters_schema=parameters,
             permission_mode="approval",
             effect="state_changing",
             # The executable path is a local binding captured by the handler,
@@ -185,16 +179,12 @@ async def _execute_command(
     *,
     context: ToolExecutionContext,
 ) -> ToolResult:
-    command = _text_arg(invocation, "command")
-    cwd_arg = invocation.arguments.get("cwd")
-    requested_cwd = str(cwd_arg) if isinstance(cwd_arg, str) and cwd_arg else None
-    timeout_raw = invocation.arguments.get("timeout_seconds", 30)
-    timeout_seconds = float(timeout_raw) if isinstance(timeout_raw, int | float) else 30.0
-    cwd = context.resolve_working_directory(requested_cwd)
+    arguments = _ShellArguments.model_validate(invocation.arguments)
+    cwd = context.resolve_working_directory(arguments.cwd)
     process_result = await context.run_process(
-        shell.prepare_arguments(command),
+        shell.prepare_arguments(arguments.command),
         cwd=cwd,
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=arguments.timeout_seconds,
         environment=shell.execution_environment(),
     )
 
@@ -369,10 +359,3 @@ def _process_output(result: ToolProcessResult, *, stdout: str, stderr: str) -> s
     if status and output:
         return f"{status}\n{output}"
     return status or output
-
-
-def _text_arg(invocation: ToolInvocation, name: str) -> str:
-    value = invocation.arguments.get(name)
-    if not isinstance(value, str):
-        raise ValueError(f"tool argument '{name}' must be a string")
-    return value

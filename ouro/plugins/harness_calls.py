@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import inspect
 from collections.abc import Callable
 from dataclasses import replace
+from inspect import Parameter, iscoroutinefunction, signature
 from typing import Any, Literal
 
 from ouro.core.callbacks import invoke_callback, invoke_owned_callback
@@ -118,37 +118,55 @@ async def invoke_plugin_callback(
     )
     try:
         bound_call = replace(call, session_state=view)
-        args, kwargs = callback_arguments(handler, bound_call, context)
+        args = (bound_call,) if context is None else (bound_call, context)
         if owned:
             raw = await invoke_owned_callback(
-                handler, *args, on_cancel=view.close if view is not None else None, **kwargs
+                handler, *args, on_cancel=view.close if view is not None else None
             )
         else:
-            raw = await invoke_callback(handler, *args, **kwargs)
+            raw = await invoke_callback(handler, *args)
         return raw, view.finish() if view is not None else None
     finally:
         if view is not None:
             view.close()
 
 
-def callback_arguments(
-    handler: Callable[..., Any], call: Any, context: object | None
-) -> tuple[tuple[object, ...], dict[str, object]]:
-    if context is None:
-        return (call,), {}
-    try:
-        parameters = tuple(inspect.signature(handler).parameters.values())
-    except TypeError, ValueError:
-        return (call,), {}
-    if any(
-        parameter.kind == inspect.Parameter.VAR_KEYWORD or parameter.name == "context"
-        for parameter in parameters
-    ):
-        return (call,), {"context": context}
+def bind_context_callback(handler: Callable[..., Any]) -> Callable[[Any, Any], Any]:
+    """Bind the SDK's optional context once, preserving async/sync ownership."""
+
+    contract = signature(handler)
+    parameters = tuple(contract.parameters.values())
     positional = [
         parameter
         for parameter in parameters
-        if parameter.kind
-        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        if parameter.kind in (Parameter.POSITIONAL_ONLY, Parameter.POSITIONAL_OR_KEYWORD)
     ]
-    return ((call, context), {}) if len(positional) >= 2 else ((call,), {})
+    if len(positional) >= 2 and positional[1].name == "context":
+        contract.bind(None, None)
+        return handler
+    if any(
+        parameter.kind == Parameter.VAR_KEYWORD
+        or (parameter.name == "context" and parameter.kind != Parameter.POSITIONAL_ONLY)
+        for parameter in parameters
+    ):
+        contract.bind(None, context=None)
+
+        def bound(call, context):
+            return handler(call, context=context)
+
+    elif len(positional) >= 2:
+        contract.bind(None, None)
+        return handler
+    else:
+        contract.bind(None)
+
+        def bound(call, context):
+            return handler(call)
+
+    if iscoroutinefunction(handler):
+
+        async def async_bound(call, context):
+            return await bound(call, context)
+
+        return async_bound
+    return bound

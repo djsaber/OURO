@@ -5,7 +5,13 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, JsonValue, field_validator, model_validator
 
 from ouro.core.base import OuroModel
-from ouro.tools.base import Tool, ToolDefinition, ToolInputRequest, ToolInvocation
+from ouro.tools.base import (
+    Tool,
+    ToolDefinition,
+    ToolExecutionContext,
+    ToolInputRequest,
+    ToolInvocation,
+)
 
 ASK_USER_TOOL_NAME = "AskUser"
 ASK_USER_REQUEST_TYPE = "ask_user"
@@ -143,7 +149,7 @@ def parse_builtin_ask_user_request(
     return AskUserRequest.model_validate(data)
 
 
-def _ask_user(invocation: ToolInvocation) -> ToolInputRequest:
+def _ask_user(invocation: ToolInvocation, context: ToolExecutionContext) -> ToolInputRequest:
     arguments = AskUserArguments.model_validate(invocation.arguments)
     request = AskUserRequest(questions=arguments.questions)
     return ToolInputRequest(data=request.to_json())

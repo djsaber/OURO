@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from ouro.plugins.dependencies import BuiltinPluginContract, resolve_plugin_dependencies
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.models import PluginStateDocument
+from ouro.plugins.paths import portable_relative_path
 
 if TYPE_CHECKING:
     from ouro.sdk.plugins.v2 import PluginContext
@@ -27,6 +28,7 @@ class BuiltinPluginDefinition:
     factory: BuiltinPluginFactory
     root: Path
     default_enabled: bool = True
+    runtime_resources: tuple[str, ...] = ()
     _contract_hash: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -42,7 +44,11 @@ class BuiltinPluginDefinition:
             raise ValueError("builtin package resource contributions are not supported yet")
         if not callable(self.factory):
             raise TypeError("builtin plugin factory must be callable")
-        object.__setattr__(self, "_contract_hash", _builtin_contract_hash(self.manifest, root))
+        object.__setattr__(
+            self,
+            "_contract_hash",
+            _builtin_contract_hash(self.manifest, root, self.runtime_resources),
+        )
 
     @property
     def plugin_id(self) -> str:
@@ -145,16 +151,16 @@ class BuiltinPluginRegistry:
 EMPTY_BUILTIN_PLUGIN_REGISTRY = BuiltinPluginRegistry()
 
 
-def _builtin_contract_hash(manifest: PluginManifest, root: Path) -> str:
+def _builtin_contract_hash(
+    manifest: PluginManifest, root: Path, runtime_resources: tuple[str, ...]
+) -> str:
+    """Bind product-owned Python code and explicitly declared runtime data."""
+
+    inputs = {path for path in root.rglob("*.py") if path.is_file()}
+    inputs.update(root / portable_relative_path(resource) for resource in runtime_resources)
     implementation: list[dict[str, str]] = []
     for path in sorted(
-        (
-            candidate
-            for candidate in root.rglob("*")
-            if candidate.is_file()
-            and "__pycache__" not in candidate.parts
-            and candidate.suffix != ".pyc"
-        ),
+        inputs,
         key=lambda candidate: candidate.relative_to(root).as_posix(),
     ):
         implementation.append(
@@ -164,7 +170,7 @@ def _builtin_contract_hash(manifest: PluginManifest, root: Path) -> str:
             }
         )
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "manifest": manifest.model_dump(mode="json", exclude_none=True),
         "implementation": implementation,
     }

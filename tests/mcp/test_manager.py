@@ -575,7 +575,7 @@ def test_register_tools_marks_tools_with_server_id() -> None:
     manager.configure(_config())
     registry = ToolRegistry()
 
-    def handler(invocation: ToolInvocation) -> ToolResult:
+    def handler(invocation: ToolInvocation, context) -> ToolResult:
         return ToolResult(
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,

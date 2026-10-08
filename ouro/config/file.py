@@ -36,9 +36,6 @@ class JsonConfigFile:
         self._lock_path = self.root / "locks" / f"{Path(name).stem}-mutations.lock"
 
     def read(self) -> dict[str, Any]:
-        if self.path.name in DOMAIN_CONFIG_FILES.values():
-            # Reject an obsolete shared layout even when a domain is read alone.
-            JsonConfigFile(self.root).read()
         if not self.path.exists():
             return {}
         try:

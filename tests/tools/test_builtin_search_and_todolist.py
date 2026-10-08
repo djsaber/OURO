@@ -593,5 +593,5 @@ async def test_todolist_rejects_invalid_items() -> None:
         await _todo(tools["TodoList"], {"todos": [{"title": "x", "status": "doing"}]})
     with pytest.raises(ValueError, match="title"):
         await _todo(tools["TodoList"], {"todos": [{"title": "", "status": "done"}]})
-    with pytest.raises(ValueError, match="must be a list"):
+    with pytest.raises(ValueError, match="todos"):
         await _todo(tools["TodoList"], {"todos": "not-a-list"})

@@ -174,10 +174,13 @@ def test_invalid_configuration_archive_cannot_change_target(tmp_path):
     assert target.read_bytes() == before
 
 
-def test_obsolete_shared_config_is_explicitly_rejected(tmp_path):
+def test_runtime_rejects_obsolete_shared_config_without_blocking_provider_inspection(tmp_path):
+    from ouro.application.runtime_configuration import RuntimeConfigurationResolver
+
     JsonConfigFile(tmp_path).write({"providers": {"default": "faux"}})
+    assert ProviderConfigManager(tmp_path).snapshot().default_provider_id == "faux"
     with pytest.raises(ConfigError, match="unsupported shared config sections"):
-        ProviderConfigManager(tmp_path).snapshot()
+        RuntimeConfigurationResolver(tmp_path).snapshot()
 
 
 def _create_session(store, identity="ses_test", **kwargs):

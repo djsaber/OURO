@@ -1427,7 +1427,7 @@ def _application_with_tool_sources(tmp_path: Path) -> LocalApplication:
                     permission_mode="approval",
                     metadata={"plugin_id": plugin_id} if plugin_id is not None else {},
                 ),
-                handler=lambda invocation: ToolResult(
+                handler=lambda invocation, context: ToolResult(
                     tool_call_id=invocation.tool_call_id,
                     tool_name=invocation.tool_name,
                 ),
@@ -1443,7 +1443,7 @@ def _application_with_tool_sources(tmp_path: Path) -> LocalApplication:
                 permission_control="tool",
                 metadata={"plugin_id": "dev.ouro.third-party"},
             ),
-            handler=lambda invocation: ToolResult(
+            handler=lambda invocation, context: ToolResult(
                 tool_call_id=invocation.tool_call_id,
                 tool_name=invocation.tool_name,
             ),
@@ -1633,7 +1633,7 @@ def _queued_subagent_approval_application(
                 permission_mode="approval",
                 effect="state_changing",
             ),
-            handler=lambda invocation: ToolResult(
+            handler=lambda invocation, context: ToolResult(
                 tool_call_id=invocation.tool_call_id,
                 tool_name=invocation.tool_name,
                 content="danger completed",
@@ -1812,7 +1812,7 @@ def _question_application(
                     effect="read_only",
                     permission_mode="auto",
                 ),
-                handler=lambda _invocation: ToolInputRequest(
+                handler=lambda _invocation, context: ToolInputRequest(
                     data={
                         "question": "How should the plugin continue?",
                         "options": [

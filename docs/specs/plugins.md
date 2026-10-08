@@ -125,13 +125,23 @@ Builtin plugin：
 - 由 application composition root 提供；
 - 由显式、不可变的 builtin definition registry 提供，不扫描 workspace、`OURO_HOME` 或用户插件目录；
 - definition 包含稳定 identity、version、Manifest contribution/dependency contract、in-process factory、
-  `default_enabled` 和由规范化 Manifest 与实现文件内容派生的 builtin contract hash；
+  `default_enabled`、显式 `runtime_resources` 和由规范化 Manifest 与运行输入派生的 builtin contract hash；
 - 与 user plugin 复用同一 generation、gate、owner、contribution preparation、catalog transaction 和 durable
   execution contract；builtin 不是 Host baseline，也不建立第二套 runtime；
 - 不进入 user install/update/remove 流程；
 - 不经过 user install/select/remove 流程；
 - identity 和公开名称不能被 user plugin 覆盖；
 - 以稳定 version 和 builtin contract hash 参与 dependency lock；实现内容变化即使忘记提升 version，也必须产生不同 release identity。
+
+Builtin contract hash 的输入格式版本为 2，包含规范化 Manifest、definition root 下全部 Python 源文件，
+以及 `runtime_resources` 声明的包内相对文件路径与内容摘要。插件读取的非 Python 提示词、模板、schema 等
+随代码发布的运行资源必须显式列入；缺失的声明资源使 definition 构造失败。普通说明文档不作为运行输入，
+判断依据是是否参与执行，不是文件名或扩展名。外部工作区指令、Session 制品和用户配置属于动态业务输入，
+继续由各自的读取与持久化契约管理。插件间依赖通过 dependency lock 纳入 execution contract，
+SDK 和 Host 通过既有 API、贡献与执行契约约束，不把整个应用文件树纳入局部插件摘要。
+
+User package digest 仍覆盖完整规范化包文件树，用于安装内容身份与完整性检查；不能套用 builtin 的运行输入范围。
+`builtin_contract_hash` 作为 release identity，并参与 execution contract。
 
 `builtin | user` 是代码供应类别，`declarative | python-inprocess | worker` 是运行方式，二者相互独立。Manifest
 不能声明 plugin class，也不设置可由 user package 伪造的 `runtime.kind = builtin`。Builtin 使用 Plan/Goal
@@ -839,7 +849,9 @@ Run，不能在策略检查后重新读取 current catalog。Observer registrati
 - pending approval/tool batch 必须重新通过当前 generation gate 和 ToolExecutor。
 
 Builtin 不保留随旧 OURO 版本发布的代码副本。恢复所需 builtin contract 与当前 definition 不一致时必须确定性失败，
-不能按同名 Tool、相同 plugin id 或当前 factory 猜测兼容。
+不能按同名 Tool、相同 plugin id 或当前 factory 猜测兼容。哈希输入格式也是契约身份的一部分；绑定不同格式所得
+哈希的待恢复 Run 同样不支持续跑，不自动重绑、不重放待审批动作、不清空会话事实。继续原 Run 需要匹配的
+运行实现；需要当前实现执行新的工作时使用新 Session。
 
 ## 16. Update、Rollback 与 Remove
 
