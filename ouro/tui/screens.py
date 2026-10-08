@@ -102,7 +102,21 @@ def help_choices(
         )
         for command in plugin_commands
     )
-    return (*shortcuts, *commands, *plugins)
+    return (
+        *shortcuts,
+        Choice(
+            "command:@",
+            "@[name]",
+            description=(
+                "Type to filter; Space selects files; "
+                "Enter opens folders or adds references; Esc closes."
+            ),
+            trailing="Reference local files",
+            group="COMMANDS",
+        ),
+        *commands,
+        *plugins,
+    )
 
 
 ChoiceSelectionHandler = Callable[[str], Awaitable[tuple[Choice, ...] | None]]

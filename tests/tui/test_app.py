@@ -9520,6 +9520,18 @@ async def test_root_help_groups_runtime_plugin_commands(
             ("/hello <name>", "Say hello")
         ]
 
+        help_screen = app.screen
+        help_screen.query_one("#choice-filter", Input).value = "@"
+        await pilot.pause()
+        options = help_screen.query_one("#choice-list", OptionList)
+        assert [
+            option.id
+            for index in range(options.option_count)
+            if not (option := options.get_option_at_index(index)).disabled
+        ] == ["command:@"]
+        await pilot.press("enter")
+        assert app.screen is help_screen
+
 
 @pytest.mark.asyncio
 async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
@@ -9551,6 +9563,16 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         assert shortcuts["Alt+A"] == "cycle tool approval"
         assert shortcuts["Alt+← / Alt+→"] == "switch agent"
         assert shortcuts["Alt+↑ / Alt+↓"] == "main / recent agent"
+        files = next(choice for choice in menu._choices if choice.value == "command:@")
+        assert (files.group, files.label, files.trailing) == (
+            "COMMANDS",
+            "@[name]",
+            "Reference local files",
+        )
+        assert files.description == (
+            "Type to filter; Space selects files; "
+            "Enter opens folders or adds references; Esc closes."
+        )
         plugin_commands = tuple(
             choice for choice in menu._choices if choice.group == "PLUGIN COMMANDS"
         )
