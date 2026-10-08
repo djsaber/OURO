@@ -106,7 +106,7 @@ def help_choices(
         *shortcuts,
         Choice(
             "command:@",
-            "@[name]",
+            "@",
             description=(
                 "Type to filter; Space selects files; "
                 "Enter opens folders or adds references; Esc closes."

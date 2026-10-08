@@ -9566,7 +9566,7 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         files = next(choice for choice in menu._choices if choice.value == "command:@")
         assert (files.group, files.label, files.trailing) == (
             "COMMANDS",
-            "@[name]",
+            "@",
             "Reference local files",
         )
         assert files.description == (
