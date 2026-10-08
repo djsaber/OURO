@@ -77,6 +77,7 @@ def test_picker_names_share_left_edge_and_only_files_have_selection_marks(tmp_pa
         "Reference selected files",
     ]
     assert [item.checked for item in arguments] == [None, None, True, None]
+    assert picker.arguments("missing", DEFAULT_TUI_THEME) == ()
     picker.toggle(str(path))
     assert picker.arguments("notes", DEFAULT_TUI_THEME)[0].checked is False
 
@@ -332,8 +333,17 @@ async def test_import_queue_cancel_and_draft_restart_restore_exact_input(tmp_pat
         assert restarted.query_one(Composer).input_content == restored
 
 
-async def test_composer_at_and_plain_paste_do_not_confuse_attachment_identity(tmp_path):
+@pytest.mark.parametrize("key, mode", (("enter", "follow_up"), ("ctrl+j", "steer")))
+async def test_composer_at_and_plain_paste_do_not_confuse_attachment_identity(
+    tmp_path, monkeypatch, key, mode
+):
     app = OuroTuiApp(application=application_at(tmp_path))
+    submitted = []
+    monkeypatch.setattr(
+        app,
+        "_submit_run",
+        lambda text, mode, *, attachments: submitted.append((text, mode, attachments)),
+    )
     async with run_ready_app(app) as pilot:
         composer = app.query_one(Composer)
         composer.load_text("name")
@@ -350,6 +360,34 @@ async def test_composer_at_and_plain_paste_do_not_confuse_attachment_identity(tm
         assert composer.input_content == InputContent(text="check ")
         await app._attach_files("/ordinary text to paste").wait()
         assert composer.input_content.text == "check /ordinary text to paste"
+
+        attachment = InputAttachment(resource_id="r", name="file.txt", text_offset=7)
+        for content, position, expected in (
+            (InputContent(), 0, "@missing text"),
+            (
+                InputContent(text="before after", attachments=(attachment,)),
+                7,
+                "before @missing textafter",
+            ),
+        ):
+            composer.load_input(content)
+            composer.move_cursor((0, position))
+            await pilot.press("@")
+            if workers := [w for w in app.workers if w.group == "attachment-directory"]:
+                await app.workers.wait_for_complete(workers)
+            await pilot.press(*"missing text")
+            await pilot.pause()
+            assert not app.query_one(CommandPopup).display
+            await pilot.press(key)
+            await pilot.pause()
+            text, submitted_mode, attachments = submitted[-1]
+            assert (text, submitted_mode) == (expected, mode)
+            assert attachments == tuple(
+                item.model_copy(update={"text_offset": item.text_offset + len("@missing text")})
+                for item in content.attachments
+            )
+            assert composer.input_content.is_empty
+            assert not composer.attachment_menu_open and app._attachment_picker is None
 
 
 async def test_transient_commands_preserve_attachment_spans():
@@ -511,13 +549,21 @@ async def test_inline_picker_cancel_preserves_draft_cursor_and_narrow_layout(tmp
         composer.load_text("before after")
         composer.move_cursor((0, 7))
         original, selection = composer.input_content, composer.selection
-        await pilot.press("@", *"missing")
+        await pilot.press("@")
+        if workers := [w for w in app.workers if w.group == "attachment-directory"]:
+            await app.workers.wait_for_complete(workers)
         await pilot.pause()
         popup = app.query_one(CommandPopup)
         assert app.focused is composer and popup.display
         assert popup.region.bottom == composer.region.y
         assert popup.region.right <= 44
+        await pilot.press(*"missing")
+        await pilot.pause()
+        assert not popup.display
         assert app._input_drafts.content_for(session.session_id) == original
+        composer.set_attachment_query("")
+        await pilot.pause()
+        assert popup.display
         await pilot.press("escape")
         assert composer.input_content == original and composer.selection == selection
         assert not popup.display

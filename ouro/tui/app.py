@@ -1269,6 +1269,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         composer = self.query_one(Composer)
         popup = self.query_one(CommandPopup)
         composer.set_suggestion_resolver(lambda: self._command_suggestion(composer, popup))
+        composer.set_command_matcher(lambda: self._matches_command(composer))
         composer.disabled = True
         self._mcp_status_timer = self.set_interval(
             _MCP_STATUS_SYNC_INTERVAL_SECONDS,
@@ -2010,6 +2011,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         await self.query_one(ConversationView).add_run_summary(presentation)
 
     async def on_composer_submitted(self, message: Composer.Submitted) -> None:
+        self._close_attachment_menu()
         if self._visible_read_only:
             self.notify("Subagent sessions are read-only", severity="warning")
             return
@@ -2117,6 +2119,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 "@", "Loading files…" if picker.loading else "No matching files", "Reference files"
             ),
             arguments,
+            query=context[0][1:],
             heading=str(picker.directory),
             hint=self._tui_theme.inline_separator.join(
                 ("↑/↓ move", "Space select", "Enter open / reference", "Esc close")
@@ -2623,6 +2626,33 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             arguments[0] if arguments else None,
         )
         return argument_suggestion(command, argument, selected)
+
+    def _matches_command(self, composer: Composer) -> bool:
+        context = composer.command_context()
+        if context is None:
+            return False
+        value, _draft = context
+        if composer.attachment_menu_open:
+            picker = self._attachment_picker
+            return (
+                picker is None
+                or picker.loading
+                or bool(picker.arguments(value[1:], self._tui_theme))
+            )
+        catalog = self._command_catalog()
+        _name, separator, argument = value.partition(" ")
+        if not separator:
+            return bool(matching_commands(value, catalog))
+        command, _argument = resolve_command(value, catalog)
+        if command is None:
+            return False
+        if not argument.strip():
+            return True
+        return command.takes_arguments and (
+            command.freeform_arguments
+            or any(option.is_suggestion for option in command.argument_options)
+            or bool(matching_arguments(command, argument))
+        )
 
     def _sync_command_suggestion(
         self,
@@ -3144,6 +3174,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                         command.argument_hint if self._controller.session_id is None else None
                     ),
                     argument_options=self._workspace_arguments(),
+                    freeform_arguments=self._controller.session_id is None,
                 )
             elif command.name == "/navigate" and argument_owner == command.name:
                 catalog[index] = replace(
@@ -3426,7 +3457,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     for option in item.argument_options
                 ),
             )
-            matches.append(command)
+            matches.append(replace(command, freeform_arguments=bool(command.input_hint)))
         return tuple(matches)
 
     @work(group="plugin-command")

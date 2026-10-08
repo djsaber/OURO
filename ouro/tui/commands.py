@@ -53,6 +53,7 @@ class TuiCommand:
     argument_hint: str | None = None
     aliases: tuple[str, ...] = ()
     argument_options: tuple[TuiCommandArgument, ...] = ()
+    freeform_arguments: bool = False
 
     @property
     def usage(self) -> str:
@@ -105,6 +106,7 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
         "Workspace",
         "Choose a working folder or clear recent folders",
         "[clear|<path>]",
+        freeform_arguments=True,
     ),
     TuiCommand(
         "/sessions",
@@ -221,12 +223,13 @@ def matching_arguments(
     command: TuiCommand,
     argument: str,
 ) -> tuple[TuiCommandArgument, ...]:
-    query, separator, _remainder = argument.lstrip().partition(" ")
+    query, separator, remainder = argument.lstrip().partition(" ")
     if separator:
         return tuple(
             option
             for option in command.argument_options
             if option.value.casefold() == query.casefold()
+            and (not remainder.strip() or option.argument_hint or option.is_suggestion)
         )
     return tuple(option for option in command.argument_options if option.matches(query))
 

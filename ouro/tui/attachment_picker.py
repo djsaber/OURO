@@ -108,7 +108,7 @@ class AttachmentPicker:
                     checked=None if entry.is_directory else entry.path in self.selected,
                 )
             )
-        if self.selected:
+        if self.selected and (not needle or arguments):
             arguments.append(
                 TuiCommandArgument(
                     self.CONFIRM,

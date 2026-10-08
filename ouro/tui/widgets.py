@@ -3053,8 +3053,9 @@ class CommandPopup(VerticalScroll):
                     (index for index, item in enumerate(arguments) if item.value == selected_value),
                     0,
                 )
-            self.display = True
-            self._render_arguments()
+            self.display = bool(arguments) or not query.strip()
+            if self.display:
+                self._render_arguments()
 
     def hide(self) -> None:
         if (
@@ -3357,6 +3358,7 @@ class Composer(AttachmentTextArea):
         self._attachment_display = ""
         self._attachment_selection = self.selection
         self._suggestion_resolver: Callable[[], str] | None = None
+        self._command_matcher: Callable[[], bool] | None = None
         self._placeholder_parts: tuple[_PlaceholderPart, ...] = ()
         self._placeholder_kind: Literal["active_run", "subagent"] | None = None
         # Some terminals emit Paste alongside the right-click mouse event.
@@ -3393,6 +3395,14 @@ class Composer(AttachmentTextArea):
 
         self._suggestion_resolver = resolver
         self.update_suggestion()
+
+    def set_command_matcher(self, matcher: Callable[[], bool]) -> None:
+        """Let the host distinguish command candidates from ordinary input."""
+
+        self._command_matcher = matcher
+
+    def _matches_command(self) -> bool:
+        return self._command_matcher is None or self._command_matcher()
 
     def set_plain_placeholder(self, placeholder: str) -> None:
         if not self._placeholder_parts and self.placeholder == placeholder:
@@ -3698,7 +3708,7 @@ class Composer(AttachmentTextArea):
             event.stop()
             event.prevent_default()
             return
-        if self.attachment_menu_open and event.character == " ":
+        if self.attachment_menu_open and event.character == " " and self._matches_command():
             event.stop()
             event.prevent_default()
             self.post_message(self.AttachmentToggled())
@@ -3731,7 +3741,7 @@ class Composer(AttachmentTextArea):
         if content.is_empty or self.import_pending:
             return
         context = self.command_context()
-        if context is not None:
+        if context is not None and self._matches_command():
             command_text, draft = context
             self.post_message(
                 self.CommandSubmitted(
@@ -3741,6 +3751,12 @@ class Composer(AttachmentTextArea):
                 )
             )
             return
+        if context is not None and self.attachment_menu_open:
+            self.finish_attachment_menu()
+            self.insert_plain_paste(context[0])
+            content = self.input_content
+            value = content.text
+        self._command_draft = None
         self._history.append(content)
         self._history_index = len(self._history)
         self.clear()

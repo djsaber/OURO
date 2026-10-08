@@ -11706,6 +11706,7 @@ async def test_workspace_command_selects_paths_only_before_session_and_keeps_cle
         assert popup.argument_command is not None
         assert popup.argument_command.name == "/workspace"
         assert popup.selected_argument is None
+        assert not popup.display
 
         await pilot.press("enter")
         await pilot.pause()
@@ -11839,18 +11840,42 @@ async def test_slash_prefix_filters_new_command_text_and_restores_existing_draft
 
 
 @pytest.mark.asyncio
-async def test_command_popup_hides_when_no_commands_match(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "text",
+    (
+        "/not-a-command",
+        "/model 你叫什么名字",
+        "/model faux/faux extra text",
+        "/help extra text",
+        "/plan unknown",
+        "/skill missing explain this",
+    ),
+)
+@pytest.mark.parametrize("key, mode", (("enter", "follow_up"), ("ctrl+j", "steer")))
+async def test_command_popup_hides_when_no_commands_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str, key: str, mode: str
+) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
+    submitted = []
+    monkeypatch.setattr(
+        app,
+        "_submit_run",
+        lambda text, mode, *, attachments: submitted.append((text, mode, attachments)),
+    )
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        await pilot.press("slash", *"not-a-command")
+        await pilot.press(*text)
         await pilot.pause()
 
         popup = app.query_one(CommandPopup)
         assert popup.display is False
         assert popup.selected_command is None
         assert "No matching commands" not in app.export_screenshot()
+        await pilot.press(key)
+        await pilot.pause()
+        assert submitted == [(text, mode, ())]
+        assert app.query_one(Composer).text == ""
 
 
 @pytest.mark.asyncio
@@ -12321,6 +12346,13 @@ async def test_parameterized_command_opens_argument_menu_and_executes_selection(
         await pilot.pause()
         assert composer.text == ""
         assert executed == [("goal", "pause")]
+
+        composer.load_command("/goal Explain this project")
+        await pilot.pause()
+        assert not popup.display
+        await pilot.press("enter")
+        await pilot.pause()
+        assert executed[-1] == ("goal", "Explain this project")
 
 
 @pytest.mark.asyncio

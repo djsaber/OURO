@@ -97,6 +97,7 @@ def test_parameter_options_filter_and_drive_inline_suggestions() -> None:
 
     assert [item.value for item in matching_arguments(command, "pau")] == ["pause"]
     assert [item.value for item in matching_arguments(command, "replace new goal")] == ["replace"]
+    assert matching_arguments(command, "pause extra text") == ()
     assert command.input_hint == "<request>"
     assert argument_suggestion(command, "", command.argument_options[0]) == "<request>"
     assert argument_suggestion(command, "pau", command.argument_options[1]) == "se"
