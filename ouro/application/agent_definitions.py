@@ -42,7 +42,7 @@ GENERAL_AGENT_DEFINITION = AgentDefinition(
 
 
 class AgentDefinitionService:
-    """Manage definitions and freeze their exact tool contracts for a Run."""
+    """Resolve definitions and current tool capabilities for one decision."""
 
     def __init__(self, config: AgentDefinitionsConfigManager) -> None:
         self.config = config
@@ -180,7 +180,7 @@ class AgentDefinitionService:
                 description=definition.description,
                 effect=definition.effect,
                 owner_id=self._owner_id(tools, definition.name),
-                execution_contract_hash=self._effective_tool_ref(
+                execution_contract_hash=self.tool_reference(
                     tools, definition
                 ).execution_contract_hash,
             )
@@ -252,7 +252,7 @@ class AgentDefinitionService:
                 if permission == "deny":
                     continue
                 effective.append(
-                    self._effective_tool_ref(
+                    self.tool_reference(
                         tools,
                         tool,
                         minimum_permission_mode=permission,
@@ -276,7 +276,7 @@ class AgentDefinitionService:
         )
 
     @classmethod
-    def _effective_tool_ref(
+    def tool_reference(
         cls,
         tools: ToolRegistry,
         definition: ToolDefinition,

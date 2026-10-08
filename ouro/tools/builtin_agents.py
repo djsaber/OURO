@@ -8,7 +8,7 @@ from ouro.tools.base import Tool, ToolDefinition, ToolExecutionContext
 
 
 def agent_control_tools(catalog: AgentCatalogSnapshot) -> tuple[Tool, ...]:
-    """Project one Run-frozen Agent catalog into product-owned tools."""
+    """Project one decision-bound Agent catalog into product-owned tools."""
 
     options = [
         {

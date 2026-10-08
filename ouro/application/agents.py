@@ -569,6 +569,17 @@ class AgentService:
             raise ValueError(f"maximum subagent depth is {self.max_depth}")
         if request.lifecycle_binding != "bound":
             raise ValueError("detached subagent is not supported in the first release")
+        existing = self.store.find_delegation_by_idempotency_key(
+            parent_session.agent_root_session_id,
+            request.request_id,
+        )
+        if existing is not None:
+            self._validate_spawn_retry(
+                existing,
+                request=request,
+                parent_session=parent_session,
+            )
+            return parent_session, parent_run, existing
         entry = self._resolve_parent_catalog(parent_run, request.agent_id)
         assert parent_run.agent_catalog is not None
         policy = parent_run.agent_catalog.spawn_policy
@@ -595,19 +606,6 @@ class AgentService:
                 parent_session.session_id,
                 request.resource_refs,
             )
-        existing = self.store.find_delegation_by_idempotency_key(
-            root_id,
-            request.request_id,
-        )
-        if existing is not None:
-            self._validate_spawn_retry(
-                existing,
-                request=request,
-                parent_session=parent_session,
-                entry=entry,
-                allow_external_paths=policy.allow_external_paths,
-            )
-            return parent_session, parent_run, existing
         delegation = DelegationRecord(
             idempotency_key=request.request_id,
             root_session_id=root_id,
@@ -650,8 +648,6 @@ class AgentService:
         *,
         request: SpawnAgentRequest,
         parent_session: SessionRecord,
-        entry: AgentCatalogEntry,
-        allow_external_paths: bool,
     ) -> None:
         root_id = parent_session.agent_root_session_id
         prompt_digest = "sha256:" + hashlib.sha256(request.task.encode("utf-8")).hexdigest()
@@ -667,9 +663,6 @@ class AgentService:
             and relation.task_resource_refs == request.resource_refs
             and relation.execution_mode == request.execution_mode
             and relation.lifecycle_binding == request.lifecycle_binding
-            and relation.definition.contract_hash == entry.definition.contract_hash
-            and relation.effective_tools == entry.effective_tools
-            and relation.constraints.allow_external_paths == allow_external_paths
         )
         if not matches:
             raise ValueError(
@@ -873,7 +866,6 @@ class AgentService:
                 trigger="subagent",
                 model=self._selected_model(relation.definition.model, parent_run.model),
                 metadata={
-                    **self._extension_metadata(parent_run),
                     "delegation_id": relation.delegation_id,
                     "root_session_id": relation.root_session_id,
                     "agent_id": relation.agent_id,
@@ -1091,10 +1083,6 @@ class AgentService:
                         "Parent is still consuming this child's synchronous result"
                     )
         child = self.store.load_session_record(relation.child_session_id)
-        previous_run = self.store.load_run(
-            relation.child_session_id,
-            relation.current_child_run_id,
-        )
         run = RunRecord(
             run_id=continuation.run_id if continuation is not None else new_id("run"),
             session_id=child.session_id,
@@ -1106,7 +1094,6 @@ class AgentService:
             trigger="continue" if continuation is not None else "subagent_follow_up",
             model=self._selected_model(relation.definition.model, child.current_model),
             metadata={
-                **(self._extension_metadata(previous_run) if continuation is None else {}),
                 "delegation_id": relation.delegation_id,
                 "root_session_id": relation.root_session_id,
                 "agent_id": relation.agent_id,
@@ -2156,14 +2143,6 @@ class AgentService:
         if relation.parent_session_id != parent_session_id:
             raise ValueError("delegation is not a direct child of this parent")
         return relation
-
-    @staticmethod
-    def _extension_metadata(run: RunRecord) -> dict[str, object]:
-        return {
-            key: run.metadata[key]
-            for key in ("extension_catalog_id", "extension_generations")
-            if key in run.metadata
-        }
 
     def _require_child_identity(
         self,

@@ -12,7 +12,6 @@ from ouro.core.callbacks import run_blocking
 from ouro.core.continuations import (
     AttributedContinuationDecision,
     ContinuationFailure,
-    ContinuationPolicyRegistration,
     RunContinuationRegistry,
 )
 from ouro.core.harness_calls import accept_state_changes
@@ -442,7 +441,7 @@ class RunContinuationService:
             if checkpoint is None or checkpoint.state == "resolved":
                 return RunContinuationSettlement(run=latest)
             draft = plan.harness
-            # Older plans lack a proven state boundary. They may be paused, never replayed.
+            # A plan without a proven state boundary cannot authorize execution.
             if draft is None:
                 resolved = self._resolve_locked(
                     latest, action="pause", reason="continuation_state_unavailable"
@@ -465,11 +464,7 @@ class RunContinuationService:
             diagnostic = None
             queued = False
             if action == "continue":
-                registration = self._current_registration(plan)
-                if registration is None or registration.generation_id is None:
-                    action, reason = "pause", "continuation_execution_contract_missing"
-                    diagnostic = "continuation policy had no current execution contract"
-                elif controller_ref.activation_id is not None and not any(
+                if controller_ref.activation_id is not None and not any(
                     item.activation_id == controller_ref.activation_id
                     and item.controller_id == controller_ref.active_when_controller_id
                     for item in before.controls.activations
@@ -501,7 +496,7 @@ class RunContinuationService:
                         source="plugin",
                         plugin_id=plan.plugin_id,
                         contribution_id=plan.policy_id,
-                        generation_id=registration.generation_id,
+                        generation_id=controller_ref.generation_id,
                         execution_contract_hash=plan.execution_contract_hash,
                         caused_by_run_id=run.run_id,
                         continuation_decision_id=checkpoint.decision_id,
@@ -538,22 +533,6 @@ class RunContinuationService:
                 diagnostics=(diagnostic,) if diagnostic else (),
             )
 
-    def _current_registration(
-        self,
-        plan: RunContinuationSettlementPlan,
-    ) -> ContinuationPolicyRegistration | None:
-        return next(
-            (
-                registration
-                for registration in self.registry.registered()
-                if registration.plugin_id == plan.plugin_id
-                and registration.policy_id == plan.policy_id
-                and registration.execution_contract_hash == plan.execution_contract_hash
-                and registration.contract_hash == plan.contract_hash
-            ),
-            None,
-        )
-
     @staticmethod
     def _controller_ref_for_plan(
         checkpoint: RunContinuationCheckpoint,
@@ -580,63 +559,29 @@ class RunContinuationService:
         diagnostic: str,
     ) -> RunContinuationSettlement:
         with self.store.session_mutation(run.session_id):
-            before, snapshot = capture_session_harness(self.store, run.session_id)
+            before = self.store.load_session_record(run.session_id)
             latest = self.store.load_run(run.session_id, run.run_id)
             checkpoint = latest.continuation
             assert checkpoint is not None
             if checkpoint.state == "resolved":
                 return RunContinuationSettlement(run=latest)
-            failed_ids = {(failure.plugin_id, failure.policy_id) for failure in failures}
-            current = {
-                (item.controller_id, item.activation_id) for item in before.controls.activations
-            }
-            released = {
-                controller.activation_id
-                for controller in checkpoint.controllers
-                if (controller.plugin_id, controller.policy_id) in failed_ids
-                and (controller.active_when_controller_id, controller.activation_id) in current
-                and controller.activation_id is not None
-                and latest.history_epoch == before.history_epoch
-            }
-            controls = (
-                before.controls.model_copy(
-                    update={
-                        "revision": before.controls.revision + 1,
-                        "activations": [
-                            item
-                            for item in before.controls.activations
-                            if item.activation_id not in released
-                        ],
-                    }
-                )
-                if released
-                else before.controls
-            )
             resolved = _resolved_run(latest, action="pause", reason=reason)
-            self.session_controls.commit(
+            self.store.commit_session(
                 SessionCommit(
                     operation_id=checkpoint.decision_id,
                     before=before,
-                    steps=(
-                        SessionCommitStep(
-                            harness=snapshot.state.model_copy(update={"controls": controls})
-                        ),
-                    ),
                     runs=(resolved,),
                     output={"continuation": {"queued": False, "diagnostic": diagnostic}},
-                ),
-                released_activation_ids=tuple(sorted(released)),
+                )
             )
-            diagnostics = [
-                diagnostic,
-                *(
-                    "fail-closed released exact activation "
-                    f"{activation_id}; owner-private cleanup was not confirmed"
-                    for activation_id in sorted(released)
-                ),
-            ]
             return RunContinuationSettlement(
-                run=resolved, settled=True, failures=failures, diagnostics=tuple(diagnostics)
+                run=resolved,
+                settled=True,
+                failures=failures,
+                diagnostics=(
+                    diagnostic,
+                    "Session controls remain active; explicit release is required.",
+                ),
             )
 
     @staticmethod

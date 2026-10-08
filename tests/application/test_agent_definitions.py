@@ -265,3 +265,29 @@ async def test_runtime_persists_run_frozen_agent_catalog(tmp_path) -> None:
         "general",
         "reader",
     ]
+
+
+@pytest.mark.parametrize(
+    "change,allowed",
+    [
+        ({"execution_contract_hash": "new", "owner_id": "dev.test@two#gen2"}, True),
+        ({"canonical_tool_id": "dev.other/tools/read"}, False),
+        ({"effect": "state_changing"}, False),
+        ({"effect": "unknown"}, False),
+        ({"requires_network": True}, False),
+        ({"requires_mcp": True}, False),
+        ({"requires_external_paths": True}, False),
+        ({"source": "mcp"}, False),
+    ],
+)
+def test_delegated_tool_ceiling_permits_updates_but_not_authority_expansion(change, allowed):
+    from ouro.core.agents import EffectiveToolRef
+
+    granted = EffectiveToolRef(
+        public_name="read",
+        canonical_tool_id="dev.test/tools/read",
+        owner_id="dev.test@one#gen1",
+        execution_contract_hash="old",
+        effect="read_only",
+    )
+    assert granted.permits(granted.model_copy(update=change)) is allowed

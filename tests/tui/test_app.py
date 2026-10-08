@@ -3764,6 +3764,17 @@ async def test_unqueue_command_selects_message_and_returns_it_to_composer(
         composer = app.query_one(Composer)
         composer.load_text("keep queued")
         await pilot.press("enter")
+        await _wait_until(
+            lambda: (
+                "keep queued"
+                in app.query_one(QueuedInputPanel)
+                .query_one("#queued-input-content", Static)
+                .render()
+                .plain
+            ),
+            pilot,
+            description="first input accepted before submitting the second",
+        )
         composer.load_text("return to composer")
         await pilot.press("enter")
         await _wait_until(

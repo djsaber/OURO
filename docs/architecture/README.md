@@ -5,6 +5,12 @@
 
 本文定义职责、依赖方向与跨领域不变量。数据字段、状态转换、命令参数及失败矩阵由[领域规格](../specs/README.md)负责。
 
+## 会话事实与动态环境
+
+环境提供当前能力，会话保存可信事实，执行层兑现具体操作的承诺。Agent 根据已有事实和当前能力继续任务；一致性要求作用于请求与调用绑定、身份、授权、事务和副作用状态等实际依赖边界。
+
+每次模型决策取得当前环境，待完成操作依据自身契约收尾，长期等待依靠持久事实保留身份。相关职责、设计理由及维护约束见[会话连续性与动态环境](session-continuity.md)。
+
 ## 分层与装配
 
 ```text
@@ -62,13 +68,13 @@ Host 需要新增能力时先扩展 Application 用例。其他基础设施不�
 | 所有者 | 权威职责 | 与其他层的关系 |
 |---|---|---|
 | Runtime / RunLifecycle | 会话运行事务与持久状态转换 | Supervisor 调用它，不直接改写状态 |
-| Runtime / RunResources | 单个 Run 的进程内绑定与工具协调器 | 一个资源对象对应一个 Run；队列与 Observer 独立持有租约 |
+| Runtime / RunResources | 单个 Run 的进程内绑定与工具协调器 | 按决策和操作持有绑定；排队输入不持有环境，Observer 为在途回调独立持有租约 |
 | RunExecutionOwnership | 进程内执行锁与 AbortSignal | 跨进程 Session execution lock 仍是唯一执行屏障 |
 | RuntimeSupervisor | 进程内 FIFO、并发许可、订阅和 shutdown | 不另建持久化调度状态机 |
 | SessionRepository / Commit / Harness | 原子变更、检查点、撤销与恢复 | 文件和 SQLite 实现同一领域契约 |
 | AgentService | 派遣目录、Delegation、根交互路由与结果交付 | child 是普通 Session / Run，复用同一执行链 |
 | Task 应用服务 | 计划领取、执行归属和重启对账 | 调度将输入交给普通会话，不另起 Agent 内核 |
-| 插件生命周期与 Catalog lease | 代次资源、契约快照和引用寿命 | Run 持有固定目录，新目录发布不改写旧 Run |
+| 插件生命周期与 Catalog lease | 代次资源、契约快照和引用寿命 | 决策及其调用持有目录；等待释放租约，后续决策使用当前目录 |
 | Host | UI 任务、草稿、选择与渲染投影 | 通过快照和事件游标追赶，不成为业务事实来源 |
 
 `run_blocking` 拥有已开始的同步工作及取消收尾。线程重入的配置 mutation 必须在同一工作线程完成，不能持有它跨越 `await`。持久状态、锁、网络授权和 Host 等待各有所有者，不能用额外轮询状态镜像彼此的结果。
@@ -93,9 +99,9 @@ Provider 实例、产品类型与线协议独立；工厂按协议选择 adapter
 
 ### 扩展与子智能体
 
-插件安装只校验和发布不可变包；启用精确选定的内容才执行代码。候选 Catalog 就绪后原子切换，旧 Run 通过租约保留原目录；跨进程恢复按稳定执行契约匹配。13 类贡献由封闭清单接入，Skill / MCP 资源与代次绑定，后台服务遵循 activation 生命周期。
+插件安装只校验和发布不可变包；启用精确选定的内容才执行代码。候选 Catalog 就绪后原子切换，在途调用通过租约保留原目录；会话恢复采用当前能力，待完成调用核对精确执行契约。13 类贡献由封闭清单接入，Skill / MCP 资源与代次绑定，后台服务遵循 activation 生命周期。
 
-子智能体目录在父 Run 冻结，工具 schema 与实际派遣使用同一快照。子会话复用 Runtime、工具、权限、预算和恢复；sync 等待释放执行许可，async 结果通过持久身份交付，人工交互按完整 child identity 路由。当前单层、bound 生命周期约束见[子智能体规格](../specs/subagents.md)。
+子智能体目录在父模型决策边界绑定，工具 schema 与实际派遣使用同一快照。子会话复用 Runtime、工具、权限、预算和恢复；sync 等待释放执行许可，async 结果通过持久身份交付，人工交互按完整 child identity 路由。当前单层、bound 生命周期约束见[子智能体规格](../specs/subagents.md)。
 
 ### Host 与观察
 

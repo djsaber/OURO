@@ -281,7 +281,7 @@ queue_id 从接受到消费保持稳定；消费后的消息必须能由该身�
 现有输入批次作为完整单位接受/消费，不破坏 batch 身份。已消费后撤销某消息后缀不会复活或重新消费该批次。
 
 HostSessionInput.history_epoch 非空时表示该输入依赖指定代次；为空时表示独立 Host 接受事实。
-历史撤销后保留的独立输入清除旧策略检查、prospective Run 和 Catalog/Generation 许可。旧 Run 的终态
+历史撤销后保留的独立输入清除旧策略检查、prospective Run 和 Catalog/Generation 接收记录。旧 Run 的终态
 finalizer 即使迟于撤销返回，也不能自动 drain 新代次队列。
 
 ### QU-03：父子会话

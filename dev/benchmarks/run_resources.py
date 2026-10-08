@@ -1,7 +1,7 @@
-"""Offline Run resource lifetime probe, using one script for both --source revisions.
+"""Offline Run resource lifetime probe.
 
 Resource scenarios use real Runtime/coordinators/Catalog leases with a synthetic
-Catalog lookup and no execution I/O. Prepared runs use real files/SQLite stores and
+Catalog publisher and current Session control reads. Prepared runs use real files/SQLite stores and
 FauxProvider. Timings and allocation measurements run separately. No CI time limits.
 """
 
@@ -41,6 +41,7 @@ def make_runtime(root, backend="files"):
         tools=ToolRegistry(),
         adapter=RuntimeAdapter(FauxProvider(), ModelMetadata(model_id="faux", provider_id="faux")),
     )
+    app.create_session(_session_id="synthetic", title="Resource probe")
     catalog = build_extension_catalog(
         ExtensionCatalogBase.capture(
             tools=app.tools,
@@ -53,10 +54,7 @@ def make_runtime(root, backend="files"):
         (),
     )
 
-    async def restore(_generations, *, catalog_id=None):
-        return catalog.acquire()
-
-    app.bind_extensions(catalog=SimpleNamespace(snapshot=catalog.acquire, snapshot_for=restore))
+    app.bind_extensions(catalog=SimpleNamespace(snapshot=catalog.acquire))
     return app, catalog
 
 
@@ -94,13 +92,12 @@ async def resource_probe(root, count, scenario, *, memory):
             if scenario == "wait_resume":
                 app._finish_run_observers(run)
                 await app._ensure_extension_snapshot(run)
-                assert app._tool_calls_for_run(run.run_id) is coordinator
+                assert app._tool_calls_for_run(run.run_id) is not coordinator
             del coordinator
             lease_peak = max(lease_peak, catalog.lease_count)
-            if scenario == "queue_transfer":
+            if scenario == "lease_transfer":
                 lease = app._detach_extension_snapshot(run.run_id)
-                app._queued_extension_snapshots[run.run_id] = lease
-                app._release_queued_extension_snapshot(run.run_id)
+                lease.close()
                 del lease
             elif scenario != "close_waiting":
                 terminal = run.model_copy(update={"status": "completed"})
@@ -204,7 +201,7 @@ async def measure(args):
         root = Path(directory)
         for repeat in range(args.repeat):
             for count in args.counts:
-                for scenario in ("terminal", "wait_resume", "queue_transfer", "close_waiting"):
+                for scenario in ("terminal", "wait_resume", "lease_transfer", "close_waiting"):
                     for memory in (False, True):
                         report = await resource_probe(
                             root / f"{repeat}-{count}-{scenario}-{memory}",

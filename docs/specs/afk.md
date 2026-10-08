@@ -88,7 +88,7 @@ tool preflight
   -> continue the same batch and model loop
 ```
 
-原始 request、interaction revision、resolution provenance、精确 execution contract 和最终结果都保存在 active ToolBatch 中。恢复和重放继续绑定原 Run Catalog。进程在工具或 resume handler 内中断时，沿用 OURO 对未知副作用的 recoverable 语义，不猜测调用结果。
+原始 request、interaction revision、resolution provenance、精确 execution contract 和最终结果都保存在 active ToolBatch 中。恢复检查具体 invocation 的契约与当前权限，不重建旧 Catalog。进程在工具或 resume handler 内中断时，沿用 OURO 对未知副作用的 recoverable 语义，不猜测调用结果。
 
 事件至少区分：
 

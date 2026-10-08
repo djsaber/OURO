@@ -134,8 +134,7 @@ Policy 只能把执行提升为审批或拒绝，不能降低 Host policy、批�
 Tool handler 除 `ToolOutput` 或字符串外，还可返回 `ToolInputRequest(data=...)`。`data` 是 Host 透明转发和持久化的
 任意 JSON 值；Host 可据此构建单选、多选、表单或卡片界面。Run 会进入 `waiting_user`，Host 调用
 `answer_user` 后，非 resumable 工具把回答作为该次 tool call 的结果；resumable 工具则由原 contribution 的
-`resume_handler` 消费 `ToolResumeCall`，可以返回最终输出或下一次 `ToolInputRequest`。恢复始终绑定原 Catalog 和
-execution contract。此协议收集数据，不表示批准或拒绝工具执行。
+`resume_handler` 消费 `ToolResumeCall`，可以返回最终输出或下一次 `ToolInputRequest`。恢复检查原调用的 execution contract 及当前权限；不匹配时保留回答并返回局部错误。此协议收集数据，不表示批准或拒绝工具执行。
 
 `ToolResumeCall.resolution` 是判别联合，而不是把控制信息混入任意回答 JSON：正常交互收到
 `AnswerResolution(kind="answer", value=...)`，`call.answer` 仍可作为该分支的便捷投影；AFK 等 Host policy
@@ -329,15 +328,15 @@ worker 随调用接收 `params.session_state` 中的 `writable`、`value` 和只
 
 ## 5. Catalog、owner 与 durable contract
 
-一个 Run 只读取一个不可变 `ExtensionCatalogLease`。插件更新先完整构建候选 generation 与 Catalog，再切换 current
-pointer；旧 Run 继续持有旧 Catalog。Background Service 是每 plugin 的 activation-singleton，不属于 Run Catalog。
+每轮模型决策读取一个当前不可变 `ExtensionCatalogLease`。插件更新先完整构建候选 generation 与 Catalog，再切换 current
+pointer；已发出的模型请求及其调用保持原绑定，等待时释放环境租约。Background Service 是每 plugin 的 activation-singleton，不属于 Run Catalog。
 
 每个 generation 拥有 instance、worker、MCP、task、module、gate 和 contribution。disable 关闭 gate 后不能
 开始新的插件回调；lease 释放后 owner 才回收。
 
 Run、Tool/Approval 和 Continuation 持久化稳定 `execution_contract_hash`，覆盖 package、immutable configuration
 revision、传递 dependency lock、Plugin API/worker protocol 和 contribution contract。随机 `generation_id` 只用于
-当前进程 owner 与诊断。重启后可以从保留的等价内容构建新的 process-local generation；同名但不同 contract 的 Tool
+当前进程 owner 与诊断。重启后使用当前已激活的 process-local generation 检查具体调用；同名但不同 contract 的 Tool
 不能接管 pending invocation。
 
 对 builtin，用户包摘要由 definition 在装配时冻结的 builtin contract hash 取代；该摘要同时覆盖规范化 Manifest 与实现

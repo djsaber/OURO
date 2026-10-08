@@ -53,7 +53,7 @@ AskUser 复用其交互参数模型；Agent 控制工具从 Run 目录投影参�
 - 命令行工具：启动时检测宿主可执行 shell，仅暴露一个与实际执行方言同名的工具；Windows 依次选择
   PowerShell 7、Windows PowerShell、Command Prompt，POSIX 系统依次选择 Bash、POSIX sh；
 - AskUser：暂停 Run 并请求用户输入。
-- SpawnAgent、SendAgentMessage、InterruptAgent：从 parent Run 冻结目录投影的
+- SpawnAgent、SendAgentMessage、InterruptAgent：从 parent 当前决策绑定目录投影的
   product-owned Agent 控制工具；只在标准 Agent-capable composition 中出现。
 
 Glob/Grep 使用 `ToolExecutionContext` 的 workspace、忽略规则与有界输出；TodoList 使用原生 Harness
@@ -113,7 +113,7 @@ AskUser 调用进入 `waiting_user`，保存活动批次和问题。用户答案
 
 Agent 控制工具的普通 handler 只返回类型化 `AgentControlRequest`，`ToolCallCoordinator` 再把请求交给
 application `AgentService`。tools/core 不导入 AgentService、RuntimeService 或 Supervisor。SpawnAgent 的
-`agent_id` schema、execution mode 与实际解析都来自同一 Run-frozen `AgentCatalogSnapshot`；目录没有可派遣
+`agent_id` schema、execution mode 与实际解析都来自同一 decision-bound `AgentCatalogSnapshot`；目录没有可派遣
 definition 时省略 SpawnAgent，而不是生成非法空枚举。控制名称属于产品保留集，plugin/MCP 不能覆盖。
 
 child 工具权限先与 parent 可下放的工具、workspace、network/MCP/external-path hard cap 求交，再应用现有

@@ -71,9 +71,9 @@ Application 为每个 registration 建立独立有界 FIFO mailbox。生产点�
 Runtime event 在 canonical 持久化和 Host sink 投递后先执行轻量 registration/type/controller 匹配；已知没有匹配
 Observer 时不得构造脱敏冻结投影、获取额外 Catalog lease 或进入 dispatcher。Catalog 归属无法确定时保守执行完整路径。
 
-`prompt_policies` 是独立的 fail-closed guard，只检查 Host 路由后的直接用户提示并返回 `allow | deny`，不能改写提示。User plugin
-必须声明 `sessions.prompt.inspect`；拒绝或失败发生在提示进入 canonical message、durable queue 或 Run 前。允许后，直接
-Run 或 queued prospective Run 都继续使用评估时固定的同一 Catalog execution contract。完整契约见
+`prompt_policies` 是独立的 fail-closed guard，检查 Host 路由后的用户提示并返回 `allow | deny`，不能改写提示。User plugin
+必须声明 `sessions.prompt.inspect`。接收阶段拒绝不创建消息、队列输入或 Run；消费阶段拒绝保留已接受的队列输入。
+Skill 激活正文和输入来源作为接受事实保留；模型决策使用当前 Catalog。完整契约见
 [插件系统规格](plugins.md)。
 
 ## 插件注册边界

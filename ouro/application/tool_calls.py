@@ -42,7 +42,7 @@ from ouro.core.observers import (
 )
 from ouro.core.redaction import redact_text
 from ouro.core.run_budget import RunBudgetReason
-from ouro.core.session_controls import AttributedSessionControlTransition
+from ouro.core.session_controls import AttributedSessionControlTransition, SessionControlState
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batch_transitions import tool_batch_suspension
 from ouro.core.tool_batches import (
@@ -59,6 +59,7 @@ from ouro.core.tools import (
     ToolInputRequest,
     ToolInvocation,
     ToolResult,
+    tool_definition_contract_hash,
 )
 from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.tools import ToolBatchExecutor, ToolExecutionContext, ToolExecutor, ToolRegistry
@@ -149,6 +150,7 @@ class ToolCallCoordinator:
         session_controls: SessionControlCoordinator | None = None,
         session_controllers: PluginSessionControllerRegistry | None = None,
         agent_controls: AgentControlExecutor | None = None,
+        refresh_controls: Callable[[SessionControlState], str | None] | None = None,
     ) -> None:
         self.executor = executor
         self.batch_executor = ToolBatchExecutor(executor)
@@ -164,6 +166,7 @@ class ToolCallCoordinator:
         self.session_controls = session_controls
         self.session_controllers = session_controllers or PluginSessionControllerRegistry()
         self.agent_controls = agent_controls
+        self.refresh_controls = refresh_controls
 
     async def handle_batch(
         self,
@@ -1101,11 +1104,14 @@ class ToolCallCoordinator:
         batch: ToolCallBatchRecord,
         *,
         session: SessionRecord,
+        run: RunRecord,
+        emitted: list[EventRecord],
+        sequence: int,
         tool_call_id: str,
         answer: JsonValue,
         harness: HarnessCallSnapshot,
         workspace: str | None = None,
-    ) -> ToolCallBatchRecord:
+    ) -> tuple[ToolCallBatchRecord, int]:
         answer = _JSON_VALUE_ADAPTER.validate_python(answer)
         resolution = AnswerResolution(value=answer)
         resolved_calls: list[ToolBatchCall] = []
@@ -1117,6 +1123,59 @@ class ToolCallCoordinator:
             found = True
             if call.status != "waiting_user" or call.invocation is None:
                 raise ValueError(f"tool call is not waiting for user input: {tool_call_id}")
+            if call.invocation.resumable is False:
+                resolved_calls.append(
+                    call.model_copy(
+                        update={
+                            "status": "completed",
+                            "input_resolution": resolution,
+                            "result": ToolResult(
+                                tool_call_id=call.request.id,
+                                tool_name=call.request.name,
+                                content=_tool_input_result_content(answer),
+                                structured={"answer": answer},
+                                ended_at=utc_now(),
+                            ),
+                        }
+                    )
+                )
+                continue
+            invocation, policy_mode, policy_reason, sequence = await self._evaluate_tool_policies(
+                emitted,
+                sequence,
+                session=session,
+                run=run,
+                invocation=call.invocation,
+                phase="resume",
+                harness=harness,
+            )
+            prepared = self.executor.preflight(
+                invocation,
+                approved=call.approval is not None
+                and call.approval.status in {"approved", "modified"},
+                approval_mode=session.approval_mode,
+                policy_mode=policy_mode,
+                policy_reason=policy_reason,
+            )
+            if prepared.status != "ready":
+                failure_result = prepared.result or ToolResult(
+                    tool_call_id=call.request.id,
+                    tool_name=call.request.name,
+                    is_error=True,
+                    content="Tool resume requires a new approval under the current policy.",
+                    structured={"error_type": "ToolResumeApprovalRequired"},
+                    ended_at=utc_now(),
+                )
+                resolved_calls.append(
+                    call.model_copy(
+                        update={
+                            "status": "failed",
+                            "input_resolution": resolution,
+                            "result": failure_result,
+                        }
+                    )
+                )
+                continue
             definition = self.registry.get(call.request.name).definition
             if definition.resumable:
                 assert call.input_request is not None
@@ -1131,8 +1190,31 @@ class ToolCallCoordinator:
                     workspace_only=self.execution_config.workspace_only,
                     max_output_chars=self.execution_config.max_output_chars,
                 )
+                # Persist the answer and execution intent before a callback may cause effects.
+                started = call.model_copy(
+                    update={
+                        "status": "running",
+                        "invocation": prepared.invocation,
+                        "input_resolution": resolution,
+                    }
+                )
+                await run_blocking(
+                    self.runs.save_batch_state,
+                    session=session,
+                    run=run,
+                    batch=batch.model_copy(
+                        update={
+                            "calls": [
+                                started if item.request.id == tool_call_id else item
+                                for item in batch.calls
+                            ],
+                        }
+                    ),
+                    status="running",
+                    phase="tool_execution",
+                )
                 outcome = await self.executor.resume(
-                    call.invocation,
+                    prepared.invocation,
                     resolution=resolution,
                     request=call.input_request,
                     context=execution_context,
@@ -1195,7 +1277,7 @@ class ToolCallCoordinator:
         )
         return batch.model_copy(
             update={"calls": resolved_calls, "phase": phase, "updated_at": utc_now()}
-        )
+        ), sequence
 
     async def _resolve_unattended_input(
         self,
@@ -1321,6 +1403,12 @@ class ToolCallCoordinator:
                 definition.permission_control if definition is not None else "host"
             ),
             arguments=request.arguments,
+            resumable=definition.resumable if definition is not None else None,
+            definition_contract_hash=(
+                tool_definition_contract_hash(definition)
+                if definition is not None and not metadata.get("plugin_id")
+                else None
+            ),
             plugin_id=_optional_text(metadata.get("plugin_id")),
             plugin_version=_optional_text(metadata.get("plugin_version")),
             plugin_class=_optional_plugin_class(metadata.get("plugin_class")),
@@ -1512,7 +1600,28 @@ class ToolCallCoordinator:
         run: RunRecord,
         invocation: ToolInvocation,
         phase: str,
+        harness: HarnessCallSnapshot | None = None,
     ) -> tuple[ToolInvocation, ToolPolicyMode | None, str | None, int]:
+        # Current controls may activate a previously hidden policy at this boundary.
+        if harness is None and self.tool_policies.snapshot():
+            harness = await run_blocking(
+                capture_harness,
+                self.runs.store,
+                session.session_id,
+                run=run,
+                usage_service=self.runs.usage_service,
+            )
+        if self.refresh_controls is not None:
+            controls = (
+                harness.state.controls
+                if harness is not None
+                else (
+                    await run_blocking(self.runs.store.load_session_record, session.session_id)
+                ).controls
+            )
+            control_error = self.refresh_controls(controls)
+            if control_error:
+                return invocation, "deny", control_error, sequence
         try:
             definition = self.registry.get(invocation.tool_name).definition
         except KeyError:
@@ -1521,15 +1630,7 @@ class ToolCallCoordinator:
             return invocation, None, None, sequence
         policy = await self.tool_policies.evaluate(
             ToolPolicyCall(
-                harness=await run_blocking(
-                    capture_harness,
-                    self.runs.store,
-                    session.session_id,
-                    run=run,
-                    usage_service=self.runs.usage_service,
-                )
-                if self.tool_policies.registered()
-                else None,
+                harness=harness,
                 session_id=session.session_id,
                 run_id=run.run_id,
                 tool_call_id=invocation.tool_call_id,

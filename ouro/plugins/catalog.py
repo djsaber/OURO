@@ -280,18 +280,6 @@ class ExtensionCatalog:
         owner = self.owners.get(canonical_identity)
         return owner.contract_hash if owner is not None else None
 
-    def matches(self, expected_generations: Sequence[Mapping[str, object]]) -> bool:
-        expected = {str(item.get("plugin_id", "")): item for item in expected_generations}
-        if "" in expected or len(expected) != len(expected_generations):
-            return False
-        actual = {generation.plugin_id: generation for generation in self.generations}
-        if set(expected) != set(actual):
-            return False
-        return all(
-            generation_matches_execution_contract(generation, expected[plugin_id])
-            for plugin_id, generation in actual.items()
-        )
-
     def _release(self) -> None:
         with self._lock:
             if self._lease_count:
@@ -788,29 +776,6 @@ def _base_owner_records(
     return records
 
 
-def generation_matches_execution_contract(
-    generation: PluginGenerationRecord,
-    expected: Mapping[str, object],
-) -> bool:
-    """Match durable facts while leaving process-local generation identity diagnostic-only."""
-
-    return (
-        generation.execution_contract_hash is not None
-        and generation.execution_contract_hash == expected.get("execution_contract_hash")
-        and generation.version == expected.get("version")
-        and generation.plugin_class == expected.get("plugin_class", "user")
-        and generation.release_id == expected.get("release_id", expected.get("package_digest"))
-        and generation.package_digest == expected.get("package_digest")
-        and generation.builtin_contract_hash == expected.get("builtin_contract_hash")
-        and generation.runtime_kind == expected.get("runtime_kind")
-        and generation.configuration_revision_id == expected.get("configuration_revision_id")
-        and generation.dependency_lock_fingerprint == expected.get("dependency_lock_fingerprint")
-        and generation.plugin_api_version == expected.get("plugin_api_version")
-        and generation.worker_protocol_version == expected.get("worker_protocol_version")
-        and generation.contract_hashes == expected.get("contract_hashes")
-    )
-
-
 def _host_owner(identity: str, contract_hash: str) -> ContributionOwnerRecord:
     return ContributionOwnerRecord(
         canonical_identity=identity,
@@ -843,5 +808,4 @@ __all__ = [
     "GenerationGate",
     "PluginGenerationUnavailableError",
     "build_extension_catalog",
-    "generation_matches_execution_contract",
 ]

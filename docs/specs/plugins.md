@@ -30,9 +30,9 @@ OURO 是强扩展的个人智能体。插件是系统级扩展模块，不是项
 - **深层能力**：支持 Tool、Command、Observer、Context、Compaction、Skills、MCP、Background Service、Run
   Continuation、Prompt Policy 和 Tool Policy；
 - **Host 中立**：插件 API 不依赖 CLI、TUI 或 Desktop 对象；
-- **Run 一致性**：一个 Run 使用一个不可变 Extension Catalog，不在执行中混用不同插件代际；
-- **原子替换**：候选插件完整启动后才影响新 Run，失败不改变当前可用版本；
-- **可恢复**：durable record 按执行契约恢复，不按偶然的进程实例或同名 contribution 猜测；
+- **决策一致性**：一轮模型请求及其调用共享不可变 Extension Catalog，后续决策使用当前目录；
+- **原子替换**：候选插件完整启动后才影响新的决策和操作，失败不改变当前可用版本；
+- **可恢复**：会话依据持久事实和当前能力继续；待完成操作按精确执行契约处理，不按同名 contribution 猜测；
 - **本地可控**：安装、配置、启停、选版、数据、诊断和删除都由本地 `PluginService` 管理；
 - **必要信任边界**：明确 full-trust 与 process isolation，不宣称不存在的 OS sandbox；
 - **可演进内核**：新增 contribution 类型有统一内部接入边界，但用户插件不能动态定义扩展点。
@@ -63,7 +63,7 @@ OURO 是强扩展的个人智能体。插件是系统级扩展模块，不是项
 6. Builtin identity 永久保留，user plugin 不能覆盖 builtin contribution。
 7. Contribution 必须先完整 prepare，再经 catalog transaction 原子发布；失败不得部分可见。
 8. 候选 generation 构建、插件回调和外部 I/O 不得在 catalog swap 临界区执行。
-9. 新 Run 获取不可变 catalog；current catalog 更新不改变已有 Run。
+9. 每轮模型决策获取不可变 catalog；发布更新不替换已经发出的请求及其调用绑定，等待不持有环境租约。
 10. User plugin Tool 始终经过 `ToolExecutor`；Manifest 不能单方面授予自动执行权。
 11. Tool Policy 只能提升审批或拒绝，不能批准、放宽 Host policy 或修改参数。
 12. Observer 只能异步读取不可变事实，不能阻断、改写或同步反压 canonical Session/Run、durable sequence
@@ -80,8 +80,7 @@ OURO 是强扩展的个人智能体。插件是系统级扩展模块，不是项
 20. 只支持当前格式，不提供旧 schema、插件身份或 API 别名的兼容转换。
 21. 依赖契约变化时必须原子重建受影响的 active dependant closure，不能在新 Catalog 中保留旧 dependency lock。
 22. 候选阶段不得执行自主后台副作用或破坏性修改共享 plugin data。
-23. Prompt Policy 必须在用户提示持久化和 Run 创建前、基于 prospective Run 的同一 Catalog lease fail-closed；
-    拒绝不得留下消息或 Run。
+23. Prompt Policy 在接收输入和消费排队输入时检查当前策略；拒绝接收不得留下消息或 Run，拒绝消费保留已接受输入。
 
 ## 5. 领域模型
 
@@ -103,7 +102,7 @@ PluginGeneration
         |
         v
 ExtensionCatalog
-  immutable contribution directory leased by Runs
+  immutable contribution directory leased by decisions and active callbacks
 ```
 
 ### 5.1 Plugin identity
@@ -112,7 +111,7 @@ ExtensionCatalog
 - `version` 使用 SemVer，描述作者发布版本；
 - `package_digest` 是规范化包文件树的 SHA-256；
 - `generation_id` 标识当前进程内资源 owner；
-- `execution_contract_hash` 标识可跨进程重建的运行契约；
+- `execution_contract_hash` 标识可跨进程校验的运行契约；
 - `configuration_revision_id` 是规范化配置和 credential binding reference 的内容摘要，不包含秘密值；
 - 相同 version、不同 digest 是不同内容，不能静默覆盖。
 
@@ -481,7 +480,7 @@ Host 为每个稳定 contribution type 提供内部 adapter，统一承担：
 
 Adapter 不是公开动态扩展点。不同 contribution 的组合和失败规则继续由各自类型定义。Adapter 还必须声明类型是：
 
-- `snapshot-bound`：投影到 Run Catalog，可由旧、新 generation 并存；
+- `snapshot-bound`：投影到不可变 Catalog，当前决策或回调的租约允许旧、新 generation 并存；
 - `activation-singleton`：不进入 Run 可调用目录，每个 plugin id 同时只允许一个 generation 的 gate 打开。
 
 Tools、Commands、Observers、Context、Prompt Policy、Turn Policy、Compaction、Skills、MCP tool projection、
@@ -503,7 +502,7 @@ Background Service 由 activation owner 管理，不是 Catalog callback。Catal
 2. 验证全部 identity、依赖、必需 contribution 和 contract；
 3. 不执行插件代码或外部 I/O；
 4. 成功后原子替换 current catalog pointer；
-5. 为旧 catalog 保留独立 lease，直到使用它的 Run 结束。
+5. 旧 catalog 由正在使用它的决策和回调持有 lease，相关调用收尾后释放。
 
 基础 user/workspace Skill 与 Plugin Skill 是同一 Catalog 中的 `SkillMetadata`。Skill 名称全局唯一；与 Host baseline
 或其他 active user generation 冲突时，候选 Catalog 整体失败，不存在加载顺序覆盖。每个插件 Skill 声明必须恰好
@@ -558,11 +557,12 @@ message。两种 target 都可以由 producer 通过可选 `semantic_tag` 声明
 Prompt Policy 在 Host command routing 确认输入是模型提示后、持久化 user message 和创建 Run 前执行，返回
 `allow | deny`。
 
-- Application 先获取 prospective Run 将使用的 `ExtensionCatalogLease`，并用同一 lease 评估全部 active policy；
-- 全部 allow 后才持久化提示并把该 lease 转交新 Run；deny、timeout、异常或非法返回均关闭 lease，不创建消息或 Run；
+- Application 用当前 `ExtensionCatalogLease` 一致地评估全部 active policy；
+- 全部 allow 后才接受输入；接收阶段的 deny、timeout、异常或非法返回不创建消息或 Run；
+- 排队仅保存输入事实和接收来源，消费时重新评估当前策略；消费被拒绝时保留队列输入，不创建消息或新 Run；
 - 多策略按 canonical identity 稳定评估，`deny` 短路；
 - Policy 只能拒绝，不能改写提示、注入 Context、创建 Session/Run 或改变 input source；
-- 被拒绝提示正文不进入 state、event、log 或 diagnostic，只允许记录无正文的 attributed audit summary；
+- 接收被拒绝的提示正文不进入 state、event、log 或 diagnostic，只允许记录无正文的 attributed audit summary；
 - User plugin 声明该 contribution 时必须请求 `sessions.prompt.inspect`。
 
 Plugin command、Host 管理命令、审批回答和 ToolInput resolution 使用各自现有类型化边界，不进入 Prompt Policy。
@@ -601,11 +601,10 @@ Continuation 接收只读 `RunOutcome`，返回 `ignore | continue | complete | 
 - 多个控制决策、timeout 或异常使自动续跑暂停；
 - application 先持久化 generation-independent settlement plan，再通过原生提交将 Harness、release、queue
   和 checkpoint resolve 一起幂等发布。恢复完成决定，不重调已经形成该决定的插件；
-- terminal Run 的结算必须先从 Run metadata 恢复该 Run 绑定的精确 extension Catalog；存在持久化 Catalog 绑定时不得
-  回退到当前全局 registry。Catalog 暂时无法恢复时保留 checkpoint 为 pending，并在恢复成功前拒绝启动后续 Run；
-- 精确 Run Catalog 已恢复后，activation-bound policy 不可用、timeout、异常或返回非法终态时，Host 只
-  fail-closed release 其精确 activation，
-  并记录 owner 私有清理未确认；
+- 已持久化的 settlement plan 只依赖原生提交身份、history epoch、Harness 版本、activation 与队列优先级，
+  不需要插件仍然存在；队列来源保留作出决定时的 generation，不改写为当前代次；
+- 尚待回调决定的 checkpoint 使用当前 registry 中精确匹配的 policy。不可用、timeout、异常或非法决定使自动
+  继续暂停；已有 Session controls 保持有效，管理入口可显式释放。当前环境获取暂时失败时保留未决定的 checkpoint；
 - 插件不能自行创建 Run 或伪造 user message。
 
 ### 10.7 Session Controller 与激活绑定
@@ -647,8 +646,9 @@ tool list 和执行 registry 中按轮次隐藏。插件回调可以读取业务
 协议只读注解或 `unknown`，不做名称/描述启发式推断。归一化结果进入所有 contribution/execution contract hash。
 
 含 exclusive 工具的批次若还有兄弟调用，必须在任何 handler 执行前整批拒绝。工具返回 `ToolInputRequest` 后，只有
-声明 resumable 且具有 resume handler 的工具能消费回答继续执行；恢复绑定原 Catalog 和精确 execution contract，
-并允许再次请求输入。非 resumable 工具仅支持回答直接成为结果的单阶段交互。
+声明 resumable 且具有 resume handler 的工具能消费回答继续执行；当前实现必须匹配该调用的 execution contract，
+并重新通过权限和控制检查。回答与 running 意图先持久化，再调用 handler；允许再次请求输入。非 resumable 工具的
+回答直接成为原调用结果，不需要执行插件。无法承接的调用保存回答并形成局部错误结果。
 
 恢复输入必须使用 `AnswerResolution | UnattendedResolution` 判别联合，不能把 resolver provenance 混入工具拥有的
 任意 JSON answer。工具只有显式声明 `supports_unattended` 才能接收无人值守 resolution；该能力要求 resumable，
@@ -811,7 +811,7 @@ read persistent activation or mutation candidate
 当前单进程 Host 使用一个 runtime mutation lock 串行化候选提交，不建立容易死锁的 per-plugin 多锁图；插件代码、
 I/O 和 start/stop 均不进入 catalog pointer lock。Background Service 的声明与 owner 在候选期完成准备，但实际
 `start` 延迟到发布后，并严格等待旧代 `stop` 完成，因此同一 plugin id 不会同时运行两份声明式自主服务。
-Generation lease 可以继续服务已绑定的 Run；activation-singleton Background Service 只属于 current generation。
+Generation lease 可以继续服务已绑定的模型响应及调用；activation-singleton Background Service 只属于 current generation。
 
 Disable：
 
@@ -824,34 +824,27 @@ Disable：
 
 ## 15. Durable Run
 
-Run 获取一个 `ExtensionCatalogLease`，并持久化所使用 builtin/user plugin generation 的 execution contract：
+每次模型决策取得当前 `ExtensionCatalogLease`。同一响应及其工具调用共享该绑定，下一轮决策可以采用新环境。
+审批、用户回答和 child join 的等待不持有整组插件实例。历史消息与已完成结果不要求产生它们的工具仍然存在。
 
-- plugin id；
-- release reference：user 使用 package digest，builtin 使用 builtin contract hash；不得给 builtin 伪造 package digest；
-- configuration revision id/fingerprint（覆盖规范化配置和 credential binding reference，不包含秘密值）；
-- dependency lock，包含 builtin/user dependency contract；
-- Plugin API/worker protocol；
-- contribution contract hashes。
+待完成插件调用保存精确执行契约：plugin id、release（user package digest 或 builtin contract hash）、配置 revision、
+传递依赖、Plugin API/worker protocol 及 contribution contract。`generation_id` 是进程实例和审计身份，不是跨重启
+等价性的判据。当前同一契约的新实例可承接；包、配置或契约不匹配时，调用产生明确错误，不转调同名新实现。
+框架不重建历史 Catalog，也不为继续 Session 要求无关插件的旧代码或配置。
 
-`execution_contract_hash` 对以上事实计算稳定摘要。`generation_id` 只用于当前进程 owner、日志和诊断。
+Prompt Policy 在接受直接用户输入前执行；排队输入在消费前按当前策略再检查。已接受的输入保留原文、技能正文、
+来源及接受凭据，旧策略允许不覆盖未来执行。Observer 观察结果不成为 Session 恢复前提。
 
-Prompt Policy 在 Run 尚未创建前执行，不产生可恢复 pending state；allow 后必须把评估时取得的同一 Catalog lease 转交
-Run，不能在策略检查后重新读取 current catalog。Observer registration 属于执行契约，但观察投递不成为 durable Run
-恢复条件；未投递或未完成的 observation 不阻断恢复。
+恢复先处理局部事实，再开始下一次允许的模型决策：
 
-恢复时：
+- 已完成结果按原 ToolCall identity 复用；缺失工具、契约不匹配或权限收紧返回真实局部结果；
+- 请求已经发出但结果不确定时保留 unknown outcome，不自动重放；
+- 必需控制器缺失或不兼容时保持限制，管理入口可检查、正常释放或显式 force release；
+- 已接受 continuation 直接提交持久方案，未决定的回调只在当前精确契约存在时执行；
+- 通用工具帧保持完整，不伪造成功、不清空会话，也不把局部调用失败扩大为新建 Session 的要求。
 
-- 相同 package、configuration revision、依赖和 contract 可以创建新 generation 并恢复；
-- package 缺失、contract 改变或依赖不满足时稳定失败；
-- terminal Run 的 pending continuation settlement 在目标 Session 激活时重放，只提交 durable
-  release/queue/checkpoint，不因 Host 启动直接扫描历史或执行新 Run；
-- 不能仅按 tool name、plugin version 或随机 generation id 猜测等价性；
-- pending approval/tool batch 必须重新通过当前 generation gate 和 ToolExecutor。
-
-Builtin 不保留随旧 OURO 版本发布的代码副本。恢复所需 builtin contract 与当前 definition 不一致时必须确定性失败，
-不能按同名 Tool、相同 plugin id 或当前 factory 猜测兼容。哈希输入格式也是契约身份的一部分；绑定不同格式所得
-哈希的待恢复 Run 同样不支持续跑，不自动重绑、不重放待审批动作、不清空会话事实。继续原 Run 需要匹配的
-运行实现；需要当前实现执行新的工作时使用新 Session。
+只支持当前持久数据格式与对应 owner 状态版本；组件版本更新不等于支持任意数据迁移。无法解释的数据保留并明确
+报告。数据支持范围见[会话与持久化规格](session-persistence.md)。
 
 ## 16. Update、Rollback 与 Remove
 
@@ -877,7 +870,7 @@ Active plugin 的配置更新使用相同流程：创建 immutable candidate rev
 ### 16.3 Remove
 
 - selected/active digest 先 disable；
-- 有 active dependent 或 durable contract reference 时拒绝；
+- 有 active dependent、未完成调用或控制 activation 的具体 release 引用时拒绝；历史 Catalog 摘要不构成保留条件；
 - 删除 install reference 后由 GC 删除无引用 store；
 - 默认保留 plugin data；
 - 删除最后一个 digest 后才允许显式 purge data。
@@ -922,8 +915,8 @@ TUI 和程序化 Host 通过 `application.plugin_commands.submit_plugin_command`
 
 创建 Session 是一个由 `run_blocking` 承担的完整同步操作；取消须等待已取得所有权的创建结束，并通过
 `on_session_created` 报告已完成创建的身份，再传播取消。该通知在事件循环上执行，Host 可立即更新受控会话，
-之后的命令异常不使已经创建的会话失去身份。命令准备在一次锁内捕获 Session/Harness 和活动 Run，离开事件循环
-执行；Catalog 按该 Run 的原有代次与执行契约选择，命令复用已经捕获的上下文，不再次读取或跨命令缓存。
+之后的命令异常不使已经创建的会话失去身份。命令准备在一次锁内捕获 Session/Harness，离开事件循环
+执行；命令使用当前 Catalog，复用已经捕获的上下文，不再次读取或跨命令缓存。
 Catalog 获取期间发生的历史撤销不能通过重取较新 Harness 而被隐藏，既有提交冲突检查保护同一接受边界。
 
 `PluginCommandSubmission` 仅携带目标 Session 和现有执行结果，不是新的持久化回执。`consume_plugin_command`
@@ -1008,7 +1001,7 @@ ouro/builtin_plugins/
 ### Catalog 与 lifecycle
 
 - 候选 start/commit 失败时 current catalog 不变；
-- 新旧 Run 同时持有不同 catalog，不互相阻塞；
+- 并发决策可持有不同 Catalog，在途调用不被替换，等待不延长整组环境寿命；
 - enable/disable/restart 不等待无关 Run；
 - gate close 后不能开始新插件调用；
 - retire 和 shutdown 无 task/process/MCP/listener 泄漏；
@@ -1043,8 +1036,8 @@ ouro/builtin_plugins/
 
 - Observer 不被 Agent 语义关键路径 await，慢、失败或积压的 registration 不影响其他 observer 或业务结果；
 - 同 registration FIFO，queue drop、timeout、cancel、retire 和 shutdown 均不泄漏 task 或 Catalog lease；
-- Prompt Policy 的 allow/deny、失败关闭、permission 和 same-catalog 语义可由 application 集成测试证明；
-- deny 不创建 canonical user message、Run、continuation 或可恢复残留，且 diagnostic 不泄露提示正文；
+- Prompt Policy 的 allow/deny、失败关闭、permission 及接受与消费边界语义可由 application 集成测试证明；
+- 接收 deny 不创建 canonical user message、Run 或 continuation；消费 deny 保留已接受输入，diagnostic 不泄露提示正文；
 - in-process 与 worker 的 observation/policy 类型、错误、取消和 contract 行为等价。
 
 Plugin Skill 不转换为 Observer；`RuntimeService` 每轮从该 Run 的
@@ -1053,7 +1046,7 @@ Plugin Skill 不转换为 Observer；`RuntimeService` 每轮从该 Run 的
 
 ### Durable recovery
 
-- 相同 execution contract 可跨进程重建；
+- 待完成操作的相同 execution contract 可跨进程校验；
 - 配置、依赖或 contract 改变时稳定拒绝；
 - pending tool/approval 不调用同名不同 contract contribution。
 

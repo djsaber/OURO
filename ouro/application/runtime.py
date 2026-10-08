@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Mapping
-from functools import partial
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from pydantic import JsonValue
 
+from ouro.application.agent_definitions import AgentDefinitionService
 from ouro.application.compaction import (
     ContextPreparationService,
     LLMSummaryCompactionStrategy,
@@ -139,6 +139,7 @@ from ouro.core.session_controls import (
     DelegatedTaskInput,
     HostSessionInput,
     SessionControlActivation,
+    SessionControlState,
     SessionControlTransitionResult,
     SessionInputRequest,
     SessionInputRole,
@@ -152,7 +153,7 @@ from ouro.core.state import (
 from ouro.core.tool_batch_transitions import resolve_tool_approval, tool_batch_suspension
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tool_policies import ToolPolicyRegistry
-from ouro.core.tools import PermissionMode, ToolDefinition, tool_definition_contract_hash
+from ouro.core.tools import PermissionMode, ToolDefinition
 from ouro.core.turn_policies import TurnCompletionCandidate, TurnPolicyRegistry
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT, render_agent_skills_prompt
 from ouro.sessions import RuntimeSessionSnapshot, SessionStore
@@ -161,7 +162,6 @@ from ouro.tools import ToolExecutor, ToolRegistry, ToolResult
 from ouro.tools.builtin_agents import agent_control_tools
 
 if TYPE_CHECKING:
-    from ouro.application.agent_definitions import AgentDefinitionService
     from ouro.application.resources import ResourceService
     from ouro.application.tool_calls import AgentControlExecutor
     from ouro.plugins.catalog import ExtensionCatalogLease
@@ -327,7 +327,6 @@ class RuntimeService:
         self._extension_catalog: PluginRuntimeResource | None = None
         self._extensions_bound = False
         self._run_resources: dict[str, RunResources] = {}
-        self._queued_extension_snapshots: dict[str, ExtensionCatalogLease] = {}
         self._agent_definitions: AgentDefinitionService | None = None
         self._agent_controls: AgentControlExecutor | None = None
 
@@ -448,25 +447,21 @@ class RuntimeService:
         resources = self._run_resources.get(run_id)
         snapshot = resources.snapshot if resources is not None else None
         registry = snapshot.tools if snapshot is not None else self.tools
+        if snapshot is None and resources is not None and resources.host_tools is not None:
+            registry = resources.host_tools
         scoped = registry.scoped(lambda: self._active_controller_ids_for_run(run_id))
         cap = resources.tool_names if resources is not None else None
-        selected = scoped if cap is None else scoped.selected(cap)
-        for reference in resources.tool_refs if resources is not None else ():
-            definition = selected.get(reference.public_name).definition
-            metadata_hash = definition.metadata.get("execution_contract_hash")
-            execution_hash = (
-                metadata_hash
-                if isinstance(metadata_hash, str) and metadata_hash
-                else tool_definition_contract_hash(definition)
-            )
-            if (
-                execution_hash != reference.execution_contract_hash
-                or definition.source != reference.source
-                or definition.effect != reference.effect
-            ):
-                raise RuntimeError(
-                    f"delegated tool contract is unavailable or changed: {reference.public_name}"
+        selected = scoped if cap is None else scoped.selected(cap.intersection(scoped.names()))
+        if resources is not None and resources.tool_refs:
+            ceilings = {reference.public_name: reference for reference in resources.tool_refs}
+            selected = selected.selected(
+                definition.name
+                for definition in selected.definitions()
+                if definition.name in ceilings
+                and ceilings[definition.name].permits(
+                    AgentDefinitionService.tool_reference(selected, definition)
                 )
+            )
         catalog = resources.agent_catalog if resources is not None else None
         if catalog is None or self._agent_controls is None:
             return selected
@@ -577,6 +572,7 @@ class RuntimeService:
             session_controls=self.session_controls,
             session_controllers=self._session_controllers_for_run(run_id),
             agent_controls=self._agent_controls,
+            refresh_controls=lambda controls: self._bind_control_state(run_id, controls),
         )
         resources.tool_calls = coordinator
         return coordinator
@@ -804,11 +800,6 @@ class RuntimeService:
                 self._release_run_resources(run_id)
             except Exception as exc:  # noqa: BLE001 - close every owned resource.
                 errors.append(exc)
-        for queue_id in tuple(self._queued_extension_snapshots):
-            try:
-                self._release_queued_extension_snapshot(queue_id)
-            except Exception as exc:  # noqa: BLE001 - close every owned resource.
-                errors.append(exc)
         try:
             await self.event_recorder.close()
         except Exception as exc:  # noqa: BLE001 - close every owned resource.
@@ -880,7 +871,6 @@ class RuntimeService:
         if result is None:
             return None
         session, cancelled = result
-        self._release_queued_extension_snapshot(queue_id)
         if cancelled is None:
             return None
         await self.event_recorder.publish(
@@ -1663,8 +1653,6 @@ class RuntimeService:
                     run,
                     self._extension_snapshot_for_run(run.run_id),
                 )
-            elif _queued_inputs and _queued_inputs[0].prompt_policy_checked:
-                run = await self._attach_queued_extension_snapshot(run, _queued_inputs)
             elif _prepared_run is not None and "extension_generations" in run.metadata:
                 await self._ensure_extension_snapshot(run)
             else:
@@ -1736,9 +1724,7 @@ class RuntimeService:
                     pending_input.resource_refs,
                     pending_input.attachments,
                 )
-            if preapproved_new_run is None and not (
-                _queued_inputs and _queued_inputs[0].prompt_policy_checked
-            ):
+            if preapproved_new_run is None:
                 await self._evaluate_prompt_policies(
                     session=session,
                     run=run,
@@ -1873,12 +1859,7 @@ class RuntimeService:
         result = await run_blocking(
             self.sessions.undo, session_id, message_id=message_id, queue_id=queue_id
         )
-        for identity in result.cancelled_queue_ids:
-            self._release_queued_extension_snapshot(identity)
         if result.removed_count:
-            # Pending independent inputs survive, but their old catalog permits do not.
-            for item in self.queued_inputs.eligible_session(result.session):
-                self._release_queued_extension_snapshot(item.queue_id)
             if self._agent_controls is not None:
                 await self._agent_controls.reconcile_session(result.session)
         return result
@@ -1935,7 +1916,6 @@ class RuntimeService:
                 run = await self._attach_extension_snapshot(run)
             else:
                 run = latest_run
-                await self._ensure_extension_snapshot(run)
                 if self._run_continuation_is_pending(run):
                     settlement = await self._settle_run_continuation(run)
                     if settlement.settled:
@@ -1950,6 +1930,7 @@ class RuntimeService:
                         )
                     snapshot = await run_blocking(self.store.load_runtime_session, session_id)
                     run = continuable_run(snapshot)
+                await self._ensure_extension_snapshot(run)
                 snapshot = await self.run_recovery.reconcile(
                     snapshot, run_ids=frozenset({run.run_id})
                 )
@@ -2056,21 +2037,18 @@ class RuntimeService:
         on_provider_stream_start: Callable[[], None] | None = None,
     ) -> RunResult:
         try:
-            tool_calls = self._tool_calls_for_run(run.run_id)
-            tools = tool_calls.registry
-            context_providers = self._context_providers_for_run(run.run_id)
-            compaction = self._compaction_for_run(run.run_id)
             loop = InnerAgentLoop(
                 adapter=adapter,
-                tool_definitions=tools.definitions,
+                tool_definitions=lambda: self._tools_for_run(run.run_id).definitions(),
                 run_budget=self._run_budget_for_run(run),
                 ports=InnerLoopPorts(
                     context=InnerLoopContext(
-                        prepare=partial(
-                            self.context_preparation.prepare,
-                            context_providers=context_providers,
-                            strategies=compaction,
+                        prepare=lambda *args, **kwargs: self.context_preparation.prepare(
+                            *args,
+                            context_providers=self._context_providers_for_run(run.run_id),
+                            strategies=self._compaction_for_run(run.run_id),
                             skill_instructions=self._instructions_for_run(run),
+                            **kwargs,
                         ),
                         record_completion=self.context_preparation.record_provider_completion,
                         resolve_model_request=self._resolve_model_request,
@@ -2085,9 +2063,10 @@ class RuntimeService:
                     ),
                     turns=InnerLoopTurnBoundaries(
                         consume_inputs=self._consume_turn_boundary_inputs,
-                        evaluate_completion=partial(
-                            self._evaluate_turn_completion,
+                        evaluate_completion=lambda *args, **kwargs: self._evaluate_turn_completion(
+                            *args,
                             policies=self._turn_policies_for_run(run.run_id),
+                            **kwargs,
                         ),
                         begin_model_round=self._begin_model_round,
                         commit_model_request=self._commit_model_request,
@@ -2097,7 +2076,9 @@ class RuntimeService:
                         notify_provider_stream_start=on_provider_stream_start,
                     ),
                     emit=self.event_recorder.emit,
-                    handle_tool_batch=tool_calls.handle_batch,
+                    handle_tool_batch=lambda *args, **kwargs: self._tool_calls_for_run(
+                        run.run_id
+                    ).handle_batch(*args, **kwargs),
                     refresh_session=self.store.load_session_record,
                 ),
             )
@@ -2552,15 +2533,7 @@ class RuntimeService:
                 origin=source,
             )
             prospective_run_id = prospective.run_id
-            controller_run_id: str | None = None
-            if mode == "steer" and active_run is not None:
-                await self._ensure_extension_snapshot(active_run)
-                active_snapshot = self._extension_snapshot_for_run(active_run.run_id)
-                if active_snapshot is not None:
-                    extension_snapshot = active_snapshot.fork()
-                controller_run_id = active_run.run_id
-            else:
-                prospective = await self._attach_extension_snapshot(prospective)
+            prospective = await self._attach_extension_snapshot(prospective)
             try:
                 if skill_invocation is not None:
                     resolved_skill_activation = self._resolve_skill_activation_for_run(
@@ -2594,10 +2567,8 @@ class RuntimeService:
                         )
                     ],
                     catalog_snapshot=extension_snapshot,
-                    controller_run_id=controller_run_id,
                 )
-                if controller_run_id is None:
-                    extension_snapshot = self._detach_extension_snapshot(prospective.run_id)
+                extension_snapshot = self._detach_extension_snapshot(prospective.run_id)
                 if extension_snapshot is not None:
                     extension_catalog_id = extension_snapshot.catalog_id
                     extension_generations = tuple(
@@ -2673,12 +2644,7 @@ class RuntimeService:
                 extension_snapshot.close()
             raise
         if extension_snapshot is not None:
-            retained = self._queued_extension_snapshots.setdefault(
-                queued_input.queue_id,
-                extension_snapshot,
-            )
-            if retained is not extension_snapshot:
-                extension_snapshot.close()
+            extension_snapshot.close()
         if on_input_accepted is not None:
             on_input_accepted()
         emitted: list[EventRecord] = []
@@ -2762,8 +2728,6 @@ class RuntimeService:
             coalesce_key=batch.coalesce_key,
             caused_by_run_id=active_run.run_id if active_run is not None else None,
         )
-        for item in superseded:
-            self._release_queued_extension_snapshot(item.queue_id)
         emitted: list[EventRecord] = []
         payload = {
             "batch_id": queued[0].batch_id,
@@ -2833,7 +2797,7 @@ class RuntimeService:
         for unit in pending_units:
             item = unit[0]
             if first.prompt_policy_checked:
-                matches = all(self._same_approved_queue_contract(first, member) for member in unit)
+                matches = all(self._can_group_queued_inputs(first, member) for member in unit)
             else:
                 matches = not item.prompt_policy_checked
             if not matches:
@@ -2842,14 +2806,10 @@ class RuntimeService:
         return [item for unit in compatible_units for item in unit]
 
     @staticmethod
-    def _same_approved_queue_contract(first: QueuedInput, item: QueuedInput) -> bool:
+    def _can_group_queued_inputs(first: QueuedInput, item: QueuedInput) -> bool:
         if first.skill_activation is not None or item.skill_activation is not None:
             return first.queue_id == item.queue_id
-        return (
-            item.prompt_policy_checked
-            and item.extension_catalog_id == first.extension_catalog_id
-            and item.extension_generations == first.extension_generations
-        )
+        return item.prompt_policy_checked == first.prompt_policy_checked
 
     async def _consume_turn_boundary_inputs(
         self,
@@ -2875,6 +2835,18 @@ class RuntimeService:
         eligible = [item for unit in units for item in unit]
         if not eligible:
             return TurnBoundaryInputResult(sequence=sequence)
+
+        current = self._extension_catalog.snapshot() if self._extension_catalog else None
+        try:
+            await self._evaluate_prompt_policies(
+                session=snapshot.session,
+                run=run,
+                inputs=eligible,
+                catalog_snapshot=current,
+            )
+        finally:
+            if current is not None:
+                current.close()
 
         appended: list[MessageRecord] = []
         if assistant_text or assistant_reasoning or assistant_continuation is not None:
@@ -2909,7 +2881,6 @@ class RuntimeService:
                     for message in consumed
                     if message.metadata.get("queued_input_id") == item.queue_id
                 )
-                self._release_queued_extension_snapshot(item.queue_id)
                 sequence = await self.event_recorder.emit(
                     emitted,
                     sequence,
@@ -3258,17 +3229,20 @@ class RuntimeService:
         inputs: list[QueuedInput],
         harness: HarnessCallSnapshot | None = None,
         catalog_snapshot: ExtensionCatalogLease | None = None,
-        controller_run_id: str | None = None,
     ) -> None:
-        scope_run_id = controller_run_id or run.run_id
         snapshot = catalog_snapshot or self._extension_snapshot_for_run(run.run_id)
-        registry = (
-            snapshot.prompt_policies.scoped(
-                lambda: self._active_controller_ids_for_run(scope_run_id)
+        if snapshot is not None:
+            self._session_control_snapshot(
+                session.session_id,
+                run_id=run.run_id,
+                model_round=0,
+                catalog=snapshot,
+                session_record=session,
             )
-            if snapshot is not None
-            else self._prompt_policies_for_run(scope_run_id)
-        )
+            active = {activation.controller_id for activation in session.controls.activations}
+            registry = snapshot.prompt_policies.scoped(lambda: active)
+        else:
+            registry = self._prompt_policies_for_run(run.run_id)
         if not registry.registered():
             return
         execution_contracts = {
@@ -3556,8 +3530,13 @@ class RuntimeService:
                 run=run,
                 usage_service=self.usage,
             )
-            batch = await self._tool_calls_for_run(run.run_id).resolve_user_answer(
+            sequence = await run_blocking(self.store.latest_event_sequence, session_id)
+            emitted: list[EventRecord] = []
+            batch, sequence = await self._tool_calls_for_run(run.run_id).resolve_user_answer(
                 batch,
+                emitted=emitted,
+                sequence=sequence,
+                run=run,
                 session=session,
                 tool_call_id=waiting_call.request.id,
                 answer=answer,
@@ -3579,8 +3558,6 @@ class RuntimeService:
             resolved_call = next(
                 call for call in batch.calls if call.request.id == waiting_call.request.id
             )
-            sequence = await run_blocking(self.store.latest_event_sequence, session_id)
-            emitted: list[EventRecord] = []
             sequence = await self.event_recorder.emit(
                 emitted,
                 sequence,
@@ -4002,22 +3979,18 @@ class RuntimeService:
         )
         if withdrawn is not None:
             return withdrawn
-        try:
-            await self._ensure_extension_snapshot(run)
-            if self._run_has_extension_binding(run) and (
-                self._extension_snapshot_for_run(run.run_id) is None
-            ):
-                raise RuntimeError("Run-bound extension Catalog was not restored")
-        except Exception as exc:  # noqa: BLE001 - leave the durable checkpoint retryable
-            diagnostic = (
-                f"extension snapshot recovery failed for Run {run.run_id}: "
-                f"{type(exc).__name__}: {redact_text(str(exc))}"
-            )
-            _LOG.warning(diagnostic)
-            return RunContinuationSettlement(
-                run=run,
-                diagnostics=(diagnostic,),
-            )
+        checkpoint = run.continuation
+        assert checkpoint is not None
+        if checkpoint.settlement_plan is None:
+            try:
+                await self._ensure_extension_snapshot(run)
+            except Exception as exc:  # noqa: BLE001 - keep an unaccepted decision retryable.
+                diagnostic = (
+                    f"current environment binding failed for Run {run.run_id}: "
+                    f"{type(exc).__name__}: {redact_text(str(exc))}"
+                )
+                _LOG.warning(diagnostic)
+                return RunContinuationSettlement(run=run, diagnostics=(diagnostic,))
 
         return await RunContinuationService(
             store=self.store,
@@ -4088,16 +4061,12 @@ class RuntimeService:
         self.run_lifecycle.finish_run(run)
         if run.status not in ACTIVE_RUN_STATUSES:
             self.event_recorder.finish_run_observers(run.run_id)
+        if run.status != "running":
             self._release_run_resources(run.run_id)
 
     def _release_run_resources(self, run_id: str) -> None:
         # Drop the Run owner before invoking a lease callback that may fail.
         snapshot = self._detach_extension_snapshot(run_id)
-        if snapshot is not None:
-            snapshot.close()
-
-    def _release_queued_extension_snapshot(self, queue_id: str) -> None:
-        snapshot = self._queued_extension_snapshots.pop(queue_id, None)
         if snapshot is not None:
             snapshot.close()
 
@@ -4125,10 +4094,24 @@ class RuntimeService:
         run: RunRecord,
         model_round: int,
     ) -> RunRecord:
-        del session
+        # A completed model/tool turn no longer owns an executable environment.
+        # The next request and its resulting calls share one current binding.
+        resources = self._run_resources[run.run_id]
+        if self._extension_catalog is not None:
+            current_snapshot = self._extension_catalog.snapshot()
+            previous = resources.snapshot
+            resources.snapshot = current_snapshot
+            if previous is not None:
+                previous.close()
+        else:
+            resources.host_tools = self.tools.scoped(
+                lambda: self._active_controller_ids_for_run(run.run_id)
+            )
+        resources.tool_calls = None
         with self.store.session_mutation(run.session_id):
             latest = self.store.load_run(run.session_id, run.run_id)
-            if latest.history_epoch != self.store.load_session_record(run.session_id).history_epoch:
+            session = self.store.load_session_record(run.session_id)
+            if latest.history_epoch != session.history_epoch:
                 raise SessionCommitConflict("Run belongs to withdrawn Session history")
             if latest.abort_requested or latest.status not in ACTIVE_RUN_STATUSES:
                 return latest
@@ -4139,10 +4122,35 @@ class RuntimeService:
                 run_id=latest.run_id,
                 model_round=model_round,
                 catalog=snapshot,
+                session_record=session,
+            )
+            self._run_resources[latest.run_id].controller_ids = frozenset(
+                item["controller_id"]
+                for item in metadata["session_control_snapshot"]["activations"]
             )
             update: dict[str, object] = {"metadata": metadata}
             if latest.kind == "agent" and snapshot is not None:
-                update["continuation"] = self._continuation_checkpoint(latest, snapshot)
+                update["continuation"] = self._continuation_checkpoint(latest, snapshot, session)
+                metadata["extension_catalog_id"] = snapshot.catalog_id
+                metadata["extension_generations"] = [
+                    generation.model_dump(mode="json", exclude_none=True)
+                    for generation in snapshot.generations
+                ]
+            if (
+                latest.kind == "agent"
+                and session.session_kind == "primary"
+                and self._agent_definitions is not None
+            ):
+                catalog = self._agent_definitions.catalog_snapshot(
+                    self._tools_for_run(latest.run_id),
+                    permission_overrides=self._permission_overrides,
+                    plugin_permission_overrides=self._plugin_permission_overrides,
+                    approval_mode=session.approval_mode,
+                )
+                if self._agent_controls is not None:
+                    catalog = self._agent_controls.constrain_catalog(catalog)
+                update["agent_catalog"] = catalog
+                resources.agent_catalog = catalog
             updated = latest.model_copy(update=update)
             self.store.save_run(updated)
             return updated
@@ -4194,7 +4202,6 @@ class RuntimeService:
             }
             for activation in controls.activations
         ]
-        eligible_controller_ids: set[str] = set()
         for activation in controls.activations:
             try:
                 controller = (
@@ -4210,36 +4217,37 @@ class RuntimeService:
                 raise SessionControlContractError(
                     f"Session controller contract is unavailable: {activation.controller_id}"
                 )
-            eligible_controller_ids.add(activation.controller_id)
-        self._run_resources[run_id].controller_ids = frozenset(eligible_controller_ids)
         return {
             "revision": controls.revision,
             "model_round": model_round,
             "activations": activations,
         }
 
-    @staticmethod
-    def _restored_controller_ids(run: RunRecord, catalog: ExtensionCatalogLease) -> frozenset[str]:
-        raw = run.metadata.get("session_control_snapshot", {})
-        if not isinstance(raw, dict):
-            raise ValueError("run has invalid Session control snapshot metadata")
-        activations = raw.get("activations", [])
-        if not isinstance(activations, list) or any(
-            not isinstance(item, dict) or not isinstance(item.get("controller_id"), str)
-            for item in activations
-        ):
-            raise ValueError("run has invalid Session control activation metadata")
+    def _bind_control_state(self, run_id: str, controls: SessionControlState) -> str | None:
+        resources = self._run_resources[run_id]
+        snapshot = resources.snapshot
         eligible: set[str] = set()
-        for item in activations:
-            controller_id = str(item["controller_id"])
+        unavailable: list[str] = []
+        for activation in controls.activations:
             try:
-                controller = catalog.session_controllers.get(controller_id)
+                controller = (
+                    snapshot.session_controllers.get(activation.controller_id) if snapshot else None
+                )
             except KeyError:
-                continue
-            if controller.execution_contract_hash != item.get("execution_contract_hash"):
-                continue
-            eligible.add(controller_id)
-        return frozenset(eligible)
+                controller = None
+            if (
+                controller is None
+                or controller.execution_contract_hash != activation.execution_contract_hash
+            ):
+                unavailable.append(activation.controller_id)
+            else:
+                eligible.add(activation.controller_id)
+        resources.controller_ids = frozenset(eligible)
+        return (
+            "Required Session controls are unavailable: " + ", ".join(unavailable)
+            if unavailable
+            else None
+        )
 
     async def _attach_extension_snapshot(self, run: RunRecord) -> RunRecord:
         snapshot = (
@@ -4257,6 +4265,10 @@ class RuntimeService:
             resources = RunResources()
             self._run_resources[run.run_id] = resources
         resources.snapshot = snapshot
+        if snapshot is None:
+            resources.host_tools = self.tools.scoped(
+                lambda: self._active_controller_ids_for_run(run.run_id)
+            )
         try:
             metadata = dict(run.metadata)
             metadata.setdefault("run_budget", self.run_budget.model_dump(mode="json"))
@@ -4271,6 +4283,9 @@ class RuntimeService:
                     catalog=snapshot,
                     session_record=session,
                 )
+                resources.controller_ids = frozenset(
+                    activation.controller_id for activation in session.controls.activations
+                )
                 metadata["extension_catalog_id"] = snapshot.catalog_id
                 metadata["extension_generations"] = [
                     generation.model_dump(mode="json", exclude_none=True)
@@ -4278,48 +4293,10 @@ class RuntimeService:
                 ]
                 if run.kind == "agent":
                     update["continuation"] = self._continuation_checkpoint(run, snapshot, session)
-            if (
-                run.kind == "agent"
-                and session.session_kind == "primary"
-                and self._agent_definitions is not None
-            ):
-                catalog = await run_blocking(
-                    self._agent_definitions.catalog_snapshot,
-                    self._tools_for_run(run.run_id),
-                    permission_overrides=self._permission_overrides,
-                    plugin_permission_overrides=self._plugin_permission_overrides,
-                    approval_mode=session.approval_mode,
-                )
-                if self._agent_controls is not None:
-                    catalog = self._agent_controls.constrain_catalog(catalog)
-                update["agent_catalog"] = catalog
-                resources.agent_catalog = catalog
             return run.model_copy(update=update)
         except BaseException:
             self._release_run_resources(run.run_id)
             raise
-
-    async def _attach_queued_extension_snapshot(
-        self,
-        run: RunRecord,
-        inputs: list[QueuedInput],
-    ) -> RunRecord:
-        first = inputs[0]
-        if not first.prompt_policy_checked or first.prospective_run_id != run.run_id:
-            raise ValueError("queued prompt policy approval does not match prospective run")
-        if any(not self._same_approved_queue_contract(first, item) for item in inputs[1:]):
-            raise ValueError("approved queued inputs do not share one extension Catalog")
-        for item in inputs[1:]:
-            self._release_queued_extension_snapshot(item.queue_id)
-        snapshot = self._queued_extension_snapshots.pop(first.queue_id, None)
-        if snapshot is None and first.extension_catalog_id is not None:
-            if self._extension_catalog is None:
-                raise RuntimeError("approved queued input extension Catalog is unavailable")
-            snapshot = await self._extension_catalog.snapshot_for(
-                list(first.extension_generations),
-                catalog_id=first.extension_catalog_id,
-            )
-        return await self._bind_extension_snapshot(run, snapshot)
 
     def _continuation_checkpoint(
         self,
@@ -4385,28 +4362,7 @@ class RuntimeService:
             if not controllers:
                 return None
             return RunContinuationCheckpoint(controllers=controllers)
-        existing_identities = {
-            (
-                controller.plugin_id,
-                controller.policy_id,
-                controller.execution_contract_hash,
-                controller.contract_hash,
-            )
-            for controller in previous.controllers
-        }
-        retained = [*previous.controllers]
-        retained.extend(
-            controller
-            for controller in controllers
-            if (
-                controller.plugin_id,
-                controller.policy_id,
-                controller.execution_contract_hash,
-                controller.contract_hash,
-            )
-            not in existing_identities
-        )
-        return previous.model_copy(update={"controllers": retained})
+        return previous.model_copy(update={"controllers": controllers})
 
     async def _ensure_extension_snapshot(self, run: RunRecord) -> None:
         resources = self._run_resources.get(run.run_id)
@@ -4415,31 +4371,21 @@ class RuntimeService:
         resources.restore_tool_bindings(run)
         if run.agent_catalog is not None:
             resources.agent_catalog = run.agent_catalog
-        if resources.snapshot is not None:
+        if resources.snapshot is not None or resources.host_tools is not None:
             return
-        if self._extension_catalog is None:
-            if self._run_has_extension_binding(run):
-                raise RuntimeError("Run-bound extension Catalog is unavailable")
-            self._run_resources[run.run_id] = resources
-            return
-        raw = run.metadata.get("extension_generations", [])
-        if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
-            raise ValueError("run has invalid extension generation metadata")
-        raw_catalog_id = run.metadata.get("extension_catalog_id")
-        catalog_id = raw_catalog_id if isinstance(raw_catalog_id, str) else None
-        snapshot = await self._extension_catalog.snapshot_for(raw, catalog_id=catalog_id)
-        try:
-            controller_ids = self._restored_controller_ids(run, snapshot)
-        except BaseException:
-            snapshot.close()
-            raise
+        snapshot = self._extension_catalog.snapshot() if self._extension_catalog else None
         resources.snapshot = snapshot
-        resources.controller_ids = controller_ids
+        if snapshot is None:
+            resources.host_tools = self.tools.scoped(
+                lambda: self._active_controller_ids_for_run(run.run_id)
+            )
         self._run_resources[run.run_id] = resources
-
-    @staticmethod
-    def _run_has_extension_binding(run: RunRecord) -> bool:
-        return "extension_catalog_id" in run.metadata or "extension_generations" in run.metadata
+        try:
+            session = await run_blocking(self.store.load_session_record, run.session_id)
+            self._bind_control_state(run.run_id, session.controls)
+        except BaseException:
+            self._release_run_resources(run.run_id)
+            raise
 
 
 def _queued_user_input_view(item: QueuedInput) -> QueuedUserInputView:

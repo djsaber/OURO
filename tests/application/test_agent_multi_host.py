@@ -19,8 +19,9 @@ from ouro.tools.builtin_shell import CommandShell, builtin_command_tool
 class DelegatingProvider:
     provider_id = "test"
 
-    def __init__(self, *, spawn: bool = False):
+    def __init__(self, *, spawn: bool = False, fail_child: bool = False):
         self.spawn = spawn
+        self.fail_child = fail_child
 
     async def stream(self, *, model, messages, system_prompt="", tools=None, request_context=None):
         primary = any(tool["name"] == "SpawnAgent" for tool in tools or [])
@@ -46,6 +47,8 @@ class DelegatingProvider:
                 )
             else:
                 yield ProviderStreamEvent(type="text_delta", text="Parent settled")
+        elif self.fail_child:
+            raise RuntimeError("Child provider unavailable")
         elif len(results) < 2:
             yield ProviderStreamEvent.from_tool_call(
                 {
@@ -128,7 +131,7 @@ async def test_late_owner_settlement_cannot_rewind_shared_session_activity(
             subscription.close()
 
 
-def application(tmp_path, backend, executable, *, kind="powershell", spawn=False):
+def application(tmp_path, backend, executable, *, kind="powershell", spawn=False, fail_child=False):
     store = (
         LocalSessionStore(tmp_path)
         if backend == "files"
@@ -150,7 +153,8 @@ def application(tmp_path, backend, executable, *, kind="powershell", spawn=False
         store=store,
         tools=tools,
         adapter=RuntimeAdapter(
-            DelegatingProvider(spawn=spawn), ModelMetadata(model_id="test", provider_id="test")
+            DelegatingProvider(spawn=spawn, fail_child=fail_child),
+            ModelMetadata(model_id="test", provider_id="test"),
         ),
         environment=RuntimeEnvironment.local(
             tmp_path, store.sessions_dir if backend == "files" else None
@@ -166,17 +170,18 @@ async def interaction(app, root_id):
     return items[0]
 
 
-def _finish_child_in_process(directory, backend, root_id, failed):
+def _finish_child_in_process(directory, backend, root_id, scenario):
     async def execute():
         app = application(
             directory,
             backend,
             "C:/PowerShell/pwsh.exe",
-            kind="windows_powershell" if failed else "powershell",
+            kind="windows_powershell" if scenario == "changed" else "powershell",
             spawn=True,
+            fail_child=scenario == "provider_failure",
         )
         async with app:
-            for _ in range(1 if failed else 2):
+            for index in range(1 if scenario == "provider_failure" else 2):
                 pending = await interaction(app, root_id)
                 handle = await app.agents.resolve_agent_approval(
                     pending.delegation_id,
@@ -184,7 +189,7 @@ def _finish_child_in_process(directory, backend, root_id, failed):
                     child_run_id=pending.child_run_id,
                     tool_call_id=pending.tool_call_id,
                     approval_id=pending.request_id,
-                    approved=False,
+                    approved=scenario == "changed" and index == 0,
                 )
                 await app.supervisor.wait(handle)
 
@@ -192,8 +197,8 @@ def _finish_child_in_process(directory, backend, root_id, failed):
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
-@pytest.mark.parametrize("failed", [False, True])
-async def test_sync_result_crosses_real_process_boundary(tmp_path, backend, failed):
+@pytest.mark.parametrize("scenario", ["same", "changed", "provider_failure"])
+async def test_sync_result_crosses_real_process_boundary(tmp_path, backend, scenario):
     app = application(tmp_path, backend, "C:/PowerShell/pwsh.exe", spawn=True)
     async with app:
         session = app.runtime.sessions.create(
@@ -213,7 +218,7 @@ async def test_sync_result_crosses_real_process_boundary(tmp_path, backend, fail
         await interaction(app, root.session_id)
         process = multiprocessing.get_context("spawn").Process(
             target=_finish_child_in_process,
-            args=(tmp_path, backend, root.session_id, failed),
+            args=(tmp_path, backend, root.session_id, scenario),
         )
         process.start()
         try:
@@ -227,8 +232,14 @@ async def test_sync_result_crosses_real_process_boundary(tmp_path, backend, fail
                 m for m in messages if m.tool_result and m.tool_result.tool_call_id == "spawn"
             ]
             assert len(results) == 1
-            assert results[0].tool_result.is_error == failed
-            assert ("contract" if failed else "Child completed") in results[0].text_content
+            assert results[0].tool_result.is_error == (scenario == "provider_failure")
+            expected = (
+                "Child provider unavailable"
+                if scenario == "provider_failure"
+                else "Child completed"
+            )
+            assert expected in results[0].text_content
+            assert_child_outcome(app, root.session_id, scenario)
         finally:
             if process.is_alive():
                 process.terminate()
@@ -237,15 +248,16 @@ async def test_sync_result_crosses_real_process_boundary(tmp_path, backend, fail
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
-@pytest.mark.parametrize("failed", [False, True])
-async def test_sync_parent_wakes_when_child_finishes_on_another_host(tmp_path, backend, failed):
+@pytest.mark.parametrize("scenario", ["same", "changed", "provider_failure"])
+async def test_sync_parent_wakes_when_child_finishes_on_another_host(tmp_path, backend, scenario):
     first = application(tmp_path, backend, "C:/PowerShell/pwsh.exe", spawn=True)
     second = application(
         tmp_path,
         backend,
         "C:/PowerShell/pwsh.exe",
-        kind="windows_powershell" if failed else "powershell",
+        kind="windows_powershell" if scenario == "changed" else "powershell",
         spawn=True,
+        fail_child=scenario == "provider_failure",
     )
     async with first, second:
         session = first.runtime.sessions.create(
@@ -265,7 +277,7 @@ async def test_sync_parent_wakes_when_child_finishes_on_another_host(tmp_path, b
         # Opening the same root on B arms a second durable waiter. Both Hosts
         # must converge on one original ToolCall and one parent continuation.
         await second.agents.reconcile_root(root.session_id)
-        for _ in range(1 if failed else 2):
+        for index in range(1 if scenario == "provider_failure" else 2):
             pending = await interaction(second, root.session_id)
             handle = await second.agents.resolve_agent_approval(
                 pending.delegation_id,
@@ -273,7 +285,7 @@ async def test_sync_parent_wakes_when_child_finishes_on_another_host(tmp_path, b
                 child_run_id=pending.child_run_id,
                 tool_call_id=pending.tool_call_id,
                 approval_id=pending.request_id,
-                approved=False,
+                approved=scenario == "changed" and index == 0,
             )
             await second.supervisor.wait(handle)
         async with asyncio.timeout(5):
@@ -289,8 +301,23 @@ async def test_sync_parent_wakes_when_child_finishes_on_another_host(tmp_path, b
         messages = first.runtime.store.load_runtime_session(root.session_id).messages
         results = [m for m in messages if m.tool_result and m.tool_result.tool_call_id == "spawn"]
         assert len(results) == 1
-        assert results[0].tool_result.is_error == failed
-        assert ("contract" if failed else "Child completed") in results[0].text_content
+        assert results[0].tool_result.is_error == (scenario == "provider_failure")
+        expected = (
+            "Child provider unavailable" if scenario == "provider_failure" else "Child completed"
+        )
+        assert expected in results[0].text_content
+        assert_child_outcome(first, root.session_id, scenario)
+
+
+def assert_child_outcome(app, root_id, scenario):
+    relation = app.runtime.store.list_delegations(root_id)[0]
+    child = app.runtime.store.load_run(relation.child_session_id, relation.current_child_run_id)
+    assert child.status == ("failed" if scenario == "provider_failure" else "completed")
+    if scenario == "changed":
+        messages = app.runtime.store.load_run_messages(child.session_id, child.run_id)
+        result = next(message for message in messages if message.tool_result)
+        assert result.tool_result.is_error
+        assert "contract" in result.text_content
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -427,7 +454,9 @@ async def test_child_approvals_and_follow_up_can_move_between_shell_install_path
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
-async def test_child_setup_contract_failure_is_durable_and_resumes_sync_parent(tmp_path, backend):
+async def test_child_starts_with_current_host_capabilities_and_resumes_sync_parent(
+    tmp_path, backend
+):
     first = application(tmp_path, backend, "C:/PowerShell/pwsh.exe", spawn=True)
     second = application(
         tmp_path, backend, "C:/Windows/powershell.exe", kind="windows_powershell", spawn=True
@@ -437,8 +466,8 @@ async def test_child_setup_contract_failure_is_durable_and_resumes_sync_parent(t
             approval_mode="approval", current_model=first.runtime.current_model().key
         ).session
         root = await first.supervisor.submit("Delegate", session_id=session.session_id)
-        # The persisted parent catalog belongs to the first host; approving on
-        # the second must reject a different shell dialect in the child.
+        # The accepted task keeps its authority ceiling; the child makes its
+        # first decision with the second Host's current implementation.
         waiting = await asyncio.wait_for(first.supervisor.wait(root), 5)
         run = first.runtime.store.load_run(root.session_id, waiting.run_id)
         assert run.status == "waiting_approval"
@@ -448,7 +477,20 @@ async def test_child_setup_contract_failure_is_durable_and_resumes_sync_parent(t
             approval_id=run.pending_approval_id,
             approved=True,
         )
-        await asyncio.wait_for(second.supervisor.wait(resumed), 5)
+        assert (
+            await asyncio.wait_for(second.supervisor.wait(resumed), 5)
+        ).status == "waiting_child"
+        for _ in range(2):
+            pending = await interaction(second, root.session_id)
+            handle = await second.agents.resolve_agent_approval(
+                pending.delegation_id,
+                child_session_id=pending.child_session_id,
+                child_run_id=pending.child_run_id,
+                tool_call_id=pending.tool_call_id,
+                approval_id=pending.request_id,
+                approved=False,
+            )
+            await second.supervisor.wait(handle)
         async with asyncio.timeout(5):
             while first.runtime.store.load_run(root.session_id, run.run_id).status != "completed":
                 await asyncio.sleep(0.01)
@@ -457,13 +499,13 @@ async def test_child_setup_contract_failure_is_durable_and_resumes_sync_parent(t
             relation.child_session_id, relation.current_child_run_id
         )
         assert first.runtime.store.load_run(root.session_id, run.run_id).status == "completed"
-        assert child.status == "failed"
-        assert "contract" in child.error
+        assert child.status == "completed"
+        assert child.error is None
         assert child.ended_at is not None
-        assert child.model_round_count == 0
+        assert child.model_round_count == 3
         assert first.runtime.store.load_session_record(child.session_id).active_run_id is None
-        assert relation.result.terminal_status == "failed"
+        assert relation.result.terminal_status == "completed"
         events, _ = first.runtime.store.load_events_after(
             child.session_id, after_sequence=0, limit=100
         )
-        assert any(event.event_type == "run_failed" for event in events)
+        assert any(event.event_type == "run_completed" for event in events)

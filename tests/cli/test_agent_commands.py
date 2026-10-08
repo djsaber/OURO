@@ -97,7 +97,7 @@ def test_agent_definition_cli_crud_and_tool_compatibility_without_provider(
     )
     assert code == 0
     assert created["catalog"]["revision"] == 1  # type: ignore[index]
-    assert created["catalog"]["effective_from"] == "next_run"  # type: ignore[index]
+    assert created["catalog"]["effective_from"] == "next_decision"  # type: ignore[index]
 
     code, shown = _json_command(
         ["agent", "definition", "show", "reader", "--home", home, "--json"],

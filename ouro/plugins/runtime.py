@@ -27,7 +27,6 @@ from ouro.plugins.catalog import (
     ExtensionCatalogLease,
     GenerationGate,
     build_extension_catalog,
-    generation_matches_execution_contract,
 )
 from ouro.plugins.contributions import (
     ContributionCoordinator,
@@ -83,10 +82,6 @@ class PluginCandidateBuildError(RuntimeError):
         super().__init__(f"candidate generation failed for {plugin_id}: {cause}")
         self.plugin_id = plugin_id
         self.cause = cause
-
-
-class PluginExecutionContractUnavailableError(RuntimeError):
-    """Raised when persisted plugin code cannot be reconstructed exactly."""
 
 
 @dataclass
@@ -176,7 +171,6 @@ class PluginRuntimeResource:
         self._catalog_pointer_lock = threading.Lock()
         self._catalog_base: ExtensionCatalogBase | None = None
         self._current_catalog: ExtensionCatalog | None = None
-        self._catalogs: dict[str, ExtensionCatalog] = {}
         self._retirement_tasks: set[asyncio.Task[None]] = set()
         self._started = False
         self._closed = False
@@ -433,7 +427,7 @@ class PluginRuntimeResource:
         with self._catalog_pointer_lock:
             catalog = self._current_catalog
             assert catalog is not None
-            return catalog.acquire(on_close=self._catalog_lease_closed)
+            return catalog.acquire()
 
     async def replace_base_skills(self, skills: tuple[SkillMetadata, ...]) -> None:
         """Publish a new Host Skill baseline for future Catalog leases.
@@ -455,200 +449,6 @@ class PluginRuntimeResource:
                 catalog_base=catalog_base,
                 base_skills=candidate_skills,
             )
-
-    async def snapshot_for(
-        self,
-        expected_generations: list[dict[str, object]],
-        *,
-        catalog_id: str | None = None,
-    ) -> ExtensionCatalogLease:
-        if self._closed:
-            raise RuntimeError("plugin runtime is closed")
-        self._ensure_catalog()
-        catalog = self._matching_catalog(expected_generations, catalog_id=catalog_id)
-        if catalog is not None:
-            return catalog.acquire(on_close=self._catalog_lease_closed)
-        async with self._mutation_lock:
-            catalog = self._matching_catalog(expected_generations, catalog_id=catalog_id)
-            if catalog is None:
-                catalog = await self._rebuild_recovery_catalog(expected_generations)
-            return catalog.acquire(on_close=self._catalog_lease_closed)
-
-    def _matching_catalog(
-        self,
-        expected_generations: list[dict[str, object]],
-        *,
-        catalog_id: str | None,
-    ) -> ExtensionCatalog | None:
-        with self._catalog_pointer_lock:
-            catalog = self._catalogs.get(catalog_id) if catalog_id is not None else None
-            if catalog is None:
-                catalog = next(
-                    (
-                        item
-                        for item in self._catalogs.values()
-                        if item.matches(expected_generations)
-                    ),
-                    None,
-                )
-            if catalog is None or not catalog.matches(expected_generations):
-                return None
-            return catalog
-
-    async def _rebuild_recovery_catalog(
-        self,
-        expected_generations: list[dict[str, object]],
-    ) -> ExtensionCatalog:
-        """Rebuild an exact durable contract without changing desired plugin state."""
-
-        expected_records = {
-            record.plugin_id: record
-            for record in (
-                PluginGenerationRecord.model_validate(item) for item in expected_generations
-            )
-        }
-        if len(expected_records) != len(expected_generations):
-            raise PluginExecutionContractUnavailableError(
-                "required plugin catalog has duplicate plugin identities"
-            )
-        if not expected_records:
-            catalog = self._build_catalog({})
-            with self._catalog_pointer_lock:
-                self._catalogs[catalog.catalog_id] = catalog
-            return catalog
-
-        state = self.store.read_state()
-        recovery_state = state.model_copy(deep=True)
-        for plugin_id, expected in expected_records.items():
-            if not self._desired_enabled(recovery_state, plugin_id):
-                raise PluginExecutionContractUnavailableError(
-                    "required plugin catalog is no longer available"
-                )
-            if expected.plugin_class == "builtin":
-                definition = self.builtin_plugins.get(plugin_id)
-                if (
-                    definition is None
-                    or definition.contract_hash != expected.builtin_contract_hash
-                    or create_configuration_revision().revision_id
-                    != expected.configuration_revision_id
-                ):
-                    raise PluginExecutionContractUnavailableError(
-                        "required builtin plugin contract is no longer available"
-                    )
-                continue
-            record = recovery_state.plugins.get(plugin_id)
-            if record is None:
-                raise PluginExecutionContractUnavailableError(
-                    "required plugin catalog is no longer available"
-                )
-            installed = next(
-                (
-                    item
-                    for item in record.installs
-                    if item.package_digest == expected.package_digest
-                ),
-                None,
-            )
-            revision = record.activation.configuration_revisions.get(
-                expected.configuration_revision_id
-            )
-            if installed is None or revision is None:
-                raise PluginExecutionContractUnavailableError(
-                    "required plugin catalog is no longer available"
-                )
-            record.activation.selected_digest = installed.package_digest
-            record.activation.configuration_revision_by_digest[installed.package_digest] = (
-                revision.revision_id
-            )
-            record.activation.active_configuration_revision_id = revision.revision_id
-
-        recovery_state = PluginStateDocument.model_validate(
-            recovery_state.model_dump(mode="python")
-        )
-        try:
-            graph = self._resolve_dependencies(
-                recovery_state,
-                roots=set(expected_records),
-            )
-        except PluginDependencyError as exc:
-            raise PluginExecutionContractUnavailableError(
-                "required plugin catalog is no longer available"
-            ) from exc
-        if {node.plugin_id for node in graph.nodes} != set(expected_records):
-            raise PluginExecutionContractUnavailableError(
-                "required plugin catalog dependency lock is incomplete"
-            )
-
-        sources: dict[str, ActivePluginGeneration] = {}
-        rebuilt: list[ActivePluginGeneration] = []
-        try:
-            for node in graph.nodes:
-                expected = expected_records[node.plugin_id]
-                active = self._active.get(node.plugin_id)
-                if active is not None and generation_matches_execution_contract(
-                    active.record,
-                    expected.model_dump(mode="python"),
-                ):
-                    sources[node.plugin_id] = active
-                    continue
-                if self._candidate_readiness(recovery_state, node.plugin_id) != "ready":
-                    raise PluginExecutionContractUnavailableError(
-                        "required plugin catalog is no longer available"
-                    )
-                dependency_graph = self._resolve_dependencies(
-                    recovery_state,
-                    roots={node.plugin_id},
-                )
-                dependency_fingerprint = build_dependency_lock_fingerprint(
-                    dependency_graph,
-                    recovery_state,
-                    {plugin_id: generation.record for plugin_id, generation in sources.items()},
-                    owner_plugin_id=node.plugin_id,
-                )
-                generation = await self._build_generation(
-                    self._runtime_candidate(recovery_state, node.plugin_id),
-                    dependency_lock_fingerprint=dependency_fingerprint,
-                )
-                if not generation_matches_execution_contract(
-                    generation.record,
-                    expected.model_dump(mode="python"),
-                ):
-                    await self._stop_generation(generation, reason="startup_failed")
-                    raise PluginExecutionContractUnavailableError(
-                        "required plugin execution contract does not match"
-                    )
-                sources[node.plugin_id] = generation
-                rebuilt.append(generation)
-
-            catalog = self._build_catalog(sources, state=recovery_state)
-            if not catalog.matches(expected_generations):
-                raise PluginExecutionContractUnavailableError(
-                    "required plugin execution contract does not match"
-                )
-            for generation in rebuilt:
-                if generation.data_store is not None:
-                    generation.data_store.activate()
-                generation.tasks.activate()
-                generation.gate.open()
-            lease = catalog.acquire()
-            with self._catalog_pointer_lock:
-                self._catalogs[catalog.catalog_id] = catalog
-            for generation in rebuilt:
-                self._schedule_retirement(generation, reason="restart")
-            lease.close()
-            return catalog
-        except BaseException as exc:
-            for generation in reversed(rebuilt):
-                if not generation.retiring:
-                    with suppress(Exception):
-                        await self._stop_generation(generation, reason="startup_failed")
-            if isinstance(exc, PluginExecutionContractUnavailableError):
-                raise
-            if not isinstance(exc, Exception):
-                raise
-            raise PluginExecutionContractUnavailableError(
-                "required plugin catalog is no longer available"
-            ) from exc
 
     def project_status(self, record: PluginRecord) -> PluginStatus:
         installed = record.selected()
@@ -1100,9 +900,6 @@ class PluginRuntimeResource:
             )
             self._catalog_base = catalog_base
             self._current_catalog = catalog
-            self._catalogs[catalog.catalog_id] = catalog
-            if current is not None and current.lease_count == 0:
-                self._catalogs.pop(current.catalog_id, None)
             return catalog
 
     def _capture_catalog_base(
@@ -1155,24 +952,11 @@ class PluginRuntimeResource:
         base_skills: tuple[SkillMetadata, ...] | None = None,
     ) -> None:
         with self._catalog_pointer_lock:
-            previous = self._current_catalog
             if catalog_base is not None:
                 self._catalog_base = catalog_base
             if base_skills is not None:
                 self.base_skills = base_skills
-            self._catalogs[catalog.catalog_id] = catalog
             self._current_catalog = catalog
-        if previous is not None:
-            self._discard_catalog_if_idle(previous)
-
-    def _catalog_lease_closed(self, catalog: ExtensionCatalog) -> None:
-        self._discard_catalog_if_idle(catalog)
-
-    def _discard_catalog_if_idle(self, catalog: ExtensionCatalog) -> None:
-        with self._catalog_pointer_lock:
-            if catalog is self._current_catalog or catalog.lease_count != 0:
-                return
-            self._catalogs.pop(catalog.catalog_id, None)
 
     def _schedule_retirement(
         self,

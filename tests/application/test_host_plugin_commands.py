@@ -20,7 +20,6 @@ from ouro.application.plugin_commands import (
 from ouro.application.plugins import PluginService
 from ouro.application.runtime import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.callbacks import run_blocking
 from ouro.core.errors import PersistenceError
 from ouro.core.messages import MessageRecord
 from ouro.core.observers import ObserverRegistry
@@ -115,15 +114,13 @@ async def system(tmp_path, request):
             (),
         )
 
-        async def snapshot_for(generations, *, catalog_id=None):
-            bindings.append((generations, catalog_id))
+        def snapshot():
+            bindings.append(catalog.catalog_id)
             return catalog.acquire()
 
         return PluginService(
             PluginPackageStore(tmp_path),
-            runtime=SimpleNamespace(
-                builtin_contracts={}, snapshot=catalog.acquire, snapshot_for=snapshot_for
-            ),
+            runtime=SimpleNamespace(builtin_contracts={}, snapshot=snapshot),
             session_store=store,
         )
 
@@ -303,7 +300,7 @@ async def test_command_catalog_and_harness_share_one_session_read(system, monkey
     assert record_reads == 0
 
 
-async def test_active_run_command_uses_its_catalog_binding(system):
+async def test_active_run_command_uses_current_catalog(system):
     session = system.runtime.create_session(title="active")
     run = RunRecord(
         session_id=session.session_id,
@@ -323,7 +320,9 @@ async def test_active_run_command_uses_its_catalog_binding(system):
         session_id=session.session_id,
     )
     assert submitted.execution.accepted_inputs
-    assert system.bindings == [([{"generation_id": "old"}], "old-catalog")]
+    assert len(system.bindings) == 2
+    assert len(set(system.bindings)) == 1
+    assert "old-catalog" not in system.bindings
     assert not system.store.load_session(session.session_id).messages
     assert (
         len(
@@ -350,18 +349,18 @@ async def test_command_does_not_recapture_withdrawn_history_after_catalog_acquis
     session = session.model_copy(update={"active_run_id": run.run_id})
     system.store.save_session(session)
     service = system.plugins("batch")
-    snapshot_for = service.runtime.snapshot_for
+    snapshot = service.runtime.snapshot
 
-    async def history_changes(generations, *, catalog_id=None):
-        lease = await snapshot_for(generations, catalog_id=catalog_id)
+    def history_changes():
+        lease = snapshot()
         # Another owner withdraws the captured epoch while Catalog is acquired.
-        await run_blocking(
-            system.store.commit_session,
-            SessionCommit(before=session, before_message_id=message.message_id),
-        )
+        if len(system.bindings) == 2:
+            system.store.commit_session(
+                SessionCommit(before=session, before_message_id=message.message_id)
+            )
         return lease
 
-    service.runtime.snapshot_for = history_changes
+    service.runtime.snapshot = history_changes
     with pytest.raises(SessionCommitConflict):
         await submit_plugin_command(
             service, system.runtime, "example", "", session_id=session.session_id

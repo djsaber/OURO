@@ -30,11 +30,11 @@ GC、慢回调和 Store 线程归属。Store 计数包含嵌套公共调用，�
 ## Run 资源与状态读取
 
 ```powershell
-uv run --frozen python -m dev.benchmarks.run_resources
+uv run --frozen python -m dev.benchmarks.run_resources --label current-environment
 uv run --frozen python -m dev.benchmarks.session_harness_reads
 ```
 
-资源基准覆盖正常终结、等待/恢复、排队租约转移和关闭；每场景使用 100/1,000 个 Run。计时与 tracemalloc 分开，
+资源基准覆盖正常终结、等待/恢复、显式租约转交和关闭；每场景使用 100/1,000 个 Run。计时与 tracemalloc 分开，
 通过真实租约和弱引用检查资源收尾。读取基准使用 0/8/64 个控制关系，预热后测量 Session、Harness 与控制投影。
 这些场景测量局部生命周期与读取成本，不覆盖插件启动、磁盘吞吐或终端绘制。
 

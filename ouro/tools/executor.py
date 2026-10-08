@@ -17,7 +17,7 @@ from ouro.core.cancellation import AbortSignal, settle_owned_tasks
 from ouro.core.interactions import ToolInputResolution
 from ouro.core.redaction import redact_text
 from ouro.core.tool_policies import ToolPolicyMode
-from ouro.core.tools import PermissionMode
+from ouro.core.tools import PermissionMode, ToolDefinition, tool_definition_contract_hash
 from ouro.tools.base import (
     ToolExecutionAborted,
     ToolExecutionContext,
@@ -97,7 +97,7 @@ class ToolExecutor:
                 error_type="UnknownTool",
                 error_message=f"unknown tool: {invocation.tool_name}",
             )
-        contract_error = _tool_contract_error(invocation, tool.definition.metadata)
+        contract_error = _tool_contract_error(invocation, tool.definition)
         if contract_error is not None:
             return _error_outcome(
                 invocation,
@@ -250,7 +250,7 @@ class ToolExecutor:
                 error_type="UnknownTool",
                 error_message=f"unknown tool: {invocation.tool_name}",
             )
-        contract_error = _tool_contract_error(invocation, tool.definition.metadata)
+        contract_error = _tool_contract_error(invocation, tool.definition)
         if contract_error is not None:
             return _error_outcome(
                 invocation,
@@ -447,8 +447,25 @@ def _validated_tool_result(
 
 def _tool_contract_error(
     invocation: ToolInvocation,
-    metadata: Mapping[str, object],
+    definition: ToolDefinition,
 ) -> str | None:
+    if invocation.definition_contract_hash is not None and (
+        invocation.definition_contract_hash != tool_definition_contract_hash(definition)
+    ):
+        return "persisted tool definition does not match the current contract"
+    metadata = definition.metadata
+    if invocation.canonical_tool_id is not None:
+        plugin_id = metadata.get("plugin_id")
+        contribution_id = metadata.get("contribution_id")
+        identity = (
+            f"{plugin_id}/tools/{contribution_id}"
+            if isinstance(plugin_id, str) and isinstance(contribution_id, str)
+            else f"ouro.host/tools/{definition.name}"
+        )
+        if identity != invocation.canonical_tool_id or definition.source != invocation.source:
+            return "persisted tool identity does not match the current tool"
+        if invocation.plugin_id is None and plugin_id is not None:
+            return "a plugin cannot take over a persisted Host tool call"
     expected_common = {
         "plugin_id": invocation.plugin_id,
         "plugin_class": invocation.plugin_class,

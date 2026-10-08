@@ -26,9 +26,8 @@ from ouro.core.callbacks import run_blocking
 from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.redaction import redact_text
 from ouro.core.session_controls import AttributedSessionControlTransition
-from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.state import SessionRecord
 from ouro.plugins.builtin import BuiltinPluginDefinition, BuiltinPluginRegistry
-from ouro.plugins.catalog import ExtensionCatalogLease
 from ouro.plugins.compatibility import inspect_community_package
 from ouro.plugins.dependencies import (
     PluginDependencyError,
@@ -334,13 +333,10 @@ class PluginService:
     ) -> PluginCommandExecutionView:
         runtime = self._require_runtime()
         captured_harness = None
-        active_run = None
         if session_id is not None and self.session_store is not None:
-            before, draft, active_run = await run_blocking(
-                self._capture_command_session, session_id
-            )
+            before, draft = await run_blocking(self._capture_command_session, session_id)
             captured_harness = (before, draft)
-        snapshot = await self._command_catalog(runtime, active_run=active_run)
+        snapshot = runtime.snapshot()
         try:
             return await execute_plugin_command(
                 catalog=snapshot,
@@ -355,46 +351,15 @@ class PluginService:
         finally:
             snapshot.close()
 
-    async def _command_catalog(
-        self,
-        runtime: PluginRuntimeResource,
-        *,
-        active_run: RunRecord | None,
-    ) -> ExtensionCatalogLease:
-        if active_run is None:
-            return runtime.snapshot()
-        if active_run.status not in {
-            "queued",
-            "running",
-            "waiting_user",
-            "waiting_approval",
-            "waiting_child",
-        }:
-            return runtime.snapshot()
-        generations = active_run.metadata.get("extension_generations", [])
-        if not isinstance(generations, list) or any(
-            not isinstance(item, dict) for item in generations
-        ):
-            raise ValueError("active run has invalid extension generation metadata")
-        raw_catalog_id = active_run.metadata.get("extension_catalog_id")
-        catalog_id = raw_catalog_id if isinstance(raw_catalog_id, str) else None
-        return await runtime.snapshot_for(generations, catalog_id=catalog_id)
-
     def _capture_command_session(
         self, session_id: str
-    ) -> tuple[SessionRecord, HarnessCallSnapshot, RunRecord | None]:
+    ) -> tuple[SessionRecord, HarnessCallSnapshot]:
         assert self.session_store is not None
         with self.session_store.session_mutation(session_id):
             session, harness = capture_session_harness(
                 self.session_store, session_id, usage_service=self.usage_service
             )
-            active_run = None
-            if session.active_run_id is not None:
-                try:
-                    active_run = self.session_store.load_run(session_id, session.active_run_id)
-                except FileNotFoundError:
-                    pass
-            return session, harness, active_run
+            return session, harness
 
     def dependencies(
         self,
@@ -1015,27 +980,32 @@ class PluginService:
             return []
         references: builtins.list[str] = []
         for session in self.session_store.list_sessions():
-            # Only Run records carry execution-contract references; Session journals
-            # are never read here.
+            if any(
+                activation.plugin_id == plugin_id and activation.release_id == release_id
+                for activation in session.controls.activations
+            ):
+                references.append(session.session_id)
             for run in self.session_store.load_runs(session.session_id):
                 if run.status not in _PLUGIN_GENERATION_RETAINING_RUN_STATUSES:
                     continue
-                generations = run.metadata.get("extension_generations", [])
-                if not isinstance(generations, list):
+                batch = run.active_tool_batch
+                if batch is None:
                     continue
                 if any(
-                    isinstance(item, dict)
-                    and item.get("plugin_id") == plugin_id
-                    and item.get("plugin_class", "user") == plugin_class
-                    and (
-                        item.get("release_id") == release_id
-                        or (
-                            plugin_class == "user"
-                            and "release_id" not in item
-                            and item.get("package_digest") == release_id
-                        )
-                    )
-                    for item in generations
+                    call.status
+                    in {
+                        "planned",
+                        "ready",
+                        "running",
+                        "awaiting_approval",
+                        "waiting_user",
+                        "resolving_input",
+                    }
+                    and call.invocation is not None
+                    and call.invocation.plugin_id == plugin_id
+                    and call.invocation.plugin_class == plugin_class
+                    and call.invocation.release_id == release_id
+                    for call in batch.calls
                 ):
                     references.append(f"{session.session_id}/{run.run_id}")
         return references

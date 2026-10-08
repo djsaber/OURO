@@ -38,7 +38,7 @@ class AgentDefinitionDetail(AgentDefinitionView):
 class AgentDefinitionCatalogView(ApplicationDTO):
     revision: int
     definitions: tuple[AgentDefinitionView, ...] = ()
-    effective_from: Literal["next_run"] = "next_run"
+    effective_from: Literal["next_decision"] = "next_decision"
 
 
 class AgentToolOptionView(ApplicationDTO):

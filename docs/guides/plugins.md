@@ -30,7 +30,7 @@ uv run --frozen ouro plugin remove dev.example.plugin --home ./.ouro-dev
 
 `python-inprocess` 执行与 OURO 同进程的受信代码；worker 提供进程和协议隔离，但不是 OS 沙箱。启用、选择、重载或回滚精确的包 digest 才执行相应代码；`update` 只安装候选版本，不自动切换。
 
-候选准备失败时保留旧目录；正在运行的 Run 通过租约持有固定扩展契约。插件凭据只接受已声明槽位的环境变量引用。社区包先用 `plugin import-report` 查看逐项兼容报告，导入不会执行未知 Hook 或安装脚本。
+候选准备失败时保留旧目录；已发出的模型请求及其调用保持原绑定，后续决策采用当前插件能力。插件凭据只接受已声明槽位的环境变量引用。社区包先用 `plugin import-report` 查看逐项兼容报告，导入不会执行未知 Hook 或安装脚本。
 
 完整权限、Catalog、取消和跨进程恢复规则见[插件规格](../specs/plugins.md)；开发新插件见[开发指南](../development/plugin-development.md)。
 

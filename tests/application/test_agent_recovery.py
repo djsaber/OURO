@@ -176,7 +176,7 @@ def test_relation_without_child_fails_once_and_keeps_stable_diagnostic(
     assert unchanged.revision == failed.revision
 
 
-def test_parent_catalog_contract_mismatch_fails_before_child_repair(
+def test_parent_catalog_changes_do_not_replace_a_delegation(
     recovery_store: SessionStore,
 ) -> None:
     root = _create_root(recovery_store)
@@ -191,11 +191,15 @@ def test_parent_catalog_contract_mismatch_fails_before_child_repair(
             "definition": AgentDefinition.model_validate(changed_definition.model_dump()),
         }
     )
-    recovery_store.create_delegation(relation)
+    relation = recovery_store.create_delegation(relation)
+    relation, child = _persist_child_created(recovery_store, root, relation)
+    run = _run(relation, child)
+    recovery_store.save_run(run)
 
-    diagnostics = AgentRecoveryService(recovery_store).reconcile()
-
-    assert [item.code for item in diagnostics] == ["agent_catalog_contract_unavailable"]
+    assert AgentRecoveryService(recovery_store).reconcile() == ()
+    recovered = recovery_store.load_delegation(root.session_id, relation.delegation_id)
+    assert recovered.definition == relation.definition
+    assert recovered.current_child_run_id == run.run_id
 
 
 def test_recovery_commits_only_uniquely_attributed_child_run(

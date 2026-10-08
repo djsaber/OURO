@@ -11,11 +11,13 @@ from ouro.core.state import RunRecord
 if TYPE_CHECKING:
     from ouro.application.tool_calls import ToolCallCoordinator
     from ouro.plugins.catalog import ExtensionCatalogLease
+    from ouro.tools.registry import ToolRegistry
 
 
 @dataclass
 class RunResources:
     snapshot: ExtensionCatalogLease | None = None
+    host_tools: ToolRegistry | None = None
     controller_ids: frozenset[str] = frozenset()
     agent_catalog: AgentCatalogSnapshot | None = None
     tool_names: frozenset[str] | None = None

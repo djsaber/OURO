@@ -84,6 +84,7 @@ async def runtime(tmp_path):
         tools=ToolRegistry(),
         adapter=RuntimeAdapter(FauxProvider(), ModelMetadata(model_id="faux", provider_id="faux")),
     )
+    app.create_session(_session_id="session", title="Resource ownership")
     catalog = build_extension_catalog(
         ExtensionCatalogBase.capture(
             tools=app.tools,
@@ -96,10 +97,7 @@ async def runtime(tmp_path):
         (),
     )
 
-    async def restore(_generations, *, catalog_id=None):
-        return catalog.acquire()
-
-    source = SimpleNamespace(snapshot=catalog.acquire, snapshot_for=restore)
+    source = SimpleNamespace(snapshot=catalog.acquire)
     yield app, catalog, source
     # Explicit close tests own their shutdown result, including expected errors.
     # Finish unstarted or pending shutdowns without replaying an observed failure.
@@ -142,24 +140,21 @@ async def test_close_releases_all_run_references_with_or_without_catalog(runtime
 
 
 @pytest.mark.parametrize("status", ["waiting_approval", "waiting_user", "waiting_child"])
-async def test_wait_keeps_resources_and_terminal_completion_releases_them(runtime, status):
+async def test_wait_releases_resources_and_resume_acquires_current_binding(runtime, status):
     app, catalog, source = runtime
     app.bind_extensions(catalog=source)
     run = delegated_run().model_copy(update={"status": status})
     await app._ensure_extension_snapshot(run)
-    coordinator = app._tool_calls_for_run(run.run_id)
+    reference = weakref.ref(app._tool_calls_for_run(run.run_id))
     app._finish_run_observers(run)
-    assert catalog.lease_count == 1
-    assert app._tool_calls_for_run(run.run_id) is coordinator
-    app.replace_tool_permission_overrides({"example": "deny"})
-    assert coordinator.executor.permission_overrides["example"] == "deny"
-    reference = weakref.ref(coordinator)
-    del coordinator
-    app._finish_run_observers(run.model_copy(update={"status": "completed"}))
-    app._finish_run_observers(run.model_copy(update={"status": "completed"}))
     gc.collect()
     assert catalog.lease_count == 0
     assert reference() is None
+    app.replace_tool_permission_overrides({"example": "deny"})
+    await app._ensure_extension_snapshot(run)
+    assert app._tool_calls_for_run(run.run_id).executor.permission_overrides["example"] == "deny"
+    app._finish_run_observers(run.model_copy(update={"status": "completed"}))
+    assert catalog.lease_count == 0
 
 
 async def test_terminal_cleanup_keeps_independently_forked_observer_lease(runtime):
@@ -183,20 +178,13 @@ async def test_terminal_cleanup_keeps_independently_forked_observer_lease(runtim
     assert catalog.lease_count == 0
 
 
-@pytest.mark.parametrize("invalid", [[], {"activations": [None]}])
-async def test_failed_control_restore_releases_lease_and_cannot_bypass_validation_on_retry(
-    runtime, invalid
-):
+async def test_recovery_does_not_interpret_historical_control_metadata(runtime):
     app, catalog, source = runtime
     app.bind_extensions(catalog=source)
     run = delegated_run()
-    run.metadata["session_control_snapshot"] = invalid
-    for _ in range(2):
-        with pytest.raises(ValueError, match="Session control"):
-            await app._ensure_extension_snapshot(run)
-        assert catalog.lease_count == 0
-    run.metadata["session_control_snapshot"] = {"activations": []}
+    run.metadata["session_control_snapshot"] = {"activations": [{"controller_id": "obsolete"}]}
     await app._ensure_extension_snapshot(run)
+    assert app._active_controller_ids_for_run(run.run_id) == set()
     assert catalog.lease_count == 1
 
 
@@ -233,20 +221,19 @@ async def test_cancelled_binding_releases_owned_lease(runtime, monkeypatch):
     assert catalog.lease_count == 0
 
 
-async def test_detaching_run_transfers_only_catalog_ownership_to_queue(runtime):
+async def test_detaching_run_transfers_only_catalog_ownership(runtime):
     app, catalog, source = runtime
     app.bind_extensions(catalog=source)
     run = delegated_run()
     await app._ensure_extension_snapshot(run)
     reference = weakref.ref(app._tool_calls_for_run(run.run_id))
     snapshot = app._detach_extension_snapshot(run.run_id)
-    app._queued_extension_snapshots["queued"] = snapshot
     gc.collect()
     assert reference() is None
     assert catalog.lease_count == 1
-    app._finish_run_observers(run.model_copy(update={"status": "completed"}))
-    assert catalog.lease_count == 1
     await app.close()
+    assert catalog.lease_count == 1
+    snapshot.close()
     assert catalog.lease_count == 0
 
 
@@ -268,32 +255,14 @@ async def test_prepared_run_decodes_delegated_binding_once(runtime):
     assert catalog.lease_count == 0
 
 
-async def test_recovery_cancellation_does_not_retain_an_unacquired_lease(runtime):
-    app, catalog, source = runtime
-    app.bind_extensions(catalog=source)
-    entered = asyncio.Event()
-
-    async def hold(*args, **kwargs):
-        entered.set()
-        await asyncio.Future()
-
-    source.snapshot_for = hold
-    pending = asyncio.create_task(app._ensure_extension_snapshot(delegated_run()))
-    await asyncio.wait_for(entered.wait(), 2)
-    pending.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await pending
-    assert catalog.lease_count == 0
-
-
 async def test_failed_recovery_does_not_retain_the_runs_agent_catalog(runtime):
     app, catalog, source = runtime
     app.bind_extensions(catalog=source)
 
-    async def unavailable(*args, **kwargs):
+    def unavailable():
         raise RuntimeError("catalog unavailable")
 
-    source.snapshot_for = unavailable
+    source.snapshot = unavailable
     run = delegated_run()
     reference = weakref.ref(run.agent_catalog)
     with pytest.raises(RuntimeError, match="catalog unavailable"):
@@ -304,86 +273,19 @@ async def test_failed_recovery_does_not_retain_the_runs_agent_catalog(runtime):
     assert catalog.lease_count == 0
 
 
-async def test_failed_queued_binding_releases_transferred_lease(runtime):
-    from ouro.application.queued_inputs import QueuedInput
-    from ouro.core.base import utc_now
-
-    app, catalog, source = runtime
-    app.bind_extensions(catalog=source)
-    run = delegated_run()
-    run.metadata["effective_tool_refs"] = "invalid"
-    queued = QueuedInput(
-        queue_id="queued",
-        prompt="hello",
-        mode="follow_up",
-        queued_at=utc_now(),
-        prompt_policy_checked=True,
-        prospective_run_id=run.run_id,
-        source="user",
-        role="user",
-        scaffold=False,
-        semantic_tag=None,
-    )
-    app._queued_extension_snapshots[queued.queue_id] = catalog.acquire()
-    with pytest.raises(ValueError, match="effective tool references"):
-        await app._attach_queued_extension_snapshot(run, [queued])
-    assert catalog.lease_count == 0
-
-
-async def test_failed_queue_lease_cleanup_keeps_the_primary_lease_owned(runtime):
-    from ouro.application.queued_inputs import QueuedInput
-    from ouro.core.base import utc_now
-
-    app, catalog, source = runtime
-    app.bind_extensions(catalog=source)
-    run = delegated_run()
-    first = QueuedInput(
-        queue_id="first",
-        prompt="hello",
-        mode="follow_up",
-        queued_at=utc_now(),
-        prompt_policy_checked=True,
-        prospective_run_id=run.run_id,
-        source="user",
-        role="user",
-        scaffold=False,
-        semantic_tag=None,
-    )
-    second = first.model_copy(update={"queue_id": "second"})
-
-    def fail(_catalog):
-        raise ValueError("lease cleanup failed")
-
-    primary = catalog.acquire()
-    app._queued_extension_snapshots[first.queue_id] = primary
-    app._queued_extension_snapshots[second.queue_id] = catalog.acquire(on_close=fail)
-    with pytest.raises(ValueError, match="lease cleanup failed"):
-        await app._attach_queued_extension_snapshot(run, [first, second])
-    assert app._queued_extension_snapshots[first.queue_id] is primary
-    assert catalog.lease_count == 1
-    await app.close()
-    assert catalog.lease_count == 0
-
-
-@pytest.mark.parametrize("failing_owner", ["run", "queue"])
-async def test_close_finishes_other_resources_when_a_lease_callback_fails(runtime, failing_owner):
+async def test_close_finishes_other_resources_when_a_lease_callback_fails(runtime):
     app, catalog, source = runtime
     app.bind_extensions(catalog=source)
 
     def fail(_catalog):
         raise ValueError("release callback failed")
 
-    async def restore(*args, **kwargs):
-        return catalog.acquire(on_close=fail if failing_owner == "run" else None)
-
-    source.snapshot_for = restore
+    source.snapshot = lambda: catalog.acquire(on_close=fail)
     run = delegated_run()
     await app._ensure_extension_snapshot(run)
     reference = weakref.ref(app._tool_calls_for_run(run.run_id))
-    app._queued_extension_snapshots["first"] = catalog.acquire(
-        on_close=fail if failing_owner == "queue" else None
-    )
-    app._queued_extension_snapshots["second"] = catalog.acquire()
+    source.snapshot = catalog.acquire
+    await app._ensure_extension_snapshot(delegated_run())
     with patch.object(app.models, "close", wraps=app.models.close) as close_models:
         with pytest.raises(ExceptionGroup, match="runtime shutdown failed") as failure:
             await app.close()

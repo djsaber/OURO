@@ -165,6 +165,27 @@ class EffectiveToolRef(OuroModel):
     requires_mcp: bool = False
     requires_external_paths: bool = False
 
+    def permits(self, current: EffectiveToolRef) -> bool:
+        """Intersect current capability with this delegation's authority ceiling."""
+        return (
+            self.public_name == current.public_name
+            and self.canonical_tool_id == current.canonical_tool_id
+            # Plugin canonical ids carry stable ownership; registry owners also encode generation.
+            and (
+                not self.canonical_tool_id.startswith("ouro.host/tools/")
+                or self.owner_id == current.owner_id
+            )
+            and self.source == current.source
+            and (
+                self.effect == current.effect
+                or self.effect == "unknown"
+                or current.effect == "read_only"
+            )
+            and (self.requires_network or not current.requires_network)
+            and (self.requires_mcp or not current.requires_mcp)
+            and (self.requires_external_paths or not current.requires_external_paths)
+        )
+
 
 class AgentCatalogEntry(OuroModel):
     definition: AgentDefinition

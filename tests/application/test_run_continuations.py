@@ -596,7 +596,7 @@ async def test_bound_terminal_policy_can_replace_its_exact_activation(tmp_path) 
         ("timeout", "TimeoutError"),
     ],
 )
-async def test_bound_policy_failure_force_releases_only_its_exact_activation(
+async def test_bound_policy_failure_preserves_controls_until_explicit_release(
     tmp_path,
     failure_mode,
     error_type,
@@ -664,8 +664,11 @@ async def test_bound_policy_failure_force_releases_only_its_exact_activation(
     assert settlement.run.continuation.action == "pause"
     assert settlement.run.continuation.reason == "continuation_policy_failed"
     assert [failure.error_type for failure in settlement.failures] == [error_type]
-    assert [item.activation_id for item in remaining] == [survivor.activation_id]
-    assert any("owner-private cleanup was not confirmed" in item for item in settlement.diagnostics)
+    assert [item.activation_id for item in remaining] == [
+        activation.activation_id,
+        survivor.activation_id,
+    ]
+    assert any("explicit release is required" in item for item in settlement.diagnostics)
 
 
 @pytest.mark.asyncio
@@ -724,7 +727,7 @@ async def test_invalid_continuation_transition_does_not_release_another_activati
     remaining = store.load_session_record(session.session_id).controls.activations
     assert settlement.run.continuation is not None
     assert settlement.run.continuation.reason == "continuation_decision_invalid"
-    assert [item.activation_id for item in remaining] == [other.activation_id]
+    assert [item.activation_id for item in remaining] == [bound.activation_id, other.activation_id]
 
 
 @pytest.mark.asyncio
@@ -812,8 +815,10 @@ async def test_staged_settlement_replay_does_not_reevaluate_or_release_new_activ
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("policy_available", [True, False])
 async def test_runtime_startup_reconciliation_replays_pending_settlement_without_running(
     tmp_path,
+    policy_available,
 ) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -862,6 +867,8 @@ async def test_runtime_startup_reconciliation_replays_pending_settlement_without
             ),
         ),
     )
+    if not policy_available:
+        registry = RunContinuationRegistry()
     provider = CountingProvider()
     runtime = RuntimeService(
         store=store,
@@ -928,8 +935,7 @@ async def test_snapshot_recovery_failure_keeps_continuation_retryable(tmp_path, 
     )
 
     class UnavailableCatalog:
-        async def snapshot_for(self, expected_generations, *, catalog_id=None):
-            del expected_generations, catalog_id
+        def snapshot(self):
             raise RuntimeError("catalog storage is unavailable")
 
     runtime.bind_extensions(catalog=UnavailableCatalog())  # type: ignore[arg-type]
@@ -945,7 +951,7 @@ async def test_snapshot_recovery_failure_keeps_continuation_retryable(tmp_path, 
     assert restored.continuation.state == "pending"
     assert restored.continuation.action is None
     assert [item.activation_id for item in remaining] == [activation.activation_id]
-    assert "extension snapshot recovery failed" in caplog.text
+    assert "current environment binding failed" in caplog.text
     assert "catalog storage is unavailable" in caplog.text
     with pytest.raises(SessionBusyError, match="unresolved terminal Run continuation"):
         await runtime.run("Do not start a newer Run", session_id=session.session_id)
@@ -1121,7 +1127,7 @@ async def test_continuation_matches_rebuilt_generation_by_execution_contract(tmp
     queued = queue.eligible(store.load_runtime_session(session.session_id))
     assert settlement.queued is True
     assert len(queued) == 1
-    assert queued[0].generation_id == "gen_after_restart"
+    assert queued[0].generation_id == "gen_before_restart"
     assert queued[0].execution_contract_hash == controller.execution_contract_hash
 
 

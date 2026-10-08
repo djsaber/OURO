@@ -23,7 +23,9 @@ from tests.tui.test_tasks import choose, streaming_application
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
 async def test_failed_child_tools_stop_animating_live_and_after_reopening(tmp_path, backend):
     owner = application(tmp_path, backend, "C:/PowerShell/pwsh.exe")
-    viewer = application(tmp_path, backend, "C:/Windows/powershell.exe", kind="windows_powershell")
+    viewer = application(
+        tmp_path, backend, "C:/Windows/powershell.exe", kind="windows_powershell", fail_child=True
+    )
     app = OuroTuiApp(application=viewer)
     async with owner:
         parent = await owner.runtime.run("Prepare a delegation")
@@ -34,7 +36,7 @@ async def test_failed_child_tools_stop_animating_live_and_after_reopening(tmp_pa
                 parent_run_id=parent.run.run_id,
                 agent_id="general",
                 task="Read system information",
-                description="Fail cross-host contract",
+                description="Record a tool failure before the child model fails",
                 execution_mode="sync",
             )
         )
@@ -60,8 +62,13 @@ async def test_failed_child_tools_stop_animating_live_and_after_reopening(tmp_pa
                     await app._open_session(parent.session.session_id)
                     await app._open_session(child.child_session_id)
                 await pilot.pause()
-                tools = app._projection.activity.tool_calls
+                tools = [
+                    entry.tool
+                    for entry in app.query_one(ConversationHistory).entries
+                    if entry.tool is not None
+                ]
                 assert tools and all(tool.status == "failed" for tool in tools)
+                assert app._projection.activity.tool_calls == ()
                 assert not app.query_one(ConversationView)._tools
                 assert not list(app.query(ToolActivityRow))
                 assert "PowerShell" in app.export_screenshot()

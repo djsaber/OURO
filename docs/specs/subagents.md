@@ -8,7 +8,7 @@
 子智能体是 application/runtime 的一等平台能力：模型可通过内置控制工具派遣，Host 也可通过类型化
 application service/DTO 直接操作；CLI、Desktop、API 或其他 Host 不拥有子智能体业务状态机。
 
-子智能体闭环包括：Run 冻结 AgentDefinition 目录、durable Delegation、独立 child Session/Run、
+子智能体闭环包括：模型决策绑定 AgentDefinition 目录、durable Delegation、独立 child Session/Run、
 Host/CLI 与模型控制面、sync/async、durable join、exact-once 结果交付、HITL 路由、取消级联、恢复协调、
 显式 spawn/capability 权限求交、执行边界动态撤销、共享预算上限，以及可重建且可动态订阅的 root
 AgentTree/interaction projection。本规格陈述由自动化证据约束的当前语义；范围外能力集中列在文末，不能
@@ -90,7 +90,7 @@ child_run_id 和状态。Handle 是控制引用，不是 canonical 运行事实�
 15. 前端关闭、刷新或重新连接不得改变 child 生命周期。
 16. agent_id 是持久化和工具参数使用的稳定 identity；可编辑 name 不能作为引用、权限键或恢复依据。
 17. builtin 与 user AgentDefinition 只在管理面的 editable 属性上不同；AgentService 不按来源选择执行分支。
-18. AgentDefinition 配置、SpawnAgent schema 和执行解析必须来自同一个 Run-frozen AgentCatalogSnapshot。
+18. AgentDefinition 配置、SpawnAgent schema 和执行解析必须来自同一个 decision-bound AgentCatalogSnapshot。
 19. tool_selection=all 只扩大候选可见集合，不授予权限，也不能包含当前 depth 禁止的 Agent 控制工具。
 
 ## 架构边界
@@ -201,13 +201,13 @@ reserved id 等约束直接属于当前配置模型，并在写入完整新值�
 `runtime.spawn_policy.allowed_agent_id_patterns=("*",)`。definition 与 runtime policy 共用一个 expected
 revision，避免 Host 同时编辑时发生交叉覆盖。max depth 只能为 1，lifecycle 只能为 bound；配置
 detached/nested 在校验期明确失败。runtime policy 由 `LocalApplication` 在 composition start 读取，变更报告
-`effective_from=next_runtime`；definition 内容仍由每个新 parent Run 冻结并报告
-`effective_from=next_run`。根软预算继续来自现有 `run_budget` 并冻结到 parent Run，每个 definition 的
+`effective_from=next_runtime`；definition 内容由每轮 parent 模型决策绑定并报告
+`effective_from=next_decision`。根软预算继续来自现有 `run_budget` 并冻结到 parent Run，每个 definition 的
 subagent 默认值继续复用 `RunBudgetPolicy`，不增加第二套 AgentBudget 配置或执行引擎。
 
 `AgentSpawnPolicy` 是所有 definition 共用的平台派遣上限，不是 per-definition 配置。它统一表达允许的 agent/model
-pattern、execution/lifecycle mode，以及 write、network、MCP 和 external-path 能力；每个 parent Run 再冻结一份
-当时的全局 policy。最终 child 能力继续由全局 policy、选中 AgentDefinition、父级可下放能力和当前权限策略求交。
+pattern、execution/lifecycle mode，以及 write、network、MCP 和 external-path 能力；每轮 parent 决策把
+当时的全局 policy 写入 AgentCatalogSnapshot。最终 child 能力继续由全局 policy、选中 AgentDefinition、父级可下放能力和当前权限策略求交。
 Application 配置 API 必须能读取和更新完整 policy；CLI、TUI 或其他 Host 可以只展示适合其产品面的字段，但不能
 在入口层复制或缩减底层 policy 语义。
 
@@ -229,8 +229,8 @@ create 返回稳定 agent_id；name 后续可自由修改而不改变已有引�
 
 - 已存在 Delegation 继续使用自身冻结 definition；
 - 已存在 child Session 的 resume/follow-up 继续使用该 Delegation contract；
-- active parent Run 继续使用其 Run-frozen catalog；
-- 新 Run 排除已删除 definition，并使用更新后的 contract。
+- 已发出的 parent 模型请求及其调用继续使用该轮目录；
+- 下一轮决策排除已删除 definition，并使用当前 contract。
 
 因此不需要为用户配置另建不可变 revision store 或 tombstone。Run snapshot 和 Delegation 已分别覆盖 active tool
 contract 与已创建 child 的恢复需求。
@@ -239,8 +239,8 @@ contract 与已创建 child 的恢复需求。
 
 tool_selection 保存当前产品公开的 ToolRegistry name，不保存 display name、schema 副本或本地 owner 路径：
 
-- all：选择本次 Run ExtensionCatalog 中对 child 可见的全部候选工具；
-- selected：只选择 names 与本次 Run 可见工具的精确交集；空列表表示无工具 Agent；不设置固定数量上限；
+- all：选择本次派遣决策的 ExtensionCatalog 中对 child 可见的全部候选工具；
+- selected：只选择 names 与本次决策可见工具的精确交集；空列表表示无工具 Agent；不设置固定数量上限；
 - 两种模式都继续与 platform hard cap、父级可下放约束、workspace、depth、当前 revocation 和现有
   auto/approval/deny、ToolPolicy 求交；
 - all 不是 all permissions，不跳过 approval，也不自动允许 shell、network、MCP、external path 或 Agent control；
@@ -250,22 +250,24 @@ tool_selection 保存当前产品公开的 ToolRegistry name，不保存 display
 而缺失的 tool 不得导致配置被删除或静默缩成更小 Agent；目录把该 definition 标为 unavailable，给出
 missing_tool_names，并从新的 SpawnAgent agent_id 选项中排除。
 
-AgentCatalogSnapshot 把配置 name 解析为 EffectiveToolRef；每个 ref 冻结 public name、canonical identity/owner、
-execution contract hash、最低 permission mode，以及 network/MCP/external-path 等显式执行能力。硬 deny 工具不进入
-候选 refs；approval 作为最低权限随 Delegation/child Run 冻结，后续配置只能继续收紧，不能把它放宽为 auto。恢复旧
-Delegation 时使用冻结 refs 和既有 unknown-contract 规则，不能把当前出现的同名、不同 owner/contract 工具猜测为
-原工具。
+AgentCatalogSnapshot 把配置 name 解析为 EffectiveToolRef，Delegation 保存被委派的 public name、canonical identity、
+来源、effect、最低权限和 network/MCP/external-path 上限。两种选择模式都冻结已授予的工具身份集合；后来新增的工具
+不会自动进入已有 child。approval 下限不能被后续 auto 配置放宽，当前 deny 仍然拒绝。
 
-Shell 的可执行文件路径属于 Host 本地执行绑定，不进入可移植 ToolDefinition 或委派契约摘要；实际执行结果仍保留
-路径供诊断。同一种 Shell 方言可通过不同安装路径或系统别名接管，方言、参数 schema、来源、effect 和权限上限仍受
-冻结契约约束。未知或实际不兼容的契约必须明确失败，不按工具名放行，也不改写旧 Delegation 的冻结 refs。
+child 每轮用当前工具与该上限求交：同一 canonical plugin identity 可采用更新实现；Host/MCP 还要求相同 registry
+owner。插件 registry owner 中的 release/generation 是实例来源，不能成为长期委派身份。工具移除、owner 或 source
+改变，以及写入、network、MCP、external-path 能力扩大都会排除该工具。任务、workspace、明确的模型选择和预算继续
+使用 Delegation 的原有值。工具缺失是当前能力事实，不修改已委派任务或伪造完成。
+
+待审批及等待 resume 的具体调用仍检查自身精确执行契约，不能借能力更新执行另一操作。外部结果未知时不自动重放。
+Shell 的本地可执行文件路径不进入可移植 ToolDefinition；执行结果保留路径供诊断，方言及权限边界仍受检查。
 
 ### AgentCatalogSnapshot 与派遣工具联动
 
-每个新 parent Run 在取得 ExtensionCatalogLease 后构造并持久化一个有界 AgentCatalogSnapshot，包含：
+每轮 parent 模型决策在取得当前 ExtensionCatalogLease 后构造并持久化一个有界 AgentCatalogSnapshot，包含：
 
 - agents section revision 与 catalog contract hash；
-- 本 Run 冻结的 AgentSpawnPolicy，包括 agent/model pattern、execution/lifecycle mode 与显式能力上限；
+- 本次决策使用的 AgentSpawnPolicy，包括 agent/model pattern、execution/lifecycle mode 与显式能力上限；
 - 所有 selectable definition 的完整冻结值和 contract hash；
 - 每项解析后的 EffectiveToolRefs 与 compatibility diagnostics；
 - builtin/user 管理来源只用于 Host 展示，不参与执行分派。
@@ -279,22 +281,20 @@ SpawnAgent（Host 展示名“派遣子智能体”）必须从这个同一 snap
 - execution_mode schema 与 Host handler 都按同一 snapshot 校验；
 - Run/Tool invocation 保存 agent catalog contract hash，Delegation 再嵌入实际选中的完整 definition 和 EffectiveToolRefs。
 
-配置 CRUD 返回 effective_from=next_run。编辑或删除发生在 active Run 期间时，不热改本 Run 已发送给 Provider 的工具
-schema；下一 Run 自动生成新参数，无需手写同步枚举、重启 Host 或修改 SpawnAgent 实现。
+配置 CRUD 返回 effective_from=next_decision。已发出的 Provider 请求及其调用使用该轮 schema；下一轮生成当前参数。
 
-AgentDefinition 更新只影响基于新 AgentCatalogSnapshot 创建的 Delegation；active Run 即使随后 spawn，也继续使用其
-旧 snapshot。Delegation 必须嵌入实际使用的完整 definition、contract hash 和本次派遣的显式约束；恢复不能按同名新
+AgentDefinition 更新只影响采用新决策目录的派遣；同一响应中的 spawn 使用该响应绑定的 snapshot。Delegation 必须嵌入实际使用的完整 definition、contract hash 和本次派遣的显式约束；恢复不能按同名新
 definition 猜测旧执行契约。
 
 ### 职责与边界
 
 AgentDefinition 由以下组件协作实现：一个 `agents` 配置 manager、一个有独立管理用例的 AgentDefinitionService、一个
-Run-frozen AgentCatalogSnapshot，以及从 snapshot 投影 SpawnAgent schema 的纯函数。它们分别解决跨进程配置事务、
+decision-bound AgentCatalogSnapshot，以及从 snapshot 投影 SpawnAgent schema 的纯函数。它们分别解决跨进程配置事务、
 Host CRUD/工具兼容性、durable contract 和模型参数联动，具有真实且不同的变化轴。
 
 系统不引入 AgentDefinition 专用数据库、不可变 revision store、热更新事件总线、第二套 ToolRegistry、手写派遣
 枚举、builtin/custom runtime adapter 或新的权限系统。用户配置保存在 config/agents.json；动态工具来自现有
-ExtensionCatalog；运行冻结落在 Run；实际执行通过 AgentService/RuntimeSupervisor/RuntimeService，
+ExtensionCatalog；当前决策目录落在 Run；实际执行通过 AgentService/RuntimeSupervisor/RuntimeService，
 遵守统一的运行链路与依赖方向。
 
 ## DelegationRecord
@@ -493,7 +493,7 @@ spawn 不是跨多个 Session 文件的单一原子写，因此采用 durable、
 
 模型侧使用最小的 product-owned 内置控制工具：
 
-- SpawnAgent：按 agent_id 选择 Run-frozen AgentDefinition，携带 task、显式 resource refs 和 execution mode 创建 child；sync 模式
+- SpawnAgent：按 agent_id 选择 decision-bound AgentDefinition，携带 task、显式 resource refs 和 execution mode 创建 child；sync 模式
   挂起原调用并最终返回 child result，async 模式立即返回 AgentHandle 并自动交付结果；Host 可显示为“派遣子智能体”；
 - SendAgentMessage：向 child active Run steer，或为 idle child 创建 follow-up；
 - InterruptAgent：中断当前 child Run；
@@ -666,7 +666,7 @@ child final result 建议结构化包含：
 父 Agent 只能下放自己拥有的能力。AgentDefinition、child Session 配置、一次审批、插件 ToolPolicy 或模型请求都不能
 扩大父 capability。
 
-运行时先从 parent Run 的冻结 ToolRegistry 解析 exact EffectiveToolRefs，再由 AgentService 将 AgentSpawnPolicy 与
+运行时先从 parent 当前决策绑定的 ToolRegistry 解析 exact EffectiveToolRefs，再由 AgentService 将 AgentSpawnPolicy 与
 definition 结果求交并把最终目录持久化到 parent Run。插件 manifest 的进程/网络权限会进入 Host-owned tool metadata，
 插件提供的同名 metadata 不能覆盖它；shell、MCP 和声明了相关 package 权限的工具据此受 network/external-path cap。
 child Run 同时持久化 DelegatedConstraints；external path 未下放时，普通文件工具即使 Host 全局配置更宽也强制使用
@@ -866,7 +866,7 @@ Host 默认显示任务、状态、当前工具、elapsed 和控制入口；用�
 
 未来可新增 AgentDefinitionContribution，但必须满足：
 
-- definition 先经不可变 ExtensionCatalogLease 解析，再进入 Run-frozen AgentCatalogSnapshot 和 Delegation；
+- definition 先经不可变 ExtensionCatalogLease 解析，再进入 decision-bound AgentCatalogSnapshot 和 Delegation；
 - user plugin 只能提出更窄能力模板，不能取得 Host 调度对象；
 - contribution 若未来进入产品，必须先归一化为同一 AgentDefinition/AgentCatalogSnapshot，不能产生第三套 spawn 管道；
 - contribution disable 后，旧 Delegation 按冻结 contract 恢复或明确 blocked，不按同名新 definition 替换；
@@ -905,8 +905,8 @@ parent/delegation/root/agent/definition-contract provenance。只有一个 Run �
 才允许补齐 `current_child_run_id` 和 `spawn_state=submitted`；其余情况 fail-closed、保留证据并报告到目标操作的
 application diagnostic。根归档判断 active descendant 时以 child Run 为事实源，不能以可能缺失或跨记录不一致的
 result 代替。
-当前可编辑 Agent config 与旧 snapshot 不同是 `effective_from=next_run` 的正常结果，不参与旧 Delegation 对账；恢复只校验
-parent Run 冻结的 AgentCatalogSnapshot、Delegation definition/effective tools 和 child Run contract 三者的一致性。
+当前定义与 parent 最近决策目录不用于解释已接受的 Delegation。恢复验证真实父 Run、父子 identity、Delegation 任务、
+child Session 约束及 child Run 定义摘要；父目录更新不能使已接受委派失效。幂等重试核对原派遣请求，不重新选择定义。
 
 必须产生类型化 diagnostic 的情况：
 
@@ -914,7 +914,7 @@ parent Run 冻结的 AgentCatalogSnapshot、Delegation definition/effective tool
 - agent_definition_id_conflict；
 - builtin_agent_definition_immutable；
 - agent_definition_tool_unavailable；
-- agent_catalog_contract_unavailable；
+- delegation_parent_missing；
 - delegation_child_missing；
 - child_delegation_mismatch；
 - delegation_run_missing；
@@ -991,7 +991,7 @@ CLI 的 completed-parent spawn 固定 notify-only；会启动 parent next-bounda
 - all/selected/selected-empty 工具选择和 parent hard cap 求交测试；
 - selected tool 后续缺失时 definition 保留但对新 Run unavailable，不静默降级测试；
 - AgentCatalogSnapshot 重启恢复和 active Run 配置漂移测试；
-- SpawnAgent agent_id schema 与同一 snapshot 自动联动、配置从 next_run 生效测试；
+- SpawnAgent agent_id schema 与同一 snapshot 自动联动、配置从 next_decision 生效测试；
 - system_prompt 只进入目标 child，不替换 base instructions、不泄漏到派遣 schema/事件/根树测试；
 - LocalSessionStore delegation 原子写、幂等、索引重建和布局版本拒绝测试；
 - SQLiteSessionStore delegation 事务、revision、索引和 schema 版本拒绝测试；

@@ -6,7 +6,6 @@
 
 | 规划 | 范围与进入条件 |
 |---|---|
-| [核心稳定与架构减负](architecture-simplification.md) | 从问题根因收敛重复规则、状态与计算；插件和存储承诺在需求证据明确后再取舍 |
 | [附件输入验收](attachment-validation.md) | 真实终端、视觉端点及跨平台会话传输的验收 |
 | [桌面 Host](desktop-host.md) | 复用 Application / Supervisor 的本地桌面产品面 |
 | [高级智能体能力](advanced-agents.md) | 长期记忆与通用 Workflow；需独立业务需求和持久化边界 |

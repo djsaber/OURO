@@ -316,7 +316,6 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
     from ouro.builtin_plugins import LOCAL_BUILTIN_PLUGINS
     from ouro.builtin_plugins.plan import PLAN_PLUGIN
     from ouro.plugins.builtin import BuiltinPluginRegistry
-    from ouro.plugins.runtime import PluginExecutionContractUnavailableError
 
     plugin_root = tmp_path / "plan-plugin"
     shutil.copytree(PLAN_PLUGIN.root, plugin_root)
@@ -407,15 +406,21 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
 
     if change != "documentation":
         try:
-            with pytest.raises(PluginExecutionContractUnavailableError):
-                await second_runtime.answer_user(
-                    session_id=waiting.session.session_id,
-                    run_id=waiting.run.run_id,
-                    answer={"action": "accept", "option": "Direct implementation"},
-                )
-            assert second_store.load_run(waiting.session.session_id, waiting.run.run_id).status == (
-                "waiting_user"
+            result = await second_runtime.answer_user(
+                session_id=waiting.session.session_id,
+                run_id=waiting.run.run_id,
+                answer={"action": "accept", "option": "Direct implementation"},
             )
+            assert result.run.status == "failed"
+            assert "Session controller contract is unavailable" in result.run.error
+            messages = second_store.load_runtime_session(waiting.session.session_id).messages
+            exit_result = next(
+                message.tool_result
+                for message in messages
+                if message.tool_result and message.tool_result.tool_call_id == "call_exit"
+            )
+            assert exit_result.is_error
+            assert second_store.load_session_record(waiting.session.session_id).controls.activations
             assert not final_provider.messages
         finally:
             await second_application.close()

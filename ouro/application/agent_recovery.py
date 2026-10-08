@@ -103,7 +103,7 @@ class AgentRecoveryService:
         except FileNotFoundError, PersistenceError:
             return False
         return (
-            self._catalog_mismatch(relation, parent_run) is None
+            self._parent_mismatch(relation, parent_run) is None
             and self._child_mismatch_code(relation, child) is None
             and self._run_mismatch_code(relation, run) is None
         )
@@ -122,14 +122,14 @@ class AgentRecoveryService:
             parent_run = None
         except PersistenceError as exc:
             return [self._incompatible_runtime_diagnostic(relation, exc)]
-        catalog_mismatch = self._catalog_mismatch(relation, parent_run)
-        if catalog_mismatch is not None:
-            self._fail_relation(relation, "agent_catalog_contract_unavailable")
+        parent_mismatch = self._parent_mismatch(relation, parent_run)
+        if parent_mismatch is not None:
+            self._fail_relation(relation, "delegation_parent_missing")
             return [
                 self._diagnostic(
                     relation,
-                    code="agent_catalog_contract_unavailable",
-                    message=catalog_mismatch,
+                    code="delegation_parent_missing",
+                    message=parent_mismatch,
                     run_id=relation.parent_run_id,
                 )
             ]
@@ -306,27 +306,12 @@ class AgentRecoveryService:
         return None
 
     @staticmethod
-    def _catalog_mismatch(
+    def _parent_mismatch(
         relation: DelegationRecord,
         parent_run: RunRecord | None,
     ) -> str | None:
-        if parent_run is None or parent_run.agent_catalog is None:
-            return "Delegation parent Run has no frozen Agent catalog."
-        entry = next(
-            (
-                item
-                for item in parent_run.agent_catalog.entries
-                if item.definition.agent_id == relation.agent_id
-            ),
-            None,
-        )
-        if entry is None:
-            return "Delegation Agent is absent from its parent Run catalog."
-        if (
-            entry.definition.contract_hash != relation.definition.contract_hash
-            or entry.effective_tools != relation.effective_tools
-        ):
-            return "Delegation contract does not match its parent Run catalog."
+        if parent_run is None or parent_run.session_id != relation.parent_session_id:
+            return "Delegation parent Run is unavailable."
         return None
 
     @staticmethod

@@ -95,6 +95,8 @@ class ToolInvocation(OuroModel):
     requested_at: datetime = Field(default_factory=utc_now)
     permission_mode: PermissionMode = "auto"
     permission_control: ToolPermissionControl = "host"
+    resumable: bool | None = None
+    definition_contract_hash: str | None = None
     approval_id: str | None = None
     plugin_id: str | None = None
     plugin_version: str | None = None

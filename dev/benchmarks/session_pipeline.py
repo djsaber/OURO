@@ -201,7 +201,11 @@ def application(home, backend):
             definition=ToolDefinition(
                 name="Evidence", description="Synthetic evidence", effect="read_only"
             ),
-            handler=lambda _: ToolResult(content="evidence\n" * 4096),
+            handler=lambda invocation, context: ToolResult(
+                tool_call_id=invocation.tool_call_id,
+                tool_name=invocation.tool_name,
+                content="evidence\n" * 4096,
+            ),
         )
     )
     runtime = RuntimeService(

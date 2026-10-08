@@ -39,7 +39,7 @@ OURO 是本地优先的个人智能体运行时。会话历史、运行状态、
 | Model turn | 一次模型响应及对应工具处理边界，保证工具请求 / 结果成帧 |
 | Provider / Endpoint | 供应商连接与具体模型目标；实例 ID、产品类型和线协议彼此独立 |
 | Resource | 会话拥有的不可变文件及元数据；模型请求通过可读路径访问 |
-| ExtensionCatalogLease | Run 持有的扩展目录租约，冻结代次与执行契约 |
+| ExtensionCatalogLease | 一次决策及调用持有的当前扩展目录租约 |
 | Compaction | 覆盖一段历史前缀的持久摘要，不改写原始消息 |
 | Delegation | 父子会话关系、能力上限和结果交付身份；child Run 保持执行状态的唯一来源 |
 | Goal | 主会话内一个用户拥有的目标槽位，跨有界 Run 继续；不充当通用工作流图 |

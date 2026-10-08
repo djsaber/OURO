@@ -50,6 +50,9 @@ schema 检查、WAL 设置和版本记录创建在同一初始化所有权内完
 
 当前格式的未完成提交仍按原生决定恢复，不重新运行插件、转换 schema 或重写审计事实。
 owner 业务状态由相应执行契约读取，不支持的 schema 明确拒绝；没有状态迁移命令。
+当前格式的 Session、Run、消息与 Harness 可在插件变化后继续读取。新记录的 ToolInvocation 保存 resumable 声明及
+Host 工具定义摘要；未携带这些可选字段的当前格式调用仍检查已保存的 plugin 契约及当前定义，不能推断未知私有状态。
+历史 Catalog/generation 摘要仅用于审计；队列接受凭据不授权恢复旧环境。
 
 ## Canonical 数据与投影
 

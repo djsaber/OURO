@@ -314,7 +314,7 @@ async def test_observer_timeout_releases_catalog_lease_after_plugin_disable(tmp_
 
 
 @pytest.mark.asyncio
-async def test_prompt_policy_catalog_swap_cannot_change_the_prospective_run(tmp_path) -> None:
+async def test_model_decision_uses_current_catalog_after_prompt_admission(tmp_path) -> None:
     home = tmp_path / "home"
     store = LocalSessionStore(home)
     store.initialize()
@@ -358,13 +358,13 @@ async def test_prompt_policy_catalog_swap_cannot_change_the_prospective_run(tmp_
 
     result = await run_task
     assert result.run.status == "completed"
-    assert result.run.metadata["extension_generations"][0]["generation_id"] == old_generation
+    assert result.run.metadata["extension_generations"][0]["generation_id"] != old_generation
 
     await application.close()
 
 
 @pytest.mark.asyncio
-async def test_queued_prompt_policy_approval_pins_the_prospective_catalog(tmp_path) -> None:
+async def test_queued_inputs_share_current_consumption_environment(tmp_path) -> None:
     class GateProvider:
         provider_id = "gate"
 
@@ -435,19 +435,18 @@ async def test_queued_prompt_policy_approval_pins_the_prospective_catalog(tmp_pa
     provider.release.set()
     await first_task
     completed = store.load_runtime_session(session.session_id)
-    assert len(completed.runs) == 3
+    assert len(completed.runs) == 2
     queued_run = completed.runs[1]
     assert queued_run.run_id == queued["prospective_run_id"]
-    assert queued_run.metadata["extension_generations"][0]["generation_id"] == old_generation
-    current_run = completed.runs[2]
-    assert current_run.run_id == queued_items[1]["prospective_run_id"]
-    assert current_run.metadata["extension_generations"][0]["generation_id"] == current_generation
+    assert queued_run.metadata["extension_generations"][0]["generation_id"] == current_generation
+    user_texts = [message.text_content for message in completed.messages if message.role == "user"]
+    assert user_texts == ["first input", "queued input", "queued under current catalog"]
 
     await application.close()
 
 
 @pytest.mark.asyncio
-async def test_steering_prompt_policy_uses_the_active_run_catalog(tmp_path) -> None:
+async def test_steering_admission_and_consumption_use_current_policy(tmp_path) -> None:
     class GateProvider:
         provider_id = "gate"
 
@@ -506,14 +505,14 @@ async def test_steering_prompt_policy_uses_the_active_run_catalog(tmp_path) -> N
         queue_mode="steer",
     )
     queued = store.load_session_record(session.session_id).metadata["follow_up_queue"][0]
-    assert queued["extension_catalog_id"] == active_catalog_id
-    assert queued["extension_generations"][0]["generation_id"] == active_generation
+    assert queued["extension_catalog_id"] != active_catalog_id
+    assert queued["extension_generations"][0]["generation_id"] != active_generation
     seen = json.loads(
         (home / "plugins" / "data" / "dev.ouro.prompt_guard" / "seen.json").read_text(
             encoding="utf-8"
         )
     )
-    assert seen["catalog_id"] == active_catalog_id
+    assert seen["catalog_id"] == queued["extension_catalog_id"]
 
     provider.release.set()
     await first_task
@@ -790,7 +789,7 @@ async def test_execution_boundary_can_park_for_a_new_durable_approval(tmp_path) 
 
 
 @pytest.mark.asyncio
-async def test_concurrent_runs_keep_their_immutable_plugin_catalog(tmp_path) -> None:
+async def test_waiting_calls_resume_on_current_matching_implementation(tmp_path) -> None:
     home = tmp_path / "home"
     store = LocalSessionStore(home)
     store.initialize()
@@ -845,7 +844,7 @@ async def test_concurrent_runs_keep_their_immutable_plugin_catalog(tmp_path) -> 
     new_generation = new.run.metadata["extension_generations"][0]["generation_id"]
     assert new_generation != old_generation
     assert new.run.metadata["extension_catalog_id"] != old_catalog_id
-    assert old_command.output == old_generation
+    assert old_command.output == new_generation
     assert current_command.output == new_generation
 
     old_completed = await runtime.approve_tool(
@@ -872,7 +871,7 @@ async def test_concurrent_runs_keep_their_immutable_plugin_catalog(tmp_path) -> 
         for message in store.load_runtime_session(new.session.session_id).messages
         if message.role == "tool_result"
     )
-    assert old_tool_result.text_content == old_generation
+    assert old_tool_result.text_content == new_generation
     assert new_tool_result.text_content == new_generation
 
     await application.close()
@@ -1054,7 +1053,7 @@ async def test_resumable_plugin_tool_rebuilds_original_execution_contract_after_
 
 
 @pytest.mark.asyncio
-async def test_waiting_approval_rebuilds_retained_contract_after_plugin_update(
+async def test_waiting_approval_rejects_changed_contract_after_restart(
     tmp_path,
 ) -> None:
     home = tmp_path / "home"
@@ -1119,6 +1118,7 @@ async def test_waiting_approval_rebuilds_retained_contract_after_plugin_update(
         for message in second_store.load_runtime_session(waiting.session.session_id).messages
         if message.role == "tool_result"
     )
+    assert tool_result.tool_result.is_error
     assert tool_result.text_content != selected_generation.generation_id
     assert (
         await second_application.plugins.remove(
@@ -1131,7 +1131,7 @@ async def test_waiting_approval_rebuilds_retained_contract_after_plugin_update(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("approved", [True, False])
-async def test_waiting_approval_settles_before_missing_contract_failure(
+async def test_waiting_approval_closes_missing_tool_and_continues(
     tmp_path,
     approved: bool,
 ) -> None:
@@ -1181,17 +1181,15 @@ async def test_waiting_approval_settles_before_missing_contract_failure(
         reason="not allowed",
     )
     persisted = second_store.load_session(waiting.session.session_id)
-    persisted_call = persisted.runs[0].active_tool_batch
     approval_resolved = next(
         event for event in persisted.events if event.event_type == "approval_resolved"
     )
 
-    assert result.run.status == "failed"
+    assert result.run.status == "completed"
     assert result.run.pending_approval_id is None
-    assert "required plugin catalog is no longer available" in (result.run.error or "")
-    assert persisted_call is not None
-    assert persisted_call.calls[0].status == ("ready" if approved else "rejected")
-    assert persisted_call.calls[0].approval.resolved_at is not None
+    tool_results = [message.tool_result for message in persisted.messages if message.tool_result]
+    assert len(tool_results) == 1
+    assert tool_results[0].is_error
     assert approval_resolved.payload["approved"] is approved
     assert approval_resolved.payload["tool_call_status"] == ("ready" if approved else "rejected")
     removed = await second_application.plugins.remove(
@@ -1204,7 +1202,7 @@ async def test_waiting_approval_settles_before_missing_contract_failure(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("approved", [True, False])
-async def test_waiting_approval_settles_before_stale_builtin_contract_failure(
+async def test_waiting_approval_survives_unrelated_builtin_change(
     tmp_path,
     approved: bool,
 ) -> None:
@@ -1287,9 +1285,11 @@ async def test_waiting_approval_settles_before_stale_builtin_contract_failure(
         event for event in persisted.events if event.event_type == "approval_resolved"
     )
 
-    assert result.run.status == "failed"
+    assert result.run.status == "completed"
     assert result.run.pending_approval_id is None
-    assert "required builtin plugin contract is no longer available" in (result.run.error or "")
+    tool_results = [message.tool_result for message in persisted.messages if message.tool_result]
+    assert len(tool_results) == 1
+    assert tool_results[0].is_error is (not approved)
     assert approval_resolved.payload["approved"] is approved
     assert approval_resolved.payload["tool_call_status"] == ("ready" if approved else "rejected")
     await second_application.close()

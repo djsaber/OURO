@@ -48,7 +48,7 @@ ProviderStreamEvent 的 error 可附带供应商无关 error_code；inner loop �
 ### Run/Session 状态转移
 
 Run 是执行状态的唯一权威，Session 只保存面向 Host 与查询的粗粒度投影。`plan_run_transition` 是不访问
-Store、锁、事件或外部系统的纯规则：它校验 Session/Run identity、拒绝 terminal Run 重新进入其他状态、要求
+Store、锁、事件或外部系统的纯规则：它校验 Session/Run identity、限制终态迁移、要求
 active Run 没有 `ended_at` 且 terminal Run 必须有 `ended_at`，并在同一个时间点生成 Run 与 Session 写入计划。
 
 Session 投影规则为：
@@ -59,8 +59,10 @@ Session 投影规则为：
 - `completed`、`aborted`、`paused`、`recoverable`，以及 compaction Run 的 `failed` -> `idle` 并清除
   active owner。
 
-所有 active 状态之间允许在同一 Run 内 wait/resume；active Run 可以进入 terminal 状态。terminal Run 只允许
-保持原状态追加审计字段，不能复活或改写成另一个 terminal 结果。新 Run 只能从 `queued` 或 `running` 注册。
+所有 active 状态之间允许在同一 Run 内 wait/resume；active Run 可以进入 terminal 状态。显式继续可以在同一
+history epoch 内将 `aborted`、`failed`、`paused`、`recoverable` Run 重新置为 running，清除结束标记并取得执行所有权；
+普通写入和迟到事件不能触发该迁移。completed Run 保持终态；历史撤销后的继续创建新 Run。新 Run 只能从
+`queued` 或 `running` 注册。
 application 用例仍负责取得 mutation lock、准备业务字段、先保存权威 Run 再保存 Session 投影，以及在 durable
 边界之后发事件。usage、continuation、tool batch 审计和消息游标等不改变 Run status 的写入不属于状态迁移。
 
@@ -97,32 +99,30 @@ application 用例仍负责取得 mutation lock、准备业务字段、先保存
 7. 模型文本、reasoning 和工具调用增量到达时依次形成事件；`done` 后完整工具调用交给
    `ToolCallCoordinator`，最终消息则完成 Run。
 8. waiting 状态通过 approve/reject/AskUser 或 child 结果恢复同一 Run。
-9. terminal Run 释放 lock、abort signal、每 Run Observer 隔离状态和 Catalog lease。
+9. Run 退出执行时释放执行许可和环境绑定；终态清理 Observer 隔离状态，已投递的观察任务独立完成收尾。
 10. 在 model turn 边界消费 steer 输入；completed Run 先释放 session run lock，再串行启动 follow-up Run。
 
 ## Run 进程内资源
 
-`RuntimeService` 用单一 `run_id -> RunResources` 索引持有 Run 的 Catalog lease、有效控制器身份、Agent Catalog、
-委派工具范围与契约引用、委派约束和惰性创建的工具协调器。终态、异常退出、detach 和 Runtime 关闭统一移除整个
-资源对象，再关闭或转交租约。它只承载进程内绑定，持久化事实归属 Run，执行锁和 abort signal 归属
-`RunExecutionOwnership`。
-资源归属与释放不依赖 TUI、Textual worker 或界面事件消费；无界面的 Runtime 用例使用相同边界。
-TUI 通过既有 Application 接口观察和操作运行，不接管这些资源的业务生命周期。
+`RunResources` 按 run_id 保存一次执行所需的环境租约、控制视图、委派上限、Agent 目录和工具协调器。
+持久事实归属 Session、Run、ToolCall 与 Delegation；执行锁和取消信号归属 `RunExecutionOwnership`。
+资源登记、释放和异常收尾由 Runtime 负责，CLI、TUI 与 Supervisor 使用相同边界。
 
-- `queued`、`running`、`waiting_approval`、`waiting_user`、`waiting_child` 保留运行绑定。终态（包括
-  `paused`、`recoverable`）、未返回结果的异常退出和 Runtime 关闭移除全部 Run 引用并关闭租约；
-  重复释放不重复关闭。后续继续执行根据原有持久记录重新建立绑定。
-- 排队输入按 `queue_id` 独立保留 Catalog lease。准备 Run 转入队列时，移除临时 Run 的全部引用，仅转交租约；
-  队列消费、合并、撤销和 Runtime 关闭各自释放其拥有的租约。Observer 通过 fork 独立保留代次，待观察工作结束
-  才释放，不随 Run 终态提前卸载。
-- 新绑定或恢复入口解释已有工具 metadata；工具范围、契约引用与委派约束全部验证成功后一起登记。
-  新绑定统一接管取得的租约，绑定失败或取消时移除其 Run 资源并释放租约，包括从队列转入的租约。
-  Catalog 恢复先在局部资源对象中验证原有控制快照，再登记完整绑定；失败时关闭已取得的租约，不登记部分恢复
-  的 Agent 目录或工具绑定，后续重试仍须经过验证。落盘 metadata 与 Agent Catalog 继续作为恢复来源。
-- 每轮模型请求仍按当时 Session 控制状态重建有效控制器身份；工具执行契约、权限下限和实时权限更新仍在原有
-  边界生效，不以进程内绑定替代执行前检查。
-- Runtime 关闭时尝试释放全部 Run、排队租约、Observer 和模型资源，并汇总关闭错误；单个租约回调失败不能
-  中断其他资源的收尾，也不能通过异常栈保留已经移除的 Run 资源对象。没有 Catalog lease 的 Run 引用也必须清理。
+- 每轮模型决策取得当前不可变 Catalog。工具描述、上下文提供方、技能、派遣目录及该响应产生的工具调用共享
+  这个绑定；下一轮重新取得当前能力。模型请求已经发出后，不把调用转交同名新实现。未装配插件的 Runtime
+  同样按此边界绑定 Host ToolRegistry。
+- `waiting_approval`、`waiting_user`、`waiting_child`、暂停和终态释放 Run 的环境租约及协调器。恢复取得当前
+  环境，只检查待完成调用的精确契约、当前权限及控制要求。不存在重建整个历史 Catalog 的步骤。
+- 队列只保存输入、来源和接受凭据，不持有可执行环境。用户输入入队与消费均执行相应时点的 Prompt Policy；
+  拒绝消费保留队列事实，不把旧 allow 当作永久许可。原子输入批次不拆分。
+- 插件命令是独立的当前环境操作，即使目标 Session 有等待中的 Run，也使用当前 Catalog；Harness 在命令执行前
+  捕获，提交时检查同一版本与历史边界。
+- Observer 为已投递工作独立持有租约，回调完成、取消或超时后释放。旧执行实例负责已开始的回调；禁用关闭 gate，
+  禁止该实例接受新的回调，已有副作用按正常结束或未知结果处理。
+- 所有入口显式登记资源，异常和取消关闭已取得租约。重复释放幂等；Runtime 关闭尝试释放全部资源并汇总错误。
+
+环境变化不影响规范历史的可读性。Run metadata 中 Catalog 与 generation 信息是最近绑定的审计摘要，不能作为
+Session 继续的整体前提。持久 ToolInvocation、控制 activation 和 Delegation 分别承担操作、约束和委派契约。
 
 ## Inner loop 边界
 
@@ -250,9 +250,11 @@ terminal continuation、Agent settlement、Observer/catalog lease 清理由明�
 给出 Run status、Run phase、batch phase 和拥有暂停原因的 ToolCall。preflight、并发 outcome checkpoint、执行
 结束以及 interaction resume 均复用此规则，不得各自扫描 calls 后拼装不同状态。
 
-Runtime 为一个 Run 只构造一个 `ToolCallCoordinator`，其中的 registry 是 Run-frozen catalog 加动态 controller
-scope 的组合；approval、AskUser 和 child wait 恢复复用同一 coordinator，terminal 清理时释放。不得在每个恢复
-入口重复解析同一 Run 的 tool/policy/controller registry。
+Runtime 在一个环境绑定内惰性构造并复用 `ToolCallCoordinator`。新决策或等待恢复重新绑定环境并使协调器失效；
+工具执行和 resume 前检查当前 Session controls、ToolPolicy、权限 override 与委派下限。非 resumable 问题的回答直接
+形成原调用结果；resumable 回答在回调执行前持久化为 running 调用及 AnswerResolution。缺失或不匹配的工具形成
+同一调用的错误结果；回答保持原问题归属，不成为对另一操作的批准。中断的 running/resume 调用按未知结果恢复，
+不自动重放。
 
 ## 失败语义
 
