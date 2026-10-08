@@ -86,14 +86,14 @@ class AttachmentPicker:
         arguments = []
         if not needle and self.directory.parent != self.directory:
             arguments.append(
-                TuiCommandArgument(str(self.directory.parent), "Parent directory", label="../")
+                TuiCommandArgument(str(self.directory.parent), "Parent directory", label="..")
             )
         for entry in self.entries:
             if needle not in entry.path.name.casefold():
                 continue
             accent: str | None
             if entry.is_directory:
-                label = f"{entry.path.name}/"
+                label = entry.path.name
                 accent = theme.text_secondary
             else:
                 selected = entry.path in self.selected

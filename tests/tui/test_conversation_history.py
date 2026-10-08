@@ -96,14 +96,14 @@ def test_user_message_timestamp_uses_local_date_only_before_today() -> None:
             datetime(2026, 9, 16, 8, 17, tzinfo=UTC),
             now=now,
         )
-        == "16：17"
+        == "16:17"
     )
     assert (
         _format_user_message_timestamp(
             datetime(2026, 9, 15, 8, 17, tzinfo=UTC),
             now=now,
         )
-        == "2026/9/15 • 16：17"
+        == "2026/9/15 • 16:17"
     )
 
 
@@ -125,9 +125,9 @@ def test_user_message_timestamp_is_a_separate_faint_line() -> None:
         if "user message" in "".join(segment.text for segment in line)
     )
     timestamp_line = next(
-        line for line in rendered_lines if "：" in "".join(segment.text for segment in line)
+        line for line in rendered_lines if ":" in "".join(segment.text for segment in line)
     )
-    timestamp_segment = next(segment for segment in timestamp_line if "：" in segment.text)
+    timestamp_segment = next(segment for segment in timestamp_line if ":" in segment.text)
 
     assert message_line is not timestamp_line
     assert timestamp_segment.style is not None

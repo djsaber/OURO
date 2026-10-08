@@ -3131,11 +3131,24 @@ class CommandPopup(VerticalScroll):
             self._render_rows((content,))
             return
         value_width = max(len(argument.display_label) for argument in self._arguments)
+        has_selection_marks = any(argument.checked is not None for argument in self._arguments)
         rows: list[Text] = []
         for index, argument in enumerate(self._arguments):
             selected = index == self._selected
             row = Text(style=f"on {theme.highlight}" if selected else "")
             row.append("› " if selected else "  ", style=theme.accent if selected else "")
+            if argument.checked is not None:
+                marker = (
+                    theme.selected_choice_marker
+                    if argument.checked
+                    else theme.unselected_choice_marker
+                )
+                row.append(
+                    f"{marker} ",
+                    style=theme.accent if argument.checked else theme.text_lowlight,
+                )
+            elif has_selection_marks:
+                row.append("  ")
             row.append(
                 argument.display_label.ljust(value_width),
                 style=(
@@ -3150,15 +3163,6 @@ class CommandPopup(VerticalScroll):
             if argument.trailing_badge:
                 row = _trailing_badge(
                     row, argument.trailing_badge, self.scrollable_content_region.width, theme.accent
-                )
-            elif argument.checked is not None:
-                row = _trailing_label(
-                    row,
-                    theme.selected_choice_marker
-                    if argument.checked
-                    else theme.unselected_choice_marker,
-                    self.scrollable_content_region.width,
-                    theme.accent if argument.checked else theme.text_lowlight,
                 )
             rows.append(row)
         self._render_rows(tuple(rows))

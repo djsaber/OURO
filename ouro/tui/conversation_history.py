@@ -340,7 +340,7 @@ def _format_user_message_timestamp(
 
     local_now = now or datetime.now().astimezone()
     local_created_at = created_at.astimezone(local_now.tzinfo)
-    time_label = f"{local_created_at.hour:02d}：{local_created_at.minute:02d}"
+    time_label = f"{local_created_at.hour:02d}:{local_created_at.minute:02d}"
     if local_created_at.date() == local_now.date():
         return time_label
     date_label = f"{local_created_at.year}/{local_created_at.month}/{local_created_at.day}"

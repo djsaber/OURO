@@ -71,8 +71,8 @@ def test_picker_names_share_left_edge_and_only_files_have_selection_marks(tmp_pa
     picker.toggle(str(path))
     arguments = picker.arguments("", DEFAULT_TUI_THEME)
     assert [item.display_label for item in arguments] == [
-        "../",
-        "child/",
+        "..",
+        "child",
         "notes.txt",
         "Reference selected files",
     ]
@@ -231,25 +231,28 @@ async def test_picker_retains_multiselection_across_directories_and_confirms_dir
         assert app.screen is screen and app.focused is composer
         assert popup.display and popup.region.bottom == composer.region.y
         folder = next(item for item in popup._arguments if item.value == str(child))
-        assert folder.display_label == "child/"
+        assert folder.display_label == "child"
         rows = popup._content.content.plain.splitlines()
-        for name in ("../", "child/", "one.txt"):
-            assert next(row for row in rows if name in row).index(name) == 2
-        assert (
-            next(row for row in rows if "one.txt" in row)
-            .rstrip()
-            .endswith(app.tui_theme.unselected_choice_marker)
+        for name in ("..", "child", "one.txt"):
+            assert next(row for row in rows if name in row).index(name) == 4
+        assert next(row for row in rows if "one.txt" in row).strip() == (
+            f"{app.tui_theme.unselected_choice_marker} one.txt"
         )
         for marker in (
             app.tui_theme.selected_choice_marker,
             app.tui_theme.unselected_choice_marker,
         ):
-            assert marker not in folder.display_label
+            for name in ("..", "child"):
+                assert marker not in next(row for row in rows if name in row)
         composer.set_attachment_query("one.txt")
         await pilot.pause()
         await pilot.press("space")
         picker = app._attachment_picker
         assert picker.selected == [one]
+        rows = popup._content.content.plain.splitlines()
+        assert next(row for row in rows if "one.txt" in row).strip() == (
+            f"› {app.tui_theme.selected_choice_marker} one.txt"
+        )
         composer.set_attachment_query("child")
         await pilot.pause()
         await pilot.press("space")
