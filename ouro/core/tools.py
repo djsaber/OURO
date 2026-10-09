@@ -11,6 +11,7 @@ from pydantic import Field, JsonValue, model_validator
 from ouro.core.agents import AgentControlRequest, AgentWaitRequest
 from ouro.core.approvals import ApprovalRecord, PermissionMode, ToolPermissionControl
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id, utc_now
+from ouro.core.content import ContentPart, ToolContent, content_parts, content_text
 from ouro.core.harness_calls import HarnessStateChange
 from ouro.core.session_controls import SessionControlTransitionRequest
 
@@ -119,7 +120,7 @@ class ToolResult(OuroModel):
     tool_call_id: str
     tool_name: str
     is_error: bool = False
-    content: str = ""
+    content: ToolContent = ""
     structured: dict[str, Any] = Field(default_factory=dict)
     resource_refs: list[str] = Field(default_factory=list)
     started_at: datetime = Field(default_factory=utc_now)
@@ -128,6 +129,14 @@ class ToolResult(OuroModel):
     metadata: Metadata = MetadataField
     session_control_transitions: list[SessionControlTransitionRequest] = Field(default_factory=list)
     agent_control_request: AgentControlRequest | None = None
+
+    @property
+    def content_blocks(self) -> list[ContentPart]:
+        return content_parts(self.content)
+
+    @property
+    def text_content(self) -> str:
+        return content_text(self.content)
 
     @model_validator(mode="before")
     @classmethod

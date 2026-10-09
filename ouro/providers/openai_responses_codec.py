@@ -11,11 +11,12 @@ from ouro.core.messages import (
     ModelMessage,
     ProviderContinuationArtifact,
     TextContent,
-    model_visible_message,
 )
 from ouro.core.provider import Usage
+from ouro.core.tool_result_projection import project_tool_result_messages
 from ouro.providers.openai_responses_errors import OpenAIResponsesError
 from ouro.providers.openai_responses_items import OpenAIResponsesItemAccumulator
+from ouro.providers.tool_content import ToolContentPolicy
 
 PROTOCOL = "openai-responses"
 
@@ -158,12 +159,16 @@ def responses_input(
     """Encode only content fields. Service capabilities and model options belong to the adapter."""
     instructions = [system_prompt] if system_prompt else []
     items: list[dict[str, Any]] = []
-    for original in messages:
-        message = model_visible_message(original)
+    policy = ToolContentPolicy(native=frozenset({"text", "image"} if supports_vision else {"text"}))
+    try:
+        projected = project_tool_result_messages(messages, policy)
+    except ValueError:
+        raise OpenAIResponsesError("unsupported_input") from None
+    for message in projected:
         has_image = any(isinstance(part, ImageContent) for part in message.content)
         if any(not isinstance(part, TextContent | ImageContent) for part in message.content):
             raise OpenAIResponsesError("unsupported_input")
-        if has_image and (not supports_vision or message.role != "user"):
+        if has_image and (not supports_vision or message.role not in {"user", "tool_result"}):
             raise OpenAIResponsesError("unsupported_input")
         if message.role == "system":
             instructions.append(message.text_content)
@@ -175,7 +180,7 @@ def responses_input(
                 {
                     "type": "function_call_output",
                     "call_id": message.tool_result.tool_call_id,
-                    "output": message.text_content,
+                    "output": _input_content(message) if has_image else message.text_content,
                 }
             )
             continue
@@ -204,13 +209,7 @@ def responses_input(
             if message.content or not message.tool_calls:
                 content: str | list[dict[str, Any]] = message.text_content
                 if has_image:
-                    content = [
-                        {"type": "input_text", "text": part.text}
-                        if isinstance(part, TextContent)
-                        else {"type": "input_image", "image_url": part.uri, "detail": "auto"}
-                        for part in message.content
-                        if isinstance(part, TextContent | ImageContent)
-                    ]
+                    content = _input_content(message)
                 items.append({"role": message.role, "content": content})
             for call in message.tool_calls:
                 items.append(
@@ -224,6 +223,16 @@ def responses_input(
                     }
                 )
     return {"instructions": "\n\n".join(instructions), "input": items}
+
+
+def _input_content(message: ModelMessage) -> list[dict[str, Any]]:
+    return [
+        {"type": "input_text", "text": part.text}
+        if isinstance(part, TextContent)
+        else {"type": "input_image", "image_url": part.uri, "detail": "auto"}
+        for part in message.content
+        if isinstance(part, TextContent | ImageContent)
+    ]
 
 
 def responses_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

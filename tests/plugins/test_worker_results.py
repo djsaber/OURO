@@ -45,6 +45,29 @@ DEFAULTS = {
 }
 
 
+@pytest.mark.parametrize("kind", ["tool", "tool_resume"])
+async def test_worker_decodes_content_parts_and_rejects_unknown_types(worker, kind):
+    invoke, _ = worker
+    result = await invoke(
+        kind,
+        {
+            "content": [
+                {"type": "text", "text": "before"},
+                {"type": "image", "uri": "data:image/png;base64,AAAA", "media_type": "image/png"},
+                {"type": "text", "text": "after"},
+            ]
+        },
+    )
+    assert result.content == (
+        sdk.ToolTextContent("before"),
+        sdk.ToolImageContent("data:image/png;base64,AAAA", "image/png"),
+        sdk.ToolTextContent("after"),
+    )
+    for part in ({"type": "unknown"}, {"type": "image", "uri": 3}, {"type": "image", "uri": ""}):
+        with pytest.raises(WorkerProtocolError, match="content"):
+            await invoke(kind, {"content": [part]})
+
+
 @pytest.fixture
 def worker(monkeypatch, tmp_path):
     package = Path(__file__).parents[2] / "examples/plugins/worker-tool"

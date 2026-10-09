@@ -29,6 +29,7 @@ from ouro.core.agents import (
 from ouro.core.base import utc_now
 from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal
+from ouro.core.content import append_content_text
 from ouro.core.errors import SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.harness_calls import HarnessCallSnapshot, HarnessStateChange, accept_state_changes
@@ -1081,13 +1082,11 @@ class ToolCallCoordinator:
             ),
             controls=draft.state.controls,
         )
-        content_parts = [result.content] if result.content else []
-        content_parts.extend(outputs)
         return outcome.model_copy(
             update={
                 "result": result.model_copy(
                     update={
-                        "content": "\n".join(content_parts),
+                        "content": append_content_text(result.content, "\n".join(outputs)),
                         "structured": {
                             **result.structured,
                             "session_controls": applied,
@@ -1360,7 +1359,7 @@ class ToolCallCoordinator:
                     invocation.batch_behavior if invocation is not None else "compatible"
                 ),
                 is_error=result.is_error,
-                content=result.content[:_OBSERVER_TOOL_CONTENT_LIMIT],
+                content=result.text_content[:_OBSERVER_TOOL_CONTENT_LIMIT],
                 structured=structured,
                 resource_refs=tuple(result.resource_refs),
                 exit_code=result.exit_code,

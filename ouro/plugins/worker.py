@@ -18,6 +18,7 @@ from ouro.core.redaction import SensitiveValueRedactor
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.package import PLUGIN_API_VERSION
 from ouro.plugins.paths import portable_relative_path
+from ouro.plugins.tool_content import decode_worker_content
 from ouro.sdk.plugins import v2 as sdk
 
 
@@ -1283,12 +1284,17 @@ def _decode_worker_tool(
                 f"worker {method} cannot return input_request together with tool output"
             )
         return sdk.ToolInputRequest(data=result["input_request"])
-    _require_optional_type(result, "content", str, method)
+    try:
+        content = decode_worker_content(result.get("content", ""))
+    except ValueError:
+        raise WorkerProtocolError(
+            f"worker {method} content must be text or typed content parts"
+        ) from None
     _require_optional_type(result, "structured", dict, method)
     _require_string_list(result, "resource_refs", method)
     _require_optional_type(result, "is_error", bool, method)
     return sdk.ToolOutput(
-        content=result.get("content", ""),
+        content=content,
         structured=_object_value(result.get("structured", {})),
         resource_refs=tuple(result.get("resource_refs", [])),
         is_error=result.get("is_error", False),

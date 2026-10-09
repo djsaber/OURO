@@ -5,9 +5,11 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from ouro.core.messages import ImageContent, ModelMessage, TextContent, model_visible_message
+from ouro.core.messages import ImageContent, ModelMessage, TextContent
 from ouro.core.provider import Usage
+from ouro.core.tool_result_projection import project_tool_result_messages
 from ouro.core.tools import ToolCallRequest
+from ouro.providers.tool_content import ToolContentPolicy
 
 
 def messages_to_anthropic_messages(
@@ -23,8 +25,8 @@ def messages_to_anthropic_messages(
 
     system_parts = [system_prompt] if system_prompt else []
     converted: list[dict[str, Any]] = []
-    for raw_message in messages:
-        message = model_visible_message(raw_message)
+    policy = ToolContentPolicy(native=frozenset({"text", "image"} if supports_vision else {"text"}))
+    for message in project_tool_result_messages(messages, policy):
         if message.role == "system":
             if message.text_content:
                 system_parts.append(message.text_content)
@@ -154,7 +156,11 @@ def _message_to_anthropic(
                 {
                     "type": "tool_result",
                     "tool_use_id": message.tool_result.tool_call_id,
-                    "content": message.text_content,
+                    "content": (
+                        _message_content(message, supports_vision=supports_vision)
+                        if any(isinstance(part, ImageContent) for part in message.content)
+                        else message.text_content
+                    ),
                     "is_error": message.tool_result.is_error,
                 }
             ],

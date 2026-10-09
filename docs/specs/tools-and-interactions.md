@@ -11,7 +11,14 @@
 
 `ToolDefinition` 描述：name、description、参数 schema、结果 schema、权限模式、来源和 metadata。
 `ToolCallRequest` 保存 Provider 调用身份、参数和原始顺序。`ToolInvocation` 增加 Session/Run 上下文。
-`ToolResult` 保存文本、结构化结果、错误标志和资源引用。
+`ToolResult` 保存模型内容、结构化业务结果、错误标志和资源引用。`content` 接受字符串或有序的
+`TextContent` / `ImageContent` 列表；字符串是单个文本块的简写。`content_blocks` 给出统一内容序列，
+`text_content` 只提取文本供日志和 Observer 使用。模型消息与执行结果复用 `core.content` 类型，
+不通过 `structured`、metadata 或 Markdown 文本隐式传输媒体。
+
+结果与呈现的边界见[工具结果架构](../architecture/tool-results.md)。结果提交保留内容块；Provider 请求通过
+`ToolResultProjector` 投影为原生工具内容与零到多个补充上下文片段。补充片段统一位于整批结果之后，带调用
+来源标记，不写成 canonical 用户输入；该能力不依赖特定工具名称或图片类型。
 
 注册时验证 schema；执行前使用同一 schema 验证参数。未知工具或非法参数返回 error `ToolResult`，
 不进入审批或实际 handler。
@@ -62,8 +69,9 @@ Glob/Grep 使用 `ToolExecutionContext` 的 workspace、忽略规则与有界输
 写入、编辑和命令行工具默认可由权限配置要求审批。Read/Write/Edit 的路径和命令行工具的工作目录统一经过
 `ToolExecutionContext` 解析；默认限制在 Session workspace 或 Host 管理的 `OURO_HOME/artifacts` 制品根目录内，
 不会放开其他用户数据，并拒绝 `..` 与符号链接逃逸。Read 在文件 IO 边界流式执行自身的行数和 UTF-8 字节上限，
-返回 `next_offset`、实际行数与截断信息，避免为截取一页而全量载入文件；所有工具结果仍在 executor 边界执行
-宿主统一长度上限和显式截断标记。
+返回 `next_offset`、实际行数与截断信息，避免为截取一页而全量载入文件；工具结果在 executor 边界对全部文本块
+共享 `max_output_chars` 上限并标记截断，媒体 URI 共享独立的 `max_output_media_chars` 上限（默认 20 Mi 字符）。
+媒体超限整块替换为说明，保留的媒体不切片、不解码。请求级内容预算独立于执行结果限额。
 
 命令行工具的模型可见 name、方言描述和执行包装必须由同一个检测结果生成，不能用 `Bash` 名称委托宿主
 默认 shell。PowerShell 以无 Profile、非交互、UTF-8 文本模式运行；Bash 以无 Profile、非交互并启用

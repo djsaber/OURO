@@ -128,6 +128,7 @@ class ToolExecutionContext:
     readable_roots: tuple[Path, ...] = ()
     workspace_only: bool = False
     max_output_chars: int | None = _DEFAULT_PROCESS_OUTPUT_LIMIT
+    max_output_media_chars: int = 20 * 1024 * 1024
 
     @property
     def is_aborted(self) -> bool:

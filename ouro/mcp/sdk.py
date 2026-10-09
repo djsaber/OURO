@@ -14,6 +14,7 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import McpError
 
+from ouro.core.content import ContentPart, ImageContent, TextContent
 from ouro.core.redaction import redact_text
 from ouro.mcp.client import (
     CredentialResolver,
@@ -250,26 +251,32 @@ def _remote_tool(tool: types.Tool) -> MCPRemoteTool:
 
 
 def _remote_result(result: types.CallToolResult) -> MCPRemoteToolResult:
-    text_parts: list[str] = []
-    non_text_parts: list[dict[str, Any]] = []
+    parts: list[ContentPart] = []
     for block in result.content:
         if isinstance(block, types.TextContent):
-            text_parts.append(block.text)
+            parts.append(TextContent(text=block.text))
+        elif isinstance(block, types.ImageContent):
+            parts.append(
+                ImageContent(
+                    uri=f"data:{block.mimeType};base64,{block.data}", media_type=block.mimeType
+                )
+            )
         else:
             dumped = block.model_dump(by_alias=True, mode="json", exclude_none=True)
             if isinstance(dumped, dict):
-                # Binary payloads stay inside the protocol boundary but are not duplicated
-                # into the model-readable text field.
-                if dumped.get("type") in {"image", "audio"} and "data" in dumped:
+                # Unsupported modalities remain explicit descriptions, never base64 text.
+                if "data" in dumped:
                     dumped["data"] = "<binary omitted>"
-                non_text_parts.append(dumped)
-    content = "\n".join(text_parts)
-    if non_text_parts:
-        rendered = json.dumps(non_text_parts, ensure_ascii=False, separators=(",", ":"))
-        content = f"{content}\n{rendered}" if content else rendered
+                parts.append(
+                    TextContent(text=json.dumps(dumped, ensure_ascii=False, separators=(",", ":")))
+                )
     return MCPRemoteToolResult(
         is_error=result.isError,
-        content=content,
+        content=(
+            "\n".join(part.text for part in parts if isinstance(part, TextContent))
+            if all(isinstance(part, TextContent) for part in parts)
+            else parts
+        ),
         structured=dict(result.structuredContent or {}),
         metadata={"content_block_count": len(result.content)},
     )

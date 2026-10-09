@@ -131,6 +131,13 @@ Compaction Strategy handler 同样可以把 `CancellationContext` 作为第二�
 另一项。插件 provenance 始终保留，`role="user"` 不等于直接用户来源或授权。Tool
 Policy 只能把执行提升为审批或拒绝，不能降低 Host policy、批准调用或改写参数。
 
+`ToolOutput.content` 接受字符串，或由 `ToolTextContent(text=...)`、`ToolImageContent(uri=..., media_type=...)`
+组成的有序 tuple。图片 URI 使用 HTTP(S) 地址或 Base64 data URL，不把本地路径或编码写入文本冒充图片。
+SDK 保持独立于内部领域模型；worker 使用相同的 `type: text/image`、`text`、`uri`、`media_type` 字段返回 JSON
+内容数组，非法内容类型在 worker 边界拒绝。执行与 resume 使用同一内容契约。
+Host 保留执行事实，按当前端点能力和协议生成原生结果或补充上下文；插件无需判断供应商协议，也不自行追加
+用户消息。`structured` 用于业务数据，`resource_refs` 用于会话资源关系，均不代替 `content`。
+
 Tool handler 除 `ToolOutput` 或字符串外，还可返回 `ToolInputRequest(data=...)`。`data` 是 Host 透明转发和持久化的
 任意 JSON 值；Host 可据此构建单选、多选、表单或卡片界面。Run 会进入 `waiting_user`，Host 调用
 `answer_user` 后，非 resumable 工具把回答作为该次 tool call 的结果；resumable 工具则由原 contribution 的

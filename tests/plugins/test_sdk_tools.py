@@ -7,11 +7,43 @@ from unittest.mock import patch
 import pytest
 
 from ouro.core.cancellation import AbortSignal
+from ouro.core.content import ImageContent, TextContent
 from ouro.core.interactions import AnswerResolution
-from ouro.core.tools import ToolInvocation
+from ouro.core.tools import ToolInputRequest, ToolInvocation
 from ouro.plugins.api import adapt_sdk_contributions
 from ouro.sdk.plugins import v2 as sdk
 from ouro.tools import ToolExecutionContext, ToolExecutor, ToolRegistry
+
+
+async def test_sdk_rich_content_is_preserved_for_execution_and_resume():
+    output = sdk.ToolOutput(
+        content=(sdk.ToolTextContent("rendered"), sdk.ToolImageContent("https://image.test/one"))
+    )
+    contribution = sdk.ToolContribution(
+        id="render",
+        exposed_name="Render",
+        description="render",
+        handler=lambda call: output,
+        resume_handler=lambda call: output,
+    )
+    tool = adapt_sdk_contributions(
+        sdk.ContributionSet(tools=[contribution]), owner_id="example"
+    ).tools[0]
+    invocation = ToolInvocation(tool_name="Render", session_id="s", run_id="r")
+    context = ToolExecutionContext()
+    first = await tool.execute(invocation, context=context)
+    resumed = await tool.resume(
+        invocation,
+        AnswerResolution(value="yes"),
+        request=ToolInputRequest(data={}),
+        context=context,
+    )
+    for result in (first, resumed):
+        assert result.content_blocks == [
+            TextContent(text="rendered"),
+            ImageContent(uri="https://image.test/one"),
+        ]
+        assert result.text_content == "rendered"
 
 
 async def test_sdk_callback_forms_are_bound_before_execution_and_resume(tmp_path):

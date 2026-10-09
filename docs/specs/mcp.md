@@ -106,8 +106,9 @@ request timeout；OURO 在 ToolExecutionContext abort 时取消本地等待任�
 结果处理。远端 `isError` 保留为 ToolResult error；连接、协议、timeout、disconnect 和 schema 错误在 MCP
 边界分类，之后由工具执行边界隔离，不能改变 durable Run 事务。
 
-文本 content 合并为模型可读文本，structuredContent 保存在 `ToolResult.structured`。图片和音频二进制不复制
-到文本上下文，只保留省略标记和 content block 计数，避免无界放大。
+文本和图片按远端顺序转换为类型化工具内容；纯文本结果可使用字符串简写，structuredContent 独立保存在
+`ToolResult.structured`。图片使用带 MIME 类型的 data URL，不拼入文本；未支持模态的二进制用省略标记替代。
+执行器统一实施文本与媒体限额，Provider 按协议和端点能力生成请求呈现，详见[工具结果架构](../architecture/tool-results.md)。
 
 ## 验收证据
 

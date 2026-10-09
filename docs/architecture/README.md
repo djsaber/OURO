@@ -63,6 +63,9 @@ Host 需要新增能力时先扩展 Application 用例。其他基础设施不�
 
 详细状态与边界见[运行时](../specs/runtime.md)、[上下文](../specs/context-and-compaction.md)和[工具交互](../specs/tools-and-interactions.md)。
 
+工具执行事实、类型化内容与协议呈现的职责划分见[工具结果架构](tool-results.md)。同一结果可在请求边界展开为
+原生工具响应及补充上下文，展开不改变 canonical 历史或执行事务。
+
 ## 状态与资源所有权
 
 | 所有者 | 权威职责 | 与其他层的关系 |

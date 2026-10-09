@@ -352,11 +352,11 @@ class RunLifecycle:
             if existing is not None:
                 messages.append(existing)
                 continue
-            message = MessageRecord.text(
+            message = MessageRecord(
                 session_id=session.session_id,
                 run_id=run.run_id,
                 role="tool_result",
-                text=result.content,
+                content=[*result.content_blocks],
                 sequence=first_sequence + index,
                 turn_id=turn_id,
             ).model_copy(

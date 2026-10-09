@@ -212,7 +212,8 @@ class FileInputProjector:
                     else:
                         blocks, used, image_used = self._blocks(
                             source,
-                            supports_vision=supports_vision and message.role == "user",
+                            supports_vision=supports_vision
+                            and message.role in {"user", "tool_result"},
                             text_budget=min(
                                 text_left, DEFAULT_ITEM_TEXT_BYTES, self.max_text_bytes
                             ),
@@ -239,7 +240,7 @@ class FileInputProjector:
                     image_size = len(block.uri.partition(",")[2])
                     reason = (
                         "Target endpoint or message role cannot receive images"
-                        if not supports_vision or message.role != "user"
+                        if not supports_vision or message.role not in {"user", "tool_result"}
                         else "Request image budget"
                         if image_size > images_left
                         else None

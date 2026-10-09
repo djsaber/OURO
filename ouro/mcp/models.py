@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from pydantic import Field, field_validator, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
+from ouro.core.content import ToolContent
 from ouro.core.tools import PermissionMode, ToolEffect
 
 MCPTransport = Literal["stdio", "http", "sse"]
@@ -193,6 +194,6 @@ class MCPRemoteTool(OuroModel):
 
 class MCPRemoteToolResult(OuroModel):
     is_error: bool = False
-    content: str = ""
+    content: ToolContent = ""
     structured: dict[str, Any] = Field(default_factory=dict)
     metadata: Metadata = MetadataField

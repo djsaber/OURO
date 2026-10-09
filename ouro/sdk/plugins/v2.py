@@ -159,8 +159,24 @@ class ToolCall:
 
 
 @dataclass(frozen=True)
+class ToolTextContent:
+    text: str
+    type: Literal["text"] = field(default="text", init=False)
+
+
+@dataclass(frozen=True)
+class ToolImageContent:
+    uri: str
+    media_type: str = ""
+    type: Literal["image"] = field(default="image", init=False)
+
+
+ToolContent = str | tuple[ToolTextContent | ToolImageContent, ...]
+
+
+@dataclass(frozen=True)
 class ToolOutput:
-    content: str = ""
+    content: ToolContent = ""
     structured: Mapping[str, object] = field(default_factory=dict)
     resource_refs: tuple[str, ...] = ()
     is_error: bool = False
@@ -846,6 +862,9 @@ __all__ = [
     "ToolInputRequest",
     "ToolInputResolution",
     "ToolOutput",
+    "ToolContent",
+    "ToolTextContent",
+    "ToolImageContent",
     "ToolPolicyAction",
     "ToolPolicyCall",
     "ToolPolicyContribution",

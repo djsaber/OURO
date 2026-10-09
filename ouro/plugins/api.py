@@ -84,6 +84,7 @@ from ouro.plugins.session_controllers import (
     PluginSessionControllerCall,
     PluginSessionControllerOutput,
 )
+from ouro.plugins.tool_content import from_sdk_content
 from ouro.sdk.plugins import v2 as sdk
 from ouro.tools import (
     Tool,
@@ -542,7 +543,7 @@ def _adapt_tool(contribution: sdk.ToolContribution, *, owner_id: str) -> Tool:
             harness_change=change,
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,
-            content=raw.content,
+            content=from_sdk_content(raw.content),
             structured=dict(raw.structured),
             resource_refs=list(raw.resource_refs),
             is_error=raw.is_error,
@@ -598,7 +599,7 @@ def _adapt_tool(contribution: sdk.ToolContribution, *, owner_id: str) -> Tool:
             harness_change=change,
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,
-            content=raw.content,
+            content=from_sdk_content(raw.content),
             structured=dict(raw.structured),
             resource_refs=list(raw.resource_refs),
             is_error=raw.is_error,

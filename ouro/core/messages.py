@@ -7,6 +7,8 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, field_validator, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
+from ouro.core.content import ImageContent as ImageContent
+from ouro.core.content import TextContent as TextContent
 from ouro.core.input_content import InputContent, InputFile
 from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import (
@@ -14,18 +16,6 @@ from ouro.core.message_semantics import (
     escape_semantic_envelope_delimiters,
 )
 from ouro.core.tools import ToolCallRequest
-
-
-class TextContent(OuroModel):
-    type: Literal["text"] = "text"
-    text: str = ""
-
-
-class ImageContent(OuroModel):
-    type: Literal["image"] = "image"
-    uri: str
-    media_type: str = ""
-
 
 SkillActivationSource = Literal["user", "workspace", "plugin"]
 

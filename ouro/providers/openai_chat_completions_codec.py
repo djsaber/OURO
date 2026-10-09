@@ -4,8 +4,10 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from ouro.core.messages import ImageContent, ModelMessage, TextContent, model_visible_message
+from ouro.core.messages import ImageContent, ModelMessage, TextContent
 from ouro.core.provider import ToolCallDelta, Usage
+from ouro.core.tool_result_projection import project_tool_result_messages
+from ouro.providers.tool_content import ToolContentPolicy
 
 ChatCompletionsMessageContent = str | list[dict[str, Any]]
 
@@ -23,7 +25,11 @@ def messages_to_chat_completions(
 
     system_contents: list[ChatCompletionsMessageContent] = [system_prompt] if system_prompt else []
     converted_messages: list[dict[str, Any]] = []
-    for message in messages:
+    policy = ToolContentPolicy(
+        native=frozenset({"text"}),
+        contextual=frozenset({"image"}) if supports_vision else frozenset(),
+    )
+    for message in project_tool_result_messages(messages, policy):
         converted = _message_to_chat_completions(
             message,
             supports_vision=supports_vision,
@@ -68,7 +74,6 @@ def _message_to_chat_completions(
     model_id: str,
     include_continuation: bool,
 ) -> dict[str, Any]:
-    message = model_visible_message(message)
     role = message.role
     if role == "tool_result":
         wire_role = "tool"

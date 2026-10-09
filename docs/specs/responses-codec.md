@@ -11,9 +11,12 @@
 
 canonical tool calls 转成 function_call，其 call_id 来自 ToolCallRequest.id；工具结果转成 function_call_output，其 call_id 来自 ToolResultReference。供应商 item id 不用作工具结果关联。工具 JSON 不允许非有限数字；缺少引用的工具结果明确失败。
 
-Endpoint 声明 vision 时，用户消息的图片按顺序编码为 `input_image`，data URI 使用 `image_url`，图片前后文字为
-`input_text`。非视觉端点或其他消息角色的原生图片仍明确失败；Application 先按[附件规格](attachments.md)
-处理引用降级。协议字段核对于 2026-10-07，依据 [OpenAI Images and vision](https://developers.openai.com/api/docs/guides/images-vision)。
+Endpoint 声明 vision 时，用户消息和工具结果中的图片按顺序编码为 `input_image`，data URI 使用 `image_url`，
+图片前后文字为 `input_text`。工具结果直接使用 `function_call_output.output` 内容数组；纯文本结果使用字符串。
+非视觉端点的工具内容经通用结果投影转换为明确说明；原始结果不变。非视觉用户图片及其他角色的图片明确失败，
+Application 按[附件规格](attachments.md)先准备合法输入。协议依据
+[OpenAI Images and vision](https://developers.openai.com/api/docs/guides/images-vision) 和
+[Function calling](https://developers.openai.com/api/docs/guides/function-calling#formatting-results)。
 
 `responses_tools` 将现有 parameters_schema 原样放入平铺 function 工具声明，显式 strict=false；不为了满足 strict schema 改写可选参数、required 或 additionalProperties。内置工具、结构化输出、图像和模型参数能力不由这一内容 codec 承诺。
 

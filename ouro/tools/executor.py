@@ -27,6 +27,7 @@ from ouro.tools.base import (
     ToolResult,
 )
 from ouro.tools.registry import ToolRegistry
+from ouro.tools.result_content import limit_result_content
 from ouro.tools.schema import tool_argument_error
 
 
@@ -434,7 +435,11 @@ def _validated_tool_result(
             error_type="ToolResultContractError",
             error_message="tool result identity does not match the current invocation",
         )
-    content, truncated = context.limit_output(value.content)
+    content, truncated = limit_result_content(
+        value.content,
+        text_limit=context.max_output_chars,
+        media_limit=context.max_output_media_chars,
+    )
     if not truncated:
         return value
     return value.model_copy(
