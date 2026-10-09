@@ -349,13 +349,13 @@ def test_session_choices_group_by_local_last_activity_date(tmp_path: Path) -> No
         "Today",
         "Yesterday",
         "Previous 7 days",
+        "Previous 7 days",
         "Previous 30 days",
         "Previous 30 days",
+        "July 2026",
         "June 2026",
-        "Archived",
-        "Archived",
     ]
-    assert [choice.value for choice in choices[-2:]] == ["ses_2", "ses_30"]
+    assert [choice.value for choice in choices[-2:]] == ["ses_30", "ses_45"]
 
 
 def test_session_choices_mark_only_the_selected_session(tmp_path: Path) -> None:
@@ -418,7 +418,7 @@ def test_session_choices_use_semantic_health_tones(tmp_path: Path) -> None:
     assert choices["ses_failure"].accent == DEFAULT_TUI_THEME.failure
     assert choices["ses_index_error"].accent == DEFAULT_TUI_THEME.failure
     assert choices["ses_index_error"].trailing == "index error"
-    assert choices["ses_index_error"].group == "Index issues"
+    assert choices["ses_index_error"].group == "Today"
     assert projected[-1].value == "ses_index_error"
 
 
@@ -6299,7 +6299,7 @@ async def test_session_picker_opens_canonical_session_when_catalog_entry_is_inva
 
         assert choice.accent == DEFAULT_TUI_THEME.failure
         assert choice.trailing == "index error"
-        assert choice.group == "Index issues"
+        assert choice.group == "Today"
 
         await pilot.press("enter")
         await _wait_for_active_session(app, pilot, session.session_id)
@@ -6952,7 +6952,7 @@ async def test_startup_resume_failure_opens_choice_dialog_and_keeps_tui_running(
 
 
 @pytest.mark.asyncio
-async def test_session_picker_and_archive_menu_project_and_toggle_archived_group(
+async def test_session_picker_and_archive_menu_switch_and_toggle_archived_domain(
     tmp_path: Path,
 ) -> None:
     application = _application(tmp_path)
@@ -6984,7 +6984,7 @@ async def test_session_picker_and_archive_menu_project_and_toggle_archived_group
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         groups = {choice.value: choice.group for choice in app.screen._choices}
         assert groups[active.session_id] == "Today"
-        assert groups[archived.session_id] == "Archived"
+        assert archived.session_id not in groups
         await pilot.press("escape")
 
         await pilot.press("ctrl+p")
@@ -6996,7 +6996,7 @@ async def test_session_picker_and_archive_menu_project_and_toggle_archived_group
         archive_screen = app.screen
         initial = {choice.value: choice for choice in archive_screen._choices}
         assert initial[active.session_id].marker == DEFAULT_TUI_THEME.selected_choice_marker
-        assert initial[archived.session_id].marker == ""
+        assert archived.session_id not in initial
 
         archive_screen.query_one("#choice-filter", Input).value = "Active session"
         await pilot.pause()
@@ -7004,33 +7004,30 @@ async def test_session_picker_and_archive_menu_project_and_toggle_archived_group
         await pilot.pause()
         assert app.screen is archive_screen
         await _wait_until(
-            lambda: any(
-                choice.value == active.session_id and choice.group == "Archived"
-                for choice in archive_screen._choices
-            ),
+            lambda: not archive_screen._choices,
             pilot,
-            description="archived session menu",
+            description="archived session removed from user domain",
         )
+        await pilot.press("tab", "tab", "tab")
+        await _wait_for_screen(app, ChoiceScreen, title="UNARCHIVE SESSIONS • ARCHIVED")
         choices = {choice.value: choice for choice in archive_screen._choices}
-        assert choices[active.session_id].group == "Archived"
-        assert choices[archived.session_id].group == "Archived"
+        assert set(choices) == {active.session_id, archived.session_id}
+        assert {choice.group for choice in choices.values()} == {"Today"}
         assert choices[active.session_id].marker == DEFAULT_TUI_THEME.selected_choice_marker
+        assert "Enter unarchive" in archive_screen.query_one("#choice-hint", Static).render().plain
 
         archive_screen.query_one("#choice-filter", Input).value = "Archived session"
         await pilot.pause()
         await pilot.press("enter")
-        await pilot.pause()
-        assert app.screen is archive_screen
         await _wait_until(
-            lambda: any(
-                choice.value == archived.session_id and choice.group == "Today"
-                for choice in archive_screen._choices
-            ),
+            lambda: archived.session_id not in {choice.value for choice in archive_screen._choices},
             pilot,
-            description="restored session menu",
+            description="restored session removed from archived domain",
         )
-        choices = {choice.value: choice for choice in archive_screen._choices}
-        assert choices[archived.session_id].group == "Today"
+        assert app.screen is archive_screen
+        await pilot.press("tab")
+        await _wait_for_screen(app, ChoiceScreen, title="ARCHIVE SESSIONS • USER")
+        assert [choice.value for choice in archive_screen._choices] == [archived.session_id]
         catalog = {item.session_id: item for item in application.runtime.sessions.catalog().entries}
         assert catalog[active.session_id].archived is True
         assert catalog[archived.session_id].archived is False
@@ -7078,7 +7075,9 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         rename_screen = app.screen
         assert isinstance(rename_screen, EditableChoiceScreen)
         assert rename_screen.query_one("#choice-hint", Static).render().plain == (
-            EditableChoiceScreen.DEFAULT_HINT
+            app.tui_theme.inline_separator.join(
+                ("Tab switch sessions", "↑/↓ move", "←/→ group", "Enter edit", "Esc back")
+            )
         )
         assert action_screen.query_one("#choice-panel", Vertical).display is False
         assert action_screen.styles.background.a == 0
@@ -7123,7 +7122,9 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         assert rename_screen.query_one("#choice-filter", Input).disabled is False
         assert rename_screen.query_one("#choice-filter", Input).has_focus is True
         assert rename_screen.query_one("#choice-hint", Static).render().plain == (
-            EditableChoiceScreen.DEFAULT_HINT
+            app.tui_theme.inline_separator.join(
+                ("Tab switch sessions", "↑/↓ move", "←/→ group", "Enter edit", "Esc back")
+            )
         )
         assert rename_screen.query_one("#choice-filter", Input).value == ""
         assert rename_screen._choices[0].edit_value == "Renamed title"
@@ -7166,6 +7167,7 @@ async def test_delete_session_menu_force_deletes_catalog_error_and_quits_cleanly
         session_id="ses_delete_catalog_error",
         title="Readable canonical session",
     ).session
+    application.runtime.sessions.set_archived(session.session_id, True)
     index_path = application.runtime.store._catalog.index_path
     payload = json.loads(index_path.read_text(encoding="utf-8"))
     indexed = next(item for item in payload["sessions"] if item["session_id"] == session.session_id)
@@ -7181,7 +7183,7 @@ async def test_delete_session_menu_force_deletes_catalog_error_and_quits_cleanly
         app.screen.query_one("#choice-filter", Input).value = "Delete session"
         await pilot.pause()
         await pilot.press("enter")
-        await _wait_for_screen(app, MultiChoiceScreen, title="DELETE SESSIONS")
+        await _wait_for_screen(app, MultiChoiceScreen, title="DELETE SESSIONS • ARCHIVED")
 
         choice = next(item for item in app.screen._choices if item.value == session.session_id)
         assert choice.trailing == "index error"
@@ -7245,7 +7247,7 @@ async def test_delete_session_menu_keeps_current_marker_separate_from_multi_sele
         app.screen.query_one("#choice-filter", Input).value = "Delete session"
         await pilot.pause()
         await pilot.press("enter")
-        await _wait_for_screen(app, MultiChoiceScreen, title="DELETE SESSIONS")
+        await _wait_for_screen(app, MultiChoiceScreen, title="DELETE SESSIONS • ARCHIVED")
 
         delete_screen = app.screen
         choices = {choice.value: choice for choice in delete_screen._choices}
@@ -7762,6 +7764,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Theme",
             "Thinking display",
             "Remember drafts",
+            "Session grouping",
             "Queued messages",
             "Context compaction",
             "Personal prompts",
@@ -7798,7 +7801,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Keyboard help",
         ]
         assert [choice.group for choice in action_choices] == [
-            *("Settings",) * 7,
+            *("Settings",) * 8,
             *("Sessions",) * 5,
             *("Tasks",) * 3,
             *("Providers",) * 5,
@@ -9583,7 +9586,7 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         }
         assert shortcuts["Alt+T"] == "cycle model thinking"
         assert shortcuts["Alt+A"] == "cycle tool approval"
-        assert shortcuts["Tab"] == "user / task / subagent sessions"
+        assert shortcuts["Tab"] == "switch sessions"
         assert shortcuts["Alt+← / Alt+→"] == "switch agent"
         assert shortcuts["Alt+↑ / Alt+↓"] == "main / recent agent"
         files = next(choice for choice in menu._choices if choice.value == "command:@")
@@ -10477,7 +10480,7 @@ async def test_action_choice_submenus_reuse_the_action_screen_without_flash(
         for action_label, title in (
             ("Theme", "THEME"),
             ("Open session", "SESSION • USER"),
-            ("Archive session", "ARCHIVE SESSIONS"),
+            ("Archive session", "ARCHIVE SESSIONS • USER"),
             ("Keyboard help", "KEYBOARD HELP"),
         ):
             await pilot.press("ctrl+p")

@@ -430,7 +430,7 @@ async def test_tui_composes_selected_task_backend_without_changing_file_sessions
         assert not (tmp_path / "sessions.sqlite3").exists()
 
 
-async def test_tab_cycles_session_groups_even_when_some_are_empty(tmp_path):
+async def test_tab_cycles_session_domains_even_when_some_are_empty(tmp_path):
     application = _application(tmp_path)
     task_session = application.runtime.sessions.create(title="Background", namespace="task").session
     app = OuroTuiApp(application=application)
@@ -445,6 +445,9 @@ async def test_tab_cycles_session_groups_even_when_some_are_empty(tmp_path):
         assert [choice.value for choice in app.screen._choices] == [task_session.session_id]
         await pilot.press("tab")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • SUBAGENT")
+        assert not app.screen._choices
+        await pilot.press("tab")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSION • ARCHIVED")
         assert not app.screen._choices
         await pilot.press("tab")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")

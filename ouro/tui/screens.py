@@ -14,7 +14,6 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.color import Color
 from textual.containers import Vertical
-from textual.message import Message
 from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import Input, OptionList, Static
@@ -57,7 +56,7 @@ _HELP_SHORTCUTS = (
     ("Enter", "send / queue", "Shift+Enter", "new line"),
     ("Ctrl+Enter / Ctrl+J", "guide current task", "↑ / ↓", "input history"),
     ("Ctrl+N", "new session", "Ctrl+S", "sessions"),
-    ("Ctrl+T", "tasks", "Tab", "user / task / subagent sessions"),
+    ("Ctrl+T", "tasks", "Tab", "switch sessions"),
     ("Alt+T", "cycle model thinking", "Alt+A", "cycle tool approval"),
     ("Alt+← / Alt+→", "switch agent", "Alt+↑ / Alt+↓", "main / recent agent"),
     ("Alt+P", "plugins", "Ctrl+P", "actions"),
@@ -121,6 +120,7 @@ def help_choices(
 
 ChoiceSelectionHandler = Callable[[str], Awaitable[tuple[Choice, ...] | None]]
 ChoiceRefreshHandler = Callable[[], Awaitable[tuple[Choice, ...] | None]]
+ChoiceTabHandler = Callable[[], Awaitable[None]]
 ChoiceCancelHandler = Callable[[], bool]
 ChoiceAdjustmentHandler = Callable[[str, int], tuple[Choice, ...] | None]
 MultiChoiceConfirmationHandler = Callable[
@@ -146,6 +146,7 @@ class _ChoicePage:
     on_refresh: ChoiceRefreshHandler | None
     on_cancel: ChoiceCancelHandler | None
     on_adjust: ChoiceAdjustmentHandler | None
+    on_tab: ChoiceTabHandler | None
     retain_focus_position_on_select: bool
     interaction_hint: str | None
 
@@ -302,11 +303,6 @@ def grouped_choice_options(
 
 
 class ChoiceScreen(ModalScreen[str | None]):
-    class TabRequested(Message):
-        def __init__(self, menu: ChoiceScreen) -> None:
-            super().__init__()
-            self.menu = menu
-
     MIN_LIST_HEIGHT = 5
     MAX_LIST_HEIGHT = 20
     # Fixed title, filter, and hint rows surrounding the scrollable list.
@@ -319,7 +315,7 @@ class ChoiceScreen(ModalScreen[str | None]):
     )
 
     BINDINGS = [
-        Binding("tab", "switch_session_domain", "Session domain", show=False, priority=True),
+        Binding("tab", "switch_domain", "Switch domain", show=False, priority=True),
         Binding("up", "previous_choice", "Previous", show=False, priority=True),
         Binding("down", "next_choice", "Next", show=False, priority=True),
         Binding("left", "previous_group", "Previous group", show=False, priority=True),
@@ -340,6 +336,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         on_refresh: ChoiceRefreshHandler | None = None,
         on_cancel: ChoiceCancelHandler | None = None,
         on_adjust: ChoiceAdjustmentHandler | None = None,
+        on_tab: ChoiceTabHandler | None = None,
         retain_focus_position_on_select: bool = False,
         navigation_id: MenuDestination | None = None,
         retain_for_switching: bool = False,
@@ -355,6 +352,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._on_refresh = on_refresh
         self._on_cancel = on_cancel
         self._on_adjust = on_adjust
+        self._on_tab = on_tab
         self._retain_focus_position_on_select = retain_focus_position_on_select
         self._navigation_id = navigation_id
         self._retain_for_switching = retain_for_switching
@@ -479,6 +477,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         on_refresh: ChoiceRefreshHandler | None = None,
         on_cancel: ChoiceCancelHandler | None = None,
         on_adjust: ChoiceAdjustmentHandler | None = None,
+        on_tab: ChoiceTabHandler | None = None,
         retain_focus_position_on_select: bool = False,
         navigation_id: MenuDestination | None = None,
         retain_for_switching: bool = False,
@@ -496,6 +495,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._on_refresh = on_refresh
         self._on_cancel = on_cancel
         self._on_adjust = on_adjust
+        self._on_tab = on_tab
         self._retain_focus_position_on_select = retain_focus_position_on_select
         self._navigation_id = navigation_id
         self._retain_for_switching = retain_for_switching
@@ -523,6 +523,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         on_refresh: ChoiceRefreshHandler | None = None,
         on_cancel: ChoiceCancelHandler | None = None,
         on_adjust: ChoiceAdjustmentHandler | None = None,
+        on_tab: ChoiceTabHandler | None = None,
         retain_focus_position_on_select: bool = False,
         retain_for_switching: bool = False,
         interaction_hint: str | None = None,
@@ -550,6 +551,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             on_refresh=on_refresh,
             on_cancel=on_cancel,
             on_adjust=on_adjust,
+            on_tab=on_tab,
             retain_focus_position_on_select=retain_focus_position_on_select,
             retain_for_switching=(
                 root.retain_for_switching if returning_to_root else retain_for_switching
@@ -569,6 +571,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         on_refresh: ChoiceRefreshHandler | None = None,
         on_cancel: ChoiceCancelHandler | None = None,
         on_adjust: ChoiceAdjustmentHandler | None = None,
+        on_tab: ChoiceTabHandler | None = None,
         retain_focus_position_on_select: bool = False,
         navigation_id: MenuDestination | None = None,
         retain_for_switching: bool = False,
@@ -587,6 +590,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             on_refresh=on_refresh,
             on_cancel=on_cancel,
             on_adjust=on_adjust,
+            on_tab=on_tab,
             retain_focus_position_on_select=retain_focus_position_on_select,
             navigation_id=navigation_id,
             retain_for_switching=retain_for_switching,
@@ -615,6 +619,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             on_refresh=page.on_refresh,
             on_cancel=page.on_cancel,
             on_adjust=page.on_adjust,
+            on_tab=page.on_tab,
             retain_focus_position_on_select=page.retain_focus_position_on_select,
             navigation_id=page.navigation_id,
             retain_for_switching=page.retain_for_switching,
@@ -782,6 +787,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             on_refresh=self._on_refresh,
             on_cancel=self._on_cancel,
             on_adjust=self._on_adjust,
+            on_tab=self._on_tab,
             retain_focus_position_on_select=self._retain_focus_position_on_select,
             interaction_hint=self._interaction_hint,
         )
@@ -1126,8 +1132,8 @@ class ChoiceScreen(ModalScreen[str | None]):
         )
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action == "switch_session_domain":
-            return self.navigation_id == "sessions"
+        if action == "switch_domain":
+            return self._on_tab is not None
         if action in {"previous_group", "next_group"}:
             return self._on_adjust is not None or any(choice.group for choice in self._choices)
         return super().check_action(action, parameters)
@@ -1135,8 +1141,9 @@ class ChoiceScreen(ModalScreen[str | None]):
     def action_accept_choice(self) -> None:
         self.query_one("#choice-list", OptionList).action_select()
 
-    def action_switch_session_domain(self) -> None:
-        self.post_message(self.TabRequested(self))
+    async def action_switch_domain(self) -> None:
+        if self._on_tab is not None:
+            await self._on_tab()
 
     @staticmethod
     def _options(
@@ -1253,8 +1260,16 @@ class EditableChoiceScreen(ChoiceScreen):
         placeholder: str,
         choices: tuple[Choice, ...],
         on_save: ChoiceEditHandler,
+        on_tab: ChoiceTabHandler | None = None,
+        interaction_hint: str | None = None,
     ) -> None:
-        super().__init__(title=title, placeholder=placeholder, choices=choices)
+        super().__init__(
+            title=title,
+            placeholder=placeholder,
+            choices=choices,
+            on_tab=on_tab,
+            interaction_hint=interaction_hint,
+        )
         self._on_save = on_save
         self._editing_value: str | None = None
         self._edit_text = ""
@@ -1265,6 +1280,8 @@ class EditableChoiceScreen(ChoiceScreen):
         self._edit_cursor_timer: Timer | None = None
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "switch_domain" and self._editing_value is not None:
+            return False
         if action.startswith("edit_"):
             return self._editing_value is not None
         return super().check_action(action, parameters)
@@ -1614,8 +1631,11 @@ class MultiChoiceScreen(ChoiceScreen):
         confirm_label: str = "Confirm",
         destructive: bool = False,
         selected_values: tuple[str, ...] = (),
+        interaction_hint: str | None = None,
     ) -> None:
-        super().__init__(title=title, placeholder=placeholder, choices=choices)
+        super().__init__(
+            title=title, placeholder=placeholder, choices=choices, interaction_hint=interaction_hint
+        )
         self._on_confirm = on_confirm
         self._selected = set(selected_values).intersection(choice.value for choice in choices)
         self._selected_marker = selected_marker

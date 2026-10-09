@@ -98,6 +98,7 @@ from ouro.tui.model_menus import (
 from ouro.tui.plan_confirmation import project_plan_confirmation
 from ouro.tui.preferences import (
     MAX_RECENT_WORKSPACES,
+    SessionGrouping,
     TuiPreferences,
     TuiPreferencesStore,
 )
@@ -210,6 +211,7 @@ _AGENT_INTERACTION_EVENTS = {
     "agent_result_delivered",
     "agent_closed",
 }
+_SESSION_GROUPING_ACTION = "__ouro_session_grouping__"
 _THEME_ACTION = "__ouro_theme__"
 _THOUGHT_DISPLAY_ACTION = "__ouro_thought_display__"
 _INPUT_DRAFT_MEMORY_ACTION = "__ouro_input_draft_memory__"
@@ -222,7 +224,16 @@ _MENU_ACTIONS: MenuDestination = "actions"
 _MENU_PLUGINS: MenuDestination = "plugins"
 _MENU_SESSIONS: MenuDestination = "sessions"
 _MENU_TASKS: MenuDestination = "tasks"
-_SESSION_GROUP_LABELS = {"default": "USER", "task": "TASK", "subagent": "SUBAGENT"}
+_SESSION_DOMAIN_LABELS = {
+    "default": "USER",
+    "task": "TASK",
+    "subagent": "SUBAGENT",
+    "archived": "ARCHIVED",
+}
+_SESSION_GROUPING_LABELS: dict[SessionGrouping, str] = {
+    "date": "By date",
+    "workspace": "By workspace",
+}
 _ACTION_GROUP_RANK = {
     group: rank
     for rank, group in enumerate(
@@ -951,7 +962,7 @@ _OURO_TUI_CSS = """
 
 
 class OuroTuiApp(ConfigurationWorkflowsApp):
-    _session_group = "default"
+    _session_domain = "default"
     TITLE = "OURO"
     SUB_TITLE = "Agent"
     ENABLE_COMMAND_PALETTE = False
@@ -3804,11 +3815,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             index = int(target[1:]) - 1
             conversation.scroll_to_user_turn(index)
 
-    async def on_choice_screen_tab_requested(self, message: ChoiceScreen.TabRequested) -> None:
-        message.stop()
-        self._session_group = _next_cycle_value(tuple(_SESSION_GROUP_LABELS), self._session_group)
-        await self._choose_session(menu=message.menu, switch=True)
-
     async def _sync_task_status(self) -> None:
         if not self._surface_available():
             return
@@ -3822,172 +3828,106 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         *,
         menu: ChoiceScreen | None = None,
         switch: bool = False,
+        operation: Literal["open", "rename", "archive", "delete"] = "open",
     ) -> None:
         if not await self._refresh_sessions(include_subagents=True):
             return
-        choices = _session_choices(
-            tuple(
-                item
-                for item in self._sessions
-                if (
-                    item.session_kind == "subagent"
-                    if self._session_group == "subagent"
-                    else item.session_kind != "subagent" and item.namespace == self._session_group
-                )
-            ),
-            selected_session_id=self._visible_session_id(),
-            theme=self._tui_theme,
-        )
-        domain = _SESSION_GROUP_LABELS[self._session_group]
-        title = self._tui_theme.section_separator.join(("SESSION", domain))
-        hint = self._tui_theme.inline_separator.join(
-            (
-                "Tab " + "/".join(_SESSION_GROUP_LABELS.values()),
-                "↑/↓ move",
-                "Enter select",
-                "Esc back",
-            )
-        )
+        domain = "archived" if operation == "delete" else self._session_domain
         session_menu: ChoiceScreen
 
+        def choices() -> tuple[Choice, ...]:
+            return _session_choices(
+                _sessions_in_domain(self._sessions, domain),
+                selected_session_id=self._visible_session_id(),
+                grouping=self._preferences.session_grouping,
+                theme=self._tui_theme,
+            )
+
+        def title() -> str:
+            label = {
+                "open": "SESSION",
+                "rename": "RENAME SESSION",
+                "archive": "UNARCHIVE SESSIONS" if domain == "archived" else "ARCHIVE SESSIONS",
+                "delete": "DELETE SESSIONS",
+            }[operation]
+            return self._tui_theme.section_separator.join((label, _SESSION_DOMAIN_LABELS[domain]))
+
+        def hint() -> str:
+            action = {
+                "open": "select",
+                "rename": "edit",
+                "archive": "unarchive" if domain == "archived" else "archive",
+                "delete": "confirm",
+            }[operation]
+            return self._tui_theme.inline_separator.join(
+                (
+                    *(("Tab switch sessions",) if operation != "delete" else ()),
+                    "↑/↓ move",
+                    "←/→ group",
+                    *(("Space toggle",) if operation == "delete" else ()),
+                    f"Enter {action}",
+                    "Esc back",
+                )
+            )
+
+        async def refresh_choices() -> tuple[Choice, ...] | None:
+            if not await self._refresh_sessions(include_subagents=True):
+                return None
+            return choices()
+
+        async def switch_domain() -> None:
+            nonlocal domain
+            if not await self._refresh_sessions(include_subagents=True):
+                return
+            domain = _next_cycle_value(tuple(_SESSION_DOMAIN_LABELS), domain)
+            self._session_domain = domain
+            session_menu.replace_page(
+                navigation_id=_MENU_SESSIONS if operation == "open" else None,
+                title=title(),
+                placeholder="Filter sessions…",
+                choices=choices(),
+                on_select=select_session,
+                on_tab=switch_domain,
+                interaction_hint=hint(),
+                retain_focus_position_on_select=operation == "archive",
+            )
+
         async def select_session(session_id: str) -> tuple[Choice, ...] | None:
-            # History rendering waits for the main Screen to refresh. Close the
-            # modal before loading so the destination view can participate in
-            # that refresh instead of waiting behind the picker that initiated it.
+            if operation == "archive":
+                try:
+                    await self._controller.set_session_archived(
+                        session_id, archived=domain != "archived"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self.notify(str(exc), severity="error", markup=False)
+                    return None
+                return await refresh_choices()
+            # History rendering needs the destination screen to be visible.
             session_menu.dismiss(None)
             try:
                 await self._open_session(session_id)
             except Exception as exc:  # noqa: BLE001 - one invalid Session must not exit TUI.
                 self._show_session_load_error(session_id, exc)
-                return None
             return None
 
-        if menu is not None:
-            session_menu = menu
-            navigate = (
-                menu.replace_page
-                if menu.navigation_id == _MENU_SESSIONS
-                else menu.switch_page
-                if switch
-                else menu.push_page
-            )
-            navigate(
-                navigation_id=_MENU_SESSIONS,
-                title=title,
-                placeholder="Filter sessions…",
-                choices=choices,
-                on_select=select_session,
-                interaction_hint=hint,
-            )
-            return
-        session_menu = ChoiceScreen(
-            navigation_id=_MENU_SESSIONS,
-            title=title,
-            placeholder="Filter sessions…",
-            choices=choices,
-            on_select=select_session,
-            interaction_hint=hint,
-        )
-        self.push_screen(session_menu)
-
-    async def _choose_session_archive(self, *, menu: ChoiceScreen) -> None:
-        if not await self._refresh_sessions():
-            return
-        if not self._sessions:
-            return
-        sessions = {session.session_id: session for session in self._sessions}
-
-        async def toggle_archive(session_id: str) -> tuple[Choice, ...] | None:
-            session = sessions[session_id]
-            archived = not session.archived
+        async def rename_session(session_id: str, new_title: str) -> tuple[Choice, ...] | None:
             try:
-                await self._controller.set_session_archived(
-                    session_id,
-                    archived=archived,
-                )
-            except Exception as exc:  # noqa: BLE001
-                self.notify(str(exc), severity="error", markup=False)
-                return None
-            if not await self._refresh_sessions():
-                return None
-            sessions.clear()
-            sessions.update({session.session_id: session for session in self._sessions})
-            return _session_choices(
-                self._sessions,
-                selected_session_id=self._visible_session_id(),
-                theme=self._tui_theme,
-            )
-
-        menu.push_page(
-            title="ARCHIVE SESSIONS",
-            placeholder="Filter sessions…",
-            choices=_session_choices(
-                self._sessions,
-                selected_session_id=self._visible_session_id(),
-                theme=self._tui_theme,
-            ),
-            on_select=toggle_archive,
-            retain_focus_position_on_select=True,
-        )
-
-    async def _choose_session_rename(self, *, menu: ChoiceScreen) -> None:
-        if not await self._refresh_sessions():
-            return
-        active = tuple(session for session in self._sessions if not session.archived)
-        if not active:
-            return
-
-        async def rename_session(
-            session_id: str,
-            title: str,
-        ) -> tuple[Choice, ...] | None:
-            try:
-                renamed = await self._controller.rename_session(session_id, title)
+                renamed = await self._controller.rename_session(session_id, new_title)
             except Exception as exc:  # noqa: BLE001
                 self.notify(str(exc), severity="error", markup=False)
                 return None
             if session_id == self._controller.session_id:
                 self._active_title = renamed.title
                 self.query_one(BrandHeader).set_context(session_title=renamed.title)
-            if not await self._refresh_sessions():
+            return await refresh_choices()
+
+        async def delete_selected(session_ids: tuple[str, ...]) -> tuple[Choice, ...] | None:
+            if not await self._refresh_sessions(include_subagents=True):
                 return None
-            active_sessions = tuple(session for session in self._sessions if not session.archived)
-            return _rename_session_choices(
-                active_sessions,
-                selected_session_id=self._visible_session_id(),
-                theme=self._tui_theme,
-            )
-
-        screen = EditableChoiceScreen(
-            title="RENAME SESSION",
-            placeholder="Filter sessions…",
-            choices=_rename_session_choices(
-                active,
-                selected_session_id=self._visible_session_id(),
-                theme=self._tui_theme,
-            ),
-            on_save=rename_session,
-        )
-        await menu.open_child(screen)
-
-    async def _choose_session_delete(self, *, menu: ChoiceScreen) -> None:
-        if not await self._refresh_sessions():
-            return
-        deletable = tuple(
-            session
-            for session in self._sessions
-            if (
-                session.archived
-                or session.catalog_error is not None
-                or session.catalog_marks_unreadable
-            )
-        )
-        if not deletable:
-            return
-
-        async def delete_selected(
-            session_ids: tuple[str, ...],
-        ) -> tuple[Choice, ...] | None:
+            archived_ids = {item.session_id for item in _sessions_in_domain(self._sessions, domain)}
+            if not set(session_ids).issubset(archived_ids):
+                self.notify("Only archived sessions can be deleted", severity="warning")
+                return choices()
             current_session_id = self._controller.session_id
             try:
                 removed = await self._controller.delete_sessions(session_ids)
@@ -3997,38 +3937,74 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._forget_input_drafts(removed)
             if current_session_id in removed:
                 await self._new_session()
-            if not await self._refresh_sessions():
-                return None
-            deletable_sessions = tuple(
-                session
-                for session in self._sessions
-                if (
-                    session.archived
-                    or session.catalog_error is not None
-                    or session.catalog_marks_unreadable
-                )
-            )
-            return _session_choices(
-                deletable_sessions,
-                selected_session_id=self._visible_session_id(),
-                theme=self._tui_theme,
-            )
+            return await refresh_choices()
 
-        delete_screen = MultiChoiceScreen(
-            title="DELETE SESSIONS",
-            placeholder="Search archived or unreadable sessions…",
-            choices=_session_choices(
-                deletable,
-                selected_session_id=self._visible_session_id(),
-                theme=self._tui_theme,
-            ),
-            on_confirm=delete_selected,
-            selected_marker=self._tui_theme.selected_choice_marker,
-            unselected_marker=self._tui_theme.unselected_choice_marker,
-            confirm_label="Delete",
-            destructive=True,
-        )
-        await menu.open_child(delete_screen)
+        if operation == "delete":
+            session_menu = MultiChoiceScreen(
+                title=title(),
+                placeholder="Filter archived sessions…",
+                choices=choices(),
+                on_confirm=delete_selected,
+                selected_marker=self._tui_theme.selected_choice_marker,
+                unselected_marker=self._tui_theme.unselected_choice_marker,
+                confirm_label="Delete",
+                destructive=True,
+                interaction_hint=hint(),
+            )
+        elif operation == "rename":
+            session_menu = EditableChoiceScreen(
+                title=title(),
+                placeholder="Filter sessions…",
+                choices=choices(),
+                on_save=rename_session,
+                on_tab=switch_domain,
+                interaction_hint=hint(),
+            )
+        else:
+            if menu is not None:
+                session_menu = menu
+                if operation == "archive":
+                    menu.push_page(
+                        title=title(),
+                        placeholder="Filter sessions…",
+                        choices=choices(),
+                        on_select=select_session,
+                        on_tab=switch_domain,
+                        interaction_hint=hint(),
+                        retain_focus_position_on_select=True,
+                    )
+                    return
+                navigate = (
+                    menu.replace_page
+                    if menu.navigation_id == _MENU_SESSIONS
+                    else menu.switch_page
+                    if switch
+                    else menu.push_page
+                )
+                navigate(
+                    navigation_id=_MENU_SESSIONS,
+                    title=title(),
+                    placeholder="Filter sessions…",
+                    choices=choices(),
+                    on_select=select_session,
+                    on_tab=switch_domain,
+                    interaction_hint=hint(),
+                    retain_focus_position_on_select=operation == "archive",
+                )
+                return
+            session_menu = ChoiceScreen(
+                navigation_id=_MENU_SESSIONS,
+                title=title(),
+                placeholder="Filter sessions…",
+                choices=choices(),
+                on_select=select_session,
+                on_tab=switch_domain,
+                interaction_hint=hint(),
+            )
+        if menu is not None:
+            await menu.open_child(session_menu)
+        else:
+            self.push_screen(session_menu)
 
     async def _refresh_sessions(self, *, include_subagents: bool = False) -> bool:
         try:
@@ -4651,6 +4627,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     menu=action_screen,
                 )
                 return None
+            if action_id == _SESSION_GROUPING_ACTION:
+                await self._choose_session_grouping(menu=action_screen)
+                return None
             if action_id == _THEME_ACTION:
                 await self._choose_theme(menu=action_screen)
                 return None
@@ -4664,13 +4643,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await self._choose_session(menu=action_screen)
                 return None
             if action_id == _RENAME_SESSION_ACTION:
-                await self._choose_session_rename(menu=action_screen)
+                await self._choose_session(menu=action_screen, operation="rename")
                 return None
             if action_id == _ARCHIVE_SESSION_ACTION:
-                await self._choose_session_archive(menu=action_screen)
+                await self._choose_session(menu=action_screen, operation="archive")
                 return None
             if action_id == _DELETE_SESSION_ACTION:
-                await self._choose_session_delete(menu=action_screen)
+                await self._choose_session(menu=action_screen, operation="delete")
                 return None
             if action_id == "/help":
                 self._show_help_page(action_screen)
@@ -4740,6 +4719,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     Choice(
                         _INPUT_DRAFT_MEMORY_ACTION,
                         "Remember drafts",
+                        group="Settings",
+                    ),
+                    Choice(
+                        _SESSION_GROUPING_ACTION,
+                        "Session grouping",
                         group="Settings",
                     ),
                     self._command_action_choice("/new", "Sessions", "new_session"),
@@ -4987,6 +4971,42 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 initial_value=("expand" if self._preferences.reasoning_expanded else "collapse"),
                 on_select=select_display,
             )
+        )
+
+    async def _choose_session_grouping(self, *, menu: ChoiceScreen) -> None:
+        def grouping_choices() -> tuple[Choice, ...]:
+            return tuple(
+                Choice(
+                    value,
+                    label,
+                    marker=(
+                        self._tui_theme.selected_choice_marker
+                        if value == self._preferences.session_grouping
+                        else ""
+                    ),
+                )
+                for value, label in _SESSION_GROUPING_LABELS.items()
+            )
+
+        async def select_grouping(value: str) -> tuple[Choice, ...] | None:
+            async with self._preferences_save_lock:
+                preferences = TuiPreferences.model_validate(
+                    {**self._preferences.model_dump(), "session_grouping": value}
+                )
+                try:
+                    await asyncio.to_thread(self._preferences_store.save, preferences)
+                except OuroError as exc:
+                    self.notify(str(exc), severity="warning", markup=False)
+                    return None
+                self._preferences = preferences
+            return grouping_choices()
+
+        menu.push_page(
+            title="SESSION GROUPING",
+            placeholder="Choose session grouping…",
+            choices=grouping_choices(),
+            initial_value=self._preferences.session_grouping,
+            on_select=select_grouping,
         )
 
     async def _choose_input_draft_memory(
@@ -5507,59 +5527,61 @@ def _session_choice_label(item: SessionCatalogEntry, *, theme: TuiTheme) -> str:
     return _truncate_session_title(title)
 
 
+def _sessions_in_domain(
+    sessions: tuple[SessionCatalogEntry, ...], domain: str
+) -> tuple[SessionCatalogEntry, ...]:
+    return tuple(
+        item
+        for item in sessions
+        if (
+            item.archived
+            if domain == "archived"
+            else not item.archived
+            and (
+                item.session_kind == "subagent"
+                if domain == "subagent"
+                else item.session_kind != "subagent" and item.namespace == domain
+            )
+        )
+    )
+
+
 def _session_choices(
     sessions: tuple[SessionCatalogEntry, ...],
     *,
     selected_session_id: str | None = None,
     today: date | None = None,
+    grouping: SessionGrouping = "date",
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[Choice, ...]:
     local_today = today or datetime.now().astimezone().date()
-    ordered = (
-        *(item for item in sessions if item.catalog_error is None and not item.archived),
-        *(item for item in sessions if item.catalog_error is None and item.archived),
-        *(item for item in sessions if item.catalog_error is not None),
-    )
-    return tuple(
-        Choice(
-            value=item.session_id,
-            label=_session_choice_label(item, theme=theme),
-            trailing="index error" if item.catalog_error is not None else item.status,
-            accent=(
-                theme.failure
-                if (item.catalog_error is not None or item.catalog_marks_unreadable)
-                else theme.warning
-                if item.health != "ok"
-                else None
-            ),
-            marker=(theme.selected_choice_marker if item.session_id == selected_session_id else ""),
-            group=(
-                "Index issues"
-                if item.catalog_error is not None
-                else "Archived"
-                if item.archived
-                else _session_date_group(item.last_activity_at, today=local_today)
-            ),
+    groups: dict[str, list[Choice]] = {}
+    for item in sessions:
+        group = (
+            item.workspace or "No workspace"
+            if grouping == "workspace"
+            else _session_date_group(item.last_activity_at, today=local_today)
         )
-        for item in ordered
-    )
-
-
-def _rename_session_choices(
-    sessions: tuple[SessionCatalogEntry, ...],
-    *,
-    selected_session_id: str | None = None,
-    theme: TuiTheme = DEFAULT_TUI_THEME,
-) -> tuple[Choice, ...]:
-    titles = {session.session_id: session.title for session in sessions}
-    return tuple(
-        replace(choice, edit_value=titles[choice.value])
-        for choice in _session_choices(
-            sessions,
-            selected_session_id=selected_session_id,
-            theme=theme,
+        groups.setdefault(group, []).append(
+            Choice(
+                value=item.session_id,
+                label=_session_choice_label(item, theme=theme),
+                edit_value=item.title,
+                trailing="index error" if item.catalog_error is not None else item.status,
+                accent=(
+                    theme.failure
+                    if (item.catalog_error is not None or item.catalog_marks_unreadable)
+                    else theme.warning
+                    if item.health != "ok"
+                    else None
+                ),
+                marker=(
+                    theme.selected_choice_marker if item.session_id == selected_session_id else ""
+                ),
+                group=group,
+            )
         )
-    )
+    return tuple(choice for group_choices in groups.values() for choice in group_choices)
 
 
 def _session_date_group(activity_at: datetime, *, today: date) -> str:

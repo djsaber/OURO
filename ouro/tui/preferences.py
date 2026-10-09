@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Literal
 
 from pydantic import ValidationError, field_validator
 
@@ -14,6 +15,7 @@ from ouro.local_io import read_text_atomic, write_model_atomic
 from ouro.tui.theme import DEFAULT_TUI_THEME, THEME_SATURATION_LEVELS, TUI_THEMES
 
 MAX_RECENT_WORKSPACES = 20
+SessionGrouping = Literal["date", "workspace"]
 
 
 class TuiPreferences(OuroModel):
@@ -21,6 +23,7 @@ class TuiPreferences(OuroModel):
     theme_saturation_level: int = 0
     reasoning_expanded: bool = False
     input_draft_memory_enabled: bool = True
+    session_grouping: SessionGrouping = "date"
     recent_actions: tuple[str, ...] = ()
     recent_workspaces: tuple[str, ...] = ()
 

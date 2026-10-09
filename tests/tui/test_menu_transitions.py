@@ -39,8 +39,8 @@ def _parent_frames(
     ("action", "title"),
     [
         ("Context compaction", "CONTEXT COMPACTION"),
-        ("Rename session", "RENAME SESSION"),
-        ("Delete session", "DELETE SESSIONS"),
+        ("Rename session", "RENAME SESSION • USER"),
+        ("Delete session", "DELETE SESSIONS • ARCHIVED"),
         ("+ task", "CREATE TASK"),
         ("Install plugin", "INSTALL PLUGIN"),
         ("Tool limits & file access", "TOOL LIMITS & FILE ACCESS"),

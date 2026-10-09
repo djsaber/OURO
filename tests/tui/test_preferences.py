@@ -179,12 +179,14 @@ def test_tui_components_do_not_hardcode_shared_design_tokens() -> None:
 def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> None:
     store = TuiPreferencesStore(tmp_path)
 
+    assert TuiPreferences().session_grouping == "date"
     assert TuiPreferences().reasoning_expanded is False
     assert TuiPreferences().input_draft_memory_enabled is True
     assert TuiPreferences().theme_saturation_level == 0
     store.save(
         TuiPreferences(
             theme="indigo",
+            session_grouping="workspace",
             theme_saturation_level=17,
             reasoning_expanded=False,
             input_draft_memory_enabled=False,
@@ -196,6 +198,7 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
     assert store.path == tmp_path / "config" / "tui.json"
     assert store.load() == TuiPreferences(
         theme="indigo",
+        session_grouping="workspace",
         theme_saturation_level=17,
         reasoning_expanded=False,
         input_draft_memory_enabled=False,
@@ -211,6 +214,8 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
 @pytest.mark.parametrize(
     "raw",
     (
+        {"session_grouping": "namespace"},
+        {"session_grouping": None},
         {"theme": "neon"},
         {"theme": "cobalt", "theme_saturation_level": -1},
         {"theme": "cobalt", "theme_saturation_level": THEME_SATURATION_LEVELS},
