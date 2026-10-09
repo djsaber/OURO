@@ -7,6 +7,7 @@ from ouro.core.billing import UsageFilter
 from ouro.core.usage_queries import UsageSummary, UsageSummaryGroup, UsageTotals
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.controller import TuiSystemStatus, project_usage_system_status
+from ouro.tui.welcome.components import WelcomeUsage
 from ouro.tui.widgets import WelcomePanel
 from tests.tui.helpers import run_ready_app, two_route_application
 
@@ -44,8 +45,8 @@ async def test_welcome_shows_usage_without_cost_or_billing_information(
     status = project_usage_system_status(TuiSystemStatus(), summary)
     app = OuroTuiApp(application=two_route_application(tmp_path))
     async with run_ready_app(app, size=(width, 40)) as pilot:
-        block = app.query_one(WelcomePanel)._usage
-        block.set_system_status(status)
+        block = app.query_one(WelcomeUsage)
+        app.query_one(WelcomePanel).set_system_status(status)
         await pilot.pause()
         assert block._requests.render().plain == f"{count} request(s)"
         assert block._requests.content_size.width >= block._requests.render().cell_length
@@ -88,8 +89,10 @@ async def test_hovered_day_shows_request_count_without_cost_or_billing_informati
     )
     app = OuroTuiApp(application=two_route_application(tmp_path))
     async with run_ready_app(app, size=(120, 40)) as pilot:
-        block = app.query_one(WelcomePanel)._usage
-        block.set_system_status(project_usage_system_status(TuiSystemStatus(), summary))
+        block = app.query_one(WelcomeUsage)
+        app.query_one(WelcomePanel).set_system_status(
+            project_usage_system_status(TuiSystemStatus(), summary)
+        )
         await pilot.pause()
         await pilot.hover(block._chart, offset=(0, 0))
         await pilot.pause()

@@ -4162,11 +4162,19 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             pilot,
             description="first child task result",
         )
+        child_history = app.query_one(ConversationHistory)
+        # Cache reuse and held scroll offsets require the terminal transcript,
+        # not only the completion status supplied by live activity updates.
+        await _wait_until(
+            lambda: bool(child_history.entries) and child_history.entries[-1].kind == "run",
+            pilot,
+            description="first child completion summary",
+        )
+        await child_history.wait_until_rendered()
+        await pilot._wait_for_screen()
         assert "Subagent" not in app.query_one(ActivityIndicator).render().plain
         first_child_text = "\n".join(
-            entry.text
-            for entry in app.query_one(ConversationHistory).entries
-            if entry.kind == "assistant"
+            entry.text for entry in child_history.entries if entry.kind == "assistant"
         )
         assert "first child paragraph 0" in first_child_text
         assert " + first child suffix" in first_child_text
@@ -11491,6 +11499,7 @@ async def test_plugin_commands_complete_and_execute_through_controller_boundary(
                     plugin_id="dev.ouro.demo",
                     name="hello",
                     description="Say hello",
+                    usage="<message>",
                 ),
             ),
         )
@@ -11504,7 +11513,7 @@ async def test_plugin_commands_complete_and_execute_through_controller_boundary(
         app.query_one(Composer).clear()
 
         await pilot.press("slash", *"hello world", "enter")
-        await pilot.pause()
+        await _wait_for_worker_group(app, pilot, group="plugin-command")
 
         assert executed == [("hello", "world")]
         history = app.query_one(ConversationHistory)

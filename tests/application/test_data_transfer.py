@@ -48,7 +48,7 @@ def _configure(home: Path) -> None:
         base_url="https://example.test/v1",
         api_key_env="EXAMPLE_KEY",
     )
-    MCPConfigStore(home).update("example", MCPServerConfigUpdate(command="example-server"))
+    MCPConfigStore(home).set_by_name("Example", MCPServerConfigUpdate(command="example-server"))
     AgentDefinitionsConfigManager(home).create(
         AgentDefinition(
             agent_id="review",
