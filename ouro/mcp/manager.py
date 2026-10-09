@@ -83,9 +83,7 @@ class MCPManager:
     def configure(self, config: MCPServerConfig) -> MCPServerRecord:
         current = self._servers.get(config.server_id)
         if current is not None and current.status in _ACTIVE_STATUSES:
-            raise MCPStateError(
-                f"cannot configure active MCP server {config.server_id}; stop it first"
-            )
+            raise MCPStateError(f"cannot configure active MCP server {config.name}; stop it first")
         status: MCPServerStatus = "configured" if config.enabled else "disabled"
         record = MCPServerRecord(config=config, status=status)
         self._servers[config.server_id] = record
@@ -102,7 +100,7 @@ class MCPManager:
             current = self._servers.get(config.server_id)
             if current is not None and current.status in _ACTIVE_STATUSES:
                 raise MCPStateError(
-                    f"cannot configure active MCP server {config.server_id}; stop it first"
+                    f"cannot configure active MCP server {config.name}; stop it first"
                 )
         return [self.configure(config) for config in configs]
 
@@ -154,7 +152,7 @@ class MCPManager:
         try:
             return self._servers[server_id]
         except KeyError as exc:
-            raise KeyError(f"unknown MCP server: {server_id}") from exc
+            raise KeyError("unknown MCP server") from exc
 
     def list(self) -> builtins.list[MCPServerRecord]:
         return [self._servers[server_id] for server_id in sorted(self._servers)]
@@ -475,7 +473,7 @@ class MCPManager:
         ]
         names = tuple(tool.definition.name for tool in tools)
         if len(names) != len(set(names)):
-            raise ValueError(f"MCP server {server_id} returned duplicate tool names")
+            raise ValueError(f"MCP server {config.name} returned duplicate tool names")
         if self._registry is not None:
             self._registry.replace(runtime.registered_tools, tools)
         runtime.discovered_tools = tuple(remote_tools)
@@ -512,7 +510,7 @@ class MCPManager:
         record = self.get(server_id)
         runtime = self._runtimes.get(server_id)
         if record.status != "connected" or runtime is None or runtime.session is None:
-            raise MCPDisconnectedError(f"MCP server is not connected: {server_id}")
+            raise MCPDisconnectedError(f"MCP server is not connected: {record.config.name}")
         return runtime
 
     def _unregister_tools(

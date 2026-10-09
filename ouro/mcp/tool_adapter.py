@@ -28,7 +28,7 @@ def adapt_mcp_tool(
     effect, effect_source = _resolve_effect(config, remote)
     definition = ToolDefinition(
         name=name,
-        display_name=remote.title,
+        display_name=f"{config.name}: {remote.title or remote.name}",
         description=remote.description or f"MCP tool {remote.name}",
         parameters_schema=remote.input_schema,
         result_schema=remote.output_schema,
@@ -70,10 +70,10 @@ def _resolve_effect(
 
 def exposed_tool_name(server_id: str, remote_name: str) -> str:
     if not remote_name or not _MCP_TOOL_NAME.fullmatch(remote_name):
-        raise ValueError(f"invalid MCP tool name from {server_id}: {remote_name!r}")
+        raise ValueError(f"invalid MCP tool name: {remote_name!r}")
     name = f"{server_id}__{remote_name}"
     if len(name) > 128:
-        raise ValueError(f"MCP tool identity is too long: {name}")
+        raise ValueError(f"MCP tool name is too long: {remote_name!r}")
     return name
 
 

@@ -655,6 +655,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         *,
         expected_revision: int | None = None,
         preferred_value: str | None = None,
+        title: str | None = None,
     ) -> bool:
         """Update the visible page when it still owns a background operation."""
 
@@ -664,6 +665,9 @@ class ChoiceScreen(ModalScreen[str | None]):
             return False
         previous_choices = self._choices
         self._choices = choices
+        if title is not None:
+            self._title = title
+            self.query_one("#choice-title", Static).update(title)
         self._refresh_options(
             needle=self.query_one("#choice-filter", Input).value,
             preferred_value=preferred_value,

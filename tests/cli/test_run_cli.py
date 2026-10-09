@@ -15,7 +15,7 @@ from ouro.config import ProviderConfigManager, openai_chat_completions_effort_re
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningRequest
-from ouro.mcp import MCPConfigStore, MCPServerConfig
+from ouro.mcp import MCPConfigStore, MCPServerConfigUpdate
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.providers import FauxProvider, OpenAIChatCompletionsProvider
 from ouro.sessions import LocalSessionStore
@@ -191,16 +191,16 @@ async def test_run_print_does_not_wait_for_configured_mcp_tool(
     monkeypatch,
     capsys,
 ) -> None:
-    MCPConfigStore(tmp_path).upsert(
-        MCPServerConfig(
-            server_id="echo",
+    config = MCPConfigStore(tmp_path).update(
+        None,
+        MCPServerConfigUpdate(
             name="Echo",
             command=sys.executable,
             args=["-c", "raise SystemExit(2)"],
             auto_start=True,
             permission_mode="auto",
             timeout_seconds=5,
-        )
+        ),
     )
     runtime = _runtime(
         tmp_path,
@@ -209,7 +209,7 @@ async def test_run_print_does_not_wait_for_configured_mcp_tool(
                 ProviderStreamEvent.from_tool_call(
                     {
                         "id": "mcp_call",
-                        "name": "echo__echo",
+                        "name": f"{config.server_id}__echo",
                         "arguments": {"value": "assembled"},
                     },
                 ),
@@ -234,9 +234,9 @@ async def test_run_print_does_not_wait_for_configured_mcp_tool(
     snapshot = runtime.store.load_session(session.session_id)
     tool_message = next(message for message in snapshot.messages if message.role == "tool_result")
     assert tool_message.tool_result is not None
-    assert tool_message.tool_result.tool_name == "echo__echo"
+    assert tool_message.tool_result.tool_name == f"{config.server_id}__echo"
     assert tool_message.tool_result.is_error is True
-    assert "unknown tool: echo__echo" in tool_message.text_content
+    assert f"unknown tool: {config.server_id}__echo" in tool_message.text_content
 
 
 async def test_run_json_composes_mcp_without_corrupting_machine_output(
@@ -244,16 +244,16 @@ async def test_run_json_composes_mcp_without_corrupting_machine_output(
     monkeypatch,
     capsys,
 ) -> None:
-    MCPConfigStore(tmp_path).upsert(
-        MCPServerConfig(
-            server_id="echo",
+    config = MCPConfigStore(tmp_path).update(
+        None,
+        MCPServerConfigUpdate(
             name="Echo",
             command=sys.executable,
             args=[str(MCP_ECHO_SERVER), "--transport", "stdio"],
             auto_start=True,
             permission_mode="auto",
             timeout_seconds=5,
-        )
+        ),
     )
     runtime = _runtime(
         tmp_path,
@@ -262,7 +262,7 @@ async def test_run_json_composes_mcp_without_corrupting_machine_output(
                 ProviderStreamEvent.from_tool_call(
                     {
                         "id": "json_mcp_call",
-                        "name": "echo__echo",
+                        "name": f"{config.server_id}__echo",
                         "arguments": {"value": "json"},
                     },
                 ),
@@ -292,16 +292,16 @@ async def test_run_print_isolates_mcp_start_failure(
     monkeypatch,
     capsys,
 ) -> None:
-    MCPConfigStore(tmp_path).upsert(
-        MCPServerConfig(
-            server_id="broken",
+    MCPConfigStore(tmp_path).update(
+        None,
+        MCPServerConfigUpdate(
             name="Broken",
             command=sys.executable,
             args=["-c", "raise SystemExit(2)"],
             auto_start=True,
             auto_reconnect=False,
             timeout_seconds=1,
-        )
+        ),
     )
     runtime = _runtime(
         tmp_path,

@@ -37,24 +37,25 @@ def test_mcp_cli_set_list_show_and_remove(tmp_path, capsys) -> None:
     )
     assert set_code == 0
     saved = json.loads(capsys.readouterr().out)["server"]
-    assert saved["server_id"] == "local"
+    assert "server_id" not in saved
+    assert saved["name"] == "Local tools"
     assert saved["args"] == ["***"]
     assert saved["env"] == {"MODE": "***"}
     assert saved["auto_start"] is True
 
     assert main(["mcp", "list", "--home", str(tmp_path), "--json"]) == 0
     listed = json.loads(capsys.readouterr().out)
-    assert [server["server_id"] for server in listed["servers"]] == ["local"]
+    assert [server["name"] for server in listed["servers"]] == ["Local tools"]
 
-    assert main(["mcp", "show", "local", "--home", str(tmp_path), "--json"]) == 0
+    assert main(["mcp", "show", "Local tools", "--home", str(tmp_path), "--json"]) == 0
     shown = json.loads(capsys.readouterr().out)["server"]
     assert shown["name"] == "Local tools"
     assert shown["permission_mode"] == "auto"
     assert shown["tool_effect_overrides"] == {"read": "read_only"}
 
-    assert main(["mcp", "remove", "local", "--home", str(tmp_path), "--json"]) == 0
+    assert main(["mcp", "remove", "Local tools", "--home", str(tmp_path), "--json"]) == 0
     removed = json.loads(capsys.readouterr().out)
-    assert removed["removed"] == "local"
+    assert removed["removed"] == "Local tools"
     assert MCPConfigStore(tmp_path).snapshot().servers == ()
 
 
@@ -64,6 +65,36 @@ def test_mcp_cli_rejects_invalid_tool_effect(capsys) -> None:
 
     assert exc_info.value.code == 2
     assert "tool effect must be read_only, state_changing, or unknown" in capsys.readouterr().err
+
+
+def test_mcp_cli_names_and_rename_never_expose_internal_identity(tmp_path, capsys) -> None:
+    common = ["--home", str(tmp_path)]
+    assert main(["mcp", "set", "本地工具", "--command", "python", *common]) == 0
+    created = MCPConfigStore(tmp_path).find_by_name("本地工具")
+    assert created is not None
+    assert created.server_id not in capsys.readouterr().out
+
+    for command in (["list"], ["show", "本地工具"]):
+        for output in ([], ["--json"]):
+            assert main(["mcp", *command, *common, *output]) == 0
+            result = capsys.readouterr().out
+            assert "本地工具" in result
+            assert created.server_id not in result
+            assert "server_id" not in result
+
+    assert main(["mcp", "set", "本地工具", "--name", "文件工具", *common, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["server"]["name"] == "文件工具"
+    renamed = MCPConfigStore(tmp_path).find_by_name("文件工具")
+    assert renamed is not None
+    assert renamed.server_id == created.server_id
+    assert main(["mcp", "show", "本地工具", *common]) == 2
+    capsys.readouterr()
+    assert main(["mcp", "show", created.server_id, *common]) == 2
+    capsys.readouterr()
+    assert main(["mcp", "remove", "文件工具", *common]) == 0
+    result = capsys.readouterr().out
+    assert "文件工具" in result
+    assert created.server_id not in result
 
 
 def test_mcp_cli_replaces_and_clears_collections(tmp_path, capsys) -> None:
@@ -321,11 +352,13 @@ def test_mcp_cli_check_connects_disabled_stdio_server(tmp_path, capsys) -> None:
     assert payload["status"] == "ok"
     assert payload["connection_status"] == "connected"
     assert payload["server"]["enabled"] is False
-    assert payload["tools"] == ["echo__echo"]
+    assert payload["tools"] == ["echo"]
     assert payload["server_info"]["name"] == "OURO MCP integration test"
-    persisted = MCPConfigStore(tmp_path).get("echo")
+    persisted = MCPConfigStore(tmp_path).find_by_name("echo")
     assert persisted is not None
     assert persisted.enabled is False
+    assert persisted.server_id not in json.dumps(payload)
+    assert "server_id" not in json.dumps(payload)
 
 
 def test_mcp_cli_check_failure_is_visible(tmp_path, capsys) -> None:
@@ -356,3 +389,7 @@ def test_mcp_cli_check_failure_is_visible(tmp_path, capsys) -> None:
     assert payload["connection_status"] == "failed"
     assert payload["error"]
     assert payload["diagnostics"]
+    config = MCPConfigStore(tmp_path).find_by_name("broken")
+    assert config is not None
+    assert config.server_id not in json.dumps(payload)
+    assert "server_id" not in json.dumps(payload)

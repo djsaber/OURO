@@ -31,19 +31,27 @@ transport 契约。stdio 和 Streamable HTTP 使用 SDK transport；legacy SSE �
   建立网络连接。
 
 配置持久化在 `config/mcp.json` 的 `mcp.servers`，由 `MCPConfigStore` 完整校验后原子替换，与其他配置域
-独立保存。公开配置输出必须隐藏 inline credential；运行错误和 diagnostic 必须用已解析值脱敏。
+独立保存。注册表键是 OURO 自动分配并持久化的内部 ID，名称变更不改变该 ID。用户配置只接受名称与连接、
+权限等业务字段；名称去除首尾空白后必须非空且唯一，按区分大小写的精确名称匹配。配置项中的 `server_id`
+字段不被接受。公开配置输出不包含内部 ID，且必须隐藏 inline credential；运行错误和 diagnostic 必须用已解析值脱敏。
 
-`MCPConfigStore.update` 接受类型化的 `MCPServerConfigUpdate`，负责 create/update 的完整候选校验和单次
-持久化。集合更新采用整体替换语义，显式空集合表示清空；stdio 与远程 transport 互换时，由配置层清除旧
-transport 的进程字段、URL/header 和 credential refs，CLI 不重复实现该规则。校验错误只公开字段位置与
+`MCPConfigStore.update` 接受类型化的 `MCPServerConfigUpdate`；内部 ID 为 `None` 时创建并分配 ID，
+否则只更新已有记录。`set_by_name` 在同一原子操作内按名称查找并创建或更新。两者负责完整候选校验、
+名称唯一性检查和单次持久化；校验失败不写入文件。集合更新采用整体替换语义，显式空集合表示清空；
+stdio 与远程 transport 互换时，由配置层清除旧 transport 的进程字段、URL/header 和 credential refs，
+CLI 不重复实现该规则。校验错误只公开字段位置与
 错误消息，不包含 Pydantic 输入值。
 
-CLI 管理面为 `mcp list/show/set/remove/check`。所有配置展示统一经过 `mcp_config_to_public_dict`；`check`
-用临时的 enabled、无重连副本执行单次真实握手和工具发现，不修改 durable 配置，并在返回前关闭 Manager。
-配置错误退出码为 2，连接检查失败为 3。
+CLI 管理面为 `mcp list/show/set/remove/check`，操作参数使用显示名称，`set --name` 设置新名称；不提供 ID
+查找或配置入口。TUI 复用分组内联编辑组件，在 DETAILS 分组编辑 Display name，菜单、确认框与通知使用
+该名称。应用视图保留 ID 供进程内关联，序列化时排除该字段。所有配置展示统一经过
+`mcp_config_to_public_dict`；`check` 用临时的 enabled、无重连副本执行单次真实握手和工具发现，
+不修改 durable 配置，并在返回前关闭 Manager。
+检查结果中的工具列表使用服务端工具原名。配置错误退出码为 2，连接检查失败为 3。
 
-远程工具公开名固定为 `<server_id>__<remote_tool_name>`。名称始终带 server 身份，因此不同 server 的同名
-工具不依赖连接顺序；非法名称、重复名称、过长 identity 和非法 JSON Schema 使该 server 启动或刷新失败。
+工具注册表与模型调用协议使用 `<server_id>__<remote_tool_name>` 作为内部工具地址，保证不同 server 的
+同名工具不依赖连接顺序，且 server 改名不改变调用关联。工具显示名称由 server 配置名称与工具标题
+（缺省为工具原名）组成。非法名称、重复名称、过长工具地址和非法 JSON Schema 使该 server 启动或刷新失败。
 
 ## 生命周期所有权
 

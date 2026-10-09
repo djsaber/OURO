@@ -21,7 +21,7 @@ from ouro.core.provider import (
 )
 from ouro.core.session_controls import HostSessionInput
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.mcp import MCPConfigStore, MCPRuntimeResource, MCPServerConfig
+from ouro.mcp import MCPConfigStore, MCPRuntimeResource, MCPServerConfigUpdate
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
@@ -260,22 +260,22 @@ async def test_supervisor_status_does_not_load_message_history(tmp_path, monkeyp
 @pytest.mark.asyncio
 async def test_supervisor_accepts_configured_mcp_runtime_resource(tmp_path) -> None:
     runtime = _runtime(tmp_path, FauxProvider())
-    MCPConfigStore(tmp_path).upsert(
-        MCPServerConfig(
-            server_id="manual",
+    config = MCPConfigStore(tmp_path).update(
+        None,
+        MCPServerConfigUpdate(
             name="Manual MCP",
             command="not-started",
             auto_start=False,
-        )
+        ),
     )
     resource = MCPRuntimeResource.from_config(runtime.store.root, runtime.tools)
     supervisor = RuntimeSupervisor(runtime, managed_resources=(resource,))
 
     await supervisor.start()
-    assert resource.manager.get("manual").status == "configured"
+    assert resource.manager.get(config.server_id).status == "configured"
 
     await supervisor.shutdown()
-    assert resource.manager.get("manual").status == "stopped"
+    assert resource.manager.get(config.server_id).status == "stopped"
 
 
 @pytest.mark.asyncio

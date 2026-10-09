@@ -372,7 +372,7 @@ class TuiAgentDefinitionConfiguration:
 
 @dataclass(frozen=True)
 class TuiMCPServerConfiguration:
-    server_id: str
+    server_id: str | None
     name: str
     transport: MCPTransportInput
     target: str | None
@@ -1686,11 +1686,10 @@ class TuiController:
             return previous
 
         def update() -> tuple[MCPServerConfigView, MCPServerConfig]:
-            catalog = configuration.save_mcp_server(
+            saved = configuration.save_mcp_server(
                 server_id,
                 MCPServerConfigInput(enabled=enabled),
             )
-            saved = next(item for item in catalog.servers if item.server_id == server_id)
             config = configuration.mcp.get(server_id)
             assert config is not None
             return saved, config
@@ -1717,7 +1716,11 @@ class TuiController:
         draft: TuiMCPServerConfiguration,
     ) -> MCPServerConfigView:
         configuration = self._require_configuration()
-        previous = await asyncio.to_thread(configuration.mcp.get, draft.server_id)
+        previous = (
+            await asyncio.to_thread(configuration.mcp.get, draft.server_id)
+            if draft.server_id is not None
+            else None
+        )
         saved, config = await asyncio.to_thread(self._save_mcp_configuration, draft)
         self._runtime()
         assert self._application is not None
@@ -1725,14 +1728,16 @@ class TuiController:
             await self._application.reconcile_mcp_configuration(config)
         except Exception:
             if previous is None:
-                await asyncio.to_thread(configuration.remove_mcp_server, draft.server_id)
+                await asyncio.to_thread(configuration.remove_mcp_server, saved.server_id)
                 raise
             await asyncio.to_thread(
                 configuration.save_mcp_server,
-                draft.server_id,
-                MCPServerConfigInput.model_validate(previous.model_dump(mode="python")),
+                previous.server_id,
+                MCPServerConfigInput.model_validate(
+                    previous.model_dump(mode="python", exclude={"server_id", "metadata"})
+                ),
             )
-            restored = configuration.mcp.get(draft.server_id)
+            restored = configuration.mcp.get(previous.server_id)
             assert restored is not None
             await self._application.reconcile_mcp_configuration(restored)
             raise
@@ -1770,9 +1775,8 @@ class TuiController:
                 payload[field_name] = value
         update = MCPServerConfigInput.model_validate(payload)
         configuration = self._require_configuration()
-        catalog = configuration.save_mcp_server(draft.server_id, update)
-        saved = next(item for item in catalog.servers if item.server_id == draft.server_id)
-        config = configuration.mcp.get(draft.server_id)
+        saved = configuration.save_mcp_server(draft.server_id, update)
+        config = configuration.mcp.get(saved.server_id)
         assert config is not None
         return saved, config
 

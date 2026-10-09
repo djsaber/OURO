@@ -194,6 +194,7 @@ async def test_manager_owns_connection_discovery_invocation_and_cleanup() -> Non
     assert connected.tool_names == ("fs__read", "fs__stat")
     definition = registry.get("fs__read").definition
     assert definition.source == "mcp"
+    assert definition.display_name == "Filesystem: Read"
     assert definition.permission_mode == "approval"
     assert definition.effect == "read_only"
     assert definition.metadata["effect_source"] == "mcp_annotation"
@@ -336,12 +337,15 @@ async def test_tool_policy_update_reprojects_connected_tools_without_restarting(
     before_revision = registry.revision
     updated = manager.apply_config(
         _config(
+            name="Renamed",
             permission_mode="approval",
             tool_effect_overrides={"read": "state_changing"},
         )
     )
 
     definition = registry.get("fs__read").definition
+    assert definition.display_name == "Renamed: Read"
+    assert updated.config.server_id == "fs"
     assert updated.config.permission_mode == "approval"
     assert updated.config.tool_effect_overrides == {"read": "state_changing"}
     assert definition.permission_mode == "approval"
@@ -358,6 +362,7 @@ async def test_tool_policy_update_reprojects_connected_tools_without_restarting(
     assert restarted.status == "connected"
     assert factory.open_count == 2
     assert factory.opened_configs[1].permission_mode == "approval"
+    assert factory.opened_configs[1].name == "Renamed"
     assert factory.opened_configs[1].tool_effect_overrides == {"read": "state_changing"}
     await manager.close()
 

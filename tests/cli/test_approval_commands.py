@@ -13,7 +13,7 @@ from ouro.cli.approval_commands import (
 )
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
-from ouro.mcp import MCPConfigStore, MCPRuntimeResource, MCPServerConfig
+from ouro.mcp import MCPConfigStore, MCPRuntimeResource, MCPServerConfigUpdate
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
@@ -92,15 +92,15 @@ async def test_approve_command_continues_while_mcp_reconnects_in_background(
     tmp_path,
     capsys,
 ) -> None:
-    MCPConfigStore(tmp_path).upsert(
-        MCPServerConfig(
-            server_id="echo",
+    config = MCPConfigStore(tmp_path).update(
+        None,
+        MCPServerConfigUpdate(
             name="Echo",
             command=sys.executable,
             args=[str(MCP_ECHO_SERVER), "--transport", "stdio"],
             auto_start=True,
             timeout_seconds=5,
-        )
+        ),
     )
     initial_runtime = _runtime(
         tmp_path,
@@ -109,7 +109,7 @@ async def test_approve_command_continues_while_mcp_reconnects_in_background(
                 ProviderStreamEvent.from_tool_call(
                     {
                         "id": "mcp_approval",
-                        "name": "echo__echo",
+                        "name": f"{config.server_id}__echo",
                         "arguments": {"value": "approved MCP"},
                     },
                 ),
@@ -121,7 +121,7 @@ async def test_approve_command_continues_while_mcp_reconnects_in_background(
         initial_runtime.store.root,
         initial_runtime.tools,
     ) as mcp:
-        await mcp.manager.start("echo")
+        await mcp.manager.start(config.server_id)
         waiting = await initial_runtime.run("use approved MCP")
     assert waiting.run.status == "waiting_approval"
 
@@ -147,9 +147,9 @@ async def test_approve_command_continues_while_mcp_reconnects_in_background(
     snapshot = resumed_runtime.store.load_session(waiting.session.session_id)
     tool_message = next(message for message in snapshot.messages if message.role == "tool_result")
     assert tool_message.tool_result is not None
-    assert tool_message.tool_result.tool_name == "echo__echo"
+    assert tool_message.tool_result.tool_name == f"{config.server_id}__echo"
     assert tool_message.tool_result.is_error is True
-    assert "unknown tool: echo__echo" in tool_message.text_content
+    assert f"unknown tool: {config.server_id}__echo" in tool_message.text_content
     assert resumed_runtime.tools.names() == _expected_builtin_tool_names()
 
 

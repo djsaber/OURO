@@ -37,7 +37,7 @@ def list_mcp_configs(
         auto_start = "auto" if server["auto_start"] else "manual"
         target = server["command"] if server["transport"] == "stdio" else server["url"]
         lines.append(
-            f"- {server['server_id']} {server['transport']} target={target} {enabled} {auto_start}"
+            f"- {server['name']} {server['transport']} target={target} {enabled} {auto_start}"
         )
     if not servers:
         lines.append("(none)")
@@ -46,14 +46,14 @@ def list_mcp_configs(
 
 
 def show_mcp_config(
-    server_id: str,
+    server_name: str,
     *,
     home: str | Path | None = None,
     json_mode: bool = False,
 ) -> int:
     try:
         facade = ConfigurationFacade(home)
-        config = facade.mcp_server(server_id)
+        config = facade.mcp_server_by_name(server_name)
     except OuroError as exc:
         _print_mcp_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -62,7 +62,7 @@ def show_mcp_config(
     if json_mode:
         _print_json(
             status="ok",
-            config_path=str(facade.config_path),
+            config_path=str(facade.mcp.config_path),
             server=public,
         )
         return 0
@@ -71,8 +71,7 @@ def show_mcp_config(
     print(
         "\n".join(
             [
-                f"MCP server: {public['server_id']}",
-                f"Name: {public['name']}",
+                f"MCP server: {public['name']}",
                 f"Transport: {public['transport']}",
                 f"Target: {target}",
                 f"Enabled: {'yes' if public['enabled'] else 'no'}",
@@ -80,7 +79,7 @@ def show_mcp_config(
                 f"Auto reconnect: {'yes' if public['auto_reconnect'] else 'no'}",
                 f"Permission: {public['permission_mode']}",
                 f"Tool effects: {public['tool_effect_overrides']}",
-                f"Config: {facade.config_path}",
+                f"Config: {facade.mcp.config_path}",
             ]
         )
     )
@@ -88,7 +87,7 @@ def show_mcp_config(
 
 
 def set_mcp_config(
-    server_id: str,
+    server_name: str,
     update: MCPServerConfigUpdate,
     *,
     home: str | Path | None = None,
@@ -96,8 +95,7 @@ def set_mcp_config(
 ) -> int:
     try:
         facade = ConfigurationFacade(home)
-        catalog = facade.save_mcp_server(server_id, update)
-        config = next(item for item in catalog.servers if item.server_id == server_id)
+        config = facade.set_mcp_server_by_name(server_name, update)
     except OuroError as exc:
         _print_mcp_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -106,23 +104,24 @@ def set_mcp_config(
     if json_mode:
         _print_json(
             status="ok",
-            config_path=catalog.config_path,
+            config_path=str(facade.mcp.config_path),
             server=public,
         )
         return 0
-    print(f"MCP server saved: {server_id}")
+    print(f"MCP server saved: {config.name}")
     return 0
 
 
 def remove_mcp_config(
-    server_id: str,
+    server_name: str,
     *,
     home: str | Path | None = None,
     json_mode: bool = False,
 ) -> int:
     try:
         facade = ConfigurationFacade(home)
-        catalog = facade.remove_mcp_server(server_id)
+        config = facade.mcp_server_by_name(server_name)
+        catalog = facade.remove_mcp_server(config.server_id)
     except OuroError as exc:
         _print_mcp_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -131,45 +130,48 @@ def remove_mcp_config(
         _print_json(
             status="ok",
             config_path=catalog.config_path,
-            removed=server_id,
+            removed=server_name,
         )
         return 0
-    print(f"MCP server removed: {server_id}")
+    print(f"MCP server removed: {server_name}")
     return 0
 
 
 async def check_mcp_connection(
-    server_id: str,
+    server_name: str,
     *,
     home: str | Path | None = None,
     json_mode: bool = False,
 ) -> int:
     try:
         facade = ConfigurationFacade(home)
-        check = await facade.check_mcp_server(server_id)
+        config = facade.mcp_server_by_name(server_name)
+        check = await facade.check_mcp_server(config.server_id)
     except OuroError as exc:
         _print_mcp_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
     result: dict[str, Any] = {
         "status": "ok" if check.ok else "failed",
-        "config_path": str(facade.config_path),
+        "config_path": str(facade.mcp.config_path),
         "server": check.server.model_dump(mode="json"),
         "connection_status": check.status,
         "server_info": check.server_info,
         "tools": list(check.tool_names),
         "error": check.error,
-        "diagnostics": [item.model_dump(mode="json") for item in check.diagnostics],
+        "diagnostics": [
+            item.model_dump(mode="json", exclude_none=True) for item in check.diagnostics
+        ],
     }
 
     if json_mode:
         print(json.dumps(result, ensure_ascii=False))
     elif result["status"] == "ok":
         info = result["server_info"]
-        server_name = info["name"] if isinstance(info, dict) else server_id
-        print(f"MCP check OK: {server_id} ({server_name}), tools={len(result['tools'])}")
+        implementation_name = info["name"] if isinstance(info, dict) else config.name
+        print(f"MCP check OK: {config.name} ({implementation_name}), tools={len(check.tool_names)}")
     else:
-        print(f"MCP check failed: {server_id} - {result['error']}", file=sys.stderr)
+        print(f"MCP check failed: {server_name} - {result['error']}", file=sys.stderr)
     return 0 if result["status"] == "ok" else 3
 
 

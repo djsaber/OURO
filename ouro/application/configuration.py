@@ -147,20 +147,30 @@ class ConfigurationFacade:
     def mcp_server(self, server_id: str) -> MCPServerConfigView:
         config = self.mcp.get(server_id)
         if config is None:
-            raise ConfigError(f"MCP server not found: {server_id}")
+            raise ConfigError("MCP server not found")
         return mcp_server_view(config)
+
+    def mcp_server_by_name(self, name: str) -> MCPServerConfigView:
+        config = self.mcp.find_by_name(name)
+        if config is None:
+            raise ConfigError(f"MCP server not found: {name}")
+        return mcp_server_view(config)
+
+    def set_mcp_server_by_name(
+        self, name: str, update: MCPServerConfigUpdate
+    ) -> MCPServerConfigView:
+        return mcp_server_view(self.mcp.set_by_name(name, update))
 
     def save_mcp_server(
         self,
-        server_id: str,
+        server_id: str | None,
         update: MCPServerConfigUpdate | MCPServerConfigInput,
-    ) -> MCPConfigCatalogView:
+    ) -> MCPServerConfigView:
         if isinstance(update, MCPServerConfigInput):
             update = MCPServerConfigUpdate.model_validate(
                 update.model_dump(mode="python", exclude_unset=True)
             )
-        self.mcp.update(server_id, update)
-        return self.mcp_catalog(change=configuration_change("mcp", "updated", "next_runtime"))
+        return mcp_server_view(self.mcp.update(server_id, update))
 
     def remove_mcp_server(self, server_id: str) -> MCPConfigCatalogView:
         self.mcp.remove(server_id)
@@ -169,7 +179,7 @@ class ConfigurationFacade:
     async def check_mcp_server(self, server_id: str) -> MCPConnectionCheckView:
         config = self.mcp.get(server_id)
         if config is None:
-            raise ConfigError(f"MCP server not found: {server_id}")
+            raise ConfigError("MCP server not found")
         result = await check_mcp_server_connection(config)
         return MCPConnectionCheckView(
             ok=result.ok,
@@ -194,7 +204,6 @@ class ConfigurationFacade:
                     ),
                     component="mcp.connection",
                     message=redact_text(item.message),
-                    server_id=item.server_id,
                     occurred_at=item.created_at,
                     recoverable=True,
                 )

@@ -36,8 +36,8 @@ def test_mcp_configuration_is_exposed_only_through_redacted_application_views(
     tmp_path,
 ) -> None:
     facade = ConfigurationFacade(tmp_path)
-    catalog = facade.save_mcp_server(
-        "remote",
+    saved = facade.save_mcp_server(
+        None,
         MCPServerConfigUpdate(
             name="Remote",
             transport="http",
@@ -47,8 +47,10 @@ def test_mcp_configuration_is_exposed_only_through_redacted_application_views(
         ),
     )
 
-    payload = catalog.model_dump_json()
-    server = facade.mcp_server("remote")
+    payload = facade.mcp_catalog().model_dump_json()
+    server = facade.mcp_server(saved.server_id)
+    assert saved.server_id not in payload
+    assert "server_id" not in payload
     assert "url-secret" not in payload
     assert "header-secret" not in payload
     assert "credential-secret" not in payload

@@ -1043,7 +1043,6 @@ class MCPConfigurationScreen(EditableChoiceScreen):
         self._existing = existing
         transport = existing.transport if existing is not None else "stdio"
         self._values = {
-            "mcp-server-id": existing.server_id if existing is not None else "",
             "mcp-name": existing.name if existing is not None else "",
             "mcp-transport": transport,
             "mcp-target": (
@@ -1124,10 +1123,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
         self.dismiss(draft)  # type: ignore[arg-type]
 
     def _draft(self) -> TuiMCPServerConfiguration:
-        server_id = self._values["mcp-server-id"]
         name = self._values["mcp-name"]
-        if not server_id:
-            raise ValueError("Server ID is required")
         if not name:
             raise ValueError("Display name is required")
         transport = cast(MCPTransportInput, self._values["mcp-transport"])
@@ -1140,7 +1136,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
         ):
             raise ValueError("Tool effects must be read_only, state_changing, or unknown")
         return TuiMCPServerConfiguration(
-            server_id=server_id,
+            server_id=self._existing.server_id if self._existing is not None else None,
             name=name,
             transport=transport,
             target=target,
@@ -1186,19 +1182,10 @@ class MCPConfigurationScreen(EditableChoiceScreen):
         preserved = theme_for(self).inline_separator.join(("Configured", "preserved"))
         return (
             Choice(
-                "mcp-server-id",
-                "Server ID",
-                trailing=self._values["mcp-server-id"] or "Required",
-                group="IDENTITY",
-                disabled=existing is not None,
-                edit_value=self._values["mcp-server-id"],
-                edit_placeholder="Enter a unique server ID",
-            ),
-            Choice(
                 "mcp-name",
                 "Display name",
                 trailing=self._values["mcp-name"] or "Required",
-                group="IDENTITY",
+                group="DETAILS",
                 edit_value=self._values["mcp-name"],
                 edit_placeholder="Enter a display name",
             ),

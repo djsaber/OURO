@@ -38,8 +38,9 @@ async def check_mcp_server_connection(
             "max_reconnect_attempts": 0,
         }
     )
+    registry = ToolRegistry()
     manager = MCPManager(
-        registry=ToolRegistry(),
+        registry=registry,
         client_factory=client_factory,
         resolve_credential=resolve_credential,
     )
@@ -50,7 +51,10 @@ async def check_mcp_server_connection(
             ok=record.status == "connected",
             status=record.status,
             server_info=record.server_info,
-            tool_names=record.tool_names,
+            tool_names=tuple(
+                str(registry.get(name).definition.metadata["mcp_tool_name"])
+                for name in record.tool_names
+            ),
             error=record.error,
             diagnostics=tuple(manager.diagnostics(config.server_id)),
         )

@@ -56,6 +56,7 @@ def configuration_change(
 
 def mcp_server_view(config: MCPServerConfig) -> MCPServerConfigView:
     public = mcp_config_to_public_dict(config)
+    public["server_id"] = config.server_id
     public.pop("metadata", None)
     return MCPServerConfigView.model_validate(public)
 

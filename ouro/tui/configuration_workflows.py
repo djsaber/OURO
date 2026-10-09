@@ -324,14 +324,14 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                     return None
                 if tool.permission_control == "tool":
                     self.notify(
-                        f"{tool.name} permissions are controlled by its plugin",
+                        f"{tool.display_name} permissions are controlled by its plugin",
                         severity="warning",
                     )
                     return None
                 active_tool = tool
                 current = tool.permission_override or "default"
                 screen.replace_page(
-                    title=f"TOOL PERMISSION{theme_for(self).inline_separator}{tool.name}",
+                    title=f"TOOL PERMISSION{theme_for(self).inline_separator}{tool.display_name}",
                     placeholder="Choose a permission…",
                     choices=_tool_permission_choices(
                         current,
@@ -789,7 +789,13 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             async def select_action(selected: str) -> tuple[Choice, ...] | None:
                 nonlocal config, status, loading_action
                 if selected == "edit":
-                    await self._edit_mcp(config, menu=menu)
+                    saved = await self._edit_mcp(config, menu=menu)
+                    if saved is not None:
+                        config = saved
+                        menu.update_choices(
+                            _mcp_management_choices(config, status, theme=theme_for(self)),
+                            title=f"MCP{theme_for(self).inline_separator}{config.name}",
+                        )
                 elif selected == "toggle":
                     if not await self._set_mcp_enabled(
                         server_id,
@@ -827,7 +833,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                         theme=theme_for(self),
                     )
                 elif selected == "remove":
-                    if await self._remove_mcp(server_id, menu=menu):
+                    if await self._remove_mcp(config, menu=menu):
                         await menu.pop_page_refreshed()
                 return None
 
@@ -855,31 +861,32 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         elif selected in {"start", "stop", "restart", "refresh"}:
             await self._run_mcp_action(server_id, selected)
         elif selected == "remove":
-            await self._remove_mcp(server_id)
+            await self._remove_mcp(config)
 
     async def _edit_mcp(
         self,
         existing: MCPServerConfigView | None,
         *,
         menu: ChoiceScreen | None = None,
-    ) -> None:
+    ) -> MCPServerConfigView | None:
         screen = MCPConfigurationScreen(existing, theme=theme_for(self))
         draft = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
         )
         if draft is None:
-            return
+            return None
         mcp_draft = cast(TuiMCPServerConfiguration, draft)
         try:
             saved = await self._controller.save_mcp_configuration(mcp_draft)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
-            return
+            return None
         self._refresh_mcp_system_status()
         self.notify(
-            f"MCP configuration saved: {saved.server_id}{theme_for(self).inline_separator}"
+            f"MCP configuration saved: {saved.name}{theme_for(self).inline_separator}"
             "tool policy active; restart for connection changes"
         )
+        return saved
 
     async def _check_mcp(self, server_id: str) -> None:
         try:
@@ -889,12 +896,12 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             return
         if result.ok:
             self.notify(
-                f"MCP check passed: {server_id}{theme_for(self).inline_separator}"
+                f"MCP check passed: {result.server.name}{theme_for(self).inline_separator}"
                 f"{len(result.tool_names)} tool(s)"
             )
         else:
             await self.query_one(ConversationView).add_notice(
-                f"MCP check failed: {server_id}{theme_for(self).inline_separator}"
+                f"MCP check failed: {result.server.name}{theme_for(self).inline_separator}"
                 f"{result.error or result.status}",
                 error=True,
             )
@@ -918,7 +925,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         self._refresh_mcp_system_status()
         if status.status == "failed":
             self.notify(
-                f"MCP {server_id}: {status.status}{theme_for(self).inline_separator}"
+                f"MCP {status.name}: {status.status}{theme_for(self).inline_separator}"
                 f"{status.tool_count} tool(s)",
                 severity="error",
             )
@@ -926,13 +933,13 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
 
     async def _remove_mcp(
         self,
-        server_id: str,
+        config: MCPServerConfigView,
         *,
         menu: ChoiceScreen | None = None,
     ) -> bool:
         screen = ConfirmationScreen(
             title="DELETE MCP",
-            message=(f"Delete {server_id}? Takes effect after restarting the app."),
+            message=(f"Delete {config.name}? Takes effect after restarting the app."),
             confirm_label="Delete",
         )
         selected = await (
@@ -941,12 +948,12 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         if not ConfirmationScreen.confirmed(selected):
             return False
         try:
-            await self._controller.remove_mcp_configuration(server_id)
+            await self._controller.remove_mcp_configuration(config.server_id)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return False
         self._refresh_mcp_system_status()
-        self.notify(f"MCP deleted: {server_id} (next restart)")
+        self.notify(f"MCP deleted: {config.name} (next restart)")
         return True
 
     async def _set_mcp_enabled(self, server_id: str, *, enabled: bool) -> bool:

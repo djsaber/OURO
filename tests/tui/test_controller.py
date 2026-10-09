@@ -1237,7 +1237,7 @@ async def test_controller_creates_mcp_configuration(tmp_path: Path) -> None:
     try:
         saved = await controller.save_mcp_configuration(
             TuiMCPServerConfiguration(
-                server_id="local",
+                server_id=None,
                 name="Local server",
                 transport="stdio",
                 target="python",
@@ -1259,9 +1259,74 @@ async def test_controller_creates_mcp_configuration(tmp_path: Path) -> None:
             )
         )
 
-        assert saved.server_id == "local"
-        assert configuration.mcp_server("local") == saved
-        assert controller.mcp_servers()[0].server_id == "local"
+        assert saved.server_id
+        assert saved.server_id != saved.name
+        assert configuration.mcp_server(saved.server_id) == saved
+        assert controller.mcp_servers()[0].server_id == saved.server_id
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing", [False, True])
+async def test_controller_rolls_back_mcp_save_when_runtime_reconciliation_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing: bool
+) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    previous = (
+        configuration.set_mcp_server_by_name(
+            "Original", MCPServerConfigUpdate(command="python", env={"TOKEN": "secret"})
+        )
+        if existing
+        else None
+    )
+    before = configuration.mcp.snapshot().servers
+    application = _reasoning_application(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+        configuration=configuration,
+    )
+    await controller.start()
+    reconcile = application.reconcile_mcp_configuration
+    attempts = 0
+
+    async def fail_first(config):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("Cannot reconcile")
+        return await reconcile(config)
+
+    monkeypatch.setattr(application, "reconcile_mcp_configuration", fail_first)
+    draft = TuiMCPServerConfiguration(
+        server_id=previous.server_id if previous is not None else None,
+        name="Changed",
+        transport="stdio",
+        target="python",
+        args=None,
+        env=None,
+        inherit_env=None,
+        cwd=None,
+        headers=None,
+        credential_refs=None,
+        enabled=True,
+        auto_start=False,
+        auto_reconnect=True,
+        max_reconnect_attempts=3,
+        reconnect_backoff_seconds=0.5,
+        timeout_seconds=30.0,
+        health_check_interval_seconds=30.0,
+        permission_mode="approval",
+        tool_effect_overrides=None,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="Cannot reconcile"):
+            await controller.save_mcp_configuration(draft)
+        assert configuration.mcp.snapshot().servers == before
+        if previous is not None:
+            assert controller.mcp_servers()[0].name == "Original"
     finally:
         await controller.close()
 
@@ -1271,7 +1336,7 @@ async def test_controller_hot_updates_mcp_tool_policy_without_reconfiguring_conn
     tmp_path: Path,
 ) -> None:
     configuration = ConfigurationFacade(tmp_path)
-    configuration.save_mcp_server(
+    created = configuration.set_mcp_server_by_name(
         "local",
         MCPServerConfigUpdate(command="python", auto_start=False),
     )
@@ -1285,12 +1350,12 @@ async def test_controller_hot_updates_mcp_tool_policy_without_reconfiguring_conn
 
     try:
         runtime_before = controller.mcp_servers()[0]
-        assert runtime_before.server_id == "local"
+        assert runtime_before.server_id == created.server_id
         assert runtime_before.status == "configured"
 
         saved = await controller.save_mcp_configuration(
             TuiMCPServerConfiguration(
-                server_id="local",
+                server_id=created.server_id,
                 name="Renamed",
                 transport="stdio",
                 target=None,
@@ -1315,23 +1380,23 @@ async def test_controller_hot_updates_mcp_tool_policy_without_reconfiguring_conn
         assert saved.name == "Renamed"
         assert saved.permission_mode == "deny"
         assert saved.tool_effect_overrides == {"read": "read_only"}
-        persisted = configuration.mcp.get("local")
+        persisted = configuration.mcp.get(created.server_id)
         assert persisted is not None
         assert persisted.command == "python"
         assert persisted.args == ["-m", "server"]
-        runtime_config = controller._application.mcp.manager.get("local").config
+        runtime_config = controller._application.mcp.manager.get(created.server_id).config
         assert runtime_config.permission_mode == "deny"
         assert runtime_config.tool_effect_overrides == {"read": "read_only"}
         assert controller.mcp_servers()[0].name == "Renamed"
 
-        disabled = await controller.set_mcp_enabled("local", enabled=False)
+        disabled = await controller.set_mcp_enabled(created.server_id, enabled=False)
         assert disabled.enabled is False
-        assert configuration.mcp_server("local").enabled is False
+        assert configuration.mcp_server(created.server_id).enabled is False
         assert controller.mcp_servers()[0].status == "disabled"
 
-        enabled = await controller.set_mcp_enabled("local", enabled=True)
+        enabled = await controller.set_mcp_enabled(created.server_id, enabled=True)
         assert enabled.enabled is True
-        assert configuration.mcp_server("local").enabled is True
+        assert configuration.mcp_server(created.server_id).enabled is True
         assert controller.mcp_servers()[0].status == "configured"
     finally:
         await controller.close()

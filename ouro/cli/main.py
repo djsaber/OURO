@@ -580,18 +580,18 @@ def _mcp_command(args: argparse.Namespace) -> int:
     if args.mcp_command == "list":
         return list_mcp_configs(home=home, json_mode=args.json)
     if args.mcp_command == "show":
-        return show_mcp_config(args.server_id, home=home, json_mode=args.json)
+        return show_mcp_config(args.server_name, home=home, json_mode=args.json)
     if args.mcp_command == "set":
         return set_mcp_config(
-            args.server_id,
+            args.server_name,
             _mcp_config_update(args),
             home=home,
             json_mode=args.json,
         )
     if args.mcp_command == "remove":
-        return remove_mcp_config(args.server_id, home=home, json_mode=args.json)
+        return remove_mcp_config(args.server_name, home=home, json_mode=args.json)
     if args.mcp_command == "check":
-        return asyncio.run(check_mcp_connection(args.server_id, home=home, json_mode=args.json))
+        return asyncio.run(check_mcp_connection(args.server_name, home=home, json_mode=args.json))
     raise AssertionError(f"unknown MCP command: {args.mcp_command}")
 
 

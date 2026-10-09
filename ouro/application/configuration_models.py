@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from ouro.application.dto import ApplicationDTO, Diagnostic
 from ouro.config.prompts import PromptConfig
@@ -257,7 +257,7 @@ class CompactionConfigInput(ApplicationDTO):
 
 
 class MCPServerConfigView(ApplicationDTO):
-    server_id: str
+    server_id: str = Field(exclude=True)
     name: str
     transport: Literal["stdio", "http", "sse"]
     command: str | None = None
@@ -284,6 +284,8 @@ class MCPServerConfigView(ApplicationDTO):
 class MCPServerConfigInput(ApplicationDTO):
     """Host-neutral partial command for one canonical MCP server configuration."""
 
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     name: str | None = None
     transport: MCPTransportInput | None = None
     command: str | None = None
@@ -306,7 +308,7 @@ class MCPServerConfigInput(ApplicationDTO):
 
 
 class MCPRuntimeServerView(ApplicationDTO):
-    server_id: str
+    server_id: str = Field(exclude=True)
     name: str
     transport: MCPTransportInput
     status: MCPConnectionStatus

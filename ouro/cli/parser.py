@@ -1514,13 +1514,13 @@ def _add_mcp_parser(subparsers: argparse._SubParsersAction) -> None:
     _add_mcp_common_output_args(list_parser)
 
     show_parser = mcp_subparsers.add_parser("show", help="Show an MCP server")
-    show_parser.add_argument("server_id", help="MCP server id")
+    show_parser.add_argument("server_name", help="MCP display name (exact match)")
     _add_mcp_common_output_args(show_parser)
 
     set_parser = mcp_subparsers.add_parser("set", help="Create or update an MCP server")
-    set_parser.add_argument("server_id", help="MCP server id")
+    set_parser.add_argument("server_name", help="MCP display name (exact match)")
     set_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
-    set_parser.add_argument("--name", help="Display name (defaults to server id)")
+    set_parser.add_argument("--name", help="New display name")
     set_parser.add_argument("--transport", choices=("stdio", "http", "sse"))
     set_parser.add_argument(
         "--command",
@@ -1608,11 +1608,11 @@ def _add_mcp_parser(subparsers: argparse._SubParsersAction) -> None:
     set_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     remove_parser = mcp_subparsers.add_parser("remove", help="Remove an MCP server")
-    remove_parser.add_argument("server_id", help="MCP server id")
+    remove_parser.add_argument("server_name", help="MCP display name (exact match)")
     _add_mcp_common_output_args(remove_parser)
 
     check_parser = mcp_subparsers.add_parser("check", help="Check an MCP server connection")
-    check_parser.add_argument("server_id", help="MCP server id")
+    check_parser.add_argument("server_name", help="MCP display name (exact match)")
     _add_mcp_common_output_args(check_parser)
 
 
