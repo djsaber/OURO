@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+from array import array
 from functools import lru_cache
+from math import exp
 
-import numpy as np
+import arrayfunc as af  # type: ignore[import-untyped]
 from rich.color import Color
 from rich.segment import Segment
 from rich.style import Style
 from textual.strip import Strip
 
-from ouro.tui.welcome.dot_matrix.field import DotArtwork, DotGrid
+from ouro.tui.welcome.dot_matrix.field import DotArtwork, DotGrid, Field, buffer, clip, maximum
 
-_BRAILLE_BITS = np.array(((1, 8), (2, 16), (4, 32), (64, 128)), dtype=np.uint8)
+_BRAILLE_BITS = (1, 8, 2, 16, 4, 32, 64, 128)
+_THRESHOLDS = (0.08, 0.48, 0.68, 0.28, 0.23, 0.63, 0.43, 0.13)
 
 
 @lru_cache(maxsize=4096)
@@ -21,49 +24,109 @@ def _led_style(red: int, green: int, blue: int) -> Style:
 
 
 class PhosphorRaster:
-    """One size, one artwork, one bounded persistence buffer; no I/O or clocks."""
+    """One size, one prepared sampler, bounded persistence and encoding buffers."""
 
     def __init__(self, style: DotArtwork, columns: int, rows: int) -> None:
         self.grid = DotGrid.create(columns, rows)
         self.style = style
-        self._emission = np.zeros((*self.grid.x.shape, 3))
+        self._sample = style.prepare(self.grid)
+        dots, cells = len(self.grid.x), columns * rows
+        self._emission = tuple(buffer(dots) for _ in range(3))
+        self._mapped = tuple(buffer(dots) for _ in range(3))
+        self._luminance, self._scratch = buffer(dots), buffer(dots)
+        self._padded = buffer(dots + columns * 4)
+        self._zero_column = buffer(rows * 4)
+        self._lanes = tuple(buffer(cells) for _ in range(8))
+        self._color, self._color_scratch = buffer(cells), buffer(cells)
+        self._rgb = tuple(array("B", [0]) * cells for _ in range(3))
+
+    def _map_light(self, light: Field, emission: Field, mapped: Field, decay: float) -> None:
+        af.mul(emission, decay)
+        maximum(light, emission, emission, self._scratch)
+        width = self.grid.columns * 2
+        padded = self._padded
+        padded[width:-width] = emission
+        af.add(padded[: -2 * width], padded[2 * width :], mapped)
+        left = padded[width - 1 : -width - 1]
+        right = padded[width + 1 : -width + 1]
+        # Horizontal neighbours stop at row boundaries; vertical padding is zero.
+        left[::width] = self._zero_column
+        right[width - 1 :: width] = self._zero_column
+        af.add(mapped, left)
+        af.add(mapped, right)
+        af.mul(mapped, 0.075)
+        af.add(mapped, emission)
+        af.mul(mapped, -1.5)
+        af.expm1(mapped)
+        af.neg(mapped)
+        af.pow(mapped, 0.75)
+
+    def _split_dots(self, field: Field) -> None:
+        """Project dot-row storage onto the eight fixed positions of each cell."""
+        columns = self.grid.columns
+        width = columns * 2
+        for dot, lane in enumerate(self._lanes):
+            dy, dx = divmod(dot, 2)
+            for row in range(self.grid.rows):
+                start = (row * 4 + dy) * width
+                lane[row * columns : (row + 1) * columns] = field[start + dx : start + width : 2]
 
     def frame(
         self, seconds: float, elapsed: float, *, monochrome: bool = False
     ) -> tuple[Strip, ...]:
-        light = self.style.sample(self.grid, seconds)
-        # Persistence stays at each LED address; it never advects or blurs positions.
-        self._emission = np.maximum(light, self._emission * np.exp(-max(0, elapsed) / 0.085))
-        padded = np.pad(self._emission, ((1, 1), (1, 1), (0, 0)))
-        glow = (padded[:-2, 1:-1] + padded[2:, 1:-1] + padded[1:-1, :-2] + padded[1:-1, 2:]) * 0.075
-        mapped = np.power(-np.expm1(-(self._emission + glow) * 1.5), 0.75)
-        cells = mapped.reshape(self.grid.rows, 4, self.grid.columns, 2, 3)
-        luminance = cells.max(axis=4)
-        peak = luminance.max(axis=(1, 3))
-        # All glyph bits address permanent physical dots. Dark cells retain the
-        # unlit lattice, while local radiance resolves silhouettes within a cell.
-        lit = luminance >= peak[:, None, :, None] * 0.30
-        if monochrome:
-            thresholds = np.array(((0.08, 0.48), (0.68, 0.28), (0.23, 0.63), (0.43, 0.13)))
-            lit = luminance > thresholds[None, :, None, :]
-        else:
-            lit |= peak[:, None, :, None] < 0.05
-        masks = (lit * _BRAILLE_BITS[None, :, None, :]).sum(axis=(1, 3))
-        colors = cells.mean(axis=(1, 3)) * 1.25
-        colors = np.maximum(colors, np.array((0.055, 0.065, 0.067)))
-        # Preserve the full terminal truecolor spectrum; only Style storage is bounded.
-        rgb = (np.clip(colors, 0, 1) * 255).astype(np.uint8)
+        decay = exp(-max(0, elapsed) / 0.085)
+        for light, emission, mapped in zip(
+            self._sample(seconds), self._emission, self._mapped, strict=True
+        ):
+            self._map_light(light, emission, mapped, decay)
+        maximum(self._mapped[0], self._mapped[1], self._luminance, self._scratch)
+        maximum(self._luminance, self._mapped[2], self._luminance, self._scratch)
+        self._split_dots(self._luminance)
+        masks = []
+        for values in zip(*self._lanes, strict=True):
+            if monochrome:
+                mask = sum(
+                    bit
+                    for value, bit, threshold in zip(
+                        values, _BRAILLE_BITS, _THRESHOLDS, strict=True
+                    )
+                    if value > threshold
+                )
+            else:
+                peak = max(values)
+                mask = (
+                    255
+                    if peak < 0.05
+                    else sum(
+                        bit
+                        for value, bit in zip(values, _BRAILLE_BITS, strict=True)
+                        if value >= peak * 0.30
+                    )
+                )
+            masks.append(mask)
+        for mapped, minimum, rgb in zip(
+            self._mapped, (0.055, 0.065, 0.067), self._rgb, strict=True
+        ):
+            self._split_dots(mapped)
+            self._color[:] = self._lanes[0]
+            for lane in self._lanes[1:]:
+                af.add(self._color, lane)
+            af.mul(self._color, 1.25 / 8)
+            clip(self._color, minimum, 1.0, self._color_scratch)
+            af.mul(self._color, 255.0)
+            af.convert(self._color, rgb)
         rows = []
-        for row_colors, row_masks in zip(rgb.tolist(), masks.tolist(), strict=True):
+        colors = zip(*self._rgb, strict=True)
+        for row in range(self.grid.rows):
             segments: list[Segment] = []
             run = ""
             previous: tuple[int, int, int] | None = None
-            for color, mask in zip(row_colors, row_masks, strict=True):
-                key = (color[0], color[1], color[2])
+            for index in range(row * self.grid.columns, (row + 1) * self.grid.columns):
+                key = next(colors)
                 if previous is not None and key != previous:
                     segments.append(Segment(run, _led_style(*previous)))
                     run = ""
-                run += chr(0x2800 + mask)
+                run += chr(0x2800 + masks[index])
                 previous = key
             if previous is not None:
                 segments.append(Segment(run, _led_style(*previous)))

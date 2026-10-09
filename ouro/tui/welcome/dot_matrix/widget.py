@@ -16,7 +16,7 @@ from textual.widgets import Static
 
 from ouro.tui.theme import theme_for
 from ouro.tui.welcome.centered import CenteredWelcomePage
-from ouro.tui.welcome.dot_matrix.field import DotArtwork, DotGrid, Field
+from ouro.tui.welcome.dot_matrix.field import DotArtwork, DotGrid, Sampler
 from ouro.tui.welcome.dot_matrix.raster import PhosphorRaster
 from ouro.tui.welcome.model import WelcomeStyle
 
@@ -133,9 +133,9 @@ class DotWelcomePage(CenteredWelcomePage):
 
 
 def dot_style(
-    style_id: str, label: str, description: str, sample: Callable[[DotGrid, float], Field]
+    style_id: str, label: str, description: str, prepare: Callable[[DotGrid], Sampler]
 ) -> WelcomeStyle:
     """Package factory shortcut; the welcome framework has no sampling contract."""
     return WelcomeStyle(
-        style_id, label, description, partial(DotWelcomePage, DotArtwork(label, sample))
+        style_id, label, description, partial(DotWelcomePage, DotArtwork(label, prepare))
     )

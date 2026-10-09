@@ -1,36 +1,95 @@
 """A Clifford torus rotated in four dimensions, sampled by inverse projection."""
 
-import numpy as np
+from array import array
+from math import cos, exp, sin
 
-from ouro.tui.welcome.dot_matrix.field import DotGrid, Field, band, spectrum
+import arrayfunc as af  # type: ignore[import-untyped]
+
+from ouro.tui.welcome.dot_matrix.field import DotGrid, Radiance, Sampler, Spectrum, band, buffer
 from ouro.tui.welcome.dot_matrix.widget import dot_style
 
 _SPECTRUM = ((0.21, 0.12, 0.58), (0.51, 0.34, 1.0), (0.38, 0.86, 1.0), (0.92, 0.98, 1.0))
+_DEPTHS = tuple(-2.2 + index * (4.4 / 13) for index in range(13)) + (2.2,)
 
 
-def sample(grid: DotGrid, seconds: float) -> Field:
-    x, y = grid.x * 2.5, grid.y * 2.5
-    # Integrate fixed view rays through the stereographic image of S3. Rotation
-    # in XW and YZ changes the projected surface, never the receiving LED grid.
-    a = 0.18 * np.sin(seconds * 0.19)
-    b = 0.55 + 0.35 * np.sin(seconds * 0.13)
-    light = np.zeros_like(x)
-    transmission = np.ones_like(x)
-    ca, sa, cb, sb = np.cos(a), np.sin(a), np.cos(b), np.sin(b)
-    for depth in np.linspace(-2.2, 2.2, 14):
-        radius2 = x * x + y * y + depth * depth
-        denominator = 1 + radius2
-        sx, sy = 2 * x / denominator, 2 * y / denominator
-        sz, sw = 2 * depth / denominator, (radius2 - 1) / denominator
-        rx = sx * ca - sw * sa
-        ry = sy * cb - sz * sb
-        surface = rx * rx + ry * ry - 0.5
-        weave = 0.65 + 0.35 * np.cos((rx + ry) * 28 - seconds * 0.5) ** 2
-        density = band(surface, 0.07) * np.exp(-radius2 * 0.32) * 0.65
-        light += density * weave * transmission * (1 - depth * 0.18)
-        transmission *= 1 - density * 0.55
-    color = spectrum(0.5 + 0.5 * np.sin(np.arctan2(y, x) + seconds * 0.17), _SPECTRUM)
-    return color * light[..., None] * 1.8
+def prepare(grid: DotGrid) -> Sampler:
+    x, y = array("d", grid.x), array("d", grid.y)
+    af.mul(x, 2.5)
+    af.mul(y, 2.5)
+    (
+        radial,
+        angle,
+        radius,
+        denominator,
+        rx,
+        ry,
+        work,
+        surface,
+        weave,
+        density,
+        light,
+        transmission,
+        position,
+        falloff,
+    ) = (buffer(len(x)) for _ in range(14))
+    af.mul(x, x, radial)
+    af.mul(y, y, work)
+    af.add(radial, work)
+    af.atan2(y, x, angle)
+    af.mul(radial, -0.32, falloff)
+    af.exp(falloff)
+    depths = tuple((depth, exp(-depth * depth * 0.32) * 0.65) for depth in _DEPTHS)
+    spectrum = Spectrum(len(x), _SPECTRUM)
+
+    def sample(seconds: float) -> Radiance:
+        a = 0.18 * sin(seconds * 0.19)
+        b = 0.55 + 0.35 * sin(seconds * 0.13)
+        ca, sa, cb, sb = cos(a), sin(a), cos(b), sin(b)
+        af.repeat(light, 0.0)
+        af.repeat(transmission, 1.0)
+        # Integrate fixed view rays through S3; rotate the projected surface,
+        # never the receiving LED grid.
+        for depth, attenuation in depths:
+            af.add(radial, depth * depth, radius)
+            af.add(radius, 1.0, denominator)
+            af.mul(x, 2.0 * ca, rx)
+            af.sub(radius, 1.0, work)
+            af.mul(work, sa)
+            af.sub(rx, work)
+            af.truediv(rx, denominator)
+            af.mul(y, 2.0 * cb, ry)
+            af.sub(ry, 2 * depth * sb)
+            af.truediv(ry, denominator)
+            af.mul(rx, rx, surface)
+            af.mul(ry, ry, work)
+            af.add(surface, work)
+            af.sub(surface, 0.5)
+            af.add(rx, ry, weave)
+            af.mul(weave, 28.0)
+            af.sub(weave, seconds * 0.5)
+            af.cos(weave)
+            af.mul(weave, weave)
+            af.mul(weave, 0.35)
+            af.add(weave, 0.65)
+            density[:] = surface
+            band(density, 0.07)
+            af.mul(density, falloff)
+            af.mul(density, attenuation)
+            af.mul(density, weave, work)
+            af.mul(work, transmission)
+            af.mul(work, 1 - depth * 0.18)
+            af.add(light, work)
+            af.mul(density, 0.55, work)
+            af.sub(1.0, work, work)
+            af.mul(transmission, work)
+        af.add(angle, seconds * 0.17, position)
+        af.sin(position)
+        af.mul(position, 0.5)
+        af.add(position, 0.5)
+        af.mul(light, 1.8)
+        return spectrum.sample(position, light)
+
+    return sample
 
 
-STYLE = dot_style("clifford-torus", "Iris", "An iris of folded ultraviolet light.", sample)
+STYLE = dot_style("clifford-torus", "Iris", "An iris of folded ultraviolet light.", prepare)

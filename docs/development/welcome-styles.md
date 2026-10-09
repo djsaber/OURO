@@ -108,13 +108,24 @@ Host 在离开欢迎页、打开覆盖菜单或替换页面时发送 `active=Fal
 `styles/` 中的六个艺术包各自定义数学场、节奏和光谱；`basic.py` 实现静态字标。
 `dot_matrix/` 是艺术包可选择复用的引擎：
 
-- `field.py`：只读网格、带显式时间参数的 RGB 辐射场，以及光谱插值。
+- `field.py`：只读网格、按视口准备的 RGB 采样器，以及光谱插值。
 - `raster.py`：固定地址上的余辉、相邻光照、曝光映射与 Braille 编码。
 - `widget.py`：动画时钟、局部 Strip 刷新，以及点阵页面包。
 
 每个终端 cell 对应 2×4 个固定 Braille 点位。包只计算这些采样位置的辐射值；大小变化时重新构建网格，
 动画期间只改变亮度、颜色和开关状态。一个 cell 的点共享终端前景色，点的开关保留子 cell 轮廓。
-无颜色模式使用固定空间阈值保留亮度结构。NumPy 批量计算场，Rich/Textual 处理终端绘制。
+无颜色模式使用固定空间阈值保留亮度结构。标准库 `array('d')` 保存连续双精度数据，
+`arrayfunc` 在 C 中批量计算，Rich/Textual 处理终端绘制；运行和测试均不依赖 NumPy。
+
+`DotArtwork.prepare(grid)` 为当前视口准备固定几何与工作缓冲，返回 `sample(seconds)`。
+采样器返回三个按点行优先排列的 RGB 数组，每个数组的长度为 `columns * rows * 8`，
+值须有限且非负。返回值借用采样器的缓冲区，到下次采样前有效，消费者不得修改；
+需要保留多帧时自行复制。每次 `prepare` 都创建独立状态，尺寸改变或卸载页面时释放旧状态。
+样式只负责自己的数学场，公共引擎负责余辉和终端编码；不增加通用数组兼容层。
+
+`arrayfunc` 是 C 扩展。当前锁定版本提供 Windows x64 / CPython 3.14 wheel；
+没有匹配 wheel 的平台需要 C 编译器和 Python 开发头文件，详见
+[上游安装说明](https://pypi.org/project/arrayfunc/8.5.7/#installation)。
 
 ## 验证
 
@@ -128,3 +139,14 @@ uv run --frozen pytest tests/tui/test_app.py -k 'welcome or theme or composer_gr
 自定义包需验证全视口绘制、公共组件组合、输入布局与增长、短终端、命令弹窗方向、局部样式撤销、
 快照更新、动画暂停/恢复、卸载资源回收和主题刷新。切换包时应保持同一输入实例与草稿；动画不得驱动全页布局。
 点阵包还应验证不同时间下的有限非负输出、固定坐标不变、尺寸边界、确定性和终端行宽。
+`tests/tui/fixtures/welcome-frames.json.gz` 保存迁移前的 240 帧参考输出，覆盖六个艺术包、
+四种尺寸、两种颜色模式和五个时间点，独立保护点位、RGB 颜色及余辉效果。
+
+端到端帧计算基准包含采样、光照映射、Braille 编码和 Strip 构造，不包含终端 I/O：
+
+```bash
+uv run --frozen python dev/benchmarks/welcome.py --frames 60
+```
+
+基准报告两种视口尺寸下的首帧时间、稳态中位数与 P95。性能对比应使用同一机器、
+同一 Python 版本和相同帧数；不在 CI 中断言随机器负载波动的计时阈值。

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import gzip
+import json
 import threading
+from array import array
 from functools import partial
+from math import isclose, isfinite
 from pathlib import Path
 
-import numpy as np
 import pytest
 from rich.segment import Segment
 from rich.text import Text
@@ -23,7 +27,7 @@ from ouro.tui.screens import ChoiceScreen
 from ouro.tui.theme import TUI_THEMES
 from ouro.tui.welcome import WELCOME_STYLES, WelcomePage, WelcomeStyle, welcome_catalog
 from ouro.tui.welcome.components import WelcomeUsage
-from ouro.tui.welcome.dot_matrix.field import DotGrid
+from ouro.tui.welcome.dot_matrix.field import DotGrid, buffer, clip
 from ouro.tui.welcome.dot_matrix.raster import PhosphorRaster
 from ouro.tui.welcome.dot_matrix.widget import DotWelcomePage
 from ouro.tui.welcome.host import WelcomeHost
@@ -32,6 +36,19 @@ from tests.tui.helpers import run_ready_app, two_route_application
 from tests.tui.test_app import _wait_until
 
 DOT_STYLES = tuple(style for key, style in WELCOME_STYLES.items() if key != "basic")
+REFERENCE_FRAMES = json.loads(
+    gzip.decompress((Path(__file__).parent / "fixtures" / "welcome-frames.json.gz").read_bytes())
+)
+
+
+@pytest.mark.parametrize("bounds", [(0.0, 1.0), (-0.7, 1.0), (0.055, 1.0)])
+def test_light_clamping_preserves_bounds_across_large_and_near_zero_values(bounds):
+    low, high = bounds
+    inputs = [-1e6, -100.1, -1e-15, 0.0, 1e-15, low, 0.25, high, 100.1, 1e6]
+    values = array("d", inputs)
+    clip(values, low, high, buffer(len(values)))
+    assert all(low <= value <= high for value in values)
+    assert list(values) == pytest.approx([min(high, max(low, value)) for value in inputs])
 
 
 @pytest.mark.parametrize("style", DOT_STYLES, ids=lambda style: style.style_id)
@@ -40,18 +57,24 @@ def test_artwork_changes_light_without_mutating_grid_and_is_reproducible(style, 
     visual = style.create()
     assert isinstance(visual, DotWelcomePage)
     grid = DotGrid.create(*size)
-    x, y = grid.x.copy(), grid.y.copy()
-    frames = [visual.artwork.sample(grid, time) for time in (0, 7.5, 60, 3600)]
+    x, y = grid.x, grid.y
+    sample = visual.artwork.prepare(grid)
+    frames = [tuple(tuple(channel) for channel in sample(time)) for time in (0, 7.5, 60, 3600)]
     for frame in frames:
-        assert frame.shape == (*grid.x.shape, 3)
-        assert np.isfinite(frame).all()
-        assert (frame >= 0).all()
-    np.testing.assert_array_equal(grid.x, x)
-    np.testing.assert_array_equal(grid.y, y)
-    assert not grid.x.flags.writeable and not grid.y.flags.writeable
-    np.testing.assert_array_equal(frames[1], visual.artwork.sample(grid, 7.5))
+        assert len(frame) == 3
+        assert all(len(channel) == size[0] * size[1] * 8 for channel in frame)
+        assert all(isfinite(value) and value >= 0 for channel in frame for value in channel)
+    assert grid.x == x and grid.y == y
+    assert isinstance(grid.x, tuple) and isinstance(grid.y, tuple)
+    assert frames[1] == tuple(tuple(channel) for channel in sample(7.5))
+    independent = visual.artwork.prepare(grid)
+    assert frames[1] == tuple(tuple(channel) for channel in independent(7.5))
     if size[0] > 1:
-        assert not np.allclose(frames[0], frames[1])
+        assert any(
+            not isclose(before, after, rel_tol=1e-5, abs_tol=1e-8)
+            for first, second in zip(frames[0], frames[1], strict=True)
+            for before, after in zip(first, second, strict=True)
+        )
 
 
 def test_bundled_artworks_have_different_spatial_structures_not_just_colors():
@@ -61,13 +84,39 @@ def test_bundled_artworks_have_different_spatial_structures_not_just_colors():
     for style in DOT_STYLES:
         visual = style.create()
         assert isinstance(visual, DotWelcomePage)
-        luminance = visual.artwork.sample(grid, 7.5).max(axis=2)
-        silhouette = luminance > luminance.max() * 0.25
-        assert 0.01 < silhouette.mean() < 0.65
+        luminance = [max(rgb) for rgb in zip(*visual.artwork.prepare(grid)(7.5), strict=True)]
+        threshold = max(luminance) * 0.25
+        silhouette = [value > threshold for value in luminance]
+        assert 0.01 < sum(silhouette) / len(silhouette) < 0.65
         intensities.append(silhouette)
     for index, frame in enumerate(intensities):
         for other in intensities[index + 1 :]:
-            assert (frame != other).mean() > 0.04
+            assert sum(a != b for a, b in zip(frame, other, strict=True)) / len(frame) > 0.04
+
+
+@pytest.mark.parametrize(
+    "case",
+    REFERENCE_FRAMES["cases"],
+    ids=lambda case: f"{case['style']}-{case['size']}-{case['monochrome']}",
+)
+def test_artwork_matches_reference_colors_braille_and_persistence(case):
+    artwork = WELCOME_STYLES[case["style"]].create().artwork
+    raster = PhosphorRaster(artwork, *case["size"])
+    for seconds, encoded in zip(REFERENCE_FRAMES["times"], case["frames"], strict=True):
+        expected = base64.b64decode(encoded)
+        actual = bytearray()
+        for row in raster.frame(seconds, 1 / 30, monochrome=case["monochrome"]):
+            for segment in row:
+                rgb = segment.style.color.get_truecolor()
+                for character in segment.text:
+                    actual.extend((ord(character) - 0x2800, *rgb))
+        assert actual[::4] == expected[::4]
+        # Different platform libm kernels may round a color channel by one unit.
+        assert all(
+            abs(value - reference) <= 1
+            for index, (value, reference) in enumerate(zip(actual, expected, strict=True))
+            if index % 4
+        )
 
 
 @pytest.mark.parametrize("style", DOT_STYLES, ids=lambda style: style.style_id)
