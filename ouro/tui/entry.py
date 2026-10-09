@@ -7,6 +7,7 @@ from ouro.core.interactions import SessionInteractionMode
 from ouro.deployment import SessionBackend, TaskBackend
 from ouro.tui.terminal import set_terminal_title, tui_terminal_guard
 from ouro.tui.theme import TuiTheme
+from ouro.tui.welcome.model import WelcomeStyle
 
 
 def run_tui(
@@ -19,6 +20,7 @@ def run_tui(
     interaction_mode: SessionInteractionMode = "interactive",
     resume_session_id: str | None = None,
     theme: TuiTheme | None = None,
+    welcome_styles: tuple[WelcomeStyle, ...] = (),
 ) -> int:
     """Run the full-screen Textual Host and return its process exit code."""
 
@@ -35,5 +37,6 @@ def run_tui(
             interaction_mode=interaction_mode,
             resume_session_id=resume_session_id,
             theme=theme,
+            welcome_styles=welcome_styles,
         ).run()
     return result if isinstance(result, int) else 0

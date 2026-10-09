@@ -16,6 +16,11 @@ TuiTheme 覆盖颜色、渲染样式、单 cell 标识符和 spinner 动画，�
 Margin、Border 形态、滚动和响应式规则由 TUI 固定管理。代码块和用户消息使用相同的 `panel` 背景，以统一 surface
 语义。
 
+欢迎页整体呈现由独立的 `WelcomeStyle` / `WelcomePage` 样式包提供，与 `TuiTheme` 配色并行配置。
+样式包框架管理注册、选择与页面生命周期，包控制整个欢迎页的构图、组件树、布局与渲染方式。
+Host 将持久输入层叠放于页面指定的位置，组件不随样式切换重建；系统与用量快照由 Host 提供，包按需使用公共
+信息组件投影。居中布局是内置包的可选组合，点阵引擎仅属于使用它的艺术包。扩展入口见[欢迎页样式包开发](../development/welcome-styles.md)。
+
 ## 设计原则
 
 ### 内容事实与视觉投影分离
@@ -44,7 +49,7 @@ Rich 和 Pygments 只负责解析与终端渲染，其默认颜色不构成 OURO
 一个 `OuroTuiApp` 在任一时刻只使用一份 `TuiTheme`。Textual CSS、mounted Widget、detached history render 和
 Markdown/SyntaxTheme 均从该对象取得视觉语义。
 
-`TuiTheme` 同时包含 identity、color、glyph、motion Token 和样式投影，是唯一的视觉语义对象。主题应用不存在
+`TuiTheme` 同时包含 identity、color、glyph、motion Token 和样式投影，是公共界面的视觉语义对象。主题应用不存在
 并行状态、覆盖优先级或合并链。主题选择面板的 accent 预览是面板自身的临时视觉投影，不替换活动 TuiTheme，也不进入
 其他 Widget、历史缓存或持久化配置。
 
@@ -64,7 +69,7 @@ Markdown/SyntaxTheme 均从该对象取得视觉语义。
 - history Strip 缓存区分不同主题值；
 - NO_COLOR 保留非颜色结构语义。
 
-### 不支持
+### TuiTheme 不支持
 
 - width、height、Padding、Margin、Border 形态、对齐、滚动和响应式断点自定义；
 - Widget 树或会话正文宽度自定义；

@@ -26,10 +26,9 @@ from textual.message import Message
 from textual.messages import Prune
 from textual.screen import Screen
 from textual.timer import Timer
-from textual.widgets import Static, TextArea
+from textual.widgets import TextArea
 from textual.worker import Worker
 
-from ouro import __version__
 from ouro.application.agent_models import AgentTreeNode
 from ouro.application.agent_tree import AgentTreeSubscription
 from ouro.application.dto import Diagnostic
@@ -129,6 +128,7 @@ from ouro.tui.theme import (
     TUI_THEMES,
     TuiTheme,
 )
+from ouro.tui.welcome import WelcomeStyle, welcome_catalog
 from ouro.tui.widgets import (
     COMMAND_POPUP_MAX_HEIGHT,
     COMMAND_POPUP_MIN_HEIGHT,
@@ -136,7 +136,6 @@ from ouro.tui.widgets import (
     COMPOSER_MIN_HEIGHT,
     INTERACTION_PANEL_MAX_HEIGHT,
     INTERACTION_PANEL_MIN_HEIGHT,
-    WELCOME_MAX_WIDTH,
     AskUserPanel,
     BrandHeader,
     CommandPopup,
@@ -214,6 +213,7 @@ _AGENT_INTERACTION_EVENTS = {
 _SESSION_GROUPING_ACTION = "__ouro_session_grouping__"
 _THEME_ACTION = "__ouro_theme__"
 _THOUGHT_DISPLAY_ACTION = "__ouro_thought_display__"
+_WELCOME_STYLE_ACTION = "__ouro_welcome_style__"
 _INPUT_DRAFT_MEMORY_ACTION = "__ouro_input_draft_memory__"
 _RENAME_SESSION_ACTION = "__ouro_rename_session__"
 _ARCHIVE_SESSION_ACTION = "__ouro_archive_session__"
@@ -314,14 +314,6 @@ _OURO_TUI_CSS = """
        from its complete TuiTheme so CSS and Rich rendering share one source. */
     $conversation-left-gutter: 2;
     $conversation-right-gutter: 1;
-    $welcome-width: 90%;
-    $welcome-min-width: 48;
-    $welcome-inline-padding: 1;
-    $welcome-logo-gap: 2;
-    $welcome-section-gap: 2;
-    $welcome-system-gap: 3;
-    $welcome-label-width: 11;
-    $welcome-tips-min-width: 20;
 
     Screen {
         width: 100%;
@@ -444,153 +436,12 @@ _OURO_TUI_CSS = """
         background: $ouro-background;
     }
 
-    .welcome-only {
-        display: none;
-    }
-
-    #main.welcome-page {
-        align: center middle;
-    }
-
     #main.welcome-page #conversation {
         display: none;
     }
 
     #input-region.welcome-page {
-        width: $welcome-width;
-        min-width: $welcome-min-width;
-        max-width: $welcome-max-width;
         height: 100%;
-        padding: 0 $welcome-inline-padding;
-    }
-
-    #input-region.welcome-page .welcome-only {
-        display: block;
-    }
-
-    .welcome-top {
-        width: 100%;
-        height: 1fr;
-        align: center bottom;
-    }
-
-    .welcome-logo {
-        width: auto;
-        height: auto;
-        margin-bottom: $welcome-logo-gap;
-    }
-
-    .welcome-bottom {
-        width: 100%;
-        height: 1fr;
-        min-height: 0;
-        /* Reserve the overlaid version footer without shifting the composer. */
-        padding-bottom: 1;
-        overflow: hidden;
-    }
-
-    .welcome-gap {
-        height: 1fr;
-        min-height: 1;
-    }
-
-    .welcome-section-gap {
-        max-height: $welcome-section-gap;
-    }
-
-    .welcome-system-gap {
-        max-height: $welcome-system-gap;
-    }
-
-    .welcome-section {
-        height: auto;
-        background: transparent;
-    }
-
-    .welcome-system {
-        width: 100%;
-        overflow: hidden;
-    }
-
-    .welcome-title {
-        width: auto;
-        height: 1;
-        color: $ouro-text-detail;
-        text-style: bold;
-    }
-
-    .welcome-row {
-        width: 100%;
-        height: 1;
-        overflow: hidden;
-    }
-
-    .welcome-label {
-        width: $welcome-label-width;
-        height: 1;
-        color: $ouro-text-detail;
-    }
-
-    .welcome-value {
-        width: 1fr;
-        height: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-
-    .welcome-lower {
-        width: 100%;
-        height: auto;
-        overflow: hidden;
-    }
-
-    .welcome-usage {
-        width: 1fr;
-        margin-right: 1;
-    }
-
-    .welcome-tips {
-        width: auto;
-        min-width: $welcome-tips-min-width;
-    }
-
-    .welcome-tips .welcome-title {
-        color: $ouro-theme;
-    }
-
-    .welcome-usage-line {
-        width: 100%;
-        height: 1;
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-    }
-
-    .welcome-tip-key {
-        width: 8;
-        height: 1;
-        color: $ouro-text-detail;
-    }
-
-    .welcome-tip-description {
-        width: auto;
-        height: 1;
-        color: $ouro-text-muted;
-    }
-
-    .welcome-version {
-        dock: bottom;
-        layer: welcome-footer;
-        width: 100%;
-        height: 1;
-        padding: 0 2;
-        color: $ouro-text-faint;
-        text-style: none;
-        text-align: right;
-    }
-
-    #input-region.welcome-page #command-popup {
-        overlay: screen;
-        offset-y: -100%;
     }
 
     #input-region.welcome-page #composer,
@@ -1080,6 +931,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         interaction_mode: SessionInteractionMode = "interactive",
         resume_session_id: str | None = None,
         theme: TuiTheme | None = None,
+        welcome_styles: tuple[WelcomeStyle, ...] = (),
         application: LocalApplication | None = None,
         close_application: bool = True,
     ) -> None:
@@ -1088,7 +940,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if home is None and application is not None
             else home
         )
-        self._preferences_store = TuiPreferencesStore(preference_home)
+        self._welcome_styles = welcome_catalog(welcome_styles)
+        self._preferences_store = TuiPreferencesStore(
+            preference_home, welcome_styles=self._welcome_styles
+        )
         self._preferences_error: str | None = None
         try:
             preferences = self._preferences_store.load()
@@ -1192,7 +1047,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return {
             **super().get_css_variables(),
             **self._tui_theme.css_variables(),
-            "welcome-max-width": str(WELCOME_MAX_WIDTH),
             "command-popup-min-height": str(COMMAND_POPUP_MIN_HEIGHT),
             "command-popup-max-height": str(COMMAND_POPUP_MAX_HEIGHT),
             "interaction-panel-min-height": str(INTERACTION_PANEL_MIN_HEIGHT),
@@ -1214,11 +1068,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 welcome_state_changed=self._set_welcome_mode,
                 system_status_changed=self._set_welcome_system_status,
             )
-            self._input_surface = WelcomePanel()
+            self._input_surface = WelcomePanel(
+                welcome_style=self._welcome_styles[self._preferences.welcome_style],
+                welcome_motion=self._preferences.welcome_motion,
+            )
             yield self._input_surface
-        version = Static(f"v{__version__}", id="welcome-version", classes="welcome-version")
-        version.display = False
-        yield version
 
     def get_driver_class(self) -> type[Driver]:
         driver_class = super().get_driver_class()
@@ -1700,7 +1554,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self.query_one(BrandHeader).display = not enabled
         self.query_one("#main", Vertical).set_class(enabled, "welcome-page")
         self.query_one(WelcomePanel).set_welcome_mode(enabled)
-        self.query_one("#welcome-version", Static).display = enabled
 
     def _set_welcome_system_status(self, status: TuiSystemStatus) -> None:
         self.query_one(WelcomePanel).set_system_status(status)
@@ -4851,6 +4704,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         async def select_theme(theme_id: str) -> tuple[Choice, ...] | None:
             nonlocal selected_theme_id, selected_level
+            if theme_id == _WELCOME_STYLE_ACTION:
+                await self._choose_welcome_style(menu=menu if menu is not None else theme_screen)
+                return None
             if theme_id != selected_theme_id:
                 selected_theme_id = theme_id
             self._request_tui_theme(
@@ -4934,6 +4790,66 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._register_theme_picker(theme_screen)
         await self.push_screen_wait(theme_screen)
 
+    async def _choose_welcome_style(self, *, menu: ChoiceScreen) -> None:
+        def choices() -> tuple[Choice, ...]:
+            return (
+                *(
+                    Choice(
+                        style.style_id,
+                        style.label,
+                        description=style.description,
+                        marker=(
+                            self._tui_theme.selected_choice_marker
+                            if style.style_id == self._preferences.welcome_style
+                            else ""
+                        ),
+                    )
+                    for style in self._welcome_styles.values()
+                ),
+                Choice(
+                    "__motion__",
+                    "Animation",
+                    trailing="Playing" if self._preferences.welcome_motion else "Paused",
+                ),
+            )
+
+        async def apply_selection(value: str) -> bool:
+            async with self._preferences_save_lock:
+                update = (
+                    {"welcome_motion": not self._preferences.welcome_motion}
+                    if value == "__motion__"
+                    else {"welcome_style": value}
+                )
+                preferences = self._preferences_store.validate(
+                    {**self._preferences.model_dump(), **update}
+                )
+                try:
+                    await asyncio.to_thread(self._preferences_store.save, preferences)
+                except OuroError as exc:
+                    self.notify(str(exc), severity="error", markup=False)
+                    return False
+                self._preferences = preferences
+                await self.query_one(WelcomePanel).set_welcome_style(
+                    self._welcome_styles[preferences.welcome_style],
+                    motion=preferences.welcome_motion,
+                )
+            return True
+
+        async def select(value: str) -> tuple[Choice, ...] | None:
+            # Choice workers may be cancelled by another selection. The host
+            # owns the complete save/mount transaction, serialized with prefs.
+            worker = self.run_worker(apply_selection(value), group="welcome-style")
+            saved = await asyncio.shield(worker.wait())
+            return choices() if saved else None
+
+        menu.push_page(
+            title="WELCOME STYLE",
+            placeholder="Filter welcome styles…",
+            choices=choices(),
+            initial_value=self._preferences.welcome_style,
+            on_select=select,
+        )
+
     async def _choose_thought_display(self, *, menu: ChoiceScreen | None = None) -> None:
         def display_choices(expanded: bool) -> tuple[Choice, ...]:
             return tuple(
@@ -4990,7 +4906,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         async def select_grouping(value: str) -> tuple[Choice, ...] | None:
             async with self._preferences_save_lock:
-                preferences = TuiPreferences.model_validate(
+                preferences = self._preferences_store.validate(
                     {**self._preferences.model_dump(), "session_grouping": value}
                 )
                 try:
@@ -5084,7 +5000,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 loading=theme.theme_id == self._pending_tui_theme_id,
             )
 
-        return tuple(theme_choice(theme) for theme in TUI_THEMES.values())
+        return (
+            *(theme_choice(theme) for theme in TUI_THEMES.values()),
+            Choice(
+                _WELCOME_STYLE_ACTION,
+                "Welcome style",
+                trailing=self._welcome_styles[self._preferences.welcome_style].label,
+            ),
+        )
 
     def _theme_choice_saturation_level(self, theme_id: str) -> int:
         """Return the persisted or pending level used to initialize the picker."""

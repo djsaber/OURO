@@ -10,7 +10,6 @@ from typing import Literal
 
 from pydantic import JsonValue
 from rich.cells import cell_len, get_character_cell_size
-from rich.style import Style as RichStyle
 from rich.text import Text
 from textual import events, work
 from textual.app import ComposeResult
@@ -73,17 +72,9 @@ from ouro.tui.theme import (
     theme_for,
 )
 from ouro.tui.tool_presentations import ToolLineState, ToolTextTone, present_tool
+from ouro.tui.welcome import DEFAULT_WELCOME_STYLE, WELCOME_STYLES, WelcomeStyle
+from ouro.tui.welcome.host import WelcomeHost
 
-_OURO_LOGO = """
- ██████╗ ▒▒╗   ▒▒╗██████╗  ▒▒▒▒▒▒╗
-██╔═══██╗▒▒║   ▒▒║██╔══██╗▒▒╔═══▒▒╗
-██║   ██║▒▒║   ▒▒║██████╔╝▒▒║   ▒▒║
-██║   ██║▒▒║   ▒▒║██╔══██╗▒▒║   ▒▒║
-╚██████╔╝╚▒▒▒▒▒▒╔╝██║  ██║╚▒▒▒▒▒▒╔╝
- ╚═════╝  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝
-"""
-
-WELCOME_MAX_WIDTH = 116
 COMMAND_POPUP_MIN_HEIGHT = 3
 COMMAND_POPUP_MAX_HEIGHT = 14
 INTERACTION_PANEL_MIN_HEIGHT = 6
@@ -100,10 +91,8 @@ COMPOSER_MAX_HEIGHT = COMPOSER_TEXT_MAX_HEIGHT + COMPOSER_FRAME_HEIGHT
 
 # The regular surface always retains the Host header, one conversation row, the
 # fixed input separator/navigation row, and the status line around the composer.
-# Welcome mode instead splits the rows around its centered composer/status pair.
-# Both exclude the composer, which contributes its own current height.
+# The composer contributes its own current height.
 _REGULAR_SURFACE_CHROME_HEIGHT = 4
-_WELCOME_CENTER_CHROME_HEIGHT = 1
 _BUSY_ACTIVITIES = {
     "starting",
     "loading_session",
@@ -178,15 +167,6 @@ _CONTEXT_PROGRESS_WIDTH = 11
 _HEADER_MIN_GAP = 3
 _TOOL_ARGUMENT_STREAM_WINDOW_CELLS = 48
 _SINGLE_LINE_TOOL_ARGUMENT_TRANSLATION = str.maketrans("\r\n\t", "   ")
-
-
-def _compact_names(names: tuple[str, ...], *, limit: int = 3) -> str:
-    visible = names[:limit]
-    summary = ", ".join(visible)
-    remaining = len(names) - len(visible)
-    if remaining:
-        summary += f", +{remaining}"
-    return summary
 
 
 class BrandHeader(Static):
@@ -1068,461 +1048,75 @@ def _tool_elapsed_seconds(tool: RuntimeToolCallActivity) -> float | None:
     return elapsed if elapsed > 0 else None
 
 
-_INPUT_TIPS = (
-    ("/", "Commands"),
-    ("Ctrl+P", "Actions"),
-    ("Ctrl+H", "Help"),
-)
-_USAGE_DAY_META = "ouro.welcome_usage.date"
+class WelcomePanel(WelcomeHost):
+    """Connect welcome page placement to the shared Host interaction surface."""
 
-
-def _blend_hex(background: str, foreground: str, ratio: float) -> str:
-    """Blend two Rich-compatible hex colors without depending on terminal palettes."""
-
-    amount = min(1.0, max(0.0, ratio))
-    background_rgb = tuple(int(background[index : index + 2], 16) for index in (1, 3, 5))
-    foreground_rgb = tuple(int(foreground[index : index + 2], 16) for index in (1, 3, 5))
-    blended = tuple(
-        round(start + (end - start) * amount)
-        for start, end in zip(background_rgb, foreground_rgb, strict=True)
-    )
-    return "#" + "".join(f"{channel:02x}" for channel in blended)
-
-
-def _usage_block_colors(values: tuple[int, ...], theme: TuiTheme) -> tuple[str, ...]:
-    """Map daily token totals onto a theme-derived dark-to-accent scale."""
-
-    darkest_ratio = 0.28
-    if not values:
-        return (_blend_hex(theme.background, theme.accent, darkest_ratio),)
-    lowest = min(values)
-    highest = max(values)
-    if lowest == highest:
-        return tuple(theme.accent for _ in values)
-    return tuple(
-        _blend_hex(
-            theme.background,
-            theme.accent,
-            darkest_ratio + (1.0 - darkest_ratio) * ((value - lowest) / (highest - lowest)),
-        )
-        for value in values
-    )
-
-
-class _WelcomeSystemBlock(Vertical):
-    def __init__(self, status: TuiSystemStatus | None = None) -> None:
-        super().__init__(classes="welcome-section welcome-system")
-        self._status = status or TuiSystemStatus()
-        self._spinner_frame = 0
-        self._spinner_timer: Timer | None = None
-        self._workspace = Static(classes="welcome-value")
-        self._providers = Static(classes="welcome-value")
-        self._skills = Static(classes="welcome-value")
-        self._plugins = Static(classes="welcome-value")
-        self._tasks = Static(id="welcome-task-counts", classes="welcome-value")
-        self._mcp_label = Static("MCP", id="welcome-mcp-label", classes="welcome-label")
-        self._mcp = Static(classes="welcome-value")
-        self._render_values()
-
-    def compose(self) -> ComposeResult:
-        yield Static("SYSTEM", classes="welcome-title welcome-label")
-        for label, value in (
-            ("Workspace", self._workspace),
-            ("Providers", self._providers),
-            ("Skills", self._skills),
-            ("Plugins", self._plugins),
-            ("Task", self._tasks),
-            ("MCP", self._mcp),
-        ):
-            yield Horizontal(
-                self._mcp_label if label == "MCP" else Static(label, classes="welcome-label"),
-                value,
-                classes="welcome-row",
-            )
-
-    def on_mount(self) -> None:
-        self._sync_mcp_spinner()
-        self._render_values()
-
-    def on_unmount(self) -> None:
-        if self._spinner_timer is not None:
-            self._spinner_timer.stop()
-            self._spinner_timer = None
-
-    def set_system_status(self, status: TuiSystemStatus) -> None:
-        self._status = status
-        self._sync_mcp_spinner()
-        self._render_values()
-
-    def _sync_mcp_spinner(self, *, force: bool = False) -> None:
-        if force and self._spinner_timer is not None:
-            self._spinner_timer.stop()
-            self._spinner_timer = None
-        theme = theme_for(self)
-        if self._status.mcp_connecting_count and len(theme.spinner_frames) > 1:
-            if self._spinner_timer is None:
-                self._spinner_timer = self.set_interval(
-                    theme.spinner_interval_seconds,
-                    self._advance_mcp_spinner,
-                )
-        else:
-            if self._spinner_timer is not None:
-                self._spinner_timer.stop()
-                self._spinner_timer = None
-            self._spinner_frame = 0
-
-    def _advance_mcp_spinner(self) -> None:
-        self._spinner_frame = (self._spinner_frame + 1) % len(theme_for(self).spinner_frames)
-        self._render_mcp_label()
-
-    def _render_mcp_label(self) -> None:
-        theme = theme_for(self)
-        label = Text()
-        if self._status.mcp_connecting_count:
-            label.append(
-                f"{theme.spinner_frames[self._spinner_frame]} ",
-                style=f"bold {theme.accent}",
-            )
-        label.append("MCP")
-        self._mcp_label.update(label)
-
-    def _render_values(self) -> None:
-        status = self._status
-        theme = theme_for(self)
-        counts = status.task_counts
-        tasks = Text(
-            f"{counts.completed_executions}/"
-            f"{counts.completed_executions + counts.failed_executions} completed",
-            style=theme.text_muted,
-        )
-        for label, count, color in (
-            ("waiting", counts.waiting, theme.text_lowlight),
-            ("running", counts.running, theme.accent),
-            ("approval", counts.awaiting_approval, theme.warning),
-        ):
-            if not count:
-                continue
-            tasks.append(theme.inline_separator, style=theme.text_faint)
-            tasks.append(f"{count} {label}", style=color)
-        self._tasks.update(tasks)
-        self._render_mcp_label()
-        if status.task_error:
-            self._tasks.update(
-                Text(
-                    theme.inline_separator.join(("Unavailable", status.task_error)),
-                    style=theme.text_muted,
-                )
-            )
-        self._workspace.update(Text(status.workspace or "not set", style=theme.text_primary))
-
-        providers = Text()
-        providers.append(f"{status.model_count} model(s)", style=theme.text_muted)
-        if status.model_names:
-            providers.append(
-                f"{theme.section_separator}{_compact_names(status.model_names)}",
-                style=theme.text_faint,
-            )
-        self._providers.update(providers)
-
-        skills = Text(f"{status.skill_count} available", style=theme.text_muted)
-        if status.skill_names:
-            skills.append(
-                f"{theme.section_separator}{_compact_names(status.skill_names)}",
-                style=theme.text_faint,
-            )
-        self._skills.update(skills)
-
-        plugins = Text(
-            f"{status.plugin_active_count}/{status.plugin_total_count} active",
-            style=theme.text_muted,
-        )
-        if status.plugin_active_names:
-            plugins.append(
-                f"{theme.section_separator}{_compact_names(status.plugin_active_names)}",
-                style=theme.text_faint,
-            )
-        if status.plugin_issue_count:
-            plugins.append(
-                f"{theme.section_separator}{status.plugin_issue_count} need attention",
-                style=theme.critical,
-            )
-        self._plugins.update(plugins)
-
-        mcp = Text()
-        if status.mcp_total_count:
-            mcp.append(
-                f"{status.mcp_connected_count}/{status.mcp_total_count} connected",
-                style=theme.accent,
-            )
-            mcp.append(
-                f"{theme.section_separator}{status.mcp_tool_count} tool(s)",
-                style=theme.text_muted,
-            )
-            if status.mcp_connecting_count:
-                mcp.append(
-                    f"{theme.section_separator}{status.mcp_connecting_count} connecting",
-                    style=theme.accent,
-                )
-            if status.mcp_failed_count:
-                mcp.append(
-                    f"{theme.section_separator}{status.mcp_failed_count} failed",
-                    style=theme.critical,
-                )
-        else:
-            mcp.append("not configured", style=theme.text_faint)
-        self._mcp.update(mcp)
-
-    def refresh_theme(self) -> None:
-        self._spinner_frame = 0
-        self._sync_mcp_spinner(force=True)
-        self._render_values()
-
-
-class _WelcomeUsageBlock(Vertical):
-    def __init__(self, status: TuiSystemStatus | None = None) -> None:
-        super().__init__(classes="welcome-section welcome-usage")
-        self._status = status or TuiSystemStatus()
-        self._chart = Static(classes="welcome-usage-line")
-        self._requests = Static(classes="welcome-usage-line")
-        self._tokens = Static(classes="welcome-usage-line")
-        self._hovered_date: str | None = None
-        self._render_values()
-
-    def compose(self) -> ComposeResult:
-        yield Static("USAGE", classes="welcome-title")
-        yield self._chart
-        yield self._requests
-        yield self._tokens
-
-    def on_mount(self) -> None:
-        self._render_values()
-
-    def set_system_status(self, status: TuiSystemStatus) -> None:
-        self._status = status
-        if self._hovered_date not in {day.date for day in status.usage_daily}:
-            self._hovered_date = None
-        self._render_values()
-
-    def refresh_theme(self) -> None:
-        self._render_values()
-
-    def on_mouse_move(self, event: events.MouseMove) -> None:
-        date = None
-        if event.style is not None:
-            candidate = event.style.meta.get(_USAGE_DAY_META)
-            if isinstance(candidate, str):
-                date = candidate
-        self._set_hovered_date(date)
-
-    def on_leave(self, _event: events.Leave) -> None:
-        self._set_hovered_date(None)
-
-    def _set_hovered_date(self, date: str | None) -> None:
-        if date == self._hovered_date:
-            return
-        self._hovered_date = date
-        self._render_values()
-
-    def _render_values(self) -> None:
-        status = self._status
-        theme = theme_for(self)
-        daily = status.usage_daily
-        daily_tokens = tuple(day.total_tokens for day in daily)
-        selected = next((day for day in daily if day.date == self._hovered_date), None)
-        chart = Text()
-        colors = _usage_block_colors(daily_tokens, theme) if daily else ()
-        for day, color in zip(daily, colors, strict=True):
-            mark = (
-                theme.selected_session_node_mark
-                if day.date == self._hovered_date
-                else theme.session_node_mark
-            )
-            chart.append(mark, style=RichStyle(color=color, meta={_USAGE_DAY_META: day.date}))
-        if daily:
-            chart.append(theme.section_separator, style=theme.separator_tone)
-            if selected is not None:
-                chart.append(selected.date, style=theme.text_faint)
-            else:
-                days = len(daily)
-                chart.append(
-                    f"last {days} day{'s' if days != 1 else ''}",
-                    style=theme.text_faint,
-                )
-        else:
-            chart.append(
-                theme.session_node_mark,
-                style=_usage_block_colors((), theme)[0],
-            )
-            chart.append(theme.section_separator, style=theme.separator_tone)
-            chart.append(
-                "no records",
-                style=theme.text_faint,
-            )
-        self._chart.update(chart)
-
-        request_count = (
-            selected.request_count if selected is not None else status.usage_request_count
-        )
-        requests = Text(
-            f"{request_count} request(s)",
-            style=theme.text_muted,
-        )
-        self._requests.update(requests)
-        input_tokens = selected.input_tokens if selected is not None else status.usage_input_tokens
-        output_tokens = (
-            selected.output_tokens if selected is not None else status.usage_output_tokens
-        )
-        cache_read_tokens = (
-            selected.cache_read_tokens if selected is not None else status.usage_cache_read_tokens
-        )
-        tokens = Text(f"{format_compact_count(input_tokens)} in", style=theme.text_faint)
-        for value in (
-            f"{format_compact_count(output_tokens)} out",
-            f"{_cache_hit_rate(cache_read_tokens, input_tokens):.2f}% cache",
-        ):
-            tokens.append(theme.inline_separator, style=theme.separator_tone)
-            tokens.append(value, style=theme.text_faint)
-        self._tokens.update(tokens)
-
-
-def _cache_hit_rate(cache_read_tokens: int, input_tokens: int) -> float:
-    return cache_read_tokens / input_tokens * 100 if input_tokens else 0.0
-
-
-class _WelcomeTipsBlock(Vertical):
-    def __init__(self) -> None:
-        super().__init__(classes="welcome-section welcome-tips")
-        self._title = Static(classes="welcome-title")
-
-    def compose(self) -> ComposeResult:
-        yield self._title
-        for key, description in _INPUT_TIPS:
-            yield Horizontal(
-                Static(key, classes="welcome-tip-key"),
-                Static(description, classes="welcome-tip-description"),
-                classes="welcome-row",
-            )
-
-    def on_mount(self) -> None:
-        self.refresh_theme()
-
-    def refresh_theme(self) -> None:
-        self._title.update(f"{theme_for(self).section_separator_mark} TIPS")
-
-
-class WelcomePanel(Vertical):
-    def __init__(self, status: TuiSystemStatus | None = None) -> None:
-        super().__init__(id="input-region")
-        self._status = status or TuiSystemStatus()
-        self._logo = Static(classes="welcome-logo")
-        self._system = _WelcomeSystemBlock(self._status)
-        self._usage = _WelcomeUsageBlock(self._status)
-        self._tips = _WelcomeTipsBlock()
-        self._lower = Horizontal(
-            self._usage,
-            self._tips,
-            classes="welcome-lower",
-        )
-        self._top = Vertical(
-            self._logo,
-            classes="welcome-only welcome-top",
-        )
-        self._bottom = Vertical(
-            Static(classes="welcome-gap welcome-section-gap"),
-            self._lower,
-            Static(classes="welcome-gap welcome-system-gap"),
-            self._system,
-            classes="welcome-only welcome-bottom",
-        )
+    def __init__(
+        self,
+        status: TuiSystemStatus | None = None,
+        *,
+        welcome_style: WelcomeStyle = WELCOME_STYLES[DEFAULT_WELCOME_STYLE],
+        welcome_motion: bool = True,
+    ) -> None:
         self._subagent_navigation = SubagentNavigationPanel()
         self._command_popup = CommandPopup()
         self._interaction_bar = InteractionBar()
         self._composer = Composer()
         self._composer.display = False
+        surface = Vertical(
+            self._subagent_navigation,
+            self._command_popup,
+            AskUserPanel(),
+            PlanConfirmationPanel(),
+            self._interaction_bar,
+            self._composer,
+            QueuedInputPanel(),
+            StatusLine(),
+            id="interaction-surface",
+        )
+        surface.styles.height = "auto"
+        super().__init__(surface, welcome_style, motion=welcome_motion)
+        self._status = status or TuiSystemStatus()
         self._viewport_size: Size | None = None
-        self._render_logo()
-
-    def compose(self) -> ComposeResult:
-        yield self._top
-        yield self._subagent_navigation
-        yield self._command_popup
-        yield AskUserPanel()
-        yield PlanConfirmationPanel()
-        yield self._interaction_bar
-        yield self._composer
-        yield QueuedInputPanel()
-        yield StatusLine()
-        yield self._bottom
-
-    def set_system_status(self, status: TuiSystemStatus) -> None:
-        self._status = status
-        self._system.set_system_status(status)
-        self._usage.set_system_status(status)
 
     def on_mount(self) -> None:
         self.set_viewport_size(self.app.screen.size)
-        # The composer owns its own auto height; its wrapped document height is
-        # the single source both Textual's box model and these sibling bounds
-        # resolve from, so growth and re-bounding stay in one layout pass.
-        self.watch(
-            self._composer,
-            "virtual_size",
-            self._apply_viewport_constraints,
-            init=False,
-        )
-        self.refresh_theme()
+        self.watch(self._composer, "virtual_size", self._apply_viewport_constraints, init=False)
 
     def set_welcome_mode(self, enabled: bool) -> None:
-        self.set_class(enabled, "welcome-page")
+        super().set_welcome_mode(enabled)
         self._subagent_navigation.display = not enabled
+        self._command_popup.styles.overlay = "screen" if enabled else "none"
+        if not enabled:
+            self._command_popup.styles.offset = (0, 0)
         self._apply_viewport_constraints()
 
     def set_viewport_size(self, size: Size) -> None:
-        """Apply bounded constraints while Textual continues to own layout."""
+        if size != self._viewport_size:
+            self._viewport_size = size
+            self._apply_viewport_constraints()
 
-        if size == self._viewport_size:
-            return
-        self._viewport_size = size
-        self._apply_viewport_constraints()
+    def constrain_input(self, region: Region, viewport: Size) -> None:
+        above, below = region.y, viewport.height - region.bottom
+        self._bound_command_popup(max(1, max(above, below)))
+        self._command_popup.styles.offset = (0, "-100%" if above >= below else region.height)
+
+    def _bound_command_popup(self, available: int) -> None:
+        self._command_popup.styles.max_height = min(COMMAND_POPUP_MAX_HEIGHT, available)
+        self._command_popup.styles.min_height = min(COMMAND_POPUP_MIN_HEIGHT, available)
 
     def _apply_viewport_constraints(self) -> None:
         size = self._viewport_size
         if size is None:
             return
-        welcome_mode = self.has_class("welcome-page")
-        self.styles.max_width = min(WELCOME_MAX_WIDTH, size.width) if welcome_mode else "100%"
-        composer_height = self._composer.projected_height
-        available_height = (
-            max(1, (size.height - _WELCOME_CENTER_CHROME_HEIGHT - composer_height) // 2)
-            if welcome_mode
-            else max(1, size.height - _REGULAR_SURFACE_CHROME_HEIGHT - composer_height)
+        available = max(
+            1, size.height - _REGULAR_SURFACE_CHROME_HEIGHT - self._composer.projected_height
         )
-        self._command_popup.styles.max_height = min(
-            COMMAND_POPUP_MAX_HEIGHT,
-            available_height,
-        )
-        self._command_popup.styles.min_height = min(
-            COMMAND_POPUP_MIN_HEIGHT,
-            available_height,
-        )
-        interaction_height = max(
-            1,
-            size.height - _REGULAR_SURFACE_CHROME_HEIGHT - composer_height,
-        )
-        self._interaction_bar.styles.max_height = min(
-            INTERACTION_PANEL_MAX_HEIGHT,
-            interaction_height,
-        )
-        self._interaction_bar.styles.min_height = min(
-            INTERACTION_PANEL_MIN_HEIGHT,
-            interaction_height,
-        )
-
-    def refresh_theme(self) -> None:
-        self._render_logo()
-
-    def _render_logo(self) -> None:
-        self._logo.update(Text(_OURO_LOGO.strip("\n"), style=f"bold {theme_for(self).accent}"))
+        if not self.welcome_active:
+            self._bound_command_popup(available)
+        self._interaction_bar.styles.max_height = min(INTERACTION_PANEL_MAX_HEIGHT, available)
+        self._interaction_bar.styles.min_height = min(INTERACTION_PANEL_MIN_HEIGHT, available)
+        self.refresh(layout=True)
 
 
 def _tool_activities_from_messages(

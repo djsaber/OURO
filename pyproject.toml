@@ -9,6 +9,7 @@ dependencies = [
     "httpx-sse>=0.4.3",
     "jsonschema>=4.25",
     "mcp>=1.28,<2",
+    "numpy>=2.4,<3",
     "pathspec>=1.1.1",
     "pydantic>=2.13",
     "pyperclip>=1.11,<2",

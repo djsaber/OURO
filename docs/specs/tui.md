@@ -56,6 +56,38 @@ TUI 状态分为三类：
 `controlled Session` 是允许提交输入和控制 Run 的主会话；`visible Session` 是时间线当前展示的会话。
 查看 child Session 时两者可以不同。只切换 visible Session 不得重启、暂停、接管或取消任何 Run。
 
+## 欢迎页样式
+
+欢迎页样式与界面配色为并行配置，保存于 `<OURO_HOME>/config/tui.json`：
+
+| 字段 | 默认值 | 约束 |
+|---|---|---|
+| `welcome_style` | `event-horizon` | 必须存在于当前 App 的样式包目录 |
+| `welcome_motion` | `true` | 控制样式包内动画播放；暂停时保留静态呈现 |
+
+`Ctrl+P → Theme → Welcome style` 使用标准筛选菜单选择样式；`Animation` 切换播放与暂停。
+选择必须先成功持久化再应用。存储失败时保持当前组件与偏好并显示错误。连续选择和关闭菜单不取消
+App 持有的写入/挂载事务；事务与其他 TUI 偏好更新共用锁。切换包不重建 composer 或清除草稿。
+
+内置包包括 `basic`、`event-horizon`、`electron-bloom`、`julia-reliquary`、`interference`、
+`clifford-torus` 和 `quasicrystal`。`basic` 是静态 OURO 字标；其余包各自拥有固定点阵上的独立场与光谱。
+点阵包目标刷新率为 30 FPS，实际帧率取决于终端尺寸、字体和输出速度。它们在不可见时停止动画计算，
+卸载时停止定时器；暂停和恢复不会将隐藏时长计入动画。终端缩放只重建当前尺寸的网格与帧缓冲。
+
+`WelcomeStyle` 以身份、名称、说明和工厂组成通用包契约；工厂提供新的 `WelcomePage` 全屏根组件。
+`run_tui(welcome_styles=...)` 与 `OuroTuiApp(welcome_styles=...)` 支持显式注入自定义包，目录按 App 隔离，
+重复 ID 被拒绝。框架只管理注册、选择、配置和组件生命周期，支持任意 Textual 渲染或组件组合，
+不要求点阵、RGB 采样或特定动画算法。点阵要求只约束上述六个内置艺术包。
+
+样式包控制整个欢迎页的背景、装饰、组件组合、信息布局与响应式规则。包通过 `place_input(viewport, measure)`
+返回公共输入层的位置与尺寸；Host 在其上层呈现持久输入组件，按剩余空间安排命令弹窗，菜单覆盖整页。
+System、Usage、Tips、Version 是可选的复用组件，包通过 `set_system_status` 接收 Host 的不可变信息快照。
+通用 Host 不限定居中布局、最大页宽、艺术区域或点阵形式。局部输入样式由当前包的 Host 类限定，离开欢迎页即撤销。
+
+扩展代码及生命周期说明见
+[欢迎页样式包开发](../development/welcome-styles.md)。行为由 `tests/tui/test_welcome_styles.py`、
+`test_welcome_layout.py`、`test_welcome_refresh.py` 及主题菜单回归验证。
+
 ## 会话与工作区
 
 新会话通常在第一条普通输入提交时创建；附件导入可提前准备空闲 Session 以保存资源归属，页面仍停留在欢迎页，

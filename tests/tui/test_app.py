@@ -310,7 +310,7 @@ async def _wait_for_welcome_render(
         if (
             welcome is not None
             and welcome.has_class("welcome-page")
-            and welcome._logo.region.width > 0
+            and welcome.page.region.width > 0
             and contains in _welcome_plain_text(welcome)
         ):
             await pilot._wait_for_screen()
@@ -473,7 +473,7 @@ async def test_welcome_providers_show_count_before_dimmed_names(tmp_path: Path) 
                 model_count=13,
             )
         )
-        providers = welcome._system._providers.render()
+        providers = welcome.page._system._providers.render()
         assert providers.plain == "13 model(s) • Chat, Reasoner, Vision, +2"
         assert providers.get_style_at_offset(0).foreground == Color.parse(
             DEFAULT_TUI_THEME.text_muted
@@ -482,7 +482,7 @@ async def test_welcome_providers_show_count_before_dimmed_names(tmp_path: Path) 
             providers.plain.index("Chat")
         ).foreground == Color.parse(DEFAULT_TUI_THEME.text_faint)
         welcome.set_system_status(TuiSystemStatus())
-        assert welcome._system._providers.render().plain == "0 model(s)"
+        assert welcome.page._system._providers.render().plain == "0 model(s)"
 
 
 def test_choice_screen_projects_group_headers_as_disabled_options() -> None:
@@ -1913,10 +1913,12 @@ async def test_tui_hides_welcome_header_while_startup_is_still_in_progress(
             assert status_line.display
             assert status_line.region.bottom == app.screen.region.bottom
             visible_input_children = [
-                child for child in app.query_one(WelcomePanel).children if child.display
+                child
+                for child in app.query_one(WelcomePanel).input_surface.children
+                if child.display
             ]
             assert visible_input_children == [status_line]
-            assert not app.query_one("#welcome-version", Static).display
+            assert not app.query_one(WelcomePanel).page.display
         finally:
             release_startup.set()
 
@@ -2093,7 +2095,7 @@ async def test_welcome_refreshes_live_system_status_each_time_it_opens(tmp_path:
         welcome = await _wait_for_welcome_render(app, pilot, contains="live-skill")
 
         assert app._system_status.skill_names == ("live-skill",)
-        assert "1 available • live-skill" in welcome._system._skills.render().plain
+        assert "1 available • live-skill" in welcome.page._system._skills.render().plain
 
 
 @pytest.mark.asyncio
@@ -2126,7 +2128,7 @@ async def test_welcome_usage_hover_selects_day_without_changing_color_and_previe
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
-        usage = welcome._usage
+        usage = welcome.page._usage
         usage.set_system_status(status)
         await pilot.pause()
 
@@ -2154,7 +2156,9 @@ async def test_welcome_usage_hover_selects_day_without_changing_color_and_previe
 
 
 def test_welcome_usage_cache_hit_rate_is_zero_without_input_tokens() -> None:
-    assert tui_widgets._cache_hit_rate(100, 0) == 0.0
+    from ouro.tui.welcome.components import _cache_hit_rate
+
+    assert _cache_hit_rate(100, 0) == 0.0
 
 
 @pytest.mark.asyncio
@@ -2164,7 +2168,7 @@ async def test_welcome_tips_point_to_keyboard_help_instead_of_sessions(tmp_path:
     async with run_ready_app(app, size=(100, 32)) as pilot:
         welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
         tips = "\n".join(
-            getattr(widget.render(), "plain", "") for widget in welcome._tips.query(Static)
+            getattr(widget.render(), "plain", "") for widget in welcome.page._tips.query(Static)
         )
 
         assert "Ctrl+H\nHelp" in tips
@@ -2188,19 +2192,19 @@ async def test_welcome_spacing_adapts_to_height_without_moving_composer_off_cent
             await pilot.resize_terminal(100, height)
             await pilot.pause()
 
-            section_gap = welcome._lower.region.y - status.region.bottom
-            system_gap = welcome._system.region.y - welcome._lower.region.bottom
+            section_gap = welcome.page._lower.region.y - status.region.bottom
+            system_gap = welcome.page._system.region.y - welcome.page._lower.region.bottom
             assert 1 <= section_gap <= 2
             assert 1 <= system_gap <= 3
-            assert abs(welcome._top.region.height - welcome._bottom.region.height) <= 1
-            assert composer.region.y == welcome._top.region.bottom
+            assert abs(welcome.page._top.region.height - welcome.page._bottom.region.height) <= 1
+            assert composer.region.y == welcome.page._top.region.bottom
             assert composer.region.x == app.screen.region.width - composer.region.right
-            assert welcome._usage.region.height == welcome._tips.region.height == 4
-            assert welcome._system.region.height == 7
+            assert welcome.page._usage.region.height == welcome.page._tips.region.height == 4
+            assert welcome.page._system.region.height == 7
 
             if height >= 32:
-                assert welcome._system.region.bottom <= welcome._bottom.region.bottom
-                assert welcome._system.region.bottom <= version.region.y
+                assert welcome.page._system.region.bottom <= welcome.page._bottom.region.bottom
+                assert welcome.page._system.region.bottom <= version.region.y
             if height <= 32:
                 assert (section_gap, system_gap) == (1, 1)
             if height == 40:
@@ -2227,13 +2231,15 @@ async def test_welcome_layout_stays_centered_across_terminal_width_bounds(
         assert not version.styles.text_style.bold
         assert not version.styles.text_style.italic
 
-        assert welcome.region.width == 116
+        assert welcome.region == app.screen.region
+        assert composer.region.width == 114
         assert welcome.region.x == app.screen.region.width - welcome.region.right
         assert composer.region.x == app.screen.region.width - composer.region.right
 
         await pilot.resize_terminal(64, 24)
         await pilot.pause()
-        assert welcome.region.width == 57
+        assert welcome.region == app.screen.region
+        assert composer.region.width == 55
         assert version.region.bottom == app.screen.region.bottom
         assert version.region.right == app.screen.region.right
         assert abs(welcome.region.x - (app.screen.region.width - welcome.region.right)) <= 1
@@ -2245,8 +2251,8 @@ async def test_welcome_layout_stays_centered_across_terminal_width_bounds(
         assert version.region.bottom == app.screen.region.bottom
         assert version.region.right == app.screen.region.right
         assert composer.region.x == app.screen.region.width - composer.region.right
-        assert welcome._top.region.height == welcome._bottom.region.height
-        assert composer.region.y == welcome._top.region.bottom
+        assert welcome.page._top.region.height == welcome.page._bottom.region.height
+        assert composer.region.y == welcome.page._top.region.bottom
         assert app.query_one(StatusLine).region.bottom <= app.screen.region.bottom
 
         await pilot.click("#composer")
@@ -2779,7 +2785,7 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         connecting_label = mcp_label.render().plain
         assert connecting_label.endswith(" MCP")
         assert connecting_label[0] in DEFAULT_TUI_THEME.spinner_frames
-        starting_status = welcome._system._mcp.render()
+        starting_status = welcome.page._system._mcp.render()
         assert "0/1 connected • 0 tool(s) • 1 connecting" in starting_status.plain
         assert starting_status.get_style_at_offset(
             starting_status.plain.index("connecting"),
@@ -2787,11 +2793,11 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
 
         session.initialize_gate.set()
         await _wait_until(
-            lambda: "1/1 connected • 1 tool(s)" in welcome._system._mcp.render().plain,
+            lambda: "1/1 connected • 1 tool(s)" in welcome.page._system._mcp.render().plain,
             pilot,
             description="MCP connection status",
         )
-        connected_status = welcome._system._mcp.render()
+        connected_status = welcome.page._system._mcp.render()
         assert mcp_label.render().plain == "MCP"
         assert "1/1 connected • 1 tool(s)" in connected_status.plain
         assert connected_status.get_style_at_offset(
@@ -2802,20 +2808,22 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         session.tools.append(LiveMcpSession._tool("fetch"))
         factory.tools_changed()
         await _wait_until(
-            lambda: "1/1 connected • 2 tool(s)" in welcome._system._mcp.render().plain,
+            lambda: "1/1 connected • 2 tool(s)" in welcome.page._system._mcp.render().plain,
             pilot,
             description="refreshed MCP tools",
         )
-        assert "1/1 connected • 2 tool(s)" in welcome._system._mcp.render().plain
+        assert "1/1 connected • 2 tool(s)" in welcome.page._system._mcp.render().plain
         assert {"live__fetch", "live__search"}.issubset(application.runtime.tools.names())
 
         factory.connection_lost("connection lost")
         await _wait_until(
-            lambda: "0/1 connected • 0 tool(s) • 1 failed" in welcome._system._mcp.render().plain,
+            lambda: (
+                "0/1 connected • 0 tool(s) • 1 failed" in welcome.page._system._mcp.render().plain
+            ),
             pilot,
             description="failed MCP connection status",
         )
-        assert "0/1 connected • 0 tool(s) • 1 failed" in welcome._system._mcp.render().plain
+        assert "0/1 connected • 0 tool(s) • 1 failed" in welcome.page._system._mcp.render().plain
         assert mcp_label.render().plain == "MCP"
         assert "live__search" not in application.runtime.tools.names()
 
@@ -3548,7 +3556,7 @@ async def test_first_user_message_renders_when_leaving_welcome_page(tmp_path: Pa
             history = app.query_one(ConversationHistory)
             assert history.user_turns == ("first message",)
             assert "first message" in history.rendered_text
-            assert not app.query_one("#welcome-version", Static).display
+            assert not app.query_one(WelcomePanel).page.display
         finally:
             provider.release.set()
         await _wait_for_worker_group(app, pilot, group="run")
@@ -6127,10 +6135,10 @@ async def test_welcome_mode_keeps_growing_composer_centered(tmp_path: Path) -> N
             composer.load_text(text)
             await pilot.pause()
 
-            assert composer.region.y == welcome._top.region.bottom
-            assert abs(welcome._top.region.height - welcome._bottom.region.height) <= 1
+            assert composer.region.y == welcome.page._top.region.bottom
+            assert abs(welcome.page._top.region.height - welcome.page._bottom.region.height) <= 1
             assert app.query_one(StatusLine).region.y == composer.region.bottom
-            assert welcome._system.region.bottom <= welcome._bottom.region.bottom
+            assert welcome.page._system.region.bottom <= welcome.page._bottom.region.bottom
 
 
 @pytest.mark.asyncio
@@ -13249,12 +13257,13 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         theme_screen = app.screen
         assert app.screen.query_one("#choice-title", Static).render().plain == "THEME"
         theme_options = app.screen.query_one(OptionList)
-        assert theme_options.option_count == len(TUI_THEMES)
+        assert theme_options.option_count == len(TUI_THEMES) + 1
         assert all(choice.description == "" for choice in app.screen._choices)
         assert "original" in {choice.value for choice in app.screen._choices}
         theme_choices = {choice.value: choice for choice in app.screen._choices}
         assert all(
-            len(choice.swatches) == THEME_SATURATION_LEVELS for choice in theme_choices.values()
+            len(theme_choices[theme_id].swatches) == THEME_SATURATION_LEVELS
+            for theme_id in TUI_THEMES
         )
         assert theme_choices["original"].swatch_marker_index == 0
         assert theme_choices["blossom"].swatch_marker_index is None
@@ -13793,12 +13802,12 @@ async def test_theme_preview_is_local_and_cleared_when_picker_is_cancelled(
 
         monkeypatch.setattr(theme_options, "clear_options", counted_clear_options)
         monkeypatch.setattr(theme_screen, "update_choices", counted_update_choices)
-        repeated_moves = len(TUI_THEMES) * 8 + 7
+        repeated_moves = theme_options.option_count * 8 + 7
         for _ in range(repeated_moves):
             theme_screen.action_next_choice()
         await pilot.pause()
 
-        expected_index = (4 + repeated_moves) % len(TUI_THEMES)
+        expected_index = (4 + repeated_moves) % theme_options.option_count
         assert theme_options.highlighted == expected_index
         assert clear_calls == 0
         assert update_calls == 1

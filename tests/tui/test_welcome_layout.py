@@ -34,16 +34,22 @@ async def test_welcome_sections_stay_within_available_width_when_resized(
             await pilot.pause()
 
             bounds = welcome.content_region
-            for section in (welcome._system, welcome._lower, welcome._usage, welcome._tips):
+            for section in (
+                welcome.page._system,
+                welcome.page._lower,
+                welcome.page._usage,
+                welcome.page._tips,
+            ):
                 assert section.region.width > 0
                 assert bounds.x <= section.region.x
                 assert section.region.right <= bounds.right, (width, section, section.region)
-            assert welcome._usage.region.right <= welcome._tips.region.x
-            assert welcome._lower.region.bottom <= welcome._system.region.y
-            for text in welcome._usage.query(Static):
+            assert welcome.page._usage.region.right <= welcome.page._tips.region.x
+            assert welcome.page._tips.region.right == welcome.page._lower.region.right
+            assert welcome.page._lower.region.bottom <= welcome.page._system.region.y
+            for text in welcome.page._usage.query(Static):
                 if text.display and text.render().cell_length > text.content_size.width:
                     assert text.render_line(0).text.rstrip().endswith("…")
-            for text in welcome._tips.query(Static):
+            for text in welcome.page._tips.query(Static):
                 assert text.region in app.screen.region
                 assert text.region.right <= bounds.right
                 assert text.content_size.width >= text.render().cell_length

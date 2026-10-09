@@ -59,3 +59,7 @@ TUI 欢迎页可通过 `/workspace <path>` 为尚未创建的会话选择工作�
 再选择其他目录；`/workspace clear` 只清空最近工作空间记录，不改变当前会话的工作空间。Actions 的
 `Settings` 分组统一提供主题、思考内容展开方式、输入草稿记忆、排队输入交付方式和上下文压缩策略；关闭草稿
 记忆会清空已保存草稿。排队输入交付方式与压缩策略的更新在下一次启动时生效。
+
+通过 `Ctrl+P → Theme → Welcome style` 独立选择欢迎页样式。内置 Basic 静态字标与六种动态点阵艺术包，
+默认使用 Event Horizon。`Animation` 可暂停或恢复动画。样式与播放偏好立即保存，独立于界面配色；
+关闭菜单后显示所选作品。自定义包接入见[欢迎页样式包开发](../development/welcome-styles.md)。
