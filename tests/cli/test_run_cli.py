@@ -40,7 +40,7 @@ def _endpoint_id_for_model(home: Path, provider_id: str, model_id: str) -> str:
 
 def _expected_builtin_tool_names() -> list[str]:
     shell = detect_command_shell()
-    names = ["AskUser", "Edit", "Glob", "Grep", "Read", "TodoList", "Write"]
+    names = ["AskUser", "Edit", "Glob", "Grep", "Read", "TodoList", "ViewImage", "Write"]
     if shell is not None:
         names.append(shell.tool_name)
     return sorted(names)

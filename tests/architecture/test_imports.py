@@ -21,3 +21,23 @@ def test_configuration_and_projection_imports_do_not_load_optional_runtimes(modu
         capture_output=True,
         text=True,
     )
+
+
+@pytest.mark.parametrize(
+    "setup",
+    ["import ouro.cli.main", "from ouro.tools import builtin_tools; builtin_tools()"],
+    ids=["cli-startup", "tool-registration"],
+)
+def test_startup_and_tool_registration_do_not_load_pillow(setup):
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"{setup}; import sys; "
+            "assert not any(name == 'PIL' or name.startswith('PIL.') for name in sys.modules)",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )

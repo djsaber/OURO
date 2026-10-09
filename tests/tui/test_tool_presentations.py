@@ -61,6 +61,17 @@ def _agent(
     )
 
 
+@pytest.mark.parametrize(
+    "result,expected",
+    [({}, "screens/ui.png"), ({"width": 2048, "height": 1024}, "screens/ui.png • 2048 x 1024")],
+)
+def test_image_tool_presentation_shows_path_and_loaded_resolution(result, expected):
+    presentation = present_tool(
+        _tool("ViewImage", arguments={"path": "screens/ui.png"}, result=result)
+    )
+    assert [line.text for line in presentation.lines] == [expected]
+
+
 def test_file_tool_presentations_expose_target_and_line_semantics() -> None:
     read = present_tool(
         _tool(

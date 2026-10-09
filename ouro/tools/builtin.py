@@ -7,12 +7,14 @@ from ouro.tools.builtin_glob import builtin_glob_tool
 from ouro.tools.builtin_grep import builtin_grep_tool
 from ouro.tools.builtin_shell import builtin_command_tool, detect_command_shell
 from ouro.tools.builtin_todolist import builtin_todolist_tool
+from ouro.tools.builtin_view_image import builtin_view_image_tool
 
 
 def builtin_tools() -> list[Tool]:
     shell = detect_command_shell()
     return [
         *builtin_file_tools(),
+        builtin_view_image_tool(),
         builtin_glob_tool(),
         builtin_grep_tool(),
         builtin_todolist_tool(),

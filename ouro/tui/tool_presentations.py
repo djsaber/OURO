@@ -49,6 +49,8 @@ def present_tool(
     name = tool.tool_name.casefold()
     if name == "read":
         return _present_read(tool.arguments, tool.result_data, theme=theme)
+    if name == "viewimage":
+        return _present_view_image(tool.arguments, tool.result_data, theme=theme)
     if name == "write":
         return _present_write(tool.arguments, theme=theme)
     if name == "edit":
@@ -89,6 +91,19 @@ def _present_read(
         limit = _positive_int(arguments.get("limit"))
         summary = f"{offset} - {offset + limit - 1} lines" if limit is not None else None
     return ToolPresentation(lines=_file_detail_line(path, summary, theme=theme))
+
+
+def _present_view_image(
+    arguments: dict[str, JsonValue],
+    result: dict[str, JsonValue],
+    *,
+    theme: TuiTheme,
+) -> ToolPresentation:
+    width, height = _positive_int(result.get("width")), _positive_int(result.get("height"))
+    resolution = f"{width} x {height}" if width is not None and height is not None else None
+    return ToolPresentation(
+        lines=_file_detail_line(_path(arguments.get("path")), resolution, theme=theme)
+    )
 
 
 def _present_write(arguments: dict[str, JsonValue], *, theme: TuiTheme) -> ToolPresentation:

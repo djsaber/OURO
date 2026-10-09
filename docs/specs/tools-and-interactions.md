@@ -34,7 +34,7 @@
 
 ## 内置工具参数
 
-Read、Write、Edit、Glob、Grep、TodoList 和命令行工具各自以参数模型定义字段、默认值、约束和描述。
+Read、ViewImage、Write、Edit、Glob、Grep、TodoList 和命令行工具各自以参数模型定义字段、默认值、约束和描述。
 公开 JSON Schema 从模型生成，处理器在入口解析为类型化参数，再执行文件、进程或 Session 操作。
 各工具复用 `ouro.tools.builtin_common` 的参数语义；公共模块不依赖具体工具实现。
 
@@ -52,6 +52,7 @@ AskUser 复用其交互参数模型；Agent 控制工具从 Run 目录投影参�
 
 - Read：只读取 UTF-8 文本文件，不承担目录枚举；使用 1 基 `offset` 和 `limit` 分页，按
   `<行号>\t<内容>` 返回，单次至多 1000 行或 100,000 UTF-8 字节；
+- ViewImage：读取本地图片，返回类型化图片内容与路径、尺寸说明；`detail` 可选择默认缩放或原始分辨率；
 - Write：以覆盖或追加模式写入 UTF-8 文本，并自动创建缺失的父目录；
 - Edit：执行精确字面文本替换，默认替换首处，可显式选择替换全部；
 - Glob：按文件名、扩展名或目录模式发现文件，遵循忽略规则并限制返回数量；
@@ -66,7 +67,7 @@ AskUser 复用其交互参数模型；Agent 控制工具从 Run 目录投影参�
 Glob/Grep 使用 `ToolExecutionContext` 的 workspace、忽略规则与有界输出；TodoList 使用原生 Harness
 中的宿主 owner 状态。三者由基础 `ToolRegistry` 在组合根注册，不依赖插件 generation 或启停生命周期。
 
-写入、编辑和命令行工具默认可由权限配置要求审批。Read/Write/Edit 的路径和命令行工具的工作目录统一经过
+写入、编辑和命令行工具默认可由权限配置要求审批。Read/ViewImage/Write/Edit 的路径和命令行工具的工作目录统一经过
 `ToolExecutionContext` 解析；默认限制在 Session workspace 或 Host 管理的 `OURO_HOME/artifacts` 制品根目录内，
 不会放开其他用户数据，并拒绝 `..` 与符号链接逃逸。Read 在文件 IO 边界流式执行自身的行数和 UTF-8 字节上限，
 返回 `next_offset`、实际行数与截断信息，避免为截取一页而全量载入文件；工具结果在 executor 边界对全部文本块
@@ -77,6 +78,30 @@ Glob/Grep 使用 `ToolExecutionContext` 的 workspace、忽略规则与有界输
 默认 shell。PowerShell 以无 Profile、非交互、UTF-8 文本模式运行；Bash 以无 Profile、非交互并启用
 `pipefail` 的模式运行。各方言描述需明确其引用、管道、路径、可选程序探测、错误状态与非持久会话等常见
 陷阱。若没有支持的 shell，则不注册命令行工具，不能暴露一个实际无法执行或会落到其他方言的定义。
+
+## 查看图片
+
+`ViewImage` 的描述为 “View a local image file from the filesystem when visual inspection is needed.
+Use this for images already available on disk.”。JSON Schema 由严格参数模型生成，只接受：
+
+- `path`：必填、非空的本地文件路径，绝对路径或相对于 Session workspace 的路径；
+- `detail`：可选的 `high | original`，默认 `high`，不接受 `null`。
+
+`high` 保持宽高比，将超过 2048 像素边长的图片缩小到 2048 × 2048 范围内，不放大小图；`original`
+不缩放。两者都应用 EXIF 方向。PNG、JPEG、WebP 在无需转换时复用经过解码验证的原始字节；GIF、BMP、TIFF
+以及需要缩放、方向校正的图片转换为静态 PNG。动画和多页图片只返回首帧，并在结果文字中明确说明。
+格式由内容识别，不依赖扩展名；SVG、PDF、损坏文件和非普通文件返回工具错误。
+
+工具声明 `read_only`，默认自动执行，但受统一权限覆盖与路径边界约束；会话资源目录只提供读取授权。
+文件读取与 [Pillow 解码](https://pillow.readthedocs.io/en/stable/reference/Image.html) 在宿主拥有的同步 worker
+中执行，并在阶段边界检查取消。Pillow 在文件读取与取消检查通过后按需导入，同一进程复用 Python 模块缓存；
+启动和工具注册不加载图片库。源文件至多 32 MiB，选定帧至多 40,000,000 像素；媒体结果遵循执行上下文的
+编码字符限额，PNG 编码在写入缓冲区时实施上限。读取不修改源文件，不生成缩略图文件，不缓存文件内容；
+读取期间发生的文件大小或修改时间变化会使调用失败，模型可以重试。
+
+结果使用标准 `ToolResult.content` 保存文本与 `ImageContent`，`structured` 只保存路径、尺寸、格式、detail、
+缩放/首帧标志和字节数。工具不选择供应商协议，不注入消息；原生工具图片、补充用户上下文与非视觉端点的
+文本反馈由[通用结果呈现](../architecture/tool-results.md)处理。TUI 展示路径与输出尺寸，不渲染 Base64。
 
 ## 权限
 
