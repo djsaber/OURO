@@ -109,8 +109,8 @@ Host 在离开欢迎页、打开覆盖菜单或替换页面时发送 `active=Fal
 `dot_matrix/` 是艺术包可选择复用的引擎：
 
 - `field.py`：只读网格、按视口准备的 RGB 采样器，以及光谱插值。
-- `raster.py`：固定地址上的余辉、相邻光照、曝光映射与 Braille 编码。
-- `widget.py`：动画时钟、局部 Strip 刷新，以及点阵页面包。
+- `raster.py`：固定地址上的余辉、相邻光照、曝光映射、Braille 编码与变化区域。
+- `widget.py`：动画时钟、后台帧计算、局部 Strip 刷新，以及点阵页面包。
 
 每个终端 cell 对应 2×4 个固定 Braille 点位。包只计算这些采样位置的辐射值；大小变化时重新构建网格，
 动画期间只改变亮度、颜色和开关状态。一个 cell 的点共享终端前景色，点的开关保留子 cell 轮廓。
@@ -123,6 +123,15 @@ Host 在离开欢迎页、打开覆盖菜单或替换页面时发送 `active=Fal
 需要保留多帧时自行复制。每次 `prepare` 都创建独立状态，尺寸改变或卸载页面时释放旧状态。
 样式只负责自己的数学场，公共引擎负责余辉和终端编码；不增加通用数组兼容层。
 
+点阵组件以最高 30 Hz 请求帧，采样和编码通过 Textual Worker 与 `asyncio.to_thread`
+在主循环外完成。每个组件只保留一个计算任务；计算未结束时跳过动画 tick，尺寸变更合并到最新请求。
+后台任务独占光栅缓冲，不访问挂载组件；主循环只发布当前版本的结果。暂停、缩放和卸载使过期结果失效，
+卸载不等待不可中断的数值计算，也不接受其完成结果。时钟只计算播放期间的时间，不补播积压帧。
+
+光栅按最终 Braille 位和 RGB 值比较终端 cell，复用未变化行的 Strip，仅刷新每行变化点之间的区域。
+未变化帧不触发重绘；输入焦点、布局和硬件光标由 Textual 管理，不随艺术计算更新。
+Windows 控制台的完整帧提交由终端适配器负责，与欢迎页包无关，见 [TUI 规范](../specs/tui.md)。
+
 `arrayfunc` 是 C 扩展。当前锁定版本提供 Windows x64 / CPython 3.14 wheel；
 没有匹配 wheel 的平台需要 C 编译器和 Python 开发头文件，详见
 [上游安装说明](https://pypi.org/project/arrayfunc/8.5.7/#installation)。
@@ -134,12 +143,13 @@ Host 在离开欢迎页、打开覆盖菜单或替换页面时发送 `active=Fal
 ```bash
 uv run --frozen pytest tests/tui/test_welcome_styles.py tests/tui/test_welcome_layout.py tests/tui/test_welcome_refresh.py tests/tui/test_preferences.py
 uv run --frozen pytest tests/tui/test_app.py -k 'welcome or theme or composer_growth or session_input_surface or startup'
+uv run --frozen pytest tests/tui/test_dot_animation.py tests/tui/test_windows_driver.py
 ```
 
 自定义包需验证全视口绘制、公共组件组合、输入布局与增长、短终端、命令弹窗方向、局部样式撤销、
 快照更新、动画暂停/恢复、卸载资源回收和主题刷新。切换包时应保持同一输入实例与草稿；动画不得驱动全页布局。
 点阵包还应验证不同时间下的有限非负输出、固定坐标不变、尺寸边界、确定性和终端行宽。
-`tests/tui/fixtures/welcome-frames.json.gz` 保存迁移前的 240 帧参考输出，覆盖六个艺术包、
+`tests/tui/fixtures/welcome-frames.json.gz` 保存 240 帧独立参考输出，覆盖六个艺术包、
 四种尺寸、两种颜色模式和五个时间点，独立保护点位、RGB 颜色及余辉效果。
 
 端到端帧计算基准包含采样、光照映射、Braille 编码和 Strip 构造，不包含终端 I/O：
@@ -150,3 +160,14 @@ uv run --frozen python dev/benchmarks/welcome.py --frames 60
 
 基准报告两种视口尺寸下的首帧时间、稳态中位数与 P95。性能对比应使用同一机器、
 同一 Python 版本和相同帧数；不在 CI 中断言随机器负载波动的计时阈值。
+
+输入负载基准使用真实编辑器、Textual 合成器和 ANSI 序列化，以每秒 30 个事件交替输入和删除，
+报告按键到编辑处理的延迟及终端输出量：
+
+```bash
+uv run --frozen python dev/benchmarks/welcome_input.py
+```
+
+输出由测试驱动接收，不接管终端；原生终端绘制和输入法预编辑需在实际终端验证。
+Windows 驱动测试另建隐藏的隔离控制台，检查大帧的原生写入边界、Unicode 完整性和并发光标读取；
+测试不接管现有终端，也不模拟输入法候选窗。

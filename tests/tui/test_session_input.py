@@ -1,0 +1,286 @@
+from __future__ import annotations
+
+import asyncio
+import re
+import sys
+import threading
+
+import pytest
+from rich.control import Control
+from textual import events
+from textual.geometry import Size
+from textual.widgets import Input
+
+from ouro.core.events import EventRecord
+from ouro.tui import conversation_history
+from ouro.tui.app import OuroTuiApp
+from ouro.tui.screens import ChoiceScreen
+from ouro.tui.widgets import Composer, ConversationView, StatusLine
+from tests.tui.helpers import run_ready_app, two_route_application
+
+
+@pytest.mark.parametrize("operation", ["_block_starts", "_render_entry_requests"])
+async def test_session_dispatches_input_while_stream_rendering_is_pending(
+    tmp_path, monkeypatch, operation
+):
+    application = two_route_application(tmp_path)
+    session = application.runtime.sessions.create(title="Typing while streaming").session
+    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
+    async with run_ready_app(app, size=(120, 40)) as pilot:
+        await app.query_one(ConversationView).add_user("Existing conversation")
+        await pilot.pause()
+        composer = app.query_one(Composer)
+        composer.focus()
+        await pilot.pause()
+        assert not composer.disabled
+        assert app.focused is composer
+        bounds = composer.region
+        started, release = threading.Event(), threading.Event()
+        original = getattr(conversation_history, operation)
+
+        def slow_render(*args, **kwargs):
+            started.set()
+            assert release.wait(5), "test did not release the background renderer"
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(conversation_history, operation, slow_render)
+        for sequence, (kind, payload) in enumerate(
+            (
+                ("run_started", {"trigger": "user"}),
+                ("model_text_delta", {"text": "```python\n" + "print(1)\n" * 350 + "```\n\nNext"}),
+            ),
+            start=1,
+        ):
+            assert app._queue_runtime_event(
+                EventRecord(
+                    session_id=session.session_id,
+                    run_id="run_input",
+                    sequence=sequence,
+                    event_type=kind,
+                    payload=payload,
+                )
+            )
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            expected = ""
+            for key in ("你", "好", "backspace", "界"):
+                deleting = key == "backspace"
+                expected = expected[:-1] if deleting else expected + key
+                app.post_message(events.Key(key, None if deleting else key))
+                async with asyncio.timeout(1):
+                    while composer.text != expected:
+                        await asyncio.sleep(0.01)
+            assert composer.region == bounds
+            assert app.focused is composer
+            assert app.cursor_position == composer.cursor_screen_offset
+            # A completion-triggered drain must not overtake the frame that is
+            # still rendering, even after its records left the staging buffer.
+            assert app._queue_runtime_event(
+                EventRecord(
+                    session_id=session.session_id,
+                    run_id="run_input",
+                    sequence=3,
+                    event_type="model_text_delta",
+                    payload={"text": " continuation"},
+                )
+            )
+            draining = asyncio.create_task(app._flush_pending_runtime_events())
+            await asyncio.sleep(0)
+            assert not draining.done()
+            assert app._projection is not None and app._projection.last_sequence == 2
+        finally:
+            release.set()
+            await pilot.pause()
+        await draining
+        assert app._projection.assistant_text.endswith("Next continuation")
+        assert app._projection.last_sequence == 3
+        assert composer.text == "你界"
+
+
+async def test_session_status_query_does_not_block_input_dispatch(tmp_path, monkeypatch):
+    application = two_route_application(tmp_path)
+    session = application.runtime.sessions.create(title="Status refresh").session
+    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
+    async with run_ready_app(app, size=(100, 30)) as pilot:
+        await app.query_one(ConversationView).add_user("Existing conversation")
+        await pilot.pause()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def read_interactions():
+            entered.set()
+            await release.wait()
+            return ()
+
+        monkeypatch.setattr(app._controller, "agent_interactions", read_interactions)
+        assert app._queue_runtime_event(
+            EventRecord(
+                session_id=session.session_id,
+                run_id="run_status",
+                sequence=1,
+                event_type="agent_wait_requested",
+                payload={},
+            )
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            composer = app.query_one(Composer)
+            app.post_message(events.Key("你", "你"))
+            async with asyncio.timeout(1):
+                while composer.text != "你":
+                    await asyncio.sleep(0.01)
+            assert app.focused is composer
+            assert app.cursor_position == composer.cursor_screen_offset
+        finally:
+            release.set()
+            await pilot.pause()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows terminal output adapter")
+async def test_session_frames_preserve_editor_and_menu_cursor_during_live_updates(
+    tmp_path, monkeypatch
+):
+    from textual.drivers.windows_driver import WindowsDriver
+
+    from ouro.tui.windows_driver import OuroWindowsDriver
+
+    writes = []
+
+    def start(driver):
+        size = Size(*driver._size)
+        driver.send_message(events.Resize(size, size))
+
+    def write(driver, data):
+        app = driver._app
+        if not app.screen_stack:
+            return
+        cursor = app.screen.outer_size.clamp_offset(app.cursor_position)
+        writes.append((data, Control.move_to(*cursor).segment.text))
+
+    monkeypatch.setattr(WindowsDriver, "start_application_mode", start)
+    monkeypatch.setattr(WindowsDriver, "stop_application_mode", lambda _: None)
+    monkeypatch.setattr(WindowsDriver, "write", write)
+    application = two_route_application(tmp_path)
+    session = application.runtime.sessions.create(title="Concurrent presentation").session
+    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
+    monkeypatch.setattr(app, "get_driver_class", lambda: OuroWindowsDriver)
+    async with run_ready_app(app, headless=False, size=(120, 40)) as pilot:
+        conversation = app.query_one(ConversationView)
+        await conversation.add_user("Existing conversation")
+        for index in range(45):
+            await conversation.add_notice(f"History {index}")
+        await pilot.pause()
+        conversation.scroll_home(animate=False, immediate=True)
+        composer = app.query_one(Composer)
+        bounds = composer.region
+        held_scroll = conversation.scroll_y
+        stop = asyncio.Event()
+
+        async def stream():
+            sequence = 1
+            assert app._queue_runtime_event(
+                EventRecord(
+                    session_id=session.session_id,
+                    run_id="run_frames",
+                    sequence=sequence,
+                    event_type="run_started",
+                    payload={"trigger": "user"},
+                )
+            )
+            while not stop.is_set():
+                sequence += 1
+                reasoning = sequence < 6
+                text = f"Evidence {sequence} 中文 **answer**.\n\n"
+                assert app._queue_runtime_event(
+                    EventRecord(
+                        session_id=session.session_id,
+                        run_id="run_frames",
+                        sequence=sequence,
+                        event_type="model_reasoning_delta" if reasoning else "model_text_delta",
+                        payload={"reasoning_content" if reasoning else "text": text},
+                    )
+                )
+                app.query_one(StatusLine).set_session_controls(("Plan",) if sequence % 2 else ())
+                await asyncio.sleep(0.02)
+            return sequence
+
+        writes.clear()
+        producing = asyncio.create_task(stream())
+        expected = ""
+        try:
+            for key in ("你", "好", "x", "backspace") * 3:
+                deleting = key == "backspace"
+                expected = expected[:-1] if deleting else expected + key
+                app.post_message(events.Key(key, None if deleting else key))
+                async with asyncio.timeout(2):
+                    while composer.text != expected:
+                        await asyncio.sleep(0.01)
+                assert composer.region == bounds
+                assert app.cursor_position == composer.cursor_screen_offset
+                assert app.focused is composer
+                assert conversation.scroll_y == held_scroll
+            # Refreshing the transcript must not take focus back from an overlay.
+            app.action_actions()
+            async with asyncio.timeout(2):
+                while not isinstance(app.screen, ChoiceScreen):
+                    await asyncio.sleep(0.01)
+            await pilot.pause()
+            menu = app.screen
+            menu_input = menu.query_one(Input)
+            assert app.focused is menu_input
+            app.refresh(layout=True)
+            await asyncio.sleep(0.15)
+            await pilot.pause()
+            assert app.screen is menu and app.focused is menu_input
+            assert app.cursor_position == menu_input.cursor_screen_offset
+            assert composer.text == expected
+        finally:
+            stop.set()
+            last_sequence = await producing
+        await app._flush_pending_runtime_events()
+        assert app._projection is not None and app._projection.last_sequence == last_sequence
+        # Standalone pointer-shape controls do not move the text cursor.
+        frames = [(data, cursor) for data, cursor in writes if re.search(r"\x1b\[\d+;\d+H", data)]
+        assert len(frames) > 5
+        assert all(data.endswith(cursor) for data, cursor in frames), [
+            (data[-100:], cursor) for data, cursor in frames if not data.endswith(cursor)
+        ]
+
+
+async def test_closing_session_cancels_pending_presentation_without_waiting_for_render(
+    tmp_path, monkeypatch
+):
+    application = two_route_application(tmp_path)
+    session = application.runtime.sessions.create(title="Close during render").session
+    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+    original = conversation_history._block_starts
+
+    def slow_parse(source):
+        started.set()
+        try:
+            assert release.wait(5)
+            return original(source)
+        finally:
+            finished.set()
+
+    try:
+        async with run_ready_app(app, size=(100, 30)):
+            monkeypatch.setattr(conversation_history, "_block_starts", slow_parse)
+            assert app._queue_runtime_event(
+                EventRecord(
+                    session_id=session.session_id,
+                    run_id="run_close",
+                    sequence=1,
+                    event_type="model_text_delta",
+                    payload={"text": "```\n" + "code\n" * 500},
+                )
+            )
+            assert await asyncio.to_thread(started.wait, 2)
+            app.exit()
+        assert not finished.is_set()
+        assert app._runtime_events_worker is not None and app._runtime_events_worker.is_cancelled
+        assert not app._runtime_event_flush_lock.locked()
+        assert not app._runtime_event_apply_lock.locked()
+    finally:
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 2)

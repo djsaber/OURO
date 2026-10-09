@@ -1023,6 +1023,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._runtime_event_buffer_lagged: set[str] = set()
         self._runtime_events_ready_posted = False
         self._runtime_events_frame_scheduled = False
+        self._runtime_events_worker: Worker[None] | None = None
+        self._runtime_event_flush_lock = asyncio.Lock()
         self._runtime_event_apply_lock = asyncio.Lock()
         self._session_controls_refresh_requested = False
         self._session_controls_refresh_task: asyncio.Task[None] | None = None
@@ -1573,19 +1575,30 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._system_status = status
         self.query_one(ConversationView).set_system_status(status)
 
-    async def on_runtime_events_ready(self, _message: RuntimeEventsReady) -> None:
+    def on_runtime_events_ready(self, _message: RuntimeEventsReady) -> None:
         self._runtime_events_ready_posted = False
         if self._host_closing or not self.query(ConversationView):
             self._pending_runtime_events.clear()
             return
-        await self._flush_pending_runtime_events()
+        # Awaiting rendering here stalls the App message pump, including key
+        # dispatch, even when the renderer itself runs off-loop. A single worker
+        # preserves frame cadence while leaving the input dispatcher available.
+        if self._runtime_events_worker is None or self._runtime_events_worker.is_finished:
+            self._runtime_events_worker = self.run_worker(
+                self._flush_pending_runtime_events(),
+                name="runtime-event-frame",
+                group="runtime-events",
+            )
 
     async def _flush_pending_runtime_events(self) -> None:
-        if not self._pending_runtime_events:
-            return
-        events = _runtime_event_frame_prefix(self._pending_runtime_events)
-        del self._pending_runtime_events[: len(events)]
-        await self._apply_runtime_events(events)
+        # Explicit completion drains and frame workers share the same ordering
+        # boundary, including the asynchronous reads preceding projection.
+        async with self._runtime_event_flush_lock:
+            if not self._pending_runtime_events or self._host_closing:
+                return
+            events = _runtime_event_frame_prefix(self._pending_runtime_events)
+            del self._pending_runtime_events[: len(events)]
+            await self._apply_runtime_events(events)
         if (
             self._pending_runtime_events
             and not self._runtime_events_ready_posted

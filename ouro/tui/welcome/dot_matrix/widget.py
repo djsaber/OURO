@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from functools import partial
 from time import monotonic
@@ -9,6 +10,7 @@ from time import monotonic
 from rich.text import Text
 from textual import events
 from textual.containers import Vertical
+from textual.geometry import Region, Size
 from textual.strip import Strip
 from textual.timer import Timer
 from textual.widget import Widget
@@ -21,8 +23,23 @@ from ouro.tui.welcome.dot_matrix.raster import PhosphorRaster
 from ouro.tui.welcome.model import WelcomeStyle
 
 
+def _render_frame(
+    artwork: DotArtwork,
+    raster: PhosphorRaster | None,
+    size: Size,
+    seconds: float,
+    delta: float,
+    monochrome: bool,
+) -> tuple[PhosphorRaster, tuple[Strip, ...], tuple[Region, ...]]:
+    """Compute with exclusive raster ownership and no access to mounted widgets."""
+    if raster is None:
+        raster = PhosphorRaster(artwork, size.width, size.height)
+    lines = raster.frame(seconds, delta, monochrome=monochrome)
+    return raster, lines, raster.damage
+
+
 class DotMatrix(Widget):
-    """Animate at 30 Hz; layout changes also repaint the current static frame."""
+    """Sample off-loop at up to 30 Hz, publishing only the current viewport."""
 
     DEFAULT_CSS = """
     DotMatrix { width: 100%; height: 1fr; min-height: 0; overflow: hidden; }
@@ -38,12 +55,17 @@ class DotMatrix(Widget):
         self._timer: Timer | None = None
         self._raster: PhosphorRaster | None = None
         self._lines: tuple[Strip, ...] = ()
+        self._rendering = False
+        self._render_revision = 0
+        self._pending_frame: tuple[Size, float, float, bool] | None = None
 
     def on_mount(self) -> None:
         self._timer = self.set_interval(1 / 30, self._tick, pause=True)
         self._sync_timer()
 
     def on_unmount(self) -> None:
+        self._render_revision += 1
+        self._pending_frame = None
         if self._timer is not None:
             self._timer.stop()
             self._timer = None
@@ -51,9 +73,12 @@ class DotMatrix(Widget):
         self._lines = ()
 
     def set_playback(self, *, active: bool, motion: bool) -> None:
+        if (active, motion) == (self.active, self.motion):
+            return
         self.active, self.motion = active, motion
+        self._render_revision += 1
         self._sync_timer()
-        if active and self.is_mounted:
+        if self.is_mounted and (active or self._raster is None):
             self._paint(0)
 
     def _sync_timer(self) -> None:
@@ -67,11 +92,14 @@ class DotMatrix(Widget):
     def _tick(self) -> None:
         if (
             not self.active
+            or not self.motion
             or self.app.screen is not self.screen
             or not self.visible
             or not self.display
         ):
             self._last_tick = None
+            return
+        if self._rendering:
             return
         now = monotonic()
         delta = 0.0 if self._last_tick is None else min(0.1, now - self._last_tick)
@@ -85,13 +113,43 @@ class DotMatrix(Widget):
         self._paint(0)
 
     def _paint(self, delta: float) -> None:
-        columns, rows = self.size
+        self._render_revision += 1
+        self._pending_frame = None
+        size = self.size
+        columns, rows = size
         if columns < 1 or rows < 1:
             return
-        if self._raster is None:
-            self._raster = PhosphorRaster(self.artwork, columns, rows)
-        self._lines = self._raster.frame(self.elapsed, delta, monochrome=self.app.no_color)
-        self.refresh()
+        self._pending_frame = size, self.elapsed, delta, self.app.no_color
+        if not self._rendering:
+            self._rendering = True
+            self.run_worker(self._render_frames(), group="welcome-artwork")
+
+    async def _render_frames(self) -> None:
+        try:
+            while self._pending_frame is not None:
+                revision = self._render_revision
+                size, seconds, delta, monochrome = self._pending_frame
+                self._pending_frame = None
+                raster, lines, damage = await asyncio.to_thread(
+                    _render_frame,
+                    self.artwork,
+                    self._raster,
+                    size,
+                    seconds,
+                    delta,
+                    monochrome,
+                )
+                if not self.is_mounted or revision != self._render_revision:
+                    # Its persistence and damage buffers advanced without being
+                    # displayed. The next accepted frame needs a fresh baseline.
+                    if self._raster is raster:
+                        self._raster = None
+                    continue
+                self._raster, self._lines = raster, lines
+                if damage:
+                    self.refresh(*damage)
+        finally:
+            self._rendering = False
 
     def render_line(self, y: int) -> Strip:
         if y < len(self._lines):

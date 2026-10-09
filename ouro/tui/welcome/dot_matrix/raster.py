@@ -10,6 +10,7 @@ import arrayfunc as af  # type: ignore[import-untyped]
 from rich.color import Color
 from rich.segment import Segment
 from rich.style import Style
+from textual.geometry import Region
 from textual.strip import Strip
 
 from ouro.tui.welcome.dot_matrix.field import DotArtwork, DotGrid, Field, buffer, clip, maximum
@@ -39,6 +40,9 @@ class PhosphorRaster:
         self._lanes = tuple(buffer(cells) for _ in range(8))
         self._color, self._color_scratch = buffer(cells), buffer(cells)
         self._rgb = tuple(array("B", [0]) * cells for _ in range(3))
+        self._cells = array("I", [0]) * cells
+        self._lines: tuple[Strip, ...] = ()
+        self.damage: tuple[Region, ...] = ()
 
     def _map_light(self, light: Field, emission: Field, mapped: Field, decay: float) -> None:
         af.mul(emission, decay)
@@ -116,13 +120,20 @@ class PhosphorRaster:
             af.mul(self._color, 255.0)
             af.convert(self._color, rgb)
         rows = []
+        damage = []
         colors = zip(*self._rgb, strict=True)
         for row in range(self.grid.rows):
             segments: list[Segment] = []
             run = ""
             previous: tuple[int, int, int] | None = None
+            first, last = self.grid.columns, -1
             for index in range(row * self.grid.columns, (row + 1) * self.grid.columns):
                 key = next(colors)
+                cell = (key[0] << 24) | (key[1] << 16) | (key[2] << 8) | masks[index]
+                if not self._lines or self._cells[index] != cell:
+                    column = index % self.grid.columns
+                    first, last = min(first, column), column
+                    self._cells[index] = cell
                 if previous is not None and key != previous:
                     segments.append(Segment(run, _led_style(*previous)))
                     run = ""
@@ -130,5 +141,11 @@ class PhosphorRaster:
                 previous = key
             if previous is not None:
                 segments.append(Segment(run, _led_style(*previous)))
-            rows.append(Strip(segments, self.grid.columns))
-        return tuple(rows)
+            if last < 0:
+                rows.append(self._lines[row])
+            else:
+                rows.append(Strip(segments, self.grid.columns))
+                damage.append(Region(first, row, last - first + 1, 1))
+        self._lines = tuple(rows)
+        self.damage = tuple(damage)
+        return self._lines

@@ -124,6 +124,8 @@ Provider 和工具执行中的 `AbortSignal.is_aborted()` 是高频同步检查�
   immutable transcript 渲染在 worker 上完成；
 - Runtime event buffer 每个 compositor frame 最多应用 64 条；积压前缀处理完后在下一原生帧继续，buffer 上限和
   lagged 后 durable reload 语义保持不变；
+- 帧消费由单个 Textual worker 执行，App 消息处理不等待后台解析和排版；显式排空与帧消费串行取得和应用前缀，
+  包括投影前的异步读取。Host 关闭取消呈现 worker，计算线程完成后不能再发布已取消的结果；
 - `batch_update()` 只用于合并可合并的刷新，不能被当作消除 `AwaitMount`、`AwaitRemove` 或结构布局成本的替代品。
 
 ## 文件搜索与技能目录
@@ -160,6 +162,7 @@ Skill 资源遍历在下降前剪枝忽略目录，不枚举其内部文件再�
 - `tests/application/test_run_ownership.py`
 - `tests/application/test_supervisor.py`
 - `tests/tui/test_conversation_history.py`
+- `tests/tui/test_session_input.py`
 
 ## IO 所有权与响应性验证
 
