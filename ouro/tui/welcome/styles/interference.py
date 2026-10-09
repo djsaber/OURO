@@ -23,6 +23,4 @@ def sample(grid: DotGrid, seconds: float) -> Field:
     return color * light[..., None]
 
 
-STYLE = dot_style(
-    "interference", "Tidal Interference", "Jade light woven into a breathing caustic.", sample
-)
+STYLE = dot_style("interference", "Tide", "Jade light woven into a breathing caustic.", sample)

@@ -66,7 +66,8 @@ run_tui(welcome_styles=(byte_page,))
 ```
 
 `OuroTuiApp` 接受相同的 `welcome_styles` 参数。每个 App 将这些包与内置包组成自己的只读目录；
-重复 ID 在组合边界报错。包自动出现在 `Theme → Welcome style` 菜单中。保存自定义包后，后续启动
+重复 ID 在组合边界报错。包自动出现在 `Theme` 菜单的 `Welcome style` 分组中，以 `label` 单行展示；
+`description` 保留为包元数据，不显示在菜单中。保存自定义包后，后续启动
 需要注册同一 ID；未知 ID 明确报告配置错误。JSON 只保存身份与呈现偏好，不加载 Python 路径或执行代码。
 
 ## 公共组件与局部样式
@@ -95,7 +96,8 @@ run_tui(welcome_styles=(byte_page,))
 ## 动画与资源
 
 Host 在离开欢迎页、打开覆盖菜单或替换页面时发送 `active=False`，返回当前欢迎页时发送 `active=True`。
-动画包应在 `active and motion` 时启动计时，否则暂停计时和计算；`motion=False` 仍保留静态呈现。
+动画包应在 `active and motion` 时启动计时，否则暂停动画计时和逐帧计算；`motion=False` 仍保留静态呈现。
+静态帧绘制独立于动画播放：菜单打开期间切换包或调整终端尺寸，也应立即显示当前尺寸下的作品。
 `on_unmount()` 释放定时器、任务、缓冲与其他自有资源。包不抢占输入焦点，不写入会话事实。
 
 按动画需要刷新实际变化的组件，避免每帧 `refresh(layout=True)` 或重建组件树。布局使用内存快照，帧计算不做文件

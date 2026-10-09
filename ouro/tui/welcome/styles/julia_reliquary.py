@@ -37,5 +37,5 @@ def sample(grid: DotGrid, seconds: float) -> Field:
 
 
 STYLE = dot_style(
-    "julia-reliquary", "Julia Reliquary", "A violet labyrinth with a molten gold edge.", sample
+    "julia-reliquary", "Labyrinth", "A violet labyrinth with a molten gold edge.", sample
 )

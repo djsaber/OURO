@@ -33,6 +33,4 @@ def sample(grid: DotGrid, seconds: float) -> Field:
     return color * light[..., None] * 1.8
 
 
-STYLE = dot_style(
-    "clifford-torus", "Clifford Torus", "An iris of folded ultraviolet light.", sample
-)
+STYLE = dot_style("clifford-torus", "Iris", "An iris of folded ultraviolet light.", sample)

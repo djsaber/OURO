@@ -33,4 +33,4 @@ class BasicPage(CenteredWelcomePage):
         self._wordmark.update(Text(_WORDMARK, style=f"bold {theme_for(self).accent}"))
 
 
-STYLE = WelcomeStyle("basic", "Basic", "The OURO wordmark. Still and silent.", BasicPage)
+STYLE = WelcomeStyle("basic", "Still", "The OURO wordmark. Still and silent.", BasicPage)

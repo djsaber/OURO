@@ -65,14 +65,17 @@ TUI 状态分为三类：
 | `welcome_style` | `event-horizon` | 必须存在于当前 App 的样式包目录 |
 | `welcome_motion` | `true` | 控制样式包内动画播放；暂停时保留静态呈现 |
 
-`Ctrl+P → Theme → Welcome style` 使用标准筛选菜单选择样式；`Animation` 切换播放与暂停。
+`Ctrl+P → Theme` 使用标准筛选菜单，依次展示 `Welcome style` 与 `Theme color` 两个分组。
+欢迎页样式直接以单行名称展示，不显示描述；同组的 `Animation` 切换播放与暂停。
+主题色保留色阶预览，`←/→` 仅在主题色行调整饱和度，`Enter` 应用当前选项。
 选择必须先成功持久化再应用。存储失败时保持当前组件与偏好并显示错误。连续选择和关闭菜单不取消
 App 持有的写入/挂载事务；事务与其他 TUI 偏好更新共用锁。切换包不重建 composer 或清除草稿。
 
 内置包包括 `basic`、`event-horizon`、`electron-bloom`、`julia-reliquary`、`interference`、
 `clifford-torus` 和 `quasicrystal`。`basic` 是静态 OURO 字标；其余包各自拥有固定点阵上的独立场与光谱。
 点阵包目标刷新率为 30 FPS，实际帧率取决于终端尺寸、字体和输出速度。它们在不可见时停止动画计算，
-卸载时停止定时器；暂停和恢复不会将隐藏时长计入动画。终端缩放只重建当前尺寸的网格与帧缓冲。
+卸载时停止定时器；暂停和恢复不会将隐藏时长计入动画。菜单打开期间切换样式须立即显示静态作品；
+终端缩放只重建当前尺寸的网格与帧缓冲，并绘制当前帧，不依赖动画播放状态。
 
 `WelcomeStyle` 以身份、名称、说明和工厂组成通用包契约；工厂提供新的 `WelcomePage` 全屏根组件。
 `run_tui(welcome_styles=...)` 与 `OuroTuiApp(welcome_styles=...)` 支持显式注入自定义包，目录按 App 隔离，

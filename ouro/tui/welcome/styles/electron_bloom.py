@@ -25,6 +25,4 @@ def sample(grid: DotGrid, seconds: float) -> Field:
     return color * emission[..., None]
 
 
-STYLE = dot_style(
-    "electron-bloom", "Electron Bloom", "Ice and copper petals exchanging light.", sample
-)
+STYLE = dot_style("electron-bloom", "Bloom", "Ice and copper petals exchanging light.", sample)

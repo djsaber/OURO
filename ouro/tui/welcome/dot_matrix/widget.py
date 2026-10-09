@@ -22,7 +22,7 @@ from ouro.tui.welcome.model import WelcomeStyle
 
 
 class DotMatrix(Widget):
-    """Paint only this widget at 30 Hz; suspended surfaces do no frame work."""
+    """Animate at 30 Hz; layout changes also repaint the current static frame."""
 
     DEFAULT_CSS = """
     DotMatrix { width: 100%; height: 1fr; min-height: 0; overflow: hidden; }
@@ -81,8 +81,8 @@ class DotMatrix(Widget):
 
     def on_resize(self, event: events.Resize) -> None:
         self._raster = None
-        if self.active:
-            self._paint(0)
+        # A new size needs a frame even when animation playback is paused.
+        self._paint(0)
 
     def _paint(self, delta: float) -> None:
         columns, rows = self.size

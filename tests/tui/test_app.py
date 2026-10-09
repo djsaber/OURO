@@ -725,6 +725,44 @@ async def test_refreshing_choice_screen_can_retain_focus_position_across_groups(
 
 
 @pytest.mark.asyncio
+async def test_grouped_choice_refresh_preserves_rows_and_refreshes_header_status(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    first = Choice("first", "First", group="Current", group_trailing="1 item")
+    second = Choice("second", "Second", group="Archive")
+    async with run_ready_app(app, size=(80, 24)) as pilot:
+        menu = ChoiceScreen(
+            title="GROUPS",
+            placeholder="Filter choices…",
+            choices=(first, second),
+            initial_value="second",
+        )
+        app.push_screen(menu)
+        await pilot.pause()
+        options = menu.query_one(OptionList)
+        original_options = tuple(options.options)
+        updated = replace(first, label="Renamed", marker="●")
+        menu.update_choices((updated, second), preferred_value="second")
+        await pilot.pause()
+        assert all(
+            before is after for before, after in zip(original_options, options.options, strict=True)
+        )
+        assert options.get_option("first").prompt.plain == "● Renamed"
+        assert options.get_option_at_index(options.highlighted).id == "second"
+
+        menu.update_choices(
+            (replace(updated, group_trailing="Updated"), second),
+            preferred_value="second",
+        )
+        await pilot.pause()
+        header = options.get_option_at_index(0)
+        rendered = "".join(segment.text for segment in Console(width=60).render(header.prompt))
+        assert "Current" in rendered and "Updated" in rendered and "1 item" not in rendered
+        assert options.get_option_at_index(options.highlighted).id == "second"
+
+
+@pytest.mark.asyncio
 async def test_retained_focus_clears_when_refresh_filter_has_no_choices(
     tmp_path: Path,
 ) -> None:
@@ -13257,7 +13295,7 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         theme_screen = app.screen
         assert app.screen.query_one("#choice-title", Static).render().plain == "THEME"
         theme_options = app.screen.query_one(OptionList)
-        assert theme_options.option_count == len(TUI_THEMES) + 1
+        assert theme_options.option_count == len(app.screen._choices) + 3
         assert all(choice.description == "" for choice in app.screen._choices)
         assert "original" in {choice.value for choice in app.screen._choices}
         theme_choices = {choice.value: choice for choice in app.screen._choices}
@@ -13271,6 +13309,7 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         assert TUI_THEMES["original"].accent == "#e8e8e8"
         assert TUI_THEMES["original"].accent_bright == "#ffffff"
 
+        theme_options.highlighted = theme_options.get_option_index("original")
         await pilot.press("down")
         await pilot.pause()
 
@@ -13404,6 +13443,8 @@ async def test_theme_switch_stays_interactive_coalesces_and_outlives_picker(
 
         theme_screen = app.screen
         assert isinstance(theme_screen, ChoiceScreen)
+        options = theme_screen.query_one(OptionList)
+        options.highlighted = options.get_option_index("original")
         entered = threading.Event()
         release = threading.Event()
         saved_themes: list[str] = []
@@ -13488,6 +13529,8 @@ async def test_theme_loading_ends_after_history_reaches_the_new_theme(
 
         theme_screen = app.screen
         assert isinstance(theme_screen, ChoiceScreen)
+        options = theme_screen.query_one(OptionList)
+        options.highlighted = options.get_option_index("original")
         entered = threading.Event()
         release = threading.Event()
         render_entries = conversation_history._render_entry_requests
@@ -13559,6 +13602,8 @@ async def test_theme_persistence_failure_keeps_current_theme_and_clears_loading(
             raise PersistenceError("theme storage unavailable")
 
         monkeypatch.setattr(app._preferences_store, "save", fail_save)
+        options = theme_screen.query_one(OptionList)
+        options.highlighted = options.get_option_index("original")
         await pilot.press("down", "enter")
         await _wait_until(
             lambda: not app._theme_switch_active,
@@ -13771,7 +13816,8 @@ async def test_theme_preview_is_local_and_cleared_when_picker_is_cancelled(
         await pilot.pause()
         theme_screen = app.screen
         assert isinstance(theme_screen, ChoiceScreen)
-        assert theme_screen.query_one(OptionList).highlighted == 3
+        theme_options = theme_screen.query_one(OptionList)
+        theme_options.highlighted = theme_options.get_option_index("sienna")
 
         await pilot.press("down")
         await pilot.pause()
@@ -13785,6 +13831,10 @@ async def test_theme_preview_is_local_and_cleared_when_picker_is_cancelled(
         )
 
         theme_options = theme_screen.query_one(OptionList)
+        honey_index = theme_options.highlighted
+        enabled_indices = [
+            index for index, option in enumerate(theme_options.options) if not option.disabled
+        ]
         clear_calls = 0
         update_calls = 0
         clear_options = theme_options.clear_options
@@ -13802,12 +13852,14 @@ async def test_theme_preview_is_local_and_cleared_when_picker_is_cancelled(
 
         monkeypatch.setattr(theme_options, "clear_options", counted_clear_options)
         monkeypatch.setattr(theme_screen, "update_choices", counted_update_choices)
-        repeated_moves = theme_options.option_count * 8 + 7
+        repeated_moves = len(enabled_indices) * 8 + 7
         for _ in range(repeated_moves):
             theme_screen.action_next_choice()
         await pilot.pause()
 
-        expected_index = (4 + repeated_moves) % theme_options.option_count
+        expected_index = enabled_indices[
+            (enabled_indices.index(honey_index) + repeated_moves) % len(enabled_indices)
+        ]
         assert theme_options.highlighted == expected_index
         assert clear_calls == 0
         assert update_calls == 1
@@ -13817,7 +13869,7 @@ async def test_theme_preview_is_local_and_cleared_when_picker_is_cancelled(
             theme_screen.action_previous_choice()
         await pilot.pause()
 
-        assert theme_options.highlighted == 4
+        assert theme_options.highlighted == honey_index
         assert clear_calls == 0
         assert update_calls == 2
         assert app.tui_theme == TUI_THEMES["sienna"]

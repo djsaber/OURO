@@ -27,6 +27,4 @@ def sample(grid: DotGrid, seconds: float) -> Field:
     return color * light[..., None] * 1.8
 
 
-STYLE = dot_style(
-    "quasicrystal", "Quasicrystal", "An aperiodic rose cut from copper and light.", sample
-)
+STYLE = dot_style("quasicrystal", "Prism", "An aperiodic rose cut from copper and light.", sample)

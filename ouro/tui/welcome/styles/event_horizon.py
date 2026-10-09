@@ -28,6 +28,4 @@ def sample(grid: DotGrid, seconds: float) -> Field:
     return color * light[..., None] * 1.65
 
 
-STYLE = dot_style(
-    "event-horizon", "Event Horizon", "An ember disk folded around a dark sun.", sample
-)
+STYLE = dot_style("event-horizon", "Horizon", "An ember disk folded around a dark sun.", sample)

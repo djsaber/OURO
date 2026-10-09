@@ -213,7 +213,8 @@ _AGENT_INTERACTION_EVENTS = {
 _SESSION_GROUPING_ACTION = "__ouro_session_grouping__"
 _THEME_ACTION = "__ouro_theme__"
 _THOUGHT_DISPLAY_ACTION = "__ouro_thought_display__"
-_WELCOME_STYLE_ACTION = "__ouro_welcome_style__"
+_WELCOME_STYLE_PREFIX = "welcome:"
+_WELCOME_MOTION_ACTION = "__ouro_welcome_motion__"
 _INPUT_DRAFT_MEMORY_ACTION = "__ouro_input_draft_memory__"
 _RENAME_SESSION_ACTION = "__ouro_rename_session__"
 _ARCHIVE_SESSION_ACTION = "__ouro_archive_session__"
@@ -4702,11 +4703,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         async def refresh_themes() -> tuple[Choice, ...]:
             return theme_choices()
 
-        async def select_theme(theme_id: str) -> tuple[Choice, ...] | None:
+        async def select_choice(value: str) -> tuple[Choice, ...] | None:
             nonlocal selected_theme_id, selected_level
-            if theme_id == _WELCOME_STYLE_ACTION:
-                await self._choose_welcome_style(menu=menu if menu is not None else theme_screen)
-                return None
+            if value.startswith(_WELCOME_STYLE_PREFIX) or value == _WELCOME_MOTION_ACTION:
+                # Choice workers may be cancelled by another selection. The host
+                # owns the complete save/mount transaction, serialized with prefs.
+                worker = self.run_worker(
+                    self._set_welcome_style(value.removeprefix(_WELCOME_STYLE_PREFIX)),
+                    group="welcome-style",
+                )
+                saved = await asyncio.shield(worker.wait())
+                return theme_choices() if saved else None
+            theme_id = value
             if theme_id != selected_theme_id:
                 selected_theme_id = theme_id
             self._request_tui_theme(
@@ -4726,6 +4734,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                         preferred_value=theme_id,
                     )
                 screen.preview_accent(theme.accent_saturation_scale()[selected_level])
+            else:
+                screen.clear_accent_preview()
 
         def adjust_theme(
             screen: ChoiceScreen,
@@ -4748,11 +4758,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if menu is not None:
             menu.push_page(
                 title="THEME",
-                placeholder="Filter themes…",
+                placeholder="Filter styles and colors…",
                 choices=theme_choices(),
-                initial_value=self._pending_tui_theme_id or self._tui_theme.theme_id,
+                initial_value=f"{_WELCOME_STYLE_PREFIX}{self._preferences.welcome_style}",
                 on_highlight=lambda theme_id: preview_theme(menu, theme_id),
-                on_select=select_theme,
+                on_select=select_choice,
                 on_refresh=refresh_themes,
                 on_adjust=lambda theme_id, direction: adjust_theme(
                     menu,
@@ -4760,7 +4770,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     direction,
                 ),
                 interaction_hint=DEFAULT_TUI_THEME.inline_separator.join(
-                    ("↑/↓ theme", "←/→ saturation", "Enter select", "Esc back")
+                    ("↑/↓ move", "←/→ saturation", "Enter select", "Esc back")
                 ),
             )
             self._register_theme_picker(menu)
@@ -4772,11 +4782,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         theme_screen = ChoiceScreen(
             title="THEME",
-            placeholder="Filter themes…",
+            placeholder="Filter styles and colors…",
             choices=theme_choices(),
-            initial_value=self._pending_tui_theme_id or self._tui_theme.theme_id,
+            initial_value=f"{_WELCOME_STYLE_PREFIX}{self._preferences.welcome_style}",
             on_highlight=preview_standalone_theme,
-            on_select=select_theme,
+            on_select=select_choice,
             on_refresh=refresh_themes,
             on_adjust=lambda theme_id, direction: adjust_theme(
                 theme_screen,
@@ -4784,71 +4794,33 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 direction,
             ),
             interaction_hint=DEFAULT_TUI_THEME.inline_separator.join(
-                ("↑/↓ theme", "←/→ saturation", "Enter select", "Esc close")
+                ("↑/↓ move", "←/→ saturation", "Enter select", "Esc close")
             ),
         )
         self._register_theme_picker(theme_screen)
         await self.push_screen_wait(theme_screen)
 
-    async def _choose_welcome_style(self, *, menu: ChoiceScreen) -> None:
-        def choices() -> tuple[Choice, ...]:
-            return (
-                *(
-                    Choice(
-                        style.style_id,
-                        style.label,
-                        description=style.description,
-                        marker=(
-                            self._tui_theme.selected_choice_marker
-                            if style.style_id == self._preferences.welcome_style
-                            else ""
-                        ),
-                    )
-                    for style in self._welcome_styles.values()
-                ),
-                Choice(
-                    "__motion__",
-                    "Animation",
-                    trailing="Playing" if self._preferences.welcome_motion else "Paused",
-                ),
+    async def _set_welcome_style(self, value: str) -> bool:
+        async with self._preferences_save_lock:
+            update = (
+                {"welcome_motion": not self._preferences.welcome_motion}
+                if value == _WELCOME_MOTION_ACTION
+                else {"welcome_style": value}
             )
-
-        async def apply_selection(value: str) -> bool:
-            async with self._preferences_save_lock:
-                update = (
-                    {"welcome_motion": not self._preferences.welcome_motion}
-                    if value == "__motion__"
-                    else {"welcome_style": value}
-                )
-                preferences = self._preferences_store.validate(
-                    {**self._preferences.model_dump(), **update}
-                )
-                try:
-                    await asyncio.to_thread(self._preferences_store.save, preferences)
-                except OuroError as exc:
-                    self.notify(str(exc), severity="error", markup=False)
-                    return False
-                self._preferences = preferences
-                await self.query_one(WelcomePanel).set_welcome_style(
-                    self._welcome_styles[preferences.welcome_style],
-                    motion=preferences.welcome_motion,
-                )
-            return True
-
-        async def select(value: str) -> tuple[Choice, ...] | None:
-            # Choice workers may be cancelled by another selection. The host
-            # owns the complete save/mount transaction, serialized with prefs.
-            worker = self.run_worker(apply_selection(value), group="welcome-style")
-            saved = await asyncio.shield(worker.wait())
-            return choices() if saved else None
-
-        menu.push_page(
-            title="WELCOME STYLE",
-            placeholder="Filter welcome styles…",
-            choices=choices(),
-            initial_value=self._preferences.welcome_style,
-            on_select=select,
-        )
+            preferences = self._preferences_store.validate(
+                {**self._preferences.model_dump(), **update}
+            )
+            try:
+                await asyncio.to_thread(self._preferences_store.save, preferences)
+            except OuroError as exc:
+                self.notify(str(exc), severity="error", markup=False)
+                return False
+            self._preferences = preferences
+            await self.query_one(WelcomePanel).set_welcome_style(
+                self._welcome_styles[preferences.welcome_style],
+                motion=preferences.welcome_motion,
+            )
+        return True
 
     async def _choose_thought_display(self, *, menu: ChoiceScreen | None = None) -> None:
         def display_choices(expanded: bool) -> tuple[Choice, ...]:
@@ -4993,6 +4965,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return Choice(
                 theme.theme_id,
                 theme.label,
+                group="Theme color",
                 leading_swatch=display_accent,
                 swatches=saturation_scale,
                 swatch_marker_index=selected_level if is_selected else None,
@@ -5001,12 +4974,26 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
 
         return (
-            *(theme_choice(theme) for theme in TUI_THEMES.values()),
-            Choice(
-                _WELCOME_STYLE_ACTION,
-                "Welcome style",
-                trailing=self._welcome_styles[self._preferences.welcome_style].label,
+            *(
+                Choice(
+                    f"{_WELCOME_STYLE_PREFIX}{style.style_id}",
+                    style.label,
+                    group="Welcome style",
+                    marker=(
+                        self._tui_theme.selected_choice_marker
+                        if style.style_id == self._preferences.welcome_style
+                        else ""
+                    ),
+                )
+                for style in self._welcome_styles.values()
             ),
+            Choice(
+                _WELCOME_MOTION_ACTION,
+                "Animation",
+                group="Welcome style",
+                trailing="Playing" if self._preferences.welcome_motion else "Paused",
+            ),
+            *(theme_choice(theme) for theme in TUI_THEMES.values()),
         )
 
     def _theme_choice_saturation_level(self, theme_id: str) -> int:

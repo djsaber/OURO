@@ -823,7 +823,7 @@ class ChoiceScreen(ModalScreen[str | None]):
                 for choice in previous_choices
                 if self._matches_filter(choice, normalized_needle)
             )
-            if self._replace_ungrouped_options(
+            if self._replace_stable_options(
                 options,
                 previous_visible,
                 choices,
@@ -853,7 +853,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         )
         self._sync_loading_timer()
 
-    def _replace_ungrouped_options(
+    def _replace_stable_options(
         self,
         options: OptionList,
         previous: tuple[Choice, ...],
@@ -863,23 +863,28 @@ class ChoiceScreen(ModalScreen[str | None]):
         preferred_value: str | None,
         preferred_position: int | None,
     ) -> bool:
-        """Update stable flat rows without resetting OptionList navigation state."""
+        """Update rows with stable identities and groups without resetting navigation."""
 
+        indexed_options = [
+            (index, option) for index, option in enumerate(options.options) if option.id is not None
+        ]
         if (
-            any(choice.group for choice in (*previous, *choices))
-            or len(previous) != len(choices)
-            or options.option_count != len(choices)
+            len(previous) != len(choices)
+            or len(indexed_options) != len(choices)
             or any(
-                before.value != after.value or before.disabled != after.disabled
+                before.value != after.value
+                or before.disabled != after.disabled
+                or before.group != after.group
+                or before.group_trailing != after.group_trailing
                 for before, after in zip(previous, choices, strict=True)
             )
             or any(
                 option.id != choice.value
-                for option, choice in zip(options.options, choices, strict=True)
+                for (_, option), choice in zip(indexed_options, choices, strict=True)
             )
         ):
             return False
-        for index, (before, after) in enumerate(zip(previous, choices, strict=True)):
+        for (index, _), before, after in zip(indexed_options, previous, choices, strict=True):
             if before == after:
                 continue
             prompt = _choice_option(

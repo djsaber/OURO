@@ -13,13 +13,14 @@ from textual.app import App
 from textual.color import Color
 from textual.geometry import Region
 from textual.strip import Strip
-from textual.widgets import Input, Static
+from textual.widgets import Input, OptionList, Static
 
 from ouro.core.errors import ConfigError, PersistenceError
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.controller import TuiSystemStatus
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.screens import ChoiceScreen
+from ouro.tui.theme import TUI_THEMES
 from ouro.tui.welcome import WELCOME_STYLES, WelcomePage, WelcomeStyle, welcome_catalog
 from ouro.tui.welcome.components import WelcomeUsage
 from ouro.tui.welcome.dot_matrix.field import DotGrid
@@ -28,6 +29,7 @@ from ouro.tui.welcome.dot_matrix.widget import DotWelcomePage
 from ouro.tui.welcome.host import WelcomeHost
 from ouro.tui.widgets import CommandPopup, Composer, WelcomePanel
 from tests.tui.helpers import run_ready_app, two_route_application
+from tests.tui.test_app import _wait_until
 
 DOT_STYLES = tuple(style for key, style in WELCOME_STYLES.items() if key != "basic")
 
@@ -330,15 +332,112 @@ async def select_menu(app, pilot, label):
     await pilot.press("enter")
     await pilot.pause()
     workers = [worker for worker in app.workers if worker.group.startswith("choice-selection-")]
-    await asyncio.wait_for(app.workers.wait_for_complete(workers), 3)
+    await asyncio.wait_for(asyncio.gather(*(worker.wait() for worker in workers)), 3)
 
 
 async def open_welcome_picker(app, pilot):
     await pilot.press("ctrl+p")
     await select_menu(app, pilot, "Theme")
-    await select_menu(app, pilot, "Welcome style")
     assert isinstance(app.screen, ChoiceScreen)
-    assert app.screen.page_title == "WELCOME STYLE"
+    assert app.screen.page_title == "THEME"
+
+
+@pytest.mark.parametrize("standalone", [False, True])
+async def test_theme_menu_groups_inline_styles_and_keeps_color_settings_independent(
+    tmp_path: Path, standalone: bool
+):
+    # A package ID may also be a color ID; sharing a menu must not couple them.
+    package = WelcomeStyle("coral", "Ember", "A custom component.", CustomPage)
+    app = OuroTuiApp(application=two_route_application(tmp_path), welcome_styles=(package,))
+    async with run_ready_app(app, size=(80, 24)) as pilot:
+        if standalone:
+            app.run_worker(app._choose_theme())
+            await pilot.pause()
+        else:
+            await open_welcome_picker(app, pilot)
+        menu = app.screen
+        assert isinstance(menu, ChoiceScreen)
+        revision = menu.page_revision
+        choices = menu._choices
+        assert list(dict.fromkeys(choice.group for choice in choices)) == [
+            "Welcome style",
+            "Theme color",
+        ]
+        assert len({choice.value for choice in choices}) == len(choices)
+        assert all(not choice.description for choice in choices)
+        style_choices = choices[: len(WELCOME_STYLES) + 1]
+        assert [choice.label for choice in style_choices] == [
+            "Still",
+            "Horizon",
+            "Bloom",
+            "Labyrinth",
+            "Tide",
+            "Iris",
+            "Prism",
+            "Ember",
+        ]
+        options = menu.query_one(OptionList)
+        assert options.get_option_at_index(options.highlighted).id == "welcome:event-horizon"
+        assert options.get_option_at_index(0).disabled
+        assert options.get_option_at_index(0).prompt.plain == "Welcome style"
+        assert all(
+            len(options.get_option(choice.value).prompt.plain.splitlines()) == 1
+            for choice in style_choices
+        )
+        options.highlighted = options.get_option_index("coral")
+        await _wait_until(
+            lambda: (
+                menu.query_one("#choice-title", Static).styles.color
+                == Color.parse(TUI_THEMES["coral"].accent)
+            ),
+            pilot,
+            description="color preview",
+        )
+
+        menu.query_one(Input).value = "Welcome style"
+        await pilot.pause()
+        assert options.option_count == len(style_choices) + 2  # heading and animation
+        await _wait_until(
+            lambda: (
+                menu.query_one("#choice-title", Static).styles.color
+                == Color.parse(app.tui_theme.accent)
+            ),
+            pilot,
+            description="welcome group to clear the color preview",
+        )
+        menu.query_one(Input).value = "Ember"
+        await pilot.pause()
+        await pilot.press("left", "right")
+        await select_menu(app, pilot, "Ember")
+        assert app.screen is menu and menu.page_revision == revision
+        assert isinstance(app.query_one(WelcomePanel).page, CustomPage)
+        preferences = app._preferences_store.load()
+        assert preferences.welcome_style == "coral"
+        assert preferences.theme == "original" and preferences.theme_saturation_level == 0
+        assert next(choice for choice in menu._choices if choice.label == "Ember").marker
+
+        menu.query_one(Input).value = "Theme color"
+        await pilot.pause()
+        assert options.option_count == len(TUI_THEMES) + 1
+        options.highlighted = options.get_option_index("coral")
+        await pilot.pause()
+        await pilot.press("right", "enter")
+        workers = [worker for worker in app.workers if worker.group == "theme-switch"]
+        await asyncio.wait_for(asyncio.gather(*(worker.wait() for worker in workers)), 3)
+        await pilot.pause()
+        await select_menu(app, pilot, "Animation")
+        assert app.screen is menu and menu.page_revision == revision
+        preferences = app._preferences_store.load()
+        assert preferences.theme == "coral" and preferences.theme_saturation_level == 1
+        assert preferences.welcome_style == "coral" and not preferences.welcome_motion
+        assert next(choice for choice in menu._choices if choice.label == "Animation").trailing == (
+            "Paused"
+        )
+        await pilot.press("escape")
+        if not standalone:
+            assert app.screen is menu and menu.page_title == "ACTIONS"
+            await pilot.press("escape")
+        assert app.focused is app.query_one(Composer)
 
 
 async def test_picker_mounts_arbitrary_custom_package_preserves_input_and_persists(tmp_path: Path):
@@ -353,7 +452,7 @@ async def test_picker_mounts_arbitrary_custom_package_preserves_input_and_persis
         assert isinstance(slot.page, CustomPage)
         assert slot.page.playback == (False, True)
         assert app.screen is menu
-        await pilot.press("escape", "escape", "escape")
+        await pilot.press("escape", "escape")
         await pilot.pause()
         assert slot.page.playback == (True, True)
         assert composer.text == "draft"
@@ -382,7 +481,7 @@ async def test_dot_playback_pauses_for_menu_conversation_and_motion_setting_and_
         await pilot.pause(0.12)
         assert not matrix.active and matrix.elapsed == before
         await select_menu(app, pilot, "Animation")
-        await pilot.press("escape", "escape", "escape")
+        await pilot.press("escape", "escape")
         await pilot.pause(0.12)
         assert matrix.elapsed == before
         assert not app._preferences_store.load().welcome_motion
@@ -407,6 +506,54 @@ async def test_dot_playback_pauses_for_menu_conversation_and_motion_setting_and_
         assert app.query_one(Composer).region.y == panel.page._top.region.bottom
 
 
+@pytest.mark.parametrize("motion", [True, False])
+async def test_style_selection_and_resize_render_artwork_while_menu_stays_open(tmp_path, motion):
+    store = TuiPreferencesStore(tmp_path)
+    store.save(TuiPreferences(welcome_motion=motion))
+    app = OuroTuiApp(application=two_route_application(tmp_path))
+    async with run_ready_app(app, size=(160, 48)) as pilot:
+        await open_welcome_picker(app, pilot)
+        menu = app.screen
+        host = app.query_one(WelcomePanel)
+        for style in (*DOT_STYLES[1:], DOT_STYLES[0]):
+            await select_menu(app, pilot, style.label)
+            assert app.screen is menu and menu.page_title == "THEME"
+            assert host.style_package is style
+            matrix = host.page.matrix
+            await _wait_until(
+                lambda matrix=matrix: bool(matrix.size), pilot, description="artwork layout"
+            )
+            assert not matrix.active and matrix.elapsed == 0
+            # Inspect the actual composited area above the overlay, not only the
+            # selected package or its persisted preference.
+            region = matrix.region.intersection(
+                Region(0, 0, app.size.width, menu.query_one("#choice-panel").region.y)
+            )
+            assert region
+            frame = menu._compositor.render_strips()
+            assert any(
+                "\u2800" < char <= "\u28ff"
+                for row in frame[region.y : region.bottom]
+                for char in row.crop(region.x, region.right).text
+            )
+
+        for size in ((120, 40), (180, 52)):
+            await pilot.resize_terminal(*size)
+            await pilot.pause()
+            assert matrix._raster is not None
+            assert (matrix._raster.grid.columns, matrix._raster.grid.rows) == matrix.size
+            assert len(matrix._lines) == matrix.size.height
+            assert all(row.cell_length == matrix.size.width for row in matrix._lines)
+            assert not matrix.active and matrix.elapsed == 0
+        paused_frame = matrix._lines
+        await pilot.pause(0.12)
+        assert matrix.elapsed == 0 and matrix._lines is paused_frame
+        await pilot.press("escape", "escape")
+        await pilot.pause(0.12)
+        assert matrix.active
+        assert (matrix.elapsed > 0) is motion
+
+
 async def test_failed_style_save_keeps_current_package_and_preference(tmp_path, monkeypatch):
     app = OuroTuiApp(application=two_route_application(tmp_path))
     async with run_ready_app(app) as pilot:
@@ -417,13 +564,19 @@ async def test_failed_style_save_keeps_current_package_and_preference(tmp_path, 
             raise PersistenceError("style storage unavailable")
 
         monkeypatch.setattr(app._preferences_store, "save", fail_save)
-        await select_menu(app, pilot, "Electron Bloom")
+        await select_menu(app, pilot, "Bloom")
         assert app.query_one(WelcomePanel).page is original
         assert app._preferences.welcome_style == "event-horizon"
         assert app._preferences_store.load().welcome_style == "event-horizon"
 
 
-async def test_style_transaction_survives_reselection_and_picker_close(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("next_choice", "style_id", "theme_id"),
+    [("Labyrinth", "julia-reliquary", "original"), ("Coral", "electron-bloom", "coral")],
+)
+async def test_style_transaction_survives_reselection_and_picker_close(
+    tmp_path, monkeypatch, next_choice, style_id, theme_id
+):
     app = OuroTuiApp(application=two_route_application(tmp_path))
     entered, release = threading.Event(), threading.Event()
     async with run_ready_app(app) as pilot:
@@ -438,19 +591,23 @@ async def test_style_transaction_survives_reselection_and_picker_close(tmp_path,
 
         monkeypatch.setattr(app._preferences_store, "save", slow_save)
         try:
-            app.screen.query_one("#choice-filter", Input).value = "Electron Bloom"
+            app.screen.query_one("#choice-filter", Input).value = "Bloom"
             await pilot.pause()
             await pilot.press("enter")
             assert await asyncio.to_thread(entered.wait, 2)
-            app.screen.query_one("#choice-filter", Input).value = "Julia Reliquary"
+            app.screen.query_one("#choice-filter", Input).value = next_choice
             await pilot.pause()
             await pilot.press("enter")
-            await pilot.press("escape", "escape", "escape")
+            await pilot.press("escape", "escape")
         finally:
             release.set()
-        workers = [worker for worker in app.workers if worker.group == "welcome-style"]
-        await asyncio.wait_for(app.workers.wait_for_complete(workers), 3)
+        workers = [
+            worker for worker in app.workers if worker.group in {"welcome-style", "theme-switch"}
+        ]
+        await asyncio.wait_for(asyncio.gather(*(worker.wait() for worker in workers)), 3)
         await pilot.pause()
-        assert app._preferences_store.load().welcome_style == "julia-reliquary"
-        assert app.query_one(WelcomePanel).style_package.style_id == "julia-reliquary"
+        preferences = app._preferences_store.load()
+        assert preferences.welcome_style == style_id
+        assert preferences.theme == theme_id
+        assert app.query_one(WelcomePanel).style_package.style_id == style_id
         assert app.focused is app.query_one(Composer)
