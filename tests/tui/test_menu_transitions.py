@@ -46,7 +46,7 @@ def _parent_frames(
         ("Tool limits & file access", "TOOL LIMITS & FILE ACCESS"),
         ("Subagent permissions", "SUBAGENT PERMISSIONS"),
         ("Create subagent", "CREATE SUBAGENT"),
-        ("Add MCP server", "ADD MCP SERVER"),
+        ("+ mcp", "ADD MCP"),
         ("Install skill", "INSTALL SKILL"),
     ],
 )

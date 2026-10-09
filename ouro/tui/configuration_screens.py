@@ -1076,7 +1076,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
             "mcp-auto-reconnect": (existing.auto_reconnect if existing is not None else True),
         }
         super().__init__(
-            title="EDIT MCP SERVER" if existing is not None else "ADD MCP SERVER",
+            title="EDIT MCP" if existing is not None else "ADD MCP",
             placeholder="Filter MCP settings…",
             choices=self._mcp_choices(),
             on_save=self._save_field,
@@ -1212,14 +1212,14 @@ class MCPConfigurationScreen(EditableChoiceScreen):
             ),
             Choice(
                 "mcp-target",
-                "Command / URL",
+                "Command" if self._values["mcp-transport"] == "stdio" else "URL",
                 trailing=self._values["mcp-target"] or "Required",
                 group="CONNECTION",
                 edit_value=self._values["mcp-target"],
                 edit_placeholder=(
                     "Enter executable only (e.g. npx); put arguments in Arguments (JSON)"
                     if self._values["mcp-transport"] == "stdio"
-                    else "Enter the MCP server URL"
+                    else "Enter the MCP URL"
                 ),
             ),
             Choice(

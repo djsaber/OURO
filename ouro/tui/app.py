@@ -234,7 +234,7 @@ _ACTION_GROUP_RANK = {
             "Plugins",
             "Tools",
             "Subagents",
-            "MCP",
+            "MCPs",
             "Skills",
             "Support",
         )

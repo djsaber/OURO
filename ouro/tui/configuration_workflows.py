@@ -35,7 +35,7 @@ from ouro.tui.controller import (
     project_mcp_system_status,
 )
 from ouro.tui.menu_labels import PERMISSION_LABELS
-from ouro.tui.menu_sorting import sorted_agent_definitions
+from ouro.tui.menu_sorting import display_sort_key, sorted_agent_definitions
 from ouro.tui.model_menus import model_selection_label
 from ouro.tui.prompt_workflows import PromptWorkflows
 from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
@@ -79,12 +79,8 @@ SYSTEM_SETTING_ACTIONS = (
     SystemSettingAction("agents.create", "Create subagent", "Subagents"),
     SystemSettingAction("agents.edit", "Edit subagent", "Subagents"),
     SystemSettingAction("agents.delete", "Delete subagent", "Subagents"),
-    SystemSettingAction("mcp.list", "Manage MCP servers", "MCP"),
-    SystemSettingAction("mcp.add", "Add MCP server", "MCP"),
-    SystemSettingAction("mcp.connect", "Connect MCP server", "MCP"),
-    SystemSettingAction("mcp.disconnect", "Disconnect MCP server", "MCP"),
-    SystemSettingAction("mcp.edit", "Edit MCP server", "MCP"),
-    SystemSettingAction("mcp.remove", "Delete MCP server", "MCP"),
+    SystemSettingAction("mcp.list", "Manage MCPs", "MCPs"),
+    SystemSettingAction("mcp.add", "+ mcp", "MCPs"),
     SystemSettingAction("skills.sources", "Skill sources", "Skills"),
     SystemSettingAction("skills.list", "Manage skills", "Skills"),
     SystemSettingAction("skills.install", "Install skill", "Skills"),
@@ -183,8 +179,6 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             self._choose_mcp(menu=menu)
         elif action_id == "mcp.add":
             await self._edit_mcp(None, menu=menu)
-        elif action_id.startswith("mcp."):
-            await self._choose_mcp_action(action_id.removeprefix("mcp."), menu=menu)
         elif action_id == "skills.list":
             self._choose_skills(menu=menu)
         elif action_id == "skills.install":
@@ -685,259 +679,43 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         return saved
 
     @work(exclusive=True, group="configuration")
-    async def _choose_mcp(
-        self,
-        selector: str | None = None,
-        *,
-        menu: ChoiceScreen | None = None,
-    ) -> None:
-        try:
-            configs = await self._controller.mcp_configurations()
-            runtime = {item.server_id: item for item in self._controller.mcp_servers()}
-        except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
-            return
-        selected = selector
-        if selected is None:
-            choices = _mcp_choices(configs, runtime, theme=theme_for(self))
-            if not choices:
-                return
-            if menu is not None:
-                servers = {config.server_id: config for config in configs}
+    async def _choose_mcp(self, *, menu: ChoiceScreen | None = None) -> None:
+        async def refresh_servers() -> tuple[Choice, ...] | None:
+            try:
+                configs = await self._controller.mcp_configurations()
+                runtime = {item.server_id: item for item in self._controller.mcp_servers()}
+            except Exception as exc:  # noqa: BLE001
+                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                return None
+            return _mcp_choices(configs, runtime, theme=theme_for(self))
 
-                async def refresh_servers() -> tuple[Choice, ...] | None:
-                    try:
-                        refreshed = await self._controller.mcp_configurations()
-                        refreshed_runtime = {
-                            item.server_id: item for item in self._controller.mcp_servers()
-                        }
-                    except Exception as exc:  # noqa: BLE001
-                        await self.query_one(ConversationView).add_notice(str(exc), error=True)
-                        return None
-                    servers.clear()
-                    servers.update({config.server_id: config for config in refreshed})
-                    return _mcp_choices(refreshed, refreshed_runtime, theme=theme_for(self))
-
-                async def select_server(server_id: str) -> tuple[Choice, ...] | None:
-                    if server_id not in servers:
-                        return None
-                    await self._manage_mcp(server_id, menu=menu)
-                    return None
-
-                menu.push_page(
-                    title="MCP SERVERS",
-                    placeholder="Filter servers…",
-                    choices=choices,
-                    on_select=select_server,
-                    on_refresh=refresh_servers,
-                )
-                return
-            selected = await self.push_screen_wait(
-                ChoiceScreen(title="MCP SERVERS", placeholder="Filter servers…", choices=choices)
-            )
-        if selected is None:
-            return
-        if not any(item.server_id == selected for item in configs):
-            await self.query_one(ConversationView).add_notice(
-                f"MCP server not found: {selected}",
-                error=True,
-            )
-            return
-        await self._manage_mcp(selected)
-
-    async def _choose_mcp_action(
-        self,
-        action: str,
-        *,
-        menu: ChoiceScreen | None = None,
-    ) -> None:
-        if action not in {"connect", "disconnect", "toggle", "edit", "remove"}:
-            await self.query_one(ConversationView).add_notice(
-                f"Unknown MCP action: {action}",
-                error=True,
-            )
-            return
-        try:
-            configs = await self._controller.mcp_configurations()
-            runtime = {item.server_id: item for item in self._controller.mcp_servers()}
-        except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
-            return
-
-        action_label = {
-            "connect": "CONNECT",
-            "disconnect": "DISCONNECT",
-            "toggle": "ENABLE OR DISABLE",
-            "edit": "EDIT",
-            "remove": "DELETE",
-        }[action]
-        if not configs:
-            return
-        choices = _mcp_action_choices(action, configs, runtime, theme=theme_for(self))
-        if action == "toggle":
-            servers = {config.server_id: config for config in configs}
-
-            async def toggle_mcp(server_id: str) -> tuple[Choice, ...] | None:
-                config = servers[server_id]
-                if not await self._set_mcp_enabled(
-                    server_id,
-                    enabled=not config.enabled,
-                ):
-                    return None
-                try:
-                    refreshed = await self._controller.mcp_configurations()
-                    refreshed_runtime = {
-                        item.server_id: item for item in self._controller.mcp_servers()
-                    }
-                except Exception as exc:  # noqa: BLE001
-                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
-                    return None
-                servers.clear()
-                servers.update({config.server_id: config for config in refreshed})
-                return tuple(
-                    Choice(
-                        config.server_id,
-                        config.name,
-                        group=config.transport.upper(),
-                        trailing=_mcp_labels(
-                            config,
-                            refreshed_runtime.get(config.server_id),
-                            theme=theme_for(self),
-                        ),
-                    )
-                    for config in sorted(
-                        servers.values(),
-                        key=lambda item: (item.transport, item.name.casefold()),
-                    )
-                )
-
-            if menu is not None:
-                menu.push_page(
-                    title="MCP SERVER AVAILABILITY",
-                    placeholder="Filter servers…",
-                    choices=choices,
-                    on_select=toggle_mcp,
-                )
-            else:
-                await self.push_screen_wait(
-                    ChoiceScreen(
-                        title="MCP SERVER AVAILABILITY",
-                        placeholder="Filter servers…",
-                        choices=choices,
-                        on_select=toggle_mcp,
-                    )
-                )
+        choices = await refresh_servers()
+        if choices is None:
             return
         if menu is not None:
-            servers = {config.server_id: config for config in configs}
-            loading_servers: set[str] = set()
-
-            def current_action_choices(
-                current_runtime: dict[str, McpServerStatus] | None = None,
-            ) -> tuple[Choice, ...]:
-                return _mcp_action_choices(
-                    action,
-                    tuple(servers.values()),
-                    runtime if current_runtime is None else current_runtime,
-                    loading=loading_servers,
-                    theme=theme_for(self),
-                )
-
-            async def refresh_action_candidates() -> tuple[Choice, ...] | None:
-                try:
-                    refreshed_configs = await self._controller.mcp_configurations()
-                    refreshed_runtime = {
-                        item.server_id: item for item in self._controller.mcp_servers()
-                    }
-                except Exception as exc:  # noqa: BLE001
-                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
-                    return None
-                servers.clear()
-                servers.update({config.server_id: config for config in refreshed_configs})
-                return current_action_choices(refreshed_runtime)
-
-            async def finish_runtime_action(
-                server_id: str,
-                operation: str,
-                page_revision: int,
-            ) -> None:
-                try:
-                    await self._run_mcp_action(server_id, operation)
-                finally:
-                    loading_servers.discard(server_id)
-                try:
-                    refreshed_configs = await self._controller.mcp_configurations()
-                    refreshed_runtime = {
-                        item.server_id: item for item in self._controller.mcp_servers()
-                    }
-                except Exception as exc:  # noqa: BLE001
-                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
-                    return
-                refreshed_by_id = {config.server_id: config for config in refreshed_configs}
-                for current_id in tuple(servers):
-                    config = refreshed_by_id.get(current_id)
-                    if config is None:
-                        servers.pop(current_id, None)
-                    else:
-                        servers[current_id] = config
-                if not menu.update_choices(
-                    current_action_choices(refreshed_runtime),
-                    expected_revision=page_revision,
-                    preferred_value=server_id,
-                ):
-                    await menu.refresh_choices()
 
             async def select_server(server_id: str) -> tuple[Choice, ...] | None:
-                config = servers.get(server_id)
-                if config is None:
-                    return await refresh_action_candidates()
-                if action == "edit":
-                    await self._edit_mcp(config, menu=menu)
-                elif action == "remove":
-                    await self._remove_mcp(server_id, menu=menu)
+                if server_id == "+":
+                    await self._edit_mcp(None, menu=menu)
                 else:
-                    if server_id in loading_servers:
-                        return current_action_choices()
-                    loading_servers.add(server_id)
-                    page_revision = menu.page_revision
-                    self.run_worker(
-                        finish_runtime_action(
-                            server_id,
-                            "start" if action == "connect" else "stop",
-                            page_revision,
-                        ),
-                        group=f"mcp-menu-{server_id}",
-                    )
-                    return current_action_choices()
+                    await self._manage_mcp(server_id, menu=menu)
                 return None
 
             menu.push_page(
-                title=f"{action_label} MCP SERVER",
-                placeholder="Filter servers…",
+                title="MCPs",
+                placeholder="Filter MCPs…",
                 choices=choices,
                 on_select=select_server,
-                on_refresh=refresh_action_candidates,
+                on_refresh=refresh_servers,
             )
             return
         selected = await self.push_screen_wait(
-            ChoiceScreen(
-                title=f"{action_label} MCP SERVER",
-                placeholder="Filter servers…",
-                choices=choices,
-            )
+            ChoiceScreen(title="MCPs", placeholder="Filter MCPs…", choices=choices)
         )
-        if selected is None:
-            return
-        config = next(item for item in configs if item.server_id == selected)
-        if action == "edit":
-            await self._edit_mcp(config)
-        elif action == "remove":
-            await self._remove_mcp(selected)
-        else:
-            await self._run_mcp_action(
-                selected,
-                "start" if action == "connect" else "stop",
-            )
+        if selected == "+":
+            await self._edit_mcp(None)
+        elif selected is not None:
+            await self._manage_mcp(selected)
 
     async def _manage_mcp(
         self,
@@ -955,7 +733,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
 
-        actions = _mcp_management_choices(config, status)
+        actions = _mcp_management_choices(config, status, theme=theme_for(self))
 
         if menu is not None:
             loading_action: str | None = None
@@ -979,6 +757,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                     config,
                     status,
                     loading_action=loading_action,
+                    theme=theme_for(self),
                 )
 
             async def finish_runtime_action(action: str, page_revision: int) -> None:
@@ -996,7 +775,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                     await self.query_one(ConversationView).add_notice(str(exc), error=True)
                     return
                 if menu.update_choices(
-                    _mcp_management_choices(config, status),
+                    _mcp_management_choices(config, status, theme=theme_for(self)),
                     expected_revision=page_revision,
                     preferred_value=action,
                 ):
@@ -1025,7 +804,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                         _mcp_choices(configs, runtime, theme=theme_for(self)),
                         initial_value=server_id,
                     )
-                    return _mcp_management_choices(config, status)
+                    return _mcp_management_choices(config, status, theme=theme_for(self))
                 elif selected == "check":
                     await self._check_mcp(server_id)
                 elif selected in {"start", "stop", "restart", "refresh"}:
@@ -1034,6 +813,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                             config,
                             status,
                             loading_action=loading_action,
+                            theme=theme_for(self),
                         )
                     loading_action = selected
                     self.run_worker(
@@ -1044,6 +824,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                         config,
                         status,
                         loading_action=loading_action,
+                        theme=theme_for(self),
                     )
                 elif selected == "remove":
                     if await self._remove_mcp(server_id, menu=menu):
@@ -1150,7 +931,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         menu: ChoiceScreen | None = None,
     ) -> bool:
         screen = ConfirmationScreen(
-            title="DELETE MCP SERVER",
+            title="DELETE MCP",
             message=(f"Delete {server_id}? Takes effect after restarting the app."),
             confirm_label="Delete",
         )
@@ -1165,7 +946,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return False
         self._refresh_mcp_system_status()
-        self.notify(f"MCP server deleted: {server_id} (next restart)")
+        self.notify(f"MCP deleted: {server_id} (next restart)")
         return True
 
     async def _set_mcp_enabled(self, server_id: str, *, enabled: bool) -> bool:
@@ -1715,60 +1496,10 @@ def _mcp_labels(
     *,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> str:
-    enabled = "enabled" if config.enabled else "disabled"
     runtime = status.status if status is not None else "next restart"
-    return theme.inline_separator.join((enabled, runtime))
-
-
-def _mcp_action_available(
-    action: str,
-    config: MCPServerConfigView,
-    runtime: dict[str, McpServerStatus],
-) -> bool:
-    status = runtime.get(config.server_id)
-    if action == "connect":
-        return (
-            config.enabled
-            and status is not None
-            and status.status not in {"connected", "starting", "reconnecting", "stopping"}
-        )
-    if action == "disconnect":
-        return status is not None and status.status in {
-            "connected",
-            "starting",
-            "reconnecting",
-            "stopping",
-        }
-    return True
-
-
-def _mcp_action_choices(
-    action: str,
-    configs: tuple[MCPServerConfigView, ...],
-    runtime: dict[str, McpServerStatus],
-    *,
-    loading: set[str] | frozenset[str] = frozenset(),
-    theme: TuiTheme = DEFAULT_TUI_THEME,
-) -> tuple[Choice, ...]:
-    return tuple(
-        Choice(
-            config.server_id,
-            config.name,
-            group=config.transport.upper(),
-            trailing=_mcp_labels(config, runtime.get(config.server_id), theme=theme),
-            disabled=(
-                action in {"connect", "disconnect"}
-                and not _mcp_action_available(action, config, runtime)
-            ),
-            loading=(
-                config.server_id in loading or _mcp_status_is_loading(runtime.get(config.server_id))
-            ),
-        )
-        for config in sorted(
-            configs,
-            key=lambda item: (item.transport, item.name.casefold()),
-        )
-    )
+    if config.enabled or runtime == "disabled":
+        return runtime
+    return theme.inline_separator.join(("disabled", runtime))
 
 
 def _mcp_choices(
@@ -1777,7 +1508,7 @@ def _mcp_choices(
     *,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[Choice, ...]:
-    return tuple(
+    choices = tuple(
         Choice(
             config.server_id,
             config.name,
@@ -1787,9 +1518,10 @@ def _mcp_choices(
         )
         for config in sorted(
             configs,
-            key=lambda item: (item.transport, item.name.casefold()),
+            key=lambda item: (item.transport, display_sort_key(item.name, fallback=item.server_id)),
         )
     )
+    return (*choices, Choice("+", "+"))
 
 
 def _mcp_management_choices(
@@ -1797,6 +1529,7 @@ def _mcp_management_choices(
     status: McpServerStatus | None,
     *,
     loading_action: str | None = None,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[Choice, ...]:
     runtime_status = status.status if status is not None else None
     if loading_action is None:
@@ -1814,10 +1547,10 @@ def _mcp_management_choices(
     }
 
     return (
-        Choice("edit", "Edit server"),
+        Choice("edit", "Edit"),
         Choice(
             "toggle",
-            "Disable server" if config.enabled else "Enable server",
+            "Disable" if config.enabled else "Enable",
         ),
         Choice("check", "Check connection"),
         Choice(
@@ -1844,7 +1577,7 @@ def _mcp_management_choices(
             disabled=not can_stop,
             loading=loading_action == "stop",
         ),
-        Choice("remove", "Delete server"),
+        Choice("remove", "Delete", accent=theme.danger, destructive=True),
     )
 
 

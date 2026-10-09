@@ -19,6 +19,7 @@ from textual import events
 from textual.color import Color
 from textual.containers import Vertical
 from textual.content import Content
+from textual.pilot import Pilot
 from textual.strip import Strip
 from textual.widgets import Input, OptionList, Static, TextArea
 
@@ -148,7 +149,7 @@ from ouro.tui.state import (
     project_run_presentation,
 )
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
-from ouro.tui.theme import DEFAULT_TUI_THEME, THEME_SATURATION_LEVELS, TUI_THEMES
+from ouro.tui.theme import DEFAULT_TUI_THEME, THEME_SATURATION_LEVELS, TUI_THEMES, theme_for
 from ouro.tui.widgets import (
     COMMAND_POPUP_MAX_HEIGHT,
     COMPOSER_FRAME_HEIGHT,
@@ -7788,12 +7789,8 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Create subagent",
             "Edit subagent",
             "Delete subagent",
-            "Manage MCP servers",
-            "Add MCP server",
-            "Connect MCP server",
-            "Disconnect MCP server",
-            "Edit MCP server",
-            "Delete MCP server",
+            "Manage MCPs",
+            "+ mcp",
             "Skill sources",
             "Manage skills",
             "Install skill",
@@ -7808,7 +7805,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             *("Plugins",) * 3,
             *("Tools",) * 2,
             *("Subagents",) * 5,
-            *("MCP",) * 6,
+            *("MCPs",) * 2,
             *("Skills",) * 4,
             "Support",
         ]
@@ -9203,7 +9200,7 @@ async def test_actions_persists_three_distinct_recent_choices_across_restart(
         for label, screen_type in (
             ("Theme", ChoiceScreen),
             ("Context compaction", CompactionConfigurationScreen),
-            ("Add MCP server", MCPConfigurationScreen),
+            ("+ mcp", MCPConfigurationScreen),
         ):
             await pilot.press("ctrl+p")
             await pilot.pause()
@@ -9225,7 +9222,7 @@ async def test_actions_persists_three_distinct_recent_choices_across_restart(
         await pilot.press("ctrl+p")
         await pilot.pause()
         assert [choice.label for choice in app.screen._choices[:3]] == [
-            "Add MCP server",
+            "+ mcp",
             "Context compaction",
             "Theme",
         ]
@@ -9237,7 +9234,7 @@ async def test_actions_persists_three_distinct_recent_choices_across_restart(
         await pilot.press("ctrl+p")
         await pilot.pause()
         assert [choice.label for choice in restarted.screen._choices[:3]] == [
-            "Add MCP server",
+            "+ mcp",
             "Context compaction",
             "Theme",
         ]
@@ -9682,96 +9679,109 @@ async def test_alt_menu_shortcuts_do_not_replace_transient_choice_children(
         await pilot.press("escape")
 
 
-@pytest.mark.asyncio
-async def test_mcp_actions_open_operation_specific_server_selection(tmp_path: Path) -> None:
-    ConfigurationFacade(tmp_path).save_mcp_server(
-        "local",
-        MCPServerConfigUpdate(command="python", auto_start=False),
-    )
-    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
-
-    async with run_ready_app(app, size=(100, 34)) as pilot:
-        await pilot.pause()
-        for action_label, chooser_title in (
-            ("Connect MCP server", "CONNECT MCP SERVER"),
-            ("Edit MCP server", "EDIT MCP SERVER"),
-            ("Delete MCP server", "DELETE MCP SERVER"),
-        ):
-            await pilot.press("ctrl+p")
-            await pilot.pause()
-            app.screen.query_one("#choice-filter", Input).value = action_label
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause(0.2)
-
-            assert isinstance(app.screen, ChoiceScreen)
-            assert app.screen.query_one("#choice-title", Static).render().plain == chooser_title
-            assert [choice.value for choice in app.screen._choices] == ["local"]
-            assert app.screen._choices[0].group == "STDIO"
-            assert app.screen._choices[0].trailing == "enabled • configured"
-            assert app.screen._choices[0].description == ""
-
-            await pilot.press("escape")
-            await pilot.pause()
+async def _open_mcp_management(app: OuroTuiApp, pilot: Pilot, action: str) -> ChoiceScreen:
+    await pilot.press("ctrl+p")
+    await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+    app.screen.query_one("#choice-filter", Input).value = "Manage MCPs"
+    await pilot.pause()
+    await pilot.press("enter")
+    await _wait_for_screen(app, ChoiceScreen, title="MCPs")
+    await pilot.press("enter")
+    await _wait_for_screen(app, ChoiceScreen, title="MCP • local")
+    menu = app.screen
+    assert isinstance(menu, ChoiceScreen)
+    options = menu.query_one(OptionList)
+    options.highlighted = options.get_option_index(action)
+    options.focus()
+    return menu
 
 
 @pytest.mark.asyncio
-async def test_mcp_connection_menus_show_all_servers_and_disable_unavailable_actions(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    configuration = ConfigurationFacade(tmp_path)
-    for server_id in ("connected", "stopped"):
-        configuration.save_mcp_server(
-            server_id,
-            MCPServerConfigUpdate(command="unused-in-test", auto_start=False),
-        )
+async def test_mcp_catalog_can_create_edit_and_delete_its_last_entry(tmp_path: Path) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
-
-    def runtime_servers() -> tuple[McpServerStatus, ...]:
-        return (
-            McpServerStatus(
-                server_id="connected",
-                name="connected",
-                transport="stdio",
-                status="connected",
-            ),
-            McpServerStatus(
-                server_id="stopped",
-                name="stopped",
-                transport="stdio",
-                status="stopped",
-            ),
-        )
-
     async with run_ready_app(app, size=(100, 34)) as pilot:
-        await pilot.pause()
-        monkeypatch.setattr(app._controller, "mcp_servers", runtime_servers)
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        actions = app.screen
-
-        actions.query_one("#choice-filter", Input).value = "Connect MCP server"
+        menu = app.screen
+        assert [choice.label for choice in menu._choices if choice.group == "MCPs"] == [
+            "Manage MCPs",
+            "+ mcp",
+        ]
+        menu.query_one(Input).value = "Manage MCPs"
         await pilot.pause()
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="CONNECT MCP SERVER")
-        connect_choices = {choice.value: choice for choice in app.screen._choices}
-        assert set(connect_choices) == {"connected", "stopped"}
-        assert connect_choices["connected"].disabled is True
-        assert connect_choices["stopped"].disabled is False
-
+        await _wait_for_screen(app, ChoiceScreen, title="MCPs")
+        assert app.screen is menu
+        assert [(choice.value, choice.label) for choice in menu._choices] == [("+", "+")]
+        await pilot.press("enter")
+        await _wait_for_screen(app, MCPConfigurationScreen, title="ADD MCP")
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="MCPs")
+        assert app.screen is menu
+        assert menu.query_one(Input).has_focus
+        await pilot.press("enter")
+        await _wait_for_screen(app, MCPConfigurationScreen, title="ADD MCP")
+        editor = app.screen
+        # Use a valid ID that must remain distinct from the catalog's add action.
+        for field, value in (
+            ("mcp-server-id", "add-mcp"),
+            ("mcp-name", "Local"),
+            ("mcp-target", "python"),
+        ):
+            options = editor.query_one(OptionList)
+            options.highlighted = options.get_option_index(field)
+            options.focus()
+            await pilot.press("enter", *value, "enter")
+        options.highlighted = options.get_option_index("mcp-save")
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="MCPs")
+        assert app.screen is menu
+        assert [choice.value for choice in menu._choices] == ["add-mcp", "+"]
+        options = menu.query_one(OptionList)
+        options.highlighted = options.get_option_index("add-mcp")
+        options.focus()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP • Local")
+        assert app.screen is menu
+        await pilot.press("enter")
+        await _wait_for_screen(app, MCPConfigurationScreen, title="EDIT MCP")
+        editor = app.screen
+        options = editor.query_one(OptionList)
+        assert options.get_option("mcp-server-id").disabled
+        options.highlighted = options.get_option_index("mcp-name")
+        options.focus()
+        await pilot.press("enter", "ctrl+u", *"Renamed", "enter")
+        options.highlighted = options.get_option_index("mcp-save")
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP • Local")
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="MCPs")
+        assert (
+            next(choice for choice in menu._choices if choice.value == "add-mcp").label == "Renamed"
+        )
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP • Renamed")
+        delete = next(choice for choice in menu._choices if choice.value == "remove")
+        assert delete.label == "Delete"
+        assert delete.destructive
+        assert delete.accent == theme_for(app).danger
+        options = menu.query_one(OptionList)
+        options.highlighted = options.get_option_index("remove")
+        options.focus()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ConfirmationScreen, title="CONFIRM DELETE MCP")
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP • Renamed")
+        assert ConfigurationFacade(tmp_path).mcp_server("add-mcp").name == "Renamed"
+        await pilot.press("enter")
+        await _wait_for_screen(app, ConfirmationScreen, title="CONFIRM DELETE MCP")
+        await pilot.press("down", "enter")
+        await _wait_for_screen(app, ChoiceScreen, title="MCPs")
+        assert app.screen is menu
+        assert [choice.value for choice in menu._choices] == ["+"]
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        actions.query_one("#choice-filter", Input).value = "Disconnect MCP server"
-        await pilot.pause()
-        await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="DISCONNECT MCP SERVER")
-        disconnect_choices = {choice.value: choice for choice in app.screen._choices}
-        assert set(disconnect_choices) == {"connected", "stopped"}
-        assert disconnect_choices["connected"].disabled is False
-        assert disconnect_choices["stopped"].disabled is True
-
-        await pilot.press("escape", "escape")
+        assert menu.query_one(Input).value == "Manage MCPs"
 
 
 @pytest.mark.asyncio
@@ -9812,12 +9822,7 @@ async def test_mcp_connect_runs_in_background_and_contains_failures(
         await pilot.pause()
         monkeypatch.setattr(app._controller, "mcp_servers", runtime_servers)
         monkeypatch.setattr(app._controller, "start_mcp_server", failing_start)
-        await pilot.press("ctrl+p")
-        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        app.screen.query_one("#choice-filter", Input).value = "Connect MCP server"
-        await pilot.pause()
-        await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="CONNECT MCP SERVER")
+        await _open_mcp_management(app, pilot, "start")
         menu = app.screen
         options = menu.query_one(OptionList)
         options.focus()
@@ -9826,30 +9831,28 @@ async def test_mcp_connect_runs_in_background_and_contains_failures(
         await asyncio.wait_for(operation_started.wait(), timeout=1)
 
         assert app.screen is menu
-        assert next(choice for choice in menu._choices if choice.value == "local").loading
-        menu.query_one("#choice-filter", Input).value = "local"
+        assert next(choice for choice in menu._choices if choice.value == "start").loading
+        menu.query_one("#choice-filter", Input).value = "Connect"
         await pilot.pause()
-        assert menu.query_one("#choice-filter", Input).value == "local"
+        assert menu.query_one("#choice-filter", Input).value == "Connect"
 
         release_operation.set()
         deadline = asyncio.get_running_loop().time() + 2
-        while next(choice for choice in menu._choices if choice.value == "local").loading:
+        while next(choice for choice in menu._choices if choice.value == "start").loading:
             if asyncio.get_running_loop().time() >= deadline:
                 raise AssertionError("MCP failure did not clear the menu loading state")
             await pilot.pause(0.05)
 
-        failed = next(choice for choice in menu._choices if choice.value == "local")
-        assert failed.trailing == "enabled • failed"
+        failed = next(choice for choice in menu._choices if choice.value == "start")
+        assert failed.disabled is False
         assert app.screen is menu
 
-        # A runtime refresh keeps the full server catalog visible while making
-        # an already connected server non-selectable.
+        # Refresh disables Connect after an external connection completes.
         runtime_status = "connected"
         await menu.refresh_choices()
-        connected = next(choice for choice in menu._choices if choice.value == "local")
+        connected = next(choice for choice in menu._choices if choice.value == "start")
         assert connected.disabled is True
-        assert connected.trailing == "enabled • connected"
-        options.highlighted = options.get_option_index("local")
+        options.highlighted = options.get_option_index("start")
         await pilot.press("enter")
         await pilot.pause()
         assert start_calls == 1
@@ -9891,34 +9894,34 @@ async def test_mcp_disconnect_runs_in_background_and_refreshes_status(
         await pilot.pause()
         monkeypatch.setattr(app._controller, "mcp_servers", runtime_servers)
         monkeypatch.setattr(app._controller, "stop_mcp_server", controlled_stop)
-        await pilot.press("ctrl+p")
-        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        app.screen.query_one("#choice-filter", Input).value = "Disconnect MCP server"
-        await pilot.pause()
-        await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="DISCONNECT MCP SERVER")
+        await _open_mcp_management(app, pilot, "stop")
         menu = app.screen
         options = menu.query_one(OptionList)
         options.focus()
 
         await pilot.press("enter")
         await asyncio.wait_for(operation_started.wait(), timeout=1)
-        assert next(choice for choice in menu._choices if choice.value == "local").loading
-        menu.query_one("#choice-filter", Input).value = "local"
+        assert next(choice for choice in menu._choices if choice.value == "stop").loading
+        menu.query_one("#choice-filter", Input).value = "Disconnect"
         await pilot.pause()
-        assert menu.query_one("#choice-filter", Input).value == "local"
+        assert menu.query_one("#choice-filter", Input).value == "Disconnect"
 
         release_operation.set()
         deadline = asyncio.get_running_loop().time() + 2
-        while next(choice for choice in menu._choices if choice.value == "local").loading:
+        while next(choice for choice in menu._choices if choice.value == "stop").loading:
             if asyncio.get_running_loop().time() >= deadline:
                 raise AssertionError("MCP stop did not clear the menu loading state")
             await pilot.pause(0.05)
 
-        stopped = next(choice for choice in menu._choices if choice.value == "local")
-        assert stopped.trailing == "enabled • stopped"
+        stopped = next(choice for choice in menu._choices if choice.value == "stop")
         assert stopped.disabled is True
         assert app.screen is menu
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="MCPs")
+        assert (
+            next(choice for choice in menu._choices if choice.value == "local").trailing
+            == "stopped"
+        )
 
 
 @pytest.mark.asyncio
@@ -9974,16 +9977,11 @@ async def test_mcp_disconnect_then_connect_survives_closed_action_menus(
         monkeypatch.setattr(app._controller, "stop_mcp_server", controlled_stop)
         monkeypatch.setattr(app._controller, "start_mcp_server", controlled_start)
 
-        await pilot.press("ctrl+p")
-        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        app.screen.query_one("#choice-filter", Input).value = "Disconnect MCP server"
-        await pilot.pause()
-        await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="DISCONNECT MCP SERVER")
+        await _open_mcp_management(app, pilot, "stop")
         disconnected_menu = app.screen
         await pilot.press("enter")
         await asyncio.wait_for(stop_started.wait(), timeout=1)
-        await pilot.press("escape", "escape")
+        await pilot.press("escape", "escape", "escape")
         await pilot.pause()
         assert disconnected_menu.is_attached is False
 
@@ -9992,16 +9990,11 @@ async def test_mcp_disconnect_then_connect_survives_closed_action_menus(
         await pilot.pause()
         assert app.is_running is True
 
-        await pilot.press("ctrl+p")
-        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        app.screen.query_one("#choice-filter", Input).value = "Connect MCP server"
-        await pilot.pause()
-        await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="CONNECT MCP SERVER")
+        await _open_mcp_management(app, pilot, "start")
         connected_menu = app.screen
         await pilot.press("enter")
         await asyncio.wait_for(start_started.wait(), timeout=1)
-        await pilot.press("escape", "escape")
+        await pilot.press("escape", "escape", "escape")
         await pilot.pause()
         assert connected_menu.is_attached is False
 
@@ -10180,7 +10173,7 @@ def test_mcp_management_menu_keeps_stable_actions_and_disables_unavailable_ones(
         *selectable_runtime_actions,
     }
     assert next(choice for choice in choices if choice.value == "toggle").label == (
-        "Disable server" if enabled else "Enable server"
+        "Disable" if enabled else "Enable"
     )
 
 
@@ -10200,10 +10193,10 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         action_screen = app.screen
 
-        action_screen.query_one("#choice-filter", Input).value = "Manage MCP servers"
+        action_screen.query_one("#choice-filter", Input).value = "Manage MCPs"
         await pilot.pause()
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
+        await _wait_for_screen(app, ChoiceScreen, title="MCPs")
         assert app.screen is action_screen
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
 
@@ -10221,7 +10214,7 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
             "remove",
         ]
         toggle = next(choice for choice in app.screen._choices if choice.value == "toggle")
-        assert toggle.label == "Disable server"
+        assert toggle.label == "Disable"
 
         options = app.screen.query_one("#choice-list", OptionList)
         options.highlighted = options.get_option_index("toggle")
@@ -10231,7 +10224,7 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         assert ConfigurationFacade(tmp_path).mcp_server("local").enabled is False
         assert (
             next(choice for choice in app.screen._choices if choice.value == "toggle").label
-            == "Enable server"
+            == "Enable"
         )
         start = next(choice for choice in app.screen._choices if choice.value == "start")
         assert start.label == "Connect"
@@ -10244,10 +10237,10 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         assert all(options.get_option(action).disabled for action in ("refresh", "restart", "stop"))
 
         await pilot.press("escape")
-        await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
+        await _wait_for_screen(app, ChoiceScreen, title="MCPs")
         assert (
             next(choice for choice in app.screen._choices if choice.value == "local").trailing
-            == "disabled • disabled"
+            == "disabled"
         )
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="MCP • local")
@@ -10257,7 +10250,7 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         assert ConfigurationFacade(tmp_path).mcp_server("local").enabled is True
         assert (
             next(choice for choice in app.screen._choices if choice.value == "toggle").label
-            == "Disable server"
+            == "Disable"
         )
         assert (
             next(choice for choice in app.screen._choices if choice.value == "start").disabled
@@ -10265,11 +10258,12 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         )
 
         await pilot.press("escape")
-        await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
+        await _wait_for_screen(app, ChoiceScreen, title="MCPs")
         assert app.screen is action_screen
-        assert next(
-            choice for choice in app.screen._choices if choice.value == "local"
-        ).trailing.startswith("enabled •")
+        assert (
+            next(choice for choice in app.screen._choices if choice.value == "local").trailing
+            == "configured"
+        )
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is action_screen
@@ -10289,10 +10283,10 @@ async def test_mcp_management_returns_to_catalog_after_deletion(tmp_path: Path) 
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        app.screen.query_one("#choice-filter", Input).value = "Manage MCP servers"
+        app.screen.query_one("#choice-filter", Input).value = "Manage MCPs"
         await pilot.pause()
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
+        await _wait_for_screen(app, ChoiceScreen, title="MCPs")
         app.screen.query_one("#choice-filter", Input).value = "remove"
         await pilot.pause()
         await pilot.press("enter")
@@ -10302,11 +10296,11 @@ async def test_mcp_management_returns_to_catalog_after_deletion(tmp_path: Path) 
         options.highlighted = options.get_option_index("remove")
         options.focus()
         await pilot.press("enter")
-        await _wait_for_screen(app, ConfirmationScreen, title="CONFIRM DELETE MCP SERVER")
+        await _wait_for_screen(app, ConfirmationScreen, title="CONFIRM DELETE MCP")
         await pilot.press("down", "enter")
-        await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
+        await _wait_for_screen(app, ChoiceScreen, title="MCPs")
 
-        assert [choice.value for choice in app.screen._choices] == ["keep"]
+        assert [choice.value for choice in app.screen._choices] == ["keep", "+"]
 
 
 @pytest.mark.asyncio
@@ -10341,10 +10335,10 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         action_screen = app.screen
-        action_screen.query_one("#choice-filter", Input).value = "Manage MCP servers"
+        action_screen.query_one("#choice-filter", Input).value = "Manage MCPs"
         await pilot.pause()
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
+        await _wait_for_screen(app, ChoiceScreen, title="MCPs")
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="MCP • local")
 
@@ -10364,7 +10358,7 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
         assert action_screen.query_one("#choice-filter", Input).value == "runtime"
 
         await pilot.press("escape")
-        await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
+        await _wait_for_screen(app, ChoiceScreen, title="MCPs")
         assert (
             next(choice for choice in action_screen._choices if choice.value == "local").loading
             is True
@@ -10378,7 +10372,7 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
             await pilot.pause(0.05)
         assert (
             next(choice for choice in action_screen._choices if choice.value == "local").trailing
-            == "enabled • connected"
+            == "connected"
         )
 
         await pilot.press("enter")
@@ -10411,10 +10405,10 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
         assert options.get_option("stop").disabled is True
 
         await pilot.press("escape")
-        await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
+        await _wait_for_screen(app, ChoiceScreen, title="MCPs")
         assert (
             next(choice for choice in action_screen._choices if choice.value == "local").trailing
-            == "enabled • stopped"
+            == "stopped"
         )
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -10430,10 +10424,10 @@ async def test_configuration_editor_restores_retained_action_menu(tmp_path: Path
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         action_screen = app.screen
-        action_screen.query_one("#choice-filter", Input).value = "Add MCP server"
+        action_screen.query_one("#choice-filter", Input).value = "+ mcp"
         await pilot.pause()
         await pilot.press("enter")
-        await _wait_for_screen(app, EditableChoiceScreen, title="ADD MCP SERVER")
+        await _wait_for_screen(app, EditableChoiceScreen, title="ADD MCP")
 
         assert action_screen in app.screen_stack
         assert action_screen.query_one("#choice-panel", Vertical).display is False
@@ -10856,13 +10850,15 @@ async def test_mcp_configuration_screen_validates_json_and_returns_typed_draft(
             "ACTIONS",
         }
         target = next(choice for choice in screen._choices if choice.value == "mcp-target")
+        assert target.label == "Command"
         assert target.edit_placeholder == (
             "Enter executable only (e.g. npx); put arguments in Arguments (JSON)"
         )
         screen._values["mcp-transport"] = "http"
         screen._refresh("mcp-target")
         target = next(choice for choice in screen._choices if choice.value == "mcp-target")
-        assert target.edit_placeholder == "Enter the MCP server URL"
+        assert target.label == "URL"
+        assert target.edit_placeholder == "Enter the MCP URL"
         screen._values["mcp-transport"] = "stdio"
         screen._refresh("mcp-target")
         options = screen.query_one("#choice-list", OptionList)
