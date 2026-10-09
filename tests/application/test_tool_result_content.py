@@ -26,14 +26,7 @@ class RecordingProvider(FauxProvider):
                 ProviderStreamEvent(type="done"),
             ],
         ]
-        if not request_tools:
-            batches = [
-                [
-                    ProviderStreamEvent(type="text_delta", text="continued"),
-                    ProviderStreamEvent(type="done"),
-                ]
-            ]
-        super().__init__(event_batches=batches)
+        super().__init__(event_batches=batches if request_tools else None)
         self.protocol = protocol
         self.requests = []
 
@@ -72,7 +65,7 @@ async def test_rich_results_survive_execution_storage_replay_and_route_projectio
     assert executed == ["call-0", "call-1"]
     assert (URI.partition(",")[2] in str(provider.requests[-1])) == vision
     if not vision:
-        assert "not supplied" in str(provider.requests[-1])
+        assert str(provider.requests[-1]).count("This model cannot view images.") == 2
     if protocol == "chat" and vision:
         roles = [item["role"] for item in provider.requests[-1]]
         start = roles.index("tool")

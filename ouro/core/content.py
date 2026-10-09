@@ -24,6 +24,15 @@ ContentPart = Annotated[TextContent | ImageContent, Field(discriminator="type")]
 ToolContent = str | list[ContentPart]
 
 
+def unsupported_content_text(content_type: str) -> str:
+    """Explain unavailable content without exposing routing or protocol details."""
+    ability = "view images" if content_type == "image" else f"read {content_type} content"
+    return (
+        f"This model cannot {ability}. The {content_type} was not sent. "
+        "Trying again or changing its size will not help."
+    )
+
+
 def content_parts(content: ToolContent) -> list[ContentPart]:
     """A string is the concise form of a single text part."""
     return [TextContent(text=content)] if isinstance(content, str) else list(content)

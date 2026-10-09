@@ -129,12 +129,17 @@ Enter 沿用 follow-up，Ctrl+Enter 沿用 steer；附件不绕过现有输入�
 - 不透明文件提供元信息和引用，不默认解析、执行或解压。
 - 读取失败与能力不足分开表达；不能声称看过仅提供引用的内容。
 
+能力不足的请求说明直接告知模型无法查看图片，重复尝试或改变尺寸无效；大小或总量超限则建议减少图片或
+缩小尺寸，不使用端点、消息角色或内部预算术语。持久化的输入说明使用过去时描述附件加入时的情况，
+后续模型不会被旧说明误标为不支持视觉。
+
 同次输入的全部文件共享准备预算，预览不称为语义摘要。准备完成的文本与图片直接持久化在骨架 `content` 中，
 后续对话复用消息内容，工具读取结果保存于各自的 tool_result。历史总量由既有上下文预算和压缩机制管理。
 
 当前默认限额：原件导入 100 MiB；单项文本最多 8 KiB，单次文件输入共用 8192 的保守准备配额，
-文本按 UTF-8 字节数计、每张原生图片按 2048 计；图片单项原始字节最多 20 MiB，base64 合计最多 20 MiB。
-每次最终请求另检查图片总量 20 MiB，并经 ContextBuilder 对全部消息、元信息和工具定义做完整预算检查。
+文本按 UTF-8 字节数计、每张原生图片按 2048 计；图片单项原始字节最多 20 MiB，Base64 合计最多 20 Mi 字符。
+每次请求的附件、内联图片与工具资源共用 20 Mi 编码字符限额。已有图片和各资源预览依次扣减，资源编码前
+检查剩余额度，不先编码全部图片再丢弃超限内容；ContextBuilder 对全部消息、元信息和工具定义做完整预算检查。
 这些限额不代替厂商的实际图片 token 计量。Host/tool 输出资源的即时投影另受 `min(8192, 模型输入预算 / 4)` 限制。
 
 文本检查支持 UTF-8 与 BOM 标记的 UTF-16；无后缀文本可进入预览，其他格式保持不透明。
@@ -151,7 +156,7 @@ Enter 沿用 follow-up，Ctrl+Enter 沿用 steer；附件不绕过现有输入�
   "content": [
     {
       "type": "text",
-      "text": "File: \"页面截图.png\"\nSource: Session attachment\nSession file: \"页面截图.png\"\nMedia type: image/png; size: 1024 bytes\nRepresentation: native image recorded with this input."
+      "text": "File: \"页面截图.png\"\nSource: Session attachment\nSession file: \"页面截图.png\"\nMedia type: image/png; size: 1024 bytes\n"
     },
     {
       "type": "image",

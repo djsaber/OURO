@@ -103,7 +103,7 @@ async def test_attachment_only_image_and_binary_downgrade_and_snapshot(tmp_path)
     result = await runtime.run("", session_id=session.session_id, attachments=(item,))
     assert result.run.status == "completed"
     saved = runtime.sessions.context(session.session_id)
-    assert "pixels not supplied" in saved.provider_context.messages[0].text_content
+    assert "model in use could not view images" in saved.provider_context.messages[0].text_content
     runtime.adapter.model.supports_vision = True
     result = await runtime.run("look now", session_id=session.session_id, attachments=(item,))
     assert result.run.status == "completed"
@@ -200,7 +200,7 @@ async def test_shared_attachment_budget_prioritizes_latest_material_and_retains_
     assert "2" * 3000 in projected[-1].text_content
     for original, earlier in zip(messages[:-1], projected[:-1], strict=True):
         assert earlier.resource_refs == original.resource_refs
-        assert "Request text budget" in earlier.text_content
+        assert "too much text to include at once" in earlier.text_content
         assert "full text" not in earlier.text_content
     assert not any(message.text_content for message in messages)
     await app.close()

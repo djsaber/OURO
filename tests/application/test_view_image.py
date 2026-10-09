@@ -65,7 +65,7 @@ async def test_builtin_view_image_reaches_model_through_normal_execution_and_pro
         image = next(part for part in results[0].content if isinstance(part, ImageContent))
         assert (image.uri.partition(",")[2] in str(provider.requests[-1])) == vision
         if not vision:
-            assert "not supplied" in str(provider.requests[-1])
+            assert str(provider.requests[-1]).count("This model cannot view images.") == 2
         if protocol == "chat" and vision:
             roles = [message["role"] for message in provider.requests[-1]]
             start = roles.index("tool")

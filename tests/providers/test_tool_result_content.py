@@ -48,8 +48,20 @@ def test_route_projection_preserves_canonical_results_and_degrades_without_visio
     before = deepcopy(messages)
     wire = encode(protocol, messages, vision=False)
     assert URI not in str(wire)
-    assert str(wire).count("target endpoint does not support") == 2
-    assert "before" in str(wire) and "after" in str(wire)
+    assert str(wire).count("This model cannot view images.") == 2
+    assert str(wire).count("Trying again or changing its size will not help.") == 2
+    assert "endpoint" not in str(wire)
+    expected = (
+        "before\nThis model cannot view images. The image was not sent. "
+        "Trying again or changing its size will not help.\nafter"
+    )
+    if protocol == "responses":
+        results = [item["output"] for item in wire if item.get("type") == "function_call_output"]
+    elif protocol == "messages":
+        results = [item["content"] for item in wire[-1]["content"]]
+    else:
+        results = [item["content"] for item in wire if item["role"] == "tool"]
+    assert results == [expected, expected]
     assert messages == before
     # Switching routes or capabilities reuses the execution fact, not a previous fallback.
     assert URI in str(encode("responses", messages, vision=True))
@@ -93,7 +105,7 @@ def test_chat_completions_finishes_all_tool_results_before_supplemental_messages
         result, context = wire[index + 1], wire[index + 3]
         assert result["tool_call_id"] == f"call-{index}"
         assert isinstance(result["content"], str)
-        assert "following tool context" in result["content"]
+        assert "The image is included below." in result["content"]
         assert URI not in result["content"]
         assert f"call-{index}" in str(context["content"])
         assert {"type": "image_url", "image_url": {"url": URI}} in context["content"]

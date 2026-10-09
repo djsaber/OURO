@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import base64
 import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
 import pytest
 
+from ouro.application import file_inputs
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.resources import ResourceService
 from ouro.application.runs import RunLifecycle
@@ -19,12 +21,13 @@ from ouro.core.errors import (
     UnsafeResourcePathError,
     UnsupportedMediaTypeError,
 )
-from ouro.core.messages import ImageContent, MessageRecord
+from ouro.core.messages import ImageContent, MessageRecord, ModelMessage, ToolResultReference
 from ouro.core.observers import ObserverRegistry
 from ouro.core.state import RunRecord
 from ouro.core.tools import ToolResult
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore
+from tests.providers.test_tool_result_content import encode
 
 
 def test_file_batch_failure_keeps_only_verified_published_files(tmp_path):
@@ -604,6 +607,108 @@ def test_image_resource_projection_is_request_local_data_uri(tmp_path) -> None:
 
     assert image.uri.startswith("data:image/png;base64,")
     assert all(not isinstance(block, ImageContent) for block in canonical.content)
+
+
+@pytest.mark.parametrize("source_kind", ["inline", "resource"])
+@pytest.mark.parametrize(
+    "role,vision,keeps_image",
+    [
+        ("tool_result", False, True),
+        ("tool_result", True, True),
+        ("user", False, False),
+        ("user", True, True),
+        ("assistant", False, False),
+        ("assistant", True, False),
+    ],
+)
+def test_resource_preparation_preserves_tool_content_for_provider_placement(
+    tmp_path, source_kind, role, vision, keeps_image
+):
+    _, _, resources, service = _services(tmp_path)
+    session_id = service.create().session.session_id
+    raw = b"\x89PNG\r\n\x1a\nimage-bytes"
+    uri = "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+    message = MessageRecord.text(session_id=session_id, role=role, text="image output")
+    if role == "tool_result":
+        message.tool_result = ToolResultReference(tool_call_id="call", tool_name="Render")
+    if source_kind == "inline":
+        message.content.append(ImageContent(uri=uri, media_type="image/png"))
+    else:
+        path = tmp_path / "image.png"
+        path.write_bytes(raw)
+        message.resource_refs = [resources.import_resource(session_id, path).resource.resource_id]
+    before = message.model_copy(deep=True)
+
+    projected = resources.project_model_messages([message], supports_vision=vision)[0]
+
+    images = [part for part in projected.content if isinstance(part, ImageContent)]
+    assert [part.uri for part in images] == ([uri] if keeps_image else [])
+    assert message == before
+    if role == "tool_result":
+        assert "not sent" not in projected.text_content
+        for protocol in ("responses", "messages", "chat"):
+            wire = str(encode(protocol, [ModelMessage.from_record(projected)], vision=vision))
+            assert (uri.partition(",")[2] in wire) == vision
+            if not vision:
+                assert wire.count("This model cannot view images.") == 1
+
+
+@pytest.mark.parametrize("vision", [False, True])
+@pytest.mark.parametrize("earlier_role", ["user", "tool_result"])
+def test_request_image_budget_is_shared_before_resource_encoding(
+    tmp_path, monkeypatch, vision, earlier_role
+):
+    _, _, resources, service = _services(tmp_path)
+    session_id = service.create().session.session_id
+    raw = b"\x89PNG\r\n\x1a\nimage-bytes"
+    encoded = base64.b64encode(raw).decode("ascii")
+    image = ImageContent(uri="data:image/png;base64," + encoded)
+    latest = MessageRecord(
+        session_id=session_id,
+        role="tool_result",
+        content=[image],
+        tool_result=ToolResultReference(tool_call_id="latest", tool_name="Render"),
+    )
+    for index in range(2):
+        path = tmp_path / f"{index}.png"
+        path.write_bytes(raw)
+        latest.resource_refs.append(
+            resources.import_resource(session_id, path).resource.resource_id
+        )
+    earlier = MessageRecord(
+        session_id=session_id,
+        role=earlier_role,
+        content=[image],
+        tool_result=(
+            ToolResultReference(tool_call_id="earlier", tool_name="Render")
+            if earlier_role == "tool_result"
+            else None
+        ),
+    )
+    before = [message.model_copy(deep=True) for message in (earlier, latest)]
+    monkeypatch.setattr(file_inputs, "DEFAULT_REQUEST_IMAGE_CHARS", len(encoded) * 2)
+    encode_image = base64.b64encode
+    encoded_sources = []
+
+    def bounded_encode(data):
+        encoded_sources.append(data)
+        return encode_image(data)
+
+    monkeypatch.setattr(file_inputs.base64, "b64encode", bounded_encode)
+    projected = resources.project_model_messages([earlier, latest], supports_vision=vision)
+
+    assert encoded_sources == [raw]
+    assert [
+        sum(isinstance(part, ImageContent) for part in message.content) for message in projected
+    ] == [0, 2]
+    assert "too much image data" in projected[-1].text_content
+    earlier_reason = (
+        "This model cannot view images."
+        if earlier_role == "user" and not vision
+        else "too much image data"
+    )
+    assert earlier_reason in projected[0].text_content
+    assert [earlier, latest] == before
 
 
 def test_model_attachment_accepts_binary_and_non_vision_images_as_references(tmp_path):
