@@ -21,6 +21,7 @@ from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_controls import AttributedSessionInputBatch
+from ouro.core.session_titles import fallback_session_title
 from ouro.core.state import SessionRecord
 from ouro.plugins.catalog import ExtensionCatalogLease
 from ouro.sessions import SessionStore
@@ -81,7 +82,7 @@ async def submit_plugin_command(
             f"Ambiguous plugin command /{selector}; use one of: {choices}"
         )
     selected = matches[0]
-    title = " ".join(argument.split())[:60] or f"/{selected.name}"
+    title = fallback_session_title(argument) or f"/{selected.name}"
 
     async def create_session(title: str) -> None:
         nonlocal session_id

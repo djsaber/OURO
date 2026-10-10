@@ -41,6 +41,7 @@ from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextMetrics
 from ouro.core.input_content import InputContent, InputFile
 from ouro.core.messages import MessageRecord, ModelMessage, SkillActivationContent, TextContent
+from ouro.core.state import DEFAULT_SESSION_TITLE
 from ouro.tui.attachment_editor import AttachmentTextArea, file_count_label
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import TuiCommand, TuiCommandArgument
@@ -175,7 +176,7 @@ class BrandHeader(Static):
     def __init__(
         self,
         *,
-        initial_context: str = "New session",
+        initial_context: str = DEFAULT_SESSION_TITLE,
         initial_workspace: str | None = None,
     ) -> None:
         super().__init__(id="brand-header")

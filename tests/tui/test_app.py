@@ -9670,7 +9670,7 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         await pilot.pause()
         assert not isinstance(app.screen, ChoiceScreen)
         assert len(app.screen_stack) == 1
-        assert app._active_title == "New session"
+        assert app._active_title == "New conversation"
 
 
 @pytest.mark.asyncio

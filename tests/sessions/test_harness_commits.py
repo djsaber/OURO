@@ -266,7 +266,7 @@ def test_file_decision_recovers_without_reexecuting_operation(tmp_path, monkeypa
 
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    session = SessionRecord()
+    session = SessionRecord(title_source="placeholder")
     store.create_session(session)
     write = file_commits.write_model_atomic
 
@@ -284,7 +284,10 @@ def test_file_decision_recovers_without_reexecuting_operation(tmp_path, monkeypa
         before=session,
         steps=(
             SessionCommitStep(
-                message=message(session.session_id, "result"), harness=state(session.session_id, 1)
+                message=MessageRecord.text(
+                    session_id=session.session_id, role="user", text="First topic"
+                ),
+                harness=state(session.session_id, 1),
             ),
         ),
         events=(EventRecord(session_id=session.session_id, event_type="committed"),),
@@ -297,10 +300,14 @@ def test_file_decision_recovers_without_reexecuting_operation(tmp_path, monkeypa
     reopened.initialize()
     snapshot = reopened.load_session(session.session_id)
     if failure_point == "receipt":
+        assert snapshot.session.title == "First topic"
+        assert snapshot.session.title_source == "fallback"
         assert len(snapshot.messages) == len(snapshot.events) == 1
         assert reopened.load_harness(session.session_id).state.states[0].payload == 1
         assert reopened.commit_session(request).messages == tuple(snapshot.messages)
     else:
+        assert snapshot.session.title == "New conversation"
+        assert snapshot.session.title_source == "placeholder"
         assert snapshot.messages == snapshot.events == []
         assert reopened.load_harness(session.session_id).state.states == ()
 
@@ -308,7 +315,7 @@ def test_file_decision_recovers_without_reexecuting_operation(tmp_path, monkeypa
 def test_sqlite_failure_rolls_back_the_entire_decision(tmp_path):
     store = SQLiteSessionStore(tmp_path / "sessions.db")
     store.initialize()
-    session = SessionRecord()
+    session = SessionRecord(title_source="placeholder")
     store.create_session(session)
     existing = EventRecord(session_id=session.session_id, sequence=1, event_type="existing")
     store.append_event(existing)
@@ -319,7 +326,9 @@ def test_sqlite_failure_rolls_back_the_entire_decision(tmp_path):
                 events=(existing,),
                 steps=(
                     SessionCommitStep(
-                        message=message(session.session_id, "rollback"),
+                        message=MessageRecord.text(
+                            session_id=session.session_id, role="user", text="Rolled back topic"
+                        ),
                         harness=state(session.session_id, 1),
                     ),
                 ),
@@ -328,6 +337,8 @@ def test_sqlite_failure_rolls_back_the_entire_decision(tmp_path):
     assert store.load_messages_tail(session.session_id) == []
     assert store.load_harness(session.session_id).state.states == ()
     assert store.load_session_record(session.session_id).message_count == 0
+    assert store.load_session_record(session.session_id).title == "New conversation"
+    assert store.load_session_record(session.session_id).title_source == "placeholder"
 
 
 @pytest.mark.parametrize("failure_point", ["messages", "session", "events", "completion"])

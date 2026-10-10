@@ -296,7 +296,7 @@ class RuntimeSupervisor:
         if session_id is None:
             created = await run_blocking(
                 lambda: self.runtime.sessions.create(
-                    title=title or _title_from_prompt(prompt),
+                    title=title,
                     current_model=self.runtime.current_model().key,
                 )
             )
@@ -1386,8 +1386,3 @@ def _status_from_event(
         "run_paused": "paused",
     }
     return mapping.get(event.event_type, current)
-
-
-def _title_from_prompt(prompt: str) -> str:
-    normalized = " ".join(prompt.split())
-    return normalized[:60] if normalized else "New session"

@@ -43,7 +43,8 @@ RunKind = Literal["agent", "compaction"]
 RunOrigin = Literal["user", "follow_up", "replay", "host", "plugin", "delegation"]
 
 SessionStatus = Literal["idle", "running", "waiting_user", "waiting_approval", "failed"]
-SessionTitleSource = Literal["fallback", "generated", "user"]
+DEFAULT_SESSION_TITLE = "New conversation"
+SessionTitleSource = Literal["placeholder", "fallback", "generated", "user"]
 RunPhase = Literal[
     "model_streaming",
     "tool_preflight",
@@ -172,7 +173,7 @@ class SessionRecord(VersionedOuroModel):
     delegation_id: str | None = None
     forked_from_message_id: str | None = None
     forked_from_run_id: str | None = None
-    title: str = "New session"
+    title: str = DEFAULT_SESSION_TITLE
     title_source: SessionTitleSource = "fallback"
     title_locked: bool = False
     created_at: datetime = Field(default_factory=utc_now)

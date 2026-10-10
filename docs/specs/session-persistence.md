@@ -101,6 +101,40 @@ Canonical mutation 成功后，adapter 在独立 catalog 边界只重算受影�
 `rebuild_catalog` 维护，不得从 `read_catalog`、Host 会话选择器或进程启动的常规路径
 触发。已有 canonical Session 但索引缺失/损坏时，列表明确报告需要重建；不能用空列表或同步自愈掩盖故障。
 
+## 会话标题
+
+标题由 Session 保存，Catalog 和 Host 只投影该值。未指定标题的应用层创建使用英文占位标题
+`New conversation`，来源为 `placeholder`。显式传入的标题按调用者声明的来源保存，默认来源为
+`fallback`；即使文字等于占位标题，也不视为未命名。
+
+`title_source` 表达标题的来源：
+
+| 来源 | 含义 |
+|---|---|
+| `placeholder` | 尚未取得可命名的用户输入 |
+| `fallback` | 从用户输入提取，或由创建者提供的初始标题 |
+| `generated` | 由应用层注入的生成器提供 |
+| `user` | 用户显式命名，`title_locked=true` |
+
+标题策略位于 Core，负责空白归一化、长度校验和输入提取；应用层负责创建、显式命名、生成器调用及写入所有权。
+消息提交的领域准备阶段只对 `placeholder` 且未锁定的 Session 提取标题，将结果与消息写入同一个
+`SessionCommit` 决定。File/SQLite adapter 不解释标题内容，不另建标题更新事务；读取列表不触发补全。
+
+提取只检查本次提交中 `role=user` 且 `scaffold=false` 的消息，选择第一条非空文字，合并连续空白后取前
+60 个字符；无文字的显式技能调用使用 `Skill: <name>`。附件回执、附件正文、助手回复和其他脚手架不提供标题。
+仅发送附件时保留占位标题，之后首次提交有效文字再补全。上传、文件引用、直接输入和队列消费使用同一规则，
+不以附件类型、会话创建时刻或消息计数判断是否命名。已有 `fallback/generated/user` 标题不随后续输入改写。
+撤销消息不撤销 Session 标题；分支继承标题及其来源和锁定标记。
+
+所有赋值入口使用同一校验：合并连续空白后，标题必须包含 1–160 个字符。手动重命名将来源设为 `user`
+并锁定标题。`SessionService.generate_title` 接受异步 `SessionTitleGenerator`，向其提供 Session 视图和
+最早至多 20 条 canonical 消息，不加载全部消息、事件或 Run 历史。生成器返回标题文字；应用层负责校验与提交。
+当前没有自动生成调度或内置模型生成器。
+
+生成期间不持有 Session 执行锁。结果写入时，在执行锁和 mutation 边界内重新检查用户命名与 `history_epoch`：
+用户命名优先；历史撤销或运行占用使写入延期并返回 diagnostic。生成失败或返回非法标题保留已有标题并返回
+diagnostic。消息提取只遍历本次提交批次，不增加历史读取或独立持久化开销。
+
 ## 会话摘要查询
 
 `SessionService.summaries(session_id)` 返回按持久化顺序排列的全部保留摘要，类型为

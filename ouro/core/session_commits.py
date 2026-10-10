@@ -13,6 +13,7 @@ from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessState, HarnessVersion
 from ouro.core.message_frames import MessageTruncation
 from ouro.core.messages import MessageRecord
+from ouro.core.session_titles import fill_session_title
 from ouro.core.state import RunRecord, SessionRecord
 
 
@@ -166,6 +167,7 @@ def prepare_session_commit(
         }:
             session.active_compaction_id = compactions[-1].compaction_id if compactions else None
 
+    session = fill_session_title(session, messages)
     session.harness_version = harness.version_id
     session.controls = harness.state.controls.model_copy(deep=True)
     session.updated_at = request.after.updated_at if request.after is not None else utc_now()

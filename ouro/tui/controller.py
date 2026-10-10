@@ -639,7 +639,6 @@ class TuiController:
             return await asyncio.to_thread(runtime.store.load_session_record, self._session_id)
         session = await asyncio.to_thread(
             runtime.create_session,
-            title="New conversation",
             initial_model=self._initial_model,
             reasoning_request=self._reasoning_request,
             approval_mode=self._approval_mode,

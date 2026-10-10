@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from time import monotonic
 from typing import TYPE_CHECKING, Protocol
@@ -53,13 +53,15 @@ from ouro.core.interactions import SESSION_INTERACTION_MODES, SessionInteraction
 from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
+from ouro.core.session_commits import SessionCommitConflict
+from ouro.core.session_titles import normalize_session_title, with_session_title
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord, SessionTitleSource
 from ouro.sessions import SessionIndexEntry, SessionLock, SessionSnapshot, SessionStore
 
 if TYPE_CHECKING:
     from ouro.application.resources import ResourceService
 
-_MAX_TITLE_LENGTH = 160
+_TITLE_CONTEXT_MESSAGE_LIMIT = 20
 
 
 class SessionTitleGenerator(Protocol):
@@ -88,7 +90,7 @@ class SessionService:
         *,
         session_id: str | None = None,
         namespace: str = "default",
-        title: str = "New session",
+        title: str | None = None,
         title_source: SessionTitleSource = "fallback",
         workspace: str | None = None,
         current_model: str | None = None,
@@ -96,19 +98,16 @@ class SessionService:
         approval_mode: SessionApprovalMode = "inherit",
         interaction_mode: SessionInteractionMode = "interactive",
     ) -> SessionMutationResult:
-        normalized_title = _normalize_title(title)
         session = SessionRecord(
             session_id=session_id or new_id("ses"),
             namespace=namespace,
-            title=normalized_title,
-            title_source=title_source,
-            title_locked=title_source == "user",
             workspace=workspace,
             current_model=current_model,
             reasoning_request=reasoning_request or ReasoningRequest(),
             approval_mode=approval_mode,
             interaction_mode=interaction_mode,
         )
+        session = with_session_title(session, title, source=title_source)
         self._store.create_session(session)
         return SessionMutationResult(
             session=SessionView.from_record(session),
@@ -362,9 +361,7 @@ class SessionService:
     def rename(self, session_id: str, title: str) -> SessionMutationResult:
         return self._update_session(
             session_id,
-            title=_normalize_title(title),
-            title_source="user",
-            title_locked=True,
+            transform=lambda current: with_session_title(current, title, source="user"),
         )
 
     def set_archived(self, session_id: str, archived: bool) -> SessionMutationResult:
@@ -455,16 +452,18 @@ class SessionService:
         session = self._load_session_record(session_id)
         if session.title_locked or session.title_source == "user":
             return SessionMutationResult(session=SessionView.from_record(session))
-        messages = self._load_messages(session_id)
+        messages, _ = self._store.load_messages_page(
+            session_id, cursor=0, limit=_TITLE_CONTEXT_MESSAGE_LIMIT
+        )
         try:
             generated = await generator(
                 SessionView.from_record(session),
                 tuple(messages),
             )
-            title = _normalize_title(generated)
+            title = normalize_session_title(generated)
         except Exception as exc:  # noqa: BLE001 - optional title provider isolation boundary
             return SessionMutationResult(
-                session=SessionView.from_record(session),
+                session=SessionView.from_record(self._load_session_record(session_id)),
                 diagnostics=(
                     Diagnostic(
                         code="session_title_generation_failed",
@@ -478,17 +477,16 @@ class SessionService:
                 ),
             )
 
+        def apply_title(current: SessionRecord) -> SessionRecord:
+            if current.title_locked or current.title_source == "user":
+                return current
+            if current.history_epoch != session.history_epoch:
+                raise SessionCommitConflict("Session history changed during title generation")
+            return with_session_title(current, title, source="generated")
+
         try:
-            latest = self._load_session_record(session_id)
-            if latest.title_locked or latest.title_source == "user":
-                return SessionMutationResult(session=SessionView.from_record(latest))
-            return self._update_session(
-                session_id,
-                title=title,
-                title_source="generated",
-                title_locked=False,
-            )
-        except SessionBusyError as exc:
+            return self._update_session(session_id, transform=apply_title)
+        except (SessionBusyError, SessionCommitConflict) as exc:
             latest = self._load_session_record(session_id)
             return SessionMutationResult(
                 session=SessionView.from_record(latest),
@@ -500,7 +498,7 @@ class SessionService:
                         message=str(exc),
                         session_id=session_id,
                         recoverable=True,
-                        suggested_action="Retry after the active run settles.",
+                        suggested_action="Retry with current history after the run settles.",
                     ),
                 ),
             )
@@ -916,7 +914,13 @@ class SessionService:
             frames=project_replay_frames(events),
         )
 
-    def _update_session(self, session_id: str, **changes: object) -> SessionMutationResult:
+    def _update_session(
+        self,
+        session_id: str,
+        *,
+        transform: Callable[[SessionRecord], SessionRecord] | None = None,
+        **changes: object,
+    ) -> SessionMutationResult:
         # Metadata mutations are independent of the append-only message and event
         # journals. Loading the complete aggregate here makes a constant-size
         # policy change scale with the lifetime of the conversation.
@@ -927,6 +931,11 @@ class SessionService:
         try:
             with self._store.session_mutation(session_id):
                 current = self._load_session_record(session_id)
+                if transform is not None:
+                    transformed = transform(current)
+                    if transformed is current:
+                        return SessionMutationResult(session=SessionView.from_record(current))
+                    current = transformed
                 now = utc_now()
                 updated = current.model_copy(
                     update={
@@ -1018,15 +1027,6 @@ class SessionService:
             self._store.load_session_record(session_id)
         except FileNotFoundError as exc:
             raise SessionNotFoundError(f"session not found: {session_id}") from exc
-
-
-def _normalize_title(value: str) -> str:
-    title = " ".join(value.split())
-    if not title:
-        raise ValueError("session title cannot be empty")
-    if len(title) > _MAX_TITLE_LENGTH:
-        raise ValueError(f"session title exceeds {_MAX_TITLE_LENGTH} characters")
-    return title
 
 
 def _filter_entries(

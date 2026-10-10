@@ -144,6 +144,7 @@ from ouro.core.session_controls import (
     SessionInputRequest,
     SessionInputRole,
 )
+from ouro.core.session_titles import normalize_session_title, with_session_title
 from ouro.core.state import (
     RunContinuationCheckpoint,
     RunContinuationControllerRef,
@@ -957,7 +958,7 @@ class RuntimeService:
     def create_session(
         self,
         *,
-        title: str,
+        title: str | None = None,
         _session_id: str | None = None,
         namespace: str = "default",
         initial_model: str | None = None,
@@ -1014,11 +1015,13 @@ class RuntimeService:
             raise ValueError(f"Invalid approval mode: {approval_mode}")
         if interaction_mode not in SESSION_INTERACTION_MODES:
             raise ValueError(f"Invalid interaction mode: {interaction_mode}")
-        if title is not None and (not title.strip() or len(title) > 160):
-            raise ValueError("Title must contain 1–160 characters")
+        if title is not None:
+            title = normalize_session_title(title)
 
         def configure(session: SessionRecord) -> SessionRecord:
             resolved_workspace = str(Path(workspace).expanduser().resolve())
+            if title is not None:
+                session = with_session_title(session, title, source="user")
             return session.model_copy(
                 update={
                     "current_model": selected.key,
@@ -1028,11 +1031,6 @@ class RuntimeService:
                     and session.workspace == resolved_workspace,
                     "approval_mode": approval_mode,
                     "interaction_mode": interaction_mode,
-                    **(
-                        {"title": title.strip(), "title_source": "user", "title_locked": True}
-                        if title is not None
-                        else {}
-                    ),
                 }
             )
 
@@ -1341,7 +1339,6 @@ class RuntimeService:
                 selected_reasoning = initial_reasoning_request or ReasoningRequest()
                 self._model_reasoning_state(selected_model, selected_reasoning)
                 candidate_session = SessionRecord(
-                    title=title or _title_from_input(prompt, skill_invocation),
                     workspace=(
                         str(Path(workspace).expanduser().resolve())
                         if workspace is not None
@@ -1352,6 +1349,7 @@ class RuntimeService:
                     approval_mode=approval_mode or "inherit",
                     interaction_mode=interaction_mode or "interactive",
                 )
+                candidate_session = with_session_title(candidate_session, title)
                 if attachments:
                     if self.resources is None:
                         raise ResourceAttachmentError(
@@ -1404,7 +1402,7 @@ class RuntimeService:
                     )
                     session = await run_blocking(
                         self.create_session,
-                        title=candidate_session.title,
+                        title=title,
                         _session_id=candidate_session.session_id,
                         initial_model=selected_model.key,
                         reasoning_request=candidate_session.reasoning_request,
@@ -1418,7 +1416,7 @@ class RuntimeService:
             else:
                 session = await run_blocking(
                     self.create_session,
-                    title=title or _title_from_input(prompt, skill_invocation),
+                    title=title,
                     initial_model=initial_model,
                     reasoning_request=initial_reasoning_request,
                     approval_mode=approval_mode or "inherit",
@@ -4454,15 +4452,3 @@ def _session_input_event_type(source: QueuedInputSource) -> str:
     if source == "plugin":
         return "plugin_message_added"
     return "user_message_added"
-
-
-def _title_from_input(
-    prompt: str,
-    skill_invocation: SkillInvocationRequest | None,
-) -> str:
-    stripped = " ".join(prompt.split())
-    if stripped:
-        return stripped[:60]
-    if skill_invocation is not None:
-        return f"Skill: {skill_invocation.name}"[:60]
-    return "New session"

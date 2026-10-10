@@ -209,6 +209,8 @@ async def test_welcome_upload_stays_in_draft_until_message_is_sent(tmp_path, sou
         session_id = app._controller.session_id
         snapshot = application.runtime.store.load_runtime_session(session_id)
         assert snapshot.runs and snapshot.messages[0].input_attachments
+        assert app._active_title == snapshot.session.title == "New conversation"
+        assert snapshot.session.title_source == "placeholder"
         assert composer.input_content.is_empty
 
 

@@ -75,7 +75,7 @@ def list_sessions(
     lines = ["Sessions:"]
     for session in sessions:
         marker = "*" if session.status != "idle" else "-"
-        title = session.title or "New session"
+        title = session.title
         model = session.current_model or "-"
         lines.append(f"{marker} {session.session_id} {session.status} {model} {title}")
     print("\n".join(lines))

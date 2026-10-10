@@ -8,6 +8,7 @@ from pydantic import Field, ValidationError, model_validator
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.interactions import SessionInteractionMode
+from ouro.core.state import SessionTitleSource
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
 
 SessionCatalogStatus = Literal[
@@ -40,7 +41,7 @@ class SessionIndexEntry(OuroModel):
     root_session_id: str
     parent_session_id: str | None = None
     title: str
-    title_source: Literal["fallback", "generated", "user"] = "fallback"
+    title_source: SessionTitleSource = "fallback"
     title_locked: bool = False
     created_at: datetime
     updated_at: datetime

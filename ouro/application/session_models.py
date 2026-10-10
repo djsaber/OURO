@@ -77,7 +77,7 @@ class SessionCatalogEntry(ApplicationDTO):
     root_session_id: str
     parent_session_id: str | None = None
     title: str
-    title_source: Literal["fallback", "generated", "user"] = "fallback"
+    title_source: SessionTitleSource = "fallback"
     title_locked: bool = False
     created_at: datetime
     updated_at: datetime

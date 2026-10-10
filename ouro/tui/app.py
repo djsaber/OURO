@@ -48,6 +48,7 @@ from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import REASONING_EFFORTS, ReasoningRequest
 from ouro.core.results import RunResult
+from ouro.core.state import DEFAULT_SESSION_TITLE
 from ouro.deployment import SessionBackend, TaskBackend
 from ouro.local_application import LocalApplication
 from ouro.tui.attachment_editor import file_count_label
@@ -1009,7 +1010,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._models: tuple[AvailableModel, ...] = ()
         self._sessions: tuple[SessionCatalogEntry, ...] = ()
         self._active_model = "starting"
-        self._active_title = "New session"
+        self._active_title = DEFAULT_SESSION_TITLE
         self._active_workspace: str | None = None
         self._reasoning_state: ModelReasoningState | None = None
         self._system_status = TuiSystemStatus()
@@ -3453,7 +3454,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self.query_one(Composer).set_class(False, "read-only-session")
                 self._interaction = None
                 await self._replace_agent_tree(None)
-                self._active_title = "New session"
+                self._active_title = DEFAULT_SESSION_TITLE
                 self._active_workspace = (
                     self._controller.draft_workspace or self._system_status.workspace
                 )
