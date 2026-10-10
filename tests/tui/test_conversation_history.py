@@ -202,7 +202,7 @@ def test_assistant_markdown_failure_degrades_only_to_canonical_text(
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             raise RuntimeError(source)
 
-    monkeypatch.setattr(tui_markdown, "RichMarkdown", BrokenMarkdown)
+    monkeypatch.setattr(tui_markdown, "_ProseMarkdown", BrokenMarkdown)
     console = Console(width=40)
     rendered = "".join(
         segment.text

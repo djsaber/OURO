@@ -209,6 +209,24 @@ spinner 组件使用 `spinner_frames` 按顺序循环，并以 `spinner_interval
 活动主题切换时，mounted spinner 重置到第零帧。刷新间隔发生变化时，仅为处于活动状态的 spinner 重建 Timer。
 elapsed clock、Provider delta、历史渲染和其他后台任务不读取 spinner_interval_seconds。
 
+## 文本断行边界
+
+`text_wrapping.py` 将 Unicode 断行单位适配为 Rich 的源字符偏移。`unicode-segmentation-rs` 通过原生
+Rust 扩展提供 Unicode 断行规则，Rich 提供终端 cell 测量、字形安全的超长单位折行及样式切分；
+TUI 不维护 Unicode 字符分类表。
+`ProseText` 通过 Rich `Text.wrap` 扩展点应用这些边界，ASCII 文本及非折行模式复用原生行为。
+Markdown 通过局部 element 映射为段落、标题和表格单元格提供 `ProseText`，列表、引用和代码结构继续
+由 Rich 负责。流式尾部与冻结正文使用相同的正文断行策略。
+
+`wrapped_document.py` 封装 Textual 8 的文档显示几何适配。Textual 未提供断行策略回调，因此适配器
+集中维护其断行与行索引缓存，复用原有文档、编辑历史和导航协议。断行和光标映射使用相同的制表符宽度；
+框架内部字段的依赖限制在该适配器内，由编辑、缩放、选区及光标往返测试验证。适配不修改依赖全局状态，
+不改变业务层文本，也不在渲染链路执行 I/O。
+
+每次断行按当前源行长度线性扫描，适配层不缓存完整文本或分词结果。文本编辑只对受影响的源行重新分词，
+其他行复用断行偏移；流式追加只处理未完成的显示行及新增片段。适配层复用 Rich 的有界字宽缓存，
+不增加随会话增长的分词缓存。性能测量入口为 `dev/benchmarks/text_wrapping.py`。
+
 ## Markdown 适配
 
 `ouro/tui/markdown.py` 负责把 canonical assistant Markdown 与 TuiTheme 转换为 Rich renderable。该模块拥有：

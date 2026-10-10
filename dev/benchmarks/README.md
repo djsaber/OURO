@@ -17,6 +17,14 @@ uv run --frozen python -m dev.benchmarks.startup --repeat 5
 ## 会话管线与 TUI
 
 ```powershell
+uv run --frozen python -m dev.benchmarks.text_wrapping --repeat 15
+```
+
+断行基准在 80 列 headless 窗口使用 1,024、4,096、16,384 字符的 ASCII 与中英混排文本，测量 Rich
+折行、编辑器连续插入和每批 32 字符的流式追加。断行偏移的临时分配峰值独立测量；输出原始样本、
+中位数与 P95。编辑和追加计时包含同步文档/strip 更新，不包含后续布局、终端 paint 或 IME 处理。
+
+```powershell
 uv run --frozen python -m dev.benchmarks.session_pipeline --repeat 3
 uv run --frozen python -m dev.benchmarks.session_pipeline --mode tui --store-delay-ms 5 --repeat 3
 ```

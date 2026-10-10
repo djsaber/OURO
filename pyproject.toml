@@ -19,6 +19,7 @@ dependencies = [
     "textual>=8.2,<9",
     "tzdata>=2025.2",
     "tzlocal>=5.4.4",
+    "unicode-segmentation-rs>=0.3.3,<0.4",
     "wcmatch>=11.0",
 ]
 

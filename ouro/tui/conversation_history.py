@@ -32,6 +32,7 @@ from ouro.tui.state import (
     format_duration,
     format_reasoning_label_parts,
 )
+from ouro.tui.text_wrapping import ProseText
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 
 
@@ -295,7 +296,7 @@ class _UserMessageContent:
             bgcolor=self.theme.highlight if self.highlighted else self.theme.panel,
             meta=interaction_meta,
         )
-        content = Text(self.text, style=self.theme.text_highlight)
+        content = ProseText(self.text, style=self.theme.text_highlight)
         lines = console.render_lines(content, content_options, pad=False)
         if self.created_at is not None:
             timestamp = Text(
@@ -366,7 +367,7 @@ class _ReasoningContent:
     ) -> RenderResult:
         prefix_width = 2
         content_options = options.update_width(max(1, options.max_width - prefix_width))
-        content = Text(self.text, style=f"italic {self.theme.text_lowlight}")
+        content = ProseText(self.text, style=f"italic {self.theme.text_lowlight}")
         lines = console.render_lines(content, content_options, pad=False)
         border = Segment("│", Style(color=self.theme.border))
         gap = Segment(" ")
@@ -546,7 +547,7 @@ class ReasoningLines(RangeSelectionOnly, Widget):
         self._render_updates()
 
     def _wrap_source(self, source: str) -> list[str]:
-        lines = Text(source).wrap(
+        lines = ProseText(source).wrap(
             self.app.console,
             self._source_wrap_width(),
             overflow="fold",

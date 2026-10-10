@@ -5,14 +5,43 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from rich.console import Console, ConsoleOptions, RenderResult
+from rich.console import Console, ConsoleOptions, JustifyMethod, RenderResult
+from rich.markdown import Heading, MarkdownContext, Paragraph, TableDataElement
 from rich.markdown import Markdown as RichMarkdown
 from rich.syntax import Syntax
-from rich.text import Text
 
+from ouro.tui.text_wrapping import ProseText
 from ouro.tui.theme import TuiTheme
 
 _LOG = logging.getLogger(__name__)
+
+
+class _Paragraph(Paragraph):
+    def on_enter(self, context: MarkdownContext) -> None:
+        super().on_enter(context)
+        self.text = ProseText.from_text(self.text)
+
+
+class _Heading(Heading):
+    def on_enter(self, context: MarkdownContext) -> None:
+        super().on_enter(context)
+        self.text = ProseText.from_text(self.text)
+
+
+class _TableCell(TableDataElement):
+    def __init__(self, justify: JustifyMethod) -> None:
+        super().__init__(justify)
+        self.content = ProseText.from_text(self.content)
+
+
+class _ProseMarkdown(RichMarkdown):
+    elements = {
+        **RichMarkdown.elements,
+        "paragraph_open": _Paragraph,
+        "heading_open": _Heading,
+        "td_open": _TableCell,
+        "th_open": _TableCell,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,7 +55,7 @@ class _AssistantMarkdown:
         options: ConsoleOptions,
     ) -> RenderResult:
         try:
-            markdown = RichMarkdown(
+            markdown = _ProseMarkdown(
                 self.source,
                 code_theme=self.theme.syntax_theme(),  # type: ignore[arg-type]
                 style=self.theme.text_primary,
@@ -38,7 +67,7 @@ class _AssistantMarkdown:
                 "Could not render assistant Markdown (%s)",
                 type(exc).__name__,
             )
-            yield Text(self.source, style=self.theme.text_primary)
+            yield ProseText(self.source, style=self.theme.text_primary)
 
 
 def assistant_markdown(text: str, theme: TuiTheme) -> _AssistantMarkdown:

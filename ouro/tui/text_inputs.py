@@ -3,8 +3,11 @@ from __future__ import annotations
 from typing import cast
 
 from textual import events
+from textual.document._document_navigator import DocumentNavigator
 from textual.screen import Screen
 from textual.widgets import Input, TextArea
+
+from ouro.tui.wrapped_document import ProseDocument
 
 
 def _is_alt_modified_text(event: events.Key) -> bool:
@@ -52,6 +55,12 @@ class TuiInput(_TerminalCursorSync, Input):
 
 class TuiTextArea(_TerminalCursorSync, TextArea):
     """Multi-line input that reserves Alt-modified keys for TUI commands."""
+
+    def _rewrap_and_refresh_virtual_size(self) -> None:
+        if not isinstance(self.wrapped_document, ProseDocument):
+            self.wrapped_document = ProseDocument(self.document, tab_width=self.indent_width)
+            self.navigator = DocumentNavigator(self.wrapped_document)
+        super()._rewrap_and_refresh_virtual_size()
 
     def watch_selection(self) -> None:
         """Finish cursor scrolling after an edit has updated the document geometry."""
