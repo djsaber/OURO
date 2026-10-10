@@ -1,11 +1,16 @@
 import base64
+import json
+from itertools import permutations
 
+import httpx
 import pytest
 
 from ouro.application import file_inputs
 from ouro.core.content import AudioContent, ImageContent, MediaContent, VideoContent
 from ouro.core.input_content import InputAttachment, InputFileReference
 from ouro.core.messages import MessageRecord, ToolResultReference
+from ouro.providers.http_transport import HttpxProviderHTTPTransport
+from ouro.providers.openai_chat_completions import OpenAIChatCompletionsProvider
 from tests.application.test_resources import _services
 from tests.application.test_tool_result_content import RecordingProvider
 from tests.tui.test_history_commands import application_at
@@ -16,6 +21,97 @@ MEDIA = [
     ("audio", "recording.mp3", b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\0" * 32),
     ("video", "clip.mp4", b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"),
 ]
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("source_kind", ["upload", "reference"])
+@pytest.mark.parametrize(
+    "order",
+    [("audio", "image"), ("image", "audio"), *permutations(("image", "audio", "video"))],
+    ids=lambda order: "-".join(order),
+)
+async def test_mixed_attachments_preserve_audio_and_media_order_in_http_requests(
+    tmp_path, backend, source_kind, order
+):
+    packets = []
+
+    def capture(request):
+        packets.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text='data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}'
+            "\n\ndata: [DONE]\n\n",
+        )
+
+    sources = {
+        "image": ("picture.jpg", b"\xff\xd8\xff" + b"\0" * 12_000),
+        "audio": (MEDIA[1][1], MEDIA[1][2] + b"\0" * 12_000),
+        "video": (MEDIA[2][1], MEDIA[2][2] + b"\0" * 12_000),
+    }
+    wire_types = {"image": "image_url", "audio": "input_audio", "video": "video_url"}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(capture)) as client:
+        provider = OpenAIChatCompletionsProvider(
+            base_url="https://media.test", transport=HttpxProviderHTTPTransport(client)
+        )
+        app = application_at(tmp_path / "home", provider, backend=backend)
+        runtime = app.runtime
+        runtime.adapter.model.supports_image_input = True
+        runtime.adapter.model.supports_audio_input = True
+        runtime.adapter.model.supports_video_input = True
+        try:
+            for selected in (("audio",), order):
+                session = runtime.create_session(workspace=tmp_path)
+                attachments = []
+                for kind in selected:
+                    name, raw = sources[kind]
+                    path = tmp_path / name
+                    path.write_bytes(raw)
+                    if source_kind == "upload":
+                        resource = runtime.resources.import_resource(
+                            session.session_id, path
+                        ).resource
+                        item = InputAttachment(resource_id=resource.resource_id, name=name)
+                    else:
+                        item = InputFileReference(name=name, path=str(path))
+                    attachments.append(item)
+                result = await runtime.run(
+                    "Describe the supplied media",
+                    session_id=session.session_id,
+                    attachments=tuple(attachments),
+                )
+                assert result.run.status == "completed", result.run.error
+                snapshot = runtime.store.load_latest_context(session.session_id)
+                media = [
+                    part
+                    for message in snapshot.source_messages
+                    for part in message.content
+                    if isinstance(part, MediaContent)
+                ]
+                assert [part.type for part in media] == list(selected)
+                assert [base64.b64decode(part.uri.partition(",")[2]) for part in media] == [
+                    sources[kind][1] for kind in selected
+                ]
+
+            assert len(packets) == 2
+            audio_parts = []
+            for packet, selected in zip(packets, (("audio",), order), strict=True):
+                messages = [message for message in packet["messages"] if message["role"] == "user"]
+                assert messages[-1]["content"] == "Describe the supplied media"
+                parts = [part for part in messages[0]["content"] if part["type"] != "text"]
+                assert [part["type"] for part in parts] == [wire_types[kind] for kind in selected]
+                for kind, part in zip(selected, parts, strict=True):
+                    encoded = (
+                        part["input_audio"]["data"]
+                        if kind == "audio"
+                        else part[wire_types[kind]]["url"].partition(",")[2]
+                    )
+                    assert base64.b64decode(encoded, validate=True) == sources[kind][1]
+                audio_parts.append(next(part for part in parts if part["type"] == "input_audio"))
+            assert audio_parts[0] == audio_parts[1]
+            assert audio_parts[0]["input_audio"]["format"] == "mp3"
+        finally:
+            await app.close()
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
