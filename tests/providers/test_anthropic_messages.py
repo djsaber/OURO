@@ -461,7 +461,7 @@ async def test_anthropic_stream_preserves_signed_thinking_for_same_route_only() 
             {"type": "message_stop"},
         ]
     )
-    reasoning = get_provider_template("anthropic").endpoint("claude-opus-4-8").reasoning
+    reasoning = get_provider_template("anthropic").endpoint("claude-opus-5-5").reasoning
     provider = AnthropicMessagesProvider(
         base_url="https://api.example.test",
         provider_id="anthropic",
@@ -469,7 +469,7 @@ async def test_anthropic_stream_preserves_signed_thinking_for_same_route_only() 
         reasoning_encoder=ReasoningPayloadEncoder(reasoning.profile),
     )
     model = ModelMetadata(
-        model_id="claude-opus-4-8",
+        model_id="claude-opus-5-5",
         provider_id="anthropic",
         reasoning=reasoning.capability,
         reasoning_request=ReasoningRequest(mode="enabled", effort="high"),

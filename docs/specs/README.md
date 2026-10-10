@@ -25,7 +25,7 @@
 | [Provider 与配置](provider-configuration.md) | Provider/Endpoint、静态及受管理认证引用、模板绑定、运行参数与覆盖规则 | `ouro/config`、`ouro/providers` |
 | [Provider 类型与协议](provider-protocols.md) | 实例 id、产品配置类型、线协议与冲突策略 | `ouro/config`、`ouro/providers`、`ouro/cli` |
 | [Provider 模板](provider-templates.md) | 本地模板、版本、修改感知、内容更新与严格版本边界 | `ouro/config/provider_template_store.py`、`ouro/config/provider_templates.py` |
-| [OpenAI 预制配置](openai-presets.md) | 仓库模型声明、推理配置、API / 订阅差异与验证范围 | `ouro/config/provider_templates.py` |
+| [预置供应商配置](provider-presets.md) | 供应商模型目录、连接参数、能力声明与官方依据 | `ouro/config/provider_templates.py` |
 | [受管理凭据核心](credentials.md) | 受限文件存储、revision、刷新/注销/取消与跨进程互斥；内建浏览器订阅产品复用 | `ouro/auth` |
 | [认证驱动与单次授权](authorization.md) | 受管理驱动端口、单次授权与资源清理、内建 OpenAI 浏览器订阅驱动；CLI/TUI 通过通用用例接入 | `ouro/auth/driver_contracts.py`、`ouro/auth/authorization.py`、`ouro/auth/drivers` |
 | [Provider 认证用例](provider-authentication.md) | 通用登录、安全状态、凭据管理与配置条件提交；轻量 CLI、通用 TUI 与内建浏览器驱动已接线 | `ouro/application/provider_auth*.py` |

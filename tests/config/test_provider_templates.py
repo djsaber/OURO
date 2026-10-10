@@ -12,7 +12,7 @@ from ouro.core.errors import ConfigError
 
 _EXPECTED_ENDPOINTS = {
     "openai-codex": (
-        "gpt-6-sol",
+        "gpt-6.1-sol",
         {
             "gpt-5.5",
             "gpt-5.6-luna",
@@ -20,11 +20,12 @@ _EXPECTED_ENDPOINTS = {
             "gpt-5.6-sol",
             "gpt-6-astra",
             "gpt-6-sol",
+            "gpt-6.1-sol",
             "gpt-6-luna",
         },
     ),
     "openai": (
-        "gpt-6-sol",
+        "gpt-6.1-sol",
         {
             "gpt-5.5",
             "gpt-5.6-luna",
@@ -32,18 +33,19 @@ _EXPECTED_ENDPOINTS = {
             "gpt-5.6-sol",
             "gpt-6-astra",
             "gpt-6-sol",
+            "gpt-6.1-sol",
             "gpt-6-luna",
         },
     ),
     "anthropic": (
-        "claude-sonnet-5",
-        {"claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5"},
+        "claude-sonnet-5-5",
+        {"claude-fable-5-1", "claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"},
     ),
     "gemini": (
-        "gemini-3.5-flash",
-        {"gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite"},
+        "gemini-3.8-flash",
+        {"gemini-3.8-flash", "gemini-3.1-pro-preview", "gemini-3.5-flash-lite"},
     ),
-    "deepseek": ("deepseek-v4-pro", {"deepseek-v4-pro", "deepseek-v4-flash"}),
+    "deepseek": ("deepseek-v4-pro", {"deepseek-v4-pro", "deepseek-flash"}),
     "qwen": ("qwen3.8-max", {"qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus"}),
     "kimi": (
         "kimi-k3",
@@ -53,23 +55,17 @@ _EXPECTED_ENDPOINTS = {
         "glm-5.3",
         {"glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5-turbo", "glm-5v-turbo"},
     ),
-    "grok": ("grok-4.6", {"grok-4.6"}),
-    "openrouter": ("auto", {"auto", "free"}),
+    "grok": ("grok-4.7", {"grok-4.7"}),
     "mistral": (
         "mistral-medium-3-5",
-        {"mistral-medium-3-5", "mistral-small-2603", "mistral-large-2512"},
+        {"mistral-medium-3-5", "mistral-small-2603", "mistral-large-4-0"},
     ),
-}
-
-# Templates re-verified against provider docs after the shared review date.
-_EXPECTED_VERIFIED_ON = {
-    "openai": "2026-09-23",
-    "openai-codex": "2026-09-23",
-    "deepseek": "2026-08-27",
-    "kimi": "2026-07-17",
-    "glm": "2026-08-27",
-    "grok": "2026-08-27",
-    "qwen": "2026-08-27",
+    "minimax": ("MiniMax-M3", {"MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"}),
+    "doubao": (
+        "doubao-seed-2-1-pro-260915",
+        {"doubao-seed-2-1-pro-260915", "doubao-seed-2-1-lite-260915"},
+    ),
+    "cohere": ("command-a-plus-05-2026", {"command-a-plus-05-2026"}),
 }
 
 
@@ -109,8 +105,7 @@ def test_builtin_provider_templates_expose_reviewed_endpoint_sets() -> None:
         assert {endpoint.endpoint_id for endpoint in template.endpoints} == endpoint_ids
         assert template.display_name.strip()
         assert all(endpoint.display_name for endpoint in template.endpoints)
-        expected_verified_on = _EXPECTED_VERIFIED_ON.get(template_id, "2026-07-14")
-        assert template.verified_on == expected_verified_on
+        assert template.verified_on == "2026-10-10"
 
 
 def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
@@ -128,15 +123,16 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     assert openai.capability.output == "none"
     assert openai.profile is not None
     assert openai.profile.variants["enabled"] == {"reasoning": {"effort": "medium"}}
-    assert openai.profile.variants["disabled"] == {"reasoning": {"effort": "none"}}
+    assert openai.capability.activation == "always_on"
+    assert "disabled" not in openai.profile.variants
 
     anthropic = templates["anthropic"]
-    assert anthropic.endpoint("claude-sonnet-5").reasoning.capability.default.effort == "high"
-    assert anthropic.endpoint("claude-opus-4-8").reasoning.capability.continuation == "opaque"
-    assert anthropic.endpoint("claude-haiku-4-5").reasoning.capability.supported_efforts == ()
+    assert anthropic.endpoint("claude-sonnet-5-5").reasoning.capability.default.effort == "high"
+    assert anthropic.endpoint("claude-opus-5-5").reasoning.capability.continuation == "opaque"
+    assert anthropic.endpoint("claude-haiku-5-5").reasoning.capability.default_effort == "medium"
 
     gemini = templates["gemini"]
-    assert gemini.endpoint("gemini-3.5-flash").reasoning.capability.activation == "always_on"
+    assert gemini.endpoint("gemini-3.8-flash").reasoning.capability.activation == "always_on"
     assert gemini.endpoint("gemini-3.1-pro-preview").reasoning.capability.supported_efforts == (
         "low",
         "medium",
@@ -155,10 +151,10 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
         "reasoning_effort": "max",
     }
     assert deepseek.capability.default_effort == "high"
-    assert templates["deepseek"].revision == 4
+    assert templates["deepseek"].revision == 5
 
     qwen = templates["qwen"]
-    assert qwen.revision == 5
+    assert qwen.revision == 6
     qwen_max = qwen.endpoint()
     assert qwen_max.model_id == "qwen3.8-max"
     assert qwen_max.context_window == 1_000_000
@@ -201,13 +197,13 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     assert kimi.endpoint("kimi-k2.6").reasoning.capability.activation == "toggle"
     k3_reasoning = kimi.endpoint("kimi-k3").reasoning
     assert k3_reasoning.capability.activation == "always_on"
-    assert k3_reasoning.capability.supported_efforts == ("max",)
+    assert k3_reasoning.capability.supported_efforts == ("low", "high", "max")
     assert k3_reasoning.capability.default_effort == "max"
     assert k3_reasoning.profile is not None
     assert k3_reasoning.profile.variants["enabled"] == {"reasoning_effort": "max"}
 
     glm = templates["glm"]
-    assert glm.revision == 4
+    assert glm.revision == 5
     glm_53 = glm.endpoint().reasoning
     assert glm_53.capability.activation == "always_on"
     assert glm_53.capability.supported_efforts == ("low", "high", "max")

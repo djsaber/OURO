@@ -25,8 +25,10 @@ ProviderType = Literal[
     "kimi",
     "glm",
     "grok",
-    "openrouter",
     "mistral",
+    "minimax",
+    "doubao",
+    "cohere",
     "custom",
 ]
 ProviderProtocol = Literal[
@@ -47,8 +49,10 @@ INTEGRATED_PROVIDER_TYPES: tuple[ProviderType, ...] = (
     "kimi",
     "glm",
     "grok",
-    "openrouter",
     "mistral",
+    "minimax",
+    "doubao",
+    "cohere",
 )
 CONFIGURABLE_PROVIDER_TYPES: tuple[ProviderType, ...] = (
     *INTEGRATED_PROVIDER_TYPES,
@@ -122,7 +126,6 @@ _PROVIDER_TYPE_SPECS: dict[ProviderType, ProviderTypeSpec] = {
         ProviderConnectionSpec(
             "openai-responses",
             notice=(
-                "Responses image input is not yet supported by OURO. "
                 "Persisted Responses state cannot be replayed after restarting this API Key "
                 "client; start a new conversation."
             ),
@@ -149,8 +152,10 @@ _PROVIDER_TYPE_SPECS: dict[ProviderType, ProviderTypeSpec] = {
     "kimi": ProviderTypeSpec("kimi", _OPENAI_CHAT_COMPLETIONS_STATIC),
     "glm": ProviderTypeSpec("glm", _OPENAI_CHAT_COMPLETIONS_STATIC),
     "grok": ProviderTypeSpec("grok", _OPENAI_CHAT_COMPLETIONS_STATIC),
-    "openrouter": ProviderTypeSpec("openrouter", _OPENAI_CHAT_COMPLETIONS_STATIC),
     "mistral": ProviderTypeSpec("mistral", _OPENAI_CHAT_COMPLETIONS_STATIC),
+    "minimax": ProviderTypeSpec("minimax", _OPENAI_CHAT_COMPLETIONS_STATIC),
+    "doubao": ProviderTypeSpec("doubao", _OPENAI_CHAT_COMPLETIONS_STATIC),
+    "cohere": ProviderTypeSpec("cohere", _OPENAI_CHAT_COMPLETIONS_STATIC),
     "custom": ProviderTypeSpec(
         "custom",
         None,

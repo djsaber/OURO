@@ -25,6 +25,7 @@ from tests.providers.responses_fixtures import message, terminal
         "gpt-5.6-sol",
         "gpt-6-astra",
         "gpt-6-sol",
+        "gpt-6.1-sol",
         "gpt-6-luna",
     ],
 )
@@ -106,6 +107,7 @@ def test_model_effort_limits_are_enforced_before_requests(template_id):
     for model_id in (
         "gpt-6-astra",
         "gpt-6-sol",
+        "gpt-6.1-sol",
         "gpt-6-luna",
         "gpt-5.6-sol",
         "gpt-5.6-terra",

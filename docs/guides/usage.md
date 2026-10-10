@@ -16,7 +16,7 @@
 uv run --frozen ouro usage summary --home ./.ouro-dev
 uv run --frozen ouro usage summary --home ./.ouro-dev \
   --since 2026-07-01 --until 2026-07-15 \
-  --provider <provider_id> --model claude-sonnet-5 --group-by date --json
+  --provider <provider_id> --model claude-sonnet-5-5 --group-by date --json
 
 # 请求级明细及更多过滤维度
 uv run --frozen ouro usage list --home ./.ouro-dev --purpose compaction --limit 100

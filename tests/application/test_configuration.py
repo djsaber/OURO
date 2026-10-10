@@ -395,8 +395,10 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
         "kimi",
         "glm",
         "grok",
-        "openrouter",
         "mistral",
+        "minimax",
+        "doubao",
+        "cohere",
     ]
     assert facade.provider_template("anthropic").provider_type == "anthropic"
     assert facade.provider_template("anthropic").protocol == "anthropic-messages"
@@ -416,12 +418,12 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
     assert configured.change is not None
     assert configured.change.action == "created"
     assert {endpoint.model_id for endpoint in provider.endpoints} == {
-        "gemini-3.5-flash",
+        "gemini-3.8-flash",
         "gemini-3.1-pro-preview",
-        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash-lite",
     }
     assert provider.default_endpoint is not None
-    assert facade.endpoint(provider_id, provider.default_endpoint).model_id == "gemini-3.5-flash"
+    assert facade.endpoint(provider_id, provider.default_endpoint).model_id == "gemini-3.8-flash"
     assert provider.credential.reference == "env:GEMINI_API_KEY"
     assert ConfigurationFacade(tmp_path).system_prompt().system_prompt == "Keep this section"
 
@@ -451,6 +453,7 @@ def test_provider_template_reapply_preserves_other_endpoints_and_credential(tmp_
         "gpt-5.6-luna",
         "gpt-5.5",
         "gpt-6-astra",
+        "gpt-6-sol",
         "gpt-6-luna",
         "gpt-legacy",
     }
@@ -632,6 +635,7 @@ def test_provider_template_model_override_keeps_generated_endpoint_registry(
         "gpt-5.6-luna",
         "gpt-5.5",
         "gpt-6-astra",
+        "gpt-6-sol",
         "gpt-6-luna",
     }
     assert facade.endpoint(provider_id, provider.default_endpoint).model_id == "gpt-custom"
@@ -701,6 +705,7 @@ def test_provider_create_and_explicit_replace_keep_internal_identity(tmp_path) -
         "gpt-5.5",
         "gpt-6-astra",
         "gpt-6-sol",
+        "gpt-6.1-sol",
         "gpt-6-luna",
     }
 

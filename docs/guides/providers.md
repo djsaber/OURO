@@ -18,14 +18,16 @@ uv run --frozen ouro provider add "Anthropic" --type anthropic --home ./.ouro-de
 uv run --frozen ouro provider add "Google Gemini" \
   --home ./.ouro-dev \
   --type gemini \
-  --model gemini-3.5-flash \
+  --model gemini-3.8-flash \
   --api-key-env GEMINI_API_KEY \
   --default
 ```
 
-当前模板包括 OpenAI、Anthropic、Gemini、DeepSeek、Qwen、KIMI、GLM、Grok、OpenRouter 和 Mistral；每个模板携带
+当前模板包括 OpenAI（API 与 Codex 订阅）、Anthropic、Gemini、DeepSeek、Qwen、KIMI、GLM、Grok、Mistral、
+MiniMax、豆包和 Cohere；每个模板携带
 一个明确的默认 Endpoint、仓库预制的模型 Endpoint、预定义展示名、官方文档链接与核验日期。列表不是服务端实时目录。`--model`
-只覆盖默认 Endpoint 的模型标识。`add` 根据 `--type` 自动判断是否装载内置模板并返回生成的 Provider ID。
+只覆盖默认 Endpoint 的模型标识。模型与视觉能力的核对依据见[预置供应商配置](../specs/provider-presets.md)。
+OpenRouter 等聚合服务通过 `custom` 与兼容协议配置。`add` 根据 `--type` 自动判断是否装载内置模板并返回生成的 Provider ID。
 内置类型的 `update` 会基于创建时记录的模板基线做安全三方
 合并：未修改的预置值跟随新模板，用户修改或删除的预置 Endpoint、未知 Endpoint 和自定义连接信息保留；新增
 模板 Endpoint 自动加入，同名占用会报告而不覆盖。没有模板基线的 Provider 不执行推断式更新，必须显式

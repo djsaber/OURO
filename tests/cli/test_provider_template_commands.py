@@ -25,8 +25,10 @@ def test_provider_templates_command_lists_builtin_catalog(capsys) -> None:
         "kimi",
         "glm",
         "grok",
-        "openrouter",
         "mistral",
+        "minimax",
+        "doubao",
+        "cohere",
     }
     kimi = next(item for item in payload["templates"] if item["template_id"] == "kimi")
     assert kimi["default_endpoint"] == "kimi-k3"
@@ -101,7 +103,7 @@ def test_provider_add_integrated_type_persists_complete_default_route(
     assert provider["provider_type"] == "anthropic"
     assert provider["protocol"] == "anthropic-messages"
     assert provider["default_endpoint"].startswith("endpoint_")
-    assert provider["endpoint_count"] == 3
+    assert provider["endpoint_count"] == 4
     assert next(item for item in provider["endpoints"] if item["default"])["model_id"] == (
         "claude-custom"
     )
@@ -264,7 +266,7 @@ def test_duplicate_display_names_create_independent_integrated_providers(tmp_pat
     assert payload["provider"]["provider_id"] == first["provider_id"]
     assert payload["provider"]["display_name"] == "Primary API"
     assert payload["provider"]["provider_type"] == "openai"
-    assert payload["provider"]["endpoint_count"] == 7
+    assert payload["provider"]["endpoint_count"] == 8
     assert ProviderConfigManager(tmp_path).get_provider(second["provider_id"]).provider_type == (
         "openai"
     )

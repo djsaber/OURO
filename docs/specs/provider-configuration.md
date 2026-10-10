@@ -216,25 +216,12 @@ manager。Provider retry 的关联字段作为一个原子 mutation 提交，不
 
 ## 内置模板
 
-`config/provider_templates.py` 保存经过核验的只读模板目录。模板是配置域数据，不是新的 adapter 类型；多个
+`config/provider_templates.py` 保存经过核验的只读模板目录。模板是配置域数据；多个
 厂商可复用同一线协议。每项包含稳定 template id、必填展示名、默认模板 Endpoint 身份、非空且模板身份唯一的
 Endpoint 集合、连接地址、凭据环境变量、Endpoint capability、官方文档和核验日期。默认 Endpoint 必须存在于
 模板 Endpoint 集合中；模板 Endpoint 身份只服务模板版本合并，实例化时不会复用为运行时 Endpoint ID。
 
-当前目录包含以下经官方文档核验的配置：
-
-| 模板 | 默认 Endpoint | 其他预置 Endpoint |
-| --- | --- | --- |
-| OpenAI API / Codex 订阅 | `gpt-6-sol` | `gpt-5.5`、`gpt-5.6-luna`、`gpt-5.6-terra`、`gpt-5.6-sol`、`gpt-6-astra`、`gpt-6-luna` |
-| Anthropic | `claude-sonnet-5` | `claude-opus-4-8`、`claude-haiku-4-5` |
-| Gemini | `gemini-3.5-flash` | `gemini-3.1-pro-preview`、`gemini-3.1-flash-lite` |
-| DeepSeek | `deepseek-v4-pro` | `deepseek-v4-flash` |
-| Qwen | `qwen3.8-max` | `qwen3.8-flash`、`qwen3.7-plus` |
-| KIMI | `kimi-k3` | `kimi-k2.7-code`、`kimi-k2.7-code-highspeed`、`kimi-k2.6` |
-| GLM | `glm-5.3` | `glm-5.3-flash`、`glm-5.2`、`glm-5-turbo`、`glm-5v-turbo` |
-| Grok | `grok-4.6` | — |
-| OpenRouter | `auto` | `free` |
-| Mistral | `mistral-medium-3-5` | `mistral-small-2603`、`mistral-large-2512` |
+模型目录、默认端点、连接参数与能力声明见[预置供应商配置](provider-presets.md)。
 
 模板值是便捷默认值。CLI 允许显式覆盖展示名、默认 endpoint 的 model、base URL 和 credential；内部身份
 始终由框架生成，覆盖不会丢弃同一模板中的其他 Endpoint。
@@ -282,14 +269,8 @@ Endpoint model、连接和凭据等本次 CLI 显式参数在合并后应用，�
 Faux 只作为框架内部安全运行时和测试实现存在，不进入 application/CLI 的 Provider 目录、默认展示、选择或
 连接检查；没有用户配置时，公开目录的默认 Provider 为 `null`。
 
-内置模板的思考 profile 按模型分别声明，不能从厂商品牌推导：OpenAI/Gemini 使用模型各自允许的
-`reasoning_effort`；DeepSeek、Qwen、KIMI、GLM 使用其原生开关和经过核验的 effort；Anthropic adaptive 或
-manual thinking 同时声明可展示摘要和 opaque continuation。始终思考的模型拒绝关闭请求，只支持开关的模型
-不伪造 effort 等级。
-
-Mistral 模板暂不声明 reasoning capability。其 reasoning 响应使用嵌套 `ThinkChunk`，并要求续接时原样回放；
-当前 OpenAI Chat Completions continuation 只声明可验证的 `reasoning_content` 文本；Mistral 的嵌套
-`ThinkChunk` 尚未进入该协议契约，因此模板不会默认开启一个只能首轮工作、后续退化的能力。
+思考 profile 按端点声明原生参数、可展示输出与 continuation。始终思考的模型拒绝关闭请求，
+只支持开关的模型不提供 effort 等级。
 
 模板目录以本地文件形式提供：内联目录是唯一真源，首次使用时物化为
 `config/provider-templates.json`，用户可在该文件上修改、新增模板并随内联目录自动升级。

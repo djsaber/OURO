@@ -22,14 +22,13 @@ Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它�
 ## 产品类型与协议
 
 集成厂商类型包括 `openai`、`openai-codex`、`anthropic`、`gemini`、`deepseek`、`qwen`、`kimi`、`glm`、`grok`、
-`openrouter` 和 `mistral`。它们提供已核验的模板。`ProviderTypeSpec` 保存可选默认连接组合和明确的备选组合；
+`mistral`、`minimax`、`doubao` 和 `cohere`。它们提供已核验的模板。`ProviderTypeSpec` 保存可选默认连接组合和明确的备选组合；
 每个 `ProviderConnectionSpec` 包含 protocol、auth_driver 及可选服务规则引用，managed 组合必须声明服务规则引用。
 连接声明可携带只读 notice，由 Application 投影到 Provider/Template DTO 并交给 CLI/TUI 展示；不写入用户配置，也不由 Host 判断厂商。
-`openai` 默认使用 Responses + static，保留 Chat Completions + static 备选组合，已有配置不自动改协议。
-`openai-codex` 仅声明 Responses + 同名浏览器认证驱动及服务策略。两套模板提供 GPT-5.5、GPT-5.6 Luna/Terra/Sol
-与 GPT-6 Astra/Sol/Luna，默认 GPT-6 Sol；模型等级与各自后端能力按官方文档分别声明，详见
-[预制配置说明](openai-presets.md)。订阅上下文和 max_output_tokens 为本地预算，
-服务限制通过连接 notice 和模板描述披露；图像能力仍受 Responses adapter 当前实现约束。
+`openai` 默认使用 Responses + static，支持 Chat Completions + static 备选组合。
+`openai-codex` 仅声明 Responses + 同名浏览器认证驱动及服务策略。模型目录与后端能力见
+[预置供应商配置](provider-presets.md)。订阅上下文和 max_output_tokens 为本地预算，
+服务限制通过连接 notice 和模板描述披露；两套模板均通过 Responses adapter 支持图像输入。
 默认组合自然属于允许集合；组合不能重复，也不能将两组独立允许列表作笛卡尔积。有默认连接的产品在创建时，
 省略的协议/认证选择取各自默认值，再验证完整组合。持久化读取中省略 auth_driver 固定表示 static，不根据产品猜测其他认证。
 
@@ -57,7 +56,7 @@ continuation：OpenAI Chat Completions 支持 `none/text`，Responses 与 Anthro
 }
 ```
 
-配置读取不包含历史推导分支。缺少 `protocol`、未注册协议或不被产品档案允许的组合都明确返回
+配置读取要求显式声明合法协议。缺少 `protocol`、未注册协议或不被产品档案允许的组合都明确返回
 `ConfigError`，且读取本身不修改文件。
 
 ## 分层职责
@@ -68,7 +67,7 @@ continuation：OpenAI Chat Completions 支持 `none/text`，Responses 与 Anthro
 - `ouro/application` 暴露包含 `provider_type`、`protocol` 与 `auth_driver` 的类型化 DTO，并编排配置用例；
 - CLI 只解析创建、更新或替换意图并格式化结果，冲突规则由配置/application 层执行。
 
-厂商模板不会产生一厂商一个 adapter。Gemini、DeepSeek、Qwen、KIMI、GLM、Grok、OpenRouter 和 Mistral 当前都
+厂商模板不会产生一厂商一个 adapter。Gemini、DeepSeek、Qwen、KIMI、GLM、Grok、Mistral、MiniMax、豆包和 Cohere 当前都
 复用 OpenAI Chat Completions adapter；Anthropic 使用 Messages adapter。
 
 ## 命名约定
@@ -106,8 +105,8 @@ Provider mutation 使用三个明确操作：
 - `provider replace`：只替换现有 Provider；内置类型装载新类型模板，`custom` 类型清空原 Endpoint、凭据和
   扩展设置。
 
-模板更新优先根据持久化模板绑定定位同来源模板；旧配置首次更新才根据现有 `provider_type` 安全接管。持久化的
-type/protocol 组合仍必须合法。所有冲突与校验在一次写盘前完成；失败时配置保持不变。交互 Host 遇到 Provider
+模板更新根据持久化模板绑定定位同来源模板；缺少绑定时拒绝更新。持久化的
+type/protocol 组合必须合法。所有冲突与校验在一次写盘前完成；失败时配置保持不变。交互 Host 遇到 Provider
 更新与替换以已生成 id 选择目标；Host 不提供编辑内部身份的入口。
 
 ## 非目标

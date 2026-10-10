@@ -5,14 +5,13 @@
 ## 目标与范围
 
 定义供应商模板目录的本地文件契约：内联目录与本地文件的关系、版本模型、修改感知、自动升级、
-结构版本边界与失败处理。模板是配置域蓝图数据，不是新的 adapter 类型；模板与实际 Provider 配置的
+结构版本边界与失败处理。模板是配置域蓝图数据；模板与实际 Provider 配置的
 实例化关系、类型与协议拆分由 [Provider 与配置](provider-configuration.md)和
-[Provider 类型与协议](provider-protocols.md)定义。内联模板目录继续由
+[Provider 类型与协议](provider-protocols.md)定义。内联模板目录由
 `ouro/config/provider_templates.py` 维护。
 
-当前 OpenAI API 模板修订 5、Codex 订阅模板修订 6；模型清单、能力依据与协议更新边界见
-[OpenAI 预制配置说明](openai-presets.md)。verified_on 表示文档核对日期，
-真实调用的验收范围在使用指南中单独记录。
+模型目录、连接参数、能力声明与官方依据见[预置供应商配置](provider-presets.md)。
+`verified_on` 表示官方文档核对日期。
 
 ## 总体模型
 
@@ -40,17 +39,18 @@
       "auth_driver": "static",
       "credential_env": "OPENAI_API_KEY",
       "base_url": "https://api.openai.com/v1",
-      "default_endpoint": "gpt-5.6-sol",
+      "default_endpoint": "gpt-6.1-sol",
+      "revision": 6,
       "endpoints": [
         {
-          "endpoint_id": "gpt-5.6-sol",
-          "display_name": "GPT-5.6 Sol",
-          "model_id": "gpt-5.6-sol"
+          "endpoint_id": "gpt-6.1-sol",
+          "display_name": "GPT-6.1 Sol",
+          "model_id": "gpt-6.1-sol"
         }
       ],
       "meta": {
         "origin": "inline",
-        "baseline_revision": 1,
+        "baseline_revision": 6,
         "baseline_fingerprint": "sha256:…",
         "deprecated": false,
         "enabled": true
@@ -75,8 +75,8 @@
 
 ## 版本模型
 
-当前结构版本为 3。该版本移除了模板中的建议 Provider ID，并为模板 Endpoint 增加展示名；不读取或转换
-旧结构。模板中的 `endpoint_id` 是模板目录内部用于版本合并的稳定身份，不会成为实例 Endpoint ID；实例化时
+结构版本为 3。模板包含 Provider 与 Endpoint 展示名，不包含实例 Provider ID。
+模板中的 `endpoint_id` 是模板目录内部用于版本合并的稳定身份，不会成为实例 Endpoint ID；实例化时
 OURO 为 Provider 和每个 Endpoint 分别生成内部 ID。模板 auth_driver 默认 static；credential_env 可省略，
 managed 模板必须省略或置为 null。
 静态模板缺少 credential_env 时创建 none 引用，可在创建时显式提供 API Key。模板不提供 credential id 或账户材料；
