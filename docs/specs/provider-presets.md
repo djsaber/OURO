@@ -5,13 +5,12 @@
 
 预置目录包含 13 个模板、47 个模型端点，覆盖通用、编程、多模态及成本敏感场景。
 端点声明模型 ID、上下文预算、输出预算、工具调用、图像/音频/视频输入、流式输出、结构化输出与思考配置。
-Gemini 模板启用音频输入，Qwen 模板启用视频输入；其余音视频能力默认关闭。
 启用条件与配置方式见[输入模态契约](provider-configuration.md#输入模态契约)。
 OpenRouter 等聚合平台通过 `custom` 与兼容协议配置。
 
 ## 模型目录与官方依据
 
-视觉能力指图像输入。表格描述 OURO 模板声明；服务可用性取决于厂商、账户和区域。
+表格描述 OURO 模板在所选接口和媒体编码方式下启用的输入能力；服务可用性取决于厂商、账户和区域。
 
 | 模板 | 默认模型 | 官方依据 |
 |---|---|---|
@@ -51,8 +50,14 @@ API Key 必须与模板所选平台、区域匹配。MiniMax 使用中国站，�
 
 ## 端点字段
 
-以下详情表中的上下文与输出预算以 token 为单位，图像列对应 `supports_image_input`，结构化输出列对应
-`supports_structured_output`。所有预置端点均支持文本、工具调用和流式输出。
+以下详情表中的上下文与输出预算以 token 为单位；输入模态列省略所有端点均支持的文本，
+图片、音频、视频分别对应 `supports_image_input`、`supports_audio_input`、`supports_video_input`，
+“—”表示仅启用文本。结构化输出列对应 `supports_structured_output`。所有预置端点均支持工具调用和流式输出。
+
+音频使用 WAV/MP3 的 `input_audio`，视频使用 MP4 的 `video_url` Base64 data URI。
+预置开关要求模型、所选服务接口和 OURO 本地附件编码同时可用；原生接口或 URL 输入能力不自动启用该开关。
+视频输入不保证识别音轨，媒体大小、时长与数量还受厂商限制。
+
 `context_window` 用于上下文规划；`max_output_tokens` 是默认请求预算，Codex 订阅仅将其用于本地规划。
 表中的思考默认值对应 `reasoning.capability.default`；effort 为开启思考时可选的等级。
 
@@ -89,6 +94,7 @@ API 模板的 none 映射到 OURO 的 reasoning disabled；Astra 和 GPT-6.1 Sol
 | 文本 / 流式 / 函数工具 | 开启 | 开启 |
 | 结构化输出 | 开启，Responses text.format | 未声明支持 |
 | 图像输入 | 开启，使用 Responses input_image | 开启，使用同一 Responses 图像编码 |
+| 音频 / 视频输入 | 关闭 | 关闭 |
 | 计费 | API 用量计费 | 订阅归属，未取得价格时金额未知 |
 
 模板预算用于 OURO 的上下文规划与请求控制。厂商限制见各模型官方页面；
@@ -103,12 +109,12 @@ OURO 遇到失败不会自动回退到付费 API 或其他模型。
 
 ## Anthropic
 
-| 模型 ID | 上下文 | 输出预算 | 图像 | 结构化输出 | 思考开关 / 默认 | effort |
+| 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `claude-fable-5-1` | 1,000,000 | 32,768 | 开启 | 关闭 | 始终开启 / high | low、medium、high、xhigh、max |
-| `claude-sonnet-5-5`（默认） | 1,000,000 | 32,768 | 开启 | 关闭 | 始终开启 / high | low、medium、high、xhigh、max |
-| `claude-opus-5-5` | 1,000,000 | 32,768 | 开启 | 关闭 | 始终开启 / medium | low、medium、high、xhigh、max |
-| `claude-haiku-5-5` | 1,000,000 | 32,768 | 开启 | 关闭 | 可切换，默认开启 / medium | low、medium、high、xhigh、max |
+| `claude-fable-5-1` | 1,000,000 | 32,768 | 图片 | 关闭 | 始终开启 / high | low、medium、high、xhigh、max |
+| `claude-sonnet-5-5`（默认） | 1,000,000 | 32,768 | 图片 | 关闭 | 始终开启 / high | low、medium、high、xhigh、max |
+| `claude-opus-5-5` | 1,000,000 | 32,768 | 图片 | 关闭 | 始终开启 / medium | low、medium、high、xhigh、max |
+| `claude-haiku-5-5` | 1,000,000 | 32,768 | 图片 | 关闭 | 可切换，默认开启 / medium | low、medium、high、xhigh、max |
 
 请求使用 `thinking.type=adaptive` 与 `output_config.effort`。Haiku 关闭思考时发送
 `thinking.type=disabled` 和 `output_config.effort=medium`；其余三个端点不提供关闭选项。
@@ -116,14 +122,14 @@ OURO 遇到失败不会自动回退到付费 API 或其他模型。
 
 ## Gemini
 
-| 模型 ID | 上下文 | 输出预算 | 图像 | 结构化输出 | 思考开关 / 默认 | effort |
+| 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `gemini-3.8-flash`（默认） | 1,048,576 | 32,768 | 开启 | 开启 | 始终开启 / medium | low、medium、high |
-| `gemini-3.1-pro-preview` | 1,048,576 | 32,768 | 开启 | 开启 | 始终开启 / high | low、medium、high |
-| `gemini-3.5-flash-lite` | 1,048,576 | 32,768 | 开启 | 开启 | 始终开启 / minimal | minimal、low、medium、high |
+| `gemini-3.8-flash`（默认） | 1,048,576 | 32,768 | 图片、音频 | 开启 | 始终开启 / medium | low、medium、high |
+| `gemini-3.1-pro-preview` | 1,048,576 | 32,768 | 图片、音频 | 开启 | 始终开启 / high | low、medium、high |
+| `gemini-3.5-flash-lite` | 1,048,576 | 32,768 | 图片、音频 | 开启 | 始终开启 / minimal | minimal、low、medium、high |
 
 三个 Gemini 端点均启用 WAV/MP3 音频输入，使用官方 Chat Completions 兼容接口的 `input_audio`。
-视频开关关闭：模型原生支持视频不代表当前兼容接口已具备可用编码路径。
+视频输入关闭：官方兼容接口未声明 `video_url` 输入。
 能力依据：[兼容接口音频输入](https://ai.google.dev/gemini-api/docs/openai#audio_understanding)、
 [3.8 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash)、
 [3.1 Pro](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview)、
@@ -133,21 +139,25 @@ OURO 遇到失败不会自动回退到付费 API 或其他模型。
 
 ## DeepSeek
 
-| 模型 ID | 上下文 | 输出预算 | 图像 | 结构化输出 | 思考开关 / 默认 | effort |
+| 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `deepseek-v4-pro`（默认） | 1,000,000 | 32,768 | 关闭 | 开启 | 可切换，默认开启 / high | low、high、max |
-| `deepseek-flash` | 1,000,000 | 32,768 | 关闭 | 开启 | 可切换，默认开启 / high | low、high、max |
+| `deepseek-v4-pro`（默认） | 1,000,000 | 32,768 | — | 开启 | 可切换，默认开启 / high | low、high、max |
+| `deepseek-flash` | 1,000,000 | 32,768 | 图片 | 开启 | 可切换，默认开启 / high | low、high、max |
+
+`deepseek-flash` 使用 `image_url` 接收图片 Base64 data URI；`deepseek-v4-pro` 为文本模型。
+依据：[模型能力表](https://api-docs.deepseek.com/quick_start/pricing/)、
+[图片输入接口](https://api-docs.deepseek.com/guides/vision/)。
 
 使用 `thinking.type=enabled/disabled` 切换思考，开启时通过 `reasoning_effort` 选择等级。
 思考输出为文本，工具轮次通过 `reasoning_content` 续接。
 
 ## Qwen
 
-| 模型 ID | 上下文 | 输出预算 | 图像 | 结构化输出 | 思考开关 / 默认 | effort |
+| 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `qwen3.8-max`（默认） | 1,000,000 | 131,072 | 开启 | 开启 | 可切换，默认开启 | — |
-| `qwen3.8-flash` | 1,000,000 | 131,072 | 开启 | 开启 | 可切换，默认开启 / xhigh | low、medium、xhigh |
-| `qwen3.7-plus` | 1,000,000 | 131,072 | 开启 | 开启 | 可切换，默认开启 | — |
+| `qwen3.8-max`（默认） | 1,000,000 | 131,072 | 图片、视频 | 开启 | 可切换，默认开启 | — |
+| `qwen3.8-flash` | 1,000,000 | 131,072 | 图片、视频 | 开启 | 可切换，默认开启 / xhigh | low、medium、xhigh |
+| `qwen3.7-plus` | 1,000,000 | 131,072 | 图片、视频 | 开启 | 可切换，默认开启 | — |
 
 三个 Qwen 端点均启用 MP4 视频输入，使用 `video_url` 扩展；音频输入关闭。
 [视频接口文档](https://www.alibabacloud.com/help/en/model-studio/vision)规定 Base64 视频小于 10 MB，
@@ -158,66 +168,85 @@ OURO 遇到失败不会自动回退到付费 API 或其他模型。
 
 ## Kimi
 
-| 模型 ID | 上下文 | 输出预算 | 图像 | 结构化输出 | 思考开关 / 默认 | effort |
+| 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `kimi-k3`（默认） | 1,048,576 | 32,768 | 开启 | 开启 | 始终开启 / max | low、high、max |
-| `kimi-k2.7-code` | 262,144 | 32,768 | 开启 | 开启 | 始终开启 | — |
-| `kimi-k2.7-code-highspeed` | 262,144 | 32,768 | 开启 | 开启 | 始终开启 | — |
-| `kimi-k2.6` | 262,144 | 32,768 | 开启 | 开启 | 可切换，默认开启 | — |
+| `kimi-k3`（默认） | 1,048,576 | 32,768 | 图片、视频 | 开启 | 始终开启 / max | low、high、max |
+| `kimi-k2.7-code` | 262,144 | 32,768 | 图片、视频 | 开启 | 始终开启 | — |
+| `kimi-k2.7-code-highspeed` | 262,144 | 32,768 | 图片、视频 | 开启 | 始终开启 | — |
+| `kimi-k2.6` | 262,144 | 32,768 | 图片、视频 | 开启 | 可切换，默认开启 | — |
+
+四个 Kimi 端点均通过 `video_url.url` 接收 MP4 Base64 data URI。
+模型支持范围见[视觉输入](https://platform.kimi.com/docs/guide/use-kimi-vision-model)，
+编码格式见[Chat Completions API](https://platform.kimi.com/docs/api/chat)。
 
 K3 使用顶层 `reasoning_effort`；K2.7 Code 系列不发送思考开关或 effort 参数。K2.6 使用
 `thinking.type=enabled/disabled`，开启时附带 `thinking.keep=all`。思考输出为文本，工具轮次通过 `reasoning_content` 续接。
 
 ## GLM
 
-| 模型 ID | 上下文 | 输出预算 | 图像 | 结构化输出 | 思考开关 / 默认 | effort |
+| 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `glm-5.3`（默认） | 1,000,000 | 128,000 | 关闭 | 开启 | 始终开启 / max | low、high、max |
-| `glm-5.3-flash` | 1,000,000 | 128,000 | 开启 | 开启 | 始终开启 / max | low、high、max |
-| `glm-5.2` | 1,000,000 | 32,768 | 关闭 | 开启 | 可切换，默认开启 | — |
-| `glm-5-turbo` | 200,000 | 32,768 | 关闭 | 开启 | 可切换，默认开启 | — |
-| `glm-5v-turbo` | 200,000 | 32,768 | 开启 | 关闭 | 可切换，默认开启 | — |
+| `glm-5.3`（默认） | 1,000,000 | 128,000 | — | 开启 | 始终开启 / max | low、high、max |
+| `glm-5.3-flash` | 1,000,000 | 128,000 | 图片 | 开启 | 始终开启 / max | low、high、max |
+| `glm-5.2` | 1,000,000 | 32,768 | — | 开启 | 可切换，默认开启 | — |
+| `glm-5-turbo` | 200,000 | 32,768 | — | 开启 | 可切换，默认开启 | — |
+| `glm-5v-turbo` | 200,000 | 32,768 | 图片 | 关闭 | 可切换，默认开启 | — |
+
+[GLM-5.3-Flash](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash) 和
+[GLM-5V-Turbo](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5v-turbo) 原生支持视频，
+但官方[接口文档](https://docs.bigmodel.cn/api-reference/模型-api/对话补全)仅声明视频 URL，
+[示例仓库](https://github.com/zai-org/GLM-V/blob/main/skills/glmv-caption/SKILL.md#supported-input-types)明确视频不接受 Base64。
+预置视频输入关闭，以匹配 OURO 本地附件的编码方式。
 
 使用 `thinking.type=enabled/disabled`；5.3 与 5.3 Flash 固定 enabled，并通过 `reasoning_effort` 选择等级。
 除 5.3 外，端点在开启思考时设置 `thinking.clear_thinking=false`。思考输出为文本，工具轮次通过 `reasoning_content` 续接。
 
 ## Grok
 
-| 模型 ID | 上下文 | 输出预算 | 图像 | 结构化输出 | 思考开关 / 默认 | effort |
+| 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `grok-4.7`（默认） | 500,000 | 128,000 | 开启 | 开启 | 始终开启 / high | low、medium、high、xhigh |
+| `grok-4.7`（默认） | 500,000 | 128,000 | 图片 | 开启 | 始终开启 / high | low、medium、high、xhigh |
 
 通过 `reasoning_effort` 选择等级，展示思考摘要，不声明 continuation。`provider_output_limit=unlimited`
 记录厂商输出限制声明；表中的 128,000 是 OURO 默认请求预算。
 
 ## Mistral
 
-| 模型 ID | 上下文 | 输出预算 | 图像 | 结构化输出 | 思考开关 / 默认 | effort |
+| 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `mistral-medium-3-5`（默认） | 256,000 | 32,768 | 开启 | 开启 | 固定关闭 | — |
-| `mistral-small-2603` | 256,000 | 32,768 | 开启 | 开启 | 固定关闭 | — |
-| `mistral-large-4-0` | 1,000,000 | 32,768 | 开启 | 开启 | 固定关闭 | — |
+| `mistral-medium-3-5`（默认） | 256,000 | 32,768 | 图片 | 开启 | 固定关闭 | — |
+| `mistral-small-2603` | 256,000 | 32,768 | 图片 | 开启 | 固定关闭 | — |
+| `mistral-large-4-0` | 1,000,000 | 32,768 | 图片 | 开启 | 固定关闭 | — |
 
 三个端点均固定发送 `reasoning_effort=none`，不提供思考开关或档位。Chat Completions adapter 按文本解码，
 不处理 Mistral 的 thinking chunk。`mistral-small-2603` 对应 Small 4，`mistral-large-4-0` 对应 Large 4 Public Preview。
 
 ## MiniMax
 
-| 模型 ID | 上下文 | 输出预算 | 图像 | 结构化输出 | 思考开关 / 默认 | effort |
+| 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `MiniMax-M3`（默认） | 1,000,000 | 131,072 | 开启 | 关闭 | 可切换，默认开启 | — |
-| `MiniMax-M2.7` | 204,800 | 65,536 | 关闭 | 关闭 | 始终开启 | — |
-| `MiniMax-M2.7-highspeed` | 204,800 | 65,536 | 关闭 | 关闭 | 始终开启 | — |
+| `MiniMax-M3`（默认） | 1,000,000 | 131,072 | 图片、视频 | 关闭 | 可切换，默认开启 | — |
+| `MiniMax-M2.7` | 204,800 | 65,536 | — | 关闭 | 始终开启 | — |
+| `MiniMax-M2.7-highspeed` | 204,800 | 65,536 | — | 关闭 | 始终开启 | — |
+
+M3 通过 `image_url` 和 `video_url` 接收图片、视频 Base64 输入，不支持音频；M2.7 系列为文本模型。
+服务端图片上限为 10 MB，URL 或 Base64 视频上限为 50 MB，请求体上限为 64 MB，见
+[官方兼容接口](https://platform.minimax.cn/docs/api-reference/text-openai-api#多模态输入)。
 
 M3 使用 `thinking.type=adaptive/disabled`；M2.7 系列不发送思考控制参数。所有端点发送
 `reasoning_split=true`，展示思考文本，并通过 `reasoning_content` 保存工具轮次续接。
 
 ## 豆包
 
-| 模型 ID | 上下文 | 输出预算 | 图像 | 结构化输出 | 思考开关 / 默认 | effort |
+| 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `doubao-seed-2-1-pro-260915`（默认） | 1,048,576 | 32,768 | 开启 | 开启 | 可切换，默认开启 / high | minimal、low、medium、high |
-| `doubao-seed-2-1-lite-260915` | 1,048,576 | 32,768 | 开启 | 开启 | 可切换，默认开启 / high | minimal、low、medium、high |
+| `doubao-seed-2-1-pro-260915`（默认） | 1,048,576 | 32,768 | 图片、视频 | 开启 | 可切换，默认开启 / high | minimal、low、medium、high |
+| `doubao-seed-2-1-lite-260915` | 1,048,576 | 32,768 | 图片、音频、视频 | 开启 | 可切换，默认开启 / high | minimal、low、medium、high |
+
+Pro 与 Lite 均通过 `video_url` 接收视频；Lite 另通过 `input_audio.data` 和 `format=wav/mp3` 接收音频。
+Pro 的音频输入关闭，能力范围以[模型目录](https://docs.volcengine.com/docs/ark/model-list?lang=zh)为准。
+编码依据：[Chat API](https://docs.volcengine.com/docs/ark/chat-api?lang=zh)、
+[音频输入](https://docs.volcengine.com/docs/ark/audio-understanding?lang=zh)。
 
 使用 `thinking.type=enabled/disabled` 切换思考，开启时通过 `reasoning_effort` 选择等级。
 展示并回传 `reasoning_content` 思考摘要；Chat Completions adapter 不保存 `encrypted_content` 加密原文，
@@ -225,9 +254,9 @@ M3 使用 `thinking.type=adaptive/disabled`；M2.7 系列不发送思考控制�
 
 ## Cohere
 
-| 模型 ID | 上下文 | 输出预算 | 图像 | 结构化输出 | 思考开关 / 默认 | effort |
+| 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `command-a-plus-05-2026`（默认） | 128,000 | 32,768 | 开启 | 开启 | 可切换，默认开启 / high | high |
+| `command-a-plus-05-2026`（默认） | 128,000 | 32,768 | 图片 | 开启 | 可切换，默认开启 / high | high |
 
 使用 `reasoning_effort=high/none` 映射思考开关。模板不声明可展示的思考输出与 continuation。
 

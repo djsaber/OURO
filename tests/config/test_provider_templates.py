@@ -151,7 +151,7 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
         "reasoning_effort": "max",
     }
     assert deepseek.capability.default_effort == "high"
-    assert templates["deepseek"].revision == 5
+    assert templates["deepseek"].revision == 6
 
     qwen = templates["qwen"]
     assert qwen.revision == 7

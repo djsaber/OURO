@@ -43,17 +43,37 @@ def test_protocol_encoding_limits_apply_to_every_declared_input_modality(protoco
 
 
 def test_presets_only_enable_media_supported_by_the_configured_connection():
-    templates = {template.template_id: template for template in provider_templates()}
-    for endpoint in templates["gemini"].endpoints:
-        assert endpoint.supports_audio_input and not endpoint.supports_video_input
-    for endpoint in templates["qwen"].endpoints:
-        assert endpoint.supports_video_input and not endpoint.supports_audio_input
-    for name, template in templates.items():
-        if name not in {"gemini", "qwen"}:
-            assert all(
-                not endpoint.supports_audio_input and not endpoint.supports_video_input
-                for endpoint in template.endpoints
-            )
+    audio_models = {
+        "gemini-3.8-flash",
+        "gemini-3.1-pro-preview",
+        "gemini-3.5-flash-lite",
+        "doubao-seed-2-1-lite-260915",
+    }
+    video_models = {
+        "qwen3.8-max",
+        "qwen3.8-flash",
+        "qwen3.7-plus",
+        "kimi-k3",
+        "kimi-k2.7-code",
+        "kimi-k2.7-code-highspeed",
+        "kimi-k2.6",
+        "MiniMax-M3",
+        "doubao-seed-2-1-pro-260915",
+        "doubao-seed-2-1-lite-260915",
+    }
+    text_only_models = {
+        "deepseek-v4-pro",
+        "glm-5.3",
+        "glm-5.2",
+        "glm-5-turbo",
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
+    }
+    for template in provider_templates():
+        for endpoint in template.endpoints:
+            assert endpoint.supports_image_input == (endpoint.model_id not in text_only_models)
+            assert endpoint.supports_audio_input == (endpoint.model_id in audio_models)
+            assert endpoint.supports_video_input == (endpoint.model_id in video_models)
 
 
 @pytest.mark.parametrize("protocol", ["openai-responses", "anthropic-messages"])
