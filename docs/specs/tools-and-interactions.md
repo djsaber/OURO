@@ -12,7 +12,7 @@
 `ToolDefinition` 描述：name、description、参数 schema、结果 schema、权限模式、来源和 metadata。
 `ToolCallRequest` 保存 Provider 调用身份、参数和原始顺序。`ToolInvocation` 增加 Session/Run 上下文。
 `ToolResult` 保存模型内容、结构化业务结果、错误标志和资源引用。`content` 接受字符串或有序的
-`TextContent` / `ImageContent` 列表；字符串是单个文本块的简写。`content_blocks` 给出统一内容序列，
+`TextContent` / `ImageContent` / `AudioContent` / `VideoContent` 列表；字符串是单个文本块的简写。`content_blocks` 给出统一内容序列，
 `text_content` 只提取文本供日志和 Observer 使用。模型消息与执行结果复用 `core.content` 类型，
 不通过 `structured`、metadata 或 Markdown 文本隐式传输媒体。
 
@@ -100,7 +100,7 @@ Use this for images already available on disk.”。JSON Schema 由严格参数�
 读取期间发生的文件大小或修改时间变化会使调用失败，模型可以重试。
 
 结果使用标准 `ToolResult.content` 保存文本与 `ImageContent`，`structured` 只保存路径、尺寸、格式、detail、
-缩放/首帧标志和字节数。工具不选择供应商协议，不注入消息；原生工具图片、补充用户上下文与非视觉端点的
+缩放/首帧标志和字节数。工具不选择供应商协议，不注入消息；原生工具图片、补充用户上下文与不支持图片输入时的
 文本反馈由[通用结果呈现](../architecture/tool-results.md)处理。TUI 展示路径与输出尺寸，不渲染 Base64。
 
 ## 权限

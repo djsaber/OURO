@@ -414,7 +414,7 @@ def test_run_mode_passes_endpoint_capability_overrides(monkeypatch) -> None:
             "--max-output-tokens",
             "16000",
             "--no-tools",
-            "--vision",
+            "--image-input",
             "--no-streaming",
             "--structured-output",
             "--thinking-mode",
@@ -432,7 +432,7 @@ def test_run_mode_passes_endpoint_capability_overrides(monkeypatch) -> None:
     assert options.context_window == 200_000
     assert options.max_output_tokens == 16_000
     assert options.supports_tools is False
-    assert options.supports_vision is True
+    assert options.supports_image_input is True
     assert options.supports_streaming is False
     assert options.supports_structured_output is True
     assert options.reasoning_request == ReasoningRequest(mode="enabled", effort="high")
@@ -888,7 +888,7 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
             "--max-output-tokens",
             "16000",
             "--no-tools",
-            "--vision",
+            "--image-input",
             "--no-streaming",
             "--structured-output",
             "--reasoning-config",
@@ -906,7 +906,7 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
     endpoint_id = endpoint["endpoint_id"]
     assert endpoint_id.startswith("endpoint_")
     assert endpoint["supports_tools"] is False
-    assert endpoint["supports_vision"] is True
+    assert endpoint["supports_image_input"] is True
     assert endpoint["supports_streaming"] is False
     assert endpoint["reasoning"] == reasoning.model_dump(mode="json")
 
@@ -945,7 +945,7 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
     assert runtime.adapter.model.context_window == 200_000
     assert runtime.adapter.model.max_output_tokens == 16_000
     assert runtime.adapter.model.supports_tools is False
-    assert runtime.adapter.model.supports_vision is True
+    assert runtime.adapter.model.supports_image_input is True
     assert runtime.adapter.model.supports_streaming is False
     assert runtime.adapter.model.supports_structured_output is True
     assert runtime.adapter.model.reasoning == reasoning.capability

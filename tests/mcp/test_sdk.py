@@ -8,7 +8,7 @@ import anyio
 import pytest
 from mcp import types
 
-from ouro.core.content import ImageContent, TextContent
+from ouro.core.content import AudioContent, ImageContent, TextContent
 from ouro.core.tools import ToolInvocation
 from ouro.mcp import MCPServerConfig, SDKMCPClientFactory
 from ouro.mcp.sdk import _remote_result
@@ -21,6 +21,7 @@ def test_mcp_content_preserves_order_and_media_without_stringifying_pixels():
             content=[
                 types.TextContent(type="text", text="before"),
                 types.ImageContent(type="image", data="AAAA", mimeType="image/png"),
+                types.AudioContent(type="audio", data="YXVkaW8=", mimeType="audio/wav"),
                 types.TextContent(type="text", text="after"),
             ],
             structuredContent={"width": 1},
@@ -30,6 +31,7 @@ def test_mcp_content_preserves_order_and_media_without_stringifying_pixels():
     assert result.content_blocks == [
         TextContent(text="before"),
         ImageContent(uri="data:image/png;base64,AAAA", media_type="image/png"),
+        AudioContent(uri="data:audio/wav;base64,YXVkaW8=", media_type="audio/wav"),
         TextContent(text="after"),
     ]
     assert result.text_content == "beforeafter"

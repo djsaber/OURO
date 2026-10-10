@@ -239,7 +239,7 @@ class AnthropicMessagesProvider:
         system, converted_messages = messages_to_anthropic_messages(
             messages,
             system_prompt=system_prompt,
-            supports_vision=model.supports_vision,
+            supports_image_input=model.supports_image_input,
             provider_id=self.provider_id,
             model_id=model.model_id,
             include_continuation=model.reasoning.continuation == "opaque",

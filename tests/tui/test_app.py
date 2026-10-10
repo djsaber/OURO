@@ -7408,12 +7408,16 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
             "CAPABILITIES",
             "CAPABILITIES",
             "CAPABILITIES",
+            "CAPABILITIES",
+            "CAPABILITIES",
             "THINKING",
             "THINKING",
             "REQUEST",
             "ACTIONS",
         ]
         assert screen._capabilities["endpoint-tools"] is True
+        assert screen._capabilities["endpoint-audio-input"] is False
+        assert screen._capabilities["endpoint-video-input"] is False
         assert screen._capabilities["endpoint-structured-output"] is True
         assert screen._values["endpoint-context-window"] == "1000000"
         assert screen._values["endpoint-max-output"] == "32768"
@@ -7444,11 +7448,11 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         await pilot.press("ctrl+u", *"50", "enter")
         await pilot.pause()
 
-        options.highlighted = options.get_option_index("endpoint-vision")
+        options.highlighted = options.get_option_index("endpoint-image-input")
         options.focus()
         await pilot.press("enter")
         await pilot.pause()
-        assert screen._capabilities["endpoint-vision"] is True
+        assert screen._capabilities["endpoint-image-input"] is True
         assert screen._capabilities["endpoint-streaming"] is True
 
         screen._values["endpoint-reasoning-config"] = "[]"
@@ -7519,7 +7523,9 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         assert draft.context_window == 100
         assert draft.max_output_tokens == 50
         assert draft.supports_tools is True
-        assert draft.supports_vision is True
+        assert draft.supports_image_input is True
+        assert draft.supports_audio_input is False
+        assert draft.supports_video_input is False
         assert draft.supports_streaming is True
         assert draft.supports_structured_output is True
         assert draft.reasoning is not None
@@ -8563,7 +8569,7 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
             provider_id,
             display_name="Shared",
             model=f"{provider_name}-model",
-            supports_vision=True,
+            supports_image_input=True,
             reasoning=reasoning_preset("openai-chat-completions-effort"),
         )
         endpoint_id = endpoints.changed_endpoint_id
@@ -8592,9 +8598,9 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
         assert {choice.group for choice in choices.values()} == {"Primary", "Secondary"}
         assert all(choice.description == "" for choice in app.screen._choices)
         separator = app.tui_theme.inline_separator
-        assert choices[primary_key].trailing == separator.join(("reasoning", "vision"))
+        assert choices[primary_key].trailing == separator.join(("image", "reasoning"))
         assert choices[primary_key].trailing_badge == "default"
-        assert choices[secondary_key].trailing == separator.join(("reasoning", "vision"))
+        assert choices[secondary_key].trailing == separator.join(("image", "reasoning"))
         assert choices[secondary_key].trailing_badge == ""
         internal_endpoint_ids = {endpoint_id for _, endpoint_id in routes.values()}
         assert all(
@@ -8799,7 +8805,7 @@ async def test_endpoint_management_returns_to_catalog_after_deletion(tmp_path: P
         provider_id,
         display_name="Chat",
         model="chat-model",
-        supports_vision=True,
+        supports_image_input=True,
         reasoning=reasoning_preset("openai-chat-completions-effort"),
     )
     keep = configuration.add_endpoint(provider_id, display_name="Keep", model="keep-model")
@@ -8839,7 +8845,7 @@ async def test_endpoint_management_returns_to_catalog_after_deletion(tmp_path: P
         ]
         assert next(
             choice for choice in app.screen._choices if choice.value == chat.changed_endpoint_id
-        ).trailing == app.tui_theme.inline_separator.join(("reasoning", "vision"))
+        ).trailing == app.tui_theme.inline_separator.join(("image", "reasoning"))
         app.screen.query_one("#choice-filter", Input).value = "Chat"
         await pilot.pause()
         await pilot.press("enter")

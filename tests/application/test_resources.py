@@ -98,7 +98,9 @@ def test_model_projection_reads_file_once_and_revalidates_each_request(
 
     monkeypatch.setattr(type(source), "open", tracked_open)
     monkeypatch.setattr(type(source), "read_bytes", tracked_read)
-    projected = resources.project_model_messages([message], supports_vision=image)
+    projected = resources.project_model_messages(
+        [message], input_modalities=frozenset({"image"}) if image else frozenset()
+    )
     if image:
         assert any(isinstance(block, ImageContent) for block in projected[0].content)
     else:
@@ -108,7 +110,7 @@ def test_model_projection_reads_file_once_and_revalidates_each_request(
     # Integrity is checked against the bytes consumed by every request.
     blob_path.write_bytes(b"corrupt")
     with pytest.raises(ResourceIntegrityError):
-        resources.project_model_messages([message], supports_vision=False)
+        resources.project_model_messages([message], input_modalities=frozenset())
 
 
 def test_projection_loads_session_manifest_once_per_request(tmp_path, monkeypatch):
@@ -128,7 +130,7 @@ def test_projection_loads_session_manifest_once_per_request(tmp_path, monkeypatc
 
     monkeypatch.setattr(store, "load_resource_references", tracked_load)
     for _ in range(2):
-        resources.project_model_messages([message], supports_vision=False)
+        resources.project_model_messages([message], input_modalities=frozenset())
     assert reads == [session_id, session_id]
 
 
@@ -573,7 +575,7 @@ def test_text_resource_is_projected_with_source_label_without_mutating_canonical
         text="Summarize this",
     ).model_copy(update={"resource_refs": [resource.resource_id]})
 
-    projected = resources.project_model_messages([canonical], supports_vision=False)[0]
+    projected = resources.project_model_messages([canonical], input_modalities=frozenset())[0]
 
     assert canonical.text_content == "Summarize this"
     assert canonical.resource_refs == [resource.resource_id]
@@ -602,7 +604,9 @@ def test_image_resource_projection_is_request_local_data_uri(tmp_path) -> None:
         text="Describe it",
     ).model_copy(update={"resource_refs": [resource.resource_id]})
 
-    projected = resources.project_model_messages([canonical], supports_vision=True)[0]
+    projected = resources.project_model_messages(
+        [canonical], input_modalities=frozenset({"image"})
+    )[0]
     image = next(block for block in projected.content if isinstance(block, ImageContent))
 
     assert image.uri.startswith("data:image/png;base64,")
@@ -611,9 +615,9 @@ def test_image_resource_projection_is_request_local_data_uri(tmp_path) -> None:
 
 @pytest.mark.parametrize("source_kind", ["inline", "resource"])
 @pytest.mark.parametrize(
-    "role,vision,keeps_image",
+    "role,image_input,keeps_image",
     [
-        ("tool_result", False, True),
+        ("tool_result", False, False),
         ("tool_result", True, True),
         ("user", False, False),
         ("user", True, True),
@@ -621,8 +625,8 @@ def test_image_resource_projection_is_request_local_data_uri(tmp_path) -> None:
         ("assistant", True, False),
     ],
 )
-def test_resource_preparation_preserves_tool_content_for_provider_placement(
-    tmp_path, source_kind, role, vision, keeps_image
+def test_resource_preparation_preserves_eligible_tool_content_for_provider_placement(
+    tmp_path, source_kind, role, image_input, keeps_image
 ):
     _, _, resources, service = _services(tmp_path)
     session_id = service.create().session.session_id
@@ -639,24 +643,28 @@ def test_resource_preparation_preserves_tool_content_for_provider_placement(
         message.resource_refs = [resources.import_resource(session_id, path).resource.resource_id]
     before = message.model_copy(deep=True)
 
-    projected = resources.project_model_messages([message], supports_vision=vision)[0]
+    projected = resources.project_model_messages(
+        [message], input_modalities=frozenset({"image"}) if image_input else frozenset()
+    )[0]
 
     images = [part for part in projected.content if isinstance(part, ImageContent)]
     assert [part.uri for part in images] == ([uri] if keeps_image else [])
     assert message == before
     if role == "tool_result":
-        assert "not sent" not in projected.text_content
+        assert ("not sent" in projected.text_content) == (not image_input)
         for protocol in ("responses", "messages", "chat"):
-            wire = str(encode(protocol, [ModelMessage.from_record(projected)], vision=vision))
-            assert (uri.partition(",")[2] in wire) == vision
-            if not vision:
+            wire = str(
+                encode(protocol, [ModelMessage.from_record(projected)], image_input=image_input)
+            )
+            assert (uri.partition(",")[2] in wire) == image_input
+            if not image_input:
                 assert wire.count("This model cannot view images.") == 1
 
 
-@pytest.mark.parametrize("vision", [False, True])
+@pytest.mark.parametrize("image_input", [False, True])
 @pytest.mark.parametrize("earlier_role", ["user", "tool_result"])
 def test_request_image_budget_is_shared_before_resource_encoding(
-    tmp_path, monkeypatch, vision, earlier_role
+    tmp_path, monkeypatch, image_input, earlier_role
 ):
     _, _, resources, service = _services(tmp_path)
     session_id = service.create().session.session_id
@@ -686,7 +694,7 @@ def test_request_image_budget_is_shared_before_resource_encoding(
         ),
     )
     before = [message.model_copy(deep=True) for message in (earlier, latest)]
-    monkeypatch.setattr(file_inputs, "DEFAULT_REQUEST_IMAGE_CHARS", len(encoded) * 2)
+    monkeypatch.setattr(file_inputs, "DEFAULT_REQUEST_MEDIA_CHARS", len(encoded) * 2)
     encode_image = base64.b64encode
     encoded_sources = []
 
@@ -695,19 +703,17 @@ def test_request_image_budget_is_shared_before_resource_encoding(
         return encode_image(data)
 
     monkeypatch.setattr(file_inputs.base64, "b64encode", bounded_encode)
-    projected = resources.project_model_messages([earlier, latest], supports_vision=vision)
+    projected = resources.project_model_messages(
+        [earlier, latest], input_modalities=frozenset({"image"}) if image_input else frozenset()
+    )
 
-    assert encoded_sources == [raw]
+    assert encoded_sources == ([raw] if image_input else [])
     assert [
         sum(isinstance(part, ImageContent) for part in message.content) for message in projected
-    ] == [0, 2]
-    assert "too much image data" in projected[-1].text_content
-    earlier_reason = (
-        "This model cannot view images."
-        if earlier_role == "user" and not vision
-        else "too much image data"
-    )
-    assert earlier_reason in projected[0].text_content
+    ] == ([0, 2] if image_input else [0, 0])
+    reason = "too much media data" if image_input else "This model cannot view images."
+    assert reason in projected[-1].text_content
+    assert reason in projected[0].text_content
     assert [earlier, latest] == before
 
 
@@ -726,6 +732,6 @@ def test_model_attachment_accepts_binary_and_non_vision_images_as_references(tmp
         )
         message = MessageRecord.text(session_id=session.session_id, role="user", text="")
         message.resource_refs = [resource.resource_id]
-        projected = resources.project_model_messages([message], supports_vision=False)[0]
+        projected = resources.project_model_messages([message], input_modalities=frozenset())[0]
         assert "Representation: reference only" in projected.text_content
         assert not any(isinstance(block, ImageContent) for block in projected.content)

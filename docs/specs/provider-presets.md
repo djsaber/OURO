@@ -4,7 +4,9 @@
 > 配置事实来源：[provider_templates.py](../../ouro/config/provider_templates.py)；代码记录的模板核对日期为 2026-10-10。
 
 预置目录包含 13 个模板、47 个模型端点，覆盖通用、编程、多模态及成本敏感场景。
-端点声明模型 ID、上下文预算、输出预算、工具调用、图像输入、流式输出、结构化输出与思考配置。
+端点声明模型 ID、上下文预算、输出预算、工具调用、图像/音频/视频输入、流式输出、结构化输出与思考配置。
+Gemini 模板启用音频输入，Qwen 模板启用视频输入；其余音视频能力默认关闭。
+启用条件与配置方式见[输入模态契约](provider-configuration.md#输入模态契约)。
 OpenRouter 等聚合平台通过 `custom` 与兼容协议配置。
 
 ## 模型目录与官方依据
@@ -49,7 +51,7 @@ API Key 必须与模板所选平台、区域匹配。MiniMax 使用中国站，�
 
 ## 端点字段
 
-以下详情表中的上下文与输出预算以 token 为单位，图像列对应 `supports_vision`，结构化输出列对应
+以下详情表中的上下文与输出预算以 token 为单位，图像列对应 `supports_image_input`，结构化输出列对应
 `supports_structured_output`。所有预置端点均支持文本、工具调用和流式输出。
 `context_window` 用于上下文规划；`max_output_tokens` 是默认请求预算，Codex 订阅仅将其用于本地规划。
 表中的思考默认值对应 `reasoning.capability.default`；effort 为开启思考时可选的等级。
@@ -120,6 +122,13 @@ OURO 遇到失败不会自动回退到付费 API 或其他模型。
 | `gemini-3.1-pro-preview` | 1,048,576 | 32,768 | 开启 | 开启 | 始终开启 / high | low、medium、high |
 | `gemini-3.5-flash-lite` | 1,048,576 | 32,768 | 开启 | 开启 | 始终开启 / minimal | minimal、low、medium、high |
 
+三个 Gemini 端点均启用 WAV/MP3 音频输入，使用官方 Chat Completions 兼容接口的 `input_audio`。
+视频开关关闭：模型原生支持视频不代表当前兼容接口已具备可用编码路径。
+能力依据：[兼容接口音频输入](https://ai.google.dev/gemini-api/docs/openai#audio_understanding)、
+[3.8 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash)、
+[3.1 Pro](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview)、
+[3.5 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite)。
+
 通过 Chat Completions 兼容接口发送 `reasoning_effort`。模板不声明可展示的思考输出与 continuation。
 
 ## DeepSeek
@@ -139,6 +148,10 @@ OURO 遇到失败不会自动回退到付费 API 或其他模型。
 | `qwen3.8-max`（默认） | 1,000,000 | 131,072 | 开启 | 开启 | 可切换，默认开启 | — |
 | `qwen3.8-flash` | 1,000,000 | 131,072 | 开启 | 开启 | 可切换，默认开启 / xhigh | low、medium、xhigh |
 | `qwen3.7-plus` | 1,000,000 | 131,072 | 开启 | 开启 | 可切换，默认开启 | — |
+
+三个 Qwen 端点均启用 MP4 视频输入，使用 `video_url` 扩展；音频输入关闭。
+[视频接口文档](https://www.alibabacloud.com/help/en/model-studio/vision)规定 Base64 视频小于 10 MB，
+服务端还限制时长、分辨率与帧数；OURO 本地准备上限不替代这些限制。
 
 使用 `enable_thinking` 控制开关，`preserve_thinking` 随开关设置为相同布尔值；Flash 通过
 `reasoning_effort` 选择等级。思考输出为文本，工具轮次通过 `reasoning_content` 续接。

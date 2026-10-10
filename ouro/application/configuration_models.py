@@ -70,7 +70,9 @@ class ProviderEndpointView(ApplicationDTO):
     context_window: int
     max_output_tokens: int
     supports_tools: bool
-    supports_vision: bool
+    supports_image_input: bool
+    supports_audio_input: bool
+    supports_video_input: bool
     supports_streaming: bool
     supports_structured_output: bool
     reasoning: EndpointReasoningConfig = Field(default_factory=EndpointReasoningConfig)

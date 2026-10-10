@@ -33,6 +33,7 @@ from ouro.core.compaction import (
     plan_compaction,
     project_compacted_messages,
 )
+from ouro.core.content import MediaModality
 from ouro.core.context import (
     ContextBuilder,
     ContextView,
@@ -85,7 +86,7 @@ class ModelMessageProjector(Protocol):
         self,
         messages: list[MessageRecord],
         *,
-        supports_vision: bool,
+        input_modalities: frozenset[MediaModality],
         input_budget_tokens: int | None = None,
     ) -> list[MessageRecord]: ...
 
@@ -1018,7 +1019,9 @@ class ContextPreparationService:
                     provider_id=adapter.model.provider_id,
                     endpoint_id=adapter.model.endpoint_id,
                     model_id=adapter.model.model_id,
-                    supports_vision=adapter.model.supports_vision,
+                    supports_image_input=adapter.model.supports_image_input,
+                    supports_audio_input=adapter.model.supports_audio_input,
+                    supports_video_input=adapter.model.supports_video_input,
                     system_prompt=context.system_prompt,
                     injected_messages=context.model_messages[:injected_message_count],
                     source_messages=source_messages,
@@ -1476,7 +1479,7 @@ class ContextPreparationService:
             return messages
         return self.project_model_messages(
             messages,
-            supports_vision=adapter.model.supports_vision,
+            input_modalities=adapter.model.input_modalities,
             input_budget_tokens=self._input_budget(adapter),
         )
 

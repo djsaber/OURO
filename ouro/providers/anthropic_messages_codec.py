@@ -16,7 +16,7 @@ def messages_to_anthropic_messages(
     messages: list[ModelMessage],
     *,
     system_prompt: str,
-    supports_vision: bool,
+    supports_image_input: bool,
     provider_id: str,
     model_id: str,
     include_continuation: bool,
@@ -25,15 +25,19 @@ def messages_to_anthropic_messages(
 
     system_parts = [system_prompt] if system_prompt else []
     converted: list[dict[str, Any]] = []
-    policy = ToolContentPolicy(native=frozenset({"text", "image"} if supports_vision else {"text"}))
+    policy = ToolContentPolicy(
+        native=frozenset({"text", "image"} if supports_image_input else {"text"})
+    )
     for message in project_tool_result_messages(messages, policy):
+        if any(not isinstance(part, TextContent | ImageContent) for part in message.content):
+            raise ValueError("unsupported Anthropic Messages content type")
         if message.role == "system":
             if message.text_content:
                 system_parts.append(message.text_content)
             continue
         item = _message_to_anthropic(
             message,
-            supports_vision=supports_vision,
+            supports_image_input=supports_image_input,
             provider_id=provider_id,
             model_id=model_id,
             include_continuation=include_continuation,
@@ -142,7 +146,7 @@ def error_from_anthropic(response: Mapping[str, Any]) -> str:
 def _message_to_anthropic(
     message: ModelMessage,
     *,
-    supports_vision: bool,
+    supports_image_input: bool,
     provider_id: str,
     model_id: str,
     include_continuation: bool,
@@ -157,7 +161,7 @@ def _message_to_anthropic(
                     "type": "tool_result",
                     "tool_use_id": message.tool_result.tool_call_id,
                     "content": (
-                        _message_content(message, supports_vision=supports_vision)
+                        _message_content(message, supports_image_input=supports_image_input)
                         if any(isinstance(part, ImageContent) for part in message.content)
                         else message.text_content
                     ),
@@ -167,7 +171,7 @@ def _message_to_anthropic(
         }
 
     role = "assistant" if message.role == "assistant" else "user"
-    content = _message_content(message, supports_vision=supports_vision)
+    content = _message_content(message, supports_image_input=supports_image_input)
     if role == "assistant":
         continuation = message.provider_continuation
         if (
@@ -196,7 +200,7 @@ def _message_to_anthropic(
 def _message_content(
     message: ModelMessage,
     *,
-    supports_vision: bool,
+    supports_image_input: bool,
 ) -> list[dict[str, Any]]:
     content: list[dict[str, Any]] = []
     for block in message.content:
@@ -204,9 +208,11 @@ def _message_content(
             if block.text:
                 content.append({"type": "text", "text": block.text})
         elif isinstance(block, ImageContent):
-            if not supports_vision:
+            if not supports_image_input:
                 raise ValueError("model endpoint does not support image input")
             content.append(_image_to_anthropic(block))
+        else:
+            raise ValueError(f"Anthropic Messages does not support {block.type} input")
     return content
 
 

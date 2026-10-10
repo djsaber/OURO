@@ -20,13 +20,57 @@ class ImageContent(OuroModel):
     media_type: str = ""
 
 
-ContentPart = Annotated[TextContent | ImageContent, Field(discriminator="type")]
+class AudioContent(OuroModel):
+    type: Literal["audio"] = "audio"
+    uri: str = Field(min_length=1)
+    media_type: str = Field(pattern=r"^audio/[^\s;]+$")
+
+
+class VideoContent(OuroModel):
+    type: Literal["video"] = "video"
+    uri: str = Field(min_length=1)
+    media_type: str = Field(pattern=r"^video/[^\s;]+$")
+
+
+MediaModality = Literal["image", "audio", "video"]
+MediaContent = ImageContent | AudioContent | VideoContent
+ContentPart = Annotated[TextContent | MediaContent, Field(discriminator="type")]
 ToolContent = str | list[ContentPart]
+
+
+# A local planning allowance; duration and the provider determine actual media tokens.
+MEDIA_CONTENT_COST = 2048
+
+
+def input_modalities(
+    *, supports_image_input: bool, supports_audio_input: bool, supports_video_input: bool
+) -> frozenset[MediaModality]:
+    capabilities: tuple[tuple[MediaModality, bool], ...] = (
+        ("image", supports_image_input),
+        ("audio", supports_audio_input),
+        ("video", supports_video_input),
+    )
+    return frozenset(kind for kind, supported in capabilities if supported)
+
+
+def media_format_omission(content_type: MediaModality, media_type: str) -> str | None:
+    formats = {
+        "image": ("image/png", "image/jpeg", "image/gif", "image/webp"),
+        "audio": ("audio/wav", "audio/mpeg"),
+        "video": ("video/mp4",),
+    }
+    if media_type not in formats[content_type]:
+        return (
+            f"The {content_type} format {media_type!r} cannot be sent. Provide a supported format."
+        )
+    return None
 
 
 def unsupported_content_text(content_type: str) -> str:
     """Explain unavailable content without exposing routing or protocol details."""
-    ability = "view images" if content_type == "image" else f"read {content_type} content"
+    ability = {"image": "view images", "audio": "hear audio", "video": "view videos"}.get(
+        content_type, f"read {content_type} content"
+    )
     return (
         f"This model cannot {ability}. The {content_type} was not sent. "
         "Trying again or changing its size will not help."

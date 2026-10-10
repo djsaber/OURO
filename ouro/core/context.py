@@ -8,10 +8,10 @@ from typing import Any
 from pydantic import Field, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
+from ouro.core.content import MEDIA_CONTENT_COST, MediaContent
 from ouro.core.context_providers import ContextFragment
 from ouro.core.message_semantics import render_semantic_envelope
 from ouro.core.messages import (
-    ImageContent,
     MessageRecord,
     ModelMessage,
     TextContent,
@@ -292,8 +292,8 @@ def estimate_message_tokens(
     content_tokens = sum(
         active_estimator(block.text)
         if isinstance(block, TextContent)
-        else _estimate_image_tokens(block)
-        if isinstance(block, ImageContent)
+        else MEDIA_CONTENT_COST
+        if isinstance(block, MediaContent)
         else 0
         for block in model_message.content
     )
@@ -312,12 +312,6 @@ def estimate_message_tokens(
         + content_tokens
         + active_estimator(json.dumps(protocol_payload, ensure_ascii=False, sort_keys=True))
     )
-
-
-def _estimate_image_tokens(_image: ImageContent) -> int:
-    """Use a bounded fallback instead of treating base64 bytes as text tokens."""
-
-    return 2048
 
 
 def _estimate_tool_tokens(tool: ToolDefinition, estimator: TokenEstimator) -> int:

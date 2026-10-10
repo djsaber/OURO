@@ -32,7 +32,13 @@ class RecordingProvider(FauxProvider):
 
     async def stream(self, *, model, messages, **kwargs):
         self.requests.append(
-            encode(self.protocol, deepcopy(messages), vision=model.supports_vision)
+            encode(
+                self.protocol,
+                deepcopy(messages),
+                image_input=model.supports_image_input,
+                audio_input=model.supports_audio_input,
+                video_input=model.supports_video_input,
+            )
         )
         async for event in super().stream(model=model, messages=messages, **kwargs):
             yield event
@@ -40,13 +46,13 @@ class RecordingProvider(FauxProvider):
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
 @pytest.mark.parametrize("protocol", ["chat", "responses", "messages"])
-@pytest.mark.parametrize("vision", [False, True])
+@pytest.mark.parametrize("image_input", [False, True])
 async def test_rich_results_survive_execution_storage_replay_and_route_projection(
-    tmp_path, backend, protocol, vision
+    tmp_path, backend, protocol, image_input
 ):
     provider = RecordingProvider(protocol)
     app = application_at(tmp_path, provider, backend=backend)
-    app.runtime.adapter.model.supports_vision = vision
+    app.runtime.adapter.model.supports_image_input = image_input
     executed = []
 
     def render(invocation, context):
@@ -63,10 +69,10 @@ async def test_rich_results_survive_execution_storage_replay_and_route_projectio
     result = await app.runtime.run("render")
     assert result.run.status == "completed"
     assert executed == ["call-0", "call-1"]
-    assert (URI.partition(",")[2] in str(provider.requests[-1])) == vision
-    if not vision:
+    assert (URI.partition(",")[2] in str(provider.requests[-1])) == image_input
+    if not image_input:
         assert str(provider.requests[-1]).count("This model cannot view images.") == 2
-    if protocol == "chat" and vision:
+    if protocol == "chat" and image_input:
         roles = [item["role"] for item in provider.requests[-1]]
         start = roles.index("tool")
         assert roles[start : start + 4] == ["tool", "tool", "user", "user"]
@@ -84,7 +90,7 @@ async def test_rich_results_survive_execution_storage_replay_and_route_projectio
     reopened = application_at(tmp_path, replay_provider, backend=backend)
     try:
         # Persisted content remains independent of the route that consumed it.
-        reopened.runtime.adapter.model.supports_vision = True
+        reopened.runtime.adapter.model.supports_image_input = True
         lifecycle = reopened.runtime._tool_calls_for_run(result.run.run_id).runs
         replay = lifecycle.append_tool_result_messages(
             session=result.session,

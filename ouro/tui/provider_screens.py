@@ -19,6 +19,7 @@ from ouro.config.provider_headers import parse_provider_headers
 from ouro.config.provider_models import (
     default_api_path,
     resolve_provider_connection,
+    validate_media_protocol_compatibility,
     validate_reasoning_protocol_compatibility,
 )
 from ouro.tui.controller import TuiEndpointConfiguration, TuiProviderConfiguration
@@ -344,7 +345,9 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
     _CAPABILITY_FIELDS = frozenset(
         {
             "endpoint-tools",
-            "endpoint-vision",
+            "endpoint-image-input",
+            "endpoint-audio-input",
+            "endpoint-video-input",
             "endpoint-streaming",
             "endpoint-structured-output",
         }
@@ -378,7 +381,15 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         }
         self._capabilities = {
             "endpoint-tools": existing.supports_tools if existing is not None else True,
-            "endpoint-vision": existing.supports_vision if existing is not None else False,
+            "endpoint-image-input": existing.supports_image_input
+            if existing is not None
+            else False,
+            "endpoint-audio-input": existing.supports_audio_input
+            if existing is not None
+            else False,
+            "endpoint-video-input": existing.supports_video_input
+            if existing is not None
+            else False,
             "endpoint-streaming": (existing.supports_streaming if existing is not None else True),
             "endpoint-structured-output": (
                 existing.supports_structured_output if existing is not None else True
@@ -520,13 +531,21 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             )
         except ValueError as exc:
             raise ValueError(f"Reasoning config is incompatible: {exc}") from exc
+        validate_media_protocol_compatibility(
+            self._provider.protocol,
+            supports_image_input=self._capabilities["endpoint-image-input"],
+            supports_audio_input=self._capabilities["endpoint-audio-input"],
+            supports_video_input=self._capabilities["endpoint-video-input"],
+        )
         return TuiEndpointConfiguration(
             display_name=display_name or None,
             model_id=model_id,
             context_window=context_window,
             max_output_tokens=max_output_tokens,
             supports_tools=self._capabilities["endpoint-tools"],
-            supports_vision=self._capabilities["endpoint-vision"],
+            supports_image_input=self._capabilities["endpoint-image-input"],
+            supports_audio_input=self._capabilities["endpoint-audio-input"],
+            supports_video_input=self._capabilities["endpoint-video-input"],
             supports_streaming=self._capabilities["endpoint-streaming"],
             supports_structured_output=self._capabilities["endpoint-structured-output"],
             reasoning=(
@@ -592,9 +611,24 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                 group="CAPABILITIES",
             ),
             Choice(
-                "endpoint-vision",
-                "Vision",
-                trailing=state("endpoint-vision"),
+                "endpoint-image-input",
+                "Image input",
+                trailing=state("endpoint-image-input"),
+                description="Accept images as model input.",
+                group="CAPABILITIES",
+            ),
+            Choice(
+                "endpoint-audio-input",
+                "Audio input",
+                trailing=state("endpoint-audio-input"),
+                description="Accept audio as model input.",
+                group="CAPABILITIES",
+            ),
+            Choice(
+                "endpoint-video-input",
+                "Video input",
+                trailing=state("endpoint-video-input"),
+                description="Accept video as model input.",
                 group="CAPABILITIES",
             ),
             Choice(

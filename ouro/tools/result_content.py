@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ouro.core.content import ContentPart, ImageContent, TextContent, ToolContent
+from ouro.core.content import ContentPart, MediaContent, TextContent, ToolContent
 
 
 def limit_result_content(
@@ -21,9 +21,9 @@ def limit_result_content(
     media_left = media_limit
     truncated = False
     for part in content:
-        if isinstance(part, ImageContent):
+        if isinstance(part, MediaContent):
             # URLs and data URLs are retained intact. Counting their serialized
-            # characters avoids decoding/copying image bytes on the execution path.
+            # characters avoids decoding/copying media bytes on the execution path.
             if len(part.uri) > media_left:
                 parts.append(TextContent(text="[media output limit exceeded; content omitted]"))
                 truncated = True

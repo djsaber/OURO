@@ -76,7 +76,7 @@ canonical Session 不可读或隐藏事件。派生索引维护是 best-effort �
 offset 0 由索引缺失隐式表达，只有游标能跳过非空历史前缀时才落盘。
 
 Session、Run、Message、Event、Compaction、ContextSnapshot 和 Delegation 是独立持久化根记录。每个 payload
-必须显式携带各自当前 `schema_version`：Session/Run/Event 为 2，Message/ContextSnapshot 为 3，Compaction/Delegation 为 1。
+必须显式携带各自当前 `schema_version`：Session/Run/Event 为 2，Message 为 3，ContextSnapshot 为 4，Compaction/Delegation 为 1。
 缺失、非整数、旧版本或未来版本均由共享 versioned decoder 在 adapter
 读取边界抛出 `UnsupportedDataVersionError`。领域模型校验各自版本，未知版本不能被验证为当前记录。
 Store 不通过字段默认值猜测旧格式，也不提供历史版本转换。

@@ -206,7 +206,7 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
         model_id="claude-test",
         provider_id="anthropic",
         supports_streaming=False,
-        supports_vision=True,
+        supports_image_input=True,
         reasoning=reasoning.capability,
         reasoning_request=ReasoningRequest(mode="enabled", effort="low"),
     )
@@ -547,7 +547,7 @@ async def test_anthropic_provider_rejects_unsupported_image_without_request() ->
             model=ModelMetadata(
                 model_id="claude-test",
                 provider_id="anthropic",
-                supports_vision=False,
+                supports_image_input=False,
             ),
             messages=[message],
         )

@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from pydantic import TypeAdapter
 
-from ouro.core.content import ContentPart, ImageContent, TextContent, ToolContent
+from ouro.core.content import (
+    AudioContent,
+    ContentPart,
+    ImageContent,
+    TextContent,
+    ToolContent,
+    VideoContent,
+)
 from ouro.sdk.plugins import v2 as sdk
 
 _CONTENT: TypeAdapter[ToolContent] = TypeAdapter(ToolContent)
@@ -19,6 +26,10 @@ def from_sdk_content(content: sdk.ToolContent) -> ToolContent:
             parts.append(TextContent(text=part.text))
         elif isinstance(part, sdk.ToolImageContent):
             parts.append(ImageContent(uri=part.uri, media_type=part.media_type))
+        elif isinstance(part, sdk.ToolAudioContent):
+            parts.append(AudioContent(uri=part.uri, media_type=part.media_type))
+        elif isinstance(part, sdk.ToolVideoContent):
+            parts.append(VideoContent(uri=part.uri, media_type=part.media_type))
         else:
             raise ValueError("tool output content must contain typed SDK content parts")
     return parts
@@ -31,6 +42,10 @@ def decode_worker_content(value: object) -> sdk.ToolContent:
     return tuple(
         sdk.ToolTextContent(text=part.text)
         if isinstance(part, TextContent)
-        else sdk.ToolImageContent(uri=part.uri, media_type=part.media_type)
+        else {
+            "image": sdk.ToolImageContent,
+            "audio": sdk.ToolAudioContent,
+            "video": sdk.ToolVideoContent,
+        }[part.type](uri=part.uri, media_type=part.media_type)
         for part in content
     )

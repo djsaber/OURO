@@ -171,7 +171,7 @@ async def test_file_only_reference_is_visible_to_prompt_policies_before_persiste
 @pytest.mark.parametrize("backend", ("files", "sqlite"))
 async def test_reference_image_snapshot_survives_source_removal(tmp_path, backend):
     app = application_at(tmp_path / "home", backend=backend)
-    app.runtime.adapter.model.supports_vision = True
+    app.runtime.adapter.model.supports_image_input = True
     image = tmp_path / "picture.png"
     raw = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="

@@ -355,11 +355,12 @@ def test_empty_templates_object_refills_from_inline(tmp_path) -> None:
     assert set(_read_json(tmp_path)["templates"]) == set(_INLINE_BY_ID)
 
 
-def test_old_structure_version_is_rejected_without_writing(tmp_path) -> None:
+@pytest.mark.parametrize("version", [0, 3])
+def test_old_structure_version_is_rejected_without_writing(tmp_path, version) -> None:
     store = ProviderTemplateStore(tmp_path)
     store.catalog()
     root = _read_json(tmp_path)
-    root["schema_version"] = 0
+    root["schema_version"] = version
     _write_json(tmp_path, root)
     written_text = _file_path(tmp_path).read_text(encoding="utf-8")
 
@@ -452,7 +453,7 @@ def test_catalog_does_not_invent_missing_content_baseline(tmp_path, monkeypatch,
     assert _file_path(tmp_path).read_bytes() == before
 
 
-@pytest.mark.parametrize("version", [None, 0, SCHEMA_VERSION + 1])
+@pytest.mark.parametrize("version", [None, 0, 3, SCHEMA_VERSION + 1])
 def test_restore_does_not_relabel_an_unsupported_template_file(tmp_path, version):
     store = ProviderTemplateStore(tmp_path)
     store.catalog()

@@ -54,7 +54,7 @@ trash entry. It first requests canonical abort for genuinely live Runs and waits
 then acquires the complete tree lock set and discards stale unfinished records. Tree scope never
 depends on deserializing historical Run or Delegation records.
 
-附件提供全文、首尾预览、原生图片或引用。PNG、JPEG、GIF、WebP 在 vision Endpoint 与预算允许时提供像素；
+附件提供全文、首尾预览、原生媒体或引用。PNG/JPEG/GIF/WebP 图片、WAV/MP3 音频与 MP4 视频在端点声明对应输入能力且预算允许时提供媒体内容；
 PDF、Office、压缩包等以元信息和引用提交，不自动解析。模型获得原名称、来源与真实路径，自主使用现有 Read 等工具读取或处理。引用降级会明确说明尚未读取的内容。
 
 资源通过 `resource import` 导入会话，再由 `run --resource <resource_id>` 附加到输入。TUI 可以恢复撤销消息的

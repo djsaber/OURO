@@ -41,7 +41,7 @@ def test_user_image_blocks_keep_order_and_native_data_uri():
         role="user",
         content=[TextContent(text="before"), ImageContent(uri=uri), TextContent(text="after")],
     )
-    assert encode([message], supports_vision=True)["input"] == [
+    assert encode([message], supports_image_input=True)["input"] == [
         {
             "role": "user",
             "content": [
@@ -52,7 +52,7 @@ def test_user_image_blocks_keep_order_and_native_data_uri():
         }
     ]
     with pytest.raises(OpenAIResponsesError):
-        encode([message.model_copy(update={"role": "system"})], supports_vision=True)
+        encode([message.model_copy(update={"role": "system"})], supports_image_input=True)
 
 
 def artifact(items):

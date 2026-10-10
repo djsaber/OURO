@@ -824,7 +824,7 @@ async def test_spawn_runs_child_as_independent_session_with_frozen_tools(tmp_pat
     anthropic_system, anthropic_messages = messages_to_anthropic_messages(
         provider.messages[0],
         system_prompt=provider.system_prompts[0],
-        supports_vision=False,
+        supports_image_input=False,
         provider_id="capture",
         model_id="capture",
         include_continuation=False,

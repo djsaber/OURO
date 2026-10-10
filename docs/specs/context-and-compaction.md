@@ -31,8 +31,8 @@ Context Provider 注入、压缩/恢复后的 messages、tools、metrics、路�
 
 `ContextSnapshotRecord` 只保存实际 Provider 请求的单一当前投影。语义包络完全由 source message/fragment 上是否
 存在 `semantic_tag` 决定；Store 不猜测旧投影方式。
-schema 3 固定实际发送的文本、状态和原生图片字节，查询不重新读取文件，
-不依据当前模型或阈值重新投影。文件预览和原生图片直接保存在骨架 content 中，文件变化不修改过去的内容；
+schema 4 固定实际发送的文本、状态、图片、音频和视频内容，以及当时端点的三种输入能力；查询不重新读取文件，
+不依据当前模型或阈值重新投影。文件预览和原生媒体直接保存在骨架 content 中，文件变化不修改过去的内容；
 工具读取结果保存在各自的 tool_result 中。附件骨架和正文按共享输入批次进入同一压缩帧，详见[附件规格](attachments.md)。
 
 ## Token 预算

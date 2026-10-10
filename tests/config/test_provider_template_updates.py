@@ -73,7 +73,7 @@ def test_template_update_merges_managed_values_and_preserves_user_ownership(
         provider_id,
         primary_id,
         display_name=None,
-        supports_vision=True,
+        supports_image_input=True,
     )
     manager.update_endpoint(
         provider_id,
@@ -103,7 +103,7 @@ def test_template_update_merges_managed_values_and_preserves_user_ownership(
         unknown.endpoint_id,
     }
     assert provider.endpoint(primary_id).context_window == 100_000
-    assert provider.endpoint(primary_id).supports_vision is True
+    assert provider.endpoint(primary_id).supports_image_input is True
     assert provider.endpoint(removed_custom_id).model_id == "private-model"
     assert result.added_endpoints == (new_default_id,)
     assert result.removed_endpoints == (removed_managed_id,)

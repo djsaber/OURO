@@ -398,7 +398,7 @@ def test_provider_config_resolves_endpoint_capabilities(tmp_path) -> None:
                                     "context_window": 200_000,
                                     "max_output_tokens": 16_000,
                                     "supports_tools": False,
-                                    "supports_vision": True,
+                                    "supports_image_input": True,
                                     "supports_streaming": False,
                                     "reasoning": reasoning.model_dump(mode="json"),
                                     "request_options": {"seed": 7},
@@ -423,7 +423,7 @@ def test_provider_config_resolves_endpoint_capabilities(tmp_path) -> None:
     assert options.context_window == 200_000
     assert options.max_output_tokens == 16_000
     assert options.supports_tools is False
-    assert options.supports_vision is True
+    assert options.supports_image_input is True
     assert options.supports_streaming is False
     assert options.reasoning == reasoning
     assert options.reasoning_request is None
@@ -664,11 +664,11 @@ def test_endpoint_defaults_match_mapping_defaults() -> None:
     assert endpoint.context_window == mapped.context_window == 1_000_000
     assert endpoint.max_output_tokens == mapped.max_output_tokens == 32_768
     assert endpoint.supports_tools is True
-    assert endpoint.supports_vision is False
+    assert endpoint.supports_image_input is False
     assert endpoint.supports_streaming is True
     assert endpoint.supports_structured_output is True
     assert mapped.supports_tools is True
-    assert mapped.supports_vision is False
+    assert mapped.supports_image_input is False
     assert mapped.supports_streaming is True
     assert mapped.supports_structured_output is True
 

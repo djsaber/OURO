@@ -171,7 +171,23 @@ class ToolImageContent:
     type: Literal["image"] = field(default="image", init=False)
 
 
-ToolContent = str | tuple[ToolTextContent | ToolImageContent, ...]
+@dataclass(frozen=True)
+class ToolAudioContent:
+    uri: str
+    media_type: str
+    type: Literal["audio"] = field(default="audio", init=False)
+
+
+@dataclass(frozen=True)
+class ToolVideoContent:
+    uri: str
+    media_type: str
+    type: Literal["video"] = field(default="video", init=False)
+
+
+ToolContent = (
+    str | tuple[ToolTextContent | ToolImageContent | ToolAudioContent | ToolVideoContent, ...]
+)
 
 
 @dataclass(frozen=True)
@@ -865,6 +881,8 @@ __all__ = [
     "ToolContent",
     "ToolTextContent",
     "ToolImageContent",
+    "ToolAudioContent",
+    "ToolVideoContent",
     "ToolPolicyAction",
     "ToolPolicyCall",
     "ToolPolicyContribution",

@@ -29,7 +29,7 @@ async def test_image_input_keeps_observed_bytes_across_capability_changes(
         item = InputFileReference(name=path.name, path=str(path))
     encoded = base64.b64encode(PNG).decode("ascii")
     try:
-        runtime.adapter.model.supports_vision = True
+        runtime.adapter.model.supports_image_input = True
         first = await runtime.run(
             "Describe this", session_id=session.session_id, attachments=(item,)
         )
@@ -45,7 +45,7 @@ async def test_image_input_keeps_observed_bytes_across_capability_changes(
             pytest.fail("observed attachments must not be read again")
 
         monkeypatch.setattr(runtime.resources._store, "read_ranges", fail_read)
-        runtime.adapter.model.supports_vision = False
+        runtime.adapter.model.supports_image_input = False
         assert runtime.sessions.context(session.session_id) == first_snapshot
         second = await runtime.run("Continue", session_id=session.session_id)
         assert second.run.status == "completed", second.run.error
@@ -60,7 +60,7 @@ async def test_image_input_keeps_observed_bytes_across_capability_changes(
             for part in message.content
         )
 
-        runtime.adapter.model.supports_vision = True
+        runtime.adapter.model.supports_image_input = True
         assert runtime.sessions.context(session.session_id) == second_snapshot
         third = await runtime.run("Look again", session_id=session.session_id)
         assert third.run.status == "completed"
@@ -72,7 +72,7 @@ async def test_image_input_keeps_observed_bytes_across_capability_changes(
 
 @pytest.mark.parametrize("protocol", ["responses", "messages", "chat"])
 @pytest.mark.parametrize("source_kind", ["upload", "reference"])
-async def test_nonvision_input_records_past_observation_without_mislabeling_a_later_model(
+async def test_unsupported_image_records_observed_capability_without_mislabeling_a_later_model(
     tmp_path, protocol, source_kind
 ):
     provider = RecordingProvider(protocol, request_tools=False)
@@ -93,15 +93,15 @@ async def test_nonvision_input_records_past_observation_without_mislabeling_a_la
         assert first.run.status == "completed", first.run.error
         observed = runtime.store.load_runtime_session(session.session_id).messages[0]
         assert not any(isinstance(part, ImageContent) for part in observed.content)
-        assert "model in use could not view images" in observed.text_content
+        assert "model in use did not support it" in observed.text_content
 
-        runtime.adapter.model.supports_vision = True
+        runtime.adapter.model.supports_image_input = True
         second = await runtime.run("Continue", session_id=session.session_id)
         assert second.run.status == "completed", second.run.error
         wire = str(provider.requests[-1])
         assert encoded not in wire
         assert "This model cannot view images." not in wire
-        assert "model in use could not view images" in wire
+        assert "model in use did not support it" in wire
 
         third = await runtime.run("Look again", session_id=session.session_id, attachments=(item,))
         assert third.run.status == "completed", third.run.error

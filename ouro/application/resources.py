@@ -15,6 +15,7 @@ from ouro.application.resource_models import (
     ResourceView,
 )
 from ouro.core.base import new_id, utc_now
+from ouro.core.content import MediaModality
 from ouro.core.errors import (
     ResourceAttachmentError,
     ResourceInUseError,
@@ -35,7 +36,7 @@ from ouro.sessions import SessionStore
 
 DEFAULT_MAX_RESOURCE_BYTES = 100 * 1024 * 1024
 DEFAULT_MAX_MODEL_TEXT_BYTES = 1 * 1024 * 1024
-DEFAULT_MAX_MODEL_IMAGE_BYTES = 20 * 1024 * 1024
+DEFAULT_MAX_MODEL_MEDIA_BYTES = 20 * 1024 * 1024
 DEFAULT_MAX_MODEL_ATTACHMENTS = 16
 
 
@@ -49,14 +50,14 @@ class ResourceService:
         sessions: SessionStore,
         max_resource_bytes: int = DEFAULT_MAX_RESOURCE_BYTES,
         max_model_text_bytes: int = DEFAULT_MAX_MODEL_TEXT_BYTES,
-        max_model_image_bytes: int = DEFAULT_MAX_MODEL_IMAGE_BYTES,
+        max_model_media_bytes: int = DEFAULT_MAX_MODEL_MEDIA_BYTES,
         max_model_attachments: int = DEFAULT_MAX_MODEL_ATTACHMENTS,
     ) -> None:
         if (
             min(
                 max_resource_bytes,
                 max_model_text_bytes,
-                max_model_image_bytes,
+                max_model_media_bytes,
                 max_model_attachments,
             )
             <= 0
@@ -65,7 +66,7 @@ class ResourceService:
         self._store, self._sessions = store, sessions
         self._max_resource_bytes = max_resource_bytes
         self._max_model_text_bytes = max_model_text_bytes
-        self._max_model_image_bytes = max_model_image_bytes
+        self._max_model_media_bytes = max_model_media_bytes
         self._max_model_attachments = max_model_attachments
 
     def import_resource(
@@ -238,20 +239,20 @@ class ResourceService:
             record=record,
             max_resource_bytes=self._max_resource_bytes,
             max_text_bytes=self._max_model_text_bytes,
-            max_image_bytes=self._max_model_image_bytes,
+            max_media_bytes=self._max_model_media_bytes,
         )
 
     def prepare_input(
         self,
         message: MessageRecord,
         *,
-        supports_vision: bool,
+        input_modalities: frozenset[MediaModality],
         workspace: str | None,
         workspace_only: bool,
     ) -> MessageRecord:
         return self._projector().prepare_input(
             message,
-            supports_vision=supports_vision,
+            input_modalities=input_modalities,
             workspace=workspace,
             workspace_only=workspace_only,
         )
@@ -260,11 +261,11 @@ class ResourceService:
         self,
         messages: list[MessageRecord],
         *,
-        supports_vision: bool,
+        input_modalities: frozenset[MediaModality],
         input_budget_tokens: int | None = None,
     ) -> list[MessageRecord]:
         return self._projector().project(
-            messages, supports_vision=supports_vision, input_budget_tokens=input_budget_tokens
+            messages, input_modalities=input_modalities, input_budget_tokens=input_budget_tokens
         )
 
     def branch_references(

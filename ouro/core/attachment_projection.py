@@ -17,6 +17,38 @@ def image_media_type(prefix: bytes) -> str | None:
     return None
 
 
+def file_media_type(prefix: bytes) -> str | None:
+    """Recognize bounded container signatures without decoding media streams."""
+    image = image_media_type(prefix)
+    if image is not None:
+        return image
+    if prefix.startswith(b"RIFF") and prefix[8:12] == b"WAVE":
+        return "audio/wav"
+    id3_header = (
+        len(prefix) >= 10
+        and prefix.startswith(b"ID3")
+        and prefix[3] in (2, 3, 4)
+        and prefix[4] != 0xFF
+        and all(byte < 0x80 for byte in prefix[6:10])
+    )
+    if id3_header or (
+        len(prefix) >= 4
+        and prefix[0] == 0xFF
+        and prefix[1] & 0xE6 == 0xE2  # MPEG audio sync, non-reserved version, layer III
+        and prefix[1] & 0x18 != 0x08
+        and prefix[2] & 0xF0 not in (0, 0xF0)
+        and prefix[2] & 0x0C != 0x0C
+    ):
+        return "audio/mpeg"
+    if len(prefix) >= 16 and prefix[4:8] == b"ftyp":
+        brand = prefix[8:12]
+        if brand in (b"M4A ", b"M4B ", b"M4P "):
+            return "audio/mp4"
+        if brand in (b"isom", b"iso2", b"mp41", b"mp42", b"avc1", b"M4V "):
+            return "video/mp4"
+    return None
+
+
 def text_encoding(prefix: bytes) -> str | None:
     if prefix.startswith(b"\xef\xbb\xbf"):
         return "utf-8-sig"

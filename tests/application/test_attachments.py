@@ -103,8 +103,8 @@ async def test_attachment_only_image_and_binary_downgrade_and_snapshot(tmp_path)
     result = await runtime.run("", session_id=session.session_id, attachments=(item,))
     assert result.run.status == "completed"
     saved = runtime.sessions.context(session.session_id)
-    assert "model in use could not view images" in saved.provider_context.messages[0].text_content
-    runtime.adapter.model.supports_vision = True
+    assert "model in use did not support it" in saved.provider_context.messages[0].text_content
+    runtime.adapter.model.supports_image_input = True
     result = await runtime.run("look now", session_id=session.session_id, attachments=(item,))
     assert result.run.status == "completed"
     snapshot = runtime.store.load_latest_context(session.session_id)
@@ -118,7 +118,7 @@ async def test_attachment_only_image_and_binary_downgrade_and_snapshot(tmp_path)
     ]
     assert len(images) == 1
     assert base64.b64decode(images[0].uri.split(",", 1)[1]) == PNG
-    runtime.adapter.model.supports_vision = False
+    runtime.adapter.model.supports_image_input = False
     assert runtime.sessions.context(session.session_id) == restored
     binary = tmp_path / "opaque.bin"
     binary.write_bytes(b"\x00\x01\xffopaque")
@@ -144,7 +144,7 @@ async def test_long_unicode_preview_named_path_and_scoped_export(tmp_path):
     ref = runtime.resources.import_resource(session.session_id, path).resource.resource_id
     message = MessageRecord.text(session_id=session.session_id, role="user", text="")
     message.resource_refs = [ref]
-    preview = runtime.resources.project_model_messages([message], supports_vision=False)[
+    preview = runtime.resources.project_model_messages([message], input_modalities=frozenset())[
         0
     ].text_content
     assert "head/tail preview" in preview and "omitted bytes" in preview
@@ -174,7 +174,7 @@ async def test_preview_preserves_supported_unicode_encodings(tmp_path, encoding)
     ref = runtime.resources.import_resource(session.session_id, path).resource.resource_id
     message = MessageRecord.text(session_id=session.session_id, role="user", text="")
     message.resource_refs = [ref]
-    projected = runtime.resources.project_model_messages([message], supports_vision=False)[0]
+    projected = runtime.resources.project_model_messages([message], input_modalities=frozenset())[0]
     assert original in projected.text_content
     await app.close()
 
@@ -194,7 +194,7 @@ async def test_shared_attachment_budget_prioritizes_latest_material_and_retains_
         message.resource_refs = [ref]
         messages.append(message)
     projected = runtime.resources.project_model_messages(
-        messages, supports_vision=False, input_budget_tokens=16000
+        messages, input_modalities=frozenset(), input_budget_tokens=16000
     )
     assert "full text" in projected[-1].text_content
     assert "2" * 3000 in projected[-1].text_content

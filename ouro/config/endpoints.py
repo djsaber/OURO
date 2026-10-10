@@ -29,7 +29,9 @@ _ENDPOINT_FIELDS = frozenset(
         "context_window",
         "max_output_tokens",
         "supports_tools",
-        "supports_vision",
+        "supports_image_input",
+        "supports_audio_input",
+        "supports_video_input",
         "supports_streaming",
         "supports_structured_output",
         "reasoning",
@@ -51,7 +53,9 @@ class ProviderEndpointConfig(OuroModel):
     context_window: int = Field(default=1_000_000, ge=1)
     max_output_tokens: int = Field(default=32_768, ge=1)
     supports_tools: bool = True
-    supports_vision: bool = False
+    supports_image_input: bool = False
+    supports_audio_input: bool = False
+    supports_video_input: bool = False
     supports_streaming: bool = True
     supports_structured_output: bool = True
     reasoning: EndpointReasoningConfig = Field(default_factory=EndpointReasoningConfig)
@@ -120,7 +124,9 @@ def endpoint_config_from_mapping(
         context_window=raw.get("context_window", 1_000_000),
         max_output_tokens=raw.get("max_output_tokens", 32_768),
         supports_tools=raw.get("supports_tools", True),
-        supports_vision=raw.get("supports_vision", False),
+        supports_image_input=raw.get("supports_image_input", False),
+        supports_audio_input=raw.get("supports_audio_input", False),
+        supports_video_input=raw.get("supports_video_input", False),
         supports_streaming=raw.get("supports_streaming", True),
         supports_structured_output=raw.get("supports_structured_output", True),
         reasoning=EndpointReasoningConfig.model_validate(raw.get("reasoning") or {}),
@@ -135,7 +141,9 @@ def endpoint_config_to_raw(endpoint: ProviderEndpointConfig) -> dict[str, Any]:
         "context_window": endpoint.context_window,
         "max_output_tokens": endpoint.max_output_tokens,
         "supports_tools": endpoint.supports_tools,
-        "supports_vision": endpoint.supports_vision,
+        "supports_image_input": endpoint.supports_image_input,
+        "supports_audio_input": endpoint.supports_audio_input,
+        "supports_video_input": endpoint.supports_video_input,
         "supports_streaming": endpoint.supports_streaming,
         "supports_structured_output": endpoint.supports_structured_output,
         "reasoning": endpoint.reasoning.model_dump(mode="json", exclude_none=True),

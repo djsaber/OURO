@@ -683,7 +683,7 @@ async def test_controller_configures_provider_endpoint_through_application_facad
         context_window=200_000,
         max_output_tokens=16_000,
         supports_tools=True,
-        supports_vision=True,
+        supports_image_input=True,
         reasoning=reasoning_preset("thinking-toggle"),
         request_options={"seed": 7},
     )
@@ -697,7 +697,7 @@ async def test_controller_configures_provider_endpoint_through_application_facad
         assert saved.context_window == 200_000
         assert saved.max_output_tokens == 16_000
         assert saved.supports_tools is True
-        assert saved.supports_vision is True
+        assert saved.supports_image_input is True
         assert saved.reasoning == reasoning_preset("thinking-toggle")
         assert saved.request_options == {"seed": 7}
         assert f"{provider_id}/{endpoint.endpoint_id}" in {
@@ -837,7 +837,7 @@ async def test_controller_configures_preset_and_custom_providers(
                 context_window=target.context_window,
                 max_output_tokens=target.max_output_tokens,
                 supports_tools=target.supports_tools,
-                supports_vision=target.supports_vision,
+                supports_image_input=target.supports_image_input,
                 supports_streaming=target.supports_streaming,
                 supports_structured_output=target.supports_structured_output,
                 reasoning=reasoning_preset("none"),

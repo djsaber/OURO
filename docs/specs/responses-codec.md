@@ -11,9 +11,9 @@
 
 canonical tool calls 转成 function_call，其 call_id 来自 ToolCallRequest.id；工具结果转成 function_call_output，其 call_id 来自 ToolResultReference。供应商 item id 不用作工具结果关联。工具 JSON 不允许非有限数字；缺少引用的工具结果明确失败。
 
-Endpoint 声明 vision 时，用户消息和工具结果中的图片按顺序编码为 `input_image`，data URI 使用 `image_url`，
+Endpoint 声明 `supports_image_input` 时，用户消息和工具结果中的图片按顺序编码为 `input_image`，data URI 使用 `image_url`，
 图片前后文字为 `input_text`。工具结果直接使用 `function_call_output.output` 内容数组；纯文本结果使用字符串。
-非视觉端点的工具内容经通用结果投影转换为明确说明；原始结果不变。非视觉用户图片及其他角色的图片明确失败，
+不支持图片输入时，工具图片经通用结果投影转换为明确说明，原始结果不变；直接传入的用户图片及其他角色的图片明确失败。
 Application 按[附件规格](attachments.md)先准备合法输入。协议依据
 [OpenAI Images and vision](https://developers.openai.com/api/docs/guides/images-vision) 和
 [Function calling](https://developers.openai.com/api/docs/guides/function-calling#formatting-results)。
@@ -32,7 +32,7 @@ adapter 借用 `RequestAuthenticator`，每次尝试重新 acquire；用同次�
 
 max_output_tokens 保持端点配置的正整数和本地上下文预算语义。adapter 依据注入的 ProviderRequestPolicy.supports_output_limit 决定是否将其发送为请求输出上限，默认 true。明确声明 false 的服务不发送该字段，实际输出可能超过本地预算，使用入口必须披露限制。该能力不由认证方式、计费类型、URL 或模型名推断；request_options 不能覆盖，HTTP 失败后不自动调整。Codex 探针基于实测参数拒绝声明 false，省略后的正式路径已在 Windows/browser/gpt-5.5 真实实验中通过文本、刷新及工具续接；标准 Responses 继续支持发送上限。
 
-reasoning profile 只能声明原生 reasoning 对象，不能复用 Chat Completions 的 reasoning_effort。text.format 需要结构化输出能力；原生图片需 Endpoint 声明 vision。未声明工具能力时拒绝工具输入及工具输出。展示层可隐藏 reasoning_delta，但隐藏发生在共享重试边界之后，已收到思考输出仍禁止重放。完整 reasoning item 的保存不受展示开关影响。
+reasoning profile 只能声明原生 reasoning 对象，不能复用 Chat Completions 的 reasoning_effort。text.format 需要结构化输出能力；原生图片需 Endpoint 声明 `supports_image_input`。未声明工具能力时拒绝工具输入及工具输出。展示层可隐藏 reasoning_delta，但隐藏发生在共享重试边界之后，已收到思考输出仍禁止重放。完整 reasoning item 的保存不受展示开关影响。
 
 JSON 与 SSE 使用同一 decoder/完成校验。等待预算、错误分类、重试与关闭遵循
 [跨协议公共契约](provider-configuration.md#请求等待错误与资源生命周期)，不设置响应总生成时限。

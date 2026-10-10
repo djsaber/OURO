@@ -154,13 +154,13 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     assert templates["deepseek"].revision == 5
 
     qwen = templates["qwen"]
-    assert qwen.revision == 6
+    assert qwen.revision == 7
     qwen_max = qwen.endpoint()
     assert qwen_max.model_id == "qwen3.8-max"
     assert qwen_max.context_window == 1_000_000
     assert qwen_max.max_output_tokens == 131_072
     assert qwen_max.supports_tools is True
-    assert qwen_max.supports_vision is True
+    assert qwen_max.supports_image_input is True
     assert qwen_max.supports_streaming is True
     assert qwen_max.supports_structured_output is True
     qwen_reasoning = qwen_max.reasoning
@@ -170,7 +170,7 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     qwen_flash = qwen.endpoint("qwen3.8-flash")
     assert qwen_flash.context_window == 1_000_000
     assert qwen_flash.max_output_tokens == 131_072
-    assert qwen_flash.supports_vision is True
+    assert qwen_flash.supports_image_input is True
     assert qwen_flash.supports_structured_output is True
     flash_reasoning = qwen_flash.reasoning
     assert flash_reasoning.capability.activation == "toggle"
@@ -185,7 +185,7 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     qwen_plus = qwen.endpoint("qwen3.7-plus")
     assert qwen_plus.context_window == 1_000_000
     assert qwen_plus.max_output_tokens == 131_072
-    assert qwen_plus.supports_vision is True
+    assert qwen_plus.supports_image_input is True
     assert qwen_plus.supports_structured_output is True
     plus_reasoning = qwen_plus.reasoning
     assert plus_reasoning.capability.activation == "toggle"
@@ -216,14 +216,14 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     assert glm_53_endpoint.context_window == 1_000_000
     assert glm_53_endpoint.max_output_tokens == 128_000
     assert glm_53_endpoint.supports_tools is True
-    assert glm_53_endpoint.supports_vision is False
+    assert glm_53_endpoint.supports_image_input is False
     assert glm_53_endpoint.supports_streaming is True
     assert glm_53_endpoint.supports_structured_output is True
     glm_flash = glm.endpoint("glm-5.3-flash")
     assert glm_flash.context_window == 1_000_000
     assert glm_flash.max_output_tokens == 128_000
     assert glm_flash.supports_tools is True
-    assert glm_flash.supports_vision is True
+    assert glm_flash.supports_image_input is True
     assert glm_flash.supports_streaming is True
     assert glm_flash.supports_structured_output is True
     assert glm_flash.reasoning.profile is not None
@@ -241,7 +241,7 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     assert grok.context_window == 500_000
     assert grok.max_output_tokens == 128_000
     assert grok.supports_tools is True
-    assert grok.supports_vision is True
+    assert grok.supports_image_input is True
     assert grok.supports_streaming is True
     assert grok.supports_structured_output is True
     assert grok.metadata["provider_output_limit"] == "unlimited"

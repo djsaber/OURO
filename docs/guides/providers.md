@@ -152,3 +152,21 @@ uv run --frozen ouro run --home ./.ouro-dev --provider <provider_id> --endpoint 
 effort 的 Endpoint 使用显式 `default_effort` 解析未带等级的 `enabled`，不依赖厂商默认。TUI 菜单只显示不同的
 有效配置：可切换且支持 effort 时显示 `disabled` 和各 effort，不支持 effort 时显示 `enabled`、`disabled`；
 `Alt+T` 按相同集合循环，不经过重复的 `default` 状态。
+
+## 图片、音频与视频输入
+
+Endpoint 分别提供 `--image-input`、`--audio-input` 和 `--video-input` 开关，以及对应的 `--no-*` 关闭开关；
+TUI 的 Endpoint 能力菜单提供同样的设置。按目标服务与具体模型实际接受的格式开启：
+
+```bash
+# Chat Completions 音频输入端点，接受 WAV/MP3
+uv run --frozen ouro provider endpoint add <provider_id> --model <audio-model> --audio-input
+
+# 仅对接受 video_url 扩展的服务开启 MP4 视频输入
+uv run --frozen ouro provider endpoint update <provider_id> <endpoint_id> --video-input
+```
+
+音视频文件使用普通上传或 `@` 原路径引用入口。支持的内容会作为原生媒体送入对话；能力、格式或大小不符合要求时，
+保留文件说明与读取路径。三个开关均只声明输入能力，不启用语音或视频输出。
+Responses 与 Anthropic Messages 路由不接受音视频能力配置。Gemini 模板启用音频输入，Qwen 模板启用视频输入；其余音视频开关默认关闭。
+模板按经过核验的具体模型与连接声明能力，运行时不根据厂商名称推断。模型与格式限制见[输入模态契约](../specs/provider-configuration.md#输入模态契约)。

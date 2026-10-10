@@ -3123,9 +3123,9 @@ class RuntimeService:
             )
             messages[0] = self.resources.prepare_input(
                 messages[0],
-                supports_vision=self._adapter_for_session_id(
+                input_modalities=self._adapter_for_session_id(
                     session.session_id
-                ).model.supports_vision,
+                ).model.input_modalities,
                 workspace=session.workspace,
                 workspace_only=workspace_only,
             )

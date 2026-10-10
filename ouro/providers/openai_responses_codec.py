@@ -154,12 +154,14 @@ def responses_input(
     provider_id: str,
     model_id: str,
     scope: tuple[str, ...],
-    supports_vision: bool = False,
+    supports_image_input: bool = False,
 ) -> dict[str, Any]:
     """Encode only content fields. Service capabilities and model options belong to the adapter."""
     instructions = [system_prompt] if system_prompt else []
     items: list[dict[str, Any]] = []
-    policy = ToolContentPolicy(native=frozenset({"text", "image"} if supports_vision else {"text"}))
+    policy = ToolContentPolicy(
+        native=frozenset({"text", "image"} if supports_image_input else {"text"})
+    )
     try:
         projected = project_tool_result_messages(messages, policy)
     except ValueError:
@@ -168,7 +170,7 @@ def responses_input(
         has_image = any(isinstance(part, ImageContent) for part in message.content)
         if any(not isinstance(part, TextContent | ImageContent) for part in message.content):
             raise OpenAIResponsesError("unsupported_input")
-        if has_image and (not supports_vision or message.role not in {"user", "tool_result"}):
+        if has_image and (not supports_image_input or message.role not in {"user", "tool_result"}):
             raise OpenAIResponsesError("unsupported_input")
         if message.role == "system":
             instructions.append(message.text_content)

@@ -9,6 +9,58 @@ from ouro.cli.main import main
 from ouro.config import ProviderConfigManager, ProviderRuntimeOptions
 
 
+def test_endpoint_media_flags_persist_and_update_independently(tmp_path, capsys):
+    facade = ConfigurationFacade(tmp_path)
+    provider_id = facade.add_provider(
+        display_name="Media",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        base_url="https://media.test",
+    ).changed_provider_id
+    common = ["--home", str(tmp_path), "--json"]
+    assert (
+        main(
+            [
+                "provider",
+                "endpoint",
+                "add",
+                provider_id,
+                "--model",
+                "av",
+                "--audio-input",
+                "--video-input",
+                "--no-image-input",
+                *common,
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    endpoint = facade.provider(provider_id).endpoints[0]
+    assert (
+        endpoint.supports_audio_input
+        and endpoint.supports_video_input
+        and not endpoint.supports_image_input
+    )
+    assert (
+        main(
+            [
+                "provider",
+                "endpoint",
+                "update",
+                provider_id,
+                endpoint.endpoint_id,
+                "--no-audio-input",
+                *common,
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    updated = facade.provider(provider_id).endpoints[0]
+    assert not updated.supports_audio_input and updated.supports_video_input
+
+
 @pytest.mark.parametrize(
     ("protocol", "default_path"),
     [

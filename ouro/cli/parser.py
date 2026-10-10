@@ -1862,7 +1862,9 @@ def _add_endpoint_capability_args(
 ) -> None:
     for options, dest, help_text in (
         (("tools",), "supports_tools", "tool calling"),
-        (("vision",), "supports_vision", "image/multimodal input"),
+        (("image-input",), "supports_image_input", "image input"),
+        (("audio-input",), "supports_audio_input", "audio input"),
+        (("video-input",), "supports_video_input", "video input"),
         (("streaming",), "supports_streaming", "streaming output"),
         (("structured-output",), "supports_structured_output", "structured output"),
     ):

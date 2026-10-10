@@ -27,6 +27,11 @@ from ouro.providers.http_transport import HttpxProviderHTTPTransport
 from tests.providers.responses_fixtures import message, terminal
 
 
+def test_factory_rejects_unknown_protocol_before_looking_up_media_encodings():
+    with pytest.raises(ConfigError, match="unsupported provider protocol: unknown"):
+        build_runtime_adapter(ProviderRuntimeOptions(protocol="unknown"))
+
+
 @pytest.mark.parametrize(
     "protocol", ["openai-responses", "openai-chat-completions", "anthropic-messages"]
 )
@@ -264,7 +269,7 @@ async def test_configured_endpoint_drives_model_metadata_and_provider_request(tm
         context_window=200_000,
         max_output_tokens=16_000,
         supports_tools=False,
-        supports_vision=True,
+        supports_image_input=True,
         supports_streaming=False,
         supports_structured_output=True,
         reasoning=openai_chat_completions_effort_reasoning(
@@ -298,7 +303,7 @@ async def test_configured_endpoint_drives_model_metadata_and_provider_request(tm
     assert [event.type for event in events] == ["text_delta", "done"]
     assert adapter.model.endpoint_id == endpoint.endpoint_id
     assert adapter.model.context_window == 200_000
-    assert adapter.model.supports_vision is True
+    assert adapter.model.supports_image_input is True
     assert adapter.model.supports_structured_output is True
     payload = transport.requests[0]["payload"]
     assert transport.requests[0]["url"] == "https://example.test/v1/responses/chat"

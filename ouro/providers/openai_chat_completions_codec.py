@@ -4,6 +4,14 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from ouro.core.content import (
+    AudioContent,
+    MediaContent,
+    MediaModality,
+    VideoContent,
+    input_modalities,
+    media_format_omission,
+)
 from ouro.core.messages import ImageContent, ModelMessage, TextContent
 from ouro.core.provider import ToolCallDelta, Usage
 from ouro.core.tool_result_projection import project_tool_result_messages
@@ -16,7 +24,9 @@ def messages_to_chat_completions(
     messages: list[ModelMessage],
     *,
     system_prompt: str,
-    supports_vision: bool,
+    supports_image_input: bool,
+    supports_audio_input: bool = False,
+    supports_video_input: bool = False,
     provider_id: str,
     model_id: str,
     include_continuation: bool,
@@ -25,14 +35,19 @@ def messages_to_chat_completions(
 
     system_contents: list[ChatCompletionsMessageContent] = [system_prompt] if system_prompt else []
     converted_messages: list[dict[str, Any]] = []
+    modalities = input_modalities(
+        supports_image_input=supports_image_input,
+        supports_audio_input=supports_audio_input,
+        supports_video_input=supports_video_input,
+    )
     policy = ToolContentPolicy(
         native=frozenset({"text"}),
-        contextual=frozenset({"image"}) if supports_vision else frozenset(),
+        contextual=modalities,
     )
     for message in project_tool_result_messages(messages, policy):
         converted = _message_to_chat_completions(
             message,
-            supports_vision=supports_vision,
+            modalities=modalities,
             provider_id=provider_id,
             model_id=model_id,
             include_continuation=include_continuation,
@@ -69,7 +84,7 @@ def _merge_system_contents(
 def _message_to_chat_completions(
     message: ModelMessage,
     *,
-    supports_vision: bool = False,
+    modalities: frozenset[MediaModality],
     provider_id: str,
     model_id: str,
     include_continuation: bool,
@@ -82,7 +97,7 @@ def _message_to_chat_completions(
 
     converted: dict[str, Any] = {
         "role": wire_role,
-        "content": _message_content_to_chat_completions(message, supports_vision=supports_vision),
+        "content": _message_content_to_chat_completions(message, modalities=modalities),
     }
     if wire_role == "assistant":
         if message.tool_calls:
@@ -114,20 +129,50 @@ def _message_to_chat_completions(
 def _message_content_to_chat_completions(
     message: ModelMessage,
     *,
-    supports_vision: bool,
+    modalities: frozenset[MediaModality],
 ) -> str | list[dict[str, Any]]:
-    has_image = any(isinstance(block, ImageContent) for block in message.content)
-    if has_image and not supports_vision:
-        raise ValueError("model endpoint does not support image input")
-    if not has_image:
+    if not any(isinstance(block, MediaContent) for block in message.content):
+        if any(not isinstance(block, TextContent) for block in message.content):
+            raise ValueError("unsupported Chat Completions content type")
         return message.text_content
 
     content: list[dict[str, Any]] = []
     for block in message.content:
         if isinstance(block, TextContent):
             content.append({"type": "text", "text": block.text})
-        elif isinstance(block, ImageContent):
+            continue
+        if not isinstance(block, MediaContent):
+            raise ValueError("unsupported Chat Completions content type")
+        if block.type not in modalities:
+            raise ValueError(f"model endpoint does not support {block.type} input")
+        if message.role != "user":
+            raise ValueError(f"{block.type} input requires a user message")
+        if isinstance(block, ImageContent):
             content.append({"type": "image_url", "image_url": {"url": block.uri}})
+        elif isinstance(block, AudioContent):
+            reason = media_format_omission(block.type, block.media_type)
+            if reason:
+                raise ValueError(reason)
+            prefix = f"data:{block.media_type};base64,"
+            if not block.uri.startswith(prefix) or len(block.uri) == len(prefix):
+                raise ValueError("audio input requires a base64 data URI matching its media type")
+            content.append(
+                {
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": block.uri[len(prefix) :],
+                        "format": {"audio/wav": "wav", "audio/mpeg": "mp3"}[block.media_type],
+                    },
+                }
+            )
+        elif isinstance(block, VideoContent):
+            reason = media_format_omission(block.type, block.media_type)
+            if reason:
+                raise ValueError(reason)
+            prefix = f"data:{block.media_type};base64,"
+            if block.uri == prefix or not block.uri.startswith((prefix, "https://", "http://")):
+                raise ValueError("video input requires an HTTP URL or matching base64 data URI")
+            content.append({"type": "video_url", "video_url": {"url": block.uri}})
     return content
 
 

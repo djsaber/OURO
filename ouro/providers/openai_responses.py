@@ -132,7 +132,7 @@ class OpenAIResponsesProvider:
                         provider_id=self.provider_id,
                         model_id=model.model_id,
                         scope=snapshot.scope,
-                        supports_vision=model.supports_vision,
+                        supports_image_input=model.supports_image_input,
                     )
                 )
                 chunks = self._chunks(url, snapshot.headers, payload, model.supports_streaming)

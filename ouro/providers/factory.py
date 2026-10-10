@@ -12,6 +12,7 @@ from ouro.config.provider_models import (
     ProviderRuntimeOptions,
     default_api_path,
     provider_protocol_spec,
+    validate_media_protocol_compatibility,
     validate_reasoning_protocol_compatibility,
     validate_request_options,
 )
@@ -55,13 +56,22 @@ def build_runtime_adapter(
     """Build the provider boundary from fully resolved runtime options."""
 
     validate_runtime_auth(options)
-    if options.auth_driver not in (None, "static") and authenticator is None:
-        raise ConfigError("managed request authenticator must be supplied by composition")
     protocol = options.protocol or "faux"
-    if protocol == "faux" and options.headers:
-        raise ConfigError("faux protocol does not accept HTTP headers")
     if protocol not in SUPPORTED_PROVIDER_PROTOCOLS:
         raise ConfigError(f"unsupported provider protocol: {protocol}")
+    try:
+        validate_media_protocol_compatibility(
+            protocol,
+            supports_image_input=bool(options.supports_image_input),
+            supports_audio_input=bool(options.supports_audio_input),
+            supports_video_input=bool(options.supports_video_input),
+        )
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+    if options.auth_driver not in (None, "static") and authenticator is None:
+        raise ConfigError("managed request authenticator must be supplied by composition")
+    if protocol == "faux" and options.headers:
+        raise ConfigError("faux protocol does not accept HTTP headers")
     default_provider_id = "faux" if protocol == "faux" else protocol
     provider_id = _normalized_identifier(
         options.provider_id,
@@ -232,7 +242,15 @@ def _model_metadata(
             max_output_tokens=max_output_tokens,
             temperature=options.temperature,
             supports_tools=True if options.supports_tools is None else options.supports_tools,
-            supports_vision=False if options.supports_vision is None else options.supports_vision,
+            supports_image_input=False
+            if options.supports_image_input is None
+            else options.supports_image_input,
+            supports_audio_input=False
+            if options.supports_audio_input is None
+            else options.supports_audio_input,
+            supports_video_input=False
+            if options.supports_video_input is None
+            else options.supports_video_input,
             supports_streaming=True
             if options.supports_streaming is None
             else options.supports_streaming,

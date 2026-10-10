@@ -12,13 +12,19 @@ from ouro.providers.openai_responses_codec import responses_input
 URI = "data:image/png;base64,aW1hZ2U="
 
 
-def encode(protocol, messages, *, vision):
-    kwargs = dict(system_prompt="", provider_id="p", model_id="m", supports_vision=vision)
+def encode(protocol, messages, *, image_input, audio_input=False, video_input=False):
+    kwargs = dict(system_prompt="", provider_id="p", model_id="m", supports_image_input=image_input)
     if protocol == "responses":
         return responses_input(messages, scope=("scope",), **kwargs)["input"]
     if protocol == "messages":
         return messages_to_anthropic_messages(messages, include_continuation=False, **kwargs)[1]
-    return messages_to_chat_completions(messages, include_continuation=False, **kwargs)
+    return messages_to_chat_completions(
+        messages,
+        include_continuation=False,
+        supports_audio_input=audio_input,
+        supports_video_input=video_input,
+        **kwargs,
+    )
 
 
 def exchange():
@@ -43,10 +49,10 @@ def exchange():
 
 
 @pytest.mark.parametrize("protocol", ["responses", "messages", "chat"])
-def test_route_projection_preserves_canonical_results_and_degrades_without_vision(protocol):
+def test_route_projection_preserves_canonical_results_and_degrades_without_image_input(protocol):
     messages = exchange()
     before = deepcopy(messages)
-    wire = encode(protocol, messages, vision=False)
+    wire = encode(protocol, messages, image_input=False)
     assert URI not in str(wire)
     assert str(wire).count("This model cannot view images.") == 2
     assert str(wire).count("Trying again or changing its size will not help.") == 2
@@ -64,12 +70,12 @@ def test_route_projection_preserves_canonical_results_and_degrades_without_visio
     assert results == [expected, expected]
     assert messages == before
     # Switching routes or capabilities reuses the execution fact, not a previous fallback.
-    assert URI in str(encode("responses", messages, vision=True))
+    assert URI in str(encode("responses", messages, image_input=True))
     assert messages == before
 
 
 def test_responses_embeds_ordered_native_content_in_each_function_output():
-    wire = encode("responses", exchange(), vision=True)
+    wire = encode("responses", exchange(), image_input=True)
     results = [item for item in wire if item.get("type") == "function_call_output"]
     assert [item["call_id"] for item in results] == ["call-0", "call-1"]
     assert results[0]["output"] == [
@@ -81,7 +87,7 @@ def test_responses_embeds_ordered_native_content_in_each_function_output():
 
 
 def test_messages_groups_native_tool_results_before_user_content():
-    wire = encode("messages", exchange(), vision=True)
+    wire = encode("messages", exchange(), image_input=True)
     assert [item["role"] for item in wire] == ["assistant", "user"]
     results = wire[-1]["content"]
     assert [result["tool_use_id"] for result in results] == ["call-0", "call-1"]
@@ -99,7 +105,7 @@ def test_messages_groups_native_tool_results_before_user_content():
 def test_chat_completions_finishes_all_tool_results_before_supplemental_messages():
     messages = exchange()
     messages.append(ModelMessage.text(role="user", text="next question"))
-    wire = encode("chat", messages, vision=True)
+    wire = encode("chat", messages, image_input=True)
     assert [item["role"] for item in wire] == ["assistant", "tool", "tool", "user", "user", "user"]
     for index in range(2):
         result, context = wire[index + 1], wire[index + 3]

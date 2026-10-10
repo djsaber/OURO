@@ -20,6 +20,48 @@ from ouro.tui.screens import EditableChoiceScreen
 from tests.tui.helpers import run_ready_app, two_route_application
 
 
+async def test_endpoint_media_toggles_use_shared_configuration_validation(tmp_path):
+    app = OuroTuiApp(application=two_route_application(tmp_path))
+    facade = ConfigurationFacade(tmp_path)
+    provider_id = facade.add_provider(
+        display_name="Media",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        base_url="https://media.test",
+    ).changed_provider_id
+    async with run_ready_app(app) as pilot:
+        screen = EndpointConfigurationScreen(facade.provider(provider_id))
+        app.push_screen(screen)
+        await pilot.pause()
+        choices = {choice.value: choice for choice in screen._choices}
+        for kind, noun in (("image", "images"), ("audio", "audio"), ("video", "video")):
+            choice = choices[f"endpoint-{kind}-input"]
+            assert choice.label == f"{kind.title()} input"
+            assert choice.description == f"Accept {noun} as model input."
+        await screen._save_field("endpoint-model-id", "av")
+        await select_choice(app, pilot, "endpoint-audio-input")
+        await select_choice(app, pilot, "endpoint-video-input")
+        saved = await app._controller.add_endpoint(provider_id, screen._draft())
+        assert (
+            saved.supports_audio_input
+            and saved.supports_video_input
+            and not saved.supports_image_input
+        )
+        editor = EndpointConfigurationScreen(facade.provider(provider_id), saved)
+        assert editor._draft().supports_audio_input and editor._draft().supports_video_input
+
+        responses_id = facade.add_provider(
+            display_name="Images",
+            provider_type="custom",
+            protocol="openai-responses",
+            base_url="https://images.test",
+        ).changed_provider_id
+        other = EndpointConfigurationScreen(facade.provider(responses_id))
+        other._values["endpoint-model-id"] = "image-only"
+        other._capabilities["endpoint-audio-input"] = True
+        assert "does not support audio input" in other._validation_error()
+
+
 async def test_header_editor_preserves_secrets_and_explicitly_replaces_or_clears(tmp_path):
     app = OuroTuiApp(application=two_route_application(tmp_path))
     facade = ConfigurationFacade(tmp_path)

@@ -16,9 +16,9 @@ _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
 class ContextSnapshotRecord(VersionedOuroModel):
-    """Lossless latest-request snapshot retaining the exact text and image bytes sent."""
+    """Lossless latest-request snapshot retaining text and native media bytes."""
 
-    schema_version: int = 3
+    schema_version: int = 4
 
     context_id: str = Field(default_factory=lambda: new_id("ctx"))
     session_id: str
@@ -28,7 +28,9 @@ class ContextSnapshotRecord(VersionedOuroModel):
     provider_id: str
     endpoint_id: str | None = None
     model_id: str
-    supports_vision: bool = False
+    supports_image_input: bool = False
+    supports_audio_input: bool = False
+    supports_video_input: bool = False
     prepared_at: datetime = Field(default_factory=utc_now)
     completed_at: datetime | None = None
     system_prompt: str = ""

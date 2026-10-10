@@ -525,11 +525,11 @@ async def test_openai_endpoint_capabilities_gate_tools_and_encode_images() -> No
         event
         async for event in provider.stream(
             model=ModelMetadata(
-                model_id="vision-model",
+                model_id="image_input-model",
                 provider_id="glm",
                 supports_streaming=False,
                 supports_tools=False,
-                supports_vision=True,
+                supports_image_input=True,
             ),
             messages=[message],
             tools=[{"name": "Read", "parameters_schema": {"type": "object"}}],
@@ -567,7 +567,7 @@ async def test_openai_endpoint_rejects_images_when_multimodal_is_disabled() -> N
             model=ModelMetadata(
                 model_id="text-model",
                 provider_id="glm",
-                supports_vision=False,
+                supports_image_input=False,
             ),
             messages=[message],
         )

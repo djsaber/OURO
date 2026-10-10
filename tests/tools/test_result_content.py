@@ -1,6 +1,6 @@
 import pytest
 
-from ouro.core.content import ImageContent, TextContent
+from ouro.core.content import AudioContent, ImageContent, TextContent, VideoContent
 from ouro.tools import (
     Tool,
     ToolDefinition,
@@ -35,6 +35,16 @@ def test_media_budget_is_shared_and_oversized_parts_become_explicit_text():
     assert bounded[0] == image
     assert isinstance(bounded[1], TextContent)
     assert "omitted" in bounded[1].text
+
+
+def test_audio_and_video_share_the_same_tool_media_budget():
+    audio = AudioContent(uri="data:audio/wav;base64,YQ==", media_type="audio/wav")
+    video = VideoContent(uri="data:video/mp4;base64,Yg==", media_type="video/mp4")
+    bounded, truncated = limit_result_content(
+        [audio, video], text_limit=None, media_limit=len(audio.uri) + len(video.uri) - 1
+    )
+    assert truncated and bounded[0] == audio
+    assert isinstance(bounded[1], TextContent) and "omitted" in bounded[1].text
 
 
 @pytest.mark.parametrize("limit", [0, 1, 20, 80])

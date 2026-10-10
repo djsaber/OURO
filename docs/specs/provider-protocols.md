@@ -70,6 +70,20 @@ continuation：OpenAI Chat Completions 支持 `none/text`，Responses 与 Anthro
 厂商模板不会产生一厂商一个 adapter。Gemini、DeepSeek、Qwen、KIMI、GLM、Grok、Mistral、MiniMax、豆包和 Cohere 当前都
 复用 OpenAI Chat Completions adapter；Anthropic 使用 Messages adapter。
 
+`ProviderProtocolSpec` 是已注册 adapter 的实现档案，保存默认 API 路径、连接要求、可保存的 reasoning continuation
+和 `encodable_input_modalities`。输入集合只描述 OURO 的编码实现范围，不代表同协议下所有服务与模型都支持这些输入。
+
+| Adapter | 可编码的媒体输入 |
+| --- | --- |
+| OpenAI Chat Completions | `image`、`audio`、`video`；视频使用 `video_url` 扩展 |
+| OpenAI Responses | `image` |
+| Anthropic Messages | `image` |
+| Faux | 空集合；内部占位实现不编码媒体 |
+
+Endpoint 通过三个 `supports_<modality>_input` 字段独立声明具体服务与模型的输入能力，声明集合必须是上述集合的子集。
+配置、模板、TUI 草稿与 adapter 构造共享该校验；三种媒体模态遵循同一规则，不因图片能力或协议名称推导音视频能力。
+格式、角色、配置入口和降级规则见[输入模态契约](provider-configuration.md#输入模态契约)。
+
 ## 命名约定
 
 协议标识使用 API 的完整名称，Python 模块使用对应的 snake_case，公开实现类保留 Provider 后缀：

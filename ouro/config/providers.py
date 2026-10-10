@@ -818,7 +818,9 @@ class ProviderConfigManager:
         context_window: int | None = None,
         max_output_tokens: int | None = None,
         supports_tools: bool | None = None,
-        supports_vision: bool | None = None,
+        supports_image_input: bool | None = None,
+        supports_audio_input: bool | None = None,
+        supports_video_input: bool | None = None,
         supports_streaming: bool | None = None,
         supports_structured_output: bool | None = None,
         reasoning: EndpointReasoningConfig | None = None,
@@ -836,7 +838,9 @@ class ProviderConfigManager:
             context_window=context_window,
             max_output_tokens=max_output_tokens,
             supports_tools=supports_tools,
-            supports_vision=supports_vision,
+            supports_image_input=supports_image_input,
+            supports_audio_input=supports_audio_input,
+            supports_video_input=supports_video_input,
             supports_streaming=supports_streaming,
             supports_structured_output=supports_structured_output,
             reasoning=reasoning,
@@ -857,7 +861,9 @@ class ProviderConfigManager:
         context_window: int | None = None,
         max_output_tokens: int | None = None,
         supports_tools: bool | None = None,
-        supports_vision: bool | None = None,
+        supports_image_input: bool | None = None,
+        supports_audio_input: bool | None = None,
+        supports_video_input: bool | None = None,
         supports_streaming: bool | None = None,
         supports_structured_output: bool | None = None,
         reasoning: EndpointReasoningConfig | None = None,
@@ -875,7 +881,9 @@ class ProviderConfigManager:
             context_window=context_window,
             max_output_tokens=max_output_tokens,
             supports_tools=supports_tools,
-            supports_vision=supports_vision,
+            supports_image_input=supports_image_input,
+            supports_audio_input=supports_audio_input,
+            supports_video_input=supports_video_input,
             supports_streaming=supports_streaming,
             supports_structured_output=supports_structured_output,
             reasoning=reasoning,
@@ -897,7 +905,9 @@ class ProviderConfigManager:
         context_window: int | None,
         max_output_tokens: int | None,
         supports_tools: bool | None,
-        supports_vision: bool | None,
+        supports_image_input: bool | None,
+        supports_audio_input: bool | None,
+        supports_video_input: bool | None,
         supports_streaming: bool | None,
         supports_structured_output: bool | None,
         reasoning: EndpointReasoningConfig | None,
@@ -948,9 +958,15 @@ class ProviderConfigManager:
                     "supports_tools": supports_tools
                     if supports_tools is not None
                     else current.supports_tools,
-                    "supports_vision": supports_vision
-                    if supports_vision is not None
-                    else current.supports_vision,
+                    "supports_image_input": supports_image_input
+                    if supports_image_input is not None
+                    else current.supports_image_input,
+                    "supports_audio_input": supports_audio_input
+                    if supports_audio_input is not None
+                    else current.supports_audio_input,
+                    "supports_video_input": supports_video_input
+                    if supports_video_input is not None
+                    else current.supports_video_input,
                     "supports_streaming": supports_streaming
                     if supports_streaming is not None
                     else current.supports_streaming,

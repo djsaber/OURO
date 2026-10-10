@@ -131,9 +131,11 @@ Compaction Strategy handler 同样可以把 `CancellationContext` 作为第二�
 另一项。插件 provenance 始终保留，`role="user"` 不等于直接用户来源或授权。Tool
 Policy 只能把执行提升为审批或拒绝，不能降低 Host policy、批准调用或改写参数。
 
-`ToolOutput.content` 接受字符串，或由 `ToolTextContent(text=...)`、`ToolImageContent(uri=..., media_type=...)`
-组成的有序 tuple。图片 URI 使用 HTTP(S) 地址或 Base64 data URL，不把本地路径或编码写入文本冒充图片。
-SDK 保持独立于内部领域模型；worker 使用相同的 `type: text/image`、`text`、`uri`、`media_type` 字段返回 JSON
+`ToolOutput.content` 接受字符串，或由 `ToolTextContent(text=...)`、`ToolImageContent(uri=..., media_type=...)`、
+`ToolAudioContent(uri=..., media_type=...)`、`ToolVideoContent(uri=..., media_type=...)` 组成的有序 tuple。
+音频与视频必须声明对应 MIME 类型。图片和视频 URI 使用 HTTP(S) 地址或 Base64 data URL，
+音频输入使用 Base64 data URL；不把本地路径或编码写入文本冒充媒体。
+SDK 保持独立于内部领域模型；worker 使用相同的 `type: text/image/audio/video`、`text`、`uri`、`media_type` 字段返回 JSON
 内容数组，非法内容类型在 worker 边界拒绝。执行与 resume 使用同一内容契约。
 Host 保留执行事实，按当前端点能力和协议生成原生结果或补充上下文；插件无需判断供应商协议，也不自行追加
 用户消息。`structured` 用于业务数据，`resource_refs` 用于会话资源关系，均不代替 `content`。

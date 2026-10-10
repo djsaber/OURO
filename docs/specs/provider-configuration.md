@@ -26,12 +26,54 @@ Endpoint 表示一个具体可调用模型：
 - `display_name`：可选展示名；`model_id`：发送给供应商的模型标识；
 - 可覆盖的 base URL/API path；
 - temperature、context window、max output tokens；
-- tools、vision、streaming、structured output 能力；
+- tools、image/audio/video 输入、streaming、structured output 能力；
 - 类型化 reasoning capability 与声明式原生参数 profile；
 - request options 与展示 metadata。
 
 Endpoint 使用单一正整数 `max_output_tokens` 定义输出预算，同时用于本地上下文预算预留；该值不能超过 context window。默认服务将其发送为请求输出上限；受信服务声明不支持输出上限时不发送该字段，仅保留本地预算语义，实际输出可能超过该值，使用入口必须明确标注这一限制。服务能力通过 ProviderRequestPolicy 注入，不由认证方式推断，也不增加 Endpoint 预留参数或 nullable/server-default 模式。思考能力、原生编码和运行时意图使用下文的统一契约；
 `request_options` 不能同时拥有 reasoning profile 已管理的顶层字段。
+
+## 输入模态契约
+
+Endpoint 用三个相互独立、默认为 `false` 的字段声明服务实际接受的对话输入：
+
+| 字段 | TUI 选项 | CLI 开关 |
+| --- | --- | --- |
+| `supports_image_input` | Image input | `--image-input` / `--no-image-input` |
+| `supports_audio_input` | Audio input | `--audio-input` / `--no-audio-input` |
+| `supports_video_input` | Video input | `--video-input` / `--no-video-input` |
+
+输入能力统一按 `supports_<modality>_input` 命名，模态使用内容块的 `image`、`audio`、`video`；
+界面名称、说明、能力摘要与 CLI 开关均明确表达输入方向。
+
+这些字段从端点配置、模板、Application DTO 和 runtime override 传递到 `ModelMetadata`；
+`ModelMetadata.input_modalities` 产生类型化的只读模态集合，供输入准备、请求投影和压缩共用；文本为基本输入，不占该集合项。
+省略更新字段表示保留，显式 `false` 表示关闭；模型名称、厂商、后缀或其他输入能力不能代替声明。
+它们不声明输出模态，不触发语音生成、自动转写、视频抽帧或媒体转码。
+
+可发送内容同时受端点声明、协议实现、媒体格式、消息角色与请求预算约束：
+
+| OURO 协议实现 | 图片 | 音频 | 视频 |
+| --- | --- | --- | --- |
+| OpenAI Chat Completions | `image_url` | `input_audio`，WAV/MP3 Base64 | `video_url` 扩展，MP4 |
+| OpenAI Responses | `input_image` | 不支持 | 不支持 |
+| Anthropic Messages | `image` | 不支持 | 不支持 |
+
+`supports_video_input=true` 在 Chat Completions 路由上明确声明目标服务接受 `video_url` 扩展；
+它不是 OpenAI 标准 Chat Completions 的通用保证。音频内容使用 `audio/wav` 或 `audio/mpeg` 的
+Base64 data URI，编码为 `format=wav/mp3`；视频使用 `video/mp4` 的 data URI 或 HTTP(S) URL。
+本地路径由附件服务观察为媒体内容，不能直接作为模型可读取的 URL 发送。视频输入声明不保证服务处理音轨。
+
+`ProviderProtocolSpec.encodable_input_modalities` 描述 OURO adapter 能编码的媒体输入集合，
+Endpoint 的 `supports_<modality>_input` 描述具体服务与模型实际接受的输入。端点声明的集合必须是协议可编码集合的子集；
+协议具备编码能力不会自动启用端点能力。图片、音频和视频使用相同校验；配置、模板和直接 adapter 构造均拒绝无法编码的声明。
+Adapter 只按协议分派，不按厂商或模型名称猜测格式。原始 codec 调用遇到不支持的内容、格式或角色明确失败；
+Application 对历史附件按本次能力投影为原生媒体或带原因的引用，不修改保存的原始内容。
+
+协议依据：[OpenAI Chat Completions 音频输入](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、
+[Gemini OpenAI 兼容接口音频输入](https://ai.google.dev/gemini-api/docs/openai#audio_understanding)、
+[Model Studio 视频输入扩展](https://www.alibabacloud.com/help/en/model-studio/vision)。
+附件识别、存储、预算与快照契约见[附件规格](attachments.md)。
 
 ## 权威配置结构
 
@@ -338,15 +380,15 @@ Core `Provider` 只暴露 `stream` 和 `check_connection`。Adapter factory 通�
 
 OpenAI Chat Completions 实现负责：
 
-- system message、普通内容、vision、tool history 和声明式 reasoning profile 编码；
+- system message、文本与原生媒体输入、tool history 和声明式 reasoning profile 编码；
 - 普通 JSON 与 SSE transport；
 - usage、tool call、reasoning 和错误响应解码；思考文本同时接受 DeepSeek 风格 `reasoning_content` 与
   OpenRouter 风格裸 `reasoning` 两种响应字段（流式 delta 与非流式 message 一致，`reasoning_content` 优先，
   两者均支持字符串或 block 数组形态），continuation 回放统一规范化为 `reasoning_content`；
 - 外部流缺失 tool index 时按块位置处理；
-- 不符合 Endpoint 能力的 image/tool response 明确报错。
+- 不符合 Endpoint 能力、媒体格式或消息角色的直接输入明确报错；工具结果按能力提供原生内容或明确降级说明。
 
-Anthropic Messages 实现负责 Messages API 的顶层 system、content blocks、vision source、tool use/result、
+Anthropic Messages 实现负责 Messages API 的顶层 system、content blocks、image source、tool use/result、
 usage/error 与 SSE event 映射，并在工具续接边界原样保存/重放同路由的签名 thinking blocks。协议差异留在
 各自 codec/adapter 中。
 

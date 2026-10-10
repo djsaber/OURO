@@ -11,7 +11,7 @@ import pytest
 
 from ouro.application.session_recovery import SessionRecoveryService
 from ouro.core.compaction import CompactionRecord
-from ouro.core.context import ContextBuilder
+from ouro.core.context import ContextBuilder, ContextMetrics
 from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
 from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
 from ouro.core.events import EventRecord
@@ -303,6 +303,44 @@ def test_session_store_replaces_latest_context_atomically(session_store: Session
     assert session_store.load_latest_context(session.session_id) == first
     session_store.save_latest_context(second)
     assert session_store.load_latest_context(session.session_id) == second
+
+
+def test_session_store_rejects_context_with_incompatible_capability_schema(
+    session_store: SessionStore,
+) -> None:
+    session = SessionRecord(title="Context schema")
+    session_store.create_session(session)
+    context = ContextSnapshotRecord(
+        session_id=session.session_id,
+        run_id="run_media",
+        turn_id="turn_media",
+        model_round=1,
+        provider_id="media",
+        model_id="media",
+        supports_image_input=True,
+        metrics=ContextMetrics(estimated_input_tokens=0, estimated_fixed_tokens=0),
+        context_digest="sha256:" + "0" * 64,
+    )
+    session_store.save_latest_context(context)
+    raw = context.model_dump(mode="json")
+    raw["schema_version"] = 3
+    raw["supports_vision"] = raw.pop("supports_image_input")
+    raw.pop("supports_audio_input")
+    raw.pop("supports_video_input")
+    payload = json.dumps(raw)
+    if isinstance(session_store, LocalSessionStore):
+        path = session_store.sessions_dir / session.session_id / "context.json"
+        path.write_text(payload, encoding="utf-8")
+    else:
+        with closing(sqlite3.connect(session_store.database)) as connection:
+            connection.execute(
+                "UPDATE latest_contexts SET payload = ? WHERE session_id = ?",
+                (payload, session.session_id),
+            )
+            connection.commit()
+
+    with pytest.raises(UnsupportedDataVersionError, match="found 3, expected 4"):
+        session_store.load_latest_context(session.session_id)
 
 
 def test_session_store_loads_runs_without_reading_journals(session_store: SessionStore) -> None:

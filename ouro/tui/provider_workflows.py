@@ -1015,8 +1015,10 @@ def _endpoint_capabilities(endpoint: ProviderEndpointView) -> tuple[str, ...]:
     return tuple(
         capability
         for capability, supported in (
+            ("image", endpoint.supports_image_input),
+            ("audio", endpoint.supports_audio_input),
+            ("video", endpoint.supports_video_input),
             ("reasoning", endpoint.reasoning.capability.activation != "unsupported"),
-            ("vision", endpoint.supports_vision),
         )
         if supported
     )

@@ -14,7 +14,7 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import McpError
 
-from ouro.core.content import ContentPart, ImageContent, TextContent
+from ouro.core.content import AudioContent, ContentPart, ImageContent, TextContent
 from ouro.core.redaction import redact_text
 from ouro.mcp.client import (
     CredentialResolver,
@@ -258,6 +258,12 @@ def _remote_result(result: types.CallToolResult) -> MCPRemoteToolResult:
         elif isinstance(block, types.ImageContent):
             parts.append(
                 ImageContent(
+                    uri=f"data:{block.mimeType};base64,{block.data}", media_type=block.mimeType
+                )
+            )
+        elif isinstance(block, types.AudioContent):
+            parts.append(
+                AudioContent(
                     uri=f"data:{block.mimeType};base64,{block.data}", media_type=block.mimeType
                 )
             )

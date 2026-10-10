@@ -41,7 +41,9 @@ def runtime_options_from_config(
         context_window=endpoint.context_window,
         max_output_tokens=endpoint.max_output_tokens,
         supports_tools=endpoint.supports_tools,
-        supports_vision=endpoint.supports_vision,
+        supports_image_input=endpoint.supports_image_input,
+        supports_audio_input=endpoint.supports_audio_input,
+        supports_video_input=endpoint.supports_video_input,
         supports_streaming=endpoint.supports_streaming,
         supports_structured_output=endpoint.supports_structured_output,
         reasoning=endpoint.reasoning,
@@ -98,10 +100,20 @@ def merge_runtime_options(
         supports_tools=(
             override.supports_tools if override.supports_tools is not None else base.supports_tools
         ),
-        supports_vision=(
-            override.supports_vision
-            if override.supports_vision is not None
-            else base.supports_vision
+        supports_image_input=(
+            override.supports_image_input
+            if override.supports_image_input is not None
+            else base.supports_image_input
+        ),
+        supports_audio_input=(
+            override.supports_audio_input
+            if override.supports_audio_input is not None
+            else base.supports_audio_input
+        ),
+        supports_video_input=(
+            override.supports_video_input
+            if override.supports_video_input is not None
+            else base.supports_video_input
         ),
         supports_streaming=(
             override.supports_streaming

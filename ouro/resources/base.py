@@ -46,6 +46,8 @@ class ResourceStore(Protocol):
 
     def read_ranges(
         self, session_id: str, record: ResourceRecord, ranges: tuple[tuple[int, int], ...]
-    ) -> tuple[bytes, ...]: ...
+    ) -> tuple[bytes, ...]:
+        """Verify the entire resource, retaining only the requested byte windows."""
+        ...
 
     def delete_resources(self, session_id: str, records: Iterable[ResourceRecord]) -> list[str]: ...

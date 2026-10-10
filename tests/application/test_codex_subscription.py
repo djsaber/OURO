@@ -108,7 +108,7 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
     assert configured.auth_driver == "openai-codex"
     assert "local planning budget" in configured.notice
     assert configured.endpoints[0].reasoning.capability.continuation == "opaque"
-    assert configured.endpoints[0].supports_vision
+    assert configured.endpoints[0].supports_image_input
     assert not model_requests and not token_requests
 
     # Unattended consumers fail without opening an authorization flow or sending HTTP.

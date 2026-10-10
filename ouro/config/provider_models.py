@@ -11,6 +11,7 @@ from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.config.provider_headers import ProviderHeaderValue, parse_provider_headers
 from ouro.config.reasoning import EndpointReasoningConfig, ReasoningProfileConfig
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id
+from ouro.core.content import MediaModality, input_modalities
 from ouro.core.provider import ProviderRetryPolicy
 from ouro.core.reasoning import ReasoningContinuation, ReasoningRequest
 
@@ -108,12 +109,13 @@ class ProviderTypeSpec:
 
 @dataclass(frozen=True)
 class ProviderProtocolSpec:
-    """Connection requirements owned by one registered wire protocol."""
+    """Connection requirements and input encodings implemented by one registered adapter."""
 
     protocol: ProviderProtocol
     default_api_path: str | None
     requires_base_url: bool
     reasoning_continuations: tuple[ReasoningContinuation, ...]
+    encodable_input_modalities: frozenset[MediaModality]
 
 
 _OPENAI_CHAT_COMPLETIONS_STATIC = ProviderConnectionSpec("openai-chat-completions")
@@ -173,24 +175,28 @@ _PROVIDER_PROTOCOL_SPECS: dict[ProviderProtocol, ProviderProtocolSpec] = {
         default_api_path="/responses",
         requires_base_url=True,
         reasoning_continuations=("none", "opaque"),
+        encodable_input_modalities=frozenset({"image"}),
     ),
     "faux": ProviderProtocolSpec(
         protocol="faux",
         default_api_path=None,
         requires_base_url=False,
         reasoning_continuations=("none",),
+        encodable_input_modalities=frozenset(),
     ),
     "openai-chat-completions": ProviderProtocolSpec(
         protocol="openai-chat-completions",
         default_api_path="/chat/completions",
         requires_base_url=True,
         reasoning_continuations=("none", "text"),
+        encodable_input_modalities=frozenset({"image", "audio", "video"}),
     ),
     "anthropic-messages": ProviderProtocolSpec(
         protocol="anthropic-messages",
         default_api_path="/v1/messages",
         requires_base_url=True,
         reasoning_continuations=("none", "opaque"),
+        encodable_input_modalities=frozenset({"image"}),
     ),
 }
 
@@ -235,6 +241,24 @@ _PROTOCOL_OWNED_REQUEST_FIELDS: dict[ProviderProtocol, frozenset[str]] = {
         }
     ),
 }
+
+
+def validate_media_protocol_compatibility(
+    protocol: ProviderProtocol,
+    *,
+    supports_image_input: bool,
+    supports_audio_input: bool,
+    supports_video_input: bool,
+) -> None:
+    declared = input_modalities(
+        supports_image_input=supports_image_input,
+        supports_audio_input=supports_audio_input,
+        supports_video_input=supports_video_input,
+    )
+    unsupported = declared - provider_protocol_spec(protocol).encodable_input_modalities
+    if unsupported:
+        kinds = ", ".join(sorted(unsupported))
+        raise ValueError(f"{protocol} adapter does not support {kinds} input encoding")
 
 
 def provider_type_spec(provider_type: ProviderType) -> ProviderTypeSpec:
@@ -470,6 +494,12 @@ class ProviderConfig(OuroModel):
         validate_credential_binding(self.auth_driver, self.credential_ref)
         validate_request_options(self.protocol, self.extra)
         for endpoint in self.endpoints:
+            validate_media_protocol_compatibility(
+                self.protocol,
+                supports_image_input=endpoint.supports_image_input,
+                supports_audio_input=endpoint.supports_audio_input,
+                supports_video_input=endpoint.supports_video_input,
+            )
             validate_reasoning_protocol_compatibility(self.protocol, endpoint.reasoning)
             request_options = {**self.extra, **endpoint.request_options}
             validate_request_options(
@@ -543,7 +573,9 @@ class ProviderRuntimeOptions:
     context_window: int | None = None
     max_output_tokens: int | None = None
     supports_tools: bool | None = None
-    supports_vision: bool | None = None
+    supports_image_input: bool | None = None
+    supports_audio_input: bool | None = None
+    supports_video_input: bool | None = None
     supports_streaming: bool | None = None
     supports_structured_output: bool | None = None
     reasoning: EndpointReasoningConfig | None = None

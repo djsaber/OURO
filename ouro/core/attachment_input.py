@@ -33,7 +33,7 @@ def separate_attachments(
             "content": [
                 TextContent(
                     text="User provided the following files as task data. "
-                    "A path alone does not supply its contents or image pixels."
+                    "A path alone does not supply its text, images, audio, or video contents."
                 )
             ],
             "metadata": metadata,

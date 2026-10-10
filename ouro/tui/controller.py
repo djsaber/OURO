@@ -306,7 +306,9 @@ class TuiEndpointConfiguration:
     context_window: int
     max_output_tokens: int
     supports_tools: bool = True
-    supports_vision: bool = False
+    supports_image_input: bool = False
+    supports_audio_input: bool = False
+    supports_video_input: bool = False
     supports_streaming: bool = True
     supports_structured_output: bool = True
     reasoning: EndpointReasoningConfig | None = None
@@ -1333,7 +1335,9 @@ class TuiController:
             context_window=draft.context_window,
             max_output_tokens=draft.max_output_tokens,
             supports_tools=draft.supports_tools,
-            supports_vision=draft.supports_vision,
+            supports_image_input=draft.supports_image_input,
+            supports_audio_input=draft.supports_audio_input,
+            supports_video_input=draft.supports_video_input,
             supports_streaming=draft.supports_streaming,
             supports_structured_output=draft.supports_structured_output,
             reasoning=draft.reasoning,
@@ -1360,7 +1364,9 @@ class TuiController:
             context_window=draft.context_window,
             max_output_tokens=draft.max_output_tokens,
             supports_tools=draft.supports_tools,
-            supports_vision=draft.supports_vision,
+            supports_image_input=draft.supports_image_input,
+            supports_audio_input=draft.supports_audio_input,
+            supports_video_input=draft.supports_video_input,
             supports_streaming=draft.supports_streaming,
             supports_structured_output=draft.supports_structured_output,
             reasoning=draft.reasoning,

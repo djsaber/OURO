@@ -8,6 +8,7 @@ from pydantic import Field, field_validator, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
 from ouro.core.content import ImageContent as ImageContent
+from ouro.core.content import MediaContent
 from ouro.core.content import TextContent as TextContent
 from ouro.core.input_content import InputContent, InputFile
 from ouro.core.message_roles import MessageRole
@@ -40,7 +41,7 @@ class SkillActivationContent(OuroModel):
 
 
 ContentBlock = Annotated[
-    TextContent | ImageContent | SkillActivationContent,
+    TextContent | MediaContent | SkillActivationContent,
     Field(discriminator="type"),
 ]
 
@@ -311,7 +312,7 @@ def _validate_skill_activation_blocks(role: MessageRole, content: list[ContentBl
         raise ValueError("a user message can activate at most one skill")
 
 
-def _model_visible_content(block: ContentBlock) -> TextContent | ImageContent:
+def _model_visible_content(block: ContentBlock) -> TextContent | MediaContent:
     if not isinstance(block, SkillActivationContent):
         return block
     tag = "ouro-skill-activation"
