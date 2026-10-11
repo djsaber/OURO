@@ -35,8 +35,37 @@ def test_projection_without_run_is_idle() -> None:
     assert projection.activity.run_id is None
 
 
-def test_duration_and_reasoning_labels_share_explicit_state_format() -> None:
-    assert format_duration(3_425.4) == "57m 05.4s"
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [
+        (-1, "0ms"),
+        (0, "0ms"),
+        (0.000001, "0ms"),
+        (0.1234, "123ms"),
+        (0.9994, "999ms"),
+        (0.9996, "1.0s"),
+        (1, "1.0s"),
+        (2.54, "2.5s"),
+        (59.94, "59.9s"),
+        (59.96, "1m 00.0s"),
+        (60, "1m 00.0s"),
+        (3_425.4, "57m 05.4s"),
+        (3_599.94, "59m 59.9s"),
+        (3_599.96, "1h 0m 00.0s"),
+        (3_600, "1h 0m 00.0s"),
+        (3_661.2, "1h 1m 01.2s"),
+        (86_399.94, "23h 59m 59.9s"),
+        (86_399.96, "1d 0h 0m 00.0s"),
+        (86_400, "1d 0h 0m 00.0s"),
+        (93_784.5, "1d 2h 3m 04.5s"),
+        (864_001, "10d 0h 0m 01.0s"),
+    ],
+)
+def test_duration_carries_units_at_display_precision(seconds: float, expected: str) -> None:
+    assert format_duration(seconds) == expected
+
+
+def test_reasoning_labels_share_explicit_state_format() -> None:
     assert format_reasoning_label("Thought", 2.5, expanded=False) == "+ Thought • 2.5s"
     assert format_reasoning_label("Thought", 2.5, expanded=True) == "- Thought • 2.5s"
 

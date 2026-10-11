@@ -71,12 +71,19 @@ def test_single_tool_entry_uses_background_rendering() -> None:
     assert ConversationHistory._requires_background_render((entry,))
 
 
-def test_reasoning_label_uses_lowlight_title_and_faint_timing() -> None:
-    label = _reasoning_label_text("Thought", 2.5, expanded=False)
+@pytest.mark.parametrize("title", ["Thinking", "Thought"])
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [(2.5, "2.5s"), (3_661.2, "1h 1m 01.2s"), (93_784.5, "1d 2h 3m 04.5s")],
+)
+def test_reasoning_label_uses_lowlight_title_and_faint_timing(
+    title: str, seconds: float, expected: str
+) -> None:
+    label = _reasoning_label_text(title, seconds, expanded=False)
 
-    assert label.plain == "+ Thought • 2.5s"
-    title_style = _style_at(label, "Thought")
-    duration_style = _style_at(label, "2.5s")
+    assert label.plain == f"+ {title} • {expected}"
+    title_style = _style_at(label, title)
+    duration_style = _style_at(label, expected)
     assert not title_style.bold
     assert not duration_style.bold
     assert title_style.color is not None
@@ -736,12 +743,18 @@ async def test_tool_updates_are_scoped_to_the_parent_run(monkeypatch) -> None:
         assert app.history.entries[1].tool.status == "completed"
 
 
-def test_compaction_and_run_summaries_share_visual_structure_and_failure_semantics() -> None:
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [(316.4, "5m 16.4s"), (3_916.4, "1h 5m 16.4s"), (93_784.5, "1d 2h 3m 04.5s")],
+)
+def test_compaction_and_run_summaries_share_visual_structure_and_failure_semantics(
+    seconds: float, expected: str
+) -> None:
     compaction = _compaction_summary(
         CompactionPresentation(
             covered_message_count=8,
             tokens_reduced=1_200,
-            duration_seconds=3_425.4,
+            duration_seconds=seconds,
         ),
         DEFAULT_TUI_THEME,
     )
@@ -750,15 +763,15 @@ def test_compaction_and_run_summaries_share_visual_structure_and_failure_semanti
             run_id="run_failed",
             status="failed",
             model="deepseek-v4-flash",
-            duration_seconds=316.4,
+            duration_seconds=seconds,
             error="provider returned an empty assistant message",
         ),
         DEFAULT_TUI_THEME,
     )
 
-    assert compaction.plain == ("▣ Context compacted • 8 messages • 1.2K tokens • 57m 05.4s")
+    assert compaction.plain == f"▣ Context compacted • 8 messages • 1.2K tokens • {expected}"
     assert failed.plain == (
-        "▣ deepseek-v4-flash • 5m 16.4s • provider returned an empty assistant message"
+        f"▣ deepseek-v4-flash • {expected} • provider returned an empty assistant message"
     )
     assert not _style_at(compaction, "Context compacted").bold
     assert not _style_at(compaction, DEFAULT_TUI_THEME.brand_mark).bold

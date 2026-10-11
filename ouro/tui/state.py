@@ -41,13 +41,26 @@ def format_compact_count(value: int) -> str:
 
 
 def format_duration(seconds: float) -> str:
+    """Format elapsed time with day/hour/minute carries at display precision."""
     seconds = max(0.0, seconds)
     if seconds < 1:
-        return f"{seconds * 1000:.0f}ms"
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    minutes, remaining = divmod(seconds, 60)
-    return f"{int(minutes)}m {remaining:04.1f}s"
+        milliseconds = round(seconds * 1000)
+        if milliseconds < 1000:
+            return f"{milliseconds}ms"
+
+    # Round before splitting units so the displayed remainder cannot reach 60s.
+    minutes, tenths = divmod(round(seconds * 10), 600)
+    if minutes == 0:
+        return f"{tenths / 10:.1f}s"
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if days or hours:
+        parts.append(f"{hours}h")
+    parts.extend((f"{minutes}m", f"{tenths / 10:04.1f}s"))
+    return " ".join(parts)
 
 
 def format_reasoning_label(

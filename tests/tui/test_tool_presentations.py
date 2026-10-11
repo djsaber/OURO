@@ -374,7 +374,14 @@ def test_streaming_tool_window_keeps_the_latest_fixed_width_tail() -> None:
     assert overflow_window == "x" * 48
 
 
-def test_tool_elapsed_time_omits_zero_and_uses_shared_duration_format() -> None:
+@pytest.mark.parametrize("tool_name", ["Read", "SpawnAgent"])
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [(304.2, "5m 04.2s"), (3_904.2, "1h 5m 04.2s"), (93_784.5, "1d 2h 3m 04.5s")],
+)
+def test_tool_elapsed_time_omits_zero_and_uses_shared_duration_format(
+    tool_name: str, seconds: float, expected: str
+) -> None:
     started_at = datetime(2026, 8, 28, tzinfo=UTC)
     zero = _tool("Read").model_copy(update={"started_at": started_at, "ended_at": started_at})
     submillisecond = _tool("Read").model_copy(
@@ -383,10 +390,10 @@ def test_tool_elapsed_time_omits_zero_and_uses_shared_duration_format() -> None:
             "ended_at": started_at + timedelta(microseconds=1),
         }
     )
-    elapsed = _tool("Read").model_copy(
+    elapsed = _tool(tool_name).model_copy(
         update={
             "started_at": started_at,
-            "ended_at": started_at + timedelta(seconds=304.2),
+            "ended_at": started_at + timedelta(seconds=seconds),
         }
     )
 
@@ -409,9 +416,8 @@ def test_tool_elapsed_time_omits_zero_and_uses_shared_duration_format() -> None:
 
     assert "0s" not in zero_text
     assert "0ms" not in submillisecond_text
-    assert "5m 04.2s" in elapsed_text
-    assert "304" not in elapsed_text
-    elapsed_style = elapsed_rendered.get_style_at_offset(Console(), elapsed_text.index("5m 04.2s"))
+    assert expected in elapsed_text
+    elapsed_style = elapsed_rendered.get_style_at_offset(Console(), elapsed_text.index(expected))
     assert not elapsed_style.bold
 
 
