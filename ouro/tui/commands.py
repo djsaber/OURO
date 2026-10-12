@@ -171,12 +171,6 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
         "Show the latest saved summary for the current session",
     ),
     TuiCommand(
-        "/skill",
-        "Use skill",
-        "Send a task using a chosen skill",
-        "<skill> [task]",
-    ),
-    TuiCommand(
         "/unqueue",
         "Edit queued message",
         "Move a waiting message back to the input box",
@@ -195,11 +189,17 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
 )
 
 
+REFERENCE_COMMANDS = (
+    TuiCommand("@file", "Reference files", "Choose files", "<file>"),
+    TuiCommand("@skill", "Reference skills", "Choose skills", "<skill>"),
+)
+
+
 def matching_commands(
     query: str,
     commands: tuple[TuiCommand, ...] = TUI_COMMANDS,
 ) -> tuple[TuiCommand, ...]:
-    if not query.startswith("/") or any(character.isspace() for character in query):
+    if not query.startswith(("/", "@")) or any(character.isspace() for character in query):
         return ()
     return tuple(command for command in commands if command.matches(query))
 

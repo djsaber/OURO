@@ -41,3 +41,5 @@ Skills 使用标准 `SKILL.md` YAML frontmatter。用户级原生目录是 `OURO
 TUI 的 `Actions > Skill sources` 提供相同的总开关与逐源开关，并即时刷新当前 Runtime；
 自定义 `skills.paths` 条目使用自身的 `enabled` 字段。插件 Skill 属于插件贡献契约，继续通过所属插件启停，
 不受目录发现源开关影响。格式错误会产生明确诊断，OURO 不会猜测或修复无效 frontmatter。
+
+在 TUI 输入框首位输入 `@skill ` 选择技能：↑/↓ 移动，Space 多选，Enter 将所选技能加入输入框，Esc 取消。菜单顶部常驻技能标题，右侧以低亮度 `[x]` 显示已选数量。技能显示为独立的 `@名称` 元素，可与 `@file` 文件引用一起编辑、删除和撤销。随后输入任务并发送，所有引用随同一条输入提交。

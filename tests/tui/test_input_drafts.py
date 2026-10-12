@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from ouro.core.errors import ConfigError
-from ouro.core.input_content import InputAttachment, InputFileReference
+from ouro.core.input_content import InputAttachment, InputFileReference, InputSkillReference
 from ouro.tui.input_drafts import (
     MAX_SESSION_DRAFTS,
     TuiInputDrafts,
@@ -48,11 +48,13 @@ def test_input_drafts_round_trip_and_keep_a_bounded_session_mru(tmp_path: Path) 
 def test_editing_and_reloading_a_draft_preserves_its_attachment_selection(tmp_path):
     store = TuiInputDraftStore(tmp_path)
     attachments = (InputAttachment(resource_id="res_1", name="notes.txt"),)
-    draft = TuiInputDrafts().remember("ses_1", "/skill demo original", attachments=attachments)
-    store.save(draft.remember("ses_1", "/skill demo edited", attachments=attachments))
+    skills = (InputSkillReference(name="demo"),)
+    draft = TuiInputDrafts().remember("ses_1", "original", attachments=attachments, skills=skills)
+    store.save(draft.remember("ses_1", "edited", attachments=attachments, skills=skills))
     loaded = store.load()
     assert loaded.resources_for("ses_1") == ("res_1",)
-    assert loaded.draft_for("ses_1") == "/skill demo edited"
+    assert loaded.draft_for("ses_1") == "edited"
+    assert loaded.content_for("ses_1").skills == skills
     assert loaded.resources_for("ses_2") == ()
     assert loaded.remember("ses_1", "", attachments=attachments).resources_for("ses_1") == (
         "res_1",

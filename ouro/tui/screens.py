@@ -22,7 +22,7 @@ from textual.widgets.option_list import Option
 from textual.worker import Worker, WorkerCancelled
 
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
-from ouro.tui.commands import TUI_COMMANDS, TuiCommand
+from ouro.tui.commands import REFERENCE_COMMANDS, TUI_COMMANDS, TuiCommand
 from ouro.tui.text_inputs import TuiInput
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 
@@ -104,15 +104,18 @@ def help_choices(
     )
     return (
         *shortcuts,
-        Choice(
-            "command:@",
-            "@",
-            description=(
-                "Type to filter; Space selects files; "
-                "Enter opens folders or adds references; Esc closes."
-            ),
-            trailing="Reference local files",
-            group="COMMANDS",
+        *(
+            Choice(
+                f"command:{command.name}",
+                command.name,
+                description=(
+                    "Type to filter; Space selects; "
+                    "Enter opens folders or adds references; Esc closes."
+                ),
+                trailing=command.title,
+                group="COMMANDS",
+            )
+            for command in REFERENCE_COMMANDS
         ),
         *commands,
         *plugins,

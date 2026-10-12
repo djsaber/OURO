@@ -9616,7 +9616,7 @@ async def test_root_help_groups_runtime_plugin_commands(
             option.id
             for index in range(options.option_count)
             if not (option := options.get_option_at_index(index)).disabled
-        ] == ["command:@"]
+        ] == ["command:@file", "command:@skill"]
         await pilot.press("enter")
         assert app.screen is help_screen
 
@@ -9652,15 +9652,14 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         assert shortcuts["Tab"] == "switch sessions"
         assert shortcuts["Alt+← / Alt+→"] == "switch agent"
         assert shortcuts["Alt+↑ / Alt+↓"] == "main / recent agent"
-        files = next(choice for choice in menu._choices if choice.value == "command:@")
+        files = next(choice for choice in menu._choices if choice.value == "command:@file")
         assert (files.group, files.label, files.trailing) == (
             "COMMANDS",
-            "@",
-            "Reference local files",
+            "@file",
+            "Reference files",
         )
         assert files.description == (
-            "Type to filter; Space selects files; "
-            "Enter opens folders or adds references; Esc closes."
+            "Type to filter; Space selects; Enter opens folders or adds references; Esc closes."
         )
         plugin_commands = tuple(
             choice for choice in menu._choices if choice.group == "PLUGIN COMMANDS"
@@ -11641,12 +11640,12 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
         assert popup.scroll_y == 0
 
         for _ in range(20):
-            if popup.selected_command is not None and popup.selected_command.name == "/skill":
+            if popup.selected_command is not None and popup.selected_command.name == "/summary":
                 break
             await pilot.press("down")
         await pilot.pause()
         assert popup.selected_command is not None
-        assert popup.selected_command.name == "/skill"
+        assert popup.selected_command.name == "/summary"
 
         await pilot.press("escape")
         assert popup.display is False
@@ -11971,7 +11970,7 @@ async def test_command_popup_hides_when_no_commands_match(
     monkeypatch.setattr(
         app,
         "_submit_run",
-        lambda text, mode, *, attachments: submitted.append((text, mode, attachments)),
+        lambda text, mode, *, attachments, skills: submitted.append((text, mode, attachments)),
     )
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
@@ -12213,21 +12212,21 @@ Review the requested code carefully.
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        await pilot.press("slash", *"skill", "enter")
+        await pilot.press("@", *"skill", "enter")
         await pilot.pause()
 
         popup = app.query_one(CommandPopup)
-        assert app.query_one(Composer).text == "/skill "
+        assert app.query_one(Composer).text == "@skill "
         assert popup.argument_command is not None
-        assert popup.argument_command.name == "/skill"
+        assert popup.argument_command.name == "@skill"
         assert popup.selected_argument is not None
         assert popup.selected_argument.value == "reviewer"
 
         await pilot.press("enter")
         await pilot.pause()
         composer = app.query_one(Composer)
-        assert composer.text == "/skill reviewer "
-        assert composer.suggestion == "<task>"
+        assert composer.text == "@reviewer "
+        assert composer.suggestion == ""
 
         await pilot.press(*"inspect", "space", *"app.py", "enter")
         await _wait_for_worker_group(app, pilot, group="run")
@@ -12237,7 +12236,7 @@ Review the requested code carefully.
             description="skill-activated run",
         )
 
-        assert app.query_one(ConversationHistory).user_turns == ("/skill reviewer inspect app.py",)
+        assert app.query_one(ConversationHistory).user_turns == ("@reviewer inspect app.py",)
         assert app._controller.session_id is not None
         snapshot = application.runtime.store.load_runtime_session(app._controller.session_id)
         message = next(item for item in snapshot.messages if item.skill_activations)
@@ -12246,7 +12245,7 @@ Review the requested code carefully.
 
 
 @pytest.mark.asyncio
-async def test_skill_selection_prompts_for_instructions_without_metadata_hint(
+async def test_skill_selection_creates_an_element_without_submitting(
     tmp_path: Path,
 ) -> None:
     skill_root = tmp_path / "skills" / "imagegen"
@@ -12265,16 +12264,18 @@ Create the requested image.
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        await pilot.press("slash", *"skill", "enter")
+        await pilot.press("@", *"skill", "enter")
         await pilot.pause()
 
         await pilot.press("enter")
         await pilot.pause()
 
         composer = app.query_one(Composer)
-        assert composer.text == "/skill imagegen "
-        assert composer.suggestion == "<instruction>"
-        assert app.query_one(CommandPopup).display is True
+        assert composer.text == "@imagegen "
+        assert composer.input_content.skills[0].name == "imagegen"
+        assert composer.suggestion == ""
+        assert app.query_one(CommandPopup).display is False
+        assert app._controller.session_id is None
 
 
 @pytest.mark.asyncio

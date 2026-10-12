@@ -18,6 +18,8 @@ class SkillInvocationRequest(OuroModel):
 
     name: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     arguments: str = ""
+    text_offset: int = Field(default=0, ge=0)
+    order: int = Field(default=0, ge=0)
 
     @field_validator("name")
     @classmethod
@@ -79,6 +81,8 @@ class SkillActivationService:
             )
         return SkillActivationContent(
             name=loaded.metadata.name,
+            text_offset=request.text_offset,
+            order=request.order,
             source=loaded.metadata.source,
             location=loaded.metadata.location,
             base_directory=str(Path(loaded.metadata.location).parent),

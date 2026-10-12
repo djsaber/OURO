@@ -27,7 +27,7 @@ from ouro.tui.widgets import Composer, ConversationView
 from tests.tui.helpers import run_ready_app
 
 
-def application_at(tmp_path, provider=None, *, backend="files"):
+def application_at(tmp_path, provider=None, *, backend="files", skills=None):
     store = (
         LocalSessionStore(tmp_path)
         if backend == "files"
@@ -43,7 +43,7 @@ def application_at(tmp_path, provider=None, *, backend="files"):
         ),
         tools=ToolRegistry(),
         resources=ResourceService(store=resources, sessions=store),
-        skills=tuple(discover_skill_catalog(home=tmp_path).skills),
+        skills=tuple(discover_skill_catalog(home=tmp_path).skills) if skills is None else skills,
         environment=RuntimeEnvironment.local(
             tmp_path, store.sessions_dir if backend == "files" else None
         ),
@@ -76,11 +76,11 @@ async def test_undo_skill_and_attachment_survive_navigation_restart_and_submissi
     app = OuroTuiApp(application=application, resume_session_id=session.session_id)
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await command(app, pilot, "/undo")
-        assert app.query_one(Composer).input_content.text == "/skill demo original"
+        assert app.query_one(Composer).input_content.text == "original"
         await app._open_session(other.session_id)
         assert app._input_drafts.resources_for(other.session_id) == ()
         await app._open_session(session.session_id)
-        assert app.query_one(Composer).input_content.text == "/skill demo original"
+        assert app.query_one(Composer).input_content.text == "original"
         assert app._input_drafts.resources_for(session.session_id) == (resource.resource_id,)
     assert TuiInputDraftStore(tmp_path).load().resources_for(session.session_id) == (
         resource.resource_id,
@@ -88,12 +88,15 @@ async def test_undo_skill_and_attachment_survive_navigation_restart_and_submissi
     restarted_application = application_at(tmp_path, backend=backend)
     restarted = OuroTuiApp(application=restarted_application, resume_session_id=session.session_id)
     async with run_ready_app(restarted, size=(100, 32)) as pilot:
-        assert restarted.query_one(Composer).input_content.text == "/skill demo original"
+        assert restarted.query_one(Composer).input_content.text == "original"
+        restored = restarted.query_one(Composer).input_content
+        assert [item.name for item in restored.skills] == ["demo"]
         await command(
             restarted,
             pilot,
-            "/skill demo edited",
-            attachments=restarted.query_one(Composer).input_content.attachments,
+            "edited",
+            attachments=restored.attachments,
+            skills=restored.skills,
         )
         async with asyncio.timeout(10):
             workers = tuple(w for w in restarted.workers if w.group == "run")
@@ -115,7 +118,7 @@ async def test_undo_skill_and_attachment_survive_navigation_restart_and_submissi
         assert user.run_id != original.run.run_id
 
 
-async def command(app, pilot, value, *, attachments=()):
+async def command(app, pilot, value, *, attachments=(), skills=()):
     async with asyncio.timeout(10):
         startup = tuple(worker for worker in app.workers if worker.name == "tui-start")
         if startup:
@@ -129,6 +132,7 @@ async def command(app, pilot, value, *, attachments=()):
     composer.load_input(
         InputContent(
             text=value,
+            skills=skills,
             attachments=tuple(
                 item.model_copy(update={"text_offset": len(value)}) for item in attachments
             ),

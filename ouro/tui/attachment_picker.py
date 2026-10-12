@@ -16,8 +16,6 @@ class AttachmentEntry:
 
 
 class AttachmentPicker:
-    CONFIRM = "__reference__"
-
     def __init__(self, directory: Path, *, limit: int = 16) -> None:
         self.directory = directory.absolute()
         self.entries: tuple[AttachmentEntry, ...] = ()
@@ -85,9 +83,7 @@ class AttachmentPicker:
         needle = query.casefold().strip()
         arguments = []
         if not needle and self.directory.parent != self.directory:
-            arguments.append(
-                TuiCommandArgument(str(self.directory.parent), "Parent directory", label="..")
-            )
+            arguments.append(TuiCommandArgument(str(self.directory.parent), "", label=".."))
         for entry in self.entries:
             if needle not in entry.path.name.casefold():
                 continue
@@ -106,15 +102,6 @@ class AttachmentPicker:
                     label=label,
                     accent=accent,
                     checked=None if entry.is_directory else entry.path in self.selected,
-                )
-            )
-        if self.selected and (not needle or arguments):
-            arguments.append(
-                TuiCommandArgument(
-                    self.CONFIRM,
-                    "",
-                    label="Reference selected files",
-                    trailing_badge=str(len(self.selected)),
                 )
             )
         return tuple(arguments)

@@ -108,7 +108,7 @@ async def test_default_undo_cancels_last_queued_input_during_live_execution(runt
         content_digest=f"sha256:{'a' * 64}",
     )
     last = enqueue(
-        runtime, session.session_id, "edit", skill_activation=skill, resource_refs=("resource",)
+        runtime, session.session_id, "edit", skill_activations=(skill,), resource_refs=("resource",)
     )
     lock = runtime.store.acquire_session_lock(session.session_id, run.run_id)
     try:

@@ -11,7 +11,7 @@ from textual.document._document import Document, EditResult, Selection
 from textual.document._edit import Edit
 from textual.widgets import TextArea
 
-from ouro.core.input_content import InputContent, InputFile
+from ouro.core.input_content import InputContent, InputFile, InputSkillReference
 from ouro.tui.text_inputs import TuiTextArea
 from ouro.tui.theme import theme_for
 
@@ -20,7 +20,7 @@ from ouro.tui.theme import theme_for
 class AttachmentSpan:
     start: int
     end: int
-    attachment: InputFile
+    attachment: InputFile | InputSkillReference
 
 
 class AttachmentEdit(Edit):
@@ -58,16 +58,16 @@ class AttachmentTextArea(TuiTextArea):
     @staticmethod
     def _input_content(text: str, spans: tuple[AttachmentSpan, ...]) -> InputContent:
         parts: list[str] = []
-        attachments: list[InputFile] = []
+        elements: list[InputFile | InputSkillReference] = []
         cursor = offset = 0
         for span in spans:
             part = text[cursor : span.start]
             parts.append(part)
             offset += len(part)
-            attachments.append(span.attachment.model_copy(update={"text_offset": offset}))
+            elements.append(span.attachment.model_copy(update={"text_offset": offset}))
             cursor = span.end
         parts.append(text[cursor:])
-        return InputContent(text="".join(parts), attachments=tuple(attachments))
+        return InputContent.from_elements("".join(parts), tuple(elements))
 
     def prepare_attachment_insertion(
         self,
@@ -89,14 +89,14 @@ class AttachmentTextArea(TuiTextArea):
         )
 
         def insert(items: tuple[InputFile, ...]) -> InputContent:
-            return InputContent(
-                text=before.text + after.text,
-                attachments=(
-                    *before.attachments,
+            return InputContent.from_elements(
+                before.text + after.text,
+                (
+                    *before.elements,
                     *(item.model_copy(update={"text_offset": len(before.text)}) for item in items),
                     *(
                         item.model_copy(update={"text_offset": len(before.text) + item.text_offset})
-                        for item in after.attachments
+                        for item in after.elements
                     ),
                 ),
             )
@@ -107,7 +107,7 @@ class AttachmentTextArea(TuiTextArea):
         parts: list[str] = []
         spans: list[AttachmentSpan] = []
         cursor = rendered = 0
-        for item in content.attachments:
+        for item in content.elements:
             text = content.text[cursor : item.text_offset]
             label = item.label + " "
             parts.extend((text, label))
@@ -164,7 +164,9 @@ class AttachmentTextArea(TuiTextArea):
             return super().edit(edit)
         return super().edit(self._attachment_edit(edit))
 
-    def _attachment_edit(self, edit: Edit, inserted: tuple[InputFile, ...] = ()) -> AttachmentEdit:
+    def _attachment_edit(
+        self, edit: Edit, inserted: tuple[InputFile | InputSkillReference, ...] = ()
+    ) -> AttachmentEdit:
         start = self.plain_document.get_index_from_location(edit.top)
         end = self.plain_document.get_index_from_location(edit.bottom)
         for span in self.attachment_spans:
@@ -196,8 +198,17 @@ class AttachmentTextArea(TuiTextArea):
     def insert_attachments(self, attachments: tuple[InputFile, ...]) -> None:
         if not attachments or self.read_only:
             return
-        if len(self.attachment_spans) + len(attachments) > 16:
+        if len(self.input_content.attachments) + len(attachments) > 16:
             raise ValueError("A message can contain at most 16 attachments")
+        self._insert_elements(attachments)
+
+    def insert_skills(self, skills: tuple[InputSkillReference, ...]) -> None:
+        existing = {item.name for item in self.input_content.skills}
+        self._insert_elements(tuple(item for item in skills if item.name not in existing))
+
+    def _insert_elements(self, attachments: tuple[InputFile | InputSkillReference, ...]) -> None:
+        if not attachments or self.read_only:
+            return
         self.history.checkpoint()
         edit = Edit("".join(item.label + " " for item in attachments), *self.selection, False)
         result = self.edit(self._attachment_edit(edit, attachments))

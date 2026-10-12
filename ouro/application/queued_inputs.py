@@ -5,12 +5,12 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Literal
 
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import AliasChoices, Field, ValidationError, field_validator, model_validator
 
 from ouro.application.dto import ApplicationDTO
 from ouro.application.supervisor_models import HostInputReceipt
 from ouro.core.base import OuroModel, new_id, utc_now
-from ouro.core.input_content import InputContent, InputFile
+from ouro.core.input_content import InputContent, InputFile, InputSkillReference
 from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import SkillActivationContent
@@ -35,7 +35,7 @@ class QueuedUserInputView(ApplicationDTO):
     prompt: str
     mode: QueuedInputMode
     queued_at: datetime
-    skill_name: str | None = None
+    skills: tuple[InputSkillReference, ...] = ()
     attachments: tuple[InputFile, ...] = Field(default=(), max_length=16)
     resource_refs: tuple[str, ...] = ()
 
@@ -45,7 +45,9 @@ class QueuedInput(OuroModel):
     history_bound: bool = False
     queue_id: str = Field(min_length=1)
     prompt: str = ""
-    skill_activation: SkillActivationContent | None = None
+    skill_activations: tuple[SkillActivationContent, ...] = Field(
+        default=(), validation_alias=AliasChoices("skill_activations", "skill_activation")
+    )
     mode: QueuedInputMode
     driver: RunDriverBinding | None = None
     title: str | None = None
@@ -74,6 +76,16 @@ class QueuedInput(OuroModel):
     prospective_run_id: str | None = None
     extension_catalog_id: str | None = None
     extension_generations: tuple[dict[str, object], ...] = ()
+
+    @field_validator("skill_activations", mode="before")
+    @classmethod
+    def read_skill_activations(cls, value: object) -> object:
+        """Retain accepted inputs persisted with a single activation."""
+        if value is None:
+            return ()
+        if isinstance(value, dict | SkillActivationContent):
+            return (value,)
+        return value
 
     @field_validator("host_source_id")
     @classmethod
@@ -158,12 +170,12 @@ class QueuedInput(OuroModel):
                 raise ValueError("Attachment identities must match resource references")
         if (
             not self.prompt.strip()
-            and self.skill_activation is None
+            and not self.skill_activations
             and not self.resource_refs
             and not self.attachments
         ):
             raise ValueError("queued input requires a prompt or skill activation")
-        if self.skill_activation is not None:
+        if self.skill_activations:
             if self.source != "user" or self.role != "user" or self.scaffold:
                 raise ValueError("skill activation is only valid on direct user input")
             if self.mode != "follow_up":
@@ -283,7 +295,7 @@ class QueuedInputQueue:
         snapshot: RuntimeSessionSnapshot,
         prompt: str,
         driver: RunDriverBinding | None = None,
-        skill_activation: SkillActivationContent | None = None,
+        skill_activations: tuple[SkillActivationContent, ...] = (),
         mode: QueuedInputMode = "follow_up",
         title: str | None,
         resource_refs: tuple[str, ...] = (),
@@ -316,7 +328,7 @@ class QueuedInputQueue:
             history_bound=history_bound,
             queue_id=queue_id or new_id("queued"),
             prompt=prompt,
-            skill_activation=skill_activation,
+            skill_activations=skill_activations,
             driver=driver,
             mode=mode,
             title=title,

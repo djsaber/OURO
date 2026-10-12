@@ -246,21 +246,21 @@ def test_queue_persists_argumentless_user_skill_activation_and_rejects_steering(
     queued_session, queued, _ = queue.enqueue(
         snapshot=store.load_session(session.session_id),
         prompt="",
-        skill_activation=activation,
+        skill_activations=(activation,),
         title=None,
         role="user",
         scaffold=False,
     )
     restored = queue.peek(store.load_session(queued_session.session_id))
 
-    assert queued.skill_activation == activation
+    assert queued.skill_activations == (activation,)
     assert restored is not None
-    assert restored.skill_activation == activation
+    assert restored.skill_activations == (activation,)
     with pytest.raises(ValidationError, match="cannot steer"):
         queue.enqueue(
             snapshot=store.load_session(session.session_id),
             prompt="task",
-            skill_activation=activation,
+            skill_activations=(activation,),
             title=None,
             mode="steer",
             role="user",

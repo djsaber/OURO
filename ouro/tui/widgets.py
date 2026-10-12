@@ -34,7 +34,7 @@ from ouro.application.session_models import SessionContextStatus
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextMetrics
-from ouro.core.input_content import InputContent, InputFile
+from ouro.core.input_content import InputContent, InputFile, InputSkillReference
 from ouro.core.messages import MessageRecord, ModelMessage, SkillActivationContent, TextContent
 from ouro.core.state import DEFAULT_SESSION_TITLE
 from ouro.sdk.plugins.interactions import (
@@ -2587,10 +2587,14 @@ class CommandPopup(VerticalScroll):
         self._arguments: tuple[TuiCommandArgument, ...] = ()
         self._selected: int | None = 0
         self._content = Static(id="command-popup-content")
+        self._heading_widget = Static(id="command-popup-heading")
+        self._heading_widget.display = False
         self._heading = ""
+        self._selection_count: int | None = None
         self._hint = ""
 
     def compose(self) -> ComposeResult:
+        yield self._heading_widget
         yield self._content
 
     @property
@@ -2621,6 +2625,7 @@ class CommandPopup(VerticalScroll):
             self._argument_command = None
             self._arguments = ()
             self._heading = self._hint = ""
+            self._selection_count = None
             self._selected = next(
                 (index for index, item in enumerate(commands) if item.name == selected_name),
                 0,
@@ -2635,6 +2640,7 @@ class CommandPopup(VerticalScroll):
         *,
         query: str = "",
         heading: str = "",
+        selection_count: int | None = None,
         hint: str = "",
     ) -> None:
         """Show matches without implicitly accepting suggestions over typed input."""
@@ -2647,13 +2653,14 @@ class CommandPopup(VerticalScroll):
             self._argument_command = command
             self._arguments = arguments
             self._heading, self._hint = heading, hint
+            self._selection_count = selection_count
             self._selected = None
             if not query.strip() or not any(item.is_suggestion for item in arguments):
                 self._selected = next(
                     (index for index, item in enumerate(arguments) if item.value == selected_value),
                     0,
                 )
-            self.display = bool(arguments) or not query.strip()
+            self.display = bool(heading) or bool(arguments) or not query.strip()
             if self.display:
                 self._render_arguments()
 
@@ -2673,6 +2680,8 @@ class CommandPopup(VerticalScroll):
             self._arguments = ()
             self._selected = 0
             self._heading = self._hint = ""
+            self._selection_count = None
+            self._heading_widget.display = False
 
     def navigate(self, offset: int) -> None:
         items = self._arguments if self._argument_command is not None else self._commands
@@ -2772,8 +2781,7 @@ class CommandPopup(VerticalScroll):
 
     def _render_rows(self, rows: tuple[Text, ...]) -> None:
         theme = theme_for(self)
-        if self._heading:
-            rows = (Text(self._heading, style=theme.text_lowlight), *rows)
+        self._heading_widget.display = bool(self._heading)
         if self._hint:
             rows = (*rows, Text(self._hint, style=theme.text_faint))
         self._render_rows_at_width(rows, retry_after_layout=True)
@@ -2785,6 +2793,16 @@ class CommandPopup(VerticalScroll):
         retry_after_layout: bool,
     ) -> None:
         width = self.scrollable_content_region.width
+        if self._heading:
+            theme = theme_for(self)
+            heading = Text(self._heading, style=theme.text_lowlight)
+            if self._selection_count is not None:
+                heading = _trailing_badge(
+                    heading, str(self._selection_count), width, theme.text_lowlight
+                )
+            if width > 0:
+                heading.truncate(width, overflow="ellipsis", pad=True)
+            self._heading_widget.update(heading)
         if width <= 0:
             self._content.update(Text("\n").join(rows))
             if retry_after_layout:
@@ -2805,7 +2823,7 @@ class CommandPopup(VerticalScroll):
     def _scroll_selected_into_view(self, rows: tuple[Text, ...]) -> None:
         if self._selected is None:
             return
-        selected = self._selected + bool(self._heading)
+        selected = self._selected
         if not rows or selected >= len(rows):
             return
         width = self.scrollable_content_region.width
@@ -2816,9 +2834,10 @@ class CommandPopup(VerticalScroll):
             self.call_after_refresh(self._scroll_selected_into_view, rows)
             return
         heights = tuple(max(1, len(row.wrap(self.app.console, width))) for row in rows)
+        spacing = self._content.dock_gutter
         selected_region = Region(
             0,
-            sum(heights[:selected]),
+            spacing.top + sum(heights[:selected]),
             width,
             heights[selected],
         )
@@ -2828,6 +2847,7 @@ class CommandPopup(VerticalScroll):
             # The popup suppresses scrollbar chrome, but selection still owns its viewport.
             force=True,
             x_axis=False,
+            spacing=spacing,
         )
 
 
@@ -2866,8 +2886,8 @@ class QueuedInputPanel(VerticalScroll):
                 label = "Follow-up" if item.mode == "follow_up" else "Guide"
                 tone = theme.accent if item.mode == "follow_up" else theme.accent_bright
                 prompt = " ↵ ".join(line.strip() for line in item.prompt.splitlines())
-                if item.skill_name is not None:
-                    prompt = f"/skill {item.skill_name}{f' {prompt}' if prompt else ''}"
+                if item.skills:
+                    prompt = " ".join(skill.label for skill in item.skills) + f" {prompt}"
                 row = Text(f"{index}. {label}", style=tone)
                 row.append(
                     theme.inline_separator,
@@ -2907,12 +2927,16 @@ class Composer(AttachmentTextArea):
 
     class Submitted(Message):
         def __init__(
-            self, text: str, mode: QueuedInputMode, attachments: tuple[InputFile, ...] = ()
+            self,
+            text: str,
+            mode: QueuedInputMode,
+            attachments: tuple[InputFile, ...] = (),
+            skills: tuple[InputSkillReference, ...] = (),
         ) -> None:
             super().__init__()
             self.text = text
             self.mode = mode
-            self.content = InputContent(text=text, attachments=attachments)
+            self.content = InputContent(text=text, attachments=attachments, skills=skills)
 
     class AttachmentRequested(Message):
         def __init__(self, paste: str | None = None) -> None:
@@ -2956,6 +2980,7 @@ class Composer(AttachmentTextArea):
         self._command_draft: str | None = None
         self._attachment_draft: InputContent | None = None
         self._attachment_display = ""
+        self.reference_command = "@"
         self._attachment_selection = self.selection
         self._suggestion_resolver: Callable[[], str] | None = None
         self._command_matcher: Callable[[], bool] | None = None
@@ -3157,7 +3182,12 @@ class Composer(AttachmentTextArea):
         self.set_attachment_query("")
 
     def set_attachment_query(self, value: str) -> None:
-        self.load_command("@" + value, draft=self._attachment_display)
+        prefix = self.reference_command + (" " if self.reference_command != "@" else "")
+        self.load_command(prefix + value, draft=self._attachment_display)
+
+    def select_reference_command(self, command: str) -> None:
+        self.reference_command = command
+        self.set_attachment_query("")
 
     def finish_attachment_menu(self) -> None:
         content = self._attachment_draft
@@ -3169,6 +3199,7 @@ class Composer(AttachmentTextArea):
         self._observed_text = self.text
         self.selection = self._attachment_selection
         self._attachment_display = ""
+        self.reference_command = "@"
 
     @property
     def draft_content(self) -> InputContent:
@@ -3184,6 +3215,10 @@ class Composer(AttachmentTextArea):
             attachments=tuple(
                 item.model_copy(update={"text_offset": max(0, item.text_offset - prefix)})
                 for item in content.attachments
+            ),
+            skills=tuple(
+                item.model_copy(update={"text_offset": max(0, item.text_offset - prefix)})
+                for item in content.skills
             ),
         )
 
@@ -3216,6 +3251,10 @@ class Composer(AttachmentTextArea):
                 attachments=tuple(
                     item.model_copy(update={"text_offset": item.text_offset + len(command_text)})
                     for item in content.attachments
+                ),
+                skills=tuple(
+                    item.model_copy(update={"text_offset": item.text_offset + len(command_text)})
+                    for item in content.skills
                 ),
             )
         )
@@ -3308,7 +3347,14 @@ class Composer(AttachmentTextArea):
             event.stop()
             event.prevent_default()
             return
-        if self.attachment_menu_open and event.character == " " and self._matches_command():
+        context = self.command_context()
+        if (
+            self.attachment_menu_open
+            and context is not None
+            and " " in context[0]
+            and event.character == " "
+            and self._matches_command()
+        ):
             event.stop()
             event.prevent_default()
             self.post_message(self.AttachmentToggled())
@@ -3318,7 +3364,7 @@ class Composer(AttachmentTextArea):
             event.character == "@"
             and self.attachments_enabled
             and not self.read_only
-            and (position == 0 or self.text[position - 1].isspace())
+            and position == 0
             and self.command_context() is None
             and not self.attachment_menu_open
         ):
@@ -3360,7 +3406,7 @@ class Composer(AttachmentTextArea):
         self._history.append(content)
         self._history_index = len(self._history)
         self.clear()
-        self.post_message(self.Submitted(value, mode, content.attachments))
+        self.post_message(self.Submitted(value, mode, content.attachments, content.skills))
 
     def action_newline(self) -> None:
         self.insert("\n")
@@ -3496,7 +3542,7 @@ def user_message_text(message: MessageRecord | ModelMessage) -> str:
     if not activations:
         return message.text_content
     task = message.text_content.strip()
-    return f"/skill {activations[0].name}{f' {task}' if task else ''}"
+    return " ".join(f"@{skill.name}" for skill in activations) + (f" {task}" if task else "")
 
 
 def _trailing_badge(row: Text, label: str, width: int, accent: str) -> Text:

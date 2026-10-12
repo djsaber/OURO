@@ -8,7 +8,7 @@ import pytest
 from ouro.application.runtime import RuntimeService
 from ouro.application.skill_activations import SkillActivationService, SkillInvocationRequest
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.errors import SkillActivationError
+from ouro.core.errors import PromptRejectedError, SkillActivationError
 from ouro.core.messages import ModelMessage, SkillActivationContent
 from ouro.core.prompt_policies import (
     PromptPolicyCall,
@@ -46,6 +46,7 @@ class CapturingProvider:
 def _write_skill(
     root: Path,
     *,
+    name: str = "reviewer",
     description: str = "Review source code.",
     body: str = "Review the requested code carefully.",
     extra_frontmatter: str = "",
@@ -53,7 +54,7 @@ def _write_skill(
     root.mkdir(parents=True, exist_ok=True)
     (root / "SKILL.md").write_text(
         f"""---
-name: reviewer
+name: {name}
 description: {description}
 {extra_frontmatter}---
 {body}
@@ -76,7 +77,7 @@ def _runtime(tmp_path: Path, provider: CapturingProvider, metadata, *, policies=
             ModelMetadata(model_id="capture", provider_id="capture"),
         ),
         tools=ToolRegistry(),
-        skills=(metadata,),
+        skills=metadata if isinstance(metadata, tuple) else (metadata,),
         prompt_policies=policies,
     )
 
@@ -199,7 +200,7 @@ async def test_queued_skill_activation_uses_the_instructions_frozen_at_acceptanc
     )
     pending = runtime.pending_user_inputs(session.session_id)
     assert len(pending) == 1
-    assert pending[0].skill_name == "reviewer"
+    assert [item.name for item in pending[0].skills] == ["reviewer"]
     _write_skill(root, body="Changed after queue acceptance.")
     provider.release.set()
     await active
@@ -215,3 +216,74 @@ async def test_queued_skill_activation_uses_the_instructions_frozen_at_acceptanc
     assert activation_messages[0].skill_activations[0].instructions == (
         "Original queued instructions."
     )
+
+
+@pytest.mark.parametrize("reject_second", (False, True))
+async def test_multiple_skills_are_accepted_as_one_input_after_all_policies_allow(
+    tmp_path, reject_second
+):
+    for name in ("reviewer", "writer"):
+        _write_skill(tmp_path / "skills" / name, name=name, body=f"Instructions for {name}.")
+    metadata = tuple(SkillLoader(tmp_path / "skills").load_metadata())
+    provider = CapturingProvider()
+    policies = PromptPolicyRegistry()
+    seen = []
+
+    def review(call):
+        seen.append(call.skill_activation.name)
+        if reject_second and call.skill_activation.name == "writer":
+            return PromptPolicyDecision(action="deny", reason="Writer unavailable")
+        return PromptPolicyDecision()
+
+    policies.register(PromptPolicyRegistration("test", "review", review))
+    runtime = _runtime(tmp_path, provider, metadata, policies=policies)
+    invocations = tuple(SkillInvocationRequest(name=item.name) for item in metadata)
+    if reject_second:
+        with pytest.raises(PromptRejectedError, match="Writer unavailable"):
+            await runtime.run("", skill_invocations=invocations)
+        assert not provider.calls
+        assert not runtime.store.list_sessions()
+    else:
+        result = await runtime.run("", skill_invocations=invocations)
+        messages = runtime.store.load_runtime_session(result.session.session_id).messages
+        inputs = [item for item in messages if item.role == "user"]
+        assert len(inputs) == 1 and not inputs[0].scaffold
+        assert [item.name for item in inputs[0].skill_activations] == ["reviewer", "writer"]
+        for name in ("reviewer", "writer"):
+            assert provider.calls[0][-1].text_content.count(f"Instructions for {name}.") == 1
+    assert seen == ["reviewer", "writer"]
+
+
+async def test_multiple_queued_skills_remain_one_input_with_frozen_instructions(tmp_path):
+    for name in ("reviewer", "writer"):
+        _write_skill(tmp_path / "skills" / name, name=name, body=f"Original {name}.")
+    provider = CapturingProvider(block_first=True)
+    runtime = _runtime(tmp_path, provider, tuple(SkillLoader(tmp_path / "skills").load_metadata()))
+    session = runtime.create_session(title="Multi skill queue")
+    active = asyncio.create_task(runtime.run("First task", session_id=session.session_id))
+    try:
+        await asyncio.wait_for(provider.started.wait(), timeout=5)
+        await runtime.run(
+            "",
+            session_id=session.session_id,
+            skill_invocations=(
+                SkillInvocationRequest(name="reviewer"),
+                SkillInvocationRequest(name="writer"),
+            ),
+        )
+        pending = runtime.pending_user_inputs(session.session_id)
+        assert len(pending) == 1
+        assert [item.name for item in pending[0].skills] == ["reviewer", "writer"]
+        for name in ("reviewer", "writer"):
+            _write_skill(tmp_path / "skills" / name, name=name, body=f"Changed {name}.")
+    finally:
+        provider.release.set()
+        await active
+    snapshot = runtime.store.load_runtime_session(session.session_id)
+    activated = [item for item in snapshot.messages if item.skill_activations]
+    assert len(activated) == 1 and not activated[0].scaffold
+    assert [item.instructions for item in activated[0].skill_activations] == [
+        "Original reviewer.",
+        "Original writer.",
+    ]
+    assert len(provider.calls) == 2

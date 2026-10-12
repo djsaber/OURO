@@ -102,7 +102,13 @@ from ouro.core.inner_loop import (
     InnerAgentLoop,
     TurnCompletionPolicyResult,
 )
-from ouro.core.input_content import InputAttachment, InputContent, InputFile, InputFileReference
+from ouro.core.input_content import (
+    InputAttachment,
+    InputContent,
+    InputFile,
+    InputFileReference,
+    InputSkillReference,
+)
 from ouro.core.interactions import (
     SESSION_INTERACTION_MODES,
     SessionInteractionMode,
@@ -1263,6 +1269,7 @@ class RuntimeService:
         self,
         prompt: str,
         *,
+        skill_invocations: tuple[SkillInvocationRequest, ...] = (),
         skill_invocation: SkillInvocationRequest | None = None,
         session_id: str | None = None,
         title: str | None = None,
@@ -1297,23 +1304,32 @@ class RuntimeService:
         if workspace is not None and session_id is not None:
             raise ValueError("workspace can only be set when creating a session")
         if skill_invocation is not None:
-            if prompt and prompt != skill_invocation.arguments:
+            if skill_invocations:
+                raise ValueError("use either skill_invocation or skill_invocations")
+            skill_invocations = (skill_invocation,)
+        if skill_invocations:
+            arguments = skill_invocations[0].arguments
+            if (prompt and prompt != arguments) or any(
+                item.arguments != arguments for item in skill_invocations
+            ):
                 raise ValueError("prompt must match the skill invocation arguments")
-            prompt = skill_invocation.arguments
+            prompt = arguments
+            if len({item.name for item in skill_invocations}) != len(skill_invocations):
+                raise ValueError("skill invocations must have unique names")
         queued_skill_activation = any(
-            item.skill_activation is not None for item in (_queued_inputs or ())
+            bool(item.skill_activations) for item in (_queued_inputs or ())
         )
         if (
             not prompt.strip()
-            and skill_invocation is None
+            and not skill_invocations
             and not queued_skill_activation
             and not resource_refs
             and not attachments
         ):
             raise ValueError("run input requires a prompt or skill invocation")
-        if skill_invocation is not None and _input_attribution is not None:
+        if skill_invocations and _input_attribution is not None:
             raise ValueError("skill invocation is only valid on direct user input")
-        if skill_invocation is not None and queue_mode != "follow_up":
+        if skill_invocations and queue_mode != "follow_up":
             raise ValueError("skill invocation cannot steer an active run")
         if isinstance(_input_attribution, DelegatedTaskInput) and _prepared_run is None:
             raise ValueError("delegated task input requires a prepared child run")
@@ -1352,7 +1368,7 @@ class RuntimeService:
         input_driver = (
             _queued_inputs[0].driver if _queued_inputs else self._select_input_driver(driver_id)
         )
-        resolved_skill_activation: SkillActivationContent | None = None
+        resolved_skill_activations: tuple[SkillActivationContent, ...] = ()
         if session_id is None:
             if _input_attribution is None:
                 selected_model = (
@@ -1392,11 +1408,12 @@ class RuntimeService:
                         snapshot=self._extension_catalog.snapshot()
                     )
                 try:
-                    if skill_invocation is not None:
-                        resolved_skill_activation = self._resolve_skill_activation_for_run(
-                            preapproved_new_run.run_id,
-                            skill_invocation,
+                    resolved_skill_activations = tuple(
+                        self._resolve_skill_activation_for_run(
+                            preapproved_new_run.run_id, invocation
                         )
+                        for invocation in skill_invocations
+                    )
                     await self._evaluate_prompt_policies(
                         session=candidate_session,
                         run=preapproved_new_run,
@@ -1422,7 +1439,7 @@ class RuntimeService:
                                 role="user",
                                 scaffold=False,
                                 semantic_tag=None,
-                                skill_activation=resolved_skill_activation,
+                                skill_activations=resolved_skill_activations,
                             )
                         ],
                     )
@@ -1511,7 +1528,7 @@ class RuntimeService:
                     snapshot=snapshot,
                     active_run=active_run,
                     prompt=prompt,
-                    skill_invocation=skill_invocation,
+                    skill_invocations=skill_invocations,
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
@@ -1606,7 +1623,7 @@ class RuntimeService:
                     snapshot=snapshot,
                     active_run=active_run,
                     prompt=prompt,
-                    skill_invocation=skill_invocation,
+                    skill_invocations=skill_invocations,
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
@@ -1649,7 +1666,7 @@ class RuntimeService:
                     snapshot=locked_snapshot,
                     active_run=locked_active_run,
                     prompt=prompt,
-                    skill_invocation=skill_invocation,
+                    skill_invocations=skill_invocations,
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
@@ -1687,17 +1704,17 @@ class RuntimeService:
                 await self._ensure_extension_snapshot(run)
             else:
                 run = await self._attach_extension_snapshot(run)
-            if skill_invocation is not None and resolved_skill_activation is None:
-                resolved_skill_activation = self._resolve_skill_activation_for_run(
-                    run.run_id,
-                    skill_invocation,
+            if skill_invocations and not resolved_skill_activations:
+                resolved_skill_activations = tuple(
+                    self._resolve_skill_activation_for_run(run.run_id, invocation)
+                    for invocation in skill_invocations
                 )
             pending_inputs = _queued_inputs or [
                 QueuedInput(
                     queue_id=new_id("queued"),
                     prompt=prompt,
                     driver=input_driver,
-                    skill_activation=resolved_skill_activation,
+                    skill_activations=resolved_skill_activations,
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
@@ -1745,7 +1762,7 @@ class RuntimeService:
                     ),
                 )
             ]
-            if skill_invocation is not None and (
+            if skill_invocations and (
                 len(pending_inputs) != 1 or pending_inputs[0].source != "user"
             ):
                 raise ValueError("skill invocation requires one direct user input")
@@ -1830,16 +1847,10 @@ class RuntimeService:
                         "plugin_id": queued_input.plugin_id,
                         "contribution_id": queued_input.contribution_id,
                         "resource_refs": list(queued_input.resource_refs),
-                        "skill_name": (
-                            queued_input.skill_activation.name
-                            if queued_input.skill_activation is not None
-                            else None
-                        ),
-                        "skill_content_digest": (
-                            queued_input.skill_activation.content_digest
-                            if queued_input.skill_activation is not None
-                            else None
-                        ),
+                        "skill_names": [skill.name for skill in queued_input.skill_activations],
+                        "skill_content_digests": [
+                            skill.content_digest for skill in queued_input.skill_activations
+                        ],
                     },
                 )
 
@@ -2579,7 +2590,7 @@ class RuntimeService:
         snapshot: RuntimeSessionSnapshot,
         active_run: RunRecord | None,
         prompt: str,
-        skill_invocation: SkillInvocationRequest | None = None,
+        skill_invocations: tuple[SkillInvocationRequest, ...] = (),
         title: str | None,
         mode: QueuedInputMode,
         resource_refs: tuple[str, ...] = (),
@@ -2597,7 +2608,7 @@ class RuntimeService:
         source = _attributed_input_source(attribution) if attribution is not None else "user"
         role = _input_role(attribution)
         scaffold = _input_scaffold(attribution)
-        if skill_invocation is not None and (source != "user" or mode != "follow_up"):
+        if skill_invocations and (source != "user" or mode != "follow_up"):
             raise ValueError("skill invocation requires direct follow-up user input")
         queue_id = (
             attribution.queue_id
@@ -2609,7 +2620,7 @@ class RuntimeService:
         extension_snapshot: ExtensionCatalogLease | None = None
         extension_catalog_id: str | None = None
         extension_generations: tuple[dict[str, object], ...] = ()
-        resolved_skill_activation: SkillActivationContent | None = None
+        resolved_skill_activations: tuple[SkillActivationContent, ...] = ()
         if prompt_policy_checked:
             prospective = RunRecord(
                 session_id=snapshot.session.session_id,
@@ -2621,11 +2632,10 @@ class RuntimeService:
             prospective_run_id = prospective.run_id
             prospective = await self._attach_extension_snapshot(prospective)
             try:
-                if skill_invocation is not None:
-                    resolved_skill_activation = self._resolve_skill_activation_for_run(
-                        prospective.run_id,
-                        skill_invocation,
-                    )
+                resolved_skill_activations = tuple(
+                    self._resolve_skill_activation_for_run(prospective.run_id, invocation)
+                    for invocation in skill_invocations
+                )
                 await self._evaluate_prompt_policies(
                     session=snapshot.session,
                     run=prospective,
@@ -2634,7 +2644,7 @@ class RuntimeService:
                             queue_id=queue_id,
                             prompt=prompt,
                             driver=driver,
-                            skill_activation=resolved_skill_activation,
+                            skill_activations=resolved_skill_activations,
                             title=title,
                             mode=mode,
                             resource_refs=resource_refs,
@@ -2672,7 +2682,7 @@ class RuntimeService:
                 self.queued_inputs.enqueue,
                 snapshot=snapshot,
                 prompt=prompt,
-                skill_activation=resolved_skill_activation,
+                skill_activations=resolved_skill_activations,
                 driver=driver,
                 title=title,
                 mode=mode,
@@ -2754,16 +2764,10 @@ class RuntimeService:
             "delegation_id": queued_input.delegation_id,
             "plugin_id": queued_input.plugin_id,
             "contribution_id": queued_input.contribution_id,
-            "skill_name": (
-                queued_input.skill_activation.name
-                if queued_input.skill_activation is not None
-                else None
-            ),
-            "skill_content_digest": (
-                queued_input.skill_activation.content_digest
-                if queued_input.skill_activation is not None
-                else None
-            ),
+            "skill_names": [skill.name for skill in queued_input.skill_activations],
+            "skill_content_digests": [
+                skill.content_digest for skill in queued_input.skill_activations
+            ],
         }
         if active_run is None:
             emitted.append(
@@ -2902,7 +2906,7 @@ class RuntimeService:
     def _can_group_queued_inputs(first: QueuedInput, item: QueuedInput) -> bool:
         if first.driver != item.driver:
             return False
-        if first.skill_activation is not None or item.skill_activation is not None:
+        if first.skill_activations or item.skill_activations:
             return first.queue_id == item.queue_id
         return item.prompt_policy_checked == first.prompt_policy_checked
 
@@ -3170,7 +3174,7 @@ class RuntimeService:
             prompt=item.prompt,
             role=item.role,
             scaffold=item.scaffold,
-            skill_activation=item.skill_activation,
+            skill_activations=item.skill_activations,
             sequence=sequence,
             resource_refs=item.resource_refs,
             metadata=metadata,
@@ -3366,48 +3370,50 @@ class RuntimeService:
                 for file in item.attachments
                 if isinstance(file, InputFileReference)
             )
-            evaluation = await registry.evaluate(
-                PromptPolicyCall(
-                    harness=harness,
-                    session_id=session.session_id,
-                    prospective_run_id=run.run_id,
-                    prompt=item.prompt,
-                    input_source=item.source,
-                    workspace=session.workspace or self.default_workspace,
-                    attachments=attachments,
-                    skill_activation=(
-                        PromptSkillActivationMetadata(
-                            name=item.skill_activation.name,
-                            source=item.skill_activation.source,
-                            location=item.skill_activation.location,
-                            content_digest=item.skill_activation.content_digest,
-                        )
-                        if item.skill_activation is not None
-                        else None
-                    ),
-                    catalog_id=snapshot.catalog_id if snapshot is not None else None,
-                    execution_contracts=execution_contracts,
+            # Preserve the single-skill policy contract while accepting the input atomically.
+            for activation in item.skill_activations or (None,):
+                evaluation = await registry.evaluate(
+                    PromptPolicyCall(
+                        harness=harness,
+                        session_id=session.session_id,
+                        prospective_run_id=run.run_id,
+                        prompt=item.prompt,
+                        input_source=item.source,
+                        workspace=session.workspace or self.default_workspace,
+                        attachments=attachments,
+                        skill_activation=(
+                            PromptSkillActivationMetadata(
+                                name=activation.name,
+                                source=activation.source,
+                                location=activation.location,
+                                content_digest=activation.content_digest,
+                            )
+                            if activation is not None
+                            else None
+                        ),
+                        catalog_id=snapshot.catalog_id if snapshot is not None else None,
+                        execution_contracts=execution_contracts,
+                    )
                 )
-            )
-            if evaluation.allowed:
-                continue
-            prompt_redactor = SensitiveValueRedactor((item.prompt,))
-            if evaluation.rejected_by is not None:
-                rejected = evaluation.rejected_by
+                if evaluation.allowed:
+                    continue
+                prompt_redactor = SensitiveValueRedactor((item.prompt,))
+                if evaluation.rejected_by is not None:
+                    rejected = evaluation.rejected_by
+                    raise PromptRejectedError(
+                        prompt_redactor.redact(evaluation.reason or "prompt rejected"),
+                        plugin_id=rejected.plugin_id,
+                        policy_id=rejected.policy_id,
+                    )
+                failure = evaluation.failures[0]
                 raise PromptRejectedError(
-                    prompt_redactor.redact(evaluation.reason or "prompt rejected"),
-                    plugin_id=rejected.plugin_id,
-                    policy_id=rejected.policy_id,
+                    evaluation.reason or "prompt policy evaluation failed",
+                    plugin_id=failure.plugin_id,
+                    policy_id=failure.policy_id,
+                    policy_failed=True,
+                    failure_error_type=failure.error_type,
+                    failure_message=prompt_redactor.redact(failure.message),
                 )
-            failure = evaluation.failures[0]
-            raise PromptRejectedError(
-                evaluation.reason or "prompt policy evaluation failed",
-                plugin_id=failure.plugin_id,
-                policy_id=failure.policy_id,
-                policy_failed=True,
-                failure_error_type=failure.error_type,
-                failure_message=prompt_redactor.redact(failure.message),
-            )
 
     async def _load_submission_snapshot(self, session_id: str) -> RuntimeSessionSnapshot:
         """Load one Host submission snapshot without blocking the orchestration loop."""
@@ -4466,7 +4472,10 @@ def _queued_user_input_view(item: QueuedInput) -> QueuedUserInputView:
         prompt=item.prompt,
         mode=item.mode,
         queued_at=item.queued_at,
-        skill_name=(item.skill_activation.name if item.skill_activation is not None else None),
+        skills=tuple(
+            InputSkillReference(name=skill.name, text_offset=skill.text_offset, order=skill.order)
+            for skill in item.skill_activations
+        ),
         attachments=item.attachments,
         resource_refs=item.resource_refs,
     )

@@ -165,7 +165,7 @@ class RunLifecycle:
         prompt: str,
         role: MessageRole,
         scaffold: bool,
-        skill_activation: SkillActivationContent | None = None,
+        skill_activations: tuple[SkillActivationContent, ...] = (),
         sequence: int,
         resource_refs: Iterable[str] = (),
         metadata: dict[str, Any] | None = None,
@@ -177,7 +177,7 @@ class RunLifecycle:
             prompt=prompt,
             role=role,
             scaffold=scaffold,
-            skill_activation=skill_activation,
+            skill_activations=skill_activations,
             sequence=sequence,
             resource_refs=resource_refs,
             metadata=metadata,
@@ -194,7 +194,7 @@ class RunLifecycle:
         prompt: str,
         role: MessageRole,
         scaffold: bool,
-        skill_activation: SkillActivationContent | None = None,
+        skill_activations: tuple[SkillActivationContent, ...] = (),
         sequence: int,
         resource_refs: Iterable[str] = (),
         metadata: dict[str, Any] | None = None,
@@ -210,8 +210,7 @@ class RunLifecycle:
         if self._validate_resource_refs is not None:
             self._validate_resource_refs(session.session_id, unique_resource_refs)
         content: list[ContentBlock] = []
-        if skill_activation is not None:
-            content.append(skill_activation)
+        content.extend(skill_activations)
         if prompt:
             content.append(TextContent(text=prompt))
         message = MessageRecord(

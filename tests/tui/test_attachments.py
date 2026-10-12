@@ -74,9 +74,9 @@ def test_picker_names_share_left_edge_and_only_files_have_selection_marks(tmp_pa
         "..",
         "child",
         "notes.txt",
-        "Reference selected files",
     ]
-    assert [item.checked for item in arguments] == [None, None, True, None]
+    assert [item.checked for item in arguments] == [None, None, True]
+    assert all(not item.description for item in arguments)
     assert picker.arguments("missing", DEFAULT_TUI_THEME) == ()
     picker.toggle(str(path))
     assert picker.arguments("notes", DEFAULT_TUI_THEME)[0].checked is False
@@ -94,7 +94,7 @@ async def test_directory_navigation_keeps_visible_listing_until_read_completes(
     async with run_ready_app(app) as pilot:
         app._active_workspace = str(tmp_path)
         composer = app.query_one(Composer)
-        await pilot.press("@")
+        await pilot.press("@", *"file", "enter")
         await app.workers.wait_for_complete(
             [w for w in app.workers if w.group == "attachment-directory"]
         )
@@ -129,7 +129,7 @@ async def test_directory_navigation_keeps_visible_listing_until_read_completes(
                 await worker.wait()
             await pilot.pause()
             assert picker.directory == destination and popup._heading == str(destination)
-            assert composer.text == ("@nested-3" if destination == child else "@")
+            assert composer.text == ("@file nested-3" if destination == child else "@file ")
             assert popup.region.bottom == composer.region.y
 
 
@@ -141,7 +141,7 @@ async def test_unreadable_directory_retains_listing_filter_and_selection(tmp_pat
     app = OuroTuiApp(application=application_at(tmp_path / "home"))
     async with run_ready_app(app) as pilot:
         app._active_workspace = str(tmp_path)
-        await pilot.press("@")
+        await pilot.press("@", *"file", "enter")
         await app.workers.wait_for_complete(
             [w for w in app.workers if w.group == "attachment-directory"]
         )
@@ -162,7 +162,7 @@ async def test_unreadable_directory_retains_listing_filter_and_selection(tmp_pat
         await app._load_attachment_directory(child).wait()
         await pilot.pause()
         assert errors == ["Directory access denied"]
-        assert popup._content.content == visible and composer.text == "@child"
+        assert popup._content.content == visible and composer.text == "@file child"
         assert picker.directory == tmp_path and picker.selected == [path]
         assert not picker.loading
 
@@ -177,7 +177,7 @@ async def test_welcome_upload_stays_in_draft_until_message_is_sent(tmp_path, sou
         app._active_workspace = str(tmp_path)
         composer = app.query_one(Composer)
         if source == "picker":
-            await pilot.press("@")
+            await pilot.press("@", *"file", "enter")
             await app.workers.wait_for_complete(
                 [w for w in app.workers if w.group == "attachment-directory"]
             )
@@ -225,7 +225,7 @@ async def test_picker_retains_multiselection_across_directories_and_confirms_dir
         app._active_workspace = str(tmp_path)
         screen = app.screen
         composer = app.query_one(Composer)
-        await pilot.press("@")
+        await pilot.press("@", *"file", "enter")
         await app.workers.wait_for_complete(
             [w for w in app.workers if w.group == "attachment-directory"]
         )
@@ -344,7 +344,7 @@ async def test_composer_at_and_plain_paste_do_not_confuse_attachment_identity(
     monkeypatch.setattr(
         app,
         "_submit_run",
-        lambda text, mode, *, attachments: submitted.append((text, mode, attachments)),
+        lambda text, mode, *, attachments, skills: submitted.append((text, mode, attachments)),
     )
     async with run_ready_app(app) as pilot:
         composer = app.query_one(Composer)
@@ -353,39 +353,43 @@ async def test_composer_at_and_plain_paste_do_not_confuse_attachment_identity(
         await pilot.press("@")
         assert composer.input_content == InputContent(text="name@")
         composer.load_text("check ")
-        composer.move_cursor((0, 6))
-        await pilot.press("@")
+        composer.move_cursor((0, 0))
+        await pilot.press("@", *"file", "enter")
         await pilot.pause()
         assert composer.attachment_menu_open and app.query_one(CommandPopup).display
         await pilot.press("escape")
         await pilot.pause()
         assert composer.input_content == InputContent(text="check ")
+        composer.move_cursor((0, 6))
         await app._attach_files("/ordinary text to paste").wait()
         assert composer.input_content.text == "check /ordinary text to paste"
 
         attachment = InputAttachment(resource_id="r", name="file.txt", text_offset=7)
         for content, position, expected in (
-            (InputContent(), 0, "@missing text"),
+            (InputContent(), 0, "@file missing text"),
             (
                 InputContent(text="before after", attachments=(attachment,)),
-                7,
-                "before @missing textafter",
+                0,
+                "@file missing textbefore after",
             ),
         ):
             composer.load_input(content)
             composer.move_cursor((0, position))
-            await pilot.press("@")
+            await pilot.press("@", *"file", "enter")
             if workers := [w for w in app.workers if w.group == "attachment-directory"]:
                 await app.workers.wait_for_complete(workers)
             await pilot.press(*"missing text")
             await pilot.pause()
-            assert not app.query_one(CommandPopup).display
+            assert app.query_one(CommandPopup).display
+            assert app.query_one(CommandPopup).selected_argument is None
             await pilot.press(key)
             await pilot.pause()
             text, submitted_mode, attachments = submitted[-1]
             assert (text, submitted_mode) == (expected, mode)
             assert attachments == tuple(
-                item.model_copy(update={"text_offset": item.text_offset + len("@missing text")})
+                item.model_copy(
+                    update={"text_offset": item.text_offset + len("@file missing text")}
+                )
                 for item in content.attachments
             )
             assert composer.input_content.is_empty
@@ -549,9 +553,9 @@ async def test_inline_picker_cancel_preserves_draft_cursor_and_narrow_layout(tmp
     async with run_ready_app(app, size=(44, 20)) as pilot:
         composer = app.query_one(Composer)
         composer.load_text("before after")
-        composer.move_cursor((0, 7))
+        composer.move_cursor((0, 0))
         original, selection = composer.input_content, composer.selection
-        await pilot.press("@")
+        await pilot.press("@", *"file", "enter")
         if workers := [w for w in app.workers if w.group == "attachment-directory"]:
             await app.workers.wait_for_complete(workers)
         await pilot.pause()
@@ -561,7 +565,7 @@ async def test_inline_picker_cancel_preserves_draft_cursor_and_narrow_layout(tmp
         assert popup.region.right <= 44
         await pilot.press(*"missing")
         await pilot.pause()
-        assert not popup.display
+        assert popup.display and popup.selected_argument is None
         assert app._input_drafts.content_for(session.session_id) == original
         composer.set_attachment_query("")
         await pilot.pause()

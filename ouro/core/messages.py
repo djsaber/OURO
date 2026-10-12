@@ -26,6 +26,8 @@ class SkillActivationContent(OuroModel):
 
     type: Literal["skill_activation"] = "skill_activation"
     name: str = Field(min_length=1)
+    text_offset: int = Field(default=0, ge=0)
+    order: int = Field(default=0, ge=0)
     source: SkillActivationSource
     location: str = Field(min_length=1)
     base_directory: str = Field(min_length=1)
@@ -309,8 +311,8 @@ def _validate_skill_activation_blocks(role: MessageRole, content: list[ContentBl
     activations = [block for block in content if isinstance(block, SkillActivationContent)]
     if activations and role != "user":
         raise ValueError("skill activation content is only valid on user messages")
-    if len(activations) > 1:
-        raise ValueError("a user message can activate at most one skill")
+    if len({item.name for item in activations}) != len(activations):
+        raise ValueError("skill activations must have unique names")
 
 
 def _model_visible_content(block: ContentBlock) -> TextContent | MediaContent:

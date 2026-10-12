@@ -58,11 +58,11 @@ depends on deserializing historical Run or Delegation records.
 PDF、Office、压缩包等以元信息和引用提交，不自动解析。模型获得原名称、来源与真实路径，自主使用现有 Read 等工具读取或处理。引用降级会明确说明尚未读取的内容。
 
 资源通过 `resource import` 导入会话，再由 `run --resource <resource_id>` 附加到输入。TUI 可以恢复撤销消息的
-资源引用，也可将多个文件拖入终端，或在输入位置键入 `@` 打开与输入框衔接的目录菜单：继续键入名称过滤，
-Enter 进入目录或引用文件，Space 多选文件，`../` 返回上一级，Esc 恢复草稿和光标。名称左对齐，文件选择标记在右侧，目录不显示多选标记。
+资源引用，也可将多个文件拖入终端，或在输入框首位键入 `@file ` 打开与输入框衔接的目录菜单：继续键入名称过滤，
+Enter 进入目录或引用文件，Space 多选文件，`..` 返回上一级，Esc 恢复草稿和光标。名称左对齐，文件选择标记在名称左侧，目录不显示多选标记。
 目录读取期间保留原列表；欢迎页上传附件后仍停留在欢迎页，发送消息后才进入会话页。
-拖入附件显示主题色文件名，`@` 引用显示原路径，Backspace 整体删除。上传副本保存在
-`OURO_HOME/sessions/<session_id>/resources/files/`，不自动写入工作目录；`@` 保留原文件位置，不复制为会话附件。
+菜单顶部常驻当前目录路径，右侧以低亮度 `[x]` 显示已选数量。拖入附件显示主题色文件名和扩展名，`@file` 引用保留 `@` 前缀，不显示路径；Backspace 整体删除。上传副本保存在
+`OURO_HOME/sessions/<session_id>/resources/files/`，不自动写入工作目录；`@file` 保留原文件位置，不复制为会话附件。
 带附件输入可照常排队；`/unqueue` 恢复文字和附件元素，保留已有草稿。细节与限额见[附件规格](../specs/attachments.md)。
 
 `run --queue-mode follow-up|steer` 选择排队交付边界。follow-up 在当前 Run 结束后进入后续 Run，steer 在当前

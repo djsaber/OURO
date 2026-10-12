@@ -719,7 +719,7 @@ class TuiController:
         prompt: str,
         *,
         queue_mode: QueuedInputMode = "follow_up",
-        skill_invocation: SkillInvocationRequest | None = None,
+        skill_invocations: tuple[SkillInvocationRequest, ...] = (),
         resource_refs: tuple[str, ...] = (),
         attachments: tuple[InputFile, ...] = (),
         on_input_accepted: Callable[[], None] | None = None,
@@ -758,7 +758,7 @@ class TuiController:
         try:
             result = await runtime.run(
                 prompt,
-                skill_invocation=skill_invocation,
+                skill_invocations=skill_invocations,
                 session_id=self._session_id,
                 resource_refs=resource_refs,
                 attachments=attachments,

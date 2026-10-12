@@ -11,7 +11,7 @@ from pydantic import Field, ValidationError, field_validator
 
 from ouro.core.base import VersionedOuroModel
 from ouro.core.errors import ConfigError
-from ouro.core.input_content import InputContent, InputFile
+from ouro.core.input_content import InputContent, InputFile, InputSkillReference
 from ouro.local_io import read_text_atomic, write_model_atomic
 
 MAX_SESSION_DRAFTS = 20
@@ -46,7 +46,7 @@ class TuiInputDrafts(VersionedOuroModel):
         session_ids = tuple(draft.session_id for draft in value)
         if len(set(session_ids)) != len(session_ids):
             raise ValueError("sessions must contain unique session IDs")
-        if any(not draft.text and not draft.attachments for draft in value):
+        if any(not draft.text and not draft.attachments and not draft.skills for draft in value):
             raise ValueError("session drafts must not be empty")
         return value
 
@@ -66,7 +66,7 @@ class TuiInputDrafts(VersionedOuroModel):
             return self.welcome
         return next(
             (
-                InputContent(text=draft.text, attachments=draft.attachments)
+                InputContent(text=draft.text, attachments=draft.attachments, skills=draft.skills)
                 for draft in self.sessions
                 if draft.session_id == session_id
             ),
@@ -74,12 +74,17 @@ class TuiInputDrafts(VersionedOuroModel):
         )
 
     def remember(
-        self, session_id: str | None, text: str, *, attachments: tuple[InputFile, ...] = ()
+        self,
+        session_id: str | None,
+        text: str,
+        *,
+        attachments: tuple[InputFile, ...] = (),
+        skills: tuple[InputSkillReference, ...] = (),
     ) -> TuiInputDrafts:
         """Return state with one draft updated and empty drafts removed."""
 
         if session_id is None:
-            content = InputContent(text=text, attachments=attachments)
+            content = InputContent(text=text, attachments=attachments, skills=skills)
             if content == self.welcome:
                 return self
             return TuiInputDrafts(welcome=content, sessions=self.sessions)
@@ -90,15 +95,22 @@ class TuiInputDrafts(VersionedOuroModel):
             (draft for draft in self.sessions if draft.session_id == session_id),
             None,
         )
-        if current is not None and current.text == text and current.attachments == attachments:
+        if (
+            current is not None
+            and current.text == text
+            and current.attachments == attachments
+            and current.skills == skills
+        ):
             return self
         remaining = tuple(draft for draft in self.sessions if draft.session_id != session_id)
         sessions = (
             (
-                TuiSessionDraft(session_id=session_id, text=text, attachments=attachments),
+                TuiSessionDraft(
+                    session_id=session_id, text=text, attachments=attachments, skills=skills
+                ),
                 *remaining,
             )[:MAX_SESSION_DRAFTS]
-            if text or attachments
+            if text or attachments or skills
             else remaining
         )
         return TuiInputDrafts(welcome=self.welcome, sessions=sessions)

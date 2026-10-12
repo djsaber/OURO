@@ -250,7 +250,7 @@ TUI 必须保留这些内容的现有表示，不能静默丢附件或技能。�
 现行应用结果为 SessionUndoResult：包含 Session、完整 ModelMessage、resource_refs、attachments、message_id、queue_id、
 原 run_id、removed_count 与 cancelled_queue_ids。运行时入口在返回前结算该操作拥有的输入租约和子工作。
 
-TUI 由同一份 Session 草稿保存正文和资源选择；技能沿用 `/skill <name> <task>` 表示。
+TUI 由同一份 Session 草稿保存正文、文件和技能引用；引用以独立元素恢复，保留全部选择、顺序与位置。
 空正文不等于空输入，不能因 Composer 的清空事件删除仍选中的附件。正常提交取出并清除该草稿，
 接受前失败时与已有新草稿合并恢复；接受后失败不重复插回。草稿记忆关闭时只保留当前界面的内存状态。
 草稿文件使用 schema 4；不支持的格式明确诊断并保留源文件。附件元素及其骨架撤回见[附件规格](attachments.md)。

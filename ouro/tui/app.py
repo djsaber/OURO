@@ -43,9 +43,9 @@ from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import OuroError, PersistenceError, UnsupportedDataVersionError
 from ouro.core.events import EventRecord
-from ouro.core.input_content import InputContent, InputFile
+from ouro.core.input_content import InputContent, InputFile, InputSkillReference
 from ouro.core.interactions import SessionInteractionMode
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, SkillActivationContent
 from ouro.core.reasoning import REASONING_EFFORTS, ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.core.state import DEFAULT_SESSION_TITLE
@@ -56,6 +56,7 @@ from ouro.tui.attachment_paths import pasted_files
 from ouro.tui.attachment_picker import AttachmentPicker
 from ouro.tui.clipboard import ClipboardWriteError, write_system_clipboard
 from ouro.tui.commands import (
+    REFERENCE_COMMANDS,
     TUI_COMMANDS,
     TuiCommand,
     TuiCommandArgument,
@@ -113,6 +114,7 @@ from ouro.tui.screens import (
     MultiChoiceScreen,
     help_choices,
 )
+from ouro.tui.skill_picker import SkillPicker
 from ouro.tui.state import (
     PendingInteraction,
     RunPresentation,
@@ -640,6 +642,12 @@ _OURO_TUI_CSS = """
         scrollbar-gutter: auto;
     }
 
+    #command-popup-heading {
+        dock: top;
+        width: 100%;
+        height: 1;
+    }
+
     #command-popup-content {
         width: 100%;
         height: auto;
@@ -929,6 +937,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._waiting_for_session_event = False
         self._dismissed_command_text: str | None = None
         self._attachment_picker: AttachmentPicker | None = None
+        self._skill_picker: SkillPicker | None = None
         self._pending_runtime_events: list[EventRecord] = []
         self._runtime_event_buffer_lagged: set[str] = set()
         self._runtime_events_ready_posted = False
@@ -1852,7 +1861,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._restore_unsent_input(message.content, revision, origin_session_id)
             self.notify("Select an available model with /model before sending")
             return
-        self._submit_run(message.text, message.mode, attachments=message.content.attachments)
+        self._submit_run(
+            message.text,
+            message.mode,
+            attachments=message.content.attachments,
+            skills=message.content.skills,
+        )
 
     def on_composer_attachment_requested(self, message: Composer.AttachmentRequested) -> None:
         if self._visible_read_only or self._interaction is not None:
@@ -1862,13 +1876,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if message.paste is None:
             composer = self.query_one(Composer)
             composer.begin_attachment_menu()
-            directory = Path(
-                self._active_workspace or self._controller.draft_workspace or Path.cwd()
-            )
-            self._attachment_picker = AttachmentPicker(
-                directory, limit=max(0, 16 - len(composer.draft_content.attachments))
-            )
-            self._load_attachment_directory(directory)
+            self._show_attachment_menu()
         else:
             self._attach_files(message.paste)
 
@@ -1906,31 +1914,70 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _show_attachment_menu(self) -> None:
         if not self._surface_available():
             return
-        picker = self._attachment_picker
         composer = self.query_one(Composer)
         context = composer.command_context()
-        if picker is None or not composer.attachment_menu_open:
+        if not composer.attachment_menu_open:
             return
         if context is None or not context[0].startswith("@"):
             self._close_attachment_menu()
             return
-        if picker.loading and picker.loaded:
+        name, separator, query = context[0].partition(" ")
+        popup = self.query_one(CommandPopup)
+        composer.suggestion = ""
+        if not separator:
+            self._attachment_picker = None
+            self._skill_picker = None
+            popup.show_commands(matching_commands(name, REFERENCE_COMMANDS))
             return
-        arguments = () if picker.loading else picker.arguments(context[0][1:], self._tui_theme)
-        self.query_one(CommandPopup).show_arguments(
-            TuiCommand(
-                "@", "Loading files…" if picker.loading else "No matching files", "Reference files"
-            ),
+        if name not in {command.name for command in REFERENCE_COMMANDS}:
+            popup.hide()
+            return
+        composer.reference_command = name
+        if name == "@skill":
+            self._attachment_picker = None
+            if self._skill_picker is None:
+                existing = {item.name for item in composer.draft_content.skills}
+                self._skill_picker = SkillPicker(
+                    tuple(item for item in self._skill_arguments() if item.value not in existing)
+                )
+            arguments = self._skill_picker.arguments(query, self._tui_theme)
+            selection_count = len(self._skill_picker.selected)
+            title, heading = "No matching skills", "Skills"
+        else:
+            self._skill_picker = None
+            if self._attachment_picker is None:
+                directory = Path(
+                    self._active_workspace or self._controller.draft_workspace or Path.cwd()
+                )
+                self._attachment_picker = AttachmentPicker(
+                    directory, limit=max(0, 16 - len(composer.draft_content.attachments))
+                )
+                self._load_attachment_directory(directory)
+            picker = self._attachment_picker
+            if picker.loading and picker.loaded:
+                return
+            arguments = () if picker.loading else picker.arguments(query, self._tui_theme)
+            title = "Loading files…" if picker.loading else "No matching files"
+            heading = str(picker.directory)
+            selection_count = len(picker.selected)
+        popup.show_arguments(
+            TuiCommand(name, title, "Reference files or skills"),
             arguments,
-            query=context[0][1:],
-            heading=str(picker.directory),
+            query=query,
+            heading=heading,
+            selection_count=selection_count,
             hint=self._tui_theme.inline_separator.join(
                 ("↑/↓ move", "Space select", "Enter open / reference", "Esc close")
             ),
         )
-        composer.suggestion = ""
 
     def on_composer_attachment_toggled(self, _message: Composer.AttachmentToggled) -> None:
+        if self._skill_picker is not None:
+            argument = self.query_one(CommandPopup).selected_argument
+            if argument is not None:
+                self._skill_picker.toggle(argument.value)
+                self._show_attachment_menu()
+            return
         picker = self._attachment_picker
         argument = self.query_one(CommandPopup).selected_argument
         if picker is not None and not picker.loading and argument is not None:
@@ -1941,15 +1988,29 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._show_attachment_menu()
 
     def _choose_attachment(self) -> None:
+        popup = self.query_one(CommandPopup)
+        composer = self.query_one(Composer)
+        if popup.selected_command is not None:
+            composer.select_reference_command(popup.selected_command.name)
+            self._show_attachment_menu()
+            return
+        if self._skill_picker is not None:
+            argument = popup.selected_argument
+            names = self._skill_picker.skills_for(argument.value if argument is not None else "")
+            if names:
+                self._close_attachment_menu()
+                composer.insert_skills(tuple(InputSkillReference(name=name) for name in names))
+            return
         picker = self._attachment_picker
         argument = self.query_one(CommandPopup).selected_argument
-        if picker is None or picker.loading or argument is None:
+        if picker is None or picker.loading:
             return
-        directory = picker.directory_for(argument.value)
+        value = argument.value if argument is not None else ""
+        directory = picker.directory_for(value)
         if directory is not None:
             self._load_attachment_directory(directory)
             return
-        paths = picker.files_for(argument.value)
+        paths = picker.files_for(value)
         if paths:
             self._close_attachment_menu()
             self.query_one(Composer).import_pending = True
@@ -1968,7 +2029,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             composer.insert_attachments(items)
             content = composer.input_content
             self._remember_input_draft(
-                self._controller.session_id, content.text, attachments=content.attachments
+                self._controller.session_id,
+                content.text,
+                attachments=content.attachments,
+                skills=content.skills,
             )
         except (OSError, ValueError) as exc:
             self.notify(str(exc), severity="error", markup=False)
@@ -1979,6 +2043,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def _close_attachment_menu(self) -> None:
         self._attachment_picker = None
+        self._skill_picker = None
         composer = self.query_one(Composer)
         if composer.attachment_menu_open:
             composer.finish_attachment_menu()
@@ -2020,20 +2085,29 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 # The import belongs to its captured Session, never to a later navigation.
                 restored = insert_into_original(tuple(imported)) if imported else original
                 self._remember_input_draft(
-                    session.session_id, restored.text, attachments=restored.attachments
+                    session.session_id,
+                    restored.text,
+                    attachments=restored.attachments,
+                    skills=restored.skills,
                 )
                 return
             if original_session is None:
                 self._remember_input_draft(None, "")
                 self._remember_input_draft(
-                    session.session_id, original.text, attachments=original.attachments
+                    session.session_id,
+                    original.text,
+                    attachments=original.attachments,
+                    skills=original.skills,
                 )
             composer.load_input(original)
             composer.selection = selection
             composer.insert_attachments(tuple(imported))
             content = composer.input_content
             self._remember_input_draft(
-                session.session_id, content.text, attachments=content.attachments
+                session.session_id,
+                content.text,
+                attachments=content.attachments,
+                skills=content.skills,
             )
         except Exception as exc:  # noqa: BLE001 - keep the unsent draft on import failures.
             self.notify(str(exc), severity="error", markup=False)
@@ -2054,7 +2128,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         prompt: str,
         queue_mode: QueuedInputMode,
         *,
-        skill_invocation: SkillInvocationRequest | None = None,
+        skills: tuple[InputSkillReference, ...] = (),
         attachments: tuple[InputFile, ...] | None = None,
     ) -> None:
         if self._visible_read_only:
@@ -2072,9 +2146,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             else self._input_drafts.content_for(self._controller.session_id).attachments
         )
         self._remember_input_draft(self._controller.session_id, "")
-        self._run_prompt(
-            prompt, queue_mode, skill_invocation=skill_invocation, attachments=attachments
-        )
+        self._run_prompt(prompt, queue_mode, skills=skills, attachments=attachments)
 
     @work(group="run")
     async def _run_prompt(
@@ -2082,7 +2154,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         prompt: str,
         queue_mode: QueuedInputMode,
         *,
-        skill_invocation: SkillInvocationRequest | None = None,
+        skills: tuple[InputSkillReference, ...] = (),
         attachments: tuple[InputFile, ...] = (),
     ) -> None:
         revision = self._controller.selection_revision
@@ -2097,7 +2169,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             result = await self._controller.submit(
                 prompt,
                 queue_mode=queue_mode,
-                skill_invocation=skill_invocation,
+                skill_invocations=tuple(
+                    SkillInvocationRequest(
+                        name=item.name,
+                        arguments=prompt,
+                        text_offset=item.text_offset,
+                        order=item.order,
+                    )
+                    for item in skills
+                ),
                 resource_refs=InputContent(text=prompt, attachments=attachments).resource_refs,
                 attachments=attachments,
                 on_input_accepted=input_accepted,
@@ -2107,19 +2187,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception as exc:  # noqa: BLE001 - providers and tools fail across this boundary.
             same_selection = revision == self._controller.selection_revision
             if not accepted:
-                restored = (
-                    f"/skill {skill_invocation.name} {prompt}".rstrip()
-                    if skill_invocation
-                    else prompt
-                )
-                offset = len(restored) - len(prompt)
-                content = InputContent(
-                    text=restored,
-                    attachments=tuple(
-                        item.model_copy(update={"text_offset": item.text_offset + offset})
-                        for item in attachments
-                    ),
-                )
+                content = InputContent(text=prompt, attachments=attachments, skills=skills)
                 self._restore_unsent_input(content, revision, origin_session_id)
             if same_selection:
                 self.query_one(StatusLine).set_activity("failed")
@@ -2141,7 +2209,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             else self._input_drafts.content_for(target_session)
         )
         restored = current.followed_by(content)
-        self._remember_input_draft(target_session, restored.text, attachments=restored.attachments)
+        self._remember_input_draft(
+            target_session, restored.text, attachments=restored.attachments, skills=restored.skills
+        )
         if same_selection:
             self._edit_draft(restored)
 
@@ -2327,7 +2397,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if not self._visible_read_only:
             content = composer.draft_content
             self._remember_input_draft(
-                self._controller.session_id, content.text, attachments=content.attachments
+                self._controller.session_id,
+                content.text,
+                attachments=content.attachments,
+                skills=content.skills,
             )
         popup = self.query_one(CommandPopup)
         ask_user = self.query_one(AskUserPanel)
@@ -2436,11 +2509,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return False
         value, _draft = context
         if composer.attachment_menu_open:
+            name, separator, query = value.partition(" ")
+            if not separator:
+                return bool(matching_commands(name, REFERENCE_COMMANDS))
+            if name == "@skill":
+                return self._skill_picker is not None and bool(
+                    self._skill_picker.selected
+                    or self._skill_picker.arguments(query, self._tui_theme)
+                )
             picker = self._attachment_picker
-            return (
+            return name == "@file" and (
                 picker is None
                 or picker.loading
-                or bool(picker.arguments(value[1:], self._tui_theme))
+                or bool(picker.selected or picker.arguments(query, self._tui_theme))
             )
         catalog = self._command_catalog()
         _name, separator, argument = value.partition(" ")
@@ -2524,18 +2605,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     return
                 value = selected_value
         value = selected.name if selected is not None else value
-        submitted = composer.input_content
-        if value.startswith("/skill ") and not message.draft:
-            composer.restore_command_draft("")
-            popup.hide()
-            await self._submit_skill(
-                value.removeprefix("/skill "), attachments=submitted.attachments
-            )
-            return
         composer.restore_command_draft(message.draft)
         content = composer.input_content
         self._remember_input_draft(
-            self._controller.session_id, content.text, attachments=content.attachments
+            self._controller.session_id,
+            content.text,
+            attachments=content.attachments,
+            skills=content.skills,
         )
         popup.hide()
         self._dismissed_command_text = None
@@ -2834,10 +2910,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self.query_one(Composer).load_input(draft)
 
     def _remember_input_draft(
-        self, session_id: str | None, text: str, *, attachments: tuple[InputFile, ...] = ()
+        self,
+        session_id: str | None,
+        text: str,
+        *,
+        attachments: tuple[InputFile, ...] = (),
+        skills: tuple[InputSkillReference, ...] = (),
     ) -> None:
         self._set_input_drafts(
-            self._input_drafts.remember(session_id, text, attachments=attachments)
+            self._input_drafts.remember(session_id, text, attachments=attachments, skills=skills)
         )
 
     def _forget_input_drafts(self, session_ids: Sequence[str]) -> None:
@@ -2949,8 +3030,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self.notify("Usage: /export", severity="warning")
             else:
                 self._export_current_session(self._visible_session_id())
-        elif command.name == "/skill":
-            await self._submit_skill(argument)
         elif command.name == "/unqueue":
             if argument:
                 await self._unqueue_message(argument)
@@ -3017,9 +3096,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     )
                     for model in sorted_models(self._models)
                 )
-                catalog[index] = replace(command, argument_options=options)
-            elif command.name == "/skill" and argument_owner == command.name:
-                options = self._skill_arguments()
                 catalog[index] = replace(command, argument_options=options)
             elif command.name == "/unqueue" and argument_owner == command.name:
                 catalog[index] = replace(
@@ -3095,45 +3171,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             TuiCommandArgument(
                 skill.name,
                 skill.description,
-                skill.argument_hint or "<instruction>",
             )
             for skill in skills
-        )
-
-    async def _submit_skill(
-        self, argument: str, *, attachments: tuple[InputFile, ...] = ()
-    ) -> None:
-        name, separator, task = argument.lstrip().partition(" ")
-        if not name:
-            return
-        try:
-            invocation = SkillInvocationRequest(
-                name=name,
-                arguments=task.lstrip() if separator else "",
-            )
-        except ValueError:
-            self.notify(
-                "Skill names must use lowercase letters, digits, and single hyphens.",
-                severity="warning",
-                markup=False,
-            )
-            return
-        self._submit_run(
-            invocation.arguments,
-            "follow_up",
-            skill_invocation=invocation,
-            attachments=tuple(
-                item.model_copy(
-                    update={
-                        "text_offset": max(
-                            0,
-                            item.text_offset
-                            - (len(argument) - len(invocation.arguments) + len("/skill ")),
-                        )
-                    }
-                )
-                for item in attachments
-            ),
         )
 
     async def _unqueue_message(self, queue_id: str) -> None:
@@ -3151,17 +3190,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 markup=False,
             )
             return
-        text = _queued_input_draft(cancelled)
-        offset = len(text) - len(cancelled.prompt)
         attachments = cancelled.attachments or await self._controller.input_attachments(
             session_id or "", cancelled.resource_refs
         )
         content = InputContent(
-            text=text,
-            attachments=tuple(
-                item.model_copy(update={"text_offset": item.text_offset + offset})
-                for item in attachments
-            ),
+            text=cancelled.prompt, attachments=attachments, skills=cancelled.skills
         )
         current = (
             self.query_one(Composer).draft_content
@@ -3169,7 +3202,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             else self._input_drafts.content_for(session_id)
         )
         restored = current.followed_by(content)
-        self._remember_input_draft(session_id, restored.text, attachments=restored.attachments)
+        self._remember_input_draft(
+            session_id, restored.text, attachments=restored.attachments, skills=restored.skills
+        )
         if revision == self._controller.selection_revision:
             self._edit_draft(restored)
         if not current.is_empty:
@@ -4038,24 +4073,24 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             if command == "/undo":
                 selected = await self._controller.undo()
-                text = user_message_text(selected.input)
+                text = selected.input.text_content
                 attachments = selected.attachments or await self._controller.input_attachments(
                     selected.session.session_id, selected.resource_refs
                 )
-                prefix = len(text) - len(selected.input.text_content)
-                attachments = tuple(
-                    item.model_copy(
-                        update={"text_offset": min(len(text), item.text_offset + prefix)}
+                skills = tuple(
+                    InputSkillReference(
+                        name=block.name, text_offset=block.text_offset, order=block.order
                     )
-                    for item in attachments
+                    for block in selected.input.content
+                    if isinstance(block, SkillActivationContent)
                 )
                 self._remember_input_draft(
-                    selected.session.session_id, text, attachments=attachments
+                    selected.session.session_id, text, attachments=attachments, skills=skills
                 )
                 if not self._owns_session_surface(session_id):
                     return
                 await self._show_main_session()
-                self._edit_draft(InputContent(text=text, attachments=attachments))
+                self._edit_draft(InputContent(text=text, attachments=attachments, skills=skills))
                 if selected.resource_refs:
                     self.notify(
                         f"Restored {len(selected.resource_refs)} attachment(s) to this input"
@@ -5125,6 +5160,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self._controller.session_id,
                 self.query_one(Composer).input_content.text,
                 attachments=self.query_one(Composer).input_content.attachments,
+                skills=self.query_one(Composer).input_content.skills,
             )
         self._set_input_drafts(drafts, force_persist=True)
         return True
@@ -5450,10 +5486,7 @@ def _session_date_group(activity_at: datetime, *, today: date) -> str:
 
 
 def _queued_input_draft(item: QueuedUserInputView) -> str:
-    if item.skill_name is None:
-        return item.prompt
-    task = f" {item.prompt}" if item.prompt else ""
-    return f"/skill {item.skill_name}{task}"
+    return " ".join((*[skill.label for skill in item.skills], item.prompt)).strip()
 
 
 def _queued_input_preview(item: QueuedUserInputView) -> str:

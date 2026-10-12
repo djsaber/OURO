@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ouro.tui.commands import (
+    REFERENCE_COMMANDS,
     TUI_COMMANDS,
     TuiCommand,
     TuiCommandArgument,
@@ -23,7 +24,9 @@ def test_aliases_are_distinct_from_canonical_command_prefixes() -> None:
 def test_matching_commands_filters_canonical_prefixes_and_distinct_aliases() -> None:
     assert [command.name for command in matching_commands("/m")] == ["/actions", "/model"]
     assert [command.name for command in matching_commands("/res")] == ["/sessions"]
-    assert [command.name for command in matching_commands("/ski")] == ["/skill"]
+    assert matching_commands("/ski") == ()
+    assert [command.name for command in matching_commands("@ski", REFERENCE_COMMANDS)] == ["@skill"]
+    assert [command.name for command in matching_commands("@f", REFERENCE_COMMANDS)] == ["@file"]
     assert [command.name for command in matching_commands("/unq")] == ["/unqueue"]
     assert [command.name for command in matching_commands("/w")] == ["/workspace"]
     assert matching_commands("/config") == ()
@@ -39,7 +42,7 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
     approval, approval_argument = resolve_command("/approval deny")
     thinking, thinking_argument = resolve_command("/reasoning high")
     compact, compact_argument = resolve_command("/compact")
-    skill, skill_argument = resolve_command("/skill reviewer inspect app.py")
+    skill, skill_argument = resolve_command("@skill reviewer", REFERENCE_COMMANDS)
     fork, fork_argument = resolve_command("/branch #1")
     unqueue, unqueue_argument = resolve_command("/unqueue queued_123")
     workspace, workspace_argument = resolve_command("/workspace C:/work/project")
@@ -63,8 +66,8 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
     assert thinking_argument == "high"
     assert compact is not None and compact.name == "/compact"
     assert compact_argument == ""
-    assert skill is not None and skill.name == "/skill"
-    assert skill_argument == "reviewer inspect app.py"
+    assert skill is not None and skill.name == "@skill"
+    assert skill_argument == "reviewer"
     assert fork is not None and fork.name == "/fork"
     assert fork_argument == "#1"
     assert unqueue is not None and unqueue.name == "/unqueue"

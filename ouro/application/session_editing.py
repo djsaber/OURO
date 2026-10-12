@@ -91,8 +91,7 @@ def undo_user_input(
                     ),
                 )
                 content: list[ContentBlock] = []
-                if pending.skill_activation is not None:
-                    content.append(pending.skill_activation)
+                content.extend(pending.skill_activations)
                 if pending.prompt:
                     content.append(TextContent(text=pending.prompt))
                 return SessionUndoResult(
