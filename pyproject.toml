@@ -25,6 +25,13 @@ dependencies = [
     "wcmatch>=11.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/djsaber/OURO"
+Documentation = "https://github.com/djsaber/OURO/blob/main/docs/README.md"
+Repository = "https://github.com/djsaber/OURO"
+Issues = "https://github.com/djsaber/OURO/issues"
+Changelog = "https://github.com/djsaber/OURO/blob/main/CHANGELOG.md"
+
 [project.scripts]
 ouro = "ouro.cli.main:main"
 

@@ -25,8 +25,18 @@ For a release:
    the reviewed changelog entry. Keep guides and specs focused on current behavior; release history
    belongs in the changelog.
 
-Package-index publication and signing credentials are intentionally not automated until the
-repository owner selects the destination and trusted-publishing policy.
+The public package index is PyPI, under the distribution name `ouro-agent`. Local publication uses
+an API token supplied through `UV_PUBLISH_TOKEN`; do not place credentials in source files, command
+arguments or release notes. CI publication and signing are not automated; configure Trusted Publishing
+before adding unattended CI uploads.
+
+Before uploading, validate the user-facing README with `twine check --strict`, verify that its examples
+work from an installed distribution, and use absolute links that also work on PyPI. Keep screenshots
+in `docs/assets/`, capture real application state without private data, and link the published image
+through an immutable release tag. Verify that all public links resolve before uploading. Keep the exact
+version's wheel and source archive aligned with its release commit and tag. Pass those two filenames
+explicitly to `uv publish` so older files in `dist/` are not uploaded. After uploading, verify PyPI's
+version metadata, description and file hashes, and check installation from the published index.
 
 During `0.x` development, use a new minor version for a capability milestone or incompatible public
 contract change, and a patch version for compatible fixes. Plugin API, worker protocol, package and
