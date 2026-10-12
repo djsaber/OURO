@@ -433,7 +433,7 @@ LocalSessionStore 的 Delegation JSON 使用同目录临时文件、flush/fsync 
 canonical transaction。SQLiteSessionStore 必须在数据库事务中实现同一端口、identity、revision 和查询语义；
 不能把文件实现包装成 SQLite 的旁路存储。
 
-文件布局与 SQLite 分别使用独立 data_layout_version 和 schema version。只支持各自当前格式，不提供历史迁移；
+文件布局与 SQLite 分别使用独立 data_layout_version 和 schema version。运行时只接受各自当前格式，受支持历史格式通过[离线数据升级](data-upgrade.md)处理；
 两种后端必须通过同一组 repository contract tests。
 
 ## 运行组合与调度边界

@@ -102,13 +102,17 @@ from ouro.cli.usage_commands import (
 )
 from ouro.core.errors import ConfigError, OuroError
 from ouro.core.reasoning import ReasoningRequest
-from ouro.deployment import SessionBackend
+from ouro.deployment import SessionBackend, access_home
 from ouro.mcp import MCPServerConfigUpdate
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        _validate_host_options(args)
+        if args.command is not None:
+            with access_home(getattr(args, "run_home", None) or args.home):
+                return _dispatch(args)
         return _dispatch(args)
     except OuroError as exc:
         if bool(getattr(args, "json", False) or getattr(args, "json_mode", False)):
@@ -127,7 +131,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return error_exit_code(exc)
 
 
-def _dispatch(args: argparse.Namespace) -> int:
+def _validate_host_options(args: argparse.Namespace) -> None:
     if args.command is not None and (
         args.resume_session_id is not None or args.tui_afk or args.tui_approval_mode != "inherit"
     ):
@@ -135,6 +139,9 @@ def _dispatch(args: argparse.Namespace) -> int:
             "--session, --approval-mode, and --afk before a command are TUI options; "
             "use 'ouro COMMAND --help' for command-specific options"
         )
+
+
+def _dispatch(args: argparse.Namespace) -> int:
     if args.command is None:
         from ouro.tui.entry import run_tui
 

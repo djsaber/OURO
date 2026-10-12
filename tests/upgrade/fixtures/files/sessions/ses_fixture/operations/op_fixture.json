@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "operation_id": "op_fixture",
+  "request_digest": "700a94035db115fcdb9d47524162c481b6861fffd5b1cb00346e68f43772052b",
+  "session": {
+    "schema_version": 2,
+    "session_id": "ses_fixture",
+    "harness_version": "harness_fixture",
+    "history_epoch": 0,
+    "namespace": "default",
+    "root_session_id": "ses_fixture",
+    "parent_session_id": null,
+    "session_kind": "primary",
+    "delegation_id": null,
+    "forked_from_message_id": null,
+    "forked_from_run_id": null,
+    "title": "New conversation",
+    "title_source": "fallback",
+    "title_locked": false,
+    "created_at": "2026-09-01T00:00:00Z",
+    "updated_at": "2026-09-01T00:00:00Z",
+    "last_activity_at": "2026-09-01T00:00:00Z",
+    "archived": false,
+    "pinned": false,
+    "workspace": null,
+    "workspace_trusted": false,
+    "current_model": null,
+    "reasoning_request": {
+      "mode": "default",
+      "effort": null
+    },
+    "approval_mode": "inherit",
+    "interaction_mode": "interactive",
+    "controls": {
+      "revision": 0,
+      "activations": []
+    },
+    "active_compaction_id": null,
+    "status": "idle",
+    "active_run_id": null,
+    "last_message_id": "msg_result",
+    "last_run_id": "run_fixture",
+    "message_count": 3,
+    "tags": [],
+    "metadata": {
+      "schema_version": 999,
+      "private": {
+        "message_id": "unchanged",
+        "payload": [
+          "safe-example",
+          1,
+          null
+        ]
+      }
+    }
+  },
+  "messages": [
+    {
+      "schema_version": 3,
+      "message_id": "msg_user",
+      "before_harness_version": "harness_fixture",
+      "session_id": "ses_fixture",
+      "run_id": null,
+      "turn_id": null,
+      "role": "user",
+      "created_at": "2026-09-01T00:00:00Z",
+      "sequence": 1,
+      "content": [
+        {
+          "type": "text",
+          "text": "fixture question"
+        }
+      ],
+      "scaffold": false,
+      "semantic_tag": null,
+      "resource_refs": [],
+      "input_attachments": [],
+      "tool_calls": [],
+      "tool_result": null,
+      "reasoning_content": "",
+      "model_response": null,
+      "tool_execution": null,
+      "provider_continuation": null,
+      "metadata": {}
+    },
+    {
+      "schema_version": 3,
+      "message_id": "msg_assistant",
+      "before_harness_version": "harness_fixture",
+      "session_id": "ses_fixture",
+      "run_id": "run_fixture",
+      "turn_id": null,
+      "role": "assistant",
+      "created_at": "2026-09-01T00:00:00Z",
+      "sequence": 2,
+      "content": [
+        {
+          "type": "text",
+          "text": "fixture tool call"
+        }
+      ],
+      "scaffold": false,
+      "semantic_tag": null,
+      "resource_refs": [],
+      "input_attachments": [],
+      "tool_calls": [
+        {
+          "id": "tool_be80d1e31bad460ead6c96dd4705b1e6",
+          "name": "example",
+          "arguments": {
+            "schema_version": 999,
+            "private": {
+              "message_id": "unchanged",
+              "payload": [
+                "safe-example",
+                1,
+                null
+              ]
+            }
+          },
+          "source_index": 0
+        }
+      ],
+      "tool_result": null,
+      "reasoning_content": "",
+      "model_response": null,
+      "tool_execution": null,
+      "provider_continuation": null,
+      "metadata": {}
+    },
+    {
+      "schema_version": 3,
+      "message_id": "msg_result",
+      "before_harness_version": "harness_fixture",
+      "session_id": "ses_fixture",
+      "run_id": "run_fixture",
+      "turn_id": null,
+      "role": "tool_result",
+      "created_at": "2026-09-01T00:00:00Z",
+      "sequence": 3,
+      "content": [
+        {
+          "type": "text",
+          "text": "fixture tool output"
+        }
+      ],
+      "scaffold": false,
+      "semantic_tag": null,
+      "resource_refs": [],
+      "input_attachments": [],
+      "tool_calls": [],
+      "tool_result": {
+        "tool_call_id": "tool_fixture",
+        "tool_name": "example",
+        "is_error": false
+      },
+      "reasoning_content": "",
+      "model_response": null,
+      "tool_execution": null,
+      "provider_continuation": null,
+      "metadata": {
+        "schema_version": 999,
+        "private": {
+          "message_id": "unchanged",
+          "payload": [
+            "safe-example",
+            1,
+            null
+          ]
+        }
+      }
+    }
+  ],
+  "events": [],
+  "output": {
+    "schema_version": 999,
+    "private": {
+      "message_id": "unchanged",
+      "payload": [
+        "safe-example",
+        1,
+        null
+      ]
+    }
+  },
+  "truncation": null
+}

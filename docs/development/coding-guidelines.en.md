@@ -1,4 +1,4 @@
-# OURO Development Principles
+# Development Principles
 
 > Document type: development standard
 > Scope: current source, tests, documentation, and contribution workflow
@@ -76,7 +76,7 @@ The purpose of these guidelines is not to reduce the amount of code an Agent wri
 - Data persistence must have clear boundaries. Do not let ORM details pollute business rules, nor let database schema dictate the entire domain model.
 - Database operations must have clear transactional boundaries. Do not allow half a business process to succeed while the other half fails, leaving the system in an inexplicable state.
 - Important state changes must consider idempotency. Task retries, repeated API requests, and duplicate message consumption should not easily cause duplicate writes or dirty state.
-- The current implementation does not provide compatibility or migration code for historical data, APIs, or configuration. Reject unsupported formats explicitly; users can use a fresh directory or an explicit data-maintenance procedure. Never clear user data automatically.
+- Define the supported scope of data and interface compatibility explicitly. Test conversions, rejection of unsupported input, preservation of user data, and recovery from interrupted writes. Destructive operations require explicit user intent.
 - Scripts and one-off tasks must be held to production-code standards. They can destroy data too.
 
 ## 9. Security, Concurrency, and Performance

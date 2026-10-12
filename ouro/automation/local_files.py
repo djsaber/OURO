@@ -20,7 +20,7 @@ from ouro.automation.file_records import (
     TaskFileTransaction,
     TaskIndexEntry,
 )
-from ouro.core.errors import PersistenceError
+from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
 from ouro.core.tasks import TaskConflictError, TaskCounts, TaskExecution, TaskRecord
 from ouro.local_io import read_text_atomic, write_model_atomic, write_text_atomic
 from ouro.local_locks import FileMutationLock, FileOwnerLock
@@ -355,7 +355,7 @@ def _read[Record: FileRecord](model: type[Record], path: Path) -> Record:
             or type(payload.get("schema_version")) is not int
             or payload["schema_version"] != 3
         ):
-            raise PersistenceError(
+            raise UnsupportedDataVersionError(
                 f"Unsupported or missing task file schema_version: {path}; expected 3"
             )
         return model.model_validate(payload)

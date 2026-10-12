@@ -44,8 +44,9 @@ Session 后端默认是 `files`，也可通过 `OURO_SESSION_BACKEND=sqlite` 设
 
 模型许可模式中的 `<provider_id>` 使用实际生成的 Provider ID，可从 `provider list` 取得；显示名称和产品类型不能代替该 ID。
 
-当前实现只支持现行数据格式，不提供旧格式的自动兼容或迁移。遇到版本不符时，保留原数据并选择新的
-`OURO_HOME`，或按明确的数据维护流程处理；程序不会自动清空会话。
+运行时只读取现行数据格式。TUI 启动遇到数据版本错误时，会关闭启动中的服务并自动升级受支持数据，
+显示阶段进度，成功后重新加载主页；失败时提供需单独危险确认的清空初始化兜底。
+命令行升级、支持范围和恢复操作见[数据升级指南](data-upgrade.md)。
 
 自动任务配置与执行记录也支持 `files`（默认）和 `sqlite`，通过 `--task-backend files|sqlite` 或
 `OURO_TASK_BACKEND` 选择，命令行优先。文件数据位于 `<home>/tasks/`，SQLite 数据位于 `<home>/tasks.sqlite3`；

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "tasks": {
+    "task_fixture": {
+      "updated_at": "2026-09-01T00:00:00Z",
+      "enabled": false,
+      "next_run_at": null,
+      "active_execution_id": null,
+      "status": "completed",
+      "completed_executions": 1,
+      "failed_executions": 0,
+      "awaiting_approval": false
+    }
+  }
+}

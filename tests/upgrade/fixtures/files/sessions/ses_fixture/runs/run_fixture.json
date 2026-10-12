@@ -1,0 +1,109 @@
+{
+  "schema_version": 2,
+  "history_epoch": 0,
+  "run_id": "run_fixture",
+  "session_id": "ses_fixture",
+  "kind": "agent",
+  "origin": "user",
+  "parent_run_id": null,
+  "initiator_id": null,
+  "status": "completed",
+  "phase": "model_streaming",
+  "trigger": "user",
+  "started_at": "2026-09-01T00:00:00Z",
+  "ended_at": "2026-09-01T00:00:00Z",
+  "model": null,
+  "model_endpoint_id": null,
+  "pending_approval_id": null,
+  "active_tool_batch": {
+    "batch_id": "batch_fixture",
+    "turn_id": "turn_fixture",
+    "assistant_message_id": "msg_assistant",
+    "phase": "planned",
+    "execution_mode": "sequential",
+    "max_concurrency": 4,
+    "calls": [
+      {
+        "request": {
+          "id": "tool_be80d1e31bad460ead6c96dd4705b1e6",
+          "name": "example",
+          "arguments": {
+            "schema_version": 999,
+            "private": {
+              "message_id": "unchanged",
+              "payload": [
+                "safe-example",
+                1,
+                null
+              ]
+            }
+          },
+          "source_index": 0
+        },
+        "status": "completed",
+        "invocation": {
+          "tool_call_id": "tool_fixture",
+          "session_id": "ses_fixture",
+          "run_id": "run_fixture",
+          "turn_id": null,
+          "tool_name": "example",
+          "canonical_tool_id": null,
+          "owner_id": null,
+          "source": "builtin",
+          "effect": "unknown",
+          "batch_behavior": "compatible",
+          "arguments": {
+            "schema_version": 999,
+            "private": {
+              "message_id": "unchanged",
+              "payload": [
+                "safe-example",
+                1,
+                null
+              ]
+            }
+          },
+          "requested_at": "2026-09-01T00:00:00Z",
+          "permission_mode": "auto",
+          "permission_control": "host",
+          "resumable": null,
+          "definition_contract_hash": null,
+          "approval_id": null,
+          "plugin_id": null,
+          "plugin_version": null,
+          "plugin_class": null,
+          "release_id": null,
+          "package_digest": null,
+          "builtin_contract_hash": null,
+          "generation_id": null,
+          "contract_hash": null,
+          "execution_contract_hash": null,
+          "active_when_controller_id": null,
+          "interaction_controller_id": null,
+          "interaction_activation_id": null,
+          "tool_policy_ids": [],
+          "tool_policy_reason": null
+        },
+        "approval": null,
+        "input_request": null,
+        "input_resolution": null,
+        "input_revision": 0,
+        "agent_wait": null,
+        "result": null,
+        "result_message_id": null,
+        "metadata": {}
+      }
+    ],
+    "created_at": "2026-09-01T00:00:00Z",
+    "updated_at": "2026-09-01T00:00:00Z",
+    "metadata": {}
+  },
+  "abort_requested": false,
+  "error": null,
+  "usage": {},
+  "usage_entry_ids": [],
+  "model_round_count": 0,
+  "continuation": null,
+  "agent_catalog": null,
+  "metadata": {}
+}

@@ -1,0 +1,169 @@
+{
+  "schema_version": 4,
+  "context_id": "ctx_fixture",
+  "session_id": "ses_fixture",
+  "run_id": "run_fixture",
+  "turn_id": "turn_fixture",
+  "model_round": 1,
+  "provider_id": "fixture",
+  "endpoint_id": null,
+  "model_id": "fixture-model",
+  "supports_image_input": false,
+  "supports_audio_input": false,
+  "supports_video_input": false,
+  "prepared_at": "2026-09-01T00:00:00Z",
+  "completed_at": null,
+  "system_prompt": "",
+  "injected_messages": [
+    {
+      "role": "tool_result",
+      "content": [
+        {
+          "type": "text",
+          "text": "fixture tool output"
+        }
+      ],
+      "semantic_tag": null,
+      "tool_calls": [],
+      "tool_result": {
+        "tool_call_id": "tool_fixture",
+        "tool_name": "example",
+        "is_error": false
+      },
+      "provider_continuation": null
+    }
+  ],
+  "source_messages": [
+    {
+      "schema_version": 3,
+      "message_id": "msg_user",
+      "before_harness_version": "harness_fixture",
+      "session_id": "ses_fixture",
+      "run_id": null,
+      "turn_id": null,
+      "role": "user",
+      "created_at": "2026-09-01T00:00:00Z",
+      "sequence": 1,
+      "content": [
+        {
+          "type": "text",
+          "text": "fixture question"
+        }
+      ],
+      "scaffold": false,
+      "semantic_tag": null,
+      "resource_refs": [],
+      "input_attachments": [],
+      "tool_calls": [],
+      "tool_result": null,
+      "reasoning_content": "",
+      "model_response": null,
+      "tool_execution": null,
+      "provider_continuation": null,
+      "metadata": {}
+    },
+    {
+      "schema_version": 3,
+      "message_id": "msg_assistant",
+      "before_harness_version": "harness_fixture",
+      "session_id": "ses_fixture",
+      "run_id": "run_fixture",
+      "turn_id": null,
+      "role": "assistant",
+      "created_at": "2026-09-01T00:00:00Z",
+      "sequence": 2,
+      "content": [
+        {
+          "type": "text",
+          "text": "fixture tool call"
+        }
+      ],
+      "scaffold": false,
+      "semantic_tag": null,
+      "resource_refs": [],
+      "input_attachments": [],
+      "tool_calls": [
+        {
+          "id": "tool_be80d1e31bad460ead6c96dd4705b1e6",
+          "name": "example",
+          "arguments": {
+            "schema_version": 999,
+            "private": {
+              "message_id": "unchanged",
+              "payload": [
+                "safe-example",
+                1,
+                null
+              ]
+            }
+          },
+          "source_index": 0
+        }
+      ],
+      "tool_result": null,
+      "reasoning_content": "",
+      "model_response": null,
+      "tool_execution": null,
+      "provider_continuation": null,
+      "metadata": {}
+    },
+    {
+      "schema_version": 3,
+      "message_id": "msg_result",
+      "before_harness_version": "harness_fixture",
+      "session_id": "ses_fixture",
+      "run_id": "run_fixture",
+      "turn_id": null,
+      "role": "tool_result",
+      "created_at": "2026-09-01T00:00:00Z",
+      "sequence": 3,
+      "content": [
+        {
+          "type": "text",
+          "text": "fixture tool output"
+        }
+      ],
+      "scaffold": false,
+      "semantic_tag": null,
+      "resource_refs": [],
+      "input_attachments": [],
+      "tool_calls": [],
+      "tool_result": {
+        "tool_call_id": "tool_fixture",
+        "tool_name": "example",
+        "is_error": false
+      },
+      "reasoning_content": "",
+      "model_response": null,
+      "tool_execution": null,
+      "provider_continuation": null,
+      "metadata": {
+        "schema_version": 999,
+        "private": {
+          "message_id": "unchanged",
+          "payload": [
+            "safe-example",
+            1,
+            null
+          ]
+        }
+      }
+    }
+  ],
+  "tool_definitions": [],
+  "metrics": {
+    "estimated_input_tokens": 20,
+    "estimated_fixed_tokens": 1,
+    "context_window_tokens": null,
+    "reserved_output_tokens": 0,
+    "input_budget_tokens": null,
+    "estimated_remaining_tokens": null,
+    "estimated_utilization_ratio": null,
+    "over_budget": false,
+    "estimator_id": "builtin.conservative",
+    "estimator_version": "2"
+  },
+  "context_metadata": {},
+  "context_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "provider_reported_input_tokens": null
+}

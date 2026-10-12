@@ -12,7 +12,7 @@ OURO 让你在终端中与模型协作，处理文件、调用工具、管理会
 
 ![OURO v0.2.0 的终端交互界面](https://raw.githubusercontent.com/djsaber/OURO/v0.2.0/docs/assets/tui-welcome.png)
 
-*OURO v0.2.0 实际界面 · Horizon 欢迎页 · 尚未配置模型的初始状态*
+*OURO TUI · Horizon 欢迎页 · 尚未配置模型的初始状态*
 
 [使用文档](https://github.com/djsaber/OURO/blob/main/docs/README.md) · [版本记录](https://github.com/djsaber/OURO/blob/main/CHANGELOG.md) · [源码](https://github.com/djsaber/OURO) · [问题反馈](https://github.com/djsaber/OURO/issues)
 
@@ -129,7 +129,7 @@ ouro session list --home ./.ouro-work
 
 目录选择顺序为：`--home`、环境变量 `OURO_HOME`、默认的 `~/.ouro`。本地保存不代表所有处理都离线；模型请求会发送到你配置的服务。
 
-升级前建议备份数据。当前版本会明确拒绝不受支持的旧数据格式，不会自动迁移或清空原数据；需要隔离体验时可使用新的 `--home` 目录。
+升级前建议备份数据。关闭使用同一 home 的进程后，可用 `ouro-upgrade --home <path> --check` 检查、再去掉 `--check` 原地升级受支持的核心格式，详见[数据升级指南](https://github.com/djsaber/OURO/blob/main/docs/guides/data-upgrade.md)。范围外格式明确拒绝，不会自动清空原数据。
 
 ## 升级
 

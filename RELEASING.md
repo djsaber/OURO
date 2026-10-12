@@ -3,8 +3,9 @@
 Release versions are owned by `pyproject.toml`, `ouro.__version__`, the lockfile, and release tags.
 Completion of a feature milestone does not change those metadata automatically. Supported interfaces
 and persistence formats are defined in the [current specs](docs/specs/README.md).
-Unsupported stored formats fail explicitly; the current implementation does not provide historical
-format adapters or migration commands.
+Runtime readers reject unsupported stored formats. The independent `ouro-upgrade` command and TUI
+startup recovery convert explicitly supported historical core data; see the
+[data upgrade specification](docs/specs/data-upgrade.md) for support and recovery boundaries.
 
 OURO uses the [MIT License](LICENSE). Release metadata must declare MIT, and both wheel and source
 archives must include the license text. Dependencies retain their own licenses.
@@ -12,9 +13,9 @@ archives must include the license text. Dependencies retain their own licenses.
 For a release:
 
 1. Update [CHANGELOG.md](CHANGELOG.md) for every version iteration. Keep entries in reverse
-   chronological order with a version, release date and concise user-facing improvements. Summarize
-   material compatibility impact, validation scope and known limitations; link to detailed records
-   instead of including implementation details, test logs or a commit-by-commit history. Preserve
+   chronological order with a version, release date and concise user-facing update items, including
+   material compatibility changes. Keep validation results in commit messages or review records;
+   omit implementation details, redundant explanations and a commit-by-commit history. Preserve
    earlier entries and label historical development versions without inventing release dates.
    Verify the [capability overview](docs/overview.md) and affected specs against the release candidate.
 2. Update `pyproject.toml` and `ouro.__version__`, align plugin host-version ranges, and regenerate `uv.lock`.

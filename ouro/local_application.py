@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from collections.abc import AsyncGenerator, Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field
@@ -66,6 +65,7 @@ from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.deployment import (
     SessionBackend,
     TaskBackend,
+    ensure_home_available,
     resolve_session_backend,
     resolve_task_backend,
 )
@@ -231,6 +231,7 @@ class LocalApplication:
             configured_home = resolve_local_home(home)
         if configured_home is None:
             raise OuroError("runtime has no configured deployment home")
+        ensure_home_available(configured_home)
         plugin_runtime, plugins = _build_local_plugin_runtime(
             configured_home,
             tools=runtime.tools,
@@ -764,8 +765,7 @@ def build_local_mcp_runtime(
 
 
 def resolve_local_home(home: str | Path | None = None) -> Path:
-    root = home if home is not None else os.environ.get("OURO_HOME")
-    return (Path(root) if root is not None else Path.home() / ".ouro").expanduser().resolve()
+    return ensure_home_available(home)
 
 
 def resolve_plugin_credential(reference: str) -> str:

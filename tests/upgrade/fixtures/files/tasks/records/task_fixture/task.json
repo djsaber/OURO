@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "task": {
+    "task_id": "task_fixture",
+    "revision": 1,
+    "configuration": {
+      "title": "fixture",
+      "description": "fixture scheduled prompt",
+      "workspace": "C:/fixture",
+      "approval_mode": "afk",
+      "model": "fixture/model",
+      "reasoning": {
+        "mode": "default",
+        "effort": null
+      },
+      "schedule": {
+        "frequency": "daily",
+        "timezone": "UTC",
+        "starts_at": "2026-09-01T00:00:00Z",
+        "ends_at": null,
+        "at": "09:00:00",
+        "interval": 1,
+        "unit": "days",
+        "weekdays": [],
+        "month_day": null
+      },
+      "session_mode": "new"
+    },
+    "enabled": false,
+    "created_at": "2026-09-01T00:00:00Z",
+    "updated_at": "2026-09-01T00:00:00Z",
+    "next_run_at": null,
+    "session_id": null,
+    "active_execution_id": null,
+    "last_execution_id": "exec_fixture",
+    "status": "completed",
+    "error": null
+  },
+  "history_head": "exec_fixture",
+  "completed_executions": 1,
+  "failed_executions": 0,
+  "awaiting_approval": false
+}

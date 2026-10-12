@@ -49,7 +49,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
     ),
     "config": frozenset({"core", "local_io", "local_locks", "prompts"}),
     "core": frozenset(),
-    "deployment": frozenset({"core"}),
+    "deployment": frozenset({"core", "local_locks"}),
     "data_commands": frozenset({"application"}),
     "transfer": frozenset({"core", "config", "skills"}),
     "local_application": frozenset(

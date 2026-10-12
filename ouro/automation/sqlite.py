@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ValidationError
 
-from ouro.core.errors import PersistenceError
+from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
 from ouro.core.tasks import TaskConflictError, TaskCounts, TaskExecution, TaskRecord
 from ouro.local_locks import FileMutationLock, FileOwnerLock
 
@@ -51,7 +51,9 @@ class SQLiteTaskRepository:
         with self._connection() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             if version not in {0, 3}:
-                raise PersistenceError(f"Unsupported task store version: {version}; expected 3")
+                raise UnsupportedDataVersionError(
+                    f"Unsupported task store version: {version}; expected 3"
+                )
             connection.execute("PRAGMA journal_mode=WAL")
             connection.executescript("""
                 CREATE TABLE IF NOT EXISTS tasks (

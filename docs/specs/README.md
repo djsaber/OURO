@@ -52,6 +52,7 @@
 | [CLI 与 Host](cli-and-hosts.md) | 命令面、输出模式、退出码和 Host/Application 边界 | `ouro/cli`、`ouro/local_application.py` |
 | [TUI](tui.md) | 页面、命令、键位、认证管理、子智能体视图、渲染与恢复 | `ouro/tui` |
 | [配置与数据传输](data-transfer.md) | 配置分域、统一导入导出、会话树与附件、技能目录、未知依赖与失败边界 | `ouro/application/data_transfer.py`、`ouro/transfer`、`ouro/sessions/portable.py` |
+| [数据升级](data-upgrade.md) | 指定 home 的有限核心格式升级、备份、启动保护与失败恢复 | `ouro_upgrade`、`ouro/deployment.py` |
 | [性能热路径](performance.md) | Provider 流、持久化、工具边界、TUI 帧与响应性预算 | `ouro/core`、`ouro/application`、`ouro/tui` |
 
 ## 维护与验收

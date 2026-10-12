@@ -20,6 +20,7 @@
 | 调度后台工作 | [自动任务](guides/automated-tasks.md) |
 | 查询 token、费用与计费归属 | [用量统计](guides/usage.md) |
 | 备份、选择数据和跨后端传输 | [导入导出](guides/data-transfer.md) |
+| 在已有 home 内升级受支持的旧格式 | [数据升级](guides/data-upgrade.md) |
 
 ## 架构与契约
 
