@@ -6,6 +6,7 @@
 
 | 规划 | 范围与进入条件 |
 |---|---|
+| [数据迁移模块](data-migration.md) | 待确认设计：自动识别历史数据契约，离线迁移到独立目标，保留源数据并验证完整性 |
 | [附件输入验收](attachment-validation.md) | 真实终端、视觉端点及跨平台会话传输的验收 |
 | [桌面 Host](desktop-host.md) | 复用 Application / Supervisor 的本地桌面产品面 |
 | [高级智能体能力](advanced-agents.md) | 长期记忆与通用 Workflow；需独立业务需求和持久化边界 |
