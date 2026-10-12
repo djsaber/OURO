@@ -23,7 +23,7 @@ from ouro.plugins.worker import (
     _decode_worker_observer,
     _worker_observation_payload,
 )
-from ouro.sdk.plugins import v2 as sdk
+from ouro.sdk.plugins import v3 as sdk
 
 OBSERVATIONS: tuple[tuple[str, Observation, type[object], set[str]], ...] = (
     (

@@ -60,6 +60,35 @@ uv run --frozen python -m dev.benchmarks.harness_lifecycle --repeat 3
 ## Worker 响应与插件命令
 
 ```powershell
+uv run --frozen python -m dev.benchmarks.plugin_scale --counts 0 10 100 --repeat 5
+```
+
+规模基准分别安装带 Skill 的声明式插件、带命令的进程内插件和真实 stdio worker。每个样本使用新进程，
+测量插件 Host 启动、首次使用、20 次稳态使用、列表、单插件关闭／启用和 Host 关闭。安装及启用意图准备
+不计时，Python 导入不计入 Host 启动；进程冷启动的完整导入成本由 `startup` 单独测量。声明式场景读取
+Skill 目录，可执行场景调用一个插件的 echo 命令，其余插件保持空闲。输出明确记录插件数、实际 worker 数、
+Host 句柄、进程 I/O 和原始样本；100 个 worker 的结果只说明此场景，不代表 100 个模型请求并发执行。
+worker 夹具逐条处理标准输入上的 JSON-RPC，不导入业务 SDK，也不调用反向端口，便于单独观察 Host 与 stdio 成本。
+重复样本复用临时 home，不清除 OS 缓存；I/O 含缓存命中和管道传输，不等于物理磁盘流量。
+
+```powershell
+uv run --frozen python -m dev.benchmarks.plugin_lifecycle --cycles 100
+```
+
+插件生命周期基准在临时 home 安装进程内命令与真实 stdio worker 示例，预热后各自反复启用和关闭。
+计时与 tracemalloc 分开执行，输出原始耗时、P50/P95、进程句柄或文件描述符数，以及 GC 后仍保留的
+generation、worker client、私有模块数量。句柄观测支持 Windows 和 Linux，其他平台输出 null；
+只统计 Host 进程自身，不代表全系统 IO、RSS 或跨平台性能结论。
+
+```powershell
+uv run --frozen python -m dev.benchmarks.plugin_startup_graph --counts 3 10 30 --repeat 3
+```
+
+启动图基准复用离线回归的内置插件夹具，覆盖链、共享依赖和独立插件。对照同一当前运行时下旧的逐根
+`activate` 启动循环与统一启动图，记录代次构建、后台服务启动、状态读取及原始耗时。每次新建临时 home，
+不计导入、夹具构造和关闭，不清除 OS 缓存；不启动 worker，不代表网络或整个旧版本的性能。
+
+```powershell
 uv run --frozen python -m dev.benchmarks.worker_results
 uv run --frozen python dev/benchmarks/plugin_commands.py --repeat 3
 uv run --frozen python dev/benchmarks/plugin_commands.py --mode tui --store-delay-ms 5 --repeat 3

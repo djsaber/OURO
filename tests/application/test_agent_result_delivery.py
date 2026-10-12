@@ -154,10 +154,10 @@ async def test_exhausted_delivery_stays_pending_and_targeted_recovery_retries(
             current_model=app.runtime.current_model().key,
         ).session
         # Fail the provider after its first shell request; deny all real shell execution.
-        from ouro.tools import ToolExecutionContext, ToolProcessResult
+        from ouro.tools import ProcessResult, ToolExecutionContext
 
         async def process(self, arguments, **kwargs):
-            return ToolProcessResult(stdout="test", stderr="", returncode=0)
+            return ProcessResult(stdout="test", stderr="", returncode=0)
 
         monkeypatch.setattr(ToolExecutionContext, "run_process", process)
         original = app.supervisor.route_host_input

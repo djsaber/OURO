@@ -1,0 +1,11 @@
+{
+  "schema_version": 3,
+  "plugin_id": "dev.ouro.examples.worker_exec",
+  "name": "Managed Python Execution",
+  "namespace": "worker_exec",
+  "version": "0.1.0",
+  "engines": {"ouro": "^0.2.0", "plugin_api": "^3.0.0"},
+  "runtime": {"kind": "worker", "command": ["{python}", "worker.py"], "protocol": "3.0"},
+  "permissions": [{"id": "process.spawn", "reason": "Execute Python supplied to the python command."}],
+  "contributes": {"commands": [{"id": "python", "description": "Execute Python in a managed child process."}]}
+}

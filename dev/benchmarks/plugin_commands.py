@@ -27,7 +27,7 @@ def install_plugin(app, directory):
         "name": "Synthetic commands",
         "version": "1.0.0",
         "namespace": "command_probe",
-        "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^3.0.0"},
+        "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
         "runtime": {"kind": "python-inprocess", "entrypoint": "command_probe_plugin:create_plugin"},
         "contributes": {
             "commands": [
@@ -50,7 +50,7 @@ def install_plugin(app, directory):
         encoding="utf-8",
     )
     (source / "command_probe_plugin.py").write_text(
-        """from ouro.sdk.plugins import v2 as sdk
+        """from ouro.sdk.plugins import v3 as sdk
 
 class Plugin:
     async def start(self): pass

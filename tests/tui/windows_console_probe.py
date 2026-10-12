@@ -49,10 +49,6 @@ def main() -> None:
     create.restype = wintypes.HANDLE
     set_mode = kernel.SetConsoleMode
     set_mode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-    set_size = kernel.SetConsoleScreenBufferSize
-    set_size.argtypes = [wintypes.HANDLE, Coord]
-    set_window = kernel.SetConsoleWindowInfo
-    set_window.argtypes = [wintypes.HANDLE, wintypes.BOOL, ctypes.POINTER(Rect)]
     get_info = kernel.GetConsoleScreenBufferInfo
     get_info.argtypes = [wintypes.HANDLE, ctypes.POINTER(BufferInfo)]
     read = kernel.ReadConsoleOutputCharacterW
@@ -70,8 +66,12 @@ def main() -> None:
     fd = msvcrt.open_osfhandle(handle, os.O_WRONLY)
     with open(fd, "w", encoding="utf-8") as stream:
         assert set_mode(handle, 7), ctypes.get_last_error()
-        assert set_size(handle, Coord(120, 40)), ctypes.get_last_error()
-        assert set_window(handle, True, ctypes.byref(Rect(0, 0, 119, 29))), ctypes.get_last_error()
+        # Exercise the allocated console, whose dimensions depend on the host.
+        # Resizing also depends on desktop font/DPI limits unrelated to output.
+        info = BufferInfo()
+        assert get_info(handle, ctypes.byref(info)), ctypes.get_last_error()
+        columns, rows = min(114, info.size.x - 1), min(20, info.size.y - 3)
+        expected_cursor = (min(9, info.size.x - 1), min(25, info.size.y - 1))
         output = ConsoleOutput(stream)
 
         def position() -> tuple[int, int]:
@@ -79,21 +79,22 @@ def main() -> None:
             assert get_info(handle, ctypes.byref(info)), ctypes.get_last_error()
             return info.cursor.x, info.cursor.y
 
-        restore = "\x1b[26;10H"
+        restore = f"\x1b[{expected_cursor[1] + 1};{expected_cursor[0] + 1}H"
         frame = (
             "".join(
-                f"\x1b[{y + 1};1H" + "".join(f"\x1b[38;2;{x};80;90m⣿" for x in range(114))
-                for y in range(20)
+                f"\x1b[{y + 1};1H" + "".join(f"\x1b[38;2;{x};80;90m⣿" for x in range(columns))
+                for y in range(rows)
             )
-            + "\x1b[24;1H汉🙂⣿"
+            + f"\x1b[{rows + 2};1H汉🙂⣿"
             + restore
         )
+        assert len(frame) > 8192
         # Negative control: the original transport exposes drawing positions.
         fragmented = set()
         for start in range(0, len(frame), 8192):
             output.write(frame[start : start + 8192])
             fragmented.add(position())
-        assert position() == (9, 25)
+        assert position() == expected_cursor
 
         native_write = windows_console._WRITE_CONSOLE
         native_writes = 0
@@ -126,10 +127,10 @@ def main() -> None:
             sampler.join(timeout=2)
             windows_console._WRITE_CONSOLE = native_write
         assert not sampler.is_alive()
-        line = ctypes.create_unicode_buffer(114)
+        line = ctypes.create_unicode_buffer(columns)
         count = wintypes.DWORD()
-        assert read(handle, line, 114, Coord(0, 0), ctypes.byref(count))
-        assert line[: count.value] == "⣿" * 114
+        assert read(handle, line, columns, Coord(0, 0), ctypes.byref(count))
+        assert line[: count.value] == "⣿" * columns
         print(
             json.dumps(
                 {
@@ -137,6 +138,7 @@ def main() -> None:
                     "native_writes": native_writes,
                     "sample_count": len(positions),
                     "positions": sorted(set(positions)),
+                    "expected_cursor": expected_cursor,
                 }
             )
         )

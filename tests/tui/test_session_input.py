@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import re
 import sys
 import threading
@@ -9,11 +10,12 @@ import pytest
 from rich.control import Control
 from textual import events
 from textual.geometry import Size
-from textual.widgets import Input
+from textual.widgets import Input, Static
+from textual.worker import WorkerCancelled
 
 from ouro.core.events import EventRecord
 from ouro.tui import conversation_history
-from ouro.tui.app import OuroTuiApp
+from ouro.tui.app import OuroTuiApp, RuntimeEventsReady
 from ouro.tui.screens import ChoiceScreen
 from ouro.tui.widgets import Composer, ConversationView, StatusLine
 from tests.tui.helpers import run_ready_app, two_route_application
@@ -244,6 +246,56 @@ async def test_session_frames_preserve_editor_and_menu_cursor_during_live_update
         assert all(data.endswith(cursor) for data, cursor in frames), [
             (data[-100:], cursor) for data, cursor in frames if not data.endswith(cursor)
         ]
+
+
+async def test_cancelling_event_frame_before_start_does_not_leave_an_unawaited_coroutine(
+    tmp_path, recwarn
+):
+    app = OuroTuiApp(application=two_route_application(tmp_path))
+    async with run_ready_app(app) as pilot:
+        app.on_runtime_events_ready(RuntimeEventsReady())
+        worker = app._runtime_events_worker
+        assert worker is not None
+        worker.cancel()
+        with pytest.raises(WorkerCancelled):
+            await worker.wait()
+        await pilot.pause()
+        app._runtime_events_worker = None
+        del worker
+        gc.collect()
+        assert not [
+            warning
+            for warning in recwarn
+            if "_flush_pending_runtime_events" in str(warning.message)
+            and "was never awaited" in str(warning.message)
+        ]
+
+
+async def test_cancelling_transcript_removal_preserves_widget_teardown(tmp_path):
+    entered, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class SlowUnmount(Static):
+        async def on_unmount(self):
+            entered.set()
+            await release.wait()
+            finished.set()
+
+    app = OuroTuiApp(application=two_route_application(tmp_path))
+    async with run_ready_app(app) as pilot:
+        conversation = app.query_one(ConversationView)
+        child = SlowUnmount("Live output")
+        await conversation._transcript.mount(child)
+        removal = asyncio.create_task(conversation._clear_live_transcript())
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            removal.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await removal
+        finally:
+            release.set()
+        await asyncio.wait_for(finished.wait(), 2)
+        await pilot.pause()
+        assert not child.is_attached
 
 
 async def test_closing_session_cancels_pending_presentation_without_waiting_for_render(

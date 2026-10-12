@@ -13,6 +13,7 @@ from ouro.application.plugin_commands import submit_plugin_command
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_controls import SessionControlCoordinator
+from ouro.application.usage import UsageService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.interactions import AnswerResolution
 from ouro.core.messages import ModelMessage
@@ -243,7 +244,9 @@ def _provider_tool_name(tool: object) -> str:
     return str(tool.name)
 
 
-def _runtime(home: Path, workspace: Path, provider) -> tuple[RuntimeService, LocalSessionStore]:
+def _runtime(
+    home: Path, workspace: Path, provider, *, usage_service: UsageService | None = None
+) -> tuple[RuntimeService, LocalSessionStore]:
     store = LocalSessionStore(home)
     store.initialize()
     tools = ToolRegistry()
@@ -251,6 +254,7 @@ def _runtime(home: Path, workspace: Path, provider) -> tuple[RuntimeService, Loc
         tools.register(tool)
     runtime = RuntimeService(
         store=store,
+        usage_service=usage_service,
         adapter=RuntimeAdapter(
             provider,
             ModelMetadata(model_id="plan-test", provider_id=provider.provider_id),

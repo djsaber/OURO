@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from ouro.core.compaction import CompactionStrategy
 from ouro.core.context_providers import ContextProviderRegistration
@@ -13,7 +13,9 @@ from ouro.core.prompt_policies import PromptPolicyRegistration
 from ouro.core.tool_policies import ToolPolicyRegistration
 from ouro.core.turn_policies import TurnPolicyRegistration
 from ouro.plugins.manifest import PluginManifest
+from ouro.plugins.providers import ProviderRegistration
 from ouro.plugins.registry import PluginCommand
+from ouro.plugins.run_drivers import RunDriverRegistration
 from ouro.plugins.session_controllers import PluginSessionController
 from ouro.tools import Tool
 
@@ -21,6 +23,9 @@ from ouro.tools import Tool
 class ContractBackgroundService(Protocol):
     @property
     def service_id(self) -> str: ...
+
+    @property
+    def scope(self) -> Literal["host", "home"]: ...
 
 
 @dataclass(frozen=True)
@@ -32,6 +37,8 @@ class ContributionContractContext:
     commands: tuple[PluginCommand, ...]
     compaction: tuple[CompactionStrategy, ...]
     background_services: tuple[ContractBackgroundService, ...]
+    providers: tuple[ProviderRegistration, ...]
+    run_drivers: tuple[RunDriverRegistration, ...]
     continuation_policies: tuple[ContinuationPolicyRegistration, ...]
     prompt_policies: tuple[PromptPolicyRegistration, ...]
     turn_policies: tuple[TurnPolicyRegistration, ...]
@@ -153,7 +160,8 @@ class _BackgroundServiceContractAdapter:
     def contracts(self, context: ContributionContractContext) -> dict[str, object]:
         return {
             f"{context.manifest.plugin_id}/background_services/{service.service_id}": {
-                "lifecycle": "activation-singleton"
+                "lifecycle": "activation-singleton",
+                "scope": service.scope,
             }
             for service in context.background_services
         }
@@ -228,6 +236,26 @@ COMMAND_CONTRACT_ADAPTER = _CommandContractAdapter()
 CONTEXT_CONTRACT_ADAPTER = _ContextContractAdapter()
 COMPACTION_CONTRACT_ADAPTER = _CompactionContractAdapter()
 BACKGROUND_SERVICE_CONTRACT_ADAPTER = _BackgroundServiceContractAdapter()
+
+
+@dataclass(frozen=True)
+class _RunDriverContractAdapter:
+    kind: str = "run_drivers"
+
+    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
+        return {item.canonical_id: {"protocol": "run-driver/1"} for item in context.run_drivers}
+
+
+@dataclass(frozen=True)
+class _ProviderContractAdapter:
+    kind: str = "providers"
+
+    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
+        return {item.canonical_id: {"protocol": "model-provider/1"} for item in context.providers}
+
+
+PROVIDER_CONTRACT_ADAPTER = _ProviderContractAdapter()
+RUN_DRIVER_CONTRACT_ADAPTER = _RunDriverContractAdapter()
 CONTINUATION_CONTRACT_ADAPTER = _ContinuationContractAdapter()
 TOOL_POLICY_CONTRACT_ADAPTER = _ToolPolicyContractAdapter()
 PROMPT_POLICY_CONTRACT_ADAPTER = _PromptPolicyContractAdapter()

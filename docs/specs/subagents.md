@@ -779,8 +779,8 @@ durable relation 并提交现有 RuntimeSupervisor；实际同时执行数量与
 结果固化、投递、中断、follow-up 和 close 继续由 application lifecycle lock 与 repository CAS 串行化，不通过
 工具 batch 的 `exclusive` 属性建立第二把调度锁。
 
-每个 subagent Run 继续直接读取冻结的 `RunBudgetPolicy`。此外，InnerAgentLoop 在普通 model round durable
-boundary 调用 application 提供的共享预算检查；AgentService 从 parent Run 与其 Delegation 对应的每个 subagent
+每个 subagent Run 继续直接读取冻结的 `RunBudgetPolicy`。`RunModelRequests` 在模型请求的 durable
+boundary 执行本 Run 与共享预算检查；AgentService 从 parent Run 与其 Delegation 对应的每个 subagent
 Session/Run 聚合 usage 和 model round，按 root policy 返回同一 `RunBudgetReason`。因此并发 subagent 在下一个
 边界进入现有 `paused` 路径，已完成结果不被改写。
 聚合以 `(session_id, run_id)` 去重，resume/follow-up 新 Run 各计一次；AgentTree 使用相同 Run 粒度展示 root/node

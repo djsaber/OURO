@@ -10,9 +10,9 @@ import httpx
 import pytest
 
 from ouro.application.configuration import ConfigurationFacade
-from ouro.automation.models import TaskConfiguration, TaskSchedule
 from ouro.config import ProviderConfigManager
 from ouro.core.base import utc_now
+from ouro.core.tasks import AgentTaskTarget, TaskConfiguration, TaskSchedule
 from ouro.local_application import LocalApplication, open_local_provider_auth
 from ouro.tools import Tool, ToolDefinition, ToolResult
 from tests.auth.openai_fixtures import tokens
@@ -124,9 +124,11 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
         app.tasks.clock = lambda: due
         task = await app.tasks.create(
             TaskConfiguration(
-                workspace=str(tmp_path),
-                model=f"{provider_id}/{gpt_55_endpoint_id}",
-                description="Reply OK.",
+                target=AgentTaskTarget(
+                    workspace=str(tmp_path),
+                    model=f"{provider_id}/{gpt_55_endpoint_id}",
+                    prompt="Reply OK.",
+                ),
                 schedule=TaskSchedule(frequency="daily", starts_at=due, ends_at=due),
             )
         )
@@ -137,7 +139,7 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
                 await execution.reconcile()
                 await asyncio.sleep(0.01)
         scheduled = (await app.tasks.executions(task.task_id))[0]
-        snapshot = app.runtime.store.load_session(scheduled.session_id)
+        snapshot = app.runtime.store.load_session(scheduled.target.session_id)
         assert snapshot.session.interaction_mode == "unattended"
         assert any(
             event.payload.get("error_code") == "authentication_required"
@@ -171,7 +173,7 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
     async with LocalApplication.build(tmp_path, session_backend=backend) as app:
         for session_id, run_id in (
             (unattended.session.session_id, unattended.run.run_id),
-            (scheduled.session_id, scheduled.run_id),
+            (scheduled.target.session_id, scheduled.target.run_id),
         ):
             replies.append(terminal([message("recovered")]))
             recovered = await app.runtime.continue_run(session_id=session_id)

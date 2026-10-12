@@ -15,13 +15,13 @@ from ouro.config.endpoints import (
 )
 from ouro.config.provider_headers import public_provider_headers
 from ouro.config.provider_models import (
-    SUPPORTED_PROVIDER_PROTOCOLS,
     SUPPORTED_PROVIDER_TYPES,
     ProviderConfig,
     ProviderProtocol,
     ProviderTemplateBinding,
     ProviderType,
     normalize_provider_config,
+    validate_provider_protocol,
 )
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ProviderRetryPolicy
@@ -225,6 +225,6 @@ def _provider_type(value: object) -> ProviderType:
 
 
 def _provider_protocol(value: object) -> ProviderProtocol:
-    if value in SUPPORTED_PROVIDER_PROTOCOLS:
-        return cast(ProviderProtocol, value)
+    if isinstance(value, str):
+        return validate_provider_protocol(value)
     raise ValueError(f"unsupported provider protocol: {value}")

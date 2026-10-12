@@ -41,7 +41,7 @@ def project_tool_exchanges(
     results = {
         (message.run_id, message.turn_id, message.tool_result.tool_call_id)
         for message in messages
-        if message.tool_result is not None
+        if message.tool_result is not None and message.tool_result.producer.kind == "model"
     }
     complete_calls = set()
     complete_messages = set()
@@ -57,7 +57,7 @@ def project_tool_exchanges(
     excluded = []
     for message in messages:
         incomplete = bool(message.tool_calls) and message.message_id not in complete_messages
-        if message.tool_result is not None:
+        if message.tool_result is not None and message.tool_result.producer.kind == "model":
             incomplete = (
                 message.run_id,
                 message.turn_id,

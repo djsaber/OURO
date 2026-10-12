@@ -40,7 +40,7 @@ def inspect_community_package(source: str | Path) -> CompatibilityReport:
         return CompatibilityReport(
             source_format="ouro",
             source_version=str(manifest.schema_version),
-            detected_resources=sorted(manifest.contributes.capabilities()),
+            detected_resources=sorted(manifest.capabilities()),
             items=[
                 CompatibilityItem(
                     kind=kind,

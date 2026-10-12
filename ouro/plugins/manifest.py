@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal, get_args
 
+from jsonschema import Draft202012Validator
 from pydantic import Field, field_validator, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
@@ -27,6 +28,8 @@ PluginCapability = Literal[
     "mcp_servers",
     "background_services",
     "continuation_policies",
+    "providers",
+    "run_drivers",
     "prompt_policies",
     "turn_policies",
     "tool_policies",
@@ -38,6 +41,7 @@ PLUGIN_PERMISSION_IDS = frozenset(
         "background.run",
         "credentials.use",
         "network.outbound",
+        "models.request",
         "process.spawn",
         "sessions.prompt.inspect",
         "sessions.write",
@@ -124,10 +128,7 @@ class PluginRuntimeSpec(OuroModel):
         return self
 
 
-class ToolContributionSpec(OuroModel):
-    id: str
-    exposed_name: str
-    description: str
+class ToolContributionPolicy(OuroModel):
     permission_mode: PermissionMode = "approval"
     permission_control: ToolPermissionControl = "host"
     effect: ToolEffect = "unknown"
@@ -136,10 +137,9 @@ class ToolContributionSpec(OuroModel):
     supports_unattended: bool = False
     active_when: str | None = None
     interaction_controller: str | None = None
-    optional: bool = False
 
     @model_validator(mode="after")
-    def validate_tool_contract(self) -> ToolContributionSpec:
+    def validate_tool_contract(self) -> ToolContributionPolicy:
         if self.permission_control == "tool" and self.permission_mode == "approval":
             raise ValueError("tool-controlled permission must be auto or deny")
         if self.supports_unattended and not self.resumable:
@@ -148,15 +148,31 @@ class ToolContributionSpec(OuroModel):
             raise ValueError("interaction controller binding requires a resumable tool")
         return self
 
+    @field_validator("active_when", "interaction_controller")
+    @classmethod
+    def _validate_controller_reference(cls, value: str | None) -> str | None:
+        return _validate_local_id(value) if value is not None else None
+
+
+class ToolGroupSpec(ToolContributionPolicy):
+    id: str
+
     @field_validator("id")
     @classmethod
     def _validate_id(cls, value: str) -> str:
         return _validate_local_id(value)
 
-    @field_validator("active_when", "interaction_controller")
+
+class ToolContributionSpec(ToolContributionPolicy):
+    id: str
+    exposed_name: str
+    description: str
+    optional: bool = False
+
+    @field_validator("id")
     @classmethod
-    def _validate_controller_reference(cls, value: str | None) -> str | None:
-        return _validate_local_id(value) if value is not None else None
+    def _validate_id(cls, value: str) -> str:
+        return _validate_local_id(value)
 
     @field_validator("exposed_name")
     @classmethod
@@ -337,6 +353,10 @@ class PathContributionSpec(NamedContributionSpec):
     path: str
 
 
+class BackgroundServiceContributionSpec(NamedContributionSpec):
+    scope: Literal["host", "home"] = "host"
+
+
 class PluginContributes(OuroModel):
     tools: list[ToolContributionSpec] = Field(default_factory=list)
     commands: list[CommandContributionSpec] = Field(default_factory=list)
@@ -345,7 +365,9 @@ class PluginContributes(OuroModel):
     compaction_strategies: list[NamedContributionSpec] = Field(default_factory=list)
     skills: list[PathContributionSpec] = Field(default_factory=list)
     mcp_servers: list[PathContributionSpec] = Field(default_factory=list)
-    background_services: list[NamedContributionSpec] = Field(default_factory=list)
+    background_services: list[BackgroundServiceContributionSpec] = Field(default_factory=list)
+    providers: list[NamedContributionSpec] = Field(default_factory=list)
+    run_drivers: list[NamedContributionSpec] = Field(default_factory=list)
     continuation_policies: list[ContinuationPolicyContributionSpec] = Field(default_factory=list)
     prompt_policies: list[PromptPolicyContributionSpec] = Field(default_factory=list)
     turn_policies: list[TurnPolicyContributionSpec] = Field(default_factory=list)
@@ -393,6 +415,8 @@ class PluginContributes(OuroModel):
             "skills": list(self.skills),
             "mcp_servers": list(self.mcp_servers),
             "background_services": list(self.background_services),
+            "providers": list(self.providers),
+            "run_drivers": list(self.run_drivers),
             "continuation_policies": list(self.continuation_policies),
             "prompt_policies": list(self.prompt_policies),
             "turn_policies": list(self.turn_policies),
@@ -428,6 +452,44 @@ class PluginDependencies(OuroModel):
     plugins: list[PluginDependencySpec] = Field(default_factory=list)
 
 
+class ServiceMethodSpec(OuroModel):
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    effect: ToolEffect = "unknown"
+    registration: bool = False
+    schedulable: bool = False
+
+    @model_validator(mode="after")
+    def _validate_effect(self) -> ServiceMethodSpec:
+        if self.registration and self.effect == "read_only":
+            raise ValueError("service registration cannot be read-only")
+        if self.registration and self.schedulable:
+            raise ValueError("only single-call service methods can be scheduled")
+        return self
+
+    @field_validator("input_schema")
+    @classmethod
+    def _validate_schema(cls, value: dict[str, Any]) -> dict[str, Any]:
+        Draft202012Validator.check_schema(value)
+        return value
+
+
+class ServiceExportSpec(OuroModel):
+    id: str
+    methods: dict[str, ServiceMethodSpec] = Field(min_length=1)
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        return _validate_local_id(value)
+
+    @field_validator("methods")
+    @classmethod
+    def _validate_methods(cls, value: dict[str, ServiceMethodSpec]) -> dict[str, ServiceMethodSpec]:
+        if any(_validate_local_id(name) != name for name in value):
+            raise ValueError("service method names must be normalized local identifiers")
+        return value
+
+
 class PluginManifest(OuroModel):
     schema_version: Literal[3] = 3
     plugin_id: str
@@ -441,6 +503,8 @@ class PluginManifest(OuroModel):
     permissions: list[PermissionRequest] = Field(default_factory=list)
     configuration: PluginConfigurationSpec | None = None
     dependencies: PluginDependencies = Field(default_factory=PluginDependencies)
+    exports: list[ServiceExportSpec] = Field(default_factory=list)
+    tool_groups: list[ToolGroupSpec] = Field(default_factory=list)
     metadata: Metadata = MetadataField
 
     @field_validator("plugin_id")
@@ -464,6 +528,19 @@ class PluginManifest(OuroModel):
 
     @model_validator(mode="after")
     def _validate_permissions(self) -> PluginManifest:
+        if len({item.id for item in self.tool_groups}) != len(self.tool_groups):
+            raise ValueError("duplicate tool group id")
+        if self.tool_groups and self.runtime.kind == "declarative":
+            raise ValueError("tool groups require executable plugin code")
+        controllers = {item.id for item in self.contributes.session_controllers}
+        for group in self.tool_groups:
+            for controller in (group.active_when, group.interaction_controller):
+                if controller is not None and controller not in controllers:
+                    raise ValueError(f"tool group references undeclared controller: {controller}")
+        if len({item.id for item in self.exports}) != len(self.exports):
+            raise ValueError("duplicate service export id")
+        if self.exports and self.runtime.kind == "declarative":
+            raise ValueError("service exports require executable plugin code")
         identities = [request.id for request in self.permissions]
         if len(identities) != len(set(identities)):
             raise ValueError("duplicate permission request id")
@@ -483,6 +560,12 @@ class PluginManifest(OuroModel):
                     f"python entrypoint must use the plugin-owned top-level module {expected!r}"
                 )
         return self
+
+    def capabilities(self) -> set[PluginCapability]:
+        capabilities = self.contributes.capabilities()
+        if self.tool_groups:
+            capabilities.add("tools")
+        return capabilities
 
 
 def validate_plugin_id(value: str) -> str:

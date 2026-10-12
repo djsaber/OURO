@@ -1,0 +1,14 @@
+{
+  "schema_version": 3,
+  "plugin_id": "dev.ouro.examples.dynamic_records",
+  "name": "Dynamic Records",
+  "version": "0.1.0",
+  "namespace": "dynamic_records",
+  "engines": {"ouro": "^0.2.0", "plugin_api": "^3.0.0"},
+  "runtime": {"kind": "worker", "command": ["{python}", "worker.py"], "protocol": "3.0"},
+  "tool_groups": [{"id": "records", "permission_mode": "auto", "effect": "state_changing"}],
+  "contributes": {
+    "commands": [{"id": "record-fields", "description": "Set record fields or withdraw the tool.", "usage": "<field,...|off>"}]
+  },
+  "permissions": [{"id": "sessions.write", "reason": "Record structured data in the calling Session."}]
+}

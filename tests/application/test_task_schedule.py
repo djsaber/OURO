@@ -5,8 +5,8 @@ from datetime import UTC, datetime, time
 import pytest
 from pydantic import ValidationError
 
-from ouro.automation.models import TaskSchedule
 from ouro.automation.schedule import next_occurrence
+from ouro.core.tasks import TaskSchedule
 
 
 def dt(value: str) -> datetime:

@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ouro import __version__
-from ouro.config.provider_models import CONFIGURABLE_PROVIDER_TYPES, SUPPORTED_PROVIDER_PROTOCOLS
+from ouro.config.provider_models import CONFIGURABLE_PROVIDER_TYPES
 from ouro.config.reasoning import (
     REASONING_PRESETS,
     EndpointReasoningConfig,
@@ -343,6 +343,18 @@ def _add_plugin_parser(subparsers: argparse._SubParsersAction) -> None:
     _add_plugin_request_id(remove)
     _add_plugin_output(remove)
 
+    purge = commands.add_parser(
+        "purge-data", help="Delete a disabled or uninstalled plugin's private data"
+    )
+    purge.add_argument("plugin_id")
+    _add_plugin_output(purge)
+
+    maintain = commands.add_parser("maintain", help="Run a command on disabled private plugin data")
+    maintain.add_argument("plugin_id")
+    maintain.add_argument("--timeout", type=float, default=300, help="Command timeout in seconds")
+    _add_plugin_output(maintain)
+    maintain.add_argument("--execute", nargs=argparse.REMAINDER, required=True, help="Command argv")
+
     gc = commands.add_parser("gc", help="Remove unreferenced plugin cache entries")
     _add_plugin_output(gc)
 
@@ -393,6 +405,7 @@ def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
             "workspace",
             "session",
             "run",
+            "plugin",
             "purpose",
             "billing_mode",
         ),
@@ -449,6 +462,7 @@ def _add_usage_filter_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", dest="model_ids", action="append")
     parser.add_argument("--session", dest="session_ids", action="append")
     parser.add_argument("--run", dest="run_ids", action="append")
+    parser.add_argument("--plugin", dest="plugin_ids", action="append")
     parser.add_argument("--workspace", dest="workspaces", action="append")
     parser.add_argument(
         "--billing-mode",
@@ -460,7 +474,7 @@ def _add_usage_filter_args(parser: argparse.ArgumentParser) -> None:
         "--purpose",
         dest="purposes",
         action="append",
-        choices=("agent", "compaction"),
+        choices=("agent", "compaction", "plugin"),
     )
 
 
@@ -1407,7 +1421,7 @@ def _add_provider_auth_parser(subparsers: argparse._SubParsersAction) -> None:
 def _add_provider_identity_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--protocol",
-        choices=tuple(protocol for protocol in SUPPORTED_PROVIDER_PROTOCOLS if protocol != "faux"),
+        metavar="PROTOCOL",
         help=(
             "Wire protocol; required for custom Providers. "
             "Integrated types require their template protocol"

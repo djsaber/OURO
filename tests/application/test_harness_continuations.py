@@ -20,7 +20,7 @@ from ouro.core.state import (
 )
 from ouro.plugins.api import adapt_sdk_contributions
 from ouro.plugins.session_controllers import PluginSessionControllerRegistry
-from ouro.sdk.plugins import v2 as sdk
+from ouro.sdk.plugins import v3 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from tests.harness_state import replace_harness_state
 

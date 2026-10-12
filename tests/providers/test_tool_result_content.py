@@ -3,8 +3,8 @@ from copy import deepcopy
 import pytest
 
 from ouro.core.content import ImageContent, TextContent
-from ouro.core.messages import ModelMessage, ToolResultReference
-from ouro.core.tools import ToolCallRequest
+from ouro.core.messages import MessageRecord, ModelMessage, ToolResultReference
+from ouro.core.tools import ToolCallProducer, ToolCallRequest
 from ouro.providers.anthropic_messages_codec import messages_to_anthropic_messages
 from ouro.providers.openai_chat_completions_codec import messages_to_chat_completions
 from ouro.providers.openai_responses_codec import responses_input
@@ -116,3 +116,35 @@ def test_chat_completions_finishes_all_tool_results_before_supplemental_messages
         assert f"call-{index}" in str(context["content"])
         assert {"type": "image_url", "image_url": {"url": URI}} in context["content"]
     assert wire[-1]["content"] == "next question"
+
+
+@pytest.mark.parametrize("protocol", ["responses", "messages", "chat"])
+@pytest.mark.parametrize("image_input", [False, True])
+def test_driver_result_preserves_media_as_input_without_fabricated_model_calls(
+    protocol, image_input
+):
+    receipt = MessageRecord(
+        session_id="session",
+        role="tool_result",
+        scaffold=True,
+        content=[
+            TextContent(text="Rendered evidence"),
+            ImageContent(uri=URI, media_type="image/png"),
+        ],
+        tool_result=ToolResultReference(
+            tool_call_id="native-call",
+            tool_name="Render",
+            producer=ToolCallProducer(kind="driver", driver_id="example/run_drivers/review"),
+        ),
+    )
+    messages = [ModelMessage.from_record(receipt)]
+    wire = encode(protocol, messages, image_input=image_input)
+    assert ("aW1hZ2U=" in str(wire)) == image_input
+    if not image_input:
+        assert "This model cannot view images" in str(wire)
+    assert "Rendered evidence" in str(wire)
+    assert "example/run_drivers/review" in str(wire)
+    assert [item["role"] for item in wire] == ["user"]
+    assert all(not item.tool_calls for item in messages)
+    assert not any(item.get("type") == "function_call_output" for item in wire)
+    assert receipt.tool_result.producer.kind == "driver"

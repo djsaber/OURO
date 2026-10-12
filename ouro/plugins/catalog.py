@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import inspect
 import json
 import threading
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Protocol
 
 from ouro.core.base import new_id
+from ouro.core.callbacks import invoke_owned_callback
 from ouro.core.compaction import (
     CompactionArtifact,
     CompactionRequest,
@@ -36,6 +36,13 @@ from ouro.core.prompt_policies import (
     PromptPolicyRegistration,
     PromptPolicyRegistry,
 )
+from ouro.core.run_drivers import (
+    DriverFinished,
+    DriverResume,
+    DriverSuspended,
+    RunDriverBinding,
+    RunDriverContext,
+)
 from ouro.core.state import RunOutcome
 from ouro.core.tool_policies import (
     ToolPolicyCall,
@@ -51,23 +58,35 @@ from ouro.core.turn_policies import (
 )
 from ouro.plugins.adapters import CatalogProjectionTargets, project_prepared_contributions
 from ouro.plugins.contributions import PreparedContributionSet
+from ouro.plugins.implementation_contracts import plugin_implementation
 from ouro.plugins.models import PluginClass, PluginGenerationRecord
+from ouro.plugins.providers import ProviderRegistration, ProviderRegistry
 from ouro.plugins.registry import (
     PluginCommand,
     PluginCommandRegistry,
     PluginCommandRequest,
     PluginCommandResult,
 )
+from ouro.plugins.run_drivers import RunDriverRegistration, RunDriverRegistry
 from ouro.plugins.session_controllers import (
     PluginSessionController,
     PluginSessionControllerRegistry,
 )
+from ouro.sdk.plugins import providers as provider_sdk
 from ouro.skills import SkillMetadata
 from ouro.tools import Tool, ToolExecutionContext, ToolInputRequest, ToolRegistry, ToolResult
 
 
 class PluginGenerationUnavailableError(RuntimeError):
     """Raised when a callback targets a generation whose invocation gate is closed."""
+
+
+class CatalogContributionError(ValueError):
+    """Identify the generation whose contribution prevents catalog publication."""
+
+    def __init__(self, plugin_id: str, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.plugin_id = plugin_id
 
 
 class GenerationGate:
@@ -77,6 +96,7 @@ class GenerationGate:
         self.generation_id = generation_id
         self._open = initially_open
         self._in_flight = 0
+        self._invocations: dict[asyncio.Timeout, asyncio.Task[Any]] = {}
         self._lock = threading.Lock()
         self._drained = asyncio.Event()
         self._drained.set()
@@ -106,20 +126,44 @@ class GenerationGate:
     async def wait_drained(self) -> None:
         await self._drained.wait()
 
+    def cancel_inflight(self) -> None:
+        current = asyncio.current_task()
+        with self._lock:
+            invocations = tuple(self._invocations.items())
+        for cancellation, task in invocations:
+            if task is not current and not cancellation.expired():
+                cancellation.reschedule(asyncio.get_running_loop().time())
+
     @asynccontextmanager
     async def invocation(self) -> AsyncGenerator[None]:
+        task = asyncio.current_task()
+        assert task is not None
+        cancellation = asyncio.timeout(None)
         with self._lock:
             if not self._open:
                 raise PluginGenerationUnavailableError(
                     f"plugin generation is unavailable: {self.generation_id}"
                 )
             self._in_flight += 1
+            self._invocations[cancellation] = task
             self._drained.clear()
         try:
-            yield
+            try:
+                # The timeout scope restores its own cancellation request. A
+                # plugin revocation must not cancel the surrounding Host task.
+                async with cancellation:
+                    yield
+            except TimeoutError:
+                if not cancellation.expired():
+                    raise
+            if cancellation.expired():
+                raise PluginGenerationUnavailableError(
+                    f"plugin generation is unavailable: {self.generation_id}"
+                )
         finally:
             with self._lock:
                 self._in_flight -= 1
+                del self._invocations[cancellation]
                 if self._in_flight == 0:
                     self._drained.set()
 
@@ -137,6 +181,42 @@ class CatalogGeneration(Protocol):
     gate: GenerationGate
 
     def acquire(self) -> GenerationLease: ...
+
+
+class CatalogToolGroup(CatalogGeneration, Protocol):
+    group_id: str
+
+
+def acquire_generations(generations: Iterable[CatalogGeneration]) -> tuple[GenerationLease, ...]:
+    """Acquire a selected set atomically, rolling back partial acquisition."""
+    leases: list[GenerationLease] = []
+    try:
+        for generation in generations:
+            leases.append(generation.acquire())
+    except BaseException:
+        for lease in reversed(leases):
+            lease.close()
+        raise
+    return tuple(leases)
+
+
+@dataclass
+class ContributionBinding[T]:
+    """Selected contributions and their leases, without retaining a whole catalog."""
+
+    value: T
+    _leases: tuple[GenerationLease, ...]
+
+    def close(self) -> None:
+        leases, self._leases = self._leases, ()
+        for lease in reversed(leases):
+            lease.close()
+
+    def __enter__(self) -> ContributionBinding[T]:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
 
 @dataclass(frozen=True)
@@ -217,6 +297,8 @@ class ExtensionCatalog:
         context_providers: ContextProviderRegistry,
         commands: PluginCommandRegistry,
         compaction: CompactionStrategyRegistry,
+        providers: ProviderRegistry,
+        run_drivers: RunDriverRegistry,
         continuations: RunContinuationRegistry,
         prompt_policies: PromptPolicyRegistry,
         turn_policies: TurnPolicyRegistry,
@@ -224,9 +306,14 @@ class ExtensionCatalog:
         skills: Sequence[SkillMetadata],
         session_controllers: PluginSessionControllerRegistry,
         owners: Mapping[str, ContributionOwnerRecord],
+        dependencies: Mapping[str, tuple[str, ...]] | None = None,
+        tool_groups: Sequence[CatalogToolGroup] = (),
     ) -> None:
         self.catalog_id = new_id("cat")
         self._generation_sources = tuple(generations)
+        self._tool_groups = tuple(tool_groups)
+        self._generations_by_plugin = {source.record.plugin_id: source for source in generations}
+        self._dependencies = dict(dependencies or {})
         self.generations = tuple(
             source.record.model_copy(deep=True) for source in self._generation_sources
         )
@@ -235,6 +322,8 @@ class ExtensionCatalog:
         self.context_providers = context_providers
         self.commands = commands
         self.compaction = compaction
+        self.providers = providers
+        self.run_drivers = run_drivers
         self.continuations = continuations
         self.prompt_policies = prompt_policies
         self.turn_policies = turn_policies
@@ -259,22 +348,126 @@ class ExtensionCatalog:
         *,
         on_close: Callable[[ExtensionCatalog], None] | None = None,
     ) -> ExtensionCatalogLease:
-        leases: list[GenerationLease] = []
-        try:
-            for source in self._generation_sources:
-                leases.append(source.acquire())
-        except Exception:
-            for lease in reversed(leases):
-                lease.close()
-            raise
+        leases = acquire_generations((*self._generation_sources, *self._tool_groups))
         with self._lock:
             self._lease_count += 1
-        return ExtensionCatalogLease(self, tuple(leases), on_close=on_close)
+        return ExtensionCatalogLease(self, leases, on_close=on_close)
 
     def rebase(self, base: ExtensionCatalogBase) -> ExtensionCatalog:
         """Project the same plugin generations over a new Host baseline."""
 
-        return build_extension_catalog(base, self._generation_sources)
+        return build_extension_catalog(
+            base,
+            self._generation_sources,
+            dependencies=self._dependencies,
+            tool_groups=self._tool_groups,
+        )
+
+    def with_tool_groups(
+        self, base: ExtensionCatalogBase, groups: Sequence[CatalogToolGroup]
+    ) -> ExtensionCatalog:
+        """Rebuild over the same baseline and generations before atomic publication."""
+        return build_extension_catalog(
+            base,
+            self._generation_sources,
+            dependencies=self._dependencies,
+            tool_groups=groups,
+        )
+
+    def bind_provider(self, provider_id: str) -> ContributionBinding[ProviderRegistration]:
+        provider = self.providers.get(provider_id)
+        return ContributionBinding(provider, self._acquire_plugins({provider.plugin_id}))
+
+    def bind_driver(
+        self, driver_id: str, *, expected: RunDriverBinding | None = None
+    ) -> ContributionBinding[RunDriverRegistration]:
+        driver = self._resolve_driver(driver_id)
+        if expected is not None and driver.binding != expected:
+            raise ValueError(f"Run driver execution contract is unavailable: {driver_id}")
+        return ContributionBinding(driver, self._acquire_plugins({driver.plugin_id}))
+
+    def driver_binding(self, driver_id: str) -> RunDriverBinding:
+        """Read implementation identities without acquiring execution resources."""
+        return self._resolve_driver(driver_id).binding
+
+    def _resolve_driver(self, driver_id: str) -> RunDriverRegistration:
+        driver = self.run_drivers.get(driver_id)
+        ordered = self._ordered_plugins({driver.plugin_id})
+        implementations = {
+            plugin_id: plugin_implementation(self._generations_by_plugin[plugin_id].record)
+            for plugin_id in ordered
+        }
+        return replace(
+            driver,
+            implementation=implementations[driver.plugin_id],
+            dependencies=tuple(
+                implementations[plugin_id]
+                for plugin_id in sorted(implementations)
+                if plugin_id != driver.plugin_id
+            ),
+        )
+
+    def bind_command(
+        self,
+        command_id: str,
+        *,
+        controller_ids: set[str] | None = None,
+    ) -> ContributionBinding[tuple[PluginCommandRegistry, PluginSessionControllerRegistry]]:
+        command = self.commands.get(command_id)
+        commands = PluginCommandRegistry()
+        commands.register(command)
+        commands.freeze()
+        controllers = PluginSessionControllerRegistry()
+        selected = tuple(
+            item
+            for item in self.session_controllers.list()
+            if item.plugin_id == command.plugin_id or item.canonical_id in (controller_ids or ())
+        )
+        controllers.restore({item.canonical_id: item for item in selected})
+        controllers.freeze()
+        leases = self._acquire_plugins({command.plugin_id, *(item.plugin_id for item in selected)})
+        return ContributionBinding((commands, controllers), leases)
+
+    def bind_observers(
+        self,
+        observation: Observation,
+        *,
+        active_controller_ids: Callable[[], set[str]],
+    ) -> ContributionBinding[ObserverRegistry]:
+        registrations = [
+            item
+            for item in self.observers.scoped(active_controller_ids).matching(observation)
+            if (owner := self._generations_by_plugin.get(item.plugin_id)) is None
+            or owner.gate.is_open
+        ]
+        observers = ObserverRegistry()
+        observers.restore(registrations)
+        observers.freeze()
+        leases = self._acquire_plugins({item.plugin_id for item in registrations})
+        return ContributionBinding(observers, leases)
+
+    def _ordered_plugins(self, plugin_ids: set[str]) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        pending = [(plugin_id, False) for plugin_id in sorted(plugin_ids, reverse=True)]
+        while pending:
+            plugin_id, expanded = pending.pop()
+            if expanded:
+                ordered.append(plugin_id)
+            elif plugin_id not in seen and plugin_id in self._generations_by_plugin:
+                seen.add(plugin_id)
+                pending.append((plugin_id, True))
+                pending.extend(
+                    (dependency_id, False)
+                    for dependency_id in reversed(self._dependencies.get(plugin_id, ()))
+                )
+        return ordered
+
+    def _acquire_plugins(self, plugin_ids: set[str]) -> tuple[GenerationLease, ...]:
+        return acquire_generations(
+            self._generations_by_plugin[plugin_id]
+            for plugin_id in self._ordered_plugins(plugin_ids)
+        )
 
     def contract_hash(self, canonical_identity: str) -> str | None:
         owner = self.owners.get(canonical_identity)
@@ -381,6 +574,9 @@ class ExtensionCatalogLease:
 def build_extension_catalog(
     base: ExtensionCatalogBase,
     generations: Sequence[CatalogGeneration],
+    *,
+    dependencies: Mapping[str, tuple[str, ...]] | None = None,
+    tool_groups: Sequence[CatalogToolGroup] = (),
 ) -> ExtensionCatalog:
     tools = ToolRegistry()
     tools.restore(base.tools)
@@ -392,6 +588,8 @@ def build_extension_catalog(
     commands.restore(base.commands)
     compaction = CompactionStrategyRegistry()
     compaction.restore(base.compaction)
+    providers = ProviderRegistry()
+    run_drivers = RunDriverRegistry()
     continuations = RunContinuationRegistry()
     continuations.restore(base.continuations)
     prompt_policies = PromptPolicyRegistry()
@@ -410,6 +608,8 @@ def build_extension_catalog(
         context_providers=context_providers,
         commands=commands,
         compaction=compaction,
+        providers=providers,
+        run_drivers=run_drivers,
         continuations=continuations,
         prompt_policies=prompt_policies,
         turn_policies=turn_policies,
@@ -418,33 +618,45 @@ def build_extension_catalog(
         session_controllers=session_controllers,
     )
 
-    for source in sorted(generations, key=lambda item: item.record.plugin_id):
+    sources: list[tuple[str, CatalogGeneration]] = [
+        (source.contributions.owner.key, source)
+        for source in sorted(generations, key=lambda item: item.record.plugin_id)
+    ]
+    sources.extend(
+        (f"{group.contributions.owner.key}/tool_groups/{group.group_id}", group)
+        for group in tool_groups
+    )
+    for owner, source in sources:
         prepared = bind_generation_gate(source.contributions, source.gate)
-        owner = prepared.owner.key
-        project_prepared_contributions(targets, owner=owner, prepared=prepared)
-        for identity, contract_hash in prepared.contract_hashes.items():
-            if identity in owners:
-                conflict = owners[identity]
-                raise ValueError(
-                    "catalog contribution identity conflict: "
-                    f"{identity} ({conflict.owner_id}, {prepared.owner.key})"
+        try:
+            project_prepared_contributions(targets, owner=owner, prepared=prepared)
+            for identity, contract_hash in prepared.contract_hashes.items():
+                if identity in owners:
+                    conflict = owners[identity]
+                    raise ValueError(
+                        "catalog contribution identity conflict: "
+                        f"{identity} ({conflict.owner_id}, {prepared.owner.key})"
+                    )
+                owners[identity] = ContributionOwnerRecord(
+                    canonical_identity=identity,
+                    owner_id=owner,
+                    plugin_class=source.record.plugin_class,
+                    plugin_id=source.record.plugin_id,
+                    release_id=source.record.release_id,
+                    package_digest=source.record.package_digest,
+                    builtin_contract_hash=source.record.builtin_contract_hash,
+                    generation_id=source.record.generation_id,
+                    contract_hash=contract_hash,
                 )
-            owners[identity] = ContributionOwnerRecord(
-                canonical_identity=identity,
-                owner_id=prepared.owner.key,
-                plugin_class=source.record.plugin_class,
-                plugin_id=source.record.plugin_id,
-                release_id=source.record.release_id,
-                package_digest=source.record.package_digest,
-                builtin_contract_hash=source.record.builtin_contract_hash,
-                generation_id=source.record.generation_id,
-                contract_hash=contract_hash,
-            )
+        except Exception as exc:
+            raise CatalogContributionError(source.record.plugin_id, exc) from exc
     tools.freeze()
     observers.freeze()
     context_providers.freeze()
     commands.freeze()
     compaction.freeze()
+    providers.freeze()
+    run_drivers.freeze()
     continuations.freeze()
     prompt_policies.freeze()
     turn_policies.freeze()
@@ -457,6 +669,8 @@ def build_extension_catalog(
         context_providers=context_providers,
         commands=commands,
         compaction=compaction,
+        providers=providers,
+        run_drivers=run_drivers,
         continuations=continuations,
         prompt_policies=prompt_policies,
         turn_policies=turn_policies,
@@ -464,6 +678,8 @@ def build_extension_catalog(
         session_controllers=session_controllers,
         skills=tuple(skills[name] for name in sorted(skills)),
         owners=owners,
+        dependencies=dependencies,
+        tool_groups=tool_groups,
     )
 
 
@@ -482,6 +698,8 @@ def bind_generation_gate(
         compaction_strategies=tuple(
             _GatedCompactionStrategy(item, gate) for item in prepared.compaction_strategies
         ),
+        providers=tuple(_gated_provider(item, gate) for item in prepared.providers),
+        run_drivers=tuple(_gated_driver(item, gate) for item in prepared.run_drivers),
         continuation_policies=tuple(
             _gated_continuation(item, gate) for item in prepared.continuation_policies
         ),
@@ -494,6 +712,22 @@ def bind_generation_gate(
             _gated_session_controller(item, gate) for item in prepared.session_controllers
         ),
     )
+
+
+def _gated_provider(
+    registration: ProviderRegistration, gate: GenerationGate
+) -> ProviderRegistration:
+    async def stream(
+        request: provider_sdk.ProviderRequest, output: provider_sdk.ProviderOutput
+    ) -> None:
+        async with gate.invocation():
+            await registration.stream(request, output)
+
+    async def check(request: provider_sdk.ProviderRequest) -> provider_sdk.ProviderCheck:
+        async with gate.invocation():
+            return await registration.check(request)
+
+    return replace(registration, stream=stream, check=check)
 
 
 def _gated_session_controller(
@@ -602,6 +836,18 @@ class _GatedCompactionStrategy:
             return await self.delegate.compact(request, signal=signal)
 
 
+def _gated_driver(
+    registration: RunDriverRegistration, gate: GenerationGate
+) -> RunDriverRegistration:
+    async def invoke(
+        context: RunDriverContext, resume: DriverResume | None
+    ) -> DriverFinished | DriverSuspended:
+        async with gate.invocation():
+            return await registration.handler(context, resume)
+
+    return replace(registration, handler=invoke)
+
+
 def _gated_continuation(
     registration: ContinuationPolicyRegistration,
     gate: GenerationGate,
@@ -647,12 +893,7 @@ def _gated_turn_policy(
 
 
 async def _invoke_callback(handler: Callable[[Any], Any], argument: Any) -> Any:
-    if inspect.iscoroutinefunction(handler):
-        return await handler(argument)
-    result = await asyncio.to_thread(handler, argument)
-    if inspect.isawaitable(result):
-        return await result
-    return result
+    return await invoke_owned_callback(handler, argument)
 
 
 def _base_owner_records(

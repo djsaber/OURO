@@ -70,7 +70,6 @@ class PluginInstaller:
                     f"plugin identity changed from {expected_plugin_id} "
                     f"to {package.manifest.plugin_id}"
                 )
-            self.store.publish(package)
             provenance = PluginProvenance(
                 source_kind=materialized.source_kind,
                 source_reference=materialized.source_reference,
@@ -85,7 +84,9 @@ class PluginInstaller:
                 manifest=package.manifest,
                 provenance=provenance,
             )
-            result = self._record_install(installed)
+            with self.store.plugin_lock(installed.plugin_id):
+                self.store.publish(package)
+                result = self._record_install(installed)
         self.store.append_audit(
             PluginAuditEvent(
                 action="install",
@@ -147,15 +148,6 @@ class PluginInstaller:
                 request_id=request_id,
             )
         )
-
-    def garbage_collect(self) -> list[Path]:
-        state = self.store.read_state()
-        referenced = {
-            (plugin_id, installed.package_digest)
-            for plugin_id, record in state.plugins.items()
-            for installed in record.installs
-        }
-        return self.store.garbage_collect(referenced)
 
     def _record_install(self, installed: InstalledPlugin) -> PluginInstallResult:
         diagnostics: list[PluginDiagnostic] = []

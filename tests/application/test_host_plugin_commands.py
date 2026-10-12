@@ -114,13 +114,21 @@ async def system(tmp_path, request):
             (),
         )
 
-        def snapshot():
+        def current_catalog():
             bindings.append(catalog.catalog_id)
-            return catalog.acquire()
+            return catalog
+
+        async def synchronize():
+            pass
 
         return PluginService(
             PluginPackageStore(tmp_path),
-            runtime=SimpleNamespace(builtin_contracts={}, snapshot=snapshot),
+            runtime=SimpleNamespace(
+                builtin_contracts={},
+                catalog=current_catalog,
+                synchronize=synchronize,
+                select_driver=catalog.driver_binding,
+            ),
             session_store=store,
         )
 
@@ -349,18 +357,18 @@ async def test_command_does_not_recapture_withdrawn_history_after_catalog_acquis
     session = session.model_copy(update={"active_run_id": run.run_id})
     system.store.save_session(session)
     service = system.plugins("batch")
-    snapshot = service.runtime.snapshot
+    current_catalog = service.runtime.catalog
 
     def history_changes():
-        lease = snapshot()
+        catalog = current_catalog()
         # Another owner withdraws the captured epoch while Catalog is acquired.
         if len(system.bindings) == 2:
             system.store.commit_session(
                 SessionCommit(before=session, before_message_id=message.message_id)
             )
-        return lease
+        return catalog
 
-    service.runtime.snapshot = history_changes
+    service.runtime.catalog = history_changes
     with pytest.raises(SessionCommitConflict):
         await submit_plugin_command(
             service, system.runtime, "example", "", session_id=session.session_id

@@ -16,7 +16,7 @@ from ouro.core.session_controls import (
 )
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.plugins.harness_calls import PluginStateView, invoke_plugin_callback
-from ouro.sdk.plugins import v2 as sdk
+from ouro.sdk.plugins import v3 as sdk
 
 
 @pytest.fixture
@@ -187,7 +187,6 @@ async def test_owned_sync_callback_loses_state_access_before_its_thread_settles(
             snapshot=snapshot,
             owner_id="example.plugin",
             writable=True,
-            owned=True,
         )
     )
     try:

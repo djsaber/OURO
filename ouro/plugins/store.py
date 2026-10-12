@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -11,7 +12,8 @@ from uuid import uuid4
 
 from ouro.core.base import utc_now
 from ouro.core.errors import PersistenceError
-from ouro.local_locks import FileMutationLock
+from ouro.local_locks import FileAccessLock, FileMutationLock
+from ouro.plugins.manifest import validate_plugin_id
 from ouro.plugins.models import PluginAuditEvent, PluginStateDocument
 from ouro.plugins.package import (
     ValidatedPluginPackage,
@@ -98,7 +100,9 @@ class PluginPackageStore:
                         f"immutable plugin store is corrupted for {package.manifest.plugin_id}"
                     )
                 return target
-            staging = self.staging_root / f"{package.package_digest}.{uuid4().hex}"
+            staging_root = self.staging_root / package.manifest.plugin_id
+            staging_root.mkdir(parents=True, exist_ok=True)
+            staging = staging_root / uuid4().hex
             try:
                 shutil.copytree(package.root, staging)
                 _fsync_tree(staging)
@@ -126,6 +130,15 @@ class PluginPackageStore:
             return PluginStateDocument.model_validate(raw)
         except (json.JSONDecodeError, ValueError) as exc:
             raise PluginStateFormatError(f"invalid plugin state: {exc}") from exc
+
+    def state_stamp(self) -> tuple[int, int, int] | None:
+        """Identify an atomic state-file replacement without parsing its contents."""
+
+        try:
+            stat = self.state_path.stat()
+        except FileNotFoundError:
+            return None
+        return stat.st_ino, stat.st_mtime_ns, stat.st_size
 
     def recover_state(self) -> PluginStateRecovery:
         """Read plugin state for Host boot, quarantining an unreadable document.
@@ -158,7 +171,7 @@ class PluginPackageStore:
         with FileMutationLock(self.lock_root / "state-mutations.lock"):
             current = self.read_state()
             updated = operation(current.model_copy(deep=True))
-            self._write_state_unlocked(updated)
+            self._commit_state_unlocked(current, updated)
             return updated
 
     def commit_candidate_state(
@@ -177,7 +190,7 @@ class PluginPackageStore:
                 )
             committed = PluginStateDocument.model_validate(candidate.model_dump(mode="python"))
             if committed != current:
-                self._write_state_unlocked(committed)
+                self._commit_state_unlocked(current, committed)
             return committed
 
     def append_audit(self, event: PluginAuditEvent) -> None:
@@ -206,23 +219,53 @@ class PluginPackageStore:
         removed: list[Path] = []
         if not self.store_root.exists():
             return removed
+        stamp = self.state_stamp()
+        state = self.read_state()
         for plugin_dir in self.store_root.iterdir():
             if not plugin_dir.is_dir():
                 continue
             with self.plugin_lock(plugin_dir.name):
-                for digest_dir in plugin_dir.iterdir():
-                    if digest_dir.is_dir() and (plugin_dir.name, digest_dir.name) not in referenced:
-                        shutil.rmtree(digest_dir)
-                        removed.append(digest_dir)
-                if not any(plugin_dir.iterdir()):
-                    plugin_dir.rmdir()
-        for orphan in self.staging_root.glob("*"):
-            if orphan.is_dir():
-                shutil.rmtree(orphan)
-                removed.append(orphan)
-            else:
-                orphan.unlink()
-                removed.append(orphan)
+                if not plugin_dir.is_dir():
+                    continue
+                access = self.data_lock(plugin_dir.name, exclusive=True)
+                if not access.acquire():
+                    continue
+                try:
+                    # Publication and install commit share this plugin lock. Refresh
+                    # only when state changed while waiting for another installer.
+                    current_stamp = self.state_stamp()
+                    if current_stamp != stamp:
+                        state = self.read_state()
+                        stamp = current_stamp
+                    record = state.plugins.get(plugin_dir.name)
+                    installed = (
+                        {item.package_digest for item in record.installs} if record else set()
+                    )
+                    for digest_dir in plugin_dir.iterdir():
+                        if (
+                            digest_dir.is_dir()
+                            and digest_dir.name not in installed
+                            and (plugin_dir.name, digest_dir.name) not in referenced
+                        ):
+                            shutil.rmtree(digest_dir)
+                            removed.append(digest_dir)
+                    if not any(plugin_dir.iterdir()):
+                        plugin_dir.rmdir()
+                finally:
+                    access.release()
+        for plugin_staging in self.staging_root.glob("*"):
+            if not plugin_staging.is_dir():
+                continue
+            with self.plugin_lock(plugin_staging.name):
+                if not plugin_staging.is_dir():
+                    continue
+                for orphan in plugin_staging.iterdir():
+                    if orphan.is_dir():
+                        shutil.rmtree(orphan)
+                    else:
+                        orphan.unlink()
+                    removed.append(orphan)
+                plugin_staging.rmdir()
         return removed
 
     def purge_data(self, plugin_id: str) -> None:
@@ -232,6 +275,20 @@ class PluginPackageStore:
 
     def plugin_lock(self, plugin_id: str) -> FileMutationLock:
         return FileMutationLock(self.lock_root / f"{plugin_id}.lock")
+
+    def data_lock(self, plugin_id: str, *, exclusive: bool = False) -> FileAccessLock:
+        plugin_id = validate_plugin_id(plugin_id)
+        return FileAccessLock(self.lock_root / f"{plugin_id}.data.lock", exclusive=exclusive)
+
+    def _commit_state_unlocked(
+        self, current: PluginStateDocument, updated: PluginStateDocument
+    ) -> None:
+        # Persisting enablement and reserving maintenance must be mutually exclusive.
+        # Generation locks then retain normal access until all resources have stopped.
+        with ExitStack() as access:
+            for plugin_id in sorted(_enabled_ids(updated) - _enabled_ids(current)):
+                access.enter_context(self.data_lock(plugin_id))
+            self._write_state_unlocked(updated)
 
     def _quarantine_state_document(self) -> Path:
         stamp = f"{utc_now():%Y%m%dT%H%M%SZ}-{uuid4().hex[:8]}"
@@ -263,6 +320,18 @@ class PluginPackageStore:
         finally:
             if temporary is not None and temporary.exists():
                 temporary.unlink()
+
+
+def _enabled_ids(state: PluginStateDocument) -> set[str]:
+    return {
+        plugin_id
+        for plugin_id, record in state.plugins.items()
+        if record.activation.desired_enabled
+    } | {
+        plugin_id
+        for plugin_id, override in state.builtin_activation_overrides.items()
+        if override.desired_enabled
+    }
 
 
 def _fsync_tree(root: Path) -> None:

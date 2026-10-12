@@ -11,7 +11,7 @@ from ouro.plugins import worker as worker_module
 from ouro.plugins.harness_calls import PluginStateView
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.worker import WorkerPluginInstance, WorkerProtocolError
-from ouro.sdk.plugins import v2 as sdk
+from ouro.sdk.plugins import v3 as sdk
 
 CALLS = {
     "tool": sdk.ToolCall("call", "session", "run", "echo", {}),
@@ -87,7 +87,7 @@ def worker(monkeypatch, tmp_path):
     )
 
     async def invoke(kind, payload, view=None):
-        async def respond(method, params):
+        async def respond(method, params, *, timeout=None):
             expected = {"tool_resume": "tool.resume", "observer": "observer.observe"}.get(
                 kind, f"{kind}.call"
             )

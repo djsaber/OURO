@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from textual.worker import Worker
+
 from ouro.tui.screens import Choice, EditableChoiceScreen
 
 
@@ -21,7 +23,7 @@ class ArchivePathScreen(EditableChoiceScreen):
 
     def on_mount(self) -> None:
         super().on_mount()
-        self.run_worker(self._load_directory())
+        _worker: Worker[None] = self.run_worker(self._load_directory)
 
     async def _load_directory(self) -> None:
         self._replace_choices(await self._path_choices(), selected="location")

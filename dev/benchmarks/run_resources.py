@@ -54,7 +54,14 @@ def make_runtime(root, backend="files"):
         (),
     )
 
-    app.bind_extensions(catalog=SimpleNamespace(snapshot=catalog.acquire))
+    async def synchronize():
+        pass
+
+    app.bind_extensions(
+        catalog=SimpleNamespace(
+            snapshot=catalog.acquire, catalog=lambda: catalog, synchronize=synchronize
+        )
+    )
     return app, catalog
 
 

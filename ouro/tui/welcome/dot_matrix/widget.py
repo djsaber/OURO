@@ -15,6 +15,7 @@ from textual.strip import Strip
 from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Static
+from textual.worker import Worker
 
 from ouro.tui.theme import theme_for
 from ouro.tui.welcome.centered import CenteredWelcomePage
@@ -122,7 +123,7 @@ class DotMatrix(Widget):
         self._pending_frame = size, self.elapsed, delta, self.app.no_color
         if not self._rendering:
             self._rendering = True
-            self.run_worker(self._render_frames(), group="welcome-artwork")
+            _worker: Worker[None] = self.run_worker(self._render_frames, group="welcome-artwork")
 
     async def _render_frames(self) -> None:
         try:

@@ -1,15 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import signal
-import subprocess
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from contextlib import suppress
 from dataclasses import dataclass
-from dataclasses import field as dataclass_field
 from inspect import signature
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, ValidationInfo, field_validator
 
@@ -31,6 +27,12 @@ from ouro.core.tools import (
     ToolResult,
     ToolSource,
 )
+from ouro.local_processes.commands import (
+    DEFAULT_PROCESS_OUTPUT_LIMIT,
+    ProcessAborted,
+    ProcessResult,
+    run_process,
+)
 
 __all__ = [
     "PermissionMode",
@@ -46,7 +48,7 @@ __all__ = [
     "ToolInvocation",
     "ToolOutcomeStatus",
     "ToolPermissionControl",
-    "ToolProcessResult",
+    "ProcessResult",
     "ToolResult",
     "ToolSource",
 ]
@@ -62,62 +64,6 @@ class ToolPolicyError(ValueError):
     """Raised when a tool request violates an execution policy."""
 
 
-@dataclass(frozen=True)
-class ToolProcessResult:
-    stdout: str
-    stderr: str
-    returncode: int | None
-    timed_out: bool = False
-    stdout_truncated: bool = False
-    stderr_truncated: bool = False
-
-
-_DEFAULT_PROCESS_OUTPUT_LIMIT = 100_000
-_PROCESS_READ_SIZE = 64 * 1024
-_PROCESS_SHUTDOWN_TIMEOUT_SECONDS = 5.0
-_PROCESS_PIPE_SETTLE_TIMEOUT_SECONDS = 0.5
-
-
-@dataclass
-class _BoundedProcessOutput:
-    """Drain both process pipes while retaining one shared bounded prefix."""
-
-    limit: int
-    stdout: bytearray = dataclass_field(default_factory=bytearray)
-    stderr: bytearray = dataclass_field(default_factory=bytearray)
-    stdout_truncated: bool = False
-    stderr_truncated: bool = False
-
-    @property
-    def retained_bytes(self) -> int:
-        return len(self.stdout) + len(self.stderr)
-
-    def append(self, stream_name: str, chunk: bytes) -> None:
-        target = self.stdout if stream_name == "stdout" else self.stderr
-        available = max(0, self.limit - self.retained_bytes)
-        if available:
-            target.extend(chunk[:available])
-        if len(chunk) > available:
-            if stream_name == "stdout":
-                self.stdout_truncated = True
-            else:
-                self.stderr_truncated = True
-
-    def render(self) -> tuple[str, str]:
-        return (
-            _bounded_text(
-                bytes(self.stdout).decode(errors="replace"),
-                self.limit,
-                truncated=self.stdout_truncated,
-            ),
-            _bounded_text(
-                bytes(self.stderr).decode(errors="replace"),
-                self.limit,
-                truncated=self.stderr_truncated,
-            ),
-        )
-
-
 @dataclass
 class ToolExecutionContext:
     harness: HarnessCallSnapshot | None = None
@@ -127,7 +73,7 @@ class ToolExecutionContext:
     artifact_root: str | Path | None = None
     readable_roots: tuple[Path, ...] = ()
     workspace_only: bool = False
-    max_output_chars: int | None = _DEFAULT_PROCESS_OUTPUT_LIMIT
+    max_output_chars: int | None = DEFAULT_PROCESS_OUTPUT_LIMIT
     max_output_media_chars: int = 20 * 1024 * 1024
 
     @property
@@ -208,27 +154,10 @@ class ToolExecutionContext:
         *,
         cwd: str | Path | None = None,
         timeout_seconds: float = 30.0,
-    ) -> ToolProcessResult:
-        self.raise_if_aborted()
-        if os.name == "nt":
-            process = await asyncio.create_subprocess_shell(
-                command,
-                cwd=cwd,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-            )
-        else:
-            process = await asyncio.create_subprocess_shell(
-                command,
-                cwd=cwd,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
-            )
-        return await self._collect_process(process, timeout_seconds=timeout_seconds)
+    ) -> ProcessResult:
+        return await self._run_process(
+            (command,), shell=True, cwd=cwd, timeout_seconds=timeout_seconds
+        )
 
     async def run_process(
         self,
@@ -237,90 +166,41 @@ class ToolExecutionContext:
         cwd: str | Path | None = None,
         timeout_seconds: float = 30.0,
         environment: Mapping[str, str] | None = None,
-    ) -> ToolProcessResult:
-        """Run one resolved executable without inserting an intermediary shell.
+        on_output: Callable[[Literal["stdout", "stderr"], bytes], Awaitable[None]] | None = None,
+    ) -> ProcessResult:
+        return await self._run_process(
+            arguments,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+            environment=environment,
+            on_output=on_output,
+        )
 
-        Builtin command tools already know the selected shell executable and its
-        argument contract. Launching that executable through another platform shell
-        changes quoting and process ownership on Windows, so the Host process boundary
-        accepts argv directly and supervises the process it actually owns.
-        """
-
-        self.raise_if_aborted()
-        if not arguments:
-            raise ValueError("process arguments cannot be empty")
-        process_environment = dict(environment) if environment is not None else None
-        if os.name == "nt":
-            process = await asyncio.create_subprocess_exec(
-                *arguments,
-                cwd=cwd,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=process_environment,
-                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-            )
-        else:
-            process = await asyncio.create_subprocess_exec(
-                *arguments,
-                cwd=cwd,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=process_environment,
-                start_new_session=True,
-            )
-        return await self._collect_process(process, timeout_seconds=timeout_seconds)
-
-    async def _collect_process(
+    async def _run_process(
         self,
-        process: asyncio.subprocess.Process,
+        arguments: Sequence[str],
         *,
+        cwd: str | Path | None,
         timeout_seconds: float,
-    ) -> ToolProcessResult:
-        assert process.stdout is not None
-        assert process.stderr is not None
-        output = _BoundedProcessOutput(self.max_output_chars or _DEFAULT_PROCESS_OUTPUT_LIMIT)
-        stdout_task = asyncio.create_task(_drain_process_stream(process.stdout, output, "stdout"))
-        stderr_task = asyncio.create_task(_drain_process_stream(process.stderr, output, "stderr"))
-        wait_task = asyncio.create_task(process.wait())
-        tasks = (wait_task, stdout_task, stderr_task)
-        timed_out = False
-        aborted = False
-        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        shell: bool = False,
+        environment: Mapping[str, str] | None = None,
+        on_output: Callable[[Literal["stdout", "stderr"], bytes], Awaitable[None]] | None = None,
+    ) -> ProcessResult:
+        self.raise_if_aborted()
         try:
-            while not all(task.done() for task in tasks):
-                if self.is_aborted:
-                    await _kill_process_tree(process)
-                    aborted = True
-                    break
-                remaining = deadline - asyncio.get_running_loop().time()
-                if remaining <= 0:
-                    await _kill_process_tree(process)
-                    timed_out = True
-                    break
-                await asyncio.wait(tasks, timeout=min(self.poll_interval, remaining))
-
-            if timed_out or aborted:
-                await _settle_process_tasks(process, tasks)
-            else:
-                await asyncio.gather(*tasks)
-            if aborted:
-                raise ToolExecutionAborted(self.abort_reason)
-            stdout, stderr = output.render()
-            return ToolProcessResult(
-                stdout=stdout,
-                stderr=stderr,
-                returncode=process.returncode,
-                timed_out=timed_out,
-                stdout_truncated=output.stdout_truncated,
-                stderr_truncated=output.stderr_truncated,
+            return await run_process(
+                arguments,
+                shell=shell,
+                cwd=cwd,
+                environment=environment,
+                timeout_seconds=timeout_seconds,
+                signal=self.signal,
+                max_output_chars=self.max_output_chars or DEFAULT_PROCESS_OUTPUT_LIMIT,
+                poll_interval=self.poll_interval,
+                on_output=on_output,
             )
-        finally:
-            if not all(task.done() for task in tasks):
-                with suppress(Exception):
-                    await _kill_process_tree(process)
-                await _settle_process_tasks(process, tasks)
+        except ProcessAborted as exc:
+            raise ToolExecutionAborted(exc.reason) from exc
 
 
 def _bounded_text(text: str, limit: int, *, truncated: bool) -> str:
@@ -329,89 +209,6 @@ def _bounded_text(text: str, limit: int, *, truncated: bool) -> str:
     marker = f"\n...[tool output truncated at {limit} characters]"
     prefix_length = max(0, limit - len(marker))
     return f"{text[:prefix_length]}{marker}"
-
-
-async def _drain_process_stream(
-    stream: asyncio.StreamReader,
-    output: _BoundedProcessOutput,
-    stream_name: str,
-) -> None:
-    while chunk := await stream.read(_PROCESS_READ_SIZE):
-        output.append(stream_name, chunk)
-
-
-async def _settle_process_tasks(
-    process: asyncio.subprocess.Process,
-    tasks: tuple[asyncio.Task[int], asyncio.Task[None], asyncio.Task[None]],
-) -> None:
-    _, pending = await asyncio.wait(
-        tasks,
-        timeout=_PROCESS_PIPE_SETTLE_TIMEOUT_SECONDS,
-    )
-    if not pending:
-        return
-    with suppress(ProcessLookupError):
-        process.kill()
-    _close_process_transports(process)
-    for task in pending:
-        task.cancel()
-    await asyncio.gather(*pending, return_exceptions=True)
-
-
-def _close_process_transports(process: asyncio.subprocess.Process) -> None:
-    """Close parent-owned asyncio pipe handles after forced process termination.
-
-    ``StreamReader`` has no public close API. On Windows, cancelling a pending
-    Proactor read without closing its transport leaks the OS pipe handle, so the
-    process boundary closes the transports it created before cancelling readers.
-    """
-
-    process_transport = getattr(process, "_transport", None)
-    get_pipe_transport = getattr(process_transport, "get_pipe_transport", None)
-    if callable(get_pipe_transport):
-        for file_descriptor in (1, 2):
-            pipe_transport = get_pipe_transport(file_descriptor)
-            close_pipe = getattr(pipe_transport, "close", None)
-            if callable(close_pipe):
-                close_pipe()
-    close_process = getattr(process_transport, "close", None)
-    if callable(close_process):
-        close_process()
-
-
-async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
-    """Stop the shell and descendants so inherited output pipes can reach EOF."""
-
-    if os.name == "nt":
-        killer: asyncio.subprocess.Process | None = None
-        try:
-            killer = await asyncio.create_subprocess_exec(
-                "taskkill",
-                "/PID",
-                str(process.pid),
-                "/T",
-                "/F",
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(
-                killer.wait(),
-                timeout=_PROCESS_SHUTDOWN_TIMEOUT_SECONDS,
-            )
-        except OSError, TimeoutError:
-            if killer is not None:
-                with suppress(ProcessLookupError):
-                    killer.kill()
-    else:
-        kill_process_group = getattr(os, "killpg", None)
-        sigkill = getattr(signal, "SIGKILL", None)
-        if kill_process_group is not None and sigkill is not None:
-            with suppress(ProcessLookupError):
-                kill_process_group(process.pid, sigkill)
-    if process.returncode is None:
-        with suppress(ProcessLookupError):
-            process.kill()
 
 
 ToolExecutionResult = ToolResult | ToolInputRequest

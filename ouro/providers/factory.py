@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ouro.auth.request_auth import RequestAuthenticator
 from ouro.config.credentials import CredentialRef, CredentialResolver
 from ouro.config.provider_models import (
-    SUPPORTED_PROVIDER_PROTOCOLS,
     ProviderProtocol,
     ProviderRuntimeOptions,
     default_api_path,
+    is_plugin_protocol,
     provider_protocol_spec,
     validate_media_protocol_compatibility,
+    validate_provider_protocol,
     validate_reasoning_protocol_compatibility,
     validate_request_options,
 )
@@ -21,7 +22,7 @@ from ouro.config.reasoning import EndpointReasoningConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.billing import BillingMode
 from ouro.core.errors import ConfigError
-from ouro.core.provider import ModelMetadata
+from ouro.core.provider import ModelMetadata, Provider
 from ouro.core.reasoning import ReasoningRequest
 from ouro.providers.anthropic_messages import AnthropicMessagesProvider
 from ouro.providers.authentication import ProviderRequestPolicy
@@ -32,18 +33,18 @@ from ouro.providers.reasoning import ReasoningPayloadEncoder
 
 
 @dataclass(frozen=True)
-class _AdapterBuildContext:
-    options: ProviderRuntimeOptions
+class ProviderBuildContext:
+    options: ProviderRuntimeOptions = field(repr=False)
     model: ModelMetadata
     provider_id: str
     base_url: str | None
-    api_key: str | None
+    api_key: str | None = field(repr=False)
     timeout: float
     authenticator: RequestAuthenticator | None
     request_policy: ProviderRequestPolicy | None
 
 
-AdapterBuilder = Callable[[_AdapterBuildContext], RuntimeAdapter]
+AdapterBuilder = Callable[[ProviderBuildContext], RuntimeAdapter]
 
 
 def build_runtime_adapter(
@@ -52,13 +53,18 @@ def build_runtime_adapter(
     credentials: CredentialResolver | None = None,
     authenticator: RequestAuthenticator | None = None,
     request_policy: ProviderRequestPolicy | None = None,
+    plugin_provider: Callable[[ProviderBuildContext], Provider] | None = None,
 ) -> RuntimeAdapter:
     """Build the provider boundary from fully resolved runtime options."""
 
     validate_runtime_auth(options)
     protocol = options.protocol or "faux"
-    if protocol not in SUPPORTED_PROVIDER_PROTOCOLS:
-        raise ConfigError(f"unsupported provider protocol: {protocol}")
+    try:
+        validate_provider_protocol(protocol)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+    if is_plugin_protocol(protocol) and (authenticator is not None or request_policy is not None):
+        raise ConfigError("plugin providers require static authentication")
     try:
         validate_media_protocol_compatibility(
             protocol,
@@ -80,8 +86,11 @@ def build_runtime_adapter(
     )
     assert provider_id is not None
     base_url = options.base_url.strip().rstrip("/") if options.base_url is not None else None
-    protocol_spec = provider_protocol_spec(protocol)
-    if protocol_spec.requires_base_url and not base_url:
+    if (
+        not is_plugin_protocol(protocol)
+        and provider_protocol_spec(protocol).requires_base_url
+        and not base_url
+    ):
         raise ConfigError(f"--base-url is required for {protocol} protocol")
     model_id = _normalized_identifier(
         options.model,
@@ -99,7 +108,7 @@ def build_runtime_adapter(
     if protocol != "faux" and authenticator is None:
         resolver = credentials or CredentialResolver()
         api_key = resolver.resolve(_credential_ref(options))
-    context = _AdapterBuildContext(
+    context = ProviderBuildContext(
         options=options,
         model=_model_metadata(
             options,
@@ -115,17 +124,21 @@ def build_runtime_adapter(
         authenticator=authenticator,
         request_policy=request_policy,
     )
+    if is_plugin_protocol(protocol):
+        if plugin_provider is None:
+            raise ConfigError(f"plugin provider runtime is unavailable: {protocol}")
+        return RuntimeAdapter(plugin_provider(context), context.model)
     builder = _ADAPTER_BUILDERS.get(protocol)
     if builder is None:
         raise ConfigError(f"provider protocol adapter is not registered: {protocol}")
     return builder(context)
 
 
-def _build_faux(context: _AdapterBuildContext) -> RuntimeAdapter:
+def _build_faux(context: ProviderBuildContext) -> RuntimeAdapter:
     return RuntimeAdapter(FauxProvider(), context.model)
 
 
-def _build_openai_chat_completions(context: _AdapterBuildContext) -> RuntimeAdapter:
+def _build_openai_chat_completions(context: ProviderBuildContext) -> RuntimeAdapter:
     assert context.base_url is not None
     api_path = context.options.api_path or default_api_path("openai-chat-completions")
     assert api_path is not None
@@ -147,7 +160,7 @@ def _build_openai_chat_completions(context: _AdapterBuildContext) -> RuntimeAdap
     return RuntimeAdapter(provider, context.model)
 
 
-def _build_anthropic_messages(context: _AdapterBuildContext) -> RuntimeAdapter:
+def _build_anthropic_messages(context: ProviderBuildContext) -> RuntimeAdapter:
     assert context.base_url is not None
     api_path = context.options.api_path or default_api_path("anthropic-messages")
     assert api_path is not None
@@ -169,7 +182,7 @@ def _build_anthropic_messages(context: _AdapterBuildContext) -> RuntimeAdapter:
     return RuntimeAdapter(provider, context.model)
 
 
-def _build_openai_responses(context: _AdapterBuildContext) -> RuntimeAdapter:
+def _build_openai_responses(context: ProviderBuildContext) -> RuntimeAdapter:
     assert context.base_url is not None
     api_path = context.options.api_path or default_api_path("openai-responses")
     assert api_path is not None

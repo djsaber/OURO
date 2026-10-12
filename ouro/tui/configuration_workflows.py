@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import cast
 
 from textual import work
+from textual.worker import Worker
 
 from ouro.application.agent_models import AgentDefinitionCatalogView, AgentDefinitionView
 from ouro.application.configuration_models import (
@@ -822,8 +824,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                             theme=theme_for(self),
                         )
                     loading_action = selected
-                    self.run_worker(
-                        finish_runtime_action(selected, menu.page_revision),
+                    _worker: Worker[None] = self.run_worker(
+                        partial(finish_runtime_action, selected, menu.page_revision),
                         group=f"mcp-menu-{server_id}",
                     )
                     return _mcp_management_choices(

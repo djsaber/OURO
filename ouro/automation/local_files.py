@@ -20,8 +20,8 @@ from ouro.automation.file_records import (
     TaskFileTransaction,
     TaskIndexEntry,
 )
-from ouro.automation.models import TaskConflictError, TaskCounts, TaskExecution, TaskRecord
 from ouro.core.errors import PersistenceError
+from ouro.core.tasks import TaskConflictError, TaskCounts, TaskExecution, TaskRecord
 from ouro.local_io import read_text_atomic, write_model_atomic, write_text_atomic
 from ouro.local_locks import FileMutationLock, FileOwnerLock
 
@@ -151,11 +151,17 @@ class LocalTaskRepository:
         with self._readable():
             return self._task(task_id).task
 
-    def list(self, *, limit: int = 200, offset: int = 0) -> tuple[TaskRecord, ...]:
+    def list(
+        self, *, limit: int = 200, offset: int = 0, owner_id: str | None = None
+    ) -> tuple[TaskRecord, ...]:
         _validate_page(limit, offset)
         with self._readable():
             entries = self._catalog().tasks
-            ids = sorted(entries)
+            ids = sorted(
+                task_id
+                for task_id, entry in entries.items()
+                if owner_id is None or entry.owner_id == owner_id
+            )
             ids.sort(key=lambda task_id: entries[task_id].updated_at, reverse=True)
             return tuple(self._task(task_id).task for task_id in ids[offset : offset + limit])
 
@@ -240,11 +246,15 @@ class LocalTaskRepository:
             actual = previous.task.revision if previous else None
             if actual != expected_revision or task.revision != (actual or 0) + 1:
                 raise TaskConflictError("Task changed; reload it before saving")
+            if previous and previous.task.owner_id != task.owner_id:
+                raise TaskConflictError("Task owner cannot change")
             stored = (previous or StoredTask(task=task)).model_copy(update={"task": task})
             receipt = None
             if execution is not None:
                 if execution.task_id != task.task_id:
                     raise ValueError("Execution belongs to another task")
+                if execution.owner_id != task.owner_id:
+                    raise ValueError("Execution owner must match its task")
                 _validate_id(execution.execution_id)
                 marker = self._occurrence_path(execution)
                 if marker.exists() and read_text_atomic(marker).strip() != execution.execution_id:
@@ -259,6 +269,10 @@ class LocalTaskRepository:
                 )
                 if old and old.execution.scheduled_at != execution.scheduled_at:
                     raise TaskConflictError("Execution occurrence identity cannot change")
+                if old and old.execution.target != execution.target:
+                    raise TaskConflictError("Execution target cannot change after claim")
+                if old and old.execution.cancel_requested:
+                    execution = execution.model_copy(update={"cancel_requested": True})
                 receipt = StoredExecution(
                     execution=execution, previous=old.previous if old else stored.history_head
                 )
@@ -339,10 +353,10 @@ def _read[Record: FileRecord](model: type[Record], path: Path) -> Record:
         if (
             not isinstance(payload, dict)
             or type(payload.get("schema_version")) is not int
-            or payload["schema_version"] != 1
+            or payload["schema_version"] != 3
         ):
             raise PersistenceError(
-                f"Unsupported or missing task file schema_version: {path}; expected 1"
+                f"Unsupported or missing task file schema_version: {path}; expected 3"
             )
         return model.model_validate(payload)
     except ValidationError as exc:

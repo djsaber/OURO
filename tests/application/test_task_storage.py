@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier
@@ -8,15 +11,17 @@ from threading import Barrier
 import pytest
 
 from ouro.automation.local_files import LocalTaskRepository
-from ouro.automation.models import (
+from ouro.automation.sqlite import SQLiteTaskRepository
+from ouro.core.errors import PersistenceError
+from ouro.core.tasks import (
+    AgentTaskRun,
+    AgentTaskTarget,
     TaskConfiguration,
     TaskConflictError,
     TaskExecution,
     TaskRecord,
     TaskSchedule,
 )
-from ouro.automation.sqlite import SQLiteTaskRepository
-from ouro.core.errors import PersistenceError
 
 NOW = datetime(2026, 9, 7, 9, tzinfo=UTC)
 REPOSITORIES = {"files": LocalTaskRepository, "sqlite": SQLiteTaskRepository}
@@ -33,10 +38,8 @@ def task_record(home, *, task_id="task_one", **changes):
     return TaskRecord(
         task_id=task_id,
         configuration=TaskConfiguration(
-            description="Scheduled work",
-            workspace=str(home),
-            model="faux/task",
             schedule=TaskSchedule(frequency="hourly", starts_at=NOW),
+            target=AgentTaskTarget(prompt="Scheduled work", workspace=str(home), model="faux/task"),
         ),
         created_at=NOW,
         updated_at=NOW,
@@ -47,14 +50,14 @@ def task_record(home, *, task_id="task_one", **changes):
 def receipt(task, number, *, status="completed"):
     return TaskExecution(
         task_id=task.task_id,
+        owner_id=task.owner_id,
         execution_id=f"execution_{number}",
-        session_id="ses_task",
-        run_id=f"run_{number}",
         scheduled_at=NOW + timedelta(hours=number),
         created_at=NOW + timedelta(hours=number),
         updated_at=NOW + timedelta(hours=number),
         status=status,
         ended_at=NOW + timedelta(hours=number) if status in {"completed", "failed"} else None,
+        target=AgentTaskRun(session_id="ses_task", run_id=f"run_{number}"),
     )
 
 
@@ -165,6 +168,60 @@ def test_backends_keep_execution_occurrence_identity_immutable(repository, tmp_p
     assert repository.executions(task.task_id) == (execution,)
 
 
+@pytest.mark.parametrize("field", ["session_id", "run_id"])
+def test_execution_target_cannot_change_when_recording_an_outcome(repository, tmp_path, field):
+    task = task_record(tmp_path)
+    execution = receipt(task, 1, status="running")
+    repository.commit(task, expected_revision=None, execution=execution)
+    changed = execution.model_copy(
+        update={
+            "target": execution.target.model_copy(update={field: "another_identity"}),
+            "status": "completed",
+            "ended_at": NOW + timedelta(hours=2),
+        }
+    )
+    with pytest.raises(TaskConflictError, match="target"):
+        repository.commit(
+            task.model_copy(update={"revision": 2}), expected_revision=1, execution=changed
+        )
+    assert repository.get(task.task_id) == task
+    assert repository.executions(task.task_id) == (execution,)
+    assert repository.counts().completed_executions == 0
+
+
+def test_outcome_updates_cannot_remove_an_accepted_interrupt_request(repository, tmp_path):
+    task = task_record(tmp_path)
+    accepted = receipt(task, 1, status="running").model_copy(update={"cancel_requested": True})
+    repository.commit(task, expected_revision=None, execution=accepted)
+    stale = accepted.model_copy(update={"cancel_requested": False})
+    repository.commit(task.model_copy(update={"revision": 2}), expected_revision=1, execution=stale)
+    assert repository.executions(task.task_id)[0].cancel_requested
+
+
+def test_task_owner_is_fixed_and_owner_pages_exclude_other_records(repository, tmp_path):
+    records = []
+    for owner in (None, "dev.example.a", "dev.example.b"):
+        for _ in range(3):
+            task = task_record(tmp_path, task_id=f"task_{len(records)}", owner_id=owner)
+            repository.commit(task, expected_revision=None)
+            records.append(task)
+    assert repository.list(owner_id="dev.example.a", limit=1, offset=1) == (records[4],)
+    assert repository.list(owner_id="dev.example.missing") == ()
+    with pytest.raises(TaskConflictError, match="owner"):
+        repository.commit(
+            records[3].model_copy(update={"revision": 2, "owner_id": "dev.example.b"}),
+            expected_revision=1,
+        )
+    assert repository.get(records[3].task_id) == records[3]
+    with pytest.raises(ValueError, match="owner"):
+        repository.commit(
+            records[3].model_copy(update={"revision": 2}),
+            expected_revision=1,
+            execution=receipt(records[3], 1).model_copy(update={"owner_id": None}),
+        )
+    assert not repository.executions(records[3].task_id)
+
+
 def test_parallel_writers_allow_only_one_revision_winner(repository, tmp_path):
     task = task_record(tmp_path)
     repository.commit(task, expected_revision=None)
@@ -262,12 +319,64 @@ def test_file_backend_rejects_paths_as_task_id(tmp_path, record_id):
         repository.commit(task_record(tmp_path, task_id=record_id), expected_revision=None)
 
 
-def test_file_backend_rejects_unknown_layout_version(tmp_path):
-    repository = LocalTaskRepository(tmp_path)
-    repository.initialize()
-    (repository.path / "layout.json").write_text('{"schema_version": 999}', encoding="utf-8")
-    with pytest.raises(PersistenceError, match="layout.json"):
+@pytest.mark.parametrize("version", [1, 2, 999])
+def test_unsupported_store_version_preserves_task_and_execution(repository, tmp_path, version):
+    task = task_record(tmp_path)
+    execution = receipt(task, 1)
+    repository.commit(task, expected_revision=None, execution=execution)
+    if isinstance(repository, LocalTaskRepository):
+        layout = repository.path / "layout.json"
+        layout.write_text(json.dumps({"schema_version": version}), encoding="utf-8")
+        contents = {
+            path: path.read_bytes() for path in repository.path.rglob("*") if path.is_file()
+        }
+    else:
+        with closing(sqlite3.connect(repository.path)) as connection:
+            connection.execute(f"PRAGMA user_version={version}")
+            connection.commit()
+    with pytest.raises(PersistenceError, match="expected 3"):
         repository.initialize()
+    if isinstance(repository, LocalTaskRepository):
+        assert {path: path.read_bytes() for path in contents} == contents
+    else:
+        with closing(sqlite3.connect(repository.path)) as connection:
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == version
+            assert (
+                connection.execute("SELECT payload FROM tasks").fetchone()[0]
+                == task.model_dump_json()
+            )
+            assert (
+                connection.execute("SELECT payload FROM task_executions").fetchone()[0]
+                == execution.model_dump_json()
+            )
+
+
+@pytest.mark.parametrize("kind", [None, "unknown"])
+def test_task_target_requires_an_explicit_supported_kind(repository, tmp_path, kind):
+    task = task_record(tmp_path)
+    repository.commit(task, expected_revision=None)
+    if isinstance(repository, LocalTaskRepository):
+        path = repository.path / "records" / task.task_id / "task.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        target = document["task"]["configuration"]["target"]
+    else:
+        document = task.model_dump(mode="json")
+        target = document["configuration"]["target"]
+    if kind is None:
+        target.pop("kind")
+    else:
+        target["kind"] = kind
+    payload = json.dumps(document)
+    if isinstance(repository, LocalTaskRepository):
+        path.write_text(payload, encoding="utf-8")
+    else:
+        with closing(sqlite3.connect(repository.path)) as connection:
+            connection.execute(
+                "UPDATE tasks SET payload=? WHERE task_id=?", (payload, task.task_id)
+            )
+            connection.commit()
+    with pytest.raises(PersistenceError, match="configuration.target"):
+        repository.get(task.task_id)
 
 
 @pytest.mark.parametrize("delete", [False, True])

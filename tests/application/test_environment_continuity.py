@@ -61,6 +61,12 @@ class CurrentCatalog:
     def snapshot(self):
         return self.current.acquire()
 
+    async def synchronize(self):
+        pass
+
+    def catalog(self):
+        return self.current
+
 
 def request(name="action", *, call_id="call_action"):
     return [

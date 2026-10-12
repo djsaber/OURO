@@ -4,7 +4,7 @@
 
 ## 目标
 
-在保持本地优先、durable Run 和清晰依赖方向的前提下，为 Desktop Host、长期记忆和通用 Task/Workflow
+在保持本地优先、durable Run 和清晰依赖方向的前提下，为 Desktop Host、长期记忆和依赖工作流
 定义目标契约。ResourceService、RuntimeSupervisor、插件和子智能体的当前契约分别由
 [监督规格](../specs/resources-and-supervision.md)、
 [插件规格](../specs/plugins.md)和
@@ -19,17 +19,19 @@
 
 ## 长期记忆
 
+- 记忆由独立插件拥有，通过私有存储、具名服务和上下文贡献组合；不引入框架级业务存储。
 - 记忆含来源 Session/Message、提取时间、内容、状态和用户修改记录。
 - 自动提取只产生候选；高影响记忆需用户确认。
 - 用户可查看、编辑、禁用和删除。
 - 检索结果进入 ContextBuilder 的显式边界并占用预算。
 - 外部工具输出和提示注入不能自动升级为可信记忆。
 
-## Durable Task/Workflow
+## 依赖工作流
 
-- durable task/workflow 保存 owner、状态、依赖、预算和结果引用。
-- ready task 选择、依赖、重试和跨 Run 状态必须 durable，不以递归 RuntimeService 或裸 prompt 拼接代替任务模型。
-- Task 可关联 `DelegationRecord` 和 builtin Goal，但三者保持独立 identity、状态转换和所有权；AgentTree 与 Goal
+- Workflow 插件保存业务图、owner、依赖、预算和原生执行引用；通过公开 Agent、调度或 Driver 端口执行。
+- 日历与间隔触发、领取、执行归属和中断复用原生 Task；工作流不增加平行任务账本或后台派发循环。
+- 就绪节点选择、依赖、重试和跨 Run 状态必须 durable，不以递归 RuntimeService 或裸 prompt 拼接代替业务模型。
+- Workflow 可关联 Task、`DelegationRecord` 和 Goal，保持独立 identity、状态转换和所有权；AgentTree 与 Goal
   state 不充当通用任务调度器。
 - Host 展示可验证进度、预算和用户控制入口。
 

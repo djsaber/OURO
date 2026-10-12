@@ -42,7 +42,6 @@ from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_models import SessionContextStatus, SessionMessagePage
 from ouro.application.supervisor_models import RuntimeActivitySnapshot, RuntimeToolCallActivity
-from ouro.builtin_plugins.plan.interaction import PlanConfirmationRequest
 from ouro.config import reasoning_preset
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import (
@@ -86,6 +85,7 @@ from ouro.mcp import (
     MCPServerInfo,
 )
 from ouro.providers import FauxProvider
+from ouro.sdk.plugins.interactions import PlanConfirmationRequest
 from ouro.sessions import LocalSessionStore
 from ouro.skills import SkillLoader, SkillMetadata
 from ouro.tools import (
@@ -1431,7 +1431,7 @@ def _write_skill_plugin(source: Path) -> None:
   "name": "TUI Skill",
   "version": "1.0.0",
   "namespace": "tui_skill",
-  "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^3.0.0"},
+  "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
   "runtime": {"kind": "declarative"},
   "contributes": {"skills": [{"id": "calendar", "path": "./skills/calendar"}]},
   "permissions": [],
@@ -7169,9 +7169,12 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         await pilot.pause()
         assert app.screen is rename_screen
         await _wait_until(
-            lambda: rename_screen._editing_value is None,
+            lambda: (
+                rename_screen._editing_value is None
+                and rename_screen.query_one("#choice-filter", Input).has_focus
+            ),
             pilot,
-            description="persisted session rename",
+            description="persisted session rename and restored input focus",
         )
         assert rename_screen.query_one("#choice-filter", Input).disabled is False
         assert rename_screen.query_one("#choice-filter", Input).has_focus is True
@@ -12779,9 +12782,11 @@ async def test_parallel_approvals_advance_one_at_a_time_without_stalling(tmp_pat
                 app._projection is not None
                 and app._projection.pending_interaction is not None
                 and app._projection.pending_interaction.tool_call_id == "call_write_2"
+                and app.query_one(InteractionBar).has_focus
+                and not app.query_one(InteractionBar).disabled
             ),
             pilot,
-            description="second approval request",
+            description="second approval ready for keyboard input",
         )
 
         assert app._projection.pending_interaction is not None

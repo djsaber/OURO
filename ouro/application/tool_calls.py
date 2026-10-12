@@ -26,7 +26,7 @@ from ouro.core.agents import (
     AgentControlResult,
     AgentWaitRequest,
 )
-from ouro.core.base import utc_now
+from ouro.core.base import new_id, utc_now
 from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal
 from ouro.core.content import append_content_text
@@ -34,7 +34,7 @@ from ouro.core.errors import SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.harness_calls import HarnessCallSnapshot, HarnessStateChange, accept_state_changes
 from ouro.core.interactions import AnswerResolution, UnattendedResolution
-from ouro.core.messages import ModelResponseRecord, ProviderContinuationArtifact
+from ouro.core.messages import MessageRecord, ModelResponseRecord, ProviderContinuationArtifact
 from ouro.core.observers import (
     FrozenJson,
     ToolCallFinishedObservation,
@@ -43,18 +43,20 @@ from ouro.core.observers import (
 )
 from ouro.core.redaction import redact_text
 from ouro.core.run_budget import RunBudgetReason
+from ouro.core.run_drivers import DriverCheckpoint
 from ouro.core.session_controls import AttributedSessionControlTransition, SessionControlState
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batch_transitions import tool_batch_suspension
 from ouro.core.tool_batches import (
     ToolBatchCall,
-    ToolBatchHandlingResult,
     ToolCallBatchRecord,
     ToolCallStatus,
     ToolExecutionMode,
 )
 from ouro.core.tool_policies import ToolPolicyCall, ToolPolicyMode, ToolPolicyRegistry
+from ouro.core.tool_requests import ToolBatchHandlingResult
 from ouro.core.tools import (
+    ToolCallProducer,
     ToolCallRequest,
     ToolExecutionOutcome,
     ToolInputRequest,
@@ -184,6 +186,7 @@ class ToolCallCoordinator:
         assistant_model_response: ModelResponseRecord | None,
         assistant_continuation: ProviderContinuationArtifact | None,
         abort_signal: AbortSignal,
+        driver_checkpoint: DriverCheckpoint | None = None,
     ) -> ToolBatchHandlingResult:
         assistant_message = await run_blocking(
             self.runs.append_assistant_tool_batch_message,
@@ -198,12 +201,79 @@ class ToolCallCoordinator:
             provider_continuation=assistant_continuation,
         )
         batch = ToolCallBatchRecord(
+            batch_id=driver_checkpoint.batch_id
+            if driver_checkpoint is not None
+            else new_id("batch"),
             turn_id=turn_id,
             assistant_message_id=assistant_message.message_id,
             execution_mode=self._effective_mode(tool_calls),
             max_concurrency=self.execution_config.max_concurrency,
             calls=[ToolBatchCall(request=request) for request in tool_calls],
         )
+        return await self._handle_batch(
+            emitted,
+            sequence,
+            session=session,
+            run=run,
+            batch=batch,
+            message_sequence=message_sequence + 1,
+            prefix_messages=[assistant_message],
+            abort_signal=abort_signal,
+            driver_checkpoint=driver_checkpoint,
+        )
+
+    async def handle_driver_batch(
+        self,
+        emitted: list[EventRecord],
+        sequence: int,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        tool_calls: tuple[ToolCallRequest, ...],
+        turn_id: str,
+        message_sequence: int,
+        abort_signal: AbortSignal,
+        checkpoint: DriverCheckpoint,
+    ) -> ToolBatchHandlingResult:
+        if run.driver.is_default:
+            raise ValueError("programmatic tool calls require a plugin Driver")
+        if not tool_calls:
+            raise ValueError("programmatic tool batch must contain at least one call")
+        batch = ToolCallBatchRecord(
+            batch_id=checkpoint.batch_id,
+            turn_id=turn_id,
+            producer=ToolCallProducer(kind="driver", driver_id=run.driver.driver_id),
+            execution_mode=self._effective_mode(list(tool_calls)),
+            max_concurrency=self.execution_config.max_concurrency,
+            calls=[ToolBatchCall(request=request) for request in tool_calls],
+        )
+        return await self._handle_batch(
+            emitted,
+            sequence,
+            session=session,
+            run=run,
+            batch=batch,
+            message_sequence=message_sequence,
+            prefix_messages=[],
+            abort_signal=abort_signal,
+            driver_checkpoint=checkpoint,
+        )
+
+    async def _handle_batch(
+        self,
+        emitted: list[EventRecord],
+        sequence: int,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        batch: ToolCallBatchRecord,
+        message_sequence: int,
+        prefix_messages: list[MessageRecord],
+        abort_signal: AbortSignal,
+        driver_checkpoint: DriverCheckpoint | None,
+    ) -> ToolBatchHandlingResult:
+        tool_calls = [call.request for call in batch.calls]
+        turn_id = batch.turn_id
         await run_blocking(
             self.runs.save_batch_state,
             session=session,
@@ -211,6 +281,7 @@ class ToolCallCoordinator:
             batch=batch,
             status="running",
             phase="tool_preflight",
+            driver_checkpoint=driver_checkpoint,
         )
         sequence = await self.events.emit(
             emitted,
@@ -269,10 +340,10 @@ class ToolCallCoordinator:
                 session=session,
                 run=run,
                 batch=batch,
-                message_sequence=message_sequence + 1,
+                message_sequence=message_sequence,
                 abort_signal=abort_signal,
             )
-            return executed.model_copy(update={"messages": [assistant_message, *executed.messages]})
+            return executed.model_copy(update={"messages": [*prefix_messages, *executed.messages]})
 
         calls: list[ToolBatchCall] = []
         for request in tool_calls:
@@ -284,6 +355,7 @@ class ToolCallCoordinator:
                 batch_id=batch.batch_id,
                 turn_id=turn_id,
                 request=request,
+                producer=batch.producer,
                 abort_signal=abort_signal,
             )
             calls.append(call)
@@ -294,7 +366,7 @@ class ToolCallCoordinator:
             batch = batch.model_copy(
                 update={"phase": suspension.batch_phase, "updated_at": utc_now()}
             )
-            await run_blocking(
+            session, run = await run_blocking(
                 self.runs.save_batch_state,
                 session=session,
                 run=run,
@@ -302,6 +374,8 @@ class ToolCallCoordinator:
                 status=suspension.status,
                 phase=suspension.run_phase,
             )
+            assert run.active_tool_batch is not None
+            batch = run.active_tool_batch
             sequence = await self.events.emit(
                 emitted,
                 sequence,
@@ -316,9 +390,11 @@ class ToolCallCoordinator:
                 },
             )
             return ToolBatchHandlingResult(
+                session=session,
+                run=run,
                 status=suspension.status,
                 batch=batch,
-                messages=[assistant_message],
+                messages=prefix_messages,
                 input_request=suspension.call.input_request,
                 sequence=sequence,
             )
@@ -338,10 +414,10 @@ class ToolCallCoordinator:
             session=session,
             run=run,
             batch=batch,
-            message_sequence=message_sequence + 1,
+            message_sequence=message_sequence,
             abort_signal=abort_signal,
         )
-        return executed.model_copy(update={"messages": [assistant_message, *executed.messages]})
+        return executed.model_copy(update={"messages": [*prefix_messages, *executed.messages]})
 
     async def execute_batch(
         self,
@@ -780,7 +856,7 @@ class ToolCallCoordinator:
             aborted_batch = checkpoint_batch.model_copy(
                 update={"phase": "aborted", "updated_at": utc_now()}
             )
-            await run_blocking(
+            run = await run_blocking(
                 self.runs.save_aborted_batch,
                 session_id=session.session_id,
                 run_id=run.run_id,
@@ -799,6 +875,8 @@ class ToolCallCoordinator:
                 },
             )
             return ToolBatchHandlingResult(
+                session=session,
+                run=run,
                 status="completed",
                 batch=aborted_batch,
                 sequence=sequence,
@@ -808,7 +886,7 @@ class ToolCallCoordinator:
             waiting_batch = checkpoint_batch.model_copy(
                 update={"phase": suspension.batch_phase, "updated_at": utc_now()}
             )
-            await run_blocking(
+            session, run = await run_blocking(
                 self.runs.save_batch_state,
                 session=session,
                 run=run,
@@ -816,6 +894,8 @@ class ToolCallCoordinator:
                 status=suspension.status,
                 phase=suspension.run_phase,
             )
+            assert run.active_tool_batch is not None
+            waiting_batch = run.active_tool_batch
             sequence = await self.events.emit(
                 emitted,
                 sequence,
@@ -841,6 +921,8 @@ class ToolCallCoordinator:
                     wait=suspension.call.agent_wait,
                 )
             return ToolBatchHandlingResult(
+                session=session,
+                run=run,
                 status=suspension.status,
                 batch=waiting_batch,
                 input_request=suspension.call.input_request,
@@ -884,6 +966,7 @@ class ToolCallCoordinator:
             session=session,
             run=run,
             results=results,
+            producer=batch.producer,
             first_sequence=message_sequence,
             turn_id=batch.turn_id,
         )
@@ -908,18 +991,18 @@ class ToolCallCoordinator:
             }
         )
         if terminal_phase == "aborted":
-            await run_blocking(
+            run = await run_blocking(
                 self.runs.save_aborted_batch,
                 session_id=session.session_id,
                 run_id=run.run_id,
                 batch=completed_batch,
             )
         else:
-            await run_blocking(
+            session, run = await run_blocking(
                 self.runs.save_batch_state,
                 session=session,
                 run=run,
-                batch=None,
+                batch=completed_batch,
                 status="running",
                 phase="model_streaming",
             )
@@ -938,6 +1021,8 @@ class ToolCallCoordinator:
             },
         )
         return ToolBatchHandlingResult(
+            session=session,
+            run=run,
             status="completed",
             batch=completed_batch,
             messages=messages,
@@ -1376,6 +1461,7 @@ class ToolCallCoordinator:
         batch_id: str,
         turn_id: str,
         request: ToolCallRequest,
+        producer: ToolCallProducer,
         abort_signal: AbortSignal,
     ) -> tuple[ToolBatchCall, int]:
         try:
@@ -1388,6 +1474,7 @@ class ToolCallCoordinator:
             definition = None
             metadata = {}
         invocation = ToolInvocation(
+            producer=producer,
             session_id=session.session_id,
             run_id=run.run_id,
             turn_id=turn_id,
@@ -1436,6 +1523,7 @@ class ToolCallCoordinator:
                 "tool_call_id": request.id,
                 "tool_name": request.name,
                 "arguments": request.arguments,
+                "producer": producer.model_dump(mode="json"),
                 "source_index": request.source_index,
             },
         )

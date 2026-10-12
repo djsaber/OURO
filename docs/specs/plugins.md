@@ -35,7 +35,7 @@ OURO 是强扩展的个人智能体。插件是系统级扩展模块，不是项
 - **可恢复**：会话依据持久事实和当前能力继续；待完成操作按精确执行契约处理，不按同名 contribution 猜测；
 - **本地可控**：安装、配置、启停、选版、数据、诊断和删除都由本地 `PluginService` 管理；
 - **必要信任边界**：明确 full-trust 与 process isolation，不宣称不存在的 OS sandbox；
-- **可演进内核**：新增 contribution 类型有统一内部接入边界，但用户插件不能动态定义扩展点。
+- **可演进内核**：原生 contribution 保留领域语义；插件通过具名服务和受管理 handler 提供自己的业务扩展接口。
 
 ## 3. 非目标
 
@@ -114,6 +114,13 @@ ExtensionCatalog
 - `execution_contract_hash` 标识可跨进程校验的运行契约；
 - `configuration_revision_id` 是规范化配置和 credential binding reference 的内容摘要，不包含秘密值；
 - 相同 version、不同 digest 是不同内容，不能静默覆盖。
+
+配置修订属于插件记录，包选版只引用其中一个修订。修改配置或移除某个包版本不删除既有修订，等待中的 Run 可以
+继续引用原配置。最终安装记录删除时一并删除配置修订；插件私有数据按显式保留／清除选项处理。
+
+Run Driver 的持久绑定包含所属插件与传递依赖的 release、配置修订和执行契约。恢复按需租用或装载该闭包，使用
+原依赖服务实例，不修改当前目录；临时装载的实现不发布全局贡献、不启动后台服务，最后一个调用释放后按 generation
+关闭协议回收。禁用同时撤销依赖该插件实际 generation 的旧调用，即使当前选版已经移除了相应依赖。
 
 ### 5.2 Plugin class
 
@@ -215,7 +222,7 @@ calendar-plugin/
   "description": "Calendar tools and context.",
   "namespace": "calendar",
   "engines": {
-    "ouro": ">=0.1.0,<0.2.0",
+    "ouro": ">=0.2.0,<0.3.0",
     "plugin_api": "^3.0.0"
   },
   "runtime": {
@@ -264,7 +271,7 @@ calendar-plugin/
 - 已声明的 security、runtime、contribution 和 permission 字段仍按类型、必填项与领域约束严格校验；
 - `metadata` 只保存 namespaced 非规范元数据，不参与授权和运行决策；
 - Manifest 不包含 credential 值、用户授权结果、source trust 或 plugin class；
-- contribution identity 和简要契约必须在执行前静态可见；
+- 静态 contribution identity、动态工具组 identity 与执行策略必须在执行前静态可见；动态工具定义在发布边界校验；
 - `optional_feature`、MCP `auto_start` 和无消费者 placeholder 字段不存在；
 - schema 变化直接更新 schema version 和所有调用方，不保留开发期旧 reader。
 
@@ -307,7 +314,7 @@ Python factory 在 OURO 进程中运行，是 full-trust runtime：
   worker，不增加每插件 venv 或通用 import virtualization；
 - 插件不能向 OURO 主环境动态安装依赖；
 - `prepare` 不启动长期资源、不修改全局 registry；
-- 候选 `start` 只建立可并存资源；通过 Host data API 的写入先进入 generation-local staging，发布成功后才提交；
+- `prepare/start` 期间私有 data 只读，候选 `start` 只建立可并存且由 generation 拥有的资源；写入由发布后的回调或 Background Service 执行；
 - 自主长期任务必须声明为 Background Service，不能用普通 supervised task 绕过 service gate；
 - `start/stop` 使用 generation owner，stop 幂等且有 deadline。
 
@@ -324,6 +331,20 @@ Worker 是语言无关的 JSON-RPC/stdio 进程边界：
 - 当前只支持显式 restart，不要求自动 restart/backoff/circuit breaker；
 - 反向 Host method 只能为真实能力逐项增加，禁止万能 RPC。
 
+双方 reader 只解析和分派，不等待业务回调。请求携带 `parent_id` 时，接收方绑定到仍在执行的父调用；嵌套
+Host 调用继承其只读和 workspace 约束。请求有独立关联 ID、有限正数 `timeout_seconds` 和取消通知；父调用
+结束后不接受其迟到的业务结果。默认每侧同时处理 32 个独立请求，每个方向的在途请求上限为 128；同一调用链的
+重入不占用新的独立请求槽位，但仍受总上限约束。业务完成时释放独立槽位，响应写入任务仍由传输层持有。
+
+反向方法包括 `services.call`、`services.register`、`registrations.close`、`handlers.invoke`、
+`processes.run`、`environment.agent_instructions` 及 Run 的模型、工具和 `run.inputs.consume` 领域操作。
+`run.inputs.consume` 只允许持有有效父 Driver 调用上下文的请求，输入交付与进程内 Driver 遵循同一原生契约。
+Host 仅调用明确的 worker 方法，handler 通过所属 worker
+内部的 ID 寻址；进程输出通过 `processes.output` 回调传递。没有任意对象反射或远程属性访问。
+
+后台服务使用 `background.start` 和 `background.stop`，参数为 `contribution_id`，成功响应为空对象。
+这两个方法负责对应服务的实际启动与资源释放；`lifecycle.start/stop` 负责插件实例本身，不能代替服务启停。
+
 Worker 返回的 contribution 必须是 Manifest 静态声明集合的子集；缺少必需项或返回未声明项使 prepare 失败。
 
 调用响应由对应方法的解码器同时校验并构造最终 SDK 输出，handler 直接返回该对象。
@@ -332,7 +353,7 @@ Worker 返回的 contribution 必须是 Manifest 静态声明集合的子集；�
 
 ## 8. Plugin API
 
-插件只依赖 `ouro.sdk.plugins.v2`，不依赖 `ouro.core.*`、`ouro.application.*`、具体 registry
+插件只依赖 `ouro.sdk.plugins.v3`，不依赖 `ouro.core.*`、`ouro.application.*`、具体 registry
 或 Host 类型。
 
 ```python
@@ -350,10 +371,14 @@ Context 只暴露稳定、必要的能力：
 
 - identity、provenance 摘要和 generation；
 - 只读 configuration；
-- plugin-private data view；候选读取共享数据，但写入/删除进入隔离 staging，active 发布后才提交到共享 data；
+- plugin-private data view；候选只能读取共享私有数据，发布后允许写入和删除，资源清理完成后撤销写权限；
 - credential slot resolver；
 - supervised tasks；
 - redacted logger 和 diagnostics；
+- `services`：访问本插件或显式依赖插件的具名服务；
+- `processes`：有权限、可取消的 argv 执行及有序输出；
+- `environment`：读取部署和 workspace 对应的 Agent 指令文档；不暴露整个 Host home；
+- `tool_groups`：发布 Manifest 已声明的动态工具组；worker 使用同语义的 `WorkerToolGroups` 端口；
 - 已授权 Host-service permission 集合；
 - 可选的 plugin-scoped artifact root，用于用户可见、可由 Host 文件工具处理的制品；它与 plugin-private data 和
   canonical Session 数据分离。
@@ -393,6 +418,11 @@ Session Controller 的 activate/deactivate call 还必须提供 Host 已知的 `
 接受完整 batch，并在同一安全边界把整组转为 canonical messages；`one_by_one` 只能选择完整消费单位，不能拆分
 batch。SDK、in-process adapter、worker protocol、CLI 和 TUI 使用同一类型化契约。
 
+`SessionInput.driver_id` 可为 follow-up 选择 `plugin_id/run_drivers/id` 或 `ouro.default`；省略时使用默认算法。
+接受输入时保存完整 Driver 实现及依赖契约，队列消费不重新选版。batch 的所有成员必须使用相同选择，批量消费不
+合并不同的契约。`steer` 不能指定 Driver。命令在调用嵌套 Session Controller 前解析全部 Driver 选择；解析失败
+不提交命令状态、控制变更或输入。排队输入通过原生 Run 所有权、预算、审批和 checkpoint 执行。
+
 `role` 只表达 `system | user | assistant | tool_result` 四种模型消息角色；`scaffold` 只表达 Harness 是否有意注入，
 `semantic_tag` 只表达可选的模型可见语义，producer provenance 独立保存。插件必须定义这些值，Application 仅校验
 和传递，不根据任何一个维度推导另一个。任意 role 都可作为脚手架并可选择语义标签；这不会把 producer 改成直接
@@ -410,6 +440,71 @@ batch。SDK、in-process adapter、worker protocol、CLI 和 TUI 使用同一类
 
 ## 9. Contribution 与 Catalog
 
+### 插件服务导出
+
+Manifest 顶层 `exports` 声明具名服务，每项包含 `id` 和 `methods`。方法声明输入 JSON Schema、
+`effect = read_only | state_changing | unknown` 及是否为 `registration`。可执行插件在 `ContributionSet.services`
+提供 `ServiceContribution`；服务和方法必须与 Manifest 完全一致。输入按声明校验，返回值必须是有限数值的
+JSON 数据。服务定位使用字典索引，不复制整份 Catalog。
+
+单次服务方法可显式声明 `schedulable=true`，并由具有 `background.run` 权限的提供者执行原生 Task。
+注册方法不能作为调度目标。领取时固定方法参数、发布、配置修订及传递依赖的精确实现，调用结束后释放租约。
+`ServiceCall.scheduled` 提供真实的任务、执行和发生点身份，worker 在 `services.call` 的 `scheduled` 对象中接收
+相同字段。结果是 Task 执行记录中的 JSON；插件调用不借用或制造 Session／Run。禁用撤销在途调用，缺失或不可用
+目标在领取前暂停计划，进程退出后的未知结果不自动重放。详见[自动任务](automated-tasks.md)。
+
+`PluginContext.scheduler` 与 `WorkerScheduler(peer)` 提供任务创建、分页、查询、修改、启停、删除、执行历史和
+中断。原生 `TaskServicePort` 连接应用用例，适配器绑定当前插件为不可改写的 owner；插件只能访问自己的任务。
+写计划需要 `background.run`，拥有 Agent 目标还需要 `sessions.write`，服务目标限本插件或直接声明的依赖。
+只读回调不能写计划，未发布或已撤销代次不能调用端口。修改与控制使用预期修订；中断提交持久请求，调度 owner
+负责结算。启用插件不自动启用暂停计划，SDK 不自动重试结果未知的创建。持续服务的 start 可以在发布后使用端口，
+候选准备和候选 lifecycle start 不可以。
+
+调用使用 `context.services.call(plugin_id, service, method, arguments)`。目标只能是本插件或 Manifest
+直接声明的依赖，版本兼容性由包依赖表达。绑定固定到消费代次对应的提供者代次；升级重建受影响的消费代次。
+每次普通服务调用及注册 handler 的实际执行均持有 owner 与其传递依赖的精确代次租约；共享依赖在同一绑定内只持有一次。
+返回、异常或取消结算后释放租约，不保活无关插件。空闲注册不持有调用租约，显式停用仍撤销入口并取消在途回调。
+服务不获取 Session writer，也不自动创建持久任务或进行重试；外部写入结果不明时由业务协议负责恢复。
+
+注册方法通过 `context.services.register(..., handler, arguments)` 调用。提供者先用 `call.on_close(cleanup)`
+登记移除动作，再发布 `call.handler`。框架返回幂等关闭句柄；注册同时属于调用者和提供者，任一方停止都会
+先撤销 handler，再执行清理。失败的清理保留 owner，不能把未完成的注销报告为成功。普通服务不能返回裸对象、
+回调或生成器。只读调用不能借嵌套服务修改状态、注册 handler 或启动进程。
+
+服务可使用 `PluginContext.models.request`、`.tools` 和 `.agents` 调用当前 Run 的原生能力。它们不持有固定 Session 或 Run，
+只在调用链包含活跃原生 Run 作用域时可用。方法需使用非只读 effect 并声明 `sessions.write`；模型调用产生的
+canonical 历史、预算、计数和用量仍属于调用者的 Run。跨 worker 调用保留相同作用域，Host 不接受服务传入的 Run ID。
+`WorkerRunPorts(peer)` 与进程内端口等价；服务调用不使用普通 RPC 默认期限截断原生工作，取消跟随调用者和代次。
+
+### 独立模型请求
+
+`PluginContext.models.generate(ModelRequest, on_output=...)` 执行一次独立文本对话请求，要求 `models.request`。
+输入包含 system/user/assistant 消息、临时系统指令、模型路由、思考配置、输出上限和请求期限。
+`default` 解析当前配置的默认端点；缺少默认配置明确失败。Application 复用模型目录与 Core 请求执行器，
+插件适配层仅校验权限、调用作用域并转换 SDK 数据，不持有供应商客户端或存储实现。
+
+输出回调按序号串行 await，支持 text/reasoning 块；慢消费者保留原生流的有界背压。超时、调用取消、代次撤销
+或输出消费者失败会关闭供应商流。只有供应商报告的用量进入原生账本，记录插件和请求 ID；Session 与工作空间
+按实际调用来源关联，不创建 Run。已接收完成事件的用量在返回结果前结算，结算期间取消也等待写入结束。
+
+准备阶段、只读回调、已结束调用或已撤销代次不能发起请求。活跃 Run 中必须使用 `models.request`，保留原生
+预算与历史提交；独立请求不能绕过这些约束。worker 使用 `WorkerModels(peer)`，注册其 `output` 到
+`models.output`；双向调用继承父请求生命周期，SDK 请求期限不受普通 RPC 默认超时截断。
+
+### 受管理进程与环境
+
+`context.processes.run(ProcessRequest(...), on_output=...)` 要求 `process.spawn`。执行使用 argv，不自动加入
+shell；cwd 遵守当前调用的 workspace 约束。调用取消、代次撤销和输出消费者异常均进入原生进程树清理。
+输出回调按序号串行接收 UTF-8 文本块，慢消费者使读取背压；完成结果保留最多 100,000 字节的共享输出前缀并
+标注截断。需要完整大输出的插件通过输出回调写入自己的制品。进程和 worker 都不构成 OS 沙箱。
+
+工具子进程与 worker 共用本地进程 owner。Windows 进程以 suspended 状态创建，加入配置为
+`KILL_ON_JOB_CLOSE` 的 Job Object 后才恢复主线程；父进程提前退出不会丢失后代归属。POSIX 使用独立进程组。
+这是进程生命周期管理，具体 Windows 约束见 [AssignProcessToJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject)。
+
+`context.environment.agent_instructions(workspace)` 返回带来源路径、user/project 作用域和内容的只读文档。
+文档读取在调用时完成，保留大小和编码检查；Agent Context 使用同一公开端口生成自己的上下文贡献。
+
 ### 9.1 目标稳定 contribution
 
 - `tools`；
@@ -423,10 +518,12 @@ batch。SDK、in-process adapter、worker protocol、CLI 和 TUI 使用同一类
 - `mcp_servers`；
 - `background_services`；
 - `continuation_policies`；
+- `run_drivers`；
+- `providers`；
 - `tool_policies`；
 - `session_controllers`。
 
-Host capability 清单由以下 13 类组成。这里的“消费者”指真正解释该类型语义的 Host 边界，Catalog projection
+Host capability 清单由以下 15 类组成。这里的“消费者”指真正解释该类型语义的 Host 边界，Catalog projection
 本身不算消费者；“证据”至少包含 builtin、可运行 example 或跨 SDK/worker/application 的契约测试。
 
 | capability | 生命周期 | producer / contract 证据 | Host 语义消费者 | 等级 |
@@ -440,17 +537,24 @@ Host capability 清单由以下 13 类组成。这里的“消费者”指真正
 | `mcp_servers` | snapshot | generation resource/MCP catalog contract tests | MCP runtime 投影到 Run-local `ToolRegistry`，随后走 Tool consumer | stable |
 | `background_services` | activation singleton | in-process/worker lifecycle contract tests | `PluginRuntime._handover_background_services` | stable |
 | `continuation_policies` | snapshot | Goal builtin、worker semantic contract | `RunContinuationService` | stable |
+| `providers` | request | faux-provider、原生 Faux 事件桥接、in-process/worker 路由与卸载测试 | 配置模型目录、默认与自定义 Driver、独立生成及连接检查 | stable |
+| `run_drivers` | invocation | review-driver 与 delegating-driver 的 in-process/worker、等待重启与契约测试 | Runtime Driver 选择、原生模型／工具／Agent 端口与 checkpoint 消费 | stable |
 | `prompt_policies` | snapshot | inprocess-prompt-policy example | Runtime prompt admission boundary | stable |
 | `turn_policies` | snapshot | SDK/worker semantic contract、Runtime turn tests | Runtime terminal-candidate boundary | stable |
 | `tool_policies` | snapshot | Plan builtin、SDK/worker semantic contract | `ToolCallCoordinator` preflight 与 execution recheck | stable |
 | `session_controllers` | snapshot | Goal/Plan builtin、worker semantic contract | `SessionControlCoordinator` 及 Run resume/settlement | stable |
 
-每种 capability 必须同时具备 Manifest/SDK 表达、Host adapter 和真实语义消费者。系统保持 13 类 capability；
+每种 capability 必须同时具备 Manifest/SDK 表达、Host adapter 和真实语义消费者。系统保持 15 类 capability；
 新类型必须由真实 builtin 或最小可运行 user plugin 驱动。失去消费者的类型应同步从 Manifest、SDK、worker、
 prepare、contract、projection 与文档删除，不保留空 adapter 或迁移别名。
 
 观察型扩展只公开 `observers`；`prompt_policies` 是独立语义边界。Manifest schema 3 不接受 `hooks` 字段；
-Plugin API 使用 3.0，worker protocol 使用 3.0；Python SDK 入口为 `ouro.sdk.plugins.v2`。
+Plugin API 使用 3.0，worker protocol 使用 3.0；Python SDK 入口为 `ouro.sdk.plugins.v3`。
+
+公开交互 DTO 位于 `ouro.sdk.plugins.interactions`。计划确认请求包含预览文本、计划引用、可选方案和明确的动作，
+答案包含动作及用户选择或反馈。Host 按 DTO 类型呈现，不以 builtin 身份或工具显示名赋予特殊界面；请求来源仍
+保存在原生调用事实中。业务校验与 controller 变更由请求所属插件通过公开 Session 状态与控制端口完成。
+Goal 和 Plan 的业务模块仅依赖 SDK；builtin definition 只负责在发行版中装配 Manifest 和 factory。
 
 ### 9.2 Identity 与冲突
 
@@ -481,7 +585,7 @@ Host 为每个稳定 contribution type 提供内部 adapter，统一承担：
 Adapter 不是公开动态扩展点。不同 contribution 的组合和失败规则继续由各自类型定义。Adapter 还必须声明类型是：
 
 - `snapshot-bound`：投影到不可变 Catalog，当前决策或回调的租约允许旧、新 generation 并存；
-- `activation-singleton`：不进入 Run 可调用目录，每个 plugin id 同时只允许一个 generation 的 gate 打开。
+- `activation-singleton`：不进入 Run 可调用目录，在声明的 host/home 作用域内，同一插件的同一服务最多运行一代；旧服务停止失败时，不启动替代服务。
 
 Tools、Commands、Observers、Context、Prompt Policy、Turn Policy、Compaction、Skills、MCP tool projection、
 Continuation、Tool Policy 和 Session Controller 是 snapshot-bound；Background Service 是 activation-singleton。Session Controller 的
@@ -502,13 +606,54 @@ Background Service 由 activation owner 管理，不是 Catalog callback。Catal
 2. 验证全部 identity、依赖、必需 contribution 和 contract；
 3. 不执行插件代码或外部 I/O；
 4. 成功后原子替换 current catalog pointer；
-5. 旧 catalog 由正在使用它的决策和回调持有 lease，相关调用收尾后释放。
+5. 模型决策保留完整 Catalog lease，相关响应及调用收尾后释放；局部消费者仅保留所用贡献及其 owner 依赖。
+
+管理查询通过 `catalog()` 读取不可变目录，不取得执行租约。命令绑定包含目标命令、所属插件的控制器、
+目标 Session 已激活的控制器及各 owner 的传递依赖；Observer mailbox 只保留实际匹配的 registration 及其
+owner 的传递依赖。这些局部绑定不保留父 Catalog，关闭时释放各自的租约。
 
 基础 user/workspace Skill 与 Plugin Skill 是同一 Catalog 中的 `SkillMetadata`。Skill 名称全局唯一；与 Host baseline
 或其他 active user generation 冲突时，候选 Catalog 整体失败，不存在加载顺序覆盖。每个插件 Skill 声明必须恰好
 解析一个 `SKILL.md`，且 frontmatter `name` 等于 contribution id。完整 Skill 正文仍按需要从 Catalog 固定的
 immutable package path 读取，不能重新发现 current plugin state。Catalog 对外返回防御性副本，消费者不能修改
 共享 Skill metadata。
+
+### 9.5 动态工具组
+
+可执行插件通过 Manifest 顶层 `tool_groups` 声明组 ID 和固定执行策略。组内每个工具的权限、effect、批次行为、
+恢复能力及 Controller 绑定必须与组声明一致；工具 ID、暴露名称、描述和参数／结果 JSON Schema 在发布时校验。
+未声明组的插件不持有发布端口。工具名称在整个 Catalog 中唯一，静态工具和其他组的工具不能被隐式覆盖。
+
+`ContributionSet.tool_groups` 提交候选初始组；active generation 通过 `PluginContext.tool_groups.publish()`
+发布 `ToolGroupContribution(id, revision, tools)`。发布构造并校验完整候选 Catalog 后一次替换目录。
+失败保留原组，空组撤去该组全部工具。只读、已结束调用及非当前 generation 不能发布；生命周期变更占用期间立即
+拒绝发布，避免正在停止的回调等待自身退出。发布不增加持久化状态或后台刷新循环。
+
+组内工具规范身份为 `plugin_id/tools/group_id/tool_id`，契约散列包含稳定实现 revision 与工具定义。
+revision 由插件标识行为语义，行为变化必须更换，即使 schema 不变。组修订不改变 generation 的执行契约；
+Driver、依赖及 Session 控制绑定继续使用所属 generation 的稳定身份。
+
+模型决策租约同时保留工具组修订。替换或撤销只影响后续决策，已发出的请求和工具调用保留原 schema、处理器和
+执行契约；旧修订排空租约后关闭调用入口。Catalog 重建 Host baseline 时保留所绑定的组修订。命令、Driver 与
+Observer 的局部绑定不持有无关组租约。禁用插件撤销所有修订的 generation gate。
+
+`publish()` 返回幂等 `Registration`。关闭只匹配该次发布，不能撤销替代它的新组，Host 随 generation 清理注册。
+等待释放执行租约；重启恢复须匹配原工具契约，缺失或不同 revision 产生明确契约错误，不替换执行。
+工具组不持久化 Python 回调，插件负责在发现阶段提供可重复的实现 revision。
+
+worker 的 `contributions.prepare.tool_groups` 为按组 ID 索引的 descriptor，包含 `id`、`revision`、
+`registration_id` 和 `tools`。`tool_groups.publish` 提交同形 descriptor；Host 对包声明、执行策略及整个
+Catalog 作同一校验。随机 `registration_id` 只标识本次进程内发布，不进入持久工具契约。
+`tool_groups.call`／`tool_groups.resume` 在普通工具调用与 Session 状态协议之外携带该发布身份。
+
+`tool_groups.close` 按发布身份撤销，返回 Host 是否仍持有它。旧决策排空后，Host 在同一有序通道发送
+`tool_groups.release` 通知；worker 同步移除对应处理器引用，不占用业务请求并发槽。发布回执取消时仍须按身份
+结算，不能提前删除已接受调用的实现。禁用或 worker 退出后，Host 清理通知任务和注册记录，关闭的 worker
+不会因旧 Catalog 后续释放而重新启动。
+
+Python SDK helper 将单参数工具 handler 的文本、结构化内容、等待请求和恢复结果映射到协议，提供本次调用的
+Session 状态视图。状态返回与 Host 接受保持分离；只读与失效视图拒绝变更，同步 handler 取消后等待线程退出，
+丢弃迟到结果。工具与恢复调用不使用传输层默认超时，其实际生命周期由 Run、调用方取消及 generation gate 控制。
 
 ## 10. Observer、Policy 与 Continuation
 
@@ -678,11 +823,12 @@ Permission id 必须由 OURO 核心注册表定义。每个 id 都要有真实�
 - `credentials.use`：允许解析声明的 credential slot；
 - `process.spawn`：披露并授权插件 MCP/Host service 启动子进程；
 - `network.outbound`：披露并授权插件 MCP/Host service 建立远程连接；
+- `models.request`：允许不属于活跃 Run 的独立模型请求，并按插件身份记录供应商用量；
 - `sessions.write`：允许请求带完整插件 provenance，以及显式 role、scaffold、semantic tag 契约的 Session input；
 - `sessions.prompt.inspect`：允许 Prompt Policy 接收用户提示正文和附件的安全 metadata；
 - `background.run`：允许请求 continuation/background Run。
 
-未知 permission 严格拒绝。只有真实 Host service 落地后才新增 filesystem、resource、model 等 permission。
+未知 permission 严格拒绝。只有真实 Host service 落地后才新增相应 permission。
 对 full-trust runtime，permission 不是 OS 强制边界，界面和文档必须明确这一事实。
 
 ### 11.3 Credentials
@@ -705,8 +851,9 @@ Permission id 必须由 OURO 核心注册表定义。每个 id 都要有真实�
 - 配置先校验并创建候选 revision，再构建候选 generation；
 - 候选失败时 current selection、active revision 和 catalog 不变；
 - 插件只能读取自身 configuration；
-- candidate generation 的 Host data API 不直接修改共享 data：写入/删除暂存于候选视图，候选失败时整体丢弃；
-- `python-inprocess` 是 full trust，直接绕过 Host data API 的 Python/OS 写入不属于该事务保证，也不伪装成沙箱能力。
+- candidate generation 的 Host data API 只允许读取；写入和删除明确失败。发布只改变访问权限，不执行数据提交 I/O；
+- generation 关闭后撤销私有 data 写入；停止回调可以在清理完成前保存自身状态；
+- `python-inprocess` 是 full trust，直接绕过 Host data API 的 Python/OS 写入不受上述边界约束，也不伪装成沙箱能力。
 
 被 active generation 或 durable execution contract 引用的 configuration revision 不得删除。未引用候选 revision
 可以由 GC 清理。
@@ -727,7 +874,7 @@ OURO_HOME/artifacts/
 
 - store 不可变且只保存 user plugin；builtin code 随 OURO distribution 发布，不复制或伪装安装到 store；
 - data 同时服务 builtin/user plugin，并按稳定 plugin id 隔离；data 跨 user plugin 版本和 OURO 进程重启保留；
-- artifacts 保存用户可见、可由 Host 文件工具处理的插件制品；它不参与 candidate data staging，也不是 canonical
+- artifacts 保存用户可见、可由 Host 文件工具处理的插件制品；它不是 candidate 准备时的私有数据事务，也不是 canonical
   Session 后端的一部分；Host 的路径策略只开放这一根目录，不开放整个 `OURO_HOME`；
 - state.json 只接受当前 schema 4；违反当前契约（不支持的 schema、非法编码、截断或
   损坏）时不得阻断 Host 启动：boot 路径将其隔离
@@ -739,6 +886,32 @@ OURO_HOME/artifacts/
 - remove 默认保留 data；purge 必须显式；
 - 不提供历史数据迁移或回滚兼容协议；格式不兼容时按上述读取边界处理，由用户选择新目录或显式数据维护，不自动清空用户数据；
 - 不为尚未出现的迁移需求预建 schema registry、backup engine 或兼容分支。
+
+### 私有数据访问、维护与清理
+
+每个 generation 从准备开始持有插件私有数据的共享访问锁，直到调用、后台任务、worker、服务和模块全部关闭。
+关闭失败保留占用，管理入口不能根据 desired-disabled 或某一个 Host 的内存状态推断全局资源已退出。
+锁由 OS 文件描述符拥有，不建立心跳、持久租约记录或失效时间；不同 Host 和同一进程中的多代可以同时持有共享锁。
+Windows 使用 [LockFileEx](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-lockfileex)，
+POSIX 使用 [flock](https://docs.python.org/3/library/fcntl.html#fcntl.flock)。
+
+`purge-data` 取得非阻塞独占锁后检查停用状态和持久引用，再清理该插件的 `plugins/data/<plugin_id>`。
+启用意图的提交同时取得共享访问锁，因此不能在独占清理期间保存新的启用状态。任一 Host 仍占用资源时明确拒绝，
+不强行解除锁。框架锁约束其管理的访问，不是对外部程序或受信 Python 代码的 OS 沙箱。
+
+此操作适用于已停用或已卸载的插件，也可重复执行。可恢复 Run、待消费 Driver 输入及控制 activation 的引用继续
+保留数据；查询按插件身份扫描，不要求 install record 仍存在。清理只删除私有目录，不删除 Session 扩展状态、
+Task 计划或历史、用量账本、用户制品及其他插件数据。成功操作进入插件审计。CLI 不为清理启动插件或模型客户端。
+
+`plugin maintain <id> --execute <argv...>` 使用相同的独占访问、停用与持久引用检查，在已存在的私有目录中运行
+用户明确指定的维护程序。入口不加载插件，按 argv 执行，不插入 shell；输出缓冲有界，支持超时，取消和退出均
+等待受管理进程树收尾后才释放访问锁。结果与退出状态进入审计，不记录命令参数或输出内容。维护不修改启用意图；
+成功、失败和取消后均保持停用。命令不具备 OS 沙箱隔离。
+
+数据格式由插件拥有。`prepare()` 可只读校验现有数据并拒绝不支持的格式；启用失败保留启用意图，维护前必须显式
+停用。插件自己的维护程序定义校验、备份和恢复边界，框架不推断业务格式或自动转换。`scheduled-sync` 样例只接受
+schema 1 快照；备份原始字节到私有目录外且不覆盖已有备份，恢复前校验输入并保存当前原始快照，再原子替换。
+维护不会自动修复或回滚任意程序的外部副作用。
 
 ## 13. Source、Install 与 Dependencies
 
@@ -805,22 +978,62 @@ read persistent activation or mutation candidate
 
 - current catalog 和 previous generation 保持不变；
 - 清理候选 contribution、task、process、MCP 和 listener；
+- 清理失败或尚未结束时，generation 继续保留资源所有权和诊断，阻止同一插件再次激活；
 - 保存有界、脱敏 diagnostic；
 - 不影响无关插件和 builtin。
 
+Host 冷启动使用一次共享状态快照规划所有期望启用插件，按依赖顺序为每个未激活插件构建一次候选，统一发布后
+启动后台服务；不能逐根套用显式 restart 的依赖方重建规则。依赖解析和已解析节点只在本次操作中复用。
+一个候选的 prepare/start 失败只阻断其依赖方，健康候选继续使用；目录贡献冲突按 owner 丢弃冲突候选及依赖方后
+重新投影，健康实例不重复构建。状态在构建期间发生变化则禁止发布旧候选，清理后由下一同步边界处理新状态。
+显式启用、更新和重启仍要求对应变更事务完整成功，不将启动的独立失败隔离改成部分提交配置。
+
 当前单进程 Host 使用一个 runtime mutation lock 串行化候选提交，不建立容易死锁的 per-plugin 多锁图；插件代码、
 I/O 和 start/stop 均不进入 catalog pointer lock。Background Service 的声明与 owner 在候选期完成准备，但实际
-`start` 延迟到发布后，并严格等待旧代 `stop` 完成，因此同一 plugin id 不会同时运行两份声明式自主服务。
-Generation lease 可以继续服务已绑定的模型响应及调用；activation-singleton Background Service 只属于 current generation。
+`start` 延迟到发布后，并严格等待旧代 `stop` 成功完成；旧服务停止失败时保留其归属，新代降级且不启动替代服务。
+Generation lease 可以继续服务已绑定的模型响应及调用；Background Service 由实际启动它的 generation 拥有，成功停止后才能交给新代。
+
+生命周期回调在已提交 Catalog 上接纳，其嵌套模型请求直接从该 Catalog 绑定所选 Provider 及必要依赖，
+不再次等待本次生命周期的状态同步，也不持有全目录租约。Host 和 home 服务的启动及交接遵循相同规则。
+回调结束即释放这项临时目录引用；继承执行上下文的后台任务也不能永久使用它。新的独立 Provider 请求仍先同步共享意图。
+其他 Host 在回调期间写入的状态变化由后续准入边界处理，不使已经发布的初始化回入自身或并发启动新旧服务。
+
+Manifest 的每个 `background_services` 声明可指定 `scope`：默认 `host` 在每个已激活的 Host 中运行一份；
+`home` 仅在持有现有 TaskScheduler owner 锁的 Host 中运行。scope 属于执行契约，SDK 只提供 start/stop 实现。
+未参与调度选举的管理进程不会启动 home 服务。同一 owner 内的启用和升级沿用 generation 的发布与停止顺序。
+调度器停止时先等待 home 服务释放资源，仍持有 owner 锁以结算原有 Task；close 才释放锁。
+服务停止失败时保留 owner 锁并报告错误，禁止另一个 Host 在旧服务未停止时接管。服务 stop 必须等待自己的任务、
+连接和进程实际退出；普通任务或实例启动不能绕过这一归属约定。该机制复用现有跨进程文件锁，不增加租约注册表。
 
 Disable：
 
 1. 持久化 desired disabled；
-2. 关闭 generation gate，阻止新调用；
+2. 关闭该插件当前及退休 generation 的 gate，阻止新调用并取消正在执行的回调；
 3. 发布不含该 generation 的新 catalog；
-4. 等待旧 catalog lease 和 in-flight call 释放；
-5. stop instance、background service、MCP、task 和 worker；
-6. 释放 owner。
+4. 等待实际执行的回调退出；已撤销的空闲 Catalog 引用不阻止清理；
+5. 停止 Background Service、instance、task、MCP 和 worker，释放模块；
+6. 清理成功后释放 owner 并呈现 `disabled`。
+
+`disable(wait=True)` 在本 Host 的停止预算内等待，未结束返回 `stopping`，清理失败返回 `failed`。
+`disable(wait=False)` 只等待入口撤销和目录发布；`wait_stopped(plugin_id)` 可再次等待本 Host 的清理结果。
+调用方取消不会遗弃清理；失败资源保留归属，显式再次 disable 或 Host shutdown 可以重试清理。
+插件撤销的取消限于回调范围，对外呈现不可用错误；它不取消等待回调的 Host 任务，也不接受吞掉取消后的迟到成功结果。
+卸载和私有数据清除必须等待本 Host 相应资源退出；卸载某一 digest 不要求无关版本退出。
+Host shutdown 按已发布 Catalog 的依赖顺序关闭资源，不依赖持久状态文件仍然可读。
+
+进程内插件遵守合作式停止。同步回调的线程不能强杀，取消后仍保留执行归属直到线程结束；其迟到结果不作为成功
+提交。worker 的停止 RPC 和进程树清理由同一 owner 收尾。上述完成状态只代表当前 Host，不声明其他 Host 已停止。
+
+### 共享 Home 的状态传播
+
+共享 state 文件承载 selected release、配置和启用意图。Host 在接受 Run、开始下一模型轮次、执行插件命令及
+已有调度器的刷新周期检查文件身份、修改时间和大小；未变化时不解析 state，不重新校验包。发生变化后在本 Host
+的 mutation lock 下协调启停和依赖绑定。调度刷新对 owner 与非 owner Host 都生效，默认最长刷新间隔为 30 秒，
+不增加每插件 watcher 或后台循环。移除意图先撤销入口，不等待新候选构建成功。
+
+变更文件在读取或构建期间再次替换时，下一个边界继续协调。独立插件的激活失败不阻止其他有效组件发布；尚未
+退出的旧资源继续保留，清理未完成时不重启同一插件。关闭结果只承诺当前 Host；无全员 ACK、Host 名册或跨进程
+瞬时停机保证。私有数据维护必须取得独占访问；尚未处理停用意图的 Host 仍持有共享锁时，维护明确拒绝。
 
 ## 15. Durable Run
 
@@ -870,10 +1083,16 @@ Active plugin 的配置更新使用相同流程：创建 immutable candidate rev
 ### 16.3 Remove
 
 - selected/active digest 先 disable；
-- 有 active dependent、未完成调用或控制 activation 的具体 release 引用时拒绝；历史 Catalog 摘要不构成保留条件；
-- 删除 install reference 后由 GC 删除无引用 store；
+- 有 active dependent 或本 Host 尚未退出的资源时拒绝；
+- 删除 install reference，结果列出仍保留该包的可恢复 Run、待消费输入或控制 activation；这些引用不阻止逻辑
+  卸载，也不重新启用或装载代码。未安装的实现不能继续执行，恢复前需显式重新安装所需包并满足精确配置契约；
+- GC 按管理冷路径一次扫描持久引用，保留其包字节；已完成历史和 Catalog 摘要不构成保留条件。结束相关运行后
+  可再次 GC。仍安装的包和任一 Host 仍持有数据访问的插件也不会删除；
+- 发布包与提交 install record 使用同一个插件文件锁，GC 在锁内核对最新安装状态；发布暂存目录按插件归属，
+  同一锁保护其创建和清理，不回收正在发布的文件；
 - 默认保留 plugin data；
-- 删除最后一个 digest 后才允许显式 purge data。
+- `remove --purge-data` 只允许删除最后一个 digest 时同时清理数据，并在独占访问下检查该插件所有 release 的
+  持久引用，包括已经逻辑卸载的包；独立 `purge-data` 使用相同的数据保全规则。
 
 ## 17. Community interoperability
 
@@ -896,7 +1115,7 @@ Active plugin 的配置更新使用相同流程：创建 immutable candidate rev
 - scaffold、validate、install、list、show、diagnostics、dependencies；
 - configure；
 - enable、disable、restart、check；
-- update、reload、select、rollback、remove、gc、purge-data；
+- update、reload、select、rollback、remove、gc、purge-data、maintain；
 - list/execute plugin command；
 - compatibility report。
 
@@ -941,6 +1160,8 @@ blob-filtered fetch，指定 subdirectory 时使用 sparse checkout，并禁用 
 Diagnostic 至少包含 code、phase、severity、plugin id、digest、generation、contribution、retryable、建议动作和
 correlation id，并经过敏感值脱敏。每个 generation 的 diagnostic 必须有界。
 
+插件列表从一次读取的持久状态投影配置意图和依赖状态，并结合当前 Host 的 generation 状态呈现。状态投影复用调用方持有的快照，不按列表项重复读取，也不跨管理操作缓存持久状态。
+
 并发规则：
 
 - install/update/remove/state mutation 使用跨进程文件锁；
@@ -956,7 +1177,7 @@ correlation id，并经过敏感值脱敏。每个 generation 的 diagnostic 必
 
 ## 20. 模块边界
 
-目标职责：
+职责划分：
 
 ```text
 ouro/plugins/
@@ -970,13 +1191,16 @@ ouro/plugins/
   store.py           # immutable code and mutable state/data
   readiness.py       # configuration and credential-binding readiness
   contribution_types.py # internal ContributionTypeAdapter definitions
-  catalog.py         # immutable ExtensionCatalog and leases
+  catalog.py         # immutable ExtensionCatalog, invocation gates and contribution bindings
   dependencies.py    # dependency graph and reconciliation inputs
-  runtime.py         # generation lifecycle and reconciliation
+  generation.py      # candidate/active resource ownership and shutdown
+  resources.py       # generation-owned tasks and private data access
+  generation_resources.py # resource adapters used during candidate preparation
+  runtime.py         # candidate publication, service handover and retirement
   worker.py          # worker protocol/process adapter
   compatibility.py   # community inspection/import
 
-ouro/sdk/plugins/v2.py
+ouro/sdk/plugins/v3.py
   # public plugin API only
 
 ouro/application/plugins.py
@@ -1020,8 +1244,8 @@ ouro/builtin_plugins/
 - worker timeout 和 task cancellation 都发送 cancel；
 - worker exit 撤销调用入口并投影 failed；
 - background task 失败投影 degraded；
-- 新旧 Catalog 并存时每个 plugin id 最多运行一份声明式 Background Service；
-- candidate start 的 Host data 写入被隔离暂存，失败候选不修改共享 plugin data；
+- 新旧 Catalog 并存时，同一插件的同一 Background Service 在声明的 host/home 作用域内最多运行一份；
+- candidate prepare/start 的 Host data 写入明确失败，失败候选不修改共享 plugin data；
 - optional MCP 失败 degraded，required MCP 失败不发布候选。
 
 ### Skills、MCP 与深层扩展

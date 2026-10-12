@@ -15,7 +15,7 @@ from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
 from ouro.core.state import SessionRecord
 from ouro.plugins.api import adapt_sdk_contributions
-from ouro.sdk.plugins import v2 as sdk
+from ouro.sdk.plugins import v3 as sdk
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
 

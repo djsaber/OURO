@@ -693,6 +693,7 @@ class ContextPreparationService:
         context_providers: ContextProviderRegistry | None = None,
         strategies: CompactionStrategyRegistry | None = None,
         skill_instructions: str = "",
+        prompt: str = "",
     ) -> tuple[ContextView, int]:
         prompt_context = await self._resolve_prompt_context(emitted, sequence, session, run)
         active_adapter = adapter or self.adapter
@@ -734,6 +735,8 @@ class ContextPreparationService:
             messages=messages,
             model_round=model_round,
         )
+        if prompt:
+            added_context.append(ContextFragment(text=prompt, semantic_tag="driver-instruction"))
         if session.interaction_mode == "unattended":
             added_context.append(
                 ContextFragment(

@@ -53,4 +53,8 @@ uv run --frozen ouro --help
 - [发布流程](RELEASING.md)与[变更记录](CHANGELOG.md)：版本交付要求。
 - [开发工具](dev/README.md)：本地基准和显式联网探针。
 
-软件包版本以 `pyproject.toml` 为准。仓库尚未声明分发许可证，发布前需由维护者明确许可条款。
+软件包版本以 `pyproject.toml` 为准。
+
+## 开源协议
+
+OURO 采用 [MIT 协议](LICENSE)开源。

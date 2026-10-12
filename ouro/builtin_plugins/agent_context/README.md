@@ -35,7 +35,8 @@ runtime-facts provider. Exact manifest declarations are defined in [`definition.
 
 ### Instruction Discovery
 
-For every model request, `agent-instructions` loads documents from broad to specific scope:
+For every model request, `agent-instructions` uses the public environment port to read documents
+from broad to specific scope:
 
 1. `<user-home>/.agents/AGENTS.md`;
 2. `OURO_HOME/AGENTS.md`;
@@ -83,7 +84,9 @@ the end of the complete system prompt.
 - [`definition.py`](definition.py): built-in definition and manifest.
 - [`agent_context_plugin.py`](agent_context_plugin.py): Context Provider contributions and runtime
   fact rendering.
-- [`instructions.py`](instructions.py): `AGENTS.md` discovery, validation, ordering, and rendering.
+- [`instructions.py`](instructions.py): render instruction documents supplied by the environment port.
+- [`ouro/plugins/instructions.py`](../../plugins/instructions.py): deployment-owned discovery,
+  validation and ordering, shared by builtin and user plugins.
 
 The implementation and manifest are the source of truth for priorities, limits, semantic tags, and
 failure behavior.

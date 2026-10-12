@@ -2,6 +2,7 @@
 
 from ouro.tools.base import (
     PermissionMode,
+    ProcessResult,
     Tool,
     ToolBatchBehavior,
     ToolDefinition,
@@ -13,7 +14,6 @@ from ouro.tools.base import (
     ToolInvocation,
     ToolPermissionControl,
     ToolPolicyError,
-    ToolProcessResult,
     ToolResult,
 )
 from ouro.tools.batch_executor import ToolBatchExecutor
@@ -35,7 +35,7 @@ __all__ = [
     "ToolBatchExecutor",
     "ToolExecutor",
     "ToolInvocation",
-    "ToolProcessResult",
+    "ProcessResult",
     "ToolPolicyError",
     "ToolPermissionControl",
     "ToolRegistry",

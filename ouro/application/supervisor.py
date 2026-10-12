@@ -11,6 +11,7 @@ from pydantic import JsonValue
 
 from ouro.application.dto import Diagnostic
 from ouro.application.event_models import project_runtime_event
+from ouro.application.run_ownership import RunReservation
 from ouro.application.runs import maybe_active_run
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_activity import (
@@ -61,6 +62,7 @@ class _RunJob:
     title: str | None
     background: bool = False
     prepared_run: RunRecord | None = None
+    reservation: RunReservation | None = None
     continue_existing: bool = False
     history_epoch: int | None = None
     session_input: HostSessionInput | DelegatedTaskInput | None = None
@@ -255,9 +257,6 @@ class RuntimeSupervisor:
         """Recover one Session execution boundary without scanning the store."""
 
         await self.start()
-        # Queued jobs already have a live owner before acquiring an execution lock.
-        if session_id in self._jobs_by_session:
-            return
         await self.runtime.reconcile_execution_session(session_id)
 
     async def _start(self) -> SupervisorStartResult:
@@ -354,8 +353,17 @@ class RuntimeSupervisor:
         if not session_input.prompt.strip():
             raise ValueError("run prompt cannot be empty")
         session_id = run.session_id
-        if session_id in self._jobs_by_session:
-            raise SessionBusyError(f"session already has a supervised run: {session_id}")
+        previous_job = self._jobs_by_session.get(session_id)
+        if previous_job is not None:
+            previous_id = self._snapshots[previous_job.handle.handle_id].run_id
+            if previous_id is None or previous_id == run.run_id:
+                raise SessionBusyError(f"session already has a supervised run: {session_id}")
+            previous_run = await run_blocking(self.store.load_run, session_id, previous_id)
+            if previous_run.status in ACTIVE_RUN_STATUSES:
+                raise SessionBusyError(f"session already has a supervised run: {session_id}")
+            # A durable terminal result can be observed before its local job
+            # releases ownership. Admit the queued successor after that release.
+            await previous_job.done.wait()
         active = await run_blocking(self._load_active_run, session_id)
         if active is None or active.run_id != run.run_id or active.status != "queued":
             raise SessionBusyError(
@@ -568,20 +576,41 @@ class RuntimeSupervisor:
 
         def read_boundary() -> tuple[int, int]:
             with self.store.session_mutation(session_id):
+                if job.prepared_run is not None:
+                    active = self._load_active_run(session_id)
+                    if (
+                        active is None
+                        or active.run_id != job.prepared_run.run_id
+                        or active.status != "queued"
+                    ):
+                        raise SessionBusyError("prepared Run is no longer queued")
                 return (
                     self.store.load_session_record(session_id).history_epoch,
                     self.store.latest_event_sequence(session_id),
                 )
 
-        epoch, sequence = await run_blocking(read_boundary)
+        if job.prepared_run is not None:
+            job.reservation = await self.runtime.run_ownership.reserve(
+                session_id, job.prepared_run.run_id
+            )
+            if job.reservation is None:
+                raise SessionBusyError(f"session already has an execution owner: {session_id}")
+        try:
+            epoch, sequence = await run_blocking(read_boundary)
+            # Admission publishes only after the durable queued Run has a real
+            # execution owner. All Hosts' recovery paths observe the same lock.
+            if self._closed:
+                raise OuroError("runtime supervisor is closed")
+            if session_id in self._jobs_by_session:
+                raise SessionBusyError(f"session already has a supervised run: {session_id}")
+        except BaseException:
+            if job.reservation is not None:
+                await run_blocking(job.reservation.release)
+            raise
         if job.history_epoch is None:
             job.history_epoch = epoch
         # Queries yield to other submissions and shutdown. Commit process-local
         # scheduling atomically only after checking the current ownership again.
-        if self._closed:
-            raise OuroError("runtime supervisor is closed")
-        if session_id in self._jobs_by_session:
-            raise SessionBusyError(f"session already has a supervised run: {session_id}")
         if not job.background:
             job.start_after = self._latest_job_start
             self._latest_job_start = job.provider_stream_started
@@ -890,6 +919,7 @@ class RuntimeSupervisor:
                     session_id=job.handle.session_id,
                     run_id=snapshot.run_id,
                     reason=reason,
+                    _reservation=job.reservation,
                 )
             aborted = RuntimeStatusSnapshot(
                 handle=job.handle,
@@ -907,7 +937,7 @@ class RuntimeSupervisor:
                     ),
                 ),
             )
-            self._finish_job(job, aborted)
+            await self._finish_job(job, aborted)
             return aborted
         if snapshot.status in {
             "running",
@@ -982,7 +1012,7 @@ class RuntimeSupervisor:
             current = self._snapshots[job.handle.handle_id]
             if current.status == "queued":
                 job.cancelled = True
-                self._finish_job(
+                await self._finish_job(
                     job,
                     RuntimeStatusSnapshot(
                         handle=job.handle,
@@ -1100,6 +1130,7 @@ class RuntimeSupervisor:
                         job.result = await self.runtime.run_prepared(
                             job.prepared_run,
                             job.session_input,
+                            reservation=job.reservation,
                         )
                     elif job.host_input_receipt is not None:
                         job.provider_stream_started.set()
@@ -1123,7 +1154,7 @@ class RuntimeSupervisor:
                         session_id=job.handle.session_id,
                         recoverable=False,
                     )
-                    self._finish_job(
+                    await self._finish_job(
                         job,
                         RuntimeStatusSnapshot(
                             handle=job.handle,
@@ -1134,7 +1165,7 @@ class RuntimeSupervisor:
                         ),
                     )
                 else:
-                    self._finish_job(
+                    await self._finish_job(
                         job,
                         RuntimeStatusSnapshot(
                             handle=job.handle,
@@ -1254,7 +1285,9 @@ class RuntimeSupervisor:
             raise KeyError(f"unknown supervised run: {handle_or_session}")
         return job
 
-    def _finish_job(self, job: _RunJob, snapshot: RuntimeStatusSnapshot) -> None:
+    async def _finish_job(self, job: _RunJob, snapshot: RuntimeStatusSnapshot) -> None:
+        if job.reservation is not None:
+            await run_blocking(job.reservation.release)
         job.provider_stream_started.set()
         job.run_identified.set()
         job.execution_started.set()
@@ -1331,7 +1364,7 @@ class RuntimeSupervisor:
             active = await run_blocking(self._load_active_run, job.handle.session_id)
         except Exception:  # noqa: BLE001 - shutdown must still release process state.
             active = None
-        self._finish_job(
+        await self._finish_job(
             job,
             RuntimeStatusSnapshot(
                 handle=job.handle,

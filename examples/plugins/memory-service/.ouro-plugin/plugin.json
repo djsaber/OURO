@@ -1,0 +1,17 @@
+{
+  "schema_version": 3,
+  "plugin_id": "dev.ouro.examples.memory",
+  "name": "Memory Service",
+  "namespace": "memory_example",
+  "version": "0.1.0",
+  "engines": {"ouro": "^0.2.0", "plugin_api": "^3.0.0"},
+  "runtime": {"kind": "worker", "command": ["{python}", "worker.py"], "protocol": "3.0"},
+  "exports": [{
+    "id": "memory",
+    "methods": {
+      "append": {"effect": "state_changing", "input_schema": {"type": "string", "maxLength": 4096}},
+      "search": {"effect": "read_only", "input_schema": {"type": "string", "maxLength": 4096}},
+      "filter": {"effect": "state_changing", "registration": true}
+    }
+  }]
+}

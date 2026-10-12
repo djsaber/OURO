@@ -6,13 +6,13 @@ from typing import Literal
 
 from pydantic import AwareDatetime, ConfigDict, Field
 
-from ouro.automation.models import TaskExecution, TaskRecord, TaskStatus
 from ouro.core.base import OuroModel
+from ouro.core.tasks import TaskExecution, TaskRecord, TaskStatus
 
 
 class FileRecord(OuroModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    schema_version: Literal[1] = 1
+    schema_version: Literal[3] = 3
 
 
 class StoredTask(FileRecord):
@@ -31,6 +31,7 @@ class StoredExecution(FileRecord):
 class TaskIndexEntry(OuroModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     updated_at: AwareDatetime
+    owner_id: str | None
     enabled: bool
     next_run_at: AwareDatetime | None
     active_execution_id: str | None
@@ -44,6 +45,7 @@ class TaskIndexEntry(OuroModel):
         task = record.task
         return cls(
             updated_at=task.updated_at,
+            owner_id=task.owner_id,
             enabled=task.enabled,
             next_run_at=task.next_run_at,
             active_execution_id=task.active_execution_id,

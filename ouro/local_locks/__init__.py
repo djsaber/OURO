@@ -19,6 +19,69 @@ _LOCAL_MUTATION_LOCKS: WeakValueDictionary[str, threading.RLock] = WeakValueDict
 _MUTATION_DEPTHS = threading.local()
 
 
+class FileAccessLock:
+    """Share normal resource access; reserve exclusive access for offline maintenance.
+
+    Acquisitions never wait. Each instance owns an independent OS lock, including
+    within one process. A crashed process releases its locks without a stale lease.
+    """
+
+    def __init__(self, path: Path, *, exclusive: bool = False) -> None:
+        self.path = path
+        self.exclusive = exclusive
+        self._descriptor: int | None = None
+
+    def acquire(self) -> bool:
+        if self._descriptor is not None:
+            return True
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(self.path, os.O_CREAT | os.O_RDWR)
+        try:
+            if os.name == "nt":
+                backend = importlib.import_module("ouro.local_locks.windows")
+                acquired = backend.try_lock(descriptor, exclusive=self.exclusive)
+            else:
+                fcntl = importlib.import_module("fcntl")
+                try:
+                    fcntl.flock(
+                        descriptor,
+                        (fcntl.LOCK_EX if self.exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB,
+                    )
+                except OSError as exc:
+                    if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                        raise
+                    acquired = False
+                else:
+                    acquired = True
+            if acquired:
+                self._descriptor = descriptor
+            return bool(acquired)
+        finally:
+            if self._descriptor is None:
+                os.close(descriptor)
+
+    def release(self) -> None:
+        descriptor, self._descriptor = self._descriptor, None
+        if descriptor is None:
+            return
+        try:
+            if os.name == "nt":
+                importlib.import_module("ouro.local_locks.windows").unlock(descriptor)
+            else:
+                fcntl = importlib.import_module("fcntl")
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+    def __enter__(self) -> Self:
+        if not self.acquire():
+            raise RuntimeError(f"file access is in use: {self.path}")
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.release()
+
+
 class FileOwnerLock:
     """Non-blocking cross-process lock with a diagnostic owner payload."""
 

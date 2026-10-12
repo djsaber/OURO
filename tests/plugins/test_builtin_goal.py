@@ -30,10 +30,11 @@ from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.local_application import LocalApplication
-from ouro.plugins.api import ScopedPluginDataStore, adapt_sdk_contributions
+from ouro.plugins.api import adapt_sdk_contributions
 from ouro.plugins.harness_calls import invoke_plugin_callback
+from ouro.plugins.resources import ScopedPluginDataStore
 from ouro.plugins.session_controllers import PluginSessionControllerRegistry
-from ouro.sdk.plugins import v2 as sdk
+from ouro.sdk.plugins import v3 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 

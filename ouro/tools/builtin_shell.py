@@ -16,11 +16,11 @@ from pydantic import Field
 
 from ouro.core.base import utc_now
 from ouro.tools.base import (
+    ProcessResult,
     Tool,
     ToolDefinition,
     ToolExecutionContext,
     ToolInvocation,
-    ToolProcessResult,
     ToolResult,
 )
 from ouro.tools.builtin_common import BuiltinArguments
@@ -347,7 +347,7 @@ def _windows_command_prompt(
     return resolver("cmd")
 
 
-def _process_output(result: ToolProcessResult, *, stdout: str, stderr: str) -> str:
+def _process_output(result: ProcessResult, *, stdout: str, stderr: str) -> str:
     if result.timed_out:
         status = "Command timed out."
     else:

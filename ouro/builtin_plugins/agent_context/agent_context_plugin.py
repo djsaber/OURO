@@ -12,7 +12,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from ouro import __version__
-from ouro.sdk.plugins.v2 import (
+from ouro.sdk.plugins.environment import PluginEnvironment
+from ouro.sdk.plugins.v3 import (
     ContextCall,
     ContextContribution,
     ContextFragment,
@@ -21,7 +22,7 @@ from ouro.sdk.plugins.v2 import (
     PluginContext,
 )
 
-from .instructions import AgentInstructionLoader, render_agent_instructions
+from .instructions import render_agent_instructions
 
 Clock = Callable[[], datetime]
 
@@ -56,13 +57,12 @@ class AgentContextPlugin:
     def __init__(
         self,
         *,
-        instructions: AgentInstructionLoader | None = None,
-        ouro_home: str | Path | None = None,
+        environment: PluginEnvironment,
         facts: RuntimeFacts | None = None,
         clock: Clock | None = None,
         fallback_working_directory: str | Path | None = None,
     ) -> None:
-        self._instructions = instructions or AgentInstructionLoader(ouro_home=ouro_home)
+        self._environment = environment
         self._facts = facts or RuntimeFacts.collect()
         self._clock = clock or (lambda: datetime.now().astimezone())
         self._fallback_working_directory = (
@@ -97,8 +97,8 @@ class AgentContextPlugin:
     async def stop(self, reason, deadline) -> None:
         del reason, deadline
 
-    def agent_instructions(self, call: ContextCall) -> ContextOutput:
-        text = render_agent_instructions(self._instructions.load(call.workspace))
+    async def agent_instructions(self, call: ContextCall) -> ContextOutput:
+        text = render_agent_instructions(await self._environment.agent_instructions(call.workspace))
         return ContextOutput(
             fragments=(
                 ContextFragment(
@@ -149,7 +149,9 @@ def _timezone_description(current: datetime) -> str:
 
 
 def create_plugin(context: PluginContext) -> AgentContextPlugin:
-    return AgentContextPlugin(ouro_home=context.host_home)
+    if context.environment is None:
+        raise ValueError("Agent Context requires the environment port")
+    return AgentContextPlugin(environment=context.environment)
 
 
 __all__ = [

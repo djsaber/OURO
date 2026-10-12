@@ -56,40 +56,9 @@ def plan_desired_plugin_activation(
     *,
     builtin_contracts: Mapping[str, BuiltinPluginContract] | None = None,
 ) -> PluginActivationPlan:
-    builtin_contracts = builtin_contracts or {}
-    roots = sorted(
-        {
-            *(
-                plugin_id
-                for plugin_id, record in state.plugins.items()
-                if record.activation.desired_enabled
-            ),
-            *(
-                plugin_id
-                for plugin_id, contract in builtin_contracts.items()
-                if builtin_desired_enabled(state, contract)
-            ),
-        },
-        key=lambda plugin_id: plugin_root_sort_key(plugin_id, state),
+    return _resolve_plugin_activation(
+        state, None, builtin_contracts=builtin_contracts or {}, isolate_failures=True
     )
-    ordered: list[LockedPluginDependency] = []
-    added: set[str] = set()
-    failures: list[tuple[str, PluginDependencyError]] = []
-    for root in roots:
-        try:
-            graph = resolve_plugin_dependencies(
-                state,
-                roots={root},
-                builtin_contracts=builtin_contracts,
-            )
-        except PluginDependencyError as exc:
-            failures.append((root, exc))
-            continue
-        for node in graph.nodes:
-            if node.plugin_id not in added:
-                ordered.append(node)
-                added.add(node.plugin_id)
-    return PluginActivationPlan(PluginLockGraph(tuple(ordered)), tuple(failures))
 
 
 def resolve_plugin_dependencies(
@@ -98,7 +67,18 @@ def resolve_plugin_dependencies(
     *,
     builtin_contracts: Mapping[str, BuiltinPluginContract] | None = None,
 ) -> PluginLockGraph:
-    builtin_contracts = builtin_contracts or {}
+    return _resolve_plugin_activation(
+        state, roots, builtin_contracts=builtin_contracts or {}, isolate_failures=False
+    ).graph
+
+
+def _resolve_plugin_activation(
+    state: PluginStateDocument,
+    roots: set[str] | None,
+    *,
+    builtin_contracts: Mapping[str, BuiltinPluginContract],
+    isolate_failures: bool,
+) -> PluginActivationPlan:
     requested = (
         roots
         if roots is not None
@@ -115,23 +95,24 @@ def resolve_plugin_dependencies(
             ),
         }
     )
-    selected_versions: dict[str, str] = {}
     visiting: list[str] = []
-    visited: set[str] = set()
-    ordered: list[LockedPluginDependency] = []
+    resolved: dict[str, LockedPluginDependency] = {}
+    failed: dict[str, PluginDependencyError] = {}
 
     def visit(plugin_id: str, requirement: str | None = None) -> None:
         if plugin_id in visiting:
             cycle = " -> ".join([*visiting, plugin_id])
             raise PluginDependencyError(f"plugin dependency cycle: {cycle}")
-        existing_version = selected_versions.get(plugin_id)
-        if existing_version is not None:
-            if requirement is not None and not version_satisfies(existing_version, requirement):
+        existing = resolved.get(plugin_id)
+        if existing is not None:
+            if requirement is not None and not version_satisfies(existing.version, requirement):
                 raise PluginDependencyError(
                     f"plugin dependency conflict for {plugin_id}: "
-                    f"{existing_version} does not satisfy {requirement}"
+                    f"{existing.version} does not satisfy {requirement}"
                 )
             return
+        if plugin_id in failed:
+            raise failed[plugin_id]
         record = state.plugins.get(plugin_id)
         builtin = builtin_contracts.get(plugin_id)
         if record is not None and builtin is not None:
@@ -143,63 +124,67 @@ def resolve_plugin_dependencies(
                 raise PluginDependencyError(
                     f"builtin {plugin_id} {builtin.version} does not satisfy {requirement}"
                 )
-            selected_versions[plugin_id] = builtin.version
-            visiting.append(plugin_id)
-            builtin_dependency_ids: list[str] = []
-            for dependency_id, dependency_range in sorted(builtin.dependencies):
-                visit(dependency_id, dependency_range)
-                builtin_dependency_ids.append(dependency_id)
-            visiting.pop()
-            if plugin_id not in visited:
-                visited.add(plugin_id)
-                ordered.append(
-                    LockedPluginDependency(
-                        plugin_id=plugin_id,
-                        version=builtin.version,
-                        plugin_class="builtin",
-                        package_digest=None,
-                        contract_hash=builtin.contract_hash,
-                        dependencies=tuple(builtin_dependency_ids),
-                    )
-                )
-            return
-        if record is None or not record.installs:
-            raise PluginDependencyError(f"required plugin is not installed: {plugin_id}")
-        chosen = record.selected()
-        if chosen is None:
-            raise PluginDependencyError(f"required plugin has no selected install: {plugin_id}")
-        if requirement is not None and not version_satisfies(chosen.version, requirement):
-            raise PluginDependencyError(
-                f"selected {plugin_id} {chosen.version} does not satisfy {requirement}"
+            dependencies = sorted(builtin.dependencies)
+            node = LockedPluginDependency(
+                plugin_id=plugin_id,
+                version=builtin.version,
+                plugin_class="builtin",
+                package_digest=None,
+                contract_hash=builtin.contract_hash,
+                dependencies=tuple(item[0] for item in dependencies),
             )
-        selected_versions[plugin_id] = chosen.version
+        else:
+            if record is None or not record.installs:
+                raise PluginDependencyError(f"required plugin is not installed: {plugin_id}")
+            chosen = record.selected()
+            if chosen is None:
+                raise PluginDependencyError(f"required plugin has no selected install: {plugin_id}")
+            if requirement is not None and not version_satisfies(chosen.version, requirement):
+                raise PluginDependencyError(
+                    f"selected {plugin_id} {chosen.version} does not satisfy {requirement}"
+                )
+            dependencies = sorted(
+                (item.plugin_id, item.version) for item in chosen.manifest.dependencies.plugins
+            )
+            node = LockedPluginDependency(
+                plugin_id=plugin_id,
+                version=chosen.version,
+                plugin_class="user",
+                package_digest=chosen.package_digest,
+                dependencies=tuple(item[0] for item in dependencies),
+            )
         visiting.append(plugin_id)
-        dependency_ids: list[str] = []
-        for dependency in sorted(
-            chosen.manifest.dependencies.plugins,
-            key=lambda item: item.plugin_id,
-        ):
-            visit(dependency.plugin_id, dependency.version)
-            dependency_ids.append(dependency.plugin_id)
-        visiting.pop()
-        if plugin_id not in visited:
-            visited.add(plugin_id)
-            ordered.append(
-                LockedPluginDependency(
-                    plugin_id=plugin_id,
-                    version=chosen.version,
-                    plugin_class="user",
-                    package_digest=chosen.package_digest,
-                    dependencies=tuple(dependency_ids),
-                )
-            )
+        try:
+            for dependency_id, dependency_range in dependencies:
+                visit(dependency_id, dependency_range)
+        except PluginDependencyError as exc:
+            failed[plugin_id] = exc
+            raise
+        finally:
+            visiting.pop()
+        resolved[plugin_id] = node
 
+    failures: list[tuple[str, PluginDependencyError]] = []
+    accepted: set[str] = set()
     for plugin_id in sorted(
         requested,
         key=lambda candidate_id: plugin_root_sort_key(candidate_id, state),
     ):
-        visit(plugin_id)
-    return PluginLockGraph(tuple(ordered))
+        try:
+            visit(plugin_id)
+            accepted.add(plugin_id)
+        except PluginDependencyError as exc:
+            if not isolate_failures:
+                raise
+            failures.append((plugin_id, exc))
+    pending = list(accepted)
+    while pending:
+        for dependency_id in resolved[pending.pop()].dependencies:
+            if dependency_id not in accepted:
+                accepted.add(dependency_id)
+                pending.append(dependency_id)
+    graph = PluginLockGraph(tuple(node for key, node in resolved.items() if key in accepted))
+    return PluginActivationPlan(graph, tuple(failures))
 
 
 def plugin_root_sort_key(plugin_id: str, state: PluginStateDocument) -> tuple[int, str]:
@@ -242,28 +227,24 @@ def desired_dependant_closure(
 ) -> set[str]:
     """Return roots plus every transitively desired plugin that depends on them."""
 
+    dependants: dict[str, set[str]] = {}
+    for candidate_id, record in state.plugins.items():
+        installed = record.selected()
+        if not record.activation.desired_enabled or installed is None:
+            continue
+        for dependency in installed.manifest.dependencies.plugins:
+            dependants.setdefault(dependency.plugin_id, set()).add(candidate_id)
+    for candidate_id, contract in (builtin_contracts or {}).items():
+        if builtin_desired_enabled(state, contract):
+            for dependency_id, _ in contract.dependencies:
+                dependants.setdefault(dependency_id, set()).add(candidate_id)
     affected = set(roots)
-    changed = True
-    while changed:
-        changed = False
-        for candidate_id, record in state.plugins.items():
-            if candidate_id in affected or not record.activation.desired_enabled:
-                continue
-            installed = record.selected()
-            if installed is None:
-                continue
-            dependencies = {
-                dependency.plugin_id for dependency in installed.manifest.dependencies.plugins
-            }
-            if dependencies & affected:
+    pending = list(roots)
+    while pending:
+        for candidate_id in dependants.get(pending.pop(), ()):
+            if candidate_id not in affected:
                 affected.add(candidate_id)
-                changed = True
-        for candidate_id, contract in (builtin_contracts or {}).items():
-            if candidate_id in affected or not builtin_desired_enabled(state, contract):
-                continue
-            if {dependency_id for dependency_id, _ in contract.dependencies} & affected:
-                affected.add(candidate_id)
-                changed = True
+                pending.append(candidate_id)
     return affected
 
 

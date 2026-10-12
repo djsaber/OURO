@@ -11,11 +11,12 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
+from ouro import __version__
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.paths import portable_relative_path
 from ouro.plugins.semver import version_satisfies
 
-OURO_VERSION = "0.1.0"
+OURO_VERSION = __version__
 PLUGIN_API_VERSION = "3.0.0"
 WORKER_PROTOCOL_VERSION = "3.0"
 NATIVE_MANIFEST = Path(".ouro-plugin") / "plugin.json"

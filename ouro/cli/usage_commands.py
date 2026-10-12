@@ -22,6 +22,7 @@ class UsageFilterArgs(TypedDict, total=False):
     model_ids: list[str] | None
     session_ids: list[str] | None
     run_ids: list[str] | None
+    plugin_ids: list[str] | None
     purposes: list[UsagePurpose] | None
     workspaces: list[str] | None
     billing_modes: list[BillingMode] | None
@@ -221,6 +222,7 @@ def _usage_filter(
     model_ids: list[str] | None = None,
     session_ids: list[str] | None = None,
     run_ids: list[str] | None = None,
+    plugin_ids: list[str] | None = None,
     purposes: list[UsagePurpose] | None = None,
     workspaces: list[str] | None = None,
     billing_modes: list[BillingMode] | None = None,
@@ -233,6 +235,7 @@ def _usage_filter(
         model_ids=frozenset(model_ids or ()),
         session_ids=frozenset(session_ids or ()),
         run_ids=frozenset(run_ids or ()),
+        plugin_ids=frozenset(plugin_ids or ()),
         purposes=frozenset(purposes or ()),
         workspaces=frozenset(str(Path(value).expanduser().resolve()) for value in workspaces or ()),
         billing_modes=frozenset(billing_modes or ()),

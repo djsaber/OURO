@@ -1,0 +1,19 @@
+{
+  "schema_version": 3,
+  "plugin_id": "dev.ouro.examples.scheduled_sync",
+  "name": "Scheduled Sync",
+  "version": "0.1.0",
+  "namespace": "scheduled_sync",
+  "engines": {"ouro": "^0.2.0", "plugin_api": "^3.0.0"},
+  "runtime": {"kind": "worker", "command": ["{python}", "worker.py"], "protocol": "3.0"},
+  "permissions": [{"id": "background.run", "reason": "Manage and execute scheduled record synchronization."}],
+  "exports": [{"id": "sync", "methods": {
+    "run": {"effect": "state_changing", "schedulable": true, "input_schema": {"type": "null"}}
+  }}],
+  "contributes": {"commands": [{
+    "id": "sync-plan",
+    "description": "Create or manage owned hourly synchronization plans.",
+    "usage": "create|list|pause <id>|resume <id>|delete <id>",
+    "timeout_seconds": 30
+  }]}
+}

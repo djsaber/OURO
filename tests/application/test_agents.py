@@ -1404,6 +1404,74 @@ async def test_idle_child_follow_up_reuses_session_and_creates_new_run(tmp_path)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("completion_boundary", ["before_input_drain", "after_run"])
+async def test_idle_child_follow_up_waits_for_previous_execution_receipt(
+    tmp_path, monkeypatch, completion_boundary
+):
+    service, supervisor, store, _ = await _services(tmp_path)
+    completed, release = asyncio.Event(), asyncio.Event()
+    run_prepared = supervisor.runtime.run_prepared
+    drain_inputs = supervisor.runtime._drain_queued_input_queue
+
+    async def hold_completion():
+        if not completed.is_set():
+            completed.set()
+            await release.wait()
+
+    async def hold_completed_run(run, session_input, **options):
+        result = await run_prepared(run, session_input, **options)
+        await hold_completion()
+        return result
+
+    async def hold_before_input_drain(session_id, history_epoch):
+        await hold_completion()
+        await drain_inputs(session_id, history_epoch)
+
+    if completion_boundary == "before_input_drain":
+        monkeypatch.setattr(
+            supervisor.runtime, "_drain_queued_input_queue", hold_before_input_drain
+        )
+    else:
+        monkeypatch.setattr(supervisor.runtime, "run_prepared", hold_completed_run)
+    try:
+        first = await service.spawn_agent(
+            SpawnAgentRequest(
+                request_id="host/initial-child",
+                parent_session_id="ses_root",
+                parent_run_id="run_parent",
+                agent_id="reader",
+                task="Inspect once.",
+                description="Initial inspection",
+            )
+        )
+        await asyncio.wait_for(completed.wait(), 5)
+        await service.wait_agents((first.delegation_id,))
+        submit_prepared = supervisor.submit_prepared
+
+        async def release_predecessor_after_admission_starts(run, session_input, **options):
+            asyncio.get_running_loop().call_soon(release.set)
+            return await submit_prepared(run, session_input, **options)
+
+        monkeypatch.setattr(
+            supervisor, "submit_prepared", release_predecessor_after_admission_starts
+        )
+        resumed = await service.send_agent_message(
+            first.delegation_id,
+            "Inspect again.",
+            request_id="host/follow-up",
+            mode="follow_up",
+        )
+        await service.wait_agents((first.delegation_id,))
+        assert resumed.child_session_id == first.child_session_id
+        assert resumed.child_run_id != first.child_run_id
+        assert len(store.load_runtime_session(first.child_session_id).runs) == 2
+    finally:
+        release.set()
+        await service.close()
+        await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_active_child_message_uses_steer_without_new_run(tmp_path) -> None:
     service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
 

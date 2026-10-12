@@ -1,0 +1,17 @@
+{
+  "schema_version": 3,
+  "plugin_id": "dev.ouro.examples.review_service",
+  "namespace": "review_service",
+  "name": "Native Review Service",
+  "version": "0.1.0",
+  "engines": {"ouro": "^0.2.0", "plugin_api": "^3.0.0"},
+  "runtime": {"kind": "python-inprocess", "entrypoint": "review_service_plugin:create_plugin"},
+  "permissions": [{"id": "sessions.write", "reason": "Review and act within the caller's native Run."}],
+  "exports": [{
+    "id": "review",
+    "methods": {
+      "inspect": {"effect": "state_changing", "input_schema": {"type": "null"}},
+      "act": {"effect": "state_changing", "input_schema": {"type": "string"}}
+    }
+  }]
+}

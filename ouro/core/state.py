@@ -12,6 +12,7 @@ from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.reasoning import ReasoningRequest
+from ouro.core.run_drivers import DriverCheckpoint, RunDriverBinding
 from ouro.core.session_controls import (
     RunControlBinding,
     SessionControlState,
@@ -230,7 +231,7 @@ class SessionRecord(VersionedOuroModel):
 
 
 class RunRecord(VersionedOuroModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[5] = 5
     history_epoch: int = Field(default=0, ge=0)
     run_id: str = Field(default_factory=lambda: new_id("run"))
     session_id: str
@@ -253,6 +254,8 @@ class RunRecord(VersionedOuroModel):
     usage_entry_ids: list[str] = Field(default_factory=list)
     model_round_count: int = Field(default=0, ge=0)
     continuation: RunContinuationCheckpoint | None = None
+    driver: RunDriverBinding = Field(default_factory=RunDriverBinding)
+    driver_checkpoint: DriverCheckpoint | None = None
     agent_catalog: AgentCatalogSnapshot | None = None
     metadata: Metadata = MetadataField
 

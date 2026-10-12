@@ -6,17 +6,18 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from ouro.application.agent_models import SpawnAgentRequest
-from ouro.automation.models import TaskConfiguration, TaskSchedule
 from ouro.core.provider import ProviderStreamEvent
+from ouro.core.tasks import AgentTaskTarget, TaskConfiguration, TaskSchedule
 from ouro.providers import FauxProvider
 from ouro.tools import Tool, ToolDefinition, ToolResult
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.conversation_history import ConversationHistory
 from ouro.tui.screens import ChoiceScreen
+from ouro.tui.theme import theme_for
 from ouro.tui.widgets import ConversationView, ToolActivityRow
 from tests.application.test_agent_multi_host import application, interaction
 from tests.tui.helpers import run_ready_app
-from tests.tui.test_app import _wait_for_screen
+from tests.tui.test_app import _wait_for_screen, _wait_for_worker_group
 from tests.tui.test_tasks import choose, streaming_application
 
 
@@ -136,47 +137,52 @@ async def test_two_tuis_follow_tools_and_consecutive_runs_without_duplicate_summ
     )
     session = owner.runtime.sessions.create(title="Two TUI observers").session
     first, second = OuroTuiApp(application=owner), OuroTuiApp(application=viewer)
-    async with (
-        run_ready_app(first, size=(100, 30)) as first_pilot,
-        run_ready_app(second, size=(100, 30)) as second_pilot,
-    ):
+    async with owner:
+        # Prepare the executing tool before mounting its two observers. This test
+        # exercises attachment and live updates, not startup under UI render load.
         handle = await owner.supervisor.submit("Inspect", session_id=session.session_id)
         await asyncio.wait_for(provider.started.wait(), 5)
-        for app in (first, second):
-            await app._open_session(session.session_id)
-            assert app._projection.activity.activity == "executing_tools"
-        provider.release.set()
-        run_ids = []
-        for index, text in enumerate(("First shared answer.", "Second shared answer.")):
-            if index:
-                handle = await owner.supervisor.submit("Continue", session_id=session.session_id)
-            provider.text(text)
-            provider.deltas.put_nowait(ProviderStreamEvent(type="done"))
-            result = await asyncio.wait_for(owner.supervisor.wait(handle), 5)
-            run_ids.append(result.run_id)
-            for app, pilot in ((first, first_pilot), (second, second_pilot)):
-                async with asyncio.timeout(8):
-                    while (
-                        app._projection.activity.status != "completed"
-                        or app._projection.activity.run_id != result.run_id
-                        or sum(
-                            entry.kind == "run"
-                            for entry in app.query_one(ConversationHistory).entries
-                        )
-                        < index + 1
-                    ):
-                        await pilot.pause()
-                await visible(pilot, app, text.split()[0])
-                assert text in app._projection.assistant_text
-                summaries = [
-                    entry.run
-                    for entry in app.query_one(ConversationHistory).entries
-                    if entry.kind == "run"
-                ]
-                assert [summary.run_id for summary in summaries] == run_ids
-                assert not app.query_one(ConversationView)._tools
-        assert first._projection.last_sequence == second._projection.last_sequence
-        assert not viewer.supervisor._jobs_by_session
+        async with (
+            run_ready_app(first, size=(100, 30)) as first_pilot,
+            run_ready_app(second, size=(100, 30)) as second_pilot,
+        ):
+            for app in (first, second):
+                await app._open_session(session.session_id)
+                assert app._projection.activity.activity == "executing_tools"
+            provider.release.set()
+            run_ids = []
+            for index, text in enumerate(("First shared answer.", "Second shared answer.")):
+                if index:
+                    handle = await owner.supervisor.submit(
+                        "Continue", session_id=session.session_id
+                    )
+                provider.text(text)
+                provider.deltas.put_nowait(ProviderStreamEvent(type="done"))
+                result = await asyncio.wait_for(owner.supervisor.wait(handle), 5)
+                run_ids.append(result.run_id)
+                for app, pilot in ((first, first_pilot), (second, second_pilot)):
+                    async with asyncio.timeout(8):
+                        while (
+                            app._projection.activity.status != "completed"
+                            or app._projection.activity.run_id != result.run_id
+                            or sum(
+                                entry.kind == "run"
+                                for entry in app.query_one(ConversationHistory).entries
+                            )
+                            < index + 1
+                        ):
+                            await pilot.pause()
+                    await visible(pilot, app, text.split()[0])
+                    assert text in app._projection.assistant_text
+                    summaries = [
+                        entry.run
+                        for entry in app.query_one(ConversationHistory).entries
+                        if entry.kind == "run"
+                    ]
+                    assert [summary.run_id for summary in summaries] == run_ids
+                    assert not app.query_one(ConversationView)._tools
+            assert first._projection.last_sequence == second._projection.last_sequence
+            assert not viewer.supervisor._jobs_by_session
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -201,13 +207,13 @@ async def test_task_owned_by_another_runtime_streams_through_tools_and_session_s
             task = await owner.tasks.create(
                 TaskConfiguration(
                     title="Shared background task",
-                    description="Inspect and report",
-                    workspace=str(tmp_path),
-                    model="faux/faux",
                     schedule=TaskSchedule(
                         frequency="custom",
                         unit="minutes",
                         starts_at=datetime.now(UTC) + timedelta(seconds=0.1),
+                    ),
+                    target=AgentTaskTarget(
+                        prompt="Inspect and report", workspace=str(tmp_path), model="faux/faux"
                     ),
                 )
             )
@@ -218,8 +224,20 @@ async def test_task_owned_by_another_runtime_streams_through_tools_and_session_s
             await pilot.press("ctrl+t")
             await _wait_for_screen(app, ChoiceScreen, title="Tasks")
             await choose(pilot, app, "Shared background task")
+            await _wait_for_screen(
+                app,
+                ChoiceScreen,
+                title=theme_for(app).section_separator.join(("TASK", "Shared background task")),
+            )
             await choose(pilot, app, "History")
+            await _wait_for_screen(
+                app,
+                ChoiceScreen,
+                title=theme_for(app).section_separator.join(("TASK EXECUTIONS", "LATEST 50")),
+            )
+            selection_group = f"choice-selection-{id(app.screen)}"
             await pilot.press("enter")
+            await _wait_for_worker_group(app, pilot, group=selection_group)
             await visible(pilot, app, "Before")
             assert app._projection.session_id == task.session_id
             assert app._projection.activity.activity == "executing_tools"

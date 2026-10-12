@@ -17,6 +17,7 @@ UsageGroupBy = Literal[
     "session",
     "run",
     "purpose",
+    "plugin",
     "billing_mode",
 ]
 

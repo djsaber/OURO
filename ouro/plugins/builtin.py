@@ -14,7 +14,7 @@ from ouro.plugins.models import PluginStateDocument
 from ouro.plugins.paths import portable_relative_path
 
 if TYPE_CHECKING:
-    from ouro.sdk.plugins.v2 import PluginContext
+    from ouro.sdk.plugins.v3 import PluginContext
 
 
 BuiltinPluginFactory = Callable[["PluginContext"], object]

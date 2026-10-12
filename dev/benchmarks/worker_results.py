@@ -28,7 +28,7 @@ async def measure(args):
     sys.path.insert(0, str(args.source.resolve()))
     from ouro.plugins.manifest import PluginManifest
     from ouro.plugins.worker import WorkerPluginInstance
-    from ouro.sdk.plugins import v2 as sdk
+    from ouro.sdk.plugins import v3 as sdk
 
     package = args.source / "examples/plugins/worker-tool"
     manifest = PluginManifest.model_validate_json(
@@ -84,7 +84,13 @@ async def measure(args):
                 for transport in ("decoded", "json"):
 
                     async def respond(
-                        _method, _params, encoded=encoded, transport=transport, payload=payload
+                        _method,
+                        _params,
+                        encoded=encoded,
+                        transport=transport,
+                        payload=payload,
+                        *,
+                        timeout=None,
                     ):
                         return json.loads(encoded) if transport == "json" else dict(payload)
 

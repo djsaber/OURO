@@ -33,9 +33,9 @@ LocalApplication：本地组合与生命周期所有者
 
 | 模块 | 负责的变化方向 |
 |---|---|
-| `core` | 领域记录、Provider / Tool 协议、原子消息帧、上下文与 active Run 内循环 |
+| `core` | 领域记录、Provider / Tool / Driver 协议、原子消息帧、上下文与默认循环 |
 | `application` | Session / Run 用例、事务与恢复、Agent / Task、查询投影和 Host DTO |
-| `local_application` | 实现选择、扩展装配、共享服务与完整关闭顺序 |
+| `local_application` / `local_providers` | 实现选择、扩展及协议装配、共享服务与完整关闭顺序 |
 | `sessions` | 后端中立持久化端口、文件 / SQLite、提交、撤销与查询索引 |
 | `resources` | 会话文件、元数据、完整性与本地发布 |
 | `providers` | HTTP / SSE、协议编解码、适配工厂与可见输出之前的安全重试 |
@@ -47,7 +47,7 @@ LocalApplication：本地组合与生命周期所有者
 | `automation` / `billing` | 任务与执行记录；用量账本和审计存储 |
 | `transfer` | 有版本的归档格式、路径和大小校验、原生技能文件传输 |
 | `cli` / `tui` / `data_commands` | 命令与界面、瞬态交互和共享数据操作参数 |
-| `deployment` / `local_io` / `local_locks` | 本地部署选择、原子 I/O 和进程 / 线程协调原语 |
+| `deployment` / `local_io` / `local_locks` / `local_processes` | 本地部署选择、原子 I/O、进程 / 线程协调和受管理进程树 |
 
 Host 需要新增能力时先扩展 Application 用例。其他基础设施不得通过 Session adapter 借用原子写、锁或本地目录解析。
 
@@ -55,9 +55,9 @@ Host 需要新增能力时先扩展 Application 用例。其他基础设施不�
 
 1. `LocalApplication` 装配存储、配置、Provider 工厂、Runtime、扩展目录、Supervisor、Agent 与任务服务；轻量配置 / 认证命令只装配所需服务。
 2. Runtime 在会话执行所有权下恢复和验证状态，接受输入并开始 Run；`RunLifecycle` 维护持久化 Run / Session 转换。
-3. `InnerAgentLoop` 请求上下文准备，组合有效路由、提示词、压缩、Skills、动态贡献与原子历史帧，记录真实请求快照。
+3. Run 的 Driver 决定下一步操作。模型请求端口准备上下文，组合有效路由、提示词、压缩、Skills、动态贡献与原子历史帧，记录真实请求快照；`InnerAgentLoop` 是默认算法。
 4. `RuntimeAdapter` 调用 Provider；协议适配器把响应投影为统一流事件，Core 不解释供应商的私有认证或续接内容。
-5. 完整响应边界形成工具批次。工具预检、权限、交互和执行经应用层与 `ToolBatchExecutor` 协作，结果按调用顺序提交。
+5. 完整响应边界形成类型化模型工具调用；Driver 也可显式提交程序化调用。两者共用工具预检、权限、交互和 `ToolBatchExecutor`，结果按调用顺序提交；等待与 Driver checkpoint 使用同一原子提交。
 6. 事件持久化后发布；交互预检通知与批次检查点有先后边界，Host 按后续状态事件重新查询权威交互。运行终结、预算、排队输入及 continuation 由各自所属边界裁决。
 7. 取消先记录请求并通知 owner，等待正在执行的模型 / 工具资源收尾与审计落盘，再发布 Run 终态。
 
@@ -76,7 +76,7 @@ Host 需要新增能力时先扩展 Application 用例。其他基础设施不�
 | RuntimeSupervisor | 进程内 FIFO、并发许可、订阅和 shutdown | 不另建持久化调度状态机 |
 | SessionRepository / Commit / Harness | 原子变更、检查点、撤销与恢复 | 文件和 SQLite 实现同一领域契约 |
 | AgentService | 派遣目录、Delegation、根交互路由与结果交付 | child 是普通 Session / Run，复用同一执行链 |
-| Task 应用服务 | 计划领取、执行归属和重启对账 | 调度将输入交给普通会话，不另起 Agent 内核 |
+| Task 应用服务 | 计划领取、执行归属和重启对账 | Agent 目标提交普通会话输入，插件目标调用声明可调度的服务方法；两者使用原生执行记录 |
 | 插件生命周期与 Catalog lease | 代次资源、契约快照和引用寿命 | 决策及其调用持有目录；等待释放租约，后续决策使用当前目录 |
 | Host | UI 任务、草稿、选择与渲染投影 | 通过快照和事件游标追赶，不成为业务事实来源 |
 
@@ -87,6 +87,20 @@ Host 需要新增能力时先扩展 Application 用例。其他基础设施不�
 持久化 Run 是恢复事实的来源；进程内对象只承载当前执行所需的绑定，精确生命周期见[运行时规格](../specs/runtime.md#run-进程内资源)。
 
 ## 跨领域边界
+
+### 框架与插件
+
+框架拥有模型请求、工具执行、权限、Session/Run、任务派发、资源和用量事实。插件提供领域业务、协议实现、
+循环算法和扩展处理器，通过独立 SDK 的类型化端口调用原生能力。Goal、Plan 与 Agent Context 使用同样的
+公开边界；Host 通过公开交互 DTO 呈现内容，不导入插件业务模块。
+
+Manifest 声明静态贡献与依赖，具名服务承载插件间的业务协作；动态工具整组发布。框架按实际调用保留 owner
+及依赖，不向插件暴露跨包对象或内部 Store。进程内与 worker 使用同一业务契约，worker 的双向 RPC 逐项等待
+流式结果，并保留父调用的限制。Provider 不继承 Driver 控制端口。
+
+Generation 拥有实例、任务、worker、MCP、私有模块和数据占用。禁用先撤销调用，再结算和关闭资源；升级
+发布新代次，在途工作按原绑定完成。等待只保存原生事实与执行契约。卸载保留业务数据和被待完成操作引用的
+代码；显式维护在停用及独占数据访问期间执行。详细契约见[插件规格](../specs/plugins.md)。
 
 ### 持久化与资源
 
@@ -102,7 +116,7 @@ Provider 实例、产品类型与线协议独立；工厂按协议选择 adapter
 
 ### 扩展与子智能体
 
-插件安装只校验和发布不可变包；启用精确选定的内容才执行代码。候选 Catalog 就绪后原子切换，在途调用通过租约保留原目录；会话恢复采用当前能力，待完成调用核对精确执行契约。13 类贡献由封闭清单接入，Skill / MCP 资源与代次绑定，后台服务遵循 activation 生命周期。
+插件安装只校验和发布不可变包；启用精确选定的内容才执行代码。候选 Catalog 就绪后原子切换，在途调用通过租约保留原目录；会话恢复采用当前能力，待完成调用核对精确执行契约。15 类贡献由明确清单接入，Skill / MCP 资源与代次绑定，后台服务遵循 activation 生命周期。
 
 子智能体目录在父模型决策边界绑定，工具 schema 与实际派遣使用同一快照。子会话复用 Runtime、工具、权限、预算和恢复；sync 等待释放执行许可，async 结果通过持久身份交付，人工交互按完整 child identity 路由。当前单层、bound 生命周期约束见[子智能体规格](../specs/subagents.md)。
 

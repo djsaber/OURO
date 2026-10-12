@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import builtins
+from collections.abc import Sequence
+from contextlib import nullcontext
 from pathlib import Path
+from typing import Literal
 
 from ouro.application.dto import Diagnostic
 from ouro.application.harness import capture_session_harness
@@ -15,11 +18,13 @@ from ouro.application.plugin_models import (
     PluginCommandView,
     PluginDetail,
     PluginInstallView,
+    PluginMaintenanceResult,
     PluginProvenanceView,
     PluginScaffoldView,
     PluginSummary,
     PluginValidationView,
 )
+from ouro.application.queued_inputs import QueuedInputQueue
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.application.usage import UsageService
 from ouro.core.callbacks import run_blocking
@@ -27,6 +32,7 @@ from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.redaction import redact_text
 from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.core.state import SessionRecord
+from ouro.local_processes.commands import run_process
 from ouro.plugins.builtin import BuiltinPluginDefinition, BuiltinPluginRegistry
 from ouro.plugins.compatibility import inspect_community_package
 from ouro.plugins.dependencies import (
@@ -37,7 +43,7 @@ from ouro.plugins.dependencies import (
     resolve_plugin_dependencies,
 )
 from ouro.plugins.installer import PluginInstaller
-from ouro.plugins.manifest import PluginStatus
+from ouro.plugins.manifest import PluginStatus, validate_plugin_id
 from ouro.plugins.models import (
     InstalledPlugin,
     PluginAuditEvent,
@@ -193,7 +199,7 @@ class PluginService:
     def list(self) -> list[PluginSummary]:
         state = self.store.read_state()
         summaries = {
-            plugin_id: self._summary(record)
+            plugin_id: self._summary(record, state=state)
             for plugin_id, record in state.plugins.items()
             if record.selected() is not None
         }
@@ -222,12 +228,11 @@ class PluginService:
         configuration = record.activation.configuration_for(installed.package_digest)
         generations: list[dict[str, object]] = []
         if self.runtime is not None:
-            with self.runtime.snapshot() as snapshot:
-                generations = [
-                    generation.model_dump(mode="json", exclude_none=True)
-                    for generation in snapshot.generations
-                    if generation.plugin_id == plugin_id
-                ]
+            generations = [
+                generation.model_dump(mode="json", exclude_none=True)
+                for generation in self.runtime.catalog().generations
+                if generation.plugin_id == plugin_id
+            ]
         return PluginDetail(
             **summary.model_dump(),
             description=manifest.description,
@@ -240,7 +245,8 @@ class PluginService:
                     reverse=True,
                 )
             ],
-            capabilities=sorted(manifest.contributes.capabilities()),
+            capabilities=sorted(manifest.capabilities()),
+            exports=[item.model_dump(mode="json") for item in manifest.exports],
             permissions=[
                 item.model_dump(mode="json", exclude_none=True) for item in manifest.permissions
             ],
@@ -299,29 +305,26 @@ class PluginService:
         )
 
     def list_commands(self) -> builtins.list[PluginCommandView]:
-        snapshot = self._require_runtime().snapshot()
-        try:
-            return [
-                PluginCommandView(
-                    command_id=item.command_id,
-                    plugin_id=item.plugin_id,
-                    name=item.name,
-                    description=item.description,
-                    usage=item.usage,
-                    argument_options=tuple(
-                        PluginCommandArgumentView(
-                            value=option.value,
-                            description=option.description,
-                            usage=option.usage,
-                        )
-                        for option in item.argument_options
-                    ),
-                    requires_session=item.requires_session,
-                )
-                for item in snapshot.commands.list()
-            ]
-        finally:
-            snapshot.close()
+        catalog = self._require_runtime().catalog()
+        return [
+            PluginCommandView(
+                command_id=item.command_id,
+                plugin_id=item.plugin_id,
+                name=item.name,
+                description=item.description,
+                usage=item.usage,
+                argument_options=tuple(
+                    PluginCommandArgumentView(
+                        value=option.value,
+                        description=option.description,
+                        usage=option.usage,
+                    )
+                    for option in item.argument_options
+                ),
+                requires_session=item.requires_session,
+            )
+            for item in catalog.commands.list()
+        ]
 
     async def execute_command(
         self,
@@ -332,14 +335,22 @@ class PluginService:
         workspace: str | None = None,
     ) -> PluginCommandExecutionView:
         runtime = self._require_runtime()
+        await runtime.synchronize()
         captured_harness = None
         if session_id is not None and self.session_store is not None:
             before, draft = await run_blocking(self._capture_command_session, session_id)
             captured_harness = (before, draft)
-        snapshot = runtime.snapshot()
+        controller_ids = (
+            {item.controller_id for item in captured_harness[0].controls.activations}
+            if captured_harness is not None
+            else set()
+        )
+        binding = runtime.catalog().bind_command(command_id, controller_ids=controller_ids)
         try:
+            commands, controllers = binding.value
             return await execute_plugin_command(
-                catalog=snapshot,
+                commands=commands,
+                controllers=controllers,
                 store=self.session_store,
                 command_id=command_id,
                 argument=argument,
@@ -347,9 +358,10 @@ class PluginService:
                 workspace=workspace,
                 usage_service=self.usage_service,
                 captured_harness=captured_harness,
+                select_driver=runtime.select_driver,
             )
         finally:
-            snapshot.close()
+            binding.close()
 
     def _capture_command_session(
         self, session_id: str
@@ -535,10 +547,10 @@ class PluginService:
         status = await runtime.enable(plugin_id)
         return PluginActionResult(action="enable", plugin_id=plugin_id, status=status)
 
-    async def disable(self, plugin_id: str) -> PluginActionResult:
+    async def disable(self, plugin_id: str, *, wait: bool = True) -> PluginActionResult:
         runtime = self._require_runtime()
         await self._release_plugin_session_controls(plugin_id)
-        status = await runtime.disable(plugin_id)
+        status = await runtime.disable(plugin_id, wait=wait)
         return PluginActionResult(action="disable", plugin_id=plugin_id, status=status)
 
     async def restart(self, plugin_id: str) -> PluginActionResult:
@@ -666,7 +678,7 @@ class PluginService:
                 "plugin data can only be purged while removing the final installed digest"
             )
         references = self._durable_references(plugin_id, target_digest)
-        if references:
+        if purge_data and references:
             raise ValueError(
                 "plugin digest is retained by active durable runs: " + ", ".join(references)
             )
@@ -684,58 +696,125 @@ class PluginService:
             raise ValueError(f"plugin has active dependents: {plugin_id}: {', '.join(dependents)}")
         if removing_selected and record.activation.desired_enabled:
             await self._require_runtime().disable(plugin_id)
-        self.installer.remove_install(
-            plugin_id,
-            package_digest=target_digest,
-            purge_data=purge_data,
-            request_id=request_id,
-        )
+        if self.runtime is not None and self.runtime.has_resources(
+            plugin_id, package_digest=target_digest
+        ):
+            raise ValueError(f"plugin resources must stop before removal: {plugin_id}")
+        with self.store.data_lock(plugin_id, exclusive=True) if purge_data else nullcontext():
+            if purge_data:
+                self._require_inactive_data(plugin_id)
+            self.installer.remove_install(
+                plugin_id,
+                package_digest=target_digest,
+                purge_data=purge_data,
+                request_id=request_id,
+            )
         remaining = self.store.read_state().plugins.get(plugin_id)
         return PluginActionResult(
             action="remove",
             plugin_id=plugin_id,
             status=self._status(remaining) if remaining is not None else "disabled",
             package_digest=target_digest,
+            retained_by=references,
         )
 
     def gc(self) -> builtins.list[str]:
-        return [str(path) for path in self.installer.garbage_collect()]
+        referenced = {
+            (plugin_id, release_id)
+            for plugin_class, plugin_id, release_id in self._durable_reference_map()
+            if plugin_class == "user"
+        }
+        return [str(path) for path in self.store.garbage_collect(referenced)]
 
     def purge_data(self, plugin_id: str) -> PluginActionResult:
+        plugin_id = validate_plugin_id(plugin_id)
+        if self.runtime is not None and self.runtime.has_resources(plugin_id):
+            raise ValueError(f"plugin resources must stop before purging data: {plugin_id}")
+        with self.store.data_lock(plugin_id, exclusive=True):
+            self._require_inactive_data(plugin_id)
+            self.store.purge_data(plugin_id)
+            self.store.append_audit(
+                PluginAuditEvent(
+                    action="purge_data",
+                    plugin_id=plugin_id,
+                    detail="private data purged",
+                )
+            )
+            return PluginActionResult(action="purge_data", plugin_id=plugin_id, status="disabled")
+
+    async def maintain_data(
+        self,
+        plugin_id: str,
+        arguments: Sequence[str],
+        *,
+        timeout_seconds: float = 300,
+    ) -> PluginMaintenanceResult:
+        """Run an explicit owner command with exclusive access to disabled private data."""
+        plugin_id = validate_plugin_id(plugin_id)
+        with self.store.data_lock(plugin_id, exclusive=True):
+            await run_blocking(self._require_inactive_data, plugin_id)
+            directory = self.store.data_root / plugin_id
+            if not directory.is_dir():
+                raise ValueError(f"plugin data directory does not exist: {plugin_id}")
+            try:
+                result = await run_process(
+                    arguments, cwd=directory, timeout_seconds=timeout_seconds
+                )
+            except BaseException:
+                await run_blocking(
+                    self.store.append_audit,
+                    PluginAuditEvent(
+                        action="maintain_data",
+                        plugin_id=plugin_id,
+                        result="failed",
+                        detail="command did not complete",
+                    ),
+                )
+                raise
+            status: Literal["succeeded", "failed"] = (
+                "succeeded" if result.returncode == 0 and not result.timed_out else "failed"
+            )
+            await run_blocking(
+                self.store.append_audit,
+                PluginAuditEvent(
+                    action="maintain_data",
+                    plugin_id=plugin_id,
+                    result=status,
+                    detail=f"{status}; exit={result.returncode}; timed_out={result.timed_out}",
+                ),
+            )
+            return PluginMaintenanceResult(
+                plugin_id=plugin_id,
+                status=status,
+                returncode=result.returncode,
+                timed_out=result.timed_out,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                stdout_truncated=result.stdout_truncated,
+                stderr_truncated=result.stderr_truncated,
+            )
+
+    def _require_inactive_data(self, plugin_id: str) -> None:
+        """Check under an exclusive data lock, which also prevents new enablement."""
         definition = self.builtin_plugins.get(plugin_id)
+        state = self.store.read_state()
         if definition is not None:
-            state = self.store.read_state()
             if builtin_desired_enabled(state, definition.dependency_contract()):
-                raise ValueError(f"plugin must be disabled before purging data: {plugin_id}")
+                raise ValueError(f"plugin must be disabled before data maintenance: {plugin_id}")
             references = self._durable_references(
                 plugin_id,
-                definition.contract_hash,
+                None,
                 plugin_class="builtin",
             )
-            if references:
-                raise ValueError(
-                    "plugin data is retained by active durable runs: " + ", ".join(references)
-                )
-            self.store.purge_data(plugin_id)
-            return PluginActionResult(
-                action="purge_data",
-                plugin_id=plugin_id,
-                status="disabled",
-            )
-        record = self._record(plugin_id)
-        if record.activation.desired_enabled:
-            raise ValueError(f"plugin must be disabled before purging data: {plugin_id}")
-        references = [
-            reference
-            for install in record.installs
-            for reference in self._durable_references(plugin_id, install.package_digest)
-        ]
+        else:
+            record = state.plugins.get(plugin_id)
+            if record is not None and record.activation.desired_enabled:
+                raise ValueError(f"plugin must be disabled before data maintenance: {plugin_id}")
+            references = self._durable_references(plugin_id, None)
         if references:
             raise ValueError(
                 "plugin data is retained by active durable runs: " + ", ".join(references)
             )
-        self.store.purge_data(plugin_id)
-        return PluginActionResult(action="purge_data", plugin_id=plugin_id, status="disabled")
 
     def check(self, plugin_id: str) -> PluginActionResult:
         definition = self.builtin_plugins.get(plugin_id)
@@ -776,14 +855,16 @@ class PluginService:
             diagnostics=diagnostics,
         )
 
-    def _summary(self, record: PluginRecord) -> PluginSummary:
+    def _summary(
+        self, record: PluginRecord, *, state: PluginStateDocument | None = None
+    ) -> PluginSummary:
         installed = _require_selected(record)
         return PluginSummary(
             plugin_id=installed.plugin_id,
             name=installed.manifest.name,
             version=installed.version,
             package_digest=installed.package_digest,
-            status=self._status(record),
+            status=self._status(record, state=state),
             runtime_kind=installed.manifest.runtime.kind,
             desired_enabled=record.activation.desired_enabled,
             plugin_class="user",
@@ -811,18 +892,18 @@ class PluginService:
         manifest = definition.manifest
         generations: list[dict[str, object]] = []
         if self.runtime is not None:
-            with self.runtime.snapshot() as snapshot:
-                generations = [
-                    generation.model_dump(mode="json", exclude_none=True)
-                    for generation in snapshot.generations
-                    if generation.plugin_id == definition.plugin_id
-                ]
+            generations = [
+                generation.model_dump(mode="json", exclude_none=True)
+                for generation in self.runtime.catalog().generations
+                if generation.plugin_id == definition.plugin_id
+            ]
         return PluginDetail(
             **self._builtin_summary(definition, state).model_dump(),
             description=manifest.description,
             namespace=manifest.namespace,
             installs=[],
-            capabilities=sorted(manifest.contributes.capabilities()),
+            capabilities=sorted(manifest.capabilities()),
+            exports=[item.model_dump(mode="json") for item in manifest.exports],
             permissions=[
                 item.model_dump(mode="json", exclude_none=True) for item in manifest.permissions
             ],
@@ -847,7 +928,7 @@ class PluginService:
         state: PluginStateDocument,
     ) -> PluginStatus:
         if self.runtime is not None:
-            return self.runtime.status(definition.plugin_id)
+            return self.runtime.status(definition.plugin_id, state=state)
         if not builtin_desired_enabled(state, definition.dependency_contract()):
             return "disabled"
         try:
@@ -860,9 +941,11 @@ class PluginService:
             return "incompatible"
         return "ready"
 
-    def _status(self, record: PluginRecord) -> PluginStatus:
+    def _status(
+        self, record: PluginRecord, *, state: PluginStateDocument | None = None
+    ) -> PluginStatus:
         if self.runtime is not None:
-            return self.runtime.project_status(record)
+            return self.runtime.project_status(record, state=state)
         installed = record.selected()
         if installed is None:
             return "invalid"
@@ -976,38 +1059,90 @@ class PluginService:
         *,
         plugin_class: PluginClass = "user",
     ) -> builtins.list[str]:
-        if self.session_store is None or release_id is None:
-            return []
-        references: builtins.list[str] = []
+        return sorted(
+            {
+                owner
+                for (kind, identity, release), owners in self._durable_reference_map().items()
+                if kind == plugin_class
+                and identity == plugin_id
+                and (release_id is None or release == release_id)
+                for owner in owners
+            }
+        )
+
+    def _durable_reference_map(self) -> dict[tuple[PluginClass, str, str], set[str]]:
+        """Scan recovery facts once on the management path, without loading message journals."""
+        references: dict[tuple[PluginClass, str, str], set[str]] = {}
+        if self.session_store is None:
+            return references
+
+        def retain(kind: PluginClass, identity: str, release: str, owner: str) -> None:
+            references.setdefault((kind, identity, release), set()).add(owner)
+
+        queue = QueuedInputQueue(self.session_store)
         for session in self.session_store.list_sessions():
-            if any(
-                activation.plugin_id == plugin_id and activation.release_id == release_id
-                for activation in session.controls.activations
-            ):
-                references.append(session.session_id)
+            for driver in queue.bound_drivers(session):
+                for implementation in driver.implementations:
+                    retain(
+                        implementation.plugin_class,
+                        implementation.plugin_id,
+                        implementation.release_id,
+                        f"{session.session_id}/queued",
+                    )
+            for activation in session.controls.activations:
+                retain(
+                    activation.plugin_class,
+                    activation.plugin_id,
+                    activation.release_id,
+                    session.session_id,
+                )
             for run in self.session_store.load_runs(session.session_id):
-                if run.status not in _PLUGIN_GENERATION_RETAINING_RUN_STATUSES:
+                resumable_driver = (
+                    run.driver_checkpoint is not None
+                    and run.driver_checkpoint.state in {"pending", "ready"}
+                    and run.active_tool_batch is not None
+                )
+                retained = run.status in _PLUGIN_GENERATION_RETAINING_RUN_STATUSES
+                owner = f"{session.session_id}/{run.run_id}"
+                if retained or resumable_driver:
+                    for implementation in run.driver.implementations:
+                        retain(
+                            implementation.plugin_class,
+                            implementation.plugin_id,
+                            implementation.release_id,
+                            owner,
+                        )
+                if not retained:
                     continue
                 batch = run.active_tool_batch
                 if batch is None:
                     continue
-                if any(
-                    call.status
-                    in {
-                        "planned",
-                        "ready",
-                        "running",
-                        "awaiting_approval",
-                        "waiting_user",
-                        "resolving_input",
-                    }
-                    and call.invocation is not None
-                    and call.invocation.plugin_id == plugin_id
-                    and call.invocation.plugin_class == plugin_class
-                    and call.invocation.release_id == release_id
-                    for call in batch.calls
-                ):
-                    references.append(f"{session.session_id}/{run.run_id}")
+                for call in batch.calls:
+                    invocation = call.invocation
+                    if (
+                        call.status
+                        not in {
+                            "planned",
+                            "ready",
+                            "running",
+                            "awaiting_approval",
+                            "waiting_user",
+                            "resolving_input",
+                        }
+                        or invocation is None
+                    ):
+                        continue
+                    if (
+                        invocation.plugin_class is not None
+                        and invocation.plugin_id is not None
+                        and invocation.release_id is not None
+                    ):
+                        retain(
+                            invocation.plugin_class,
+                            invocation.plugin_id,
+                            invocation.release_id,
+                            owner,
+                        )
         return references
 
 

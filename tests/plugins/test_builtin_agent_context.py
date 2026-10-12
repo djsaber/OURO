@@ -13,16 +13,15 @@ from ouro.builtin_plugins.agent_context.agent_context_plugin import (
     AgentContextPlugin,
     RuntimeFacts,
 )
-from ouro.builtin_plugins.agent_context.instructions import (
-    AgentInstructionError,
-    AgentInstructionLoader,
-    render_agent_instructions,
-)
+from ouro.builtin_plugins.agent_context.instructions import render_agent_instructions
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.local_application import LocalApplication
+from ouro.plugins.catalog import GenerationGate
+from ouro.plugins.environment import PluginEnvironmentService
+from ouro.plugins.instructions import AgentInstructionError, AgentInstructionLoader
 from ouro.providers import FauxProvider
-from ouro.sdk.plugins import v2 as sdk
+from ouro.sdk.plugins import v3 as sdk
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
 
@@ -47,7 +46,10 @@ def test_agent_context_manifest_is_default_enabled_context_contract() -> None:
 
 def test_system_information_is_tagged_prompt_tail_with_day_precision() -> None:
     plugin = AgentContextPlugin(
-        instructions=AgentInstructionLoader(ouro_home="/missing", user_home="/missing"),
+        environment=PluginEnvironmentService(
+            AgentInstructionLoader(ouro_home="/missing", user_home="/missing"),
+            GenerationGate("test-environment"),
+        ),
         facts=RuntimeFacts(
             platform="Test OS <1>",
             architecture="test64",
@@ -92,7 +94,10 @@ def test_system_information_is_tagged_prompt_tail_with_day_precision() -> None:
 
 def test_system_information_uses_process_directory_when_session_has_no_workspace() -> None:
     plugin = AgentContextPlugin(
-        instructions=AgentInstructionLoader(ouro_home="/missing", user_home="/missing"),
+        environment=PluginEnvironmentService(
+            AgentInstructionLoader(ouro_home="/missing", user_home="/missing"),
+            GenerationGate("test-environment"),
+        ),
         facts=RuntimeFacts(
             platform="Test OS",
             architecture="test64",
@@ -237,19 +242,22 @@ def test_instruction_loader_rejects_invalid_encoding_and_combined_size(tmp_path:
         loader.load(workspace)
 
 
-def test_agent_instructions_keep_nested_discovery_contract_without_current_documents(
+async def test_agent_instructions_keep_nested_discovery_contract_without_current_documents(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     plugin = AgentContextPlugin(
-        instructions=AgentInstructionLoader(
-            ouro_home=tmp_path / "home",
-            user_home=tmp_path / "profile",
+        environment=PluginEnvironmentService(
+            AgentInstructionLoader(
+                ouro_home=tmp_path / "home",
+                user_home=tmp_path / "profile",
+            ),
+            GenerationGate("test-environment"),
         )
     )
 
-    output = plugin.agent_instructions(_context_call(workspace=str(workspace)))
+    output = await plugin.agent_instructions(_context_call(workspace=str(workspace)))
 
     assert len(output.fragments) == 1
     fragment = output.fragments[0]

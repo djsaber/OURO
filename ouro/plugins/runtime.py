@@ -3,18 +3,22 @@ from __future__ import annotations
 import asyncio
 import inspect
 import threading
-from collections.abc import Callable
-from contextlib import suppress
-from dataclasses import dataclass, field, replace
-from time import monotonic
-from typing import Any, Literal
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
+from typing import Any
 
 from ouro.core.base import new_id
+from ouro.core.callbacks import run_blocking
+from ouro.core.cancellation import settle_owned_tasks
+from ouro.core.model_generation import ModelGenerationPort
+from ouro.core.plugin_tasks import PluginTaskTarget
 from ouro.core.redaction import SensitiveValueRedactor, redact_text
+from ouro.core.run_drivers import DEFAULT_DRIVER_ID, RunDriverBinding
+from ouro.core.task_ports import TaskServicePort
+from ouro.core.tasks import AgentTaskTarget
 from ouro.plugins.api import (
-    LoadedPluginModule,
-    OwnedTaskGroup,
-    ScopedPluginDataStore,
     adapt_sdk_contributions,
     build_plugin_context,
     load_plugin_factory,
@@ -22,35 +26,47 @@ from ouro.plugins.api import (
 from ouro.plugins.builtin import EMPTY_BUILTIN_PLUGIN_REGISTRY, BuiltinPluginRegistry
 from ouro.plugins.candidates import PluginRuntimeCandidate
 from ouro.plugins.catalog import (
+    CatalogContributionError,
+    ContributionBinding,
     ExtensionCatalog,
     ExtensionCatalogBase,
     ExtensionCatalogLease,
     GenerationGate,
+    GenerationLease,
+    bind_generation_gate,
     build_extension_catalog,
 )
 from ouro.plugins.contributions import (
+    BackgroundServiceScope,
     ContributionCoordinator,
+    ContributionOwner,
     PluginContributions,
     PreparedContributionSet,
     bind_execution_contract,
 )
 from ouro.plugins.dependencies import (
+    LockedPluginDependency,
     PluginDependencyError,
     PluginLockGraph,
     active_dependents,
     builtin_desired_enabled,
     desired_dependant_closure,
-    plugin_root_sort_key,
+    plan_desired_plugin_activation,
     resolve_plugin_dependencies,
 )
+from ouro.plugins.driver_contracts import resolve_driver_contract
+from ouro.plugins.environment import PluginEnvironmentService
 from ouro.plugins.execution_contracts import (
     build_dependency_lock_fingerprint,
     build_execution_contract_hash,
 )
+from ouro.plugins.generation import PluginGeneration, revoke_dependent_generations
 from ouro.plugins.generation_resources import (
     GenerationResourceRequest,
     prepare_generation_resources,
 )
+from ouro.plugins.implementation_contracts import plugin_implementation
+from ouro.plugins.instructions import AgentInstructionLoader
 from ouro.plugins.manifest import plugin_module_namespace
 from ouro.plugins.models import (
     BuiltinPluginActivationOverride,
@@ -62,15 +78,23 @@ from ouro.plugins.models import (
     PluginStatus,
     create_configuration_revision,
 )
+from ouro.plugins.native_ports import PluginNativePorts
 from ouro.plugins.package import PLUGIN_API_VERSION
+from ouro.plugins.processes import PluginProcessService
+from ouro.plugins.providers import ProviderBinding
 from ouro.plugins.readiness import plugin_install_readiness
+from ouro.plugins.resources import OwnedTaskGroup, ScopedPluginDataStore
+from ouro.plugins.run_drivers import RunDriverRegistration
+from ouro.plugins.scheduling import NativePluginScheduler
+from ouro.plugins.services import ServiceEndpoint
 from ouro.plugins.store import PluginPackageStore, PluginStateConflictError
+from ouro.plugins.tasks import PluginTaskBinding, bind_plugin_task
+from ouro.plugins.tool_groups import PluginToolGroups, ToolGroupPublication, ToolGroupVersion
 from ouro.plugins.worker import WorkerPluginInstance
-from ouro.sdk.plugins import v2 as sdk
+from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins.v3 import StopReason
 from ouro.sessions.base import SessionRepository
 from ouro.skills import SkillMetadata
-
-StopReason = Literal["disable", "restart", "upgrade", "shutdown", "startup_failed"]
 
 
 class PluginGenerationStartError(RuntimeError):
@@ -85,59 +109,8 @@ class PluginCandidateBuildError(RuntimeError):
 
 
 @dataclass
-class ActivePluginGeneration:
-    record: PluginGenerationRecord
-    candidate: PluginRuntimeCandidate
-    instance: Any
-    contributions: PreparedContributionSet
-    gate: GenerationGate
-    tasks: OwnedTaskGroup
-    data_store: ScopedPluginDataStore | None = None
-    module: LoadedPluginModule | None = None
-    resources: list[Any] = field(default_factory=list)
-    diagnostics: list[PluginDiagnostic] = field(default_factory=list)
-    lease_count: int = 0
-    retiring: bool = False
-    stopped: bool = False
-    drained: asyncio.Event = field(default_factory=asyncio.Event)
-    stop_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
-    service_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
-    started_services: list[Any] = field(default_factory=list, repr=False)
-
-    def acquire(self) -> PluginGenerationLease:
-        if self.stopped:
-            raise RuntimeError(f"plugin generation is stopped: {self.record.generation_id}")
-        self.lease_count += 1
-        self.drained.clear()
-        return PluginGenerationLease(self)
-
-    def release(self) -> None:
-        if self.lease_count:
-            self.lease_count -= 1
-        if self.lease_count == 0:
-            self.drained.set()
-
-
-class PluginGenerationLease:
-    def __init__(self, generation: ActivePluginGeneration) -> None:
-        self._generation = generation
-        self._closed = False
-
-    @property
-    def record(self) -> PluginGenerationRecord:
-        return self._generation.record
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._generation.release()
-
-    def __enter__(self) -> PluginGenerationLease:
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self.close()
+class _LifecycleAdmission:
+    catalog: ExtensionCatalog | None
 
 
 class PluginRuntimeResource:
@@ -162,11 +135,13 @@ class PluginRuntimeResource:
         self.builtin_contracts = builtin_plugins.contracts
         self.base_skills = tuple(skill.model_copy(deep=True) for skill in base_skills)
         self.session_repository = session_repository
-        self._active: dict[str, ActivePluginGeneration] = {}
-        self._retired: dict[str, ActivePluginGeneration] = {}
+        self._task_service: TaskServicePort | None = None
+        self._model_generation: ModelGenerationPort | None = None
+        self._instruction_loader = AgentInstructionLoader(ouro_home=store.home)
+        self._active: dict[str, PluginGeneration] = {}
+        self._retired: dict[str, PluginGeneration] = {}
         self._failed: dict[str, str] = {}
         self._diagnostics: list[PluginDiagnostic] = []
-        self._lock = asyncio.Lock()
         self._mutation_lock = asyncio.Lock()
         self._catalog_pointer_lock = threading.Lock()
         self._catalog_base: ExtensionCatalogBase | None = None
@@ -174,6 +149,32 @@ class PluginRuntimeResource:
         self._retirement_tasks: set[asyncio.Task[None]] = set()
         self._started = False
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
+        self._observed_state_stamp: tuple[int, int, int] | None = None
+        self._home_services_owner = False
+        self._lifecycle_admission: ContextVar[_LifecycleAdmission | None] = ContextVar(
+            "ouro_lifecycle_admission", default=None
+        )
+
+    @contextmanager
+    def _admit_lifecycle_callbacks(self) -> Iterator[None]:
+        """Nested operations use the directory already committed by this lifecycle."""
+        admission = _LifecycleAdmission(self.catalog())
+        token = self._lifecycle_admission.set(admission)
+        try:
+            yield
+        finally:
+            # Spawned background tasks must synchronize future independent work,
+            # and must not retain this catalog after the admitting callback ends.
+            admission.catalog = None
+            self._lifecycle_admission.reset(token)
+
+    async def bind_provider(self, protocol: str) -> ProviderBinding:
+        admission = self._lifecycle_admission.get()
+        if admission is not None and admission.catalog is not None:
+            return admission.catalog.bind_provider(protocol)
+        await self.synchronize()
+        return self.catalog().bind_provider(protocol)
 
     async def start(self) -> None:
         if self._closed:
@@ -181,6 +182,7 @@ class PluginRuntimeResource:
         if self._started:
             return
         self._ensure_catalog()
+        state_stamp = self.store.state_stamp()
         recovery = self.store.recover_state()
         self._started = True
         if recovery.quarantine_path is not None:
@@ -207,46 +209,164 @@ class PluginRuntimeResource:
                 )
             )
         state = recovery.state
-        desired_roots = sorted(
-            {
-                *(
-                    plugin_id
-                    for plugin_id, record in state.plugins.items()
-                    if record.activation.desired_enabled
-                ),
-                *(
-                    plugin_id
-                    for plugin_id, contract in self.builtin_contracts.items()
-                    if builtin_desired_enabled(state, contract)
-                ),
-            },
-            key=lambda plugin_id: plugin_root_sort_key(plugin_id, state),
-        )
-        for plugin_id in desired_roots:
+        async with self._mutation_lock:
+            plan = plan_desired_plugin_activation(state, builtin_contracts=self.builtin_contracts)
+            eligible: set[str] = set()
+            for node in plan.graph.nodes:
+                if (
+                    set(node.dependencies) <= eligible
+                    and self._candidate_readiness(state, node.plugin_id) == "ready"
+                ):
+                    eligible.add(node.plugin_id)
+            graph = PluginLockGraph(
+                tuple(node for node in plan.graph.nodes if node.plugin_id in eligible)
+            )
             try:
-                await self.activate(plugin_id)
-            except Exception as exc:  # noqa: BLE001 - isolate independent roots.
+                if eligible - self._active.keys():
+                    await self._transition_state_locked(
+                        expected=state,
+                        candidate_state=state,
+                        rebuild_ids=eligible - self._active.keys(),
+                        startup_graph=graph,
+                        reason="activate",
+                    )
+            except Exception as exc:  # noqa: BLE001 - startup can expose a usable empty catalog.
                 self._diagnostics.append(
                     PluginDiagnostic(
                         code="plugin_startup_failed",
                         phase="startup",
                         message=f"{type(exc).__name__}: {redact_text(str(exc))}",
-                        plugin_id=plugin_id,
                         suggested_action="Review plugin diagnostics and retry activation.",
                     )
                 )
+
+        self._observed_state_stamp = state_stamp
+
+    async def start_home_services(self) -> None:
+        """Start home-scoped work only while the caller holds the scheduler lock."""
+
+        async with self._mutation_lock:
+            if self._closed:
+                raise RuntimeError("plugin runtime is closed")
+            if self._home_services_owner:
+                return
+            self._home_services_owner = True
+            for generation in self._active.values():
+                await self._start_generation_services(generation, scopes=frozenset({"home"}))
+
+    async def stop_home_services(self) -> None:
+        """Settle singleton work before the scheduler releases its home lock."""
+
+        async with self._mutation_lock:
+            self._home_services_owner = False
+            errors: list[Exception] = []
+            generations = (*self._active.values(), *self._retired.values())
+            for generation in reversed(generations):
+                try:
+                    with self._admit_lifecycle_callbacks():
+                        await generation.stop_services(scopes=frozenset({"home"}))
+                except Exception as exc:
+                    generation.record.status = "degraded"
+                    generation.diagnostics.append(
+                        PluginDiagnostic(
+                            code="plugin_background_service_stop_failed",
+                            phase="background",
+                            message=generation.describe_error(exc),
+                            plugin_id=generation.candidate.plugin_id,
+                            generation_id=generation.record.generation_id,
+                            suggested_action="Resolve service cleanup before ownership transfer.",
+                        )
+                    )
+                    errors.append(exc)
+            if errors:
+                raise ExceptionGroup("home-scoped plugin services have not stopped", errors)
+
+    async def synchronize(self) -> None:
+        """Apply shared intent at an admission boundary without polling each plugin."""
+
+        if self._closed:
+            raise RuntimeError("plugin runtime is closed")
+        stamp = await run_blocking(self.store.state_stamp)
+        if stamp == self._observed_state_stamp:
+            return
+        async with self._mutation_lock:
+            if self._closed:
+                raise RuntimeError("plugin runtime is closed")
+            stamp = await run_blocking(self.store.state_stamp)
+            if stamp == self._observed_state_stamp:
+                return
+            state = await run_blocking(self.store.read_state)
+            plan = plan_desired_plugin_activation(state, builtin_contracts=self.builtin_contracts)
+            eligible: set[str] = set()
+            changed: set[str] = set()
+            for node in plan.graph.nodes:
+                if self._candidate_readiness(state, node.plugin_id) != "ready":
+                    continue
+                if not set(node.dependencies) <= eligible:
+                    continue
+                eligible.add(node.plugin_id)
+                candidate = self._runtime_candidate(state, node.plugin_id)
+                active = self._active.get(node.plugin_id)
+                if active is None or (
+                    active.candidate.release_id != candidate.release_id
+                    or active.candidate.configuration != candidate.configuration
+                ):
+                    changed.add(node.plugin_id)
+            owned_ids = {*self._active, *(g.candidate.plugin_id for g in self._retired.values())}
+            removed = owned_ids - eligible
+            if removed:
+                await self._transition_state_locked(
+                    expected=state,
+                    candidate_state=state,
+                    remove_ids=removed,
+                    close_gate_ids=removed,
+                    reason="disable",
+                )
+            rebuild = (
+                desired_dependant_closure(state, changed, builtin_contracts=self.builtin_contracts)
+                & eligible
+            )
+            waiting_cleanup = {
+                plugin_id for plugin_id in rebuild if self._cleanup_status(plugin_id) is not None
+            }
+            rebuild -= desired_dependant_closure(
+                state, waiting_cleanup, builtin_contracts=self.builtin_contracts
+            )
+            while rebuild:
+                try:
+                    await self._transition_state_locked(
+                        expected=state,
+                        candidate_state=state,
+                        rebuild_ids=rebuild,
+                        reason="restart",
+                    )
+                except PluginCandidateBuildError as exc:
+                    self._record_failure(
+                        self._runtime_candidate(state, exc.plugin_id), "synchronize", exc.cause
+                    )
+                    rebuild -= desired_dependant_closure(
+                        state, {exc.plugin_id}, builtin_contracts=self.builtin_contracts
+                    )
+                else:
+                    break
+            # Keep the stamp from before the read. A concurrent replacement is
+            # observed at the next boundary, even when it races with publication.
+            if not any(self._cleanup_status(item) == "stopping" for item in waiting_cleanup):
+                self._observed_state_stamp = stamp
 
     async def activate(self, plugin_id: str) -> PluginStatus:
         async with self._mutation_lock:
             self._ensure_catalog()
             expected = self.store.read_state()
             candidate = self._runtime_candidate(expected, plugin_id)
-            status = self.status(plugin_id)
+            if self._cleanup_status(plugin_id) == "failed":
+                return "failed"
+            status = self.status(plugin_id, state=expected)
             if plugin_id in self._active:
                 status = "ready"
             if status == "failed" and self._failed.get(plugin_id) == candidate.release_id:
                 self._failed.pop(plugin_id, None)
-                status = self.status(plugin_id)
+                status = self.status(plugin_id, state=expected)
             if status not in {"ready", "active"}:
                 return status
             try:
@@ -274,11 +394,9 @@ class PluginRuntimeResource:
             except Exception as exc:
                 self._record_failure(candidate, "activation", exc)
                 return "failed"
-            return "active"
+            return self.status(plugin_id)
 
     async def disable(self, plugin_id: str, *, wait: bool = True) -> PluginStatus:
-        if not wait:
-            raise ValueError("non-blocking plugin disable is not supported")
         async with self._mutation_lock:
             expected = self.store.read_state()
             candidate_definition = self._runtime_candidate(expected, plugin_id)
@@ -311,10 +429,45 @@ class PluginRuntimeResource:
                     },
                 )
             )
-            return "disabled"
+            for generation in tuple(self._retired.values()):
+                if generation.candidate.plugin_id == plugin_id:
+                    generation.revoke(cancel=True)
+                    if generation.cleanup is None or generation.cleanup.done():
+                        generation.cleanup_error = None
+                        self._schedule_retirement(generation, reason="disable")
+        return await self.wait_stopped(plugin_id) if wait else self.status(plugin_id)
+
+    async def wait_stopped(self, plugin_id: str) -> PluginStatus:
+        """Wait within the local shutdown budget without abandoning cleanup."""
+
+        tasks = [
+            generation.cleanup
+            for generation in self._retired.values()
+            if generation.candidate.plugin_id == plugin_id and generation.cleanup is not None
+        ]
+        if tasks:
+            await asyncio.wait(tasks, timeout=self.stop_timeout_seconds)
+        return self.status(plugin_id)
+
+    def _cleanup_status(self, plugin_id: str) -> PluginStatus | None:
+        generations = [
+            generation
+            for generation in self._retired.values()
+            if generation.candidate.plugin_id == plugin_id
+        ]
+        if any(generation.cleanup_error is not None for generation in generations):
+            return "failed"
+        if any(not generation.gate.is_open for generation in generations):
+            return "stopping"
+        return None
 
     async def enable(self, plugin_id: str) -> PluginStatus:
         async with self._mutation_lock:
+            if self._closed:
+                raise RuntimeError("plugin runtime is closed")
+            cleanup_status = self._cleanup_status(plugin_id)
+            if cleanup_status is not None:
+                return cleanup_status
             expected = self.store.read_state()
             root_candidate = self._runtime_candidate(expected, plugin_id)
             affected = desired_dependant_closure(
@@ -420,14 +573,206 @@ class PluginRuntimeResource:
                 self._record_failure(failed, reason, cause)
                 raise
 
+    def bind_task_service(self, service: TaskServicePort) -> None:
+        if self._active or self._started:
+            raise RuntimeError("Bind the task service before starting plugins")
+        self._task_service = service
+
+    def bind_model_generation(self, service: ModelGenerationPort) -> None:
+        if self._active or self._started:
+            raise RuntimeError("Bind model generation before starting plugins")
+        self._model_generation = service
+
+    async def bind_task(self, target: PluginTaskTarget) -> PluginTaskBinding:
+        # Capture and acquire without yielding. Lifecycle callbacks may create
+        # schedules after publication while the mutation owner is still active.
+        if self._closed:
+            raise RuntimeError("plugin runtime is closed")
+        generation = self._active.get(target.plugin_id)
+        if generation is None:
+            raise ValueError(f"Plugin task provider is unavailable: {target.plugin_id}")
+        return bind_plugin_task(generation, target)
+
+    def task_owner_available(self, owner_id: str) -> bool:
+        generation = self._active.get(owner_id)
+        return not self._closed and generation is not None and generation.gate.is_open
+
+    def require_task_owner(self, owner_id: str, target: AgentTaskTarget | PluginTaskTarget) -> None:
+        if not self.task_owner_available(owner_id):
+            raise ValueError(f"Task owner is unavailable: {owner_id}")
+        manifest = self._active[owner_id].candidate.manifest
+        permissions = {item.id for item in manifest.permissions}
+        required = (
+            {"background.run", "sessions.write"}
+            if isinstance(target, AgentTaskTarget)
+            else {"background.run"}
+        )
+        if not required.issubset(permissions):
+            raise PermissionError(f"Task owner requires permissions: {', '.join(sorted(required))}")
+        if isinstance(target, PluginTaskTarget) and target.plugin_id not in {
+            owner_id,
+            *(item.plugin_id for item in manifest.dependencies.plugins),
+        }:
+            raise PermissionError(
+                "Scheduled service must belong to the task owner or its declared dependency"
+            )
+
     def snapshot(self) -> ExtensionCatalogLease:
+        if self._closed:
+            raise RuntimeError("plugin runtime is closed")
+        self._ensure_catalog()
+        with self._catalog_pointer_lock:
+            assert self._current_catalog is not None
+            return self._current_catalog.acquire()
+
+    def catalog(self) -> ExtensionCatalog:
+        """Read the current directory; execution must acquire its own binding."""
+
         if self._closed:
             raise RuntimeError("plugin runtime is closed")
         self._ensure_catalog()
         with self._catalog_pointer_lock:
             catalog = self._current_catalog
             assert catalog is not None
-            return catalog.acquire()
+            return catalog
+
+    @asynccontextmanager
+    async def bind_driver(
+        self, expected: RunDriverBinding
+    ) -> AsyncIterator[ContributionBinding[RunDriverRegistration]]:
+        """Own the exact Driver implementation only while it executes accepted work."""
+
+        await self.synchronize()
+        generations: tuple[PluginGeneration, ...] = ()
+        async with self._mutation_lock:
+            try:
+                binding = self.catalog().bind_driver(expected.driver_id, expected=expected)
+            except ValueError:
+                binding, generations = await self._load_driver_contract(expected)
+        try:
+            yield binding
+        finally:
+            binding.close()
+            cleanup = [
+                item.cleanup
+                for item in generations
+                if item.retiring and item.lease_count == 0 and item.cleanup is not None
+            ]
+            if cleanup:
+                await asyncio.wait(cleanup, timeout=self.stop_timeout_seconds)
+
+    def select_driver(self, driver_id: str) -> RunDriverBinding:
+        """Capture a durable implementation identity when new work is accepted."""
+
+        if driver_id == DEFAULT_DRIVER_ID:
+            return RunDriverBinding()
+        return self.catalog().driver_binding(driver_id)
+
+    async def _load_driver_contract(
+        self, expected: RunDriverBinding
+    ) -> tuple[ContributionBinding[RunDriverRegistration], tuple[PluginGeneration, ...]]:
+        current = self.store.read_state()
+        state, graph = resolve_driver_contract(expected, current, self.builtin_contracts)
+        implementations = {item.plugin_id: item for item in expected.implementations}
+        generations: dict[str, PluginGeneration] = {}
+        created: list[PluginGeneration] = []
+        leases: list[GenerationLease] = []
+        available: dict[str, list[PluginGeneration]] = {}
+        for item in (*self._active.values(), *self._retired.values()):
+            available.setdefault(item.record.plugin_id, []).append(item)
+        try:
+            for node in graph.nodes:
+                implementation = implementations[node.plugin_id]
+                generation = next(
+                    (
+                        item
+                        for item in available.get(node.plugin_id, ())
+                        if item.gate.is_open
+                        and (not item.retiring or item.lease_count > 0)
+                        and plugin_implementation(item.record) == implementation
+                        and all(
+                            dependency is generations[dependency.record.plugin_id]
+                            for dependency in item.dependencies
+                        )
+                    ),
+                    None,
+                )
+                if generation is None:
+                    # A retirement already admitted at zero leases cannot be
+                    # reversed by acquiring another reference to that instance.
+                    stopping = [
+                        item.cleanup
+                        for item in self._retired.values()
+                        if item.record.plugin_id == node.plugin_id
+                        and (not item.gate.is_open or item.lease_count == 0)
+                        and item.cleanup is not None
+                    ]
+                    if stopping:
+                        await asyncio.wait(stopping, timeout=self.stop_timeout_seconds)
+                    if self._cleanup_status(node.plugin_id) is not None:
+                        raise PluginGenerationStartError(
+                            f"plugin resources have not stopped: {node.plugin_id}"
+                        )
+                    readiness = self._candidate_readiness(state, node.plugin_id)
+                    if readiness != "ready":
+                        raise PluginGenerationStartError(
+                            f"Run driver implementation is not ready: {node.plugin_id}: {readiness}"
+                        )
+                    dependency_graph = self._resolve_dependencies(state, roots={node.plugin_id})
+                    fingerprint = build_dependency_lock_fingerprint(
+                        dependency_graph,
+                        state,
+                        {key: item.record for key, item in generations.items()},
+                        owner_plugin_id=node.plugin_id,
+                    )
+                    generation = await self._build_generation(
+                        self._runtime_candidate(state, node.plugin_id),
+                        dependency_lock_fingerprint=fingerprint,
+                        dependencies={key: generations[key] for key in node.dependencies},
+                    )
+                    created.append(generation)
+                    if plugin_implementation(generation.record) != implementation:
+                        raise ValueError(
+                            f"Run driver execution contract is unavailable: {node.plugin_id}"
+                        )
+                generations[node.plugin_id] = generation
+                leases.append(generation.acquire())
+
+            assert expected.implementation is not None
+            owner = generations[expected.implementation.plugin_id]
+            prepared = bind_generation_gate(owner.contributions, owner.gate)
+            driver = next(
+                (item for item in prepared.run_drivers if item.canonical_id == expected.driver_id),
+                None,
+            )
+            if driver is None or driver.contract_hash != expected.contract_hash:
+                raise ValueError(f"Run driver contract is unavailable: {expected.driver_id}")
+            driver = replace(
+                driver, implementation=expected.implementation, dependencies=expected.dependencies
+            )
+            if self._closed or self.store.read_state() != current:
+                raise PluginStateConflictError("plugin state changed while loading a Run driver")
+            created_ids = {item.record.generation_id for item in created}
+            if any(
+                item.record.status not in {"active", "degraded"}
+                or (not item.gate.is_open and item.record.generation_id not in created_ids)
+                for item in generations.values()
+            ):
+                raise PluginGenerationStartError("Run driver implementation stopped while loading")
+            for generation in created:
+                if generation.data_store is not None:
+                    generation.data_store.activate()
+                generation.tasks.activate()
+                generation.gate.open()
+                # These implementations serve existing Runs. Their background
+                # services and global contributions remain unpublished.
+                self._schedule_retirement(generation, reason="restart")
+            return ContributionBinding(driver, tuple(leases)), tuple(generations.values())
+        except BaseException:
+            for lease in reversed(leases):
+                lease.close()
+            await self._discard_candidates(tuple(reversed(created)))
+            raise
 
     async def replace_base_skills(self, skills: tuple[SkillMetadata, ...]) -> None:
         """Publish a new Host Skill baseline for future Catalog leases.
@@ -450,7 +795,9 @@ class PluginRuntimeResource:
                 base_skills=candidate_skills,
             )
 
-    def project_status(self, record: PluginRecord) -> PluginStatus:
+    def project_status(
+        self, record: PluginRecord, *, state: PluginStateDocument | None = None
+    ) -> PluginStatus:
         installed = record.selected()
         if installed is None:
             return "invalid"
@@ -460,6 +807,9 @@ class PluginRuntimeResource:
                 active.gate.close()
                 self._schedule_generation_failure(active)
             return active.record.status
+        cleanup_status = self._cleanup_status(record.plugin_id)
+        if cleanup_status is not None:
+            return cleanup_status
         if self._failed.get(record.plugin_id) == installed.package_digest:
             return "failed"
         if not record.activation.desired_enabled:
@@ -468,21 +818,28 @@ class PluginRuntimeResource:
         readiness = plugin_install_readiness(installed, record.activation, package_root)
         if readiness != "ready":
             return readiness
-        state = self.store.read_state()
+        if state is None:
+            state = self.store.read_state()
         if self._dependency_resolution_error(state, record.plugin_id) is not None:
             return "incompatible"
         if self._dependency_blockers(state, record.plugin_id):
             return "blocked"
         return "ready"
 
-    def project_builtin_status(self, plugin_id: str) -> PluginStatus:
-        state = self.store.read_state()
+    def project_builtin_status(
+        self, plugin_id: str, *, state: PluginStateDocument | None = None
+    ) -> PluginStatus:
         definition = self.builtin_plugins.require(plugin_id)
         active = self._active.get(plugin_id)
         if active is not None:
             return active.record.status
+        cleanup_status = self._cleanup_status(plugin_id)
+        if cleanup_status is not None:
+            return cleanup_status
         if self._failed.get(plugin_id) == definition.contract_hash:
             return "failed"
+        if state is None:
+            state = self.store.read_state()
         if not self._desired_enabled(state, plugin_id):
             return "disabled"
         error = self._dependency_resolution_error(state, plugin_id)
@@ -492,10 +849,22 @@ class PluginRuntimeResource:
             return "blocked"
         return "ready"
 
-    def status(self, plugin_id: str) -> PluginStatus:
+    def status(self, plugin_id: str, *, state: PluginStateDocument | None = None) -> PluginStatus:
+        if state is None:
+            state = self.store.read_state()
         if self.builtin_plugins.get(plugin_id) is not None:
-            return self.project_builtin_status(plugin_id)
-        return self.project_status(self._plugin_record(plugin_id))
+            return self.project_builtin_status(plugin_id, state=state)
+        return self.project_status(_state_plugin_record(state, plugin_id), state=state)
+
+    def has_resources(self, plugin_id: str, *, package_digest: str | None = None) -> bool:
+        """Include retired and failed owners when deciding whether files may be removed."""
+
+        return any(
+            generation.candidate.plugin_id == plugin_id
+            and (package_digest is None or generation.candidate.package_digest == package_digest)
+            for generations in (self._active.values(), self._retired.values())
+            for generation in generations
+        )
 
     def diagnostics(self, plugin_id: str | None = None) -> list[PluginDiagnostic]:
         values = [
@@ -524,74 +893,49 @@ class PluginRuntimeResource:
         return list(unique.values())
 
     async def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._ensure_catalog()
-        async with self._lock:
-            state = self.store.read_state()
-            try:
-                active_order = self._resolve_dependencies(
-                    state,
-                    roots=set(self._active),
-                ).activation_order
-            except PluginDependencyError:
-                active_order = tuple(sorted(self._active))
+        if self._close_task is not None and self._close_task.done():
+            if self._close_task.cancelled() or self._close_task.exception() is not None:
+                self._close_task = None
+        if self._close_task is None:
+            self._closed = True
+            self._close_task = asyncio.create_task(self._close(), name="ouro-plugin-shutdown")
+        await asyncio.shield(self._close_task)
+
+    async def _close(self) -> None:
+        async with self._mutation_lock:
+            catalog = self._ensure_catalog()
             generations = [
-                *(
-                    self._active[plugin_id]
-                    for plugin_id in active_order
-                    if plugin_id in self._active
-                ),
+                *(self._active[record.plugin_id] for record in catalog.generations),
                 *self._retired.values(),
             ]
             for generation in generations:
+                generation.revoke(cancel=True)
                 generation.retiring = True
-                generation.gate.close()
-                if generation.lease_count == 0:
-                    generation.drained.set()
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(
-                    *(generation.drained.wait() for generation in generations),
-                ),
-                timeout=self.stop_timeout_seconds,
-            )
-        except TimeoutError:
-            self._diagnostics.append(
-                PluginDiagnostic(
-                    code="plugin_shutdown_forced",
-                    phase="shutdown",
-                    severity="warning",
-                    message="plugin generation leases exceeded the Host shutdown deadline",
-                    suggested_action="Inspect runs or plugin callbacks that did not finish.",
-                )
-            )
-        async with self._lock:
+                self._retired[generation.record.generation_id] = generation
             self._active.clear()
-            self._retired.clear()
-        retirement_tasks = tuple(self._retirement_tasks)
-        if retirement_tasks:
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*retirement_tasks, return_exceptions=True),
-                    timeout=self.stop_timeout_seconds,
-                )
-            except TimeoutError:
-                for task in retirement_tasks:
-                    task.cancel()
-                await asyncio.gather(*retirement_tasks, return_exceptions=True)
-        self._retirement_tasks.clear()
+            self._publish_catalog(self._build_catalog({}))
+
         errors: list[Exception] = []
         seen: set[str] = set()
         for generation in reversed(generations):
             if generation.record.generation_id in seen:
                 continue
             seen.add(generation.record.generation_id)
-            try:
-                await self._stop_generation(generation, reason="shutdown")
-            except Exception as exc:  # noqa: BLE001 - close every plugin owner.
-                errors.append(exc)
+            pending = generation.cleanup
+            if pending is None or pending.done():
+                generation.cleanup_error = None
+                self._schedule_retirement(generation, reason="shutdown")
+                pending = generation.cleanup
+            assert pending is not None
+            await asyncio.wait((pending,), timeout=self.stop_timeout_seconds)
+            if not pending.done():
+                errors.append(
+                    TimeoutError(
+                        f"plugin cleanup is still running: {generation.record.generation_id}"
+                    )
+                )
+            elif generation.cleanup_error is not None:
+                errors.append(generation.cleanup_error)
         if errors:
             raise ExceptionGroup("plugin runtime shutdown failed", errors)
 
@@ -603,10 +947,13 @@ class PluginRuntimeResource:
         rebuild_ids: set[str] | None = None,
         remove_ids: set[str] | None = None,
         close_gate_ids: set[str] | None = None,
+        startup_graph: PluginLockGraph | None = None,
         reason: str,
     ) -> None:
         """Prepare a complete candidate before committing state and catalog together."""
 
+        if self._closed:
+            raise RuntimeError("plugin runtime is closed")
         self._ensure_catalog()
         if self.store.read_state() != expected:
             raise PluginStateConflictError(
@@ -618,13 +965,18 @@ class PluginRuntimeResource:
         requested_rebuilds = set(rebuild_ids or ())
         requested_removals = set(remove_ids or ())
         gated_removals = set(close_gate_ids or ())
-        known_ids = {*expected.plugins, *self.builtin_plugins.plugin_ids}
+        known_ids = {
+            *expected.plugins,
+            *self.builtin_plugins.plugin_ids,
+            *self._active,
+            *(generation.candidate.plugin_id for generation in self._retired.values()),
+        }
         unknown = (requested_rebuilds | requested_removals | gated_removals) - known_ids
         if unknown:
             raise KeyError(f"plugin is not available: {sorted(unknown)[0]}")
         requested_rebuilds -= requested_removals
 
-        graph = (
+        graph = startup_graph or (
             self._resolve_dependencies(candidate_state, roots=requested_rebuilds)
             if requested_rebuilds
             else None
@@ -637,66 +989,31 @@ class PluginRuntimeResource:
                 if active is None or active.candidate.release_id != release_id:
                     build_ids.add(node.plugin_id)
 
-        candidates: dict[str, ActivePluginGeneration] = {}
+        candidates: dict[str, PluginGeneration] = {}
+        graph_nodes = {node.plugin_id: node for node in graph.nodes} if graph is not None else {}
         published = False
         try:
             if graph is not None:
                 for node in graph.nodes:
                     if node.plugin_id not in build_ids:
                         continue
-                    runtime_candidate = self._runtime_candidate(candidate_state, node.plugin_id)
-                    readiness = self._candidate_readiness(candidate_state, node.plugin_id)
-                    if readiness != "ready":
-                        raise PluginGenerationStartError(
-                            f"plugin candidate is not activation-ready: "
-                            f"{node.plugin_id}: {readiness}"
-                        )
-                    for dependency_id in node.dependencies:
-                        dependency_node = next(
-                            item for item in graph.nodes if item.plugin_id == dependency_id
-                        )
-                        dependency = candidates.get(dependency_id) or self._active.get(
-                            dependency_id
-                        )
-                        if dependency is None or dependency_id in requested_removals:
-                            raise PluginDependencyError(
-                                f"required plugin generation is unavailable: {dependency_id}"
-                            )
-                        expected_release_id = (
-                            dependency_node.package_digest or dependency_node.contract_hash
-                        )
-                        if dependency.candidate.release_id != expected_release_id:
-                            raise PluginDependencyError(
-                                f"required plugin generation is stale: {dependency_id}"
-                            )
+                    if startup_graph is not None and any(
+                        dependency in build_ids and dependency not in candidates
+                        for dependency in node.dependencies
+                    ):
+                        continue
                     try:
-                        dependency_graph = self._resolve_dependencies(
-                            candidate_state,
-                            roots={node.plugin_id},
-                        )
-                        dependency_generations = {
-                            plugin_id: generation.record
-                            for plugin_id, generation in self._active.items()
-                            if plugin_id not in requested_removals
-                        }
-                        dependency_generations.update(
-                            {
-                                plugin_id: generation.record
-                                for plugin_id, generation in candidates.items()
-                            }
-                        )
-                        dependency_fingerprint = build_dependency_lock_fingerprint(
-                            dependency_graph,
-                            candidate_state,
-                            dependency_generations,
-                            owner_plugin_id=node.plugin_id,
-                        )
-                        candidates[node.plugin_id] = await self._build_generation(
-                            runtime_candidate,
-                            dependency_lock_fingerprint=dependency_fingerprint,
+                        candidates[node.plugin_id] = await self._prepare_generation(
+                            candidate_state, node, graph_nodes, candidates, requested_removals
                         )
                     except Exception as exc:
-                        raise PluginCandidateBuildError(node.plugin_id, exc) from exc
+                        if startup_graph is None:
+                            raise PluginCandidateBuildError(node.plugin_id, exc) from exc
+                        self._record_failure(
+                            self._runtime_candidate(candidate_state, node.plugin_id),
+                            "startup",
+                            exc,
+                        )
 
             next_generations = {
                 plugin_id: generation
@@ -704,7 +1021,30 @@ class PluginRuntimeResource:
                 if plugin_id not in requested_removals and plugin_id not in build_ids
             }
             next_generations.update(candidates)
-            catalog = self._build_catalog(next_generations, state=candidate_state)
+            while True:
+                try:
+                    catalog = self._build_catalog(
+                        next_generations, state=candidate_state, graph=startup_graph
+                    )
+                    break
+                except CatalogContributionError as exc:
+                    if startup_graph is None or exc.plugin_id not in candidates:
+                        raise
+                    self._record_failure(candidates[exc.plugin_id].candidate, "startup", exc)
+                    rejected = {exc.plugin_id}
+                    for node in startup_graph.nodes:
+                        if rejected.intersection(node.dependencies):
+                            rejected.add(node.plugin_id)
+                    discarded = tuple(
+                        candidates.pop(key)
+                        for key in reversed(tuple(candidates))
+                        if key in rejected
+                    )
+                    for key in rejected:
+                        next_generations.pop(key, None)
+                    await self._discard_candidates(discarded)
+            if self._closed:
+                raise RuntimeError("plugin runtime closed during candidate preparation")
             self.store.commit_candidate_state(expected, candidate_state)
 
             previous = {
@@ -712,30 +1052,18 @@ class PluginRuntimeResource:
                 for plugin_id, generation in self._active.items()
                 if plugin_id in requested_removals or plugin_id in build_ids
             }
-            for plugin_id in gated_removals:
-                generation = previous.get(plugin_id)
-                if generation is not None:
-                    generation.gate.close()
+            owned = (*self._active.values(), *self._retired.values())
+            revoke_dependent_generations(
+                owned,
+                {
+                    item.record.generation_id
+                    for item in owned
+                    if item.record.plugin_id in gated_removals
+                },
+            )
             for generation in candidates.values():
                 if generation.data_store is not None:
-                    try:
-                        generation.data_store.activate()
-                    except Exception as exc:  # noqa: BLE001 - publication remains authoritative.
-                        generation.diagnostics.append(
-                            PluginDiagnostic(
-                                code="plugin_candidate_data_commit_failed",
-                                phase="activate",
-                                message=f"{type(exc).__name__}: {redact_text(str(exc))}",
-                                plugin_id=generation.candidate.plugin_id,
-                                version=generation.candidate.version,
-                                plugin_class=generation.candidate.plugin_class,
-                                release_id=generation.candidate.release_id,
-                                package_digest=generation.candidate.package_digest,
-                                builtin_contract_hash=(generation.candidate.builtin_contract_hash),
-                                generation_id=generation.record.generation_id,
-                                suggested_action="Inspect the plugin data directory and retry.",
-                            )
-                        )
+                    generation.data_store.activate()
                 generation.tasks.activate()
                 generation.gate.open()
             self._active = next_generations
@@ -743,47 +1071,126 @@ class PluginRuntimeResource:
                 self._failed.pop(plugin_id, None)
             self._publish_catalog(catalog)
             published = True
+            for generation in previous.values():
+                generation.retiring = True
+                self._retired[generation.record.generation_id] = generation
 
-            retirement_order = (
-                graph.shutdown_order if graph is not None else tuple(sorted(previous, reverse=True))
+            handover = asyncio.create_task(
+                self._finish_publication(previous, candidates, graph=graph, reason=reason),
+                name="ouro-plugin-publication",
             )
-            scheduled: set[str] = set()
-            for plugin_id in retirement_order:
-                generation = previous.get(plugin_id)
-                if generation is None:
-                    continue
-                scheduled.add(plugin_id)
-                self._schedule_retirement(
-                    generation,
-                    reason=_retirement_reason(
-                        reason,
-                        replaced=plugin_id in candidates,
-                        old=generation,
-                        new=candidates.get(plugin_id),
-                    ),
-                )
-            for plugin_id in sorted(set(previous) - scheduled, reverse=True):
-                generation = previous[plugin_id]
-                self._schedule_retirement(
-                    generation,
-                    reason=_retirement_reason(
-                        reason,
-                        replaced=plugin_id in candidates,
-                        old=generation,
-                        new=candidates.get(plugin_id),
-                    ),
-                )
-            await self._handover_background_services(
-                previous,
-                candidates,
-                graph=graph,
-            )
+            try:
+                await asyncio.shield(handover)
+            except asyncio.CancelledError:
+                await settle_owned_tasks(handover)
+                handover.result()
+                raise
         except BaseException:
             if not published:
-                for generation in reversed(tuple(candidates.values())):
-                    with suppress(Exception):
-                        await self._stop_generation(generation, reason="startup_failed")
+                await self._discard_candidates(tuple(reversed(tuple(candidates.values()))))
             raise
+
+    async def _prepare_generation(
+        self,
+        state: PluginStateDocument,
+        node: LockedPluginDependency,
+        graph_nodes: dict[str, LockedPluginDependency],
+        candidates: dict[str, PluginGeneration],
+        removals: set[str],
+    ) -> PluginGeneration:
+        if self._cleanup_status(node.plugin_id) is not None:
+            raise PluginGenerationStartError(f"plugin resources have not stopped: {node.plugin_id}")
+        readiness = self._candidate_readiness(state, node.plugin_id)
+        if readiness != "ready":
+            raise PluginGenerationStartError(
+                f"plugin candidate is not activation-ready: {node.plugin_id}: {readiness}"
+            )
+        dependencies: dict[str, PluginGeneration] = {}
+        for dependency_id in node.dependencies:
+            dependency_node = graph_nodes[dependency_id]
+            dependency = candidates.get(dependency_id) or self._active.get(dependency_id)
+            if dependency is None or dependency_id in removals:
+                raise PluginDependencyError(
+                    f"required plugin generation is unavailable: {dependency_id}"
+                )
+            expected_release_id = dependency_node.package_digest or dependency_node.contract_hash
+            if dependency.candidate.release_id != expected_release_id:
+                raise PluginDependencyError(f"required plugin generation is stale: {dependency_id}")
+            dependencies[dependency_id] = dependency
+        # Resolve versions once per operation. Each fingerprint still includes
+        # the exact transitive contracts, without rewalking manifests or state.
+        dependency_nodes: dict[str, LockedPluginDependency] = {}
+        records: dict[str, PluginGenerationRecord] = {}
+        pending = list(dependencies.values())
+        while pending:
+            generation = pending.pop()
+            plugin_id = generation.record.plugin_id
+            if plugin_id in dependency_nodes:
+                continue
+            dependency_nodes[plugin_id] = graph_nodes[plugin_id]
+            records[plugin_id] = generation.record
+            pending.extend(generation.dependencies)
+        fingerprint = build_dependency_lock_fingerprint(
+            PluginLockGraph(tuple(dependency_nodes.values())),
+            state,
+            records,
+            owner_plugin_id=node.plugin_id,
+        )
+        return await self._build_generation(
+            self._runtime_candidate(state, node.plugin_id),
+            dependency_lock_fingerprint=fingerprint,
+            dependencies=dependencies,
+        )
+
+    async def _discard_candidates(self, candidates: tuple[PluginGeneration, ...]) -> None:
+        cleanup = []
+        for generation in candidates:
+            generation.revoke(cancel=True)
+            self._schedule_retirement(generation, reason="startup_failed")
+            assert generation.cleanup is not None
+            cleanup.append(generation.cleanup)
+        if cleanup:
+            await asyncio.wait(cleanup, timeout=self.stop_timeout_seconds)
+
+    async def _finish_publication(
+        self,
+        previous: dict[str, PluginGeneration],
+        candidates: dict[str, PluginGeneration],
+        *,
+        graph: PluginLockGraph | None,
+        reason: str,
+    ) -> None:
+        if candidates:
+            await self._handover_background_services(previous, candidates, graph=graph)
+        retirement_order = (
+            graph.shutdown_order if graph is not None else tuple(sorted(previous, reverse=True))
+        )
+        scheduled: set[str] = set()
+        for plugin_id in retirement_order:
+            generation = previous.get(plugin_id)
+            if generation is None:
+                continue
+            scheduled.add(plugin_id)
+            self._schedule_retirement(
+                generation,
+                reason=_retirement_reason(
+                    reason,
+                    replaced=plugin_id in candidates,
+                    old=generation,
+                    new=candidates.get(plugin_id),
+                ),
+            )
+        for plugin_id in sorted(set(previous) - scheduled, reverse=True):
+            generation = previous[plugin_id]
+            self._schedule_retirement(
+                generation,
+                reason=_retirement_reason(
+                    reason,
+                    replaced=plugin_id in candidates,
+                    old=generation,
+                    new=candidates.get(plugin_id),
+                ),
+            )
 
     def _candidate_readiness(
         self,
@@ -922,14 +1329,17 @@ class PluginRuntimeResource:
 
     def _build_catalog(
         self,
-        generations: dict[str, ActivePluginGeneration],
+        generations: dict[str, PluginGeneration],
         *,
         state: PluginStateDocument | None = None,
+        graph: PluginLockGraph | None = None,
     ) -> ExtensionCatalog:
         self._ensure_catalog()
         assert self._catalog_base is not None
         if not generations:
             ordered_ids: tuple[str, ...] = ()
+        elif graph is not None:
+            ordered_ids = tuple(key for key in graph.activation_order if key in generations)
         elif state is None:
             raise ValueError("plugin state is required to order active generations")
         else:
@@ -942,7 +1352,55 @@ class PluginRuntimeResource:
         return build_extension_catalog(
             self._catalog_base,
             tuple(generations[plugin_id] for plugin_id in ordered_ids),
+            tool_groups=tuple(
+                group
+                for plugin_id in ordered_ids
+                if (endpoint := generations[plugin_id].tool_groups) is not None
+                for group in endpoint.versions
+            ),
+            dependencies={
+                plugin_id: tuple(
+                    item.plugin_id for item in generation.candidate.manifest.dependencies.plugins
+                )
+                for plugin_id, generation in generations.items()
+            },
         )
+
+    async def _publish_tool_group(
+        self,
+        endpoint: PluginToolGroups,
+        group_id: str,
+        version: ToolGroupVersion | None,
+        expected: ToolGroupVersion | None,
+    ) -> None:
+        # A lifecycle mutation may be draining the calling callback. Never wait
+        # for that same mutation from inside plugin code.
+        if self._mutation_lock.locked():
+            raise RuntimeError("tool groups cannot change during plugin lifecycle mutation")
+        async with self._mutation_lock:
+            endpoint.require_writable()
+            active = self._active.get(endpoint.record.plugin_id)
+            if active is None or active.tool_groups is not endpoint:
+                raise RuntimeError("only the current generation can publish tool groups")
+            if expected is not None and endpoint.get(group_id) is not expected:
+                return
+            groups = [
+                group
+                for generation in self._active.values()
+                if generation.tool_groups is not None
+                for group in generation.tool_groups.versions
+                if not (generation.tool_groups is endpoint and group.group_id == group_id)
+            ]
+            if version is not None:
+                groups.append(version)
+            current = self._ensure_catalog()
+            assert self._catalog_base is not None
+            catalog = current.with_tool_groups(self._catalog_base, groups)
+            # Construction validates all names and schemas before either state
+            # changes. Snapshot readers see one complete catalog under this lock.
+            with self._catalog_pointer_lock:
+                self._current_catalog = catalog
+                endpoint.commit(group_id, version)
 
     def _publish_catalog(
         self,
@@ -957,25 +1415,30 @@ class PluginRuntimeResource:
             if base_skills is not None:
                 self.base_skills = base_skills
             self._current_catalog = catalog
+        if self._task_service is not None:
+            self._task_service.notify_plugin_change()
 
     def _schedule_retirement(
         self,
-        generation: ActivePluginGeneration,
+        generation: PluginGeneration,
         *,
         reason: StopReason,
     ) -> None:
         generation.retiring = True
         self._retired[generation.record.generation_id] = generation
         if generation.lease_count == 0:
-            generation.drained.set()
+            generation.retirement_ready.set()
+        if generation.cleanup is not None and not generation.cleanup.done():
+            return
         task = asyncio.create_task(
             self._retire_generation(generation, reason=reason),
             name=f"ouro-plugin-retire-{generation.record.generation_id}",
         )
+        generation.cleanup = task
         self._retirement_tasks.add(task)
         task.add_done_callback(self._retirement_tasks.discard)
 
-    def _schedule_generation_failure(self, generation: ActivePluginGeneration) -> None:
+    def _schedule_generation_failure(self, generation: PluginGeneration) -> None:
         if self._closed or generation.retiring:
             return
         generation.retiring = True
@@ -992,7 +1455,7 @@ class PluginRuntimeResource:
 
     async def _handle_generation_failure(
         self,
-        generation: ActivePluginGeneration,
+        generation: PluginGeneration,
     ) -> None:
         async with self._mutation_lock:
             if self._closed:
@@ -1049,19 +1512,23 @@ class PluginRuntimeResource:
 
     async def _retire_generation(
         self,
-        generation: ActivePluginGeneration,
+        generation: PluginGeneration,
         *,
         reason: StopReason,
     ) -> None:
-        await generation.drained.wait()
+        await generation.retirement_ready.wait()
         try:
+            if generation.cleanup_error is not None:
+                raise generation.cleanup_error
             await self._stop_generation(generation, reason=reason)
         except Exception as exc:  # noqa: BLE001 - retirement cannot corrupt current catalog.
+            generation.cleanup_error = exc
+            generation.record.status = "failed"
             self._diagnostics.append(
                 PluginDiagnostic(
                     code="plugin_retirement_failed",
                     phase="retire",
-                    message=f"{type(exc).__name__}: {redact_text(str(exc))}",
+                    message=generation.describe_error(exc),
                     plugin_id=generation.candidate.plugin_id,
                     version=generation.candidate.version,
                     plugin_class=generation.candidate.plugin_class,
@@ -1069,16 +1536,16 @@ class PluginRuntimeResource:
                     package_digest=generation.candidate.package_digest,
                     builtin_contract_hash=generation.candidate.builtin_contract_hash,
                     generation_id=generation.record.generation_id,
-                    suggested_action="Restart OURO to retry complete plugin cleanup.",
+                    suggested_action="Resolve the cleanup failure, then disable the plugin again.",
                 )
             )
 
     async def _handover_background_services(
         self,
-        previous: dict[str, ActivePluginGeneration],
-        candidates: dict[str, ActivePluginGeneration],
+        previous: dict[str, PluginGeneration],
+        candidates: dict[str, PluginGeneration],
         *,
-        graph,
+        graph: PluginLockGraph | None,
     ) -> None:
         shutdown_order = (
             graph.shutdown_order if graph is not None else tuple(sorted(previous, reverse=True))
@@ -1087,13 +1554,14 @@ class PluginRuntimeResource:
             generation = previous.get(plugin_id)
             if generation is not None:
                 try:
-                    await self._stop_generation_services(generation)
+                    with self._admit_lifecycle_callbacks():
+                        await generation.stop_services()
                 except Exception as exc:  # noqa: BLE001 - catalog publication is authoritative.
                     generation.diagnostics.append(
                         PluginDiagnostic(
                             code="plugin_background_service_stop_failed",
                             phase="background",
-                            message=f"{type(exc).__name__}: {redact_text(str(exc))}",
+                            message=generation.describe_error(exc),
                             plugin_id=generation.candidate.plugin_id,
                             version=generation.candidate.version,
                             plugin_class=generation.candidate.plugin_class,
@@ -1114,61 +1582,59 @@ class PluginRuntimeResource:
 
     async def _start_generation_services(
         self,
-        generation: ActivePluginGeneration,
+        generation: PluginGeneration,
+        *,
+        scopes: frozenset[BackgroundServiceScope] | None = None,
     ) -> None:
-        async with generation.service_lock:
-            if generation.started_services or generation.stopped:
-                return
+        if scopes is None:
+            scopes = frozenset({"host", "home"} if self._home_services_owner else {"host"})
+        if any(
+            old.candidate.plugin_id == generation.candidate.plugin_id
+            and any(service.scope in scopes for service in old.started_services)
+            for old in self._retired.values()
+            if old is not generation
+        ):
+            generation.record.status = "degraded"
+            generation.diagnostics.append(
+                PluginDiagnostic(
+                    code="plugin_background_service_handover_blocked",
+                    phase="background",
+                    message="Previous generation has not released its background services",
+                    plugin_id=generation.candidate.plugin_id,
+                    generation_id=generation.record.generation_id,
+                    suggested_action="Resolve plugin cleanup before enabling it.",
+                )
+            )
+            return
+        try:
+            with self._admit_lifecycle_callbacks():
+                await generation.start_services(scopes=scopes)
+        except Exception as exc:  # The published contribution catalog remains usable.
+            generation.record.status = "degraded"
+            generation.diagnostics.append(
+                PluginDiagnostic(
+                    code="plugin_background_service_start_failed",
+                    phase="background",
+                    message=generation.describe_error(exc),
+                    plugin_id=generation.candidate.plugin_id,
+                    generation_id=generation.record.generation_id,
+                    suggested_action="Fix the background service and restart the plugin.",
+                )
+            )
             try:
-                for service in generation.contributions.background_services:
-                    await service.start()
-                    generation.started_services.append(service)
-            except Exception as exc:  # noqa: BLE001 - contribution catalog stays usable.
-                generation.record.status = "degraded"
-                generation.diagnostics.append(
-                    PluginDiagnostic(
-                        code="plugin_background_service_start_failed",
-                        phase="background",
-                        message=f"{type(exc).__name__}: {redact_text(str(exc))}",
-                        plugin_id=generation.candidate.plugin_id,
-                        version=generation.candidate.version,
-                        plugin_class=generation.candidate.plugin_class,
-                        release_id=generation.candidate.release_id,
-                        package_digest=generation.candidate.package_digest,
-                        builtin_contract_hash=generation.candidate.builtin_contract_hash,
-                        generation_id=generation.record.generation_id,
-                        suggested_action="Fix the background service and restart the plugin.",
-                    )
-                )
-                for service in reversed(generation.started_services):
-                    with suppress(Exception):
-                        await service.stop()
-                generation.started_services.clear()
-
-    async def _stop_generation_services(
-        self,
-        generation: ActivePluginGeneration,
-    ) -> None:
-        async with generation.service_lock:
-            errors: list[Exception] = []
-            for service in reversed(generation.started_services):
-                try:
-                    await service.stop()
-                except Exception as exc:  # noqa: BLE001 - stop every owned service.
-                    errors.append(exc)
-            generation.started_services.clear()
-            if errors:
-                raise ExceptionGroup(
-                    f"plugin background service shutdown failed: {generation.record.generation_id}",
-                    errors,
-                )
+                with self._admit_lifecycle_callbacks():
+                    await generation.stop_services(scopes=scopes)
+            except Exception:
+                # stop_services retains the failed owners and their cleanup error.
+                generation.record.status = "failed"
 
     async def _build_generation(
         self,
         candidate: PluginRuntimeCandidate,
         *,
         dependency_lock_fingerprint: str,
-    ) -> ActivePluginGeneration:
+        dependencies: dict[str, PluginGeneration],
+    ) -> PluginGeneration:
         configuration = candidate.configuration
         generation = PluginGenerationRecord(
             generation_id=new_id("plg"),
@@ -1212,17 +1678,76 @@ class PluginRuntimeResource:
             )
 
         tasks = OwnedTaskGroup(task_failure, active=False)
-        module: LoadedPluginModule | None = None
         resources: list[Any] = []
-        instance: Any = _DeclarativePluginInstance()
-        prepared: PreparedContributionSet | None = None
-        data_store: ScopedPluginDataStore | None = None
         package_root = (
             self.store.verify_package(candidate.plugin_id, candidate.package_digest)
             if candidate.package_digest is not None
             else candidate.root
         )
+        active = PluginGeneration(
+            record=generation,
+            candidate=candidate,
+            instance=_DeclarativePluginInstance(),
+            contributions=PreparedContributionSet(
+                owner=ContributionOwner(
+                    plugin_id=candidate.plugin_id,
+                    plugin_class=candidate.plugin_class,
+                    release_id=candidate.release_id,
+                    generation_id=generation.generation_id,
+                    package_digest=candidate.package_digest,
+                    builtin_contract_hash=candidate.builtin_contract_hash,
+                )
+            ),
+            gate=generation_gate,
+            tasks=tasks,
+            redactor=redactor,
+            dependencies=tuple(dependencies.values()),
+            resources=resources,
+            diagnostics=diagnostics,
+        )
+        active.services = ServiceEndpoint(
+            candidate.plugin_id,
+            gate=generation_gate,
+            bind=active.bind,
+            dependencies={
+                key: dependency.services
+                for key, dependency in dependencies.items()
+                if dependency.services is not None
+            },
+        )
+        if candidate.manifest.tool_groups:
+            active.tool_groups = PluginToolGroups(
+                candidate.manifest,
+                generation,
+                active.contributions.owner,
+                generation_gate,
+                self._publish_tool_group,
+            )
+        processes = PluginProcessService(
+            generation_gate,
+            frozenset(request.id for request in candidate.manifest.permissions),
+        )
+        environment = PluginEnvironmentService(self._instruction_loader, generation_gate)
+        native_run_ports = PluginNativePorts(
+            generation_gate,
+            frozenset(request.id for request in candidate.manifest.permissions),
+            plugin_id=candidate.plugin_id,
+            generation_service=self._model_generation,
+        )
+        scheduler = (
+            NativePluginScheduler(
+                self._task_service,
+                candidate.plugin_id,
+                generation_gate,
+                frozenset(request.id for request in candidate.manifest.permissions),
+            )
+            if self._task_service is not None
+            else None
+        )
         try:
+            active.data_lock = self.store.data_lock(candidate.plugin_id)
+            if not active.data_lock.acquire():
+                raise RuntimeError(f"plugin data is in use for maintenance: {candidate.plugin_id}")
             if candidate.manifest.runtime.kind == "python-inprocess":
                 if candidate.plugin_class == "builtin":
                     factory = candidate.factory
@@ -1230,15 +1755,15 @@ class PluginRuntimeResource:
                 else:
                     entrypoint = candidate.manifest.runtime.entrypoint
                     assert entrypoint is not None
-                    factory, module = load_plugin_factory(
+                    factory, active.module = load_plugin_factory(
                         package_root,
                         entrypoint,
                         module_namespace=plugin_module_namespace(candidate.manifest.namespace),
                         generation_id=generation.generation_id,
                     )
-                data_store = ScopedPluginDataStore(
+                active.data_store = ScopedPluginDataStore(
                     self.store.data_root / candidate.plugin_id,
-                    staged=True,
+                    read_only=True,
                 )
                 context = build_plugin_context(
                     candidate,
@@ -1250,13 +1775,20 @@ class PluginRuntimeResource:
                     tasks=tasks,
                     diagnostics=diagnostics,
                     redactor=redactor,
-                    data_store=data_store,
+                    data_store=active.data_store,
                     artifact_root=self.store.home / "artifacts",
-                    host_home=self.store.home,
+                    environment=environment,
+                    services=active.services,
+                    processes=processes,
+                    models=native_run_ports,
+                    tools=native_run_ports,
+                    tool_groups=active.tool_groups,
+                    scheduler=scheduler,
                 )
                 instance = factory(context)
                 if inspect.isawaitable(instance):
                     instance = await instance
+                active.instance = instance
             elif candidate.manifest.runtime.kind == "worker":
 
                 def worker_diagnostic(code: str, message: str) -> None:
@@ -1276,12 +1808,15 @@ class PluginRuntimeResource:
                         )
                     )
                     if code == "worker_exit":
-                        generation_gate.close()
-                        active = self._active.get(candidate.plugin_id)
-                        if (
-                            active is not None
-                            and active.record.generation_id == generation.generation_id
-                        ):
+                        # A failed worker cannot finish its old execution contract.
+                        # Revoke this exact owner, including a retiring generation
+                        # still referenced by a model response or approval view.
+                        active.revoke(cancel=True)
+                        revoke_dependent_generations(
+                            (*self._active.values(), *self._retired.values()),
+                            {active.record.generation_id},
+                        )
+                        if self._active.get(candidate.plugin_id) is active:
                             self._schedule_generation_failure(active)
 
                 credentials = _resolve_worker_credentials(
@@ -1290,7 +1825,7 @@ class PluginRuntimeResource:
                 )
                 for value in credentials.values():
                     redactor.add(value)
-                instance = WorkerPluginInstance(
+                active.instance = WorkerPluginInstance(
                     candidate.manifest,
                     package_root=package_root,
                     package_digest=candidate.release_id,
@@ -1299,13 +1834,34 @@ class PluginRuntimeResource:
                     data_directory=self.store.data_root / candidate.plugin_id,
                     credentials=credentials,
                     diagnostic=worker_diagnostic,
+                    environment=environment,
+                    services=active.services,
+                    processes=processes,
+                    models=native_run_ports,
+                    inputs=native_run_ports,
+                    tools=native_run_ports,
+                    tool_groups=active.tool_groups,
+                    scheduler=scheduler,
                 )
-            _validate_instance(instance)
-            contributions = await instance.prepare()
+            _validate_instance(active.instance)
+            contributions = await active.instance.prepare()
+            initial_tool_groups: list[ToolGroupPublication] = []
             if isinstance(contributions, sdk.ContributionSet):
+                initial_tool_groups = [
+                    ToolGroupPublication(group) for group in contributions.tool_groups
+                ]
+                if isinstance(active.instance, WorkerPluginInstance):
+                    initial_tool_groups.extend(active.instance.initial_tool_groups)
+                    active.instance.initial_tool_groups.clear()
+                active.services.prepare(candidate.manifest.exports, contributions.services)
                 contributions = adapt_sdk_contributions(contributions, owner_id=candidate.plugin_id)
+            else:
+                active.services.prepare(candidate.manifest.exports, ())
             if not isinstance(contributions, PluginContributions):
                 raise TypeError("plugin prepare() must return SDK ContributionSet")
+            contributions.providers = [
+                replace(item, redactor=redactor) for item in contributions.providers
+            ]
             prepared_resources = await prepare_generation_resources(
                 GenerationResourceRequest(
                     candidate=candidate,
@@ -1313,9 +1869,9 @@ class PluginRuntimeResource:
                     package_root=package_root,
                     configuration=configuration,
                     credential_resolver=self.credential_resolver,
+                    own_resource=resources.append,
                 )
             )
-            resources.extend(prepared_resources.owned_resources)
             prepared = self.coordinator.prepare(
                 candidate,
                 generation,
@@ -1349,8 +1905,13 @@ class PluginRuntimeResource:
                 prepared,
                 generation.execution_contract_hash,
             )
-            await instance.start()
-            if isinstance(instance, WorkerPluginInstance) and not instance.is_healthy:
+            active.contributions = prepared
+            if active.tool_groups is not None:
+                active.tool_groups.prepare(initial_tool_groups)
+            elif initial_tool_groups:
+                raise ValueError("plugin returned undeclared tool groups")
+            await active.instance.start()
+            if isinstance(active.instance, WorkerPluginInstance) and not active.instance.is_healthy:
                 raise RuntimeError("plugin worker exited during candidate activation")
             if generation.status == "failed":
                 raise RuntimeError("plugin generation failed during candidate activation")
@@ -1371,34 +1932,9 @@ class PluginRuntimeResource:
                         generation_id=generation.generation_id,
                     )
                 )
-            active = ActivePluginGeneration(
-                record=generation,
-                candidate=candidate,
-                instance=instance,
-                contributions=prepared,
-                gate=generation_gate,
-                tasks=tasks,
-                data_store=data_store,
-                module=module,
-                resources=resources,
-                diagnostics=diagnostics,
-            )
             return active
         except BaseException as exc:
-            with suppress(Exception):
-                await _stop_instance(
-                    instance,
-                    reason="startup_failed",
-                    timeout=self.stop_timeout_seconds,
-                )
-            await tasks.close(timeout=self.stop_timeout_seconds)
-            if data_store is not None:
-                data_store.discard()
-            for resource in reversed(resources):
-                with suppress(Exception):
-                    await resource.close()
-            if module is not None:
-                module.close()
+            await self._discard_candidates((active,))
             if isinstance(exc, Exception):
                 raise PluginGenerationStartError(
                     f"{type(exc).__name__}: {redactor.redact(str(exc))}"
@@ -1407,53 +1943,14 @@ class PluginRuntimeResource:
 
     async def _stop_generation(
         self,
-        generation: ActivePluginGeneration,
+        generation: PluginGeneration,
         *,
         reason: StopReason,
     ) -> None:
-        async with generation.stop_lock:
-            if generation.stopped:
-                return
-            generation.gate.close()
-            await generation.gate.wait_drained()
-            errors: list[Exception] = []
-            try:
-                await self._stop_generation_services(generation)
-            except Exception as exc:  # noqa: BLE001 - continue owner cleanup.
-                errors.append(exc)
-            try:
-                await _stop_instance(
-                    generation.instance,
-                    reason=reason,
-                    timeout=self.stop_timeout_seconds,
-                )
-            except Exception as exc:  # noqa: BLE001 - continue owner cleanup.
-                errors.append(exc)
-            await generation.tasks.close(timeout=self.stop_timeout_seconds)
-            for resource in reversed(generation.resources):
-                try:
-                    await resource.close()
-                except Exception as exc:  # noqa: BLE001 - continue owner cleanup.
-                    errors.append(exc)
-            if generation.module is not None:
-                generation.module.close()
-            generation.record.status = "disabled"
-            generation.stopped = True
-            self._diagnostics.extend(generation.diagnostics)
-            generation.diagnostics.clear()
-            self._retired.pop(generation.record.generation_id, None)
-            if errors:
-                raise ExceptionGroup(
-                    f"plugin generation shutdown failed: {generation.record.generation_id}",
-                    errors,
-                )
-
-    def _plugin_record(self, plugin_id: str) -> PluginRecord:
-        state = self.store.read_state()
-        try:
-            return state.plugins[plugin_id]
-        except KeyError as exc:
-            raise KeyError(f"plugin is not installed: {plugin_id}") from exc
+        await generation.stop(reason=reason, timeout=self.stop_timeout_seconds)
+        self._diagnostics.extend(generation.diagnostics)
+        generation.diagnostics.clear()
+        self._retired.pop(generation.record.generation_id, None)
 
     def _plugin_available(self, state: PluginStateDocument, plugin_id: str) -> bool:
         return plugin_id in state.plugins or self.builtin_plugins.get(plugin_id) is not None
@@ -1584,19 +2081,14 @@ def _retirement_reason(
     reason: str,
     *,
     replaced: bool,
-    old: ActivePluginGeneration,
-    new: ActivePluginGeneration | None,
+    old: PluginGeneration,
+    new: PluginGeneration | None,
 ) -> StopReason:
     if not replaced:
         return "disable" if reason == "disable" else "restart"
     if new is not None and new.candidate.release_id != old.candidate.release_id:
         return "upgrade"
     return "restart"
-
-
-async def _stop_instance(instance: Any, *, reason: StopReason, timeout: float) -> None:
-    deadline = monotonic() + timeout
-    await asyncio.wait_for(instance.stop(reason, deadline), timeout=timeout)
 
 
 def _resolve_worker_credentials(

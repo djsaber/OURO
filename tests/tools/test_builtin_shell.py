@@ -6,18 +6,19 @@ import sys
 from asyncio import create_task, sleep
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
-import ouro.tools.base as tool_base
 from ouro.core.cancellation import AbortSignal
 from ouro.core.tools import tool_definition_contract_hash
 from ouro.tools import (
+    ProcessResult,
     ToolExecutionAborted,
     ToolExecutionContext,
     ToolExecutor,
     ToolInvocation,
-    ToolProcessResult,
     ToolRegistry,
     builtin_tools,
 )
@@ -284,29 +285,24 @@ async def test_non_interactive_processes_do_not_inherit_terminal_input(
     method: str,
 ) -> None:
     captured: dict[str, object] = {}
-    process = object()
+    process = SimpleNamespace(
+        stdout=asyncio.StreamReader(),
+        stderr=asyncio.StreamReader(),
+        returncode=0,
+        wait=AsyncMock(return_value=0),
+    )
+    process.stdout.feed_eof()
+    process.stderr.feed_eof()
 
     async def fake_create(*_arguments: object, **kwargs: object) -> object:
         captured.update(kwargs)
-        return process
+        return SimpleNamespace(process=process, terminate=AsyncMock(), close=AsyncMock())
 
-    class RecordingContext(ToolExecutionContext):
-        async def _collect_process(
-            self,
-            created_process: object,
-            *,
-            timeout_seconds: float,
-        ) -> ToolProcessResult:
-            assert created_process is process
-            assert timeout_seconds == 3
-            return ToolProcessResult(stdout="", stderr="", returncode=0)
-
+    monkeypatch.setattr("ouro.local_processes.commands.start_process", fake_create)
     if method == "run_shell":
-        monkeypatch.setattr(tool_base.asyncio, "create_subprocess_shell", fake_create)
-        result = await RecordingContext().run_shell("ignored", timeout_seconds=3)
+        result = await ToolExecutionContext().run_shell("ignored", timeout_seconds=3)
     else:
-        monkeypatch.setattr(tool_base.asyncio, "create_subprocess_exec", fake_create)
-        result = await RecordingContext().run_process(("ignored",), timeout_seconds=3)
+        result = await ToolExecutionContext().run_process(("ignored",), timeout_seconds=3)
 
     assert result.returncode == 0
     assert captured["stdin"] is asyncio.subprocess.DEVNULL
@@ -327,10 +323,10 @@ async def test_command_result_identifies_shell_and_preserves_both_output_streams
             cwd: str | Path | None = None,
             timeout_seconds: float = 30.0,
             environment: Mapping[str, str] | None = None,
-        ) -> ToolProcessResult:
+        ) -> ProcessResult:
             del cwd, timeout_seconds, environment
             seen_arguments.append(tuple(arguments))
-            return ToolProcessResult(
+            return ProcessResult(
                 stdout="standard output",
                 stderr="diagnostic output",
                 returncode=7,
@@ -426,8 +422,8 @@ async def test_process_boundary_drains_large_streams_with_one_shared_memory_cap(
     assert result.stdout_truncated is True
     assert result.stderr_truncated is True
     assert len(result.stdout) + len(result.stderr) <= limit + 128
-    assert "tool output truncated" in result.stdout
-    assert "tool output truncated" in result.stderr
+    assert "output truncated" in result.stdout
+    assert "output truncated" in result.stderr
 
 
 @pytest.mark.asyncio

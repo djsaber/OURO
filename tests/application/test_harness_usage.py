@@ -104,6 +104,7 @@ async def test_native_usage_survives_undo_and_keeps_request_attribution(store, t
     # This test owns one fixed catalog; execution still verifies the real controller contract.
     resource = Mock(spec=PluginRuntimeResource)
     resource.snapshot.side_effect = catalog.acquire
+    resource.catalog.return_value = catalog
     app.bind_extensions(catalog=resource)
     session = SessionRecord(controls=goal_controls("goal-a"))
     store.create_session(session)

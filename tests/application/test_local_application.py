@@ -6,10 +6,10 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from ouro.automation.local_files import LocalTaskRepository
-from ouro.automation.models import TaskConfiguration, TaskSchedule
 from ouro.automation.sqlite import SQLiteTaskRepository
 from ouro.core.errors import ConfigError
 from ouro.core.state import SessionRecord
+from ouro.core.tasks import AgentTaskTarget, TaskConfiguration, TaskSchedule
 from ouro.deployment import resolve_session_backend, resolve_task_backend
 from ouro.local_application import (
     LocalApplication,
@@ -18,6 +18,32 @@ from ouro.local_application import (
 )
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.local_index import LocalSessionIndex
+
+
+async def test_application_close_retries_failed_plugin_cleanup(tmp_path, monkeypatch):
+    application = LocalApplication.build(tmp_path)
+    await application.start()
+    assert application.plugin_runtime is not None
+    plugin_ids = [item.plugin_id for item in application.plugin_runtime.catalog().generations]
+    close_plugins = application.plugin_runtime.close
+    attempts = 0
+
+    async def fail_once():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("plugin resource cleanup failed")
+        await close_plugins()
+
+    monkeypatch.setattr(application.plugin_runtime, "close", fail_once)
+    try:
+        with pytest.raises(ExceptionGroup, match="shutdown failed"):
+            await application.close()
+        await application.close()
+        assert attempts == 2
+        assert not any(application.plugin_runtime.has_resources(item) for item in plugin_ids)
+    finally:
+        await close_plugins()
 
 
 @pytest.mark.parametrize("task_backend", ["files", "sqlite"])
@@ -38,11 +64,13 @@ async def test_task_sessions_use_the_composed_session_backend(
         now = datetime.now(UTC)
         task = await tasks.create(
             TaskConfiguration(
-                description="Run this scheduled instruction",
-                workspace=str(tmp_path),
-                model=application.runtime.current_model().key,
                 schedule=TaskSchedule(
                     frequency="custom", unit="minutes", starts_at=now + timedelta(milliseconds=100)
+                ),
+                target=AgentTaskTarget(
+                    prompt="Run this scheduled instruction",
+                    workspace=str(tmp_path),
+                    model=application.runtime.current_model().key,
                 ),
             )
         )

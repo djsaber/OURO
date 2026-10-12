@@ -1,4 +1,4 @@
-"""Wire contract for the builtin plan confirmation interaction."""
+"""Public wire contract for presenting and answering a plan confirmation."""
 
 from __future__ import annotations
 
@@ -6,8 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, cast
 
-from ouro.core.tools import ToolInvocation
-from ouro.sdk.plugins.v2 import JsonValue
+from .state import JsonValue
 
 type PlanConfirmationAction = Literal["accept", "revise", "reject"]
 
@@ -17,8 +16,6 @@ PLAN_CONFIRMATION_ACTIONS: tuple[PlanConfirmationAction, ...] = (
     "revise",
     "reject",
 )
-_PLAN_PLUGIN_ID = "dev.ouro.plan"
-_EXIT_PLAN_MODE_TOOL_ID = f"{_PLAN_PLUGIN_ID}/tools/exit"
 
 
 @dataclass(frozen=True)
@@ -140,21 +137,11 @@ class PlanConfirmationAnswer:
         return answer
 
 
-def parse_builtin_plan_confirmation(
-    invocation: ToolInvocation | None,
-    data: object,
-) -> PlanConfirmationRequest | None:
-    """Parse only requests emitted by OURO's canonical builtin ExitPlanMode tool."""
-
-    recognized = (
-        invocation is not None
-        and invocation.plugin_class == "builtin"
-        and invocation.plugin_id == _PLAN_PLUGIN_ID
-        and invocation.canonical_tool_id == _EXIT_PLAN_MODE_TOOL_ID
-        and isinstance(data, dict)
-        and data.get("type") == PLAN_CONFIRMATION_TYPE
-    )
-    return PlanConfirmationRequest.from_json(data) if recognized else None
+def parse_plan_confirmation(data: object) -> PlanConfirmationRequest | None:
+    """Recognize the presentation contract independently of the producing plugin."""
+    if not isinstance(data, Mapping) or data.get("type") != PLAN_CONFIRMATION_TYPE:
+        return None
+    return PlanConfirmationRequest.from_json(data)
 
 
 __all__ = [
@@ -164,5 +151,5 @@ __all__ = [
     "PlanConfirmationAnswer",
     "PlanConfirmationRequest",
     "PlanOption",
-    "parse_builtin_plan_confirmation",
+    "parse_plan_confirmation",
 ]

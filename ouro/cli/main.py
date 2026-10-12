@@ -793,6 +793,7 @@ def _usage_filters(args: argparse.Namespace) -> UsageFilterArgs:
         "model_ids": args.model_ids,
         "session_ids": args.session_ids,
         "run_ids": args.run_ids,
+        "plugin_ids": args.plugin_ids,
         "purposes": args.purposes,
         "workspaces": args.workspaces,
         "billing_modes": args.billing_modes,

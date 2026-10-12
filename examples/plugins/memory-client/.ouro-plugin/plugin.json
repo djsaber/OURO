@@ -1,0 +1,14 @@
+{
+  "schema_version": 3,
+  "plugin_id": "dev.ouro.examples.memory_client",
+  "name": "Memory Client",
+  "namespace": "memory_client",
+  "version": "0.1.0",
+  "engines": {"ouro": "^0.2.0", "plugin_api": "^3.0.0"},
+  "runtime": {"kind": "worker", "command": ["{python}", "worker.py"], "protocol": "3.0"},
+  "dependencies": {"plugins": [{"plugin_id": "dev.ouro.examples.memory", "version": "^0.1.0"}]},
+  "contributes": {"commands": [
+    {"id": "remember", "description": "Store a memory through its owning plugin."},
+    {"id": "search", "description": "Search memory with a scoped result filter."}
+  ]}
+}

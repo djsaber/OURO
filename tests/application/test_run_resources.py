@@ -7,7 +7,7 @@ import sys
 import textwrap
 import weakref
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -97,7 +97,9 @@ async def runtime(tmp_path):
         (),
     )
 
-    source = SimpleNamespace(snapshot=catalog.acquire)
+    source = SimpleNamespace(
+        snapshot=catalog.acquire, catalog=lambda: catalog, synchronize=AsyncMock()
+    )
     yield app, catalog, source
     # Explicit close tests own their shutdown result, including expected errors.
     # Finish unstarted or pending shutdowns without replaying an observed failure.
@@ -157,7 +159,7 @@ async def test_wait_releases_resources_and_resume_acquires_current_binding(runti
     assert catalog.lease_count == 0
 
 
-async def test_terminal_cleanup_keeps_independently_forked_observer_lease(runtime):
+async def test_unmatched_observation_does_not_retain_the_run_catalog(runtime):
     app, catalog, source = runtime
     app.bind_extensions(catalog=source)
     run = delegated_run()
@@ -171,9 +173,9 @@ async def test_terminal_cleanup_keeps_independently_forked_observer_lease(runtim
             model_round=0,
         )
     )
-    assert catalog.lease_count == 2
-    app._finish_run_observers(run.model_copy(update={"status": "completed"}))
     assert catalog.lease_count == 1
+    app._finish_run_observers(run.model_copy(update={"status": "completed"}))
+    assert catalog.lease_count == 0
     close_observer()
     assert catalog.lease_count == 0
 

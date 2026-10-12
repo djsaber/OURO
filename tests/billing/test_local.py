@@ -74,7 +74,7 @@ def test_local_usage_ledger_rejects_event_without_explicit_schema_version(tmp_pa
         connection.execute("UPDATE events SET payload=?", (json.dumps(raw),))
         connection.commit()
 
-    with pytest.raises(UnsupportedDataVersionError, match="found missing, expected 1"):
+    with pytest.raises(UnsupportedDataVersionError, match="found missing, expected 2"):
         LocalUsageLedger(tmp_path).audit()
 
 
@@ -364,13 +364,46 @@ def test_summary_scope_and_reset_never_decode_request_or_audit_payloads(tmp_path
     assert ledger.session_scope_tokens("ses_a") == {}
 
 
-def test_database_version_is_required(tmp_path):
+@pytest.mark.parametrize("version", [1, 999])
+def test_database_version_is_required(tmp_path, version):
     ledger = LocalUsageLedger(tmp_path)
     ledger.initialize()
     with closing(sqlite3.connect(ledger.path)) as connection:
-        connection.execute("PRAGMA user_version=999")
-    with pytest.raises(UnsupportedDataVersionError, match="found 999"):
+        connection.execute(f"PRAGMA user_version={version}")
+    original = ledger.path.read_bytes()
+    with pytest.raises(UnsupportedDataVersionError, match=f"found {version}"):
         LocalUsageLedger(tmp_path).summarize(UsageFilter())
+    assert ledger.path.read_bytes() == original
+
+
+def test_independent_plugin_usage_groups_and_filters_null_run_identity(tmp_path):
+    ledger = LocalUsageLedger(tmp_path)
+    ledger.initialize()
+    run = ledger.record(_entry(0))
+    plugin = ledger.record(
+        ProviderUsageEntry(
+            entry_id="plugin_request",
+            provider_id="provider-a",
+            model_id="model-a",
+            plugin_id="dev.ouro.review",
+            purpose="plugin",
+            request_id="request",
+            input_tokens=7,
+        )
+    )
+    assert ledger.list_entries(UsageFilter(plugin_ids={plugin.plugin_id})).entries == (plugin,)
+    assert ledger.list_entries(UsageFilter(run_ids={None})).entries == (plugin,)
+    assert ledger.list_entries(UsageFilter(plugin_ids={None})).entries == (run,)
+    summary = ledger.summarize(UsageFilter(), group_by=("plugin", "run"))
+    assert {group.key for group in summary.groups} == {(None, run.run_id), (plugin.plugin_id, None)}
+    with pytest.raises(PersistenceError, match="attribution"):
+        ledger.replace(
+            plugin.model_copy(update={"revision": 2, "plugin_id": "dev.ouro.other"}),
+            note="change owner",
+        )
+    removed = ledger.reset(UsageFilter(plugin_ids={plugin.plugin_id}), note="clear plugin usage")
+    assert removed.total_tokens == 7
+    assert ledger.list_entries(UsageFilter()).entries == (run,)
 
 
 def test_initialization_preserves_other_files_and_reuses_database(tmp_path):

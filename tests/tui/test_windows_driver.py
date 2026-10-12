@@ -135,4 +135,4 @@ def test_native_console_frame_keeps_input_cursor_and_unicode_intact():
     assert measured["fragmented_positions"] > 1
     assert measured["native_writes"] == 100
     assert measured["sample_count"] > 0
-    assert measured["positions"] == [[9, 25]]
+    assert measured["positions"] == [measured["expected_cursor"]]

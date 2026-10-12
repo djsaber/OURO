@@ -14,6 +14,7 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import McpError
 
+from ouro import __version__
 from ouro.core.content import AudioContent, ContentPart, ImageContent, TextContent
 from ouro.core.redaction import redact_text
 from ouro.mcp.client import (
@@ -213,7 +214,7 @@ async def _client_session(
         read_timeout_seconds=timedelta(seconds=config.timeout_seconds),
         logging_callback=logging_callback,
         message_handler=message_handler,
-        client_info=types.Implementation(name="ouro-agent", version="0.1.0"),
+        client_info=types.Implementation(name="ouro-agent", version=__version__),
     )
     async with session:
         yield session

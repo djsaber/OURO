@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from textual.app import ComposeResult
 from textual.geometry import NULL_OFFSET, NULL_SPACING, Region, Size
 from textual.layout import ArrangeResult, Layout, WidgetPlacement
@@ -109,7 +111,7 @@ class WelcomeHost(Widget):
             page.display = False
             with self.app.batch_update():
                 self.page.set_playback(active=False, motion=self._motion)
-                await self.page.remove()
+                await asyncio.shield(self.page.remove())
                 self.remove_class(f"welcome-style-{self.style_package.style_id}")
                 self.style_package, self.page = style, page
                 await self.mount(page, before=self.input_surface)

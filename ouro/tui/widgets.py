@@ -32,16 +32,16 @@ from ouro.application.queued_inputs import (
 )
 from ouro.application.session_models import SessionContextStatus
 from ouro.application.supervisor_models import RuntimeToolCallActivity
-from ouro.builtin_plugins.plan.interaction import (
-    PlanConfirmationAction,
-    PlanConfirmationAnswer,
-    PlanConfirmationRequest,
-)
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextMetrics
 from ouro.core.input_content import InputContent, InputFile
 from ouro.core.messages import MessageRecord, ModelMessage, SkillActivationContent, TextContent
 from ouro.core.state import DEFAULT_SESSION_TITLE
+from ouro.sdk.plugins.interactions import (
+    PlanConfirmationAction,
+    PlanConfirmationAnswer,
+    PlanConfirmationRequest,
+)
 from ouro.tui.attachment_editor import AttachmentTextArea, file_count_label
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import TuiCommand, TuiCommandArgument
@@ -1429,6 +1429,9 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
 
         self._follow_tail = False
         self._restored_scroll_y = max(0.0, scroll_y)
+        # Cached strips can repaint before layout runs. Publish their saved offset
+        # now; arrange() will clamp it against the destination's actual geometry.
+        self.set_scroll(None, self._restored_scroll_y)
         self.refresh(layout=True)
 
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
@@ -1572,7 +1575,9 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             child for child in self._transcript.children if child is not self._history
         )
         if live_children:
-            await self._transcript.remove_children(live_children)
+            # DOM teardown owns the message tasks; cancelling a renderer must
+            # not propagate into those tasks while they unmount their children.
+            await asyncio.shield(self._transcript.remove_children(live_children))
 
     def user_turn_summaries(self) -> tuple[str, ...]:
         return self._history.user_turns
@@ -1708,7 +1713,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                     reasoning_expanded=reasoning_expanded,
                 )
         self._assistant = None
-        await turn.remove()
+        await asyncio.shield(turn.remove())
 
     @property
     def _history_ends_with_tool(self) -> bool:
@@ -1777,7 +1782,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                 )
                 for row in terminal_rows
             )
-            await self._transcript.remove_children(terminal_rows)
+            await asyncio.shield(self._transcript.remove_children(terminal_rows))
 
     def _adopt_streaming_tool_rows(
         self,
@@ -2345,7 +2350,7 @@ class AskUserPanel(Static):
 
 
 class PlanConfirmationPanel(ApprovalPanel):
-    """Keyboard-first decision workflow for the builtin ExitPlanMode request."""
+    """Keyboard-first decision workflow for a public plan confirmation request."""
 
     BINDINGS = [
         *ApprovalPanel.BINDINGS,
@@ -2519,15 +2524,15 @@ class PlanConfirmationPanel(ApprovalPanel):
             content.append(f"{request.error}\n\n", style=theme.danger)
         if self._stage == "action":
             content.append(
-                "Choose how Plan mode should continue\n\n",
+                "Choose how to respond to this plan\n\n",
                 style=theme.text_secondary,
             )
             presentations = {
-                "accept": ("Accept", "Approve the plan and exit Plan mode", theme.success),
-                "revise": ("Revise", "Keep planning and provide feedback", theme.accent),
+                "accept": ("Accept", "Accept the proposed plan", theme.success),
+                "revise": ("Revise", "Request changes and provide feedback", theme.accent),
                 "reject": (
                     "Reject",
-                    "Reject the plan and keep Plan mode active",
+                    "Reject the proposed plan",
                     theme.danger,
                 ),
             }

@@ -8,7 +8,7 @@ from pydantic import Field, TypeAdapter, field_validator, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
 
-UsagePurpose = Literal["agent", "compaction"]
+UsagePurpose = Literal["agent", "compaction", "plugin"]
 UsageLedgerEventType = Literal["record", "replace", "reset"]
 BillingMode = Literal["unknown", "usage_based", "subscription"]
 
@@ -24,15 +24,17 @@ class ProviderUsageEntry(VersionedOuroModel):
     informational read/write breakdown.
     """
 
+    schema_version: int = 2
     entry_id: str
     occurred_at: datetime = Field(default_factory=utc_now)
     provider_id: str
     endpoint_id: str | None = None
     model_id: str
-    session_id: str
+    session_id: str | None = None
     workspace: str | None = None
-    run_id: str
-    run_kind: str
+    run_id: str | None = None
+    run_kind: str | None = None
+    plugin_id: str | None = None
     purpose: UsagePurpose
     request_id: str
     input_tokens: int = Field(default=0, ge=0)
@@ -66,9 +68,6 @@ class ProviderUsageEntry(VersionedOuroModel):
         "entry_id",
         "provider_id",
         "model_id",
-        "session_id",
-        "run_id",
-        "run_kind",
         "request_id",
     )
     @classmethod
@@ -78,12 +77,28 @@ class ProviderUsageEntry(VersionedOuroModel):
             raise ValueError("usage identifiers must not be empty")
         return normalized
 
-    @field_validator("endpoint_id", "workspace")
+    @field_validator("endpoint_id", "workspace", "session_id", "run_id", "run_kind", "plugin_id")
     @classmethod
     def _normalize_optional_identifier(cls, value: str | None) -> str | None:
         if value is None:
             return None
         return value.strip() or None
+
+    @model_validator(mode="after")
+    def _validate_attribution(self) -> Self:
+        if self.purpose == "plugin":
+            if self.plugin_id is None or self.run_id is not None or self.run_kind is not None:
+                raise ValueError("Independent plugin usage requires a plugin and no Run identity")
+        elif (
+            self.session_id is None
+            or self.run_id is None
+            or self.run_kind is None
+            or self.plugin_id is not None
+        ):
+            raise ValueError(
+                "Run usage requires Session and Run identities and no independent plugin"
+            )
+        return self
 
     @field_validator("occurred_at", "modified_at")
     @classmethod
@@ -112,8 +127,9 @@ class UsageFilter(OuroModel):
     provider_ids: frozenset[str] = Field(default_factory=frozenset)
     endpoint_ids: frozenset[str | None] = Field(default_factory=frozenset)
     model_ids: frozenset[str] = Field(default_factory=frozenset)
-    session_ids: frozenset[str] = Field(default_factory=frozenset)
-    run_ids: frozenset[str] = Field(default_factory=frozenset)
+    session_ids: frozenset[str | None] = Field(default_factory=frozenset)
+    run_ids: frozenset[str | None] = Field(default_factory=frozenset)
+    plugin_ids: frozenset[str | None] = Field(default_factory=frozenset)
     workspaces: frozenset[str | None] = Field(default_factory=frozenset)
     purposes: frozenset[UsagePurpose] = Field(default_factory=frozenset)
     billing_modes: frozenset[BillingMode] = Field(default_factory=frozenset)
@@ -131,6 +147,7 @@ class UsageFilter(OuroModel):
         "model_ids",
         "session_ids",
         "run_ids",
+        "plugin_ids",
         "workspaces",
         mode="before",
     )
@@ -162,6 +179,7 @@ class UsageFilter(OuroModel):
 class UsageLedgerEvent(VersionedOuroModel):
     """Append-only mutation in the global provider usage ledger."""
 
+    schema_version: int = 2
     event_id: str = Field(default_factory=lambda: new_id("uev"))
     event_type: UsageLedgerEventType
     recorded_at: datetime = Field(default_factory=utc_now)

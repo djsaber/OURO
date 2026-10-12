@@ -13,6 +13,7 @@ from ouro.core.base import OuroModel
 from ouro.core.errors import OuroError
 from ouro.core.redaction import redact_text
 from ouro.local_application import (
+    build_local_plugin_maintenance_service,
     build_local_plugin_service,
     open_local_plugins,
     resolve_local_home,
@@ -31,6 +32,24 @@ def run_plugin_command(args) -> int:
 def _run_plugin_command(args) -> int:
     command = args.plugin_command
     home = resolve_local_home(args.home)
+    if command == "purge-data":
+        service = build_local_plugin_maintenance_service(home, session_backend=args.session_backend)
+        return _emit(service.purge_data(args.plugin_id), json_mode=args.json)
+    if command == "maintain":
+        service = build_local_plugin_maintenance_service(home, session_backend=args.session_backend)
+        result = asyncio.run(
+            service.maintain_data(args.plugin_id, args.execute, timeout_seconds=args.timeout)
+        )
+        _emit(result, json_mode=args.json)
+        return 0 if result.status == "succeeded" else 1
+    if command == "gc":
+        service = build_local_plugin_maintenance_service(home, session_backend=args.session_backend)
+        removed = service.gc()
+        if args.json:
+            print(json.dumps({"removed": removed}, ensure_ascii=False))
+        else:
+            print(f"Removed {len(removed)} unreferenced plugin paths.")
+        return 0
     service = build_local_plugin_service(home)
     if command == "scaffold":
         return _emit(
@@ -132,13 +151,6 @@ def _run_plugin_command(args) -> int:
                 json_mode=args.json,
             )
         )
-    if command == "gc":
-        removed = service.gc()
-        if args.json:
-            print(json.dumps({"removed": removed}, ensure_ascii=False))
-        else:
-            print(f"Removed {len(removed)} unreferenced plugin paths.")
-        return 0
     raise AssertionError(f"unknown plugin command: {command}")
 
 
@@ -325,6 +337,8 @@ def _emit(value, *, json_mode: bool) -> int:
         print(f"{value.action}: {value.plugin_id}: {value.status}{suffix}")
         for diagnostic in value.diagnostics:
             print(f"[{diagnostic.severity}] {diagnostic.code}: {diagnostic.message}")
+        if value.retained_by:
+            print("Package code retained by: " + ", ".join(value.retained_by))
     else:
         print(
             json.dumps(

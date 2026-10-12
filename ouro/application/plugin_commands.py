@@ -19,11 +19,13 @@ from ouro.core.harness_calls import HarnessCallSnapshot, accept_state_changes
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
+from ouro.core.run_drivers import RunDriverBinding
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_controls import AttributedSessionInputBatch
 from ouro.core.session_titles import fallback_session_title
 from ouro.core.state import SessionRecord
-from ouro.plugins.catalog import ExtensionCatalogLease
+from ouro.plugins.registry import PluginCommandRegistry
+from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sessions import SessionStore
 
 if TYPE_CHECKING:
@@ -147,7 +149,8 @@ async def consume_plugin_command(
 
 async def execute_plugin_command(
     *,
-    catalog: ExtensionCatalogLease,
+    commands: PluginCommandRegistry,
+    controllers: PluginSessionControllerRegistry,
     store: SessionStore | None,
     command_id: str,
     argument: str,
@@ -155,6 +158,7 @@ async def execute_plugin_command(
     workspace: str | None,
     usage_service: UsageService | None = None,
     captured_harness: tuple[SessionRecord, HarnessCallSnapshot] | None = None,
+    select_driver: Callable[[str], RunDriverBinding] | None = None,
 ) -> PluginCommandExecutionView:
     """Accept one command's owner state, nested controllers and queued inputs together."""
     if captured_harness is None and store is not None and session_id is not None:
@@ -162,7 +166,7 @@ async def execute_plugin_command(
             capture_session_harness, store, session_id, usage_service=usage_service
         )
     before, draft = captured_harness if captured_harness is not None else (None, None)
-    result = await catalog.commands.execute(
+    result = await commands.execute(
         command_id,
         argument,
         session_id=session_id,
@@ -176,6 +180,18 @@ async def execute_plugin_command(
         raise ValueError("plugin command Session control transitions require a target Session")
     if before is not None:
         assert draft is not None and store is not None
+        # Resolve every requested algorithm before starting nested controller callbacks.
+        # Independent inputs remain separate FIFO units; explicit batches are indivisible.
+        batches = result.attributed_session_input_batches or [
+            AttributedSessionInputBatch(inputs=(item,)) for item in result.attributed_session_inputs
+        ]
+        selected_batches = []
+        for batch in batches:
+            driver_id = batch.inputs[0].driver_id
+            if driver_id is not None and select_driver is None:
+                raise ValueError("plugin command Driver selection is unavailable")
+            driver = select_driver(driver_id) if driver_id is not None and select_driver else None
+            selected_batches.append((batch, driver))
         coordinator = SessionControlCoordinator(store)
         draft = accept_state_changes(
             draft, [result.harness_change] if result.harness_change else []
@@ -185,18 +201,14 @@ async def execute_plugin_command(
                 transition,
                 session=before,
                 draft=draft,
-                controllers=catalog.session_controllers,
+                controllers=controllers,
                 workspace=workspace,
             )
             controls.append(control)
-        # Single inputs remain separate FIFO units; explicit batches remain indivisible.
-        batches = result.attributed_session_input_batches or [
-            AttributedSessionInputBatch(inputs=(item,)) for item in result.attributed_session_inputs
-        ]
         after = before
         queue = QueuedInputQueue(store)
         events = []
-        for batch in batches:
+        for batch, driver in selected_batches:
             batch_id = new_id("batch")
             items = tuple(
                 QueuedInput(
@@ -205,6 +217,7 @@ async def execute_plugin_command(
                     history_epoch=before.history_epoch,
                     source="plugin",
                     prompt=item.prompt,
+                    driver=driver,
                     mode=item.mode,
                     title=item.title,
                     role=item.role,

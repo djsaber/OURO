@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, time
 from zoneinfo import ZoneInfo, available_timezones
 
@@ -8,9 +9,9 @@ from pydantic import ValidationError
 from tzlocal import get_localzone_name
 
 from ouro.application.models import AvailableModel
-from ouro.automation.models import TaskConfiguration
 from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.reasoning import ReasoningRequest, resolve_reasoning
+from ouro.core.tasks import AgentTaskTarget, PluginTaskTarget, TaskConfiguration
 from ouro.tui.controller import TUI_APPROVAL_PRESETS
 from ouro.tui.inline_editor import MultilineEditableChoiceScreen
 from ouro.tui.menu_labels import (
@@ -64,23 +65,27 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
         self._system_default_model = system_default_model
         self._local_timezone = get_localzone_name()
         config = configuration
+        target = config.target if config and isinstance(config.target, AgentTaskTarget) else None
+        self._plugin_target = (
+            config.target if config and isinstance(config.target, PluginTaskTarget) else None
+        )
         schedule = config.schedule if config is not None else None
         timezone = schedule.timezone if schedule else self._local_timezone
         zone = ZoneInfo(timezone)
         self._values: dict[str, str] = {
             "title": config.title or "" if config else "",
-            "description": config.description if config else "",
-            "workspace": config.workspace if config else workspace or "",
+            "description": target.prompt if target else "",
+            "workspace": target.workspace if target else workspace or "",
             "model": (
-                config.model
-                if config
+                target.model
+                if target
                 else default_model or ""
                 if default_model == DEFAULT_MODEL
                 or any(model.key == default_model for model in models)
                 else ""
             ),
-            "approval": config.approval_mode if config else "afk",
-            "session": config.session_mode if config else "new",
+            "approval": target.approval_mode if target else "afk",
+            "session": target.session_mode if target else "new",
             "frequency": schedule.frequency if schedule else "daily",
             "timezone": timezone,
             "at": schedule.at.isoformat(timespec="minutes") if schedule else "09:00",
@@ -96,7 +101,11 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
             "weekdays": ",".join(_DAYS[day] for day in schedule.weekdays) if schedule else "",
             "month_day": str(schedule.month_day) if schedule and schedule.month_day else "",
         }
-        self._reasoning = config.reasoning if config else ReasoningRequest()
+        self._reasoning = target.reasoning if target else ReasoningRequest()
+        if self._plugin_target is not None:
+            self._values["arguments"] = json.dumps(
+                self._plugin_target.arguments, ensure_ascii=False, indent=2
+            )
         super().__init__(
             title="EDIT TASK" if config else "CREATE TASK",
             placeholder="Search task settings…",
@@ -269,12 +278,19 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
         config = TaskConfiguration.model_validate(
             {
                 "title": values["title"] or None,
-                "description": values["description"],
-                "workspace": values["workspace"],
-                "model": values["model"],
-                "approval_mode": values["approval"],
-                "session_mode": values["session"],
-                "reasoning": self._reasoning,
+                "target": self._plugin_target.model_copy(
+                    update={"arguments": json.loads(values["arguments"])}
+                )
+                if self._plugin_target
+                else {
+                    "kind": "agent",
+                    "prompt": values["description"],
+                    "workspace": values["workspace"],
+                    "model": values["model"],
+                    "approval_mode": values["approval"],
+                    "session_mode": values["session"],
+                    "reasoning": self._reasoning,
+                },
                 "schedule": {
                     "frequency": frequency,
                     "timezone": values["timezone"],
@@ -292,14 +308,16 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
                 },
             }
         )
+        if isinstance(config.target, PluginTaskTarget):
+            return config
         model = self._selected_model()
         if model is None:
             raise ValueError(
                 "System default endpoint is not configured"
-                if config.model == DEFAULT_MODEL
+                if config.target.model == DEFAULT_MODEL
                 else "Select an available model"
             )
-        resolve_reasoning(model.reasoning, config.reasoning)
+        resolve_reasoning(model.reasoning, config.target.reasoning)
         return config
 
     def _task_choices(self) -> tuple[Choice, ...]:
@@ -319,6 +337,21 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
             ("starts", "Start (local date and time)", "SCHEDULE"),
             ("ends", "End (optional date or time)", "SCHEDULE"),
         )
+        if self._plugin_target is not None:
+            fields = (
+                ("title", "Title", "TASK"),
+                ("arguments", "Arguments (JSON)", "TASK"),
+                *(field for field in fields if field[2] == "SCHEDULE"),
+            )
+            rows.append(
+                Choice(
+                    "target",
+                    "Service",
+                    description=f"{self._plugin_target.plugin_id}/{self._plugin_target.service}/{self._plugin_target.method}",
+                    group="TASK",
+                    disabled=True,
+                )
+            )
         if values["frequency"] == "custom" and values["unit"] in {"minutes", "hours"}:
             fields = tuple(field for field in fields if field[0] != "at")
         if values["frequency"] == "custom":
@@ -370,7 +403,7 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
                     group=group,
                     edit_value=value if key not in pickers else None,
                     edit_placeholder=f"Enter {label.lower()}",
-                    edit_lines=3 if key == "description" else 1,
+                    edit_lines=3 if key in {"description", "arguments"} else 1,
                     disabled=key == "reasoning" and not self.reasoning_options(),
                 )
             )

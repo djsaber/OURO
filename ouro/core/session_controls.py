@@ -36,6 +36,13 @@ class SessionInputRequest(OuroModel):
     role: SessionInputRole = "system"
     scaffold: bool = True
     semantic_tag: SemanticTag | None = None
+    driver_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_driver_selection(self) -> Self:
+        if self.driver_id is not None and (not self.driver_id.strip() or self.mode != "follow_up"):
+            raise ValueError("Driver selection requires a nonempty identity and follow-up input")
+        return self
 
     @field_validator("prompt")
     @classmethod
@@ -65,6 +72,8 @@ class SessionInputBatchRequest(OuroModel):
         modes = {item.mode for item in self.inputs}
         if len(modes) != 1:
             raise ValueError("all inputs in a session input batch must use the same mode")
+        if len({item.driver_id for item in self.inputs}) != 1:
+            raise ValueError("all inputs in a session input batch must select the same Driver")
         return self
 
 
@@ -79,6 +88,8 @@ class AttributedSessionInputBatch(OuroModel):
         modes = {item.mode for item in self.inputs}
         if len(modes) != 1:
             raise ValueError("all inputs in a session input batch must use the same mode")
+        if len({item.driver_id for item in self.inputs}) != 1:
+            raise ValueError("all inputs in a session input batch must select the same Driver")
         owners = {
             (
                 item.plugin_id,

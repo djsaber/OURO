@@ -3,9 +3,12 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import cast
 from weakref import ReferenceType, ref
+
+from textual.worker import Worker
 
 from ouro.application.data_transfer import (
     DATA_KINDS,
@@ -113,8 +116,8 @@ class DataTransferScreen(ChoiceScreen):
                         self._replace = False
                         self._archive_error = None
                         self._identifying = True
-                        self.run_worker(
-                            self._inspect_archive(self._path),
+                        _worker: Worker[None] = self.run_worker(
+                            partial(self._inspect_archive, self._path),
                             group="archive-inspection",
                             exclusive=True,
                         )
@@ -149,8 +152,10 @@ class DataTransferScreen(ChoiceScreen):
             self._identities = ()
         elif value == "selected":
             self._loading_items = True
-            self.run_worker(
-                self._open_selection(self._request()), group="transfer-selection", exclusive=True
+            _worker: Worker[None] = self.run_worker(
+                partial(self._open_selection, self._request()),
+                group="transfer-selection",
+                exclusive=True,
             )
 
     async def _open_selection(self, request: DataTransferRequest) -> None:
@@ -385,7 +390,9 @@ class DataTransferWorkflows(TaskManagementWorkflows):
         progress.result = None
         progress.error = None
         # The App owns execution so closing a menu cannot cancel a file commit.
-        self.run_worker(self._run_data_transfer(request), group="data-transfer-operation")
+        _worker: Worker[None] = self.run_worker(
+            partial(self._run_data_transfer, request), group="data-transfer-operation"
+        )
 
     async def _run_data_transfer(self, request: DataTransferRequest) -> None:
         progress = self._data_transfer_progress

@@ -21,7 +21,8 @@ from ouro.application.data_transfer import (
 )
 from ouro.application.dto import ApplicationStartupReport, Diagnostic
 from ouro.application.events import RuntimeEventSink
-from ouro.application.models import AdapterBuilder
+from ouro.application.model_generation import ModelGenerationService
+from ouro.application.models import AdapterBuilder, ConfiguredModelCatalog
 from ouro.application.plugins import PluginService
 from ouro.application.provider_auth import ProviderAuthService
 from ouro.application.resources import ResourceService
@@ -68,8 +69,10 @@ from ouro.deployment import (
     resolve_session_backend,
     resolve_task_backend,
 )
+from ouro.local_providers import build_plugin_provider
 from ouro.mcp import MCPRuntimeResource, MCPServerConfig, MCPServerRecord
 from ouro.plugins.contributions import ContributionCoordinator
+from ouro.plugins.providers import ProviderBinder, ProviderBinding
 from ouro.plugins.registry import PluginCommandRegistry
 from ouro.plugins.runtime import PluginRuntimeResource
 from ouro.plugins.store import PluginPackageStore
@@ -260,13 +263,25 @@ class LocalApplication:
             agent_definitions=agent_definitions,
             agent_controls=agents,
         )
+        plugin_runtime.bind_model_generation(
+            ModelGenerationService(
+                runtime.models,
+                runtime.usage or build_local_usage_service(configured_home),
+            )
+        )
         task_repository = (
             LocalTaskRepository(configured_home)
             if task_backend == "files"
             else SQLiteTaskRepository(configured_home)
         )
-        tasks = TaskService(task_repository, runtime)
-        task_scheduler = TaskScheduler(tasks, TaskExecutionCoordinator(tasks, supervisor))
+        tasks = TaskService(task_repository, runtime, plugin_tasks=plugin_runtime)
+        plugin_runtime.bind_task_service(tasks)
+        task_scheduler = TaskScheduler(
+            tasks,
+            TaskExecutionCoordinator(tasks, supervisor),
+            refresh_environment=plugin_runtime.synchronize,
+            owned_services=plugin_runtime,
+        )
         return cls(
             runtime,
             build_local_mcp_runtime(runtime, home=home),
@@ -379,6 +394,9 @@ class LocalApplication:
 
     async def close(self) -> None:
         self._closed = True
+        if self._close_task is not None and self._close_task.done():
+            if self._close_task.cancelled() or self._close_task.exception() is not None:
+                self._close_task = None
         if self._close_task is None:
             self._close_task = asyncio.create_task(self._close())
         await settle_owned_tasks(self._close_task)
@@ -456,6 +474,7 @@ async def open_local_plugins(
 ) -> AsyncGenerator[PluginService]:
     root = resolve_local_home(home)
     session_services = build_local_session_services(root, session_backend=session_backend)
+    usage = build_local_usage_service(root)
     runtime, service = _build_local_plugin_runtime(
         root,
         tools=ToolRegistry(),
@@ -467,13 +486,29 @@ async def open_local_plugins(
         turn_policies=TurnPolicyRegistry(),
         tool_policies=ToolPolicyRegistry(),
         session_store=session_services._store,
-        usage_service=build_local_usage_service(root),
+        usage_service=usage,
     )
-    await runtime.start()
+    credentials = CredentialService(FileCredentialStore(root))
+
+    models = ConfiguredModelCatalog(
+        ProviderConfigManager(root),
+        adapter_builder=_authenticated_adapter_builder(
+            credentials,
+            _local_auth_drivers(()),
+            _BUILTIN_SERVICE_POLICIES,
+            provider_binder=runtime.bind_provider,
+        ),
+    )
+    runtime.bind_model_generation(ModelGenerationService(models, usage))
     try:
+        await runtime.start()
         yield service
     finally:
         await runtime.close()
+        try:
+            await models.close()
+        finally:
+            await credentials.close()
 
 
 @asynccontextmanager
@@ -550,7 +585,13 @@ def build_local_runtime(
     auth_drivers = _local_auth_drivers(auth_drivers)
     service_policies = (*_BUILTIN_SERVICE_POLICIES, *service_policies)
     auth = ProviderAuthService(ProviderConfigManager(root), credentials, auth_drivers)
-    adapter_builder = _authenticated_adapter_builder(credentials, auth_drivers, service_policies)
+
+    async def bind_provider(protocol: str) -> ProviderBinding:
+        return await runtime.bind_provider(protocol)
+
+    adapter_builder = _authenticated_adapter_builder(
+        credentials, auth_drivers, service_policies, provider_binder=bind_provider
+    )
     adapter = adapter_builder(resolved.provider_options)
     model_catalog = configuration.model_catalog(
         adapter,
@@ -566,7 +607,7 @@ def build_local_runtime(
             f"{options.provider_id}/{options.endpoint_id}"
         ),
     )
-    return RuntimeService(
+    runtime = RuntimeService(
         store=store,
         adapter=adapter,
         model_catalog=model_catalog,
@@ -604,6 +645,7 @@ def build_local_runtime(
         provider_auth=auth,
         credential_service=credentials,
     )
+    return runtime
 
 
 def build_local_services(
@@ -691,8 +733,21 @@ def build_local_plugin_service(
         store,
         session_store=session_store,
         builtin_plugins=LOCAL_BUILTIN_PLUGINS,
-        usage_service=build_local_usage_service(store.home),
+        # Static package operations do not depend on the accounting database.
+        # Ledger methods initialize and validate storage when a query needs it.
+        usage_service=UsageService(LocalUsageLedger(store.home)),
     )
+
+
+def build_local_plugin_maintenance_service(
+    home: str | Path | None = None,
+    *,
+    session_backend: SessionBackend | None = None,
+) -> PluginService:
+    """Inspect recovery references and maintain plugin data or code without activation."""
+    root = resolve_local_home(home)
+    sessions = build_local_session_services(root, session_backend=session_backend)
+    return build_local_plugin_service(root, session_store=sessions._store)
 
 
 def build_local_mcp_runtime(
@@ -789,6 +844,8 @@ def _authenticated_adapter_builder(
     credentials: CredentialService,
     drivers: tuple[AuthDriver, ...],
     policies: tuple[ProviderServicePolicy, ...],
+    *,
+    provider_binder: ProviderBinder | None = None,
 ) -> AdapterBuilder:
     driver_by_id = {driver.descriptor.driver_id: driver for driver in drivers}
     policy_by_id = {policy.policy_id: policy for policy in policies}
@@ -817,7 +874,12 @@ def _authenticated_adapter_builder(
             return (
                 build_runtime_adapter(options, request_policy=policy.requests)
                 if policy is not None
-                else build_runtime_adapter(options)
+                else build_runtime_adapter(
+                    options,
+                    plugin_provider=partial(build_plugin_provider, bind=provider_binder)
+                    if provider_binder is not None
+                    else None,
+                )
             )
         driver = driver_by_id.get(options.auth_driver)
         if driver is None or policy is None:

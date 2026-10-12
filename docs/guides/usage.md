@@ -18,6 +18,9 @@ uv run --frozen ouro usage summary --home ./.ouro-dev \
   --since 2026-07-01 --until 2026-07-15 \
   --provider <provider_id> --model claude-sonnet-5-5 --group-by date --json
 
+# 独立插件模型请求按实际插件身份记账
+uv run --frozen ouro usage summary --home ./.ouro-dev --purpose plugin --group-by plugin
+
 # 请求级明细及更多过滤维度
 uv run --frozen ouro usage list --home ./.ouro-dev --purpose compaction --limit 100
 uv run --frozen ouro usage show <usage_entry_id> --home ./.ouro-dev --json
@@ -31,7 +34,7 @@ uv run --frozen ouro usage audit --home ./.ouro-dev --limit 100 --json
 ```
 
 `summary`、`list` 和 `reset` 共享 `--since`、`--until`、`--provider`、`--endpoint`、`--model`、
-`--session`、`--run`、`--purpose` 过滤器，重复同一参数表示匹配其中任意值。Provider adapter 会把
+`--session`、`--run`、`--plugin`、`--purpose` 过滤器，重复同一参数表示匹配其中任意值。Provider adapter 会把
 `input_tokens` 统一为包含缓存读写的总输入，cache read/write token 保留为其中的独立明细；
 `total_tokens` 只计算 input + output，避免重复计入缓存明细。
 全局账本不从 `run.usage` 猜测或回填缺少请求路由与请求边界的记录；统计从账本实际记录的供应商调用开始。

@@ -578,7 +578,7 @@ async def test_build_runtime_injects_available_skills_from_home_and_workspace(
     monkeypatch.chdir(workspace)
     provider = CapturingProvider()
 
-    def fake_adapter(_options):
+    def fake_adapter(_options, *, plugin_provider=None):
         return RuntimeAdapter(
             provider,
             ModelMetadata(model_id="capture", provider_id="capture"),

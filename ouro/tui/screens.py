@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Literal, TypeVar
 
 from rich.cells import get_character_cell_size
@@ -18,7 +19,7 @@ from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
-from textual.worker import WorkerCancelled
+from textual.worker import Worker, WorkerCancelled
 
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import TUI_COMMANDS, TuiCommand
@@ -740,7 +741,9 @@ class ChoiceScreen(ModalScreen[str | None]):
             self._hide_for_child()
             return await self.app.push_screen_wait(screen)
 
-        worker = self.app.run_worker(wait_for_child(), group="choice-child")
+        worker: Worker[ScreenResult | None] = self.app.run_worker(
+            wait_for_child, group="choice-child"
+        )
         try:
             return await worker.wait()
         except WorkerCancelled as exc:
@@ -962,8 +965,8 @@ class ChoiceScreen(ModalScreen[str | None]):
         # Navigation may dismiss this Screen before its destination finishes
         # loading. Keep that work application-owned and the message pump free
         # for close/prune while a selection waits for a child dialog.
-        self.app.run_worker(
-            self._select_choice(str(event.option.id)),
+        _worker: Worker[None] = self.app.run_worker(
+            partial(self._select_choice, str(event.option.id)),
             group=f"choice-selection-{id(self)}",
             exclusive=True,
         )

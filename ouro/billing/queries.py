@@ -16,6 +16,7 @@ DIMENSIONS: dict[UsageGroupBy, str] = {
     "session": "session_id",
     "run": "run_id",
     "purpose": "purpose",
+    "plugin": "plugin_id",
     "billing_mode": "billing_mode",
 }
 FILTER_COLUMNS = {
@@ -26,6 +27,7 @@ FILTER_COLUMNS = {
     "session_ids": "session_id",
     "run_ids": "run_id",
     "purposes": "purpose",
+    "plugin_ids": "plugin_id",
     "billing_modes": "billing_mode",
 }
 AGGREGATES = """

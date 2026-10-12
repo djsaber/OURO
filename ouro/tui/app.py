@@ -1146,7 +1146,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._sync_mcp_status,
             pause=True,
         )
-        self.run_worker(self._start(), name="tui-start", exclusive=True)
+        _worker: Worker[None] = self.run_worker(self._start, name="tui-start", exclusive=True)
         if self._preferences_error is not None:
             self.notify(self._preferences_error, severity="warning")
         if self._input_drafts_error is not None:
@@ -1552,7 +1552,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def _start_welcome_status_refresh(self) -> None:
         if self._welcome_status_visible():
-            self.run_worker(self._refresh_welcome_status(full=True), group="welcome-status")
+            _worker: Worker[None] = self.run_worker(
+                partial(self._refresh_welcome_status, full=True), group="welcome-status"
+            )
 
     def _set_welcome_mode(self, enabled: bool) -> None:
         self.query_one(BrandHeader).display = not enabled
@@ -1585,8 +1587,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         # dispatch, even when the renderer itself runs off-loop. A single worker
         # preserves frame cadence while leaving the input dispatcher available.
         if self._runtime_events_worker is None or self._runtime_events_worker.is_finished:
+            # Create the coroutine only when the worker starts; it may be cancelled first.
             self._runtime_events_worker = self.run_worker(
-                self._flush_pending_runtime_events(),
+                self._flush_pending_runtime_events,
                 name="runtime-event-frame",
                 group="runtime-events",
             )
@@ -3483,7 +3486,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         if menu is not None:
             menu.dismiss(None)
-        self.run_worker(self._new_session(), exclusive=True, group="navigation")
+        _worker: Worker[None] = self.run_worker(
+            self._new_session, exclusive=True, group="navigation"
+        )
 
     def action_sessions(self) -> None:
         self._request_menu_navigation(_MENU_SESSIONS)
@@ -3564,8 +3569,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._agent_switch_in_progress:
             return
         self._agent_switch_in_progress = True
-        self.run_worker(
-            self._switch_agent_nodes(),
+        _worker: Worker[None] = self.run_worker(
+            self._switch_agent_nodes,
             exclusive=True,
             group="navigation",
         )
@@ -4462,7 +4467,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             elif destination == _MENU_TASKS:
                 await self._choose_tasks(menu=active_menu, switch=active_menu is not None)
 
-        self.run_worker(navigate(), exclusive=True, group="navigation")
+        _worker: Worker[None] = self.run_worker(navigate, exclusive=True, group="navigation")
 
     def _active_navigation_menu(self) -> ChoiceScreen | None:
         """Return the active reusable menu surface, excluding transient dialogs."""
@@ -4722,8 +4727,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if value.startswith(_WELCOME_STYLE_PREFIX) or value == _WELCOME_MOTION_ACTION:
                 # Choice workers may be cancelled by another selection. The host
                 # owns the complete save/mount transaction, serialized with prefs.
-                worker = self.run_worker(
-                    self._set_welcome_style(value.removeprefix(_WELCOME_STYLE_PREFIX)),
+                worker: Worker[bool] = self.run_worker(
+                    partial(self._set_welcome_style, value.removeprefix(_WELCOME_STYLE_PREFIX)),
                     group="welcome-style",
                 )
                 saved = await asyncio.shield(worker.wait())
@@ -5079,8 +5084,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._theme_switch_changed.set()
         if not self._theme_switch_active:
             self._theme_switch_active = True
-            self.run_worker(
-                self._switch_tui_themes(),
+            _worker: Worker[None] = self.run_worker(
+                self._switch_tui_themes,
                 name="tui-theme-switch",
                 group="theme-switch",
             )
@@ -5242,7 +5247,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self.push_screen(HelpScreen(plugin_commands=self._plugin_commands()))
             return
         if menu.page_title == "KEYBOARD HELP":
-            self.run_worker(menu.action_cancel(), exclusive=True, group="navigation")
+            _worker: Worker[None] = self.run_worker(
+                menu.action_cancel, exclusive=True, group="navigation"
+            )
             return
         self._show_help_page(menu)
 

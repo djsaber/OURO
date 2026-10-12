@@ -121,6 +121,10 @@ async def command(app, pilot, value, *, attachments=()):
         if startup:
             await app.workers.wait_for_complete(startup)
     composer = app.query_one(Composer)
+    # Runtime admission may precede the new session surface becoming editable.
+    async with asyncio.timeout(10):
+        while composer.disabled:
+            await pilot.pause()
     assert not composer.disabled
     composer.load_input(
         InputContent(

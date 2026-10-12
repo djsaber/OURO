@@ -19,7 +19,7 @@ from ouro.plugins.api import adapt_sdk_contributions
 from ouro.plugins.catalog import ExtensionCatalogBase, build_extension_catalog
 from ouro.plugins.registry import PluginCommandRegistry
 from ouro.plugins.session_controllers import PluginSessionControllerRegistry
-from ouro.sdk.plugins import v2 as sdk
+from ouro.sdk.plugins import v3 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
 
@@ -37,7 +37,7 @@ def store(tmp_path, request):
     return store
 
 
-def catalog(activate):
+def catalog(activate, *, driver_id=None):
     def command(call):
         call.session_state.replace(state_schema_version=1, payload={"command": True})
         return sdk.CommandOutput(
@@ -45,7 +45,10 @@ def catalog(activate):
             session_control_transitions=(sdk.SessionControlTransition("acquire", "mode"),),
             session_input_batches=(
                 sdk.SessionInputBatch(
-                    inputs=(sdk.SessionInput(prompt="first"), sdk.SessionInput(prompt="second"))
+                    inputs=(
+                        sdk.SessionInput(prompt="first", driver_id=driver_id),
+                        sdk.SessionInput(prompt="second", driver_id=driver_id),
+                    )
                 ),
             ),
         )
@@ -102,16 +105,34 @@ def catalog(activate):
     )
 
 
-async def execute(store, session, activate):
-    with catalog(activate).acquire() as lease:
+async def execute(store, session, activate, *, driver_id=None):
+    with catalog(activate, driver_id=driver_id).acquire() as lease:
         return await execute_plugin_command(
-            catalog=lease,
+            commands=lease.commands,
+            controllers=lease.session_controllers,
             store=store,
             command_id=f"{OWNER}:start",
             argument="",
             session_id=session.session_id,
             workspace=None,
         )
+
+
+async def test_unavailable_driver_discards_command_state_before_starting_nested_controller(store):
+    session = SessionRecord()
+    store.create_session(session)
+    calls = []
+
+    def activate_controller(call):
+        calls.append(call)
+        return sdk.SessionControllerOutput()
+
+    with pytest.raises(ValueError, match="Driver selection is unavailable"):
+        await execute(store, session, activate_controller, driver_id="missing/run_drivers/review")
+    assert calls == []
+    assert not store.load_harness(session.session_id).state.states
+    assert not store.load_session_record(session.session_id).controls.activations
+    assert not pending(store, session)
 
 
 async def test_controller_declares_native_usage_scope_in_the_accepted_control(store):

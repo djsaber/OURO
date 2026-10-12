@@ -350,6 +350,22 @@ async def test_streaming_tail_strips_always_carry_a_base_style() -> None:
 
 
 @pytest.mark.asyncio
+async def test_first_appended_batch_is_rendered_before_returning() -> None:
+    app = _HistoryApp()
+
+    async with app.run_test(size=(100, 30)):
+        await app.history.append_many_rendered(
+            (
+                TranscriptEntry(kind="assistant", reasoning="Inspect the workspace."),
+                TranscriptEntry(kind="assistant", text="Before tool."),
+            )
+        )
+
+        assert "Inspect the workspace." in app.history.rendered_text
+        assert "Before tool." in app.history.rendered_text
+
+
+@pytest.mark.asyncio
 async def test_wait_until_rendered_recovers_after_a_deferred_layout_miss(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

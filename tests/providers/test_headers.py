@@ -19,7 +19,16 @@ from tests.providers.test_request_authentication import PROVIDERS, response
 
 @pytest.mark.parametrize("provider_class", PROVIDERS)
 async def test_registered_context_fields_use_actual_route_and_explicit_call_facts(provider_class):
-    fields = ("session.id", "run.id", "provider.id", "endpoint.id", "model.id", "request.purpose")
+    fields = (
+        "session.id",
+        "run.id",
+        "provider.id",
+        "endpoint.id",
+        "model.id",
+        "request.purpose",
+        "request.id",
+        "plugin.id",
+    )
     received = []
 
     def respond(request):
@@ -49,6 +58,8 @@ async def test_registered_context_fields_use_actual_route_and_explicit_call_fact
                         "session.id": "session",
                         "run.id": "run",
                         "request.purpose": "chat",
+                        "request.id": "request",
+                        "plugin.id": "plugin",
                         "model.id": "stale-model",
                         "provider.id": "stale-provider",
                         "endpoint.id": "stale-endpoint",
@@ -61,6 +72,8 @@ async def test_registered_context_fields_use_actual_route_and_explicit_call_fact
         "session.id": "session",
         "run.id": "run",
         "request.purpose": "chat",
+        "request.id": "request",
+        "plugin.id": "plugin",
         "model.id": "selected-model",
         "provider.id": "selected-provider",
         "endpoint.id": "selected-endpoint",

@@ -3,19 +3,16 @@ from __future__ import annotations
 import asyncio
 import importlib
 import importlib.util
-import inspect
 import logging
-import os
 import shutil
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType, ModuleType
 from typing import Any
-from uuid import uuid4
 
-from ouro.core.callbacks import invoke_callback
+from ouro.core.callbacks import invoke_owned_callback
 from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import (
     CompactionAbortedError,
@@ -73,19 +70,21 @@ from ouro.plugins.candidates import PluginRuntimeCandidate
 from ouro.plugins.contributions import PluginContributions
 from ouro.plugins.harness_calls import bind_context_callback, invoke_plugin_callback
 from ouro.plugins.models import PluginDiagnostic, PluginGenerationRecord
-from ouro.plugins.paths import portable_relative_path
+from ouro.plugins.providers import adapt_provider
 from ouro.plugins.registry import (
     PluginCommand,
     PluginCommandRequest,
     PluginCommandResult,
 )
+from ouro.plugins.resources import OwnedTaskGroup, ScopedPluginDataStore
+from ouro.plugins.run_drivers import adapt_run_driver
 from ouro.plugins.session_controllers import (
     PluginSessionController,
     PluginSessionControllerCall,
     PluginSessionControllerOutput,
 )
 from ouro.plugins.tool_content import from_sdk_content
-from ouro.sdk.plugins import v2 as sdk
+from ouro.sdk.plugins import v3 as sdk
 from ouro.tools import (
     Tool,
     ToolDefinition,
@@ -94,77 +93,6 @@ from ouro.tools import (
     ToolInvocation,
     ToolResult,
 )
-
-
-class ScopedPluginDataStore:
-    """Private data view whose candidate writes stay staged until publication."""
-
-    def __init__(self, root: Path, *, staged: bool = False) -> None:
-        self.root = root
-        self._staged = staged
-        self._changes: dict[str, bytes | None] = {}
-
-    def read_bytes(self, relative_path: str) -> bytes:
-        key = portable_relative_path(relative_path).as_posix()
-        if key in self._changes:
-            value = self._changes[key]
-            if value is None:
-                raise FileNotFoundError(relative_path)
-            return value
-        return self._path(relative_path).read_bytes()
-
-    def write_bytes(self, relative_path: str, value: bytes) -> None:
-        if self._staged:
-            key = portable_relative_path(relative_path).as_posix()
-            self._changes[key] = bytes(value)
-            return
-        self._write(relative_path, value)
-
-    def delete(self, relative_path: str) -> None:
-        if self._staged:
-            key = portable_relative_path(relative_path).as_posix()
-            self._changes[key] = None
-            return
-        path = self._path(relative_path)
-        if path.exists():
-            path.unlink()
-
-    def activate(self) -> None:
-        if not self._staged:
-            return
-        changes = dict(self._changes)
-        self._changes.clear()
-        self._staged = False
-        for relative_path, value in changes.items():
-            if value is None:
-                self.delete(relative_path)
-            else:
-                self._write(relative_path, value)
-
-    def discard(self) -> None:
-        self._changes.clear()
-
-    def _write(self, relative_path: str, value: bytes) -> None:
-        path = self._path(relative_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-        try:
-            with temporary.open("xb") as stream:
-                stream.write(value)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, path)
-        finally:
-            if temporary.exists():
-                temporary.unlink()
-
-    def _path(self, value: str) -> Path:
-        relative = portable_relative_path(value)
-        path = self.root.joinpath(*relative.parts).resolve(strict=False)
-        root = self.root.resolve(strict=False)
-        if not path.is_relative_to(root):
-            raise ValueError("plugin data path escapes private data root")
-        return path
 
 
 class BoundCredentialResolver:
@@ -188,70 +116,6 @@ class BoundCredentialResolver:
         value = self._resolve_reference(reference)
         self._redactor.add(value)
         return value
-
-
-class OwnedTaskGroup:
-    def __init__(
-        self,
-        on_failure: Callable[[Exception], None] | None = None,
-        *,
-        active: bool = True,
-    ) -> None:
-        self._tasks: set[asyncio.Task[object]] = set()
-        self._closed = False
-        self._on_failure = on_failure
-        self._activated = asyncio.Event()
-        if active:
-            self._activated.set()
-
-    def start(self, coroutine: Awaitable[object], *, name: str | None = None) -> None:
-        if self._closed:
-            if inspect.iscoroutine(coroutine):
-                coroutine.close()
-            raise RuntimeError("plugin task group is closed")
-
-        async def run() -> object:
-            await self._activated.wait()
-            try:
-                return await coroutine
-            except Exception as exc:
-                if self._on_failure is not None:
-                    self._on_failure(exc)
-                raise
-
-        task: asyncio.Task[object] = asyncio.create_task(run(), name=name)
-        self._tasks.add(task)
-        task.add_done_callback(self._task_finished)
-
-    def activate(self) -> None:
-        if self._closed:
-            raise RuntimeError("plugin task group is closed")
-        self._activated.set()
-
-    def _task_finished(self, task: asyncio.Task[object]) -> None:
-        self._tasks.discard(task)
-        if task.cancelled():
-            return
-        task.exception()
-
-    async def close(self, *, timeout: float = 5.0) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        tasks = tuple(self._tasks)
-        for task in tasks:
-            task.cancel()
-        if not tasks:
-            return
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*tasks, return_exceptions=True),
-                timeout=timeout,
-            )
-        except TimeoutError:
-            return
-        finally:
-            self._tasks.clear()
 
 
 class RedactedPluginLogger:
@@ -445,7 +309,13 @@ def build_plugin_context(
     redactor: SensitiveValueRedactor,
     data_store: ScopedPluginDataStore | None = None,
     artifact_root: Path | None = None,
-    host_home: Path | None = None,
+    environment: sdk.PluginEnvironment | None = None,
+    services: sdk.PluginServices | None = None,
+    processes: sdk.PluginProcesses | None = None,
+    models: sdk.PluginModels | None = None,
+    tools: sdk.RunTools | None = None,
+    tool_groups: sdk.PluginToolGroups | None = None,
+    scheduler: sdk.PluginScheduler | None = None,
 ) -> sdk.PluginContext:
     return sdk.PluginContext(
         identity=sdk.PluginIdentity(
@@ -477,7 +347,14 @@ def build_plugin_context(
             if artifact_root is not None
             else None
         ),
-        host_home=(str(host_home.resolve(strict=False)) if host_home is not None else None),
+        environment=environment,
+        services=services,
+        processes=processes,
+        models=models,
+        tools=tools,
+        agents=sdk.RunAgents(tools) if tools is not None else None,
+        tool_groups=tool_groups,
+        scheduler=scheduler,
     )
 
 
@@ -533,7 +410,6 @@ def _adapt_tool(contribution: sdk.ToolContribution, *, owner_id: str) -> Tool:
             writable=contribution.effect != "read_only",
             signal=context.signal,
             context=_SDKToolExecutionContext(context),
-            owned=True,
         )
         if isinstance(raw, str):
             raw = sdk.ToolOutput(content=raw)
@@ -589,7 +465,6 @@ def _adapt_tool(contribution: sdk.ToolContribution, *, owner_id: str) -> Tool:
             writable=contribution.effect != "read_only",
             signal=context.signal,
             context=_SDKToolExecutionContext(context),
-            owned=True,
         )
         if isinstance(raw, str):
             raw = sdk.ToolOutput(content=raw)
@@ -821,6 +696,7 @@ def _adapt_command(contribution: sdk.CommandContribution, *, owner_id: str) -> P
                         role=item.role,
                         scaffold=item.scaffold,
                         semantic_tag=item.semantic_tag,
+                        driver_id=item.driver_id,
                     )
                     for item in raw.session_inputs
                 ],
@@ -834,6 +710,7 @@ def _adapt_command(contribution: sdk.CommandContribution, *, owner_id: str) -> P
                                 role=item.role,
                                 scaffold=item.scaffold,
                                 semantic_tag=item.semantic_tag,
+                                driver_id=item.driver_id,
                             )
                             for item in batch.inputs
                         ),
@@ -997,7 +874,6 @@ class _SDKCompactionStrategy:
             writable=False,
             signal=signal,
             context=context,
-            owned=True,
         )
         context.raise_if_aborted()
         return CompactionArtifact(summary=raw.summary, usage=dict(raw.usage))
@@ -1038,10 +914,10 @@ class _SDKBackgroundService:
         self._stop = contribution.stop
 
     async def start(self) -> None:
-        await invoke_callback(self._start)
+        await invoke_owned_callback(self._start)
 
     async def stop(self) -> None:
-        await invoke_callback(self._stop)
+        await invoke_owned_callback(self._stop)
 
 
 def _adapt_continuation_policy(
@@ -1234,6 +1110,8 @@ def _adapt_turn_policy(
     )
 
 
+PROVIDER_SDK_ADAPTER = SDKContributionAdapter("providers", adapt_provider)
+RUN_DRIVER_SDK_ADAPTER = SDKContributionAdapter("run_drivers", adapt_run_driver)
 TOOL_SDK_ADAPTER = SDKContributionAdapter("tools", _adapt_tool)
 OBSERVER_SDK_ADAPTER = SDKContributionAdapter("observers", _adapt_observer)
 COMMAND_SDK_ADAPTER = SDKContributionAdapter("commands", _adapt_command)

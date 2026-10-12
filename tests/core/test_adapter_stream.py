@@ -7,10 +7,13 @@ import ouro.core.adapter as adapter_module
 from ouro.core.adapter import (
     _STREAM_BUFFER_CAPACITY,
     _STREAM_COALESCE_MAX_CHARS,
+    RuntimeAdapter,
     _interruptible,
 )
 from ouro.core.cancellation import AbortSignal
-from ouro.core.provider import ProviderStreamEvent, ToolCallDelta
+from ouro.core.context import ContextView
+from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
+from ouro.providers import FauxProvider
 
 
 def _tool_delta(index: int) -> ProviderStreamEvent:
@@ -18,6 +21,27 @@ def _tool_delta(index: int) -> ProviderStreamEvent:
         type="tool_call_delta",
         tool_call_delta=ToolCallDelta(index=0, arguments_delta=str(index)),
     )
+
+
+@pytest.mark.asyncio
+async def test_adapter_close_waits_for_provider_resource_release() -> None:
+    closed = asyncio.Event()
+
+    class OpenProvider(FauxProvider):
+        async def stream(self, **kwargs) -> AsyncIterator[ProviderStreamEvent]:
+            try:
+                yield _tool_delta(0)
+                await asyncio.Event().wait()
+            finally:
+                closed.set()
+
+    adapter = RuntimeAdapter(OpenProvider(), ModelMetadata(model_id="test", provider_id="test"))
+    stream = adapter.stream(ContextView(system_prompt="", model_messages=[], tool_definitions=[]))
+    assert (await anext(stream)).type == "tool_call_delta"
+
+    await stream.aclose()
+
+    assert closed.is_set()
 
 
 @pytest.mark.asyncio

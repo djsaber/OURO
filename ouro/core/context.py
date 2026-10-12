@@ -137,7 +137,7 @@ class ContextBuilder:
     def build(
         self,
         *,
-        messages: list[MessageRecord],
+        messages: Sequence[MessageRecord | ModelMessage],
         tools: list[ToolDefinition],
         system_prompt: str = "",
         added_context: Sequence[str | ContextFragment] | None = None,
@@ -191,7 +191,10 @@ class ContextBuilder:
             for fragment in context_fragments
             if fragment.target == "message"
         ]
-        model_messages = [ModelMessage.from_record(message) for message in messages]
+        model_messages = [
+            ModelMessage.from_record(message) if isinstance(message, MessageRecord) else message
+            for message in messages
+        ]
         fixed_tokens = self.token_estimator(composed_prompt)
         fixed_tokens += sum(_estimate_tool_tokens(tool, self.token_estimator) for tool in tools)
         fixed_tokens += sum(

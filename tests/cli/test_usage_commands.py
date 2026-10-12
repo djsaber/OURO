@@ -14,6 +14,30 @@ from ouro.core.errors import CompactionError
 from tests.application.test_billing_attribution import record
 
 
+def test_cli_can_filter_and_group_independent_plugin_usage(tmp_path, capsys):
+    ledger = LocalUsageLedger(tmp_path)
+    ledger.initialize()
+    ledger.record(
+        ProviderUsageEntry(
+            entry_id="plugin_request",
+            provider_id="faux",
+            model_id="faux",
+            plugin_id="dev.ouro.review",
+            purpose="plugin",
+            request_id="request",
+            input_tokens=7,
+        )
+    )
+    record(UsageService(ledger), "run_request", "usage_based", 0.1)
+    args = ["--home", str(tmp_path), "--plugin", "dev.ouro.review", "--purpose", "plugin", "--json"]
+    assert main(["usage", "summary", "--group-by", "plugin", *args]) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["totals"]["request_count"] == 1 and summary["totals"]["input_tokens"] == 7
+    assert summary["groups"][0]["key"] == ["dev.ouro.review"]
+    assert main(["usage", "list", *args]) == 0
+    assert json.loads(capsys.readouterr().out)["entries"][0]["run_id"] is None
+
+
 @pytest.mark.parametrize(
     "costs,expected",
     [

@@ -11,7 +11,9 @@ from ouro.core.prompt_policies import PromptPolicyRegistry
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.plugins.contributions import PreparedContributionSet
+from ouro.plugins.providers import ProviderRegistry
 from ouro.plugins.registry import PluginCommandRegistry
+from ouro.plugins.run_drivers import RunDriverRegistry
 from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.skills import SkillMetadata
 from ouro.tools import ToolRegistry
@@ -26,6 +28,8 @@ class CatalogProjectionTargets:
     context_providers: ContextProviderRegistry
     commands: PluginCommandRegistry
     compaction: CompactionStrategyRegistry
+    providers: ProviderRegistry
+    run_drivers: RunDriverRegistry
     continuations: RunContinuationRegistry
     prompt_policies: PromptPolicyRegistry
     turn_policies: TurnPolicyRegistry
@@ -129,6 +133,10 @@ COMPACTION_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
     "compaction_strategies",
     "compaction",
     "compaction_strategies",
+)
+PROVIDER_PROJECTION_ADAPTER = _SnapshotProjectionAdapter("providers", "providers", "providers")
+RUN_DRIVER_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
+    "run_drivers", "run_drivers", "run_drivers"
 )
 CONTINUATION_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
     "continuation_policies",

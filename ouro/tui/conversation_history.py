@@ -21,6 +21,7 @@ from textual.selection import Selection
 from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import RichLog
+from textual.worker import Worker
 
 from ouro.application.agent_models import AgentTreeNode
 from ouro.application.supervisor_models import RuntimeToolCallActivity
@@ -1384,6 +1385,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             or not self._requires_background_render(materialized)
         ):
             self.append_many(materialized)
+            await self.wait_until_rendered()
             return
 
         while True:
@@ -1409,6 +1411,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 # The message pump normally serializes transcript mutations. Keep
                 # the buffer internally consistent if an external caller races this await.
                 self.append_many(materialized)
+                await self.wait_until_rendered()
                 return
             if (
                 self.scrollable_content_region.width == viewport_width
@@ -1426,6 +1429,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 or not self._requires_background_render(materialized)
             ):
                 self.append_many(materialized)
+                await self.wait_until_rendered()
                 return
 
     def _register_entry(
@@ -1533,8 +1537,8 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             return
         self._theme_render_active = True
         self._theme_render_idle.clear()
-        self.run_worker(
-            self._refresh_buffer_async(),
+        _worker: Worker[None] = self.run_worker(
+            self._refresh_buffer_async,
             group="conversation-history-theme",
         )
 

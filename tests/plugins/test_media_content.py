@@ -2,7 +2,7 @@ import pytest
 
 from ouro.core.content import AudioContent, VideoContent
 from ouro.plugins.tool_content import decode_worker_content, from_sdk_content
-from ouro.sdk.plugins.v2 import ToolAudioContent, ToolVideoContent
+from ouro.sdk.plugins.v3 import ToolAudioContent, ToolVideoContent
 
 
 @pytest.mark.parametrize(

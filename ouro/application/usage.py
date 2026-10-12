@@ -21,7 +21,7 @@ from ouro.core.usage_queries import (
 
 
 class UsageService:
-    """Record and query provider-reported model usage across all sessions."""
+    """Record and query provider-reported usage for Runs and independent plugins."""
 
     def __init__(
         self,
@@ -86,6 +86,46 @@ class UsageService:
     def session_scope_tokens(self, session_id: str) -> dict[str, dict[str, int]]:
         """Project the native ledger without scanning a Session's Run or message history."""
         return self.ledger.session_scope_tokens(session_id)
+
+    def record_plugin_usage(
+        self,
+        *,
+        plugin_id: str,
+        request_id: str,
+        usage: Usage,
+        model: ModelMetadata,
+        session_id: str | None = None,
+        workspace: str | None = None,
+    ) -> ProviderUsageEntry:
+        """Record an independent request without inventing Session or Run facts."""
+        return self.ledger.record(
+            ProviderUsageEntry(
+                entry_id=provider_usage_entry_id(
+                    run_id=None,
+                    plugin_id=plugin_id,
+                    request_id=request_id,
+                    purpose="plugin",
+                    provider_id=model.provider_id,
+                    endpoint_id=model.endpoint_id,
+                    model_id=model.model_id,
+                ),
+                occurred_at=self._clock(),
+                provider_id=model.provider_id,
+                endpoint_id=model.endpoint_id,
+                model_id=model.model_id,
+                session_id=session_id,
+                workspace=workspace,
+                plugin_id=plugin_id,
+                purpose="plugin",
+                request_id=request_id,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
+                cache_write_tokens=usage.cache_write_tokens,
+                estimated_cost=usage.estimated_cost,
+                metadata={"token_source": "provider_response", "billing_mode": model.billing_mode},
+            )
+        )
 
     def list_entries(
         self,
@@ -188,14 +228,25 @@ class UsageService:
 
 def provider_usage_entry_id(
     *,
-    run_id: str,
+    run_id: str | None,
     request_id: str,
     purpose: UsagePurpose,
     provider_id: str,
     endpoint_id: str | None,
     model_id: str,
+    plugin_id: str | None = None,
 ) -> str:
-    identity = "\0".join((run_id, request_id, purpose, provider_id, endpoint_id or "", model_id))
+    identity = "\0".join(
+        (
+            run_id or "",
+            plugin_id or "",
+            request_id,
+            purpose,
+            provider_id,
+            endpoint_id or "",
+            model_id,
+        )
+    )
     return f"use_{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:32]}"
 
 

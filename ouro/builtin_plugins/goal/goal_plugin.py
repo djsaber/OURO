@@ -5,7 +5,7 @@ from dataclasses import replace
 from typing import cast
 from uuid import uuid4
 
-from ouro.sdk.plugins.v2 import (
+from ouro.sdk.plugins.v3 import (
     CommandContribution,
     CommandOutput,
     ContinuationDecision,

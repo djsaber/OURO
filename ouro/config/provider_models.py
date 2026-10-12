@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import AfterValidator, ConfigDict, Field, field_validator, model_validator
 
 from ouro.config.credentials import CredentialRef
 from ouro.config.endpoints import ProviderEndpointConfig
@@ -32,12 +33,22 @@ ProviderType = Literal[
     "cohere",
     "custom",
 ]
-ProviderProtocol = Literal[
-    "faux",
-    "openai-chat-completions",
-    "openai-responses",
-    "anthropic-messages",
-]
+_PLUGIN_PROTOCOL = re.compile(
+    r"[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)+/providers/[a-z][a-z0-9_-]{0,63}\Z"
+)
+
+
+def is_plugin_protocol(value: str) -> bool:
+    return _PLUGIN_PROTOCOL.fullmatch(value) is not None
+
+
+def validate_provider_protocol(value: str) -> str:
+    if value not in BUILTIN_PROVIDER_PROTOCOLS and not is_plugin_protocol(value):
+        raise ValueError(f"unsupported provider protocol: {value}")
+    return value
+
+
+ProviderProtocol = Annotated[str, AfterValidator(validate_provider_protocol)]
 ProviderTemplateOrigin = Literal["inline", "custom"]
 
 INTEGRATED_PROVIDER_TYPES: tuple[ProviderType, ...] = (
@@ -63,7 +74,7 @@ SUPPORTED_PROVIDER_TYPES: tuple[ProviderType, ...] = (
     "faux",
     *CONFIGURABLE_PROVIDER_TYPES,
 )
-SUPPORTED_PROVIDER_PROTOCOLS: tuple[ProviderProtocol, ...] = (
+BUILTIN_PROVIDER_PROTOCOLS: tuple[ProviderProtocol, ...] = (
     "faux",
     "openai-chat-completions",
     "openai-responses",
@@ -250,6 +261,8 @@ def validate_media_protocol_compatibility(
     supports_audio_input: bool,
     supports_video_input: bool,
 ) -> None:
+    if is_plugin_protocol(protocol):
+        return
     declared = input_modalities(
         supports_image_input=supports_image_input,
         supports_audio_input=supports_audio_input,
@@ -287,6 +300,9 @@ def resolve_provider_connection(
     selected_driver = (
         auth_driver if auth_driver is not None else (default.auth_driver if default else "static")
     )
+    validate_provider_protocol(protocol)
+    if provider_type == "custom" and selected_driver == "static" and is_plugin_protocol(protocol):
+        return ProviderConnectionSpec(protocol)
     for connection in spec.connections:
         if (connection.protocol, connection.auth_driver) == (protocol, selected_driver):
             return connection
@@ -303,7 +319,9 @@ def validate_credential_binding(auth_driver: str, ref: CredentialRef) -> None:
 
 
 def default_api_path(protocol: ProviderProtocol) -> str | None:
-    return provider_protocol_spec(protocol).default_api_path
+    return (
+        None if is_plugin_protocol(protocol) else provider_protocol_spec(protocol).default_api_path
+    )
 
 
 def validate_request_options(
@@ -314,6 +332,8 @@ def validate_request_options(
 ) -> None:
     """Reject request fields owned by the protocol adapter or endpoint contract."""
 
+    if is_plugin_protocol(protocol):
+        return
     if protocol == "faux" and request_options:
         raise ValueError("faux protocol does not accept request options")
     collisions = sorted(_PROTOCOL_OWNED_REQUEST_FIELDS[protocol].intersection(request_options))
@@ -342,6 +362,8 @@ def validate_reasoning_protocol_compatibility(
     """Reject continuation contracts a wire adapter cannot faithfully replay."""
 
     capability = reasoning.capability
+    if is_plugin_protocol(protocol):
+        return
     spec = provider_protocol_spec(protocol)
     if capability.continuation not in spec.reasoning_continuations:
         raise ValueError(
@@ -513,7 +535,10 @@ class ProviderConfig(OuroModel):
             raise ValueError("endpoint ids must be unique")
         if self.default_endpoint is not None and self.default_endpoint not in endpoint_ids:
             raise ValueError(f"default endpoint not found: {self.default_endpoint}")
-        if provider_protocol_spec(self.protocol).requires_base_url:
+        if (
+            not is_plugin_protocol(self.protocol)
+            and provider_protocol_spec(self.protocol).requires_base_url
+        ):
             missing_base_url = next(
                 (
                     endpoint.endpoint_id

@@ -4,7 +4,7 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import (
@@ -31,14 +31,16 @@ from ouro.plugins.contracts import (
     ContributionContractContext,
     build_contribution_contract_hashes,
 )
-from ouro.plugins.manifest import PluginManifest
+from ouro.plugins.manifest import PluginManifest, ToolContributionSpec
 from ouro.plugins.models import PluginClass, PluginGenerationRecord
+from ouro.plugins.providers import ProviderRegistration
 from ouro.plugins.registry import (
     PluginCommand,
     PluginCommandArgument,
     PluginCommandRegistry,
     bind_plugin_command,
 )
+from ouro.plugins.run_drivers import RunDriverRegistration
 from ouro.plugins.session_controllers import (
     PluginSessionController,
     bind_plugin_session_controller,
@@ -55,6 +57,25 @@ class BackgroundService(Protocol):
     async def stop(self) -> None: ...
 
 
+type BackgroundServiceScope = Literal["host", "home"]
+
+
+@dataclass(frozen=True)
+class PreparedBackgroundService:
+    implementation: BackgroundService
+    scope: BackgroundServiceScope
+
+    @property
+    def service_id(self) -> str:
+        return self.implementation.service_id
+
+    async def start(self) -> None:
+        await self.implementation.start()
+
+    async def stop(self) -> None:
+        await self.implementation.stop()
+
+
 @dataclass
 class PluginContributions:
     tools: list[Tool] = field(default_factory=list)
@@ -63,6 +84,8 @@ class PluginContributions:
     context_providers: list[ContextProviderRegistration] = field(default_factory=list)
     compaction_strategies: list[CompactionStrategy] = field(default_factory=list)
     background_services: list[BackgroundService] = field(default_factory=list)
+    providers: list[ProviderRegistration] = field(default_factory=list)
+    run_drivers: list[RunDriverRegistration] = field(default_factory=list)
     continuation_policies: list[ContinuationPolicyRegistration] = field(default_factory=list)
     prompt_policies: list[PromptPolicyRegistration] = field(default_factory=list)
     turn_policies: list[TurnPolicyRegistration] = field(default_factory=list)
@@ -92,8 +115,10 @@ class PreparedContributionSet:
     context_providers: tuple[ContextProviderRegistration, ...] = ()
     commands: tuple[PluginCommand, ...] = ()
     compaction_strategies: tuple[CompactionStrategy, ...] = ()
-    background_services: tuple[BackgroundService, ...] = ()
+    background_services: tuple[PreparedBackgroundService, ...] = ()
     skills: tuple[SkillMetadata, ...] = ()
+    providers: tuple[ProviderRegistration, ...] = ()
+    run_drivers: tuple[RunDriverRegistration, ...] = ()
     continuation_policies: tuple[ContinuationPolicyRegistration, ...] = ()
     prompt_policies: tuple[PromptPolicyRegistration, ...] = ()
     turn_policies: tuple[TurnPolicyRegistration, ...] = ()
@@ -174,6 +199,14 @@ def bind_execution_contract(
         tools=tools,
         commands=commands,
         continuation_policies=continuation_policies,
+        run_drivers=tuple(
+            replace(
+                driver,
+                execution_contract_hash=execution_contract_hash,
+                contract_hash=prepared.contract_hashes[driver.canonical_id],
+            )
+            for driver in prepared.run_drivers
+        ),
         session_controllers=session_controllers,
         skills=skills,
     )
@@ -197,8 +230,10 @@ class _PreparedBuilder:
     context_providers: tuple[ContextProviderRegistration, ...] = ()
     commands: tuple[PluginCommand, ...] = ()
     compaction_strategies: tuple[CompactionStrategy, ...] = ()
-    background_services: tuple[BackgroundService, ...] = ()
+    background_services: tuple[PreparedBackgroundService, ...] = ()
     skills: tuple[SkillMetadata, ...] = ()
+    providers: tuple[ProviderRegistration, ...] = ()
+    run_drivers: tuple[RunDriverRegistration, ...] = ()
     continuation_policies: tuple[ContinuationPolicyRegistration, ...] = ()
     prompt_policies: tuple[PromptPolicyRegistration, ...] = ()
     turn_policies: tuple[TurnPolicyRegistration, ...] = ()
@@ -311,6 +346,8 @@ class ContributionCoordinator:
                 compaction=builder.compaction_strategies,
                 background_services=builder.background_services,
                 continuation_policies=builder.continuation_policies,
+                providers=builder.providers,
+                run_drivers=builder.run_drivers,
                 prompt_policies=builder.prompt_policies,
                 turn_policies=builder.turn_policies,
                 tool_policies=builder.tool_policies,
@@ -336,6 +373,8 @@ class ContributionCoordinator:
             background_services=builder.background_services,
             skills=builder.skills,
             continuation_policies=builder.continuation_policies,
+            providers=builder.providers,
+            run_drivers=builder.run_drivers,
             prompt_policies=builder.prompt_policies,
             turn_policies=builder.turn_policies,
             tool_policies=builder.tool_policies,
@@ -345,21 +384,26 @@ class ContributionCoordinator:
         )
 
     @staticmethod
-    def _prepare_tools(
+    def prepare_tools(
         manifest: PluginManifest,
         owner: ContributionOwner,
         source: PluginSource,
         tools: list[Tool],
+        *,
+        declarations: list[ToolContributionSpec] | None = None,
     ) -> tuple[Tool, ...]:
-        declarations = {item.exposed_name: item for item in manifest.contributes.tools}
+        declared = {
+            item.exposed_name: item
+            for item in (manifest.contributes.tools if declarations is None else declarations)
+        }
         actual = _unique_contribution_map(
             "tool",
             ((tool.definition.name, tool) for tool in tools),
         )
-        _validate_declared_set("tool", declarations, actual)
+        _validate_declared_set("tool", declared, actual)
         prepared: list[Tool] = []
         for name, tool in actual.items():
-            declaration = declarations[name]
+            declaration = declared[name]
             sdk_identity = tool.definition.metadata.get("sdk_contribution_id")
             if sdk_identity is not None and sdk_identity != declaration.id:
                 raise ContributionValidationError(
@@ -384,6 +428,7 @@ class ContributionCoordinator:
                     f"tool contract does not match manifest: {declaration.exposed_name}"
                 )
             definition = tool.definition.model_copy(
+                deep=True,
                 update={
                     "name": declaration.exposed_name,
                     "description": declaration.description,
@@ -402,7 +447,7 @@ class ContributionCoordinator:
                         manifest.plugin_id,
                         declaration.interaction_controller,
                     ),
-                }
+                },
             )
             contract_hash = _hash(definition.model_dump(mode="json", exclude={"metadata"}))
             definition = definition.model_copy(
@@ -802,7 +847,7 @@ class _ToolPreparationAdapter:
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
-        builder.tools = coordinator._prepare_tools(
+        builder.tools = coordinator.prepare_tools(
             context.candidate.manifest,
             context.owner,
             context.source,
@@ -1038,7 +1083,13 @@ class _BackgroundServicePreparationAdapter:
             context.candidate.manifest,
             context.contributions.background_services,
         )
-        builder.background_services = tuple(context.contributions.background_services)
+        declarations = {
+            item.id: item for item in context.candidate.manifest.contributes.background_services
+        }
+        builder.background_services = tuple(
+            PreparedBackgroundService(service, declarations[service.service_id].scope)
+            for service in context.contributions.background_services
+        )
 
     def missing_optional(
         self,
@@ -1173,6 +1224,79 @@ COMPACTION_PREPARATION_ADAPTER = _CompactionPreparationAdapter()
 SKILL_PREPARATION_ADAPTER = _SkillPreparationAdapter()
 MCP_PREPARATION_ADAPTER = _MCPPreparationAdapter()
 BACKGROUND_SERVICE_PREPARATION_ADAPTER = _BackgroundServicePreparationAdapter()
+
+
+@dataclass(frozen=True)
+class _RunDriverPreparationAdapter:
+    kind: str = "run_drivers"
+
+    def prepare(
+        self,
+        coordinator: ContributionCoordinator,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> None:
+        manifest = context.candidate.manifest
+        declarations = {item.id: item for item in manifest.contributes.run_drivers}
+        actual = _unique_contribution_map(
+            "Run driver", ((item.driver_id, item) for item in context.contributions.run_drivers)
+        )
+        _validate_declared_set("Run driver", declarations, actual)
+        if actual and "sessions.write" not in {item.id for item in manifest.permissions}:
+            raise ContributionValidationError("Run drivers require sessions.write permission")
+        builder.run_drivers = tuple(
+            replace(
+                item,
+                plugin_id=manifest.plugin_id,
+                release_id=context.owner.release_id,
+                owner=context.owner.key,
+            )
+            for item in actual.values()
+        )
+
+    def missing_optional(
+        self, context: _PreparationContext, builder: _PreparedBuilder
+    ) -> tuple[str, ...]:
+        return _missing_optional(
+            "run_drivers",
+            context.candidate.manifest.contributes.run_drivers,
+            {item.driver_id for item in builder.run_drivers},
+        )
+
+
+@dataclass(frozen=True)
+class _ProviderPreparationAdapter:
+    kind: str = "providers"
+
+    def prepare(
+        self,
+        coordinator: ContributionCoordinator,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> None:
+        manifest = context.candidate.manifest
+        declarations = {item.id: item for item in manifest.contributes.providers}
+        actual = _unique_contribution_map(
+            "Provider", ((item.provider_id, item) for item in context.contributions.providers)
+        )
+        _validate_declared_set("Provider", declarations, actual)
+        builder.providers = tuple(
+            replace(item, plugin_id=manifest.plugin_id, owner=context.owner.key)
+            for item in actual.values()
+        )
+
+    def missing_optional(
+        self, context: _PreparationContext, builder: _PreparedBuilder
+    ) -> tuple[str, ...]:
+        return _missing_optional(
+            "providers",
+            context.candidate.manifest.contributes.providers,
+            {item.provider_id for item in builder.providers},
+        )
+
+
+PROVIDER_PREPARATION_ADAPTER = _ProviderPreparationAdapter()
+RUN_DRIVER_PREPARATION_ADAPTER = _RunDriverPreparationAdapter()
 CONTINUATION_PREPARATION_ADAPTER = _ContinuationPreparationAdapter()
 TOOL_POLICY_PREPARATION_ADAPTER = _ToolPolicyPreparationAdapter()
 PROMPT_POLICY_PREPARATION_ADAPTER = _PromptPolicyPreparationAdapter()

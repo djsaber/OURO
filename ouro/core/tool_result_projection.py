@@ -49,6 +49,30 @@ def project_tool_result_messages(
         if reference is None:
             raise ValueError("tool_result message is missing its tool result reference")
         presentation = project_result(message)
+        if reference.producer.kind == "driver":
+            projected.extend(context)
+            context.clear()
+            projected.append(
+                model_visible_message(
+                    ModelMessage(
+                        role="user",
+                        semantic_tag="driver-tool-result",
+                        content=[
+                            TextContent(
+                                text=(
+                                    f"Tool {json.dumps(reference.tool_name)} executed by Driver "
+                                    f"{json.dumps(reference.producer.driver_id)} "
+                                    f"(call {json.dumps(reference.tool_call_id)}, "
+                                    f"error={reference.is_error}):\n"
+                                )
+                            ),
+                            *presentation.content,
+                            *(part for fragment in presentation.context for part in fragment),
+                        ],
+                    )
+                )
+            )
+            continue
         projected.append(message.model_copy(update={"content": list(presentation.content)}))
         for fragment in presentation.context:
             context.append(

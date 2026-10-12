@@ -340,7 +340,7 @@ TUI 在撤销成功后重载标准会话投影并恢复输入草稿；失败保�
 ### DV-01：单一当前格式
 
 当前实现只支持当前格式，不提供旧布局、旧记录、旧插件状态、旧 API 的兼容或迁移路径。
-Session/Run/Event 使用 schema 2，Message schema 3，File layout 9，SQLite schema 7；各版本域独立校验。
+Session/Event 使用 schema 2，Run schema 5，Message schema 4，File layout 9，SQLite schema 7；各版本域独立校验。
 不支持或缺失的存储版本在读取边界明确拒绝，不扫描历史文件、补默认值或转换后重试。
 由用户选择新目录或显式数据维护，不在运行时自动删除 canonical 数据。
 

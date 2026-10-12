@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -24,6 +23,7 @@ class GenerationResourceRequest:
     generation: PluginGenerationRecord
     package_root: Path
     configuration: PluginConfigurationRevision
+    own_resource: Callable[[Any], None]
     credential_resolver: Callable[[str], str | None] | None = None
 
 
@@ -31,7 +31,6 @@ class GenerationResourceRequest:
 class PreparedGenerationResources:
     skills: tuple[SkillMetadata, ...] = ()
     discovered_tools: tuple[Tool, ...] = ()
-    owned_resources: tuple[Any, ...] = ()
     degraded_reasons: tuple[str, ...] = ()
     resource_contracts: dict[str, object] = field(default_factory=dict)
 
@@ -43,7 +42,6 @@ class PreparedGenerationResources:
         return PreparedGenerationResources(
             skills=(*self.skills, *other.skills),
             discovered_tools=(*self.discovered_tools, *other.discovered_tools),
-            owned_resources=(*self.owned_resources, *other.owned_resources),
             degraded_reasons=(*self.degraded_reasons, *other.degraded_reasons),
             resource_contracts={
                 **self.resource_contracts,
@@ -153,15 +151,10 @@ class PluginMCPResourceAdapter:
             resolve_credential=request.credential_resolver,
             credential_bindings=request.configuration.credential_refs,
         )
-        try:
-            tools = await resource.start()
-        except BaseException:
-            with suppress(Exception):
-                await resource.close()
-            raise
+        request.own_resource(resource)
+        tools = await resource.start()
         return PreparedGenerationResources(
             discovered_tools=tools,
-            owned_resources=(resource,),
             degraded_reasons=tuple(resource.degraded_reasons),
             resource_contracts={
                 f"{request.candidate.plugin_id}/mcp_servers/{declaration.id}": {
@@ -184,17 +177,11 @@ async def prepare_generation_resources(
     from ouro.plugins.contribution_types import contribution_type_adapters
 
     prepared = PreparedGenerationResources()
-    try:
-        for contribution_type in contribution_type_adapters():
-            adapter = contribution_type.resource
-            if adapter is None:
-                continue
-            prepared = prepared.merge(await adapter.prepare(request))
-    except BaseException:
-        for resource in reversed(prepared.owned_resources):
-            with suppress(Exception):
-                await resource.close()
-        raise
+    for contribution_type in contribution_type_adapters():
+        adapter = contribution_type.resource
+        if adapter is None:
+            continue
+        prepared = prepared.merge(await adapter.prepare(request))
     return prepared
 
 

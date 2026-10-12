@@ -16,7 +16,7 @@ from ouro.core.message_semantics import (
     SemanticTag,
     escape_semantic_envelope_delimiters,
 )
-from ouro.core.tools import ToolCallRequest
+from ouro.core.tools import ToolCallProducer, ToolCallRequest
 
 SkillActivationSource = Literal["user", "workspace", "plugin"]
 
@@ -50,6 +50,7 @@ class ToolResultReference(OuroModel):
     tool_call_id: str
     tool_name: str
     is_error: bool = False
+    producer: ToolCallProducer = Field(default_factory=ToolCallProducer)
 
 
 class ProviderContinuationArtifact(OuroModel):
@@ -172,7 +173,7 @@ class ModelMessage(OuroModel):
 
 
 class MessageRecord(VersionedOuroModel):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     message_id: str = Field(default_factory=lambda: new_id("msg"))
     before_harness_version: str | None = None
     session_id: str

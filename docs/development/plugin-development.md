@@ -91,7 +91,7 @@ manifest 与 digest 校验。
 
 ## 4. SDK contribution
 
-in-process 插件只从 `ouro.sdk.plugins.v2` 使用公开类型。factory 接收 `PluginContext` 并返回实现以下生命周期的对象：
+in-process 插件只从 `ouro.sdk.plugins.v3` 使用公开类型。factory 接收 `PluginContext` 并返回实现以下生命周期的对象：
 
 ```python
 class Plugin:
@@ -109,15 +109,13 @@ class Plugin:
 configuration、插件私有 data 或 canonical Session 数据。没有本地用户数据根的 Host 可以返回 `None`，依赖文件
 制品的插件应在激活时明确失败。
 
-`PluginContext.host_home` 是 composition root 提供的只读位置描述，表示当前 Host 配置后的 `OURO_HOME`；它
-不等同于插件私有 data、artifact 写入授权或 workspace。需要定位 Host 全局约定文件的可信 in-process builtin
-可以使用它，实例级插件数据仍通过 `PluginContext.data` 管理。
+`PluginContext.environment.agent_instructions(workspace)` 读取 Host 配置与 workspace 对应的指令文档。
+结果包含来源路径、作用域和文本，插件不接收整个 Host home。Agent Context 与用户插件使用同一公开端口。
 
-当前稳定 contribution 包括 Tool、Command、Observer、Context Provider、Prompt Policy、Turn Policy、Compaction
-Strategy、Skill、MCP Server、Background Service、Continuation Policy、Tool Policy 和 Session Controller。插件不能
-动态注册新的 extension point。13 类能力均必须对应明确 Host 语义消费者；完整 producer/consumer/contract 证据见
-[插件系统规格](../specs/plugins.md#91-目标稳定-contribution)。没有真实 builtin 或最小可运行 user plugin
-证明前，Host 不增加第 14 类 contribution，也不复制 SDK/worker/prepare/contract/projection adapter 链。
+原生 contribution 包括 Tool、Command、Observer、Context Provider、Prompt Policy、Turn Policy、Compaction
+Strategy、Skill、MCP Server、Background Service、Continuation Policy、Tool Policy 和 Session Controller。
+这些类型对应明确的 Host 语义消费者；新业务通过独立的 `exports` 服务声明扩展，无需增加原生 contribution 类型。
+完整 producer/consumer/contract 证据见[插件系统规格](../specs/plugins.md#91-目标稳定-contribution)。
 
 Tool 可选择接收 Host-owned `ToolExecutionContext`，使用其中的 workspace、Host artifact 受约束路径解析、取消与
 输出限制。Tool / resume 以及 Compaction 的可选上下文回调在 contribution 装配时绑定；签名不满足调用契约时
@@ -153,31 +151,30 @@ Tool handler 除 `ToolOutput` 或字符串外，还可返回 `ToolInputRequest(d
 得到标准 `UserInputUnavailable` 工具结果。
 
 ```python
-from ouro.sdk.plugins.v2 import ToolInputRequest
+from ouro.sdk.plugins.interactions import PlanConfirmationRequest
+from ouro.sdk.plugins.v3 import ToolInputRequest
 
 async def confirm_plan(call):
     return ToolInputRequest(
-        data={
-            "type": "plan_confirmation",
-            "plan_path": call.arguments["plan_path"],
-            "plan": call.arguments["plan"],
-            "plan_digest": call.arguments["plan_digest"],
-            "options": call.arguments.get("options", []),
-            "actions": ["accept", "revise", "reject"],
-            "error": None,
-        }
+        data=PlanConfirmationRequest(
+            plan_path=call.arguments["plan_path"],
+            plan=call.arguments["plan"],
+            plan_digest=call.arguments["plan_digest"],
+        ).to_json()
     )
 ```
 
-前端适配只负责把用户选择编码为请求生产者定义的 JSON，领域校验和状态迁移仍由 resumable tool 完成。TUI
-只为带官方内置 Plan 插件 provenance 的 `plan_confirmation` 提供专用展示；其他插件返回相同 `type` 不会获得官方
-界面，而是继续使用通用 JSON/文本输入。这种展示映射不改变 `ToolInputRequest` 的 Host-neutral Core 契约。
+`ouro.sdk.plugins.interactions` 提供 `PlanConfirmationRequest`、`PlanOption` 和 `PlanConfirmationAnswer`。
+TUI 按 `plan_confirmation` 的公开结构提供计划预览与选择，不要求 builtin 身份或特定工具名。无效或未知结构使用
+通用 JSON/文本输入。前端只编码真实用户的选择，校验计划内容、应用答案和迁移业务状态仍由 resumable tool 完成；
+呈现类型不授予权限，不激活或释放 Session controller，也不改变无人值守处理。这种映射保留 `ToolInputRequest`
+的 Host-neutral Core 契约。
 
 Context Provider 返回的字符串或普通 `ContextFragment` 默认只影响本次模型请求。如果 Harness 指令必须进入可审计、
 可恢复的 canonical history，显式返回持久 fragment：
 
 ```python
-from ouro.sdk.plugins.v2 import ContextFragment, ContextOutput
+from ouro.sdk.plugins.v3 import ContextFragment, ContextOutput
 
 def plan_scaffold(call):
     return ContextOutput(
@@ -296,7 +293,7 @@ Harness 版本、history_epoch 和消息头前置条件处理。
 
 ### 调用内会话状态
 
-Python SDK 入口为 `ouro.sdk.plugins.v2`，manifest 使用 Plugin API `^3.0.0`，worker 使用 protocol `3.0`。
+Python SDK 入口为 `ouro.sdk.plugins.v3`，manifest 使用 Plugin API `^3.0.0`，worker 使用 protocol `3.0`。
 PluginContext 不提供会话状态写入器。可修改状态的回调使用本次调用的 owner 视图：
 
 ```python
@@ -338,10 +335,24 @@ worker 随调用接收 `params.session_state` 中的 `writable`、`value` 和只
 ## 5. Catalog、owner 与 durable contract
 
 每轮模型决策读取一个当前不可变 `ExtensionCatalogLease`。插件更新先完整构建候选 generation 与 Catalog，再切换 current
-pointer；已发出的模型请求及其调用保持原绑定，等待时释放环境租约。Background Service 是每 plugin 的 activation-singleton，不属于 Run Catalog。
+pointer；已发出的模型请求及其调用保持原绑定，等待时释放环境租约。Background Service 不属于 Run Catalog，
+其实例由激活 generation 管理。
 
-每个 generation 拥有 instance、worker、MCP、task、module、gate 和 contribution。disable 关闭 gate 后不能
-开始新的插件回调；lease 释放后 owner 才回收。
+在 `contributes.background_services` 中以 `{"id": "sync", "scope": "home"}` 声明 home 单例服务；省略 scope
+表示每个 Host 各自运行。home 服务跟随现有 TaskScheduler owner，只有当选 Host 调用 SDK contribution 的 start，
+所有权交接前等待 stop。仅打开插件管理服务不会参与该选举。stop 应幂等，并等待服务任务及外部资源真正退出；
+停止失败会保留所有权，不能让另一个 Host 同时启动替代实例。
+
+worker 对应实现 `background.start` / `background.stop`，从 `params.contribution_id` 识别服务并返回 `{}`。
+不要在 `lifecycle.start` 中启动这些后台工作；该入口处于候选阶段，也会在没有 home 所有权的 Host 中执行。
+
+每个 generation 拥有 instance、worker、MCP、task、module、gate 和 contribution。命令和 Observer 只绑定所用
+贡献及其 owner 的依赖，不持有完整 Catalog。正常升级允许已绑定的调用使用旧代，相关租约释放后回收旧 owner。
+
+disable 关闭该插件所有代次的 gate 并取消正在执行的回调；实际调用及资源清理完成才呈现 `disabled`。
+等待超过本 Host 的停止预算时呈现 `stopping`，清理失败时呈现 `failed`；再次 disable 可重试失败清理。
+旧 Background Service 停止失败时，不启动新代服务。停止中的代码或私有数据不能被卸载、清除。
+同步 Python 回调的线程不能强杀；取消后仍等待线程退出并丢弃迟到结果，插件应主动遵守停止约定。
 
 Run、Tool/Approval 和 Continuation 持久化稳定 `execution_contract_hash`，覆盖 package、immutable configuration
 revision、传递 dependency lock、Plugin API/worker protocol 和 contribution contract。随机 `generation_id` 只用于
@@ -350,6 +361,66 @@ revision、传递 dependency lock、Plugin API/worker protocol 和 contribution 
 
 对 builtin，用户包摘要由 definition 在装配时冻结的 builtin contract hash 取代；该摘要同时覆盖规范化 Manifest 与实现
 目录内容，因此代码变化不会沿用旧 release identity。
+
+### 动态工具组
+
+可执行插件可在 Manifest 顶层声明 `tool_groups`，每组声明固定执行策略；工具名称、说明和 JSON Schema
+在发布时提供。组内工具必须符合声明的 `permission_mode`、`permission_control`、`effect`、`batch_behavior`、
+`resumable`、`supports_unattended` 与 Controller 绑定。具体工具名称无需写入 Manifest。
+
+```json
+{
+  "contributes": {
+    "tool_groups": [
+      {"id": "sources", "permission_mode": "auto", "effect": "read_only"}
+    ]
+  }
+}
+```
+
+```python
+from ouro.sdk.plugins.v3 import ToolContribution, ToolGroupContribution
+
+group = ToolGroupContribution(
+    id="sources",
+    revision="source-api-2",
+    tools=(ToolContribution(
+        id="search",
+        exposed_name="sources__search",
+        description="Search the discovered source.",
+        parameters_schema={"type": "object", "properties": {}},
+        permission_mode="auto",
+        effect="read_only",
+        handler=search,
+    ),),
+)
+registration = await context.tool_groups.publish(group)
+await registration.close()
+```
+
+`prepare()` 可通过 `ContributionSet.tool_groups` 提交初始工具组；候选阶段不能调用 `publish()`。
+运行中每次发布替换整组，空组移除该组全部工具。Host 校验所有工具及目录冲突后一次性发布，失败保留原组。
+未声明工具组的插件没有该端口。发布只接受当前 active generation，拒绝只读或已结束的调用作用域。
+生命周期变更正在进行时，发布立即返回错误；调用方可在自己的工作流程中重新发起，不应等待停止自身的变更。
+
+`revision` 是实现语义的稳定标识；即使 schema 不变，处理行为变化也应改变 revision。工具规范身份为
+`plugin_id/tools/group_id/tool_id`。工具契约包含 revision 与具体定义，generation 的执行契约不随组发布改变。
+已发出的模型请求保留原组 schema 和处理器；下一轮读取当前组。进入审批或其他持久等待后释放执行租约，
+重启恢复必须匹配原工具契约，不能用同名新工具替代。组发布不持久化 Python 闭包，初始发现应提供可重复的契约标识。
+
+关闭句柄幂等，只撤销该次发布；旧句柄不能删除替代它的新组。撤销立即影响后续决策，已接受调用保留原修订至
+租约释放。禁用插件则关闭所有修订的调用入口。句柄也可在 `stop()` 中关闭，Host 负责最终回收所属注册。
+
+Python worker 使用 `ouro.sdk.plugins.worker_tool_groups.WorkerToolGroups(peer)`。该 helper 安装
+`tool_groups.call`、`tool_groups.resume` 和 `tool_groups.release` 路由；在 `contributions.prepare` 结果中
+返回 `{"tool_groups": groups.prepare(initial_groups)}`，运行中调用同样的 `await groups.publish(group)`。
+工具使用单参数 SDK `ToolCall`／`ToolResumeCall` handler；workspace 位于 call 中，原生能力通过对应 worker
+端口访问。Session 状态视图保持调用作用域，结果由 Host 校验并与消息提交，取消后的迟到状态不可写入。
+
+Host 按发布身份调用 worker 处理器，租约排空后发送 `tool_groups.release` 通知。通知在协议读取循环中移除引用，
+不占用业务并发槽。发布回执取消时，SDK 按预先建立的身份请求撤销；不能因为没有收到成功回执就删除可能已被
+模型决策持有的处理器。工具及恢复 RPC 跟随 Run／generation 生命周期，不受普通传输默认超时截断。
+完整示例见 [dynamic-records](../../examples/plugins/dynamic-records/README.md)。
 
 ## 6. 权限、配置与数据
 
@@ -365,8 +436,173 @@ OURO 保留个人智能体所需的基础边界：
 同样不承诺系统调用级沙箱。
 
 配置是内容寻址的 immutable revision。active 插件 configure 使用候选 generation，失败不切换 active revision。
-candidate 通过 Host data API 的写入先进入暂存视图，发布成功才提交；直接绕过 Host API 的 in-process OS 写入不属于
-此事务保证。
+`prepare/start` 期间 Host data API 只读；写入、删除会明确失败。将需要持久写入的自主工作放入 Background Service，
+框架会在发布后启动它。通过 task group 登记的任务同样延迟到发布后运行。候选失败时框架清理其已获取资源；
+直接绕过 Host API 的 in-process OS 写入不受该边界约束。
+
+### 具名服务与可撤销注册
+
+提供者在 Manifest 的 `exports` 声明服务 ID、方法输入 JSON Schema、`effect` 和 `registration`，并在
+`ContributionSet.services` 提供相同的服务与方法。消费插件在 `dependencies.plugins` 声明提供者及版本范围，
+再使用 `context.services.call(plugin_id, service, method, arguments)`；只传 JSON 数据，不读取提供者私有目录。
+`read_only` 方法不能通过 SDK 修改私有数据或调用有副作用的服务。
+
+需要让消费者提供过滤器等回调时，提供者声明注册方法，并在方法中先登记清理：
+
+```python
+async def register_filter(call):
+    call.on_close(lambda: filters.remove(call.handler))
+    filters.append(call.handler)
+```
+
+消费者使用 `await context.services.register(provider, service, method, handler)` 得到关闭句柄，调用
+`await registration.close()` 撤销。回调不是可长期自由使用的 Python 对象；任一插件停止、注册取消或显式关闭都会
+撤销其执行入口。清理失败保留归属供再次关闭，不自动重试业务调用。
+
+完整示例是 [`memory-service`](../../examples/plugins/memory-service) 与
+[`memory-client`](../../examples/plugins/memory-client)：数据由提供者的 SQLite 事务管理，消费方注册结果过滤器，
+两者都在独立 worker 中运行。结果最多返回 20 条，不把完整数据集复制到 Host。
+
+### 定时服务调用
+
+可供 Host 定时执行的方法在服务声明中设置 `schedulable=true`，并请求 `background.run` 权限。
+Host 使用原生 Task 的 `plugin` 目标保存插件 ID、服务、方法和参数；注册方法不支持调度。
+方法接收的 `ServiceCall.scheduled` 是 `ScheduledInvocation`，包含 `task_id`、`execution_id`、`scheduled_at`。
+普通调用时该值为 `None`。返回 JSON 会保存到执行记录，适合返回同步摘要；业务自己的游标和数据仍由插件持有。
+worker 的 `services.call` 参数包含同名 `scheduled` 对象，其时间为 ISO 8601；这条调用没有原生 Run 上下文。
+任务领取后的实现不会因升级而切换，未知结果不会被框架自动重试。
+
+### 持久计划端口
+
+`context.scheduler` 提供原生计划用例；worker 使用 `ouro.sdk.plugins.worker_scheduling.WorkerScheduler(peer)`，
+Host 的 initialize features 包含 `scheduler` 时可用。端口方法为 `create`、`get`、`list`、`update`、
+`set_enabled`、`delete`、`executions`、`interrupt`。`context.tasks` 管理代次内协程，持久计划则由原生调度 owner
+领取；两者具有不同生命周期。
+
+```python
+from datetime import UTC, datetime
+from ouro.sdk.plugins.scheduling import ScheduledService, TaskSchedule, TaskSpec
+
+plan = await context.scheduler.create(TaskSpec(
+    target=ScheduledService(context.identity.plugin_id, "sync", "run", arguments=None),
+    schedule=TaskSchedule("hourly", starts_at=datetime.now(UTC)),
+    title="Synchronize records",
+))
+await context.scheduler.set_enabled(plan.task_id, False, expected_revision=plan.revision)
+```
+
+Host 固定创建者身份，端口只返回或控制本插件拥有的任务，服务目标限本插件或直接声明的依赖。写计划要求
+`background.run`；使用 `ScheduledAgent(prompt, workspace, ...)` 创建 Agent 任务还需 `sessions.write`。
+`ModelReasoning` 表达模型思考配置，日历和目标由原生领域校验；不必构造内部模型。
+
+`update`、`set_enabled`、`delete` 和 `interrupt` 需要最近读取的 `expected_revision`，冲突应重新查询后决策。
+只读回调可以查询计划和执行记录，不能写计划。候选尚未发布时不可调用端口；需要启动时建立计划的逻辑应放在
+发布后的 Background Service，并自行明确重复启动的业务规则。每次 `create` 都创建新任务；回执丢失时先查询，
+不要盲目重发。已停止回调和撤销代次不能借旧引用新开业务。
+
+`ScheduledExecution` 对 Agent 任务返回真实 Session／Run 身份，对插件服务任务返回 JSON 结果，身份字段为
+`None`。`interrupt` 持久化请求后返回，执行状态以随后查询为准。owner 停用阻止派发并中断在途工作；计划、历史
+和数据保留，已暂停的计划需要显式启用。公开样例 [`scheduled-sync`](../../examples/plugins/scheduled-sync)
+通过同一 SDK 管理计划和更新私有记录快照，支持进程内和 worker。
+
+### 进程执行
+
+声明 `process.spawn` 后，可调用 `context.processes.run(ProcessRequest(arguments=(...)), on_output=...)`。
+`ProcessRequest` 位于 `ouro.sdk.plugins.processes`。入口接收 argv、cwd、超时和可选环境；不隐式插入 shell。
+输出回调接收有序的 `ProcessOutput`，等待回调形成背压；完成结果有界且带截断标记。大输出可在回调中写入
+plugin-scoped artifact。调用取消、插件撤销、超时及输出回调失败均触发进程树清理。进程仍拥有执行用户的 OS 权限。
+
+Worker 对应的 `WorkerProcesses` 与 `WorkerServices` 使用同一 Host 能力及取消边界；
+[`worker-exec`](../../examples/plugins/worker-exec) 展示受管理的 Python 执行与输出回调。
+
+### 独立模型请求
+
+无 Run 的命令和后台业务可以声明 `models.request`，使用公开模型 DTO：
+
+```python
+from ouro.sdk.plugins.models import ModelInput, ModelRequest
+
+result = await context.models.generate(
+    ModelRequest(
+        messages=(ModelInput("user", "Review this proposal."),),
+        model="default",
+        timeout_seconds=120,
+    ),
+    on_output=receive_output,
+)
+```
+
+`receive_output` 是可选异步回调，按序接收带 sequence、kind（text/reasoning）和 text 的 `ModelOutput`。
+回调应及时处理文本；它的完成控制后续输出交付。结果含请求 ID、实际模型路由、文本、思考文本和供应商用量。
+`ModelReasoning` 与调度 Agent 共用思考配置契约；输出上限不得超过所选端点配置，输入不得超出上下文预算。
+`default` 要求已配置默认端点，也可传 `provider/endpoint`。命令自身的 timeout_seconds 应覆盖模型请求期限。
+
+用量归属插件，存在调用者 Session 时保留该关联；此调用不创建 Session 或 Run。准备阶段、只读回调以及活跃
+Run 都不能使用 `generate`。活跃 Run 使用下述 `request` 端口；停用插件会取消其未完成的模型请求。
+worker 创建 `models = WorkerModels(peer)`，并把 `"models.output"` 路由注册到 `models.output` 方法。
+完整命令与两种运行入口见 [`model-review`](../../examples/plugins/model-review)。
+
+### Run Driver
+
+`PluginContext.models.request`、`.tools` 和 `.agents` 也可供普通插件服务使用。它们复用调用链上已接受的 Run，服务需声明
+`sessions.write`，方法 effect 为 `state_changing` 或 `unknown`。模型调用会写入 Run 历史、计数和用量，不能标为
+只读方法。嵌套服务继承调用者的 Run、工作区和只读约束；generation 不缓存某次调用的 Run。
+
+这些端口要求当前调用拥有活跃 Run，不能从无 Run 的命令、准备阶段或后台代码直接调用。命令可返回带 Driver 选择的
+`SessionInput` 进入原生接受链。一个 Run 的原生操作必须顺序 await；工具或上下文回调不能递归开启同一 Run 的模型
+请求。worker 使用 `WorkerRunPorts(peer)` 获取同等端口，反向请求沿当前服务调用继承 Host 作用域，不接受 Run ID。
+[`review-service`](../../examples/plugins/review-service) 展示独立服务中的模型审阅、工具执行及等待 checkpoint。
+
+`contributes.run_drivers` 声明 Driver id，并申请 `sessions.write` 权限。插件通过
+`RunDriverContribution(id, handler)` 注册普通 async 函数，参数为 `RunDriverContext` 和可选 `DriverResume`。
+
+算法可以 `await context.inputs.consume()` 在安全决策边界接收 steering。返回 `RunInput` 包含 `message_id`、
+`role`、JSON 内容块 `content`、`scaffold`、`semantic_tag`、来源 `metadata` 和 `resource_refs`；`text` 提取其中的文本块。
+这些是已经提交的消息副本，修改它们不会改变 Host 历史。模型请求前会自动交付待处理 steering；若算法刚显式读取过，
+紧接的模型请求使用该次输入集合。纯代码／服务算法可再次显式读取以开始下一次决策，不依赖固定模型循环。
+存在未处理的模型工具响应时须先执行并结算该批次；不能把输入插入工具请求与结果之间。
+队列、策略和恢复语义以[运行时规格](../specs/runtime.md#run-driver-与原生端口)为准。
+函数返回 `DriverFinished(text)` 或 `DriverSuspended()`，不直接修改 Run、Store 或执行所有权。
+直接采用当前模型响应作为最终答复时，返回 `DriverFinished(response.text, response_id=response.response_id)`。
+Host 校验真实响应句柄与文本，沿用已提交的 assistant 消息和模型元数据；省略句柄会保存 Driver 自己的最终输出。
+句柄不能用于改写模型输出，不能跨调用恢复，也不能在后续模型请求或程序化工具调用后复用。
+
+`context.models.request(prompt=..., tools=...)` 执行一次原生模型请求。prompt 是本次上下文的临时 Driver 指令，
+`tools=None` 使用当前可用工具，空 tuple 禁用工具，指定名字只选取当前目录的子集。上下文保存、预算、模型路由、
+计数、事件和用量仍由 Host 处理；已完成的无工具模型响应进入 canonical history。
+
+`context.tools.execute_model_response(response.response_id, checkpoint=...)` 只能消费当前调用中尚未消费的真实模型
+工具响应。公开 DTO 的修改不改变 Host 持有的调用；响应句柄不能跨 Run 或跨恢复调用复用。工具结果包含结构化输出、
+媒体内容和资源引用。工具权限、审批与交互沿用原生协调器。
+
+`context.tools.execute((RunToolCall(name, arguments), ...), checkpoint=...)` 发起程序化工具批次。
+Host 分配调用 ID、按当前决策目录绑定执行契约，并记录 Driver 来源。调用不会伪造模型工具请求或增加模型计数；
+结果由 Provider 按来源投影并应用媒体支持策略。存在未解决的模型工具响应时必须先消费该响应。
+
+`context.agents.spawn((AgentTask(agent_id, task, description), ...), checkpoint=...)` 使用原生 Agent
+目录、权限与共享预算。`AgentTask` 支持 `nickname`、`execution_mode`（默认 `sync`）和 `resource_refs`。
+`context.agents.send(delegation_id, message, mode=..., checkpoint=...)` 与
+`context.agents.interrupt(delegation_id, reason=..., checkpoint=...)` 使用同一工具执行边界。
+这些端口返回 `ToolBatchResult`，子任务身份和结果沿用原生结构化输出。同步子任务等待会释放父 Run 的执行所有权。
+批次并发由 Host 工具配置决定，子任务并发由原生调度器决定，插件不能越过这些限制。
+
+调用可能返回 `suspended=True`，此时立即返回 `DriverSuspended()`。恢复参数包含保存的 JSON checkpoint 和已结算
+工具结果。checkpoint 限制为 64 KiB UTF-8 JSON，存放小状态和资源引用；Host 在重新进入插件代码前消费它。
+消费后的中断不能自动重放插件副作用。Run 绑定所属插件和传递依赖的发布、配置修订及执行契约。升级后恢复按需装载
+原契约，不改变当前选版；该实现只在执行期间持有资源，不发布全局贡献或启动后台服务。已禁用的插件／依赖、缺失的
+包或配置修订、以及无法重建的契约会阻止交付 checkpoint，保留诊断与未消费结果。尚有可恢复 Driver 引用的包及依赖包
+受清理保留规则约束。恢复读取当前私有数据；插件更新必须考虑未完成调用所需的数据格式。
+
+原生调用必须逐个 await，调用上下文在 Driver 返回、等待或撤销后失效。模型／工具调用使用所属 Run 的权限与预算，
+插件服务和进程调用继承该 Run 的工作区约束。用户中断会等待原生端口结算取消结果，再结束 Driver 的剩余代码。
+示例 [`review-driver`](../../examples/plugins/review-driver)
+包含同一个算法的进程内入口与 worker 入口，提供 `/review <request>` 命令。命令返回
+`SessionInput(prompt=call.argument, driver_id="dev.ouro.examples.review_driver/run_drivers/review")`，
+申请 `sessions.write` 和 `background.run`，由 Host 接受输入后启动原生 Run。忙碌 Session 将输入排队，接受时即
+绑定 Driver 的发布、配置及依赖；升级和重启不会改变该选择。单个原子 batch 的成员必须选择相同 Driver，
+`steer` 不接受 Driver 选择。Host 也可直接调用 `RuntimeService.run(..., driver_id=...)`。
+[`delegating-driver`](../../examples/plugins/delegating-driver) 组合两个原生子任务、模型审阅和条件工具执行，
+支持子任务等待重启及后续工具审批。
 
 ## 7. Worker 最小协议
 
@@ -380,6 +616,11 @@ worker 从 stdin 逐行读取 JSON-RPC 2.0 request，只向 stdout 写协议 JSO
 - resumable 工具使用 `tool.resume`；`call.resolution` 传输 `answer` 或 `unattended` 判别对象；
 - Observer 使用 `observer.observe`，Prompt Policy 使用 `prompt_policy.call`；
 - `cancel`：取消超时或被 Host 取消的 request。
+
+Python worker 可使用 `ouro.sdk.plugins.worker.WorkerPeer`。它独立分派请求和响应，允许 worker → Host →
+worker 及跨多个 worker 的嵌套调用。`WorkerServices`、`WorkerProcesses`、`WorkerEnvironment` 分别提供插件服务、
+进程与环境代理；`WorkerRunDrivers` 分派 `drivers.call` 并代理调用期间的原生模型／工具端口；需要将代理的 handler 接到示例中列出的明确路由。双方都限制消息大小与并发请求数，取消通过
+请求 ID 传播。`timeout_seconds=0` 表示由所属调用生命周期控制取消，不设置 RPC 时间上限；Driver 及其原生端口使用该模式，模型与工具仍执行各自的预算／超时。业务调用携带父调用 ID，注册清理可以在原调用结束后通过所属 worker 的注册 ID 执行。
 
 stdout 污染、未知消息、过大响应、声明不一致和错误 result shape 都会使协议调用失败。完整最小实现见
 [`examples/plugins/worker-tool`](../../examples/plugins/worker-tool)。
@@ -411,7 +652,28 @@ uv run --frozen ouro plugin import-report ./community-package --json
 每个可迁移项给出 `ouro_target`，报告同时列出 outcome count、lost semantics、安全差异和所需权限。该命令只读文件，
 不执行社区 Hook、JavaScript runtime、安装脚本或 MCP server。
 
-## 9. 可运行示例
+## 9. 模型协议贡献
+
+Manifest 的 `contributes.providers` 声明本地 `id`，`ContributionSet.providers` 返回对应的
+`ouro.sdk.plugins.providers.ProviderContribution(id, stream, check)`。模型配置选择
+`<plugin_id>/providers/<id>`。供应商实例与 Endpoint 身份仍由框架管理。
+
+`stream(request, output)` 接收 `ProviderRequest` 并逐次 `await output(ProviderEvent(...))`。
+正文、推理、工具参数片段、continuation、重试通知和终态分别使用相应事件；`done` 携带规范化用量及完成原因。
+handler 必须等待输出、取消后结算自己的请求资源，并在返回后停止输出。`check(request)` 返回 `ProviderCheck`。
+实例级 HTTP client 等共享资源由插件 `start/stop` 管理；框架仅在请求期间持有代次租约。
+
+Provider 可以使用插件已授权的服务与进程端口实现协议。SDK 请求只有本次模型可见事实，不含 Host 内部对象；
+Provider 保留调用来源及父级约束，不继承当前 Driver 的模型、工具或 Agent 控制端口；活跃 Run 中也不能
+通过独立生成绕过预算。协议实现须校验自身支持的连接选项、内容编码和 reasoning 语义。
+公共类型定义见 `ouro/sdk/plugins/providers.py`，独立生成端口见 `ouro/sdk/plugins/models.py`。
+
+worker 使用 `WorkerProviders(peer)` 注册异步处理器，并在 `contributions.prepare` 返回注册得到的 Provider ID。
+与其他贡献共用一个 `WorkerPeer`；反向输出 RPC 逐项等待，根并发上限为一也能完成嵌套模型调用。
+
+## 10. 可运行示例
+
+- [`faux-provider`](../../examples/plugins/faux-provider)：纯 SDK Provider 与普通模型路由，含两种运行入口。
 
 - [`declarative-skill`](../../examples/plugins/declarative-skill)：静态 Agent Skill；
 - [`inprocess-command`](../../examples/plugins/inprocess-command)：Python Command；
@@ -420,7 +682,9 @@ uv run --frozen ouro plugin import-report ./community-package --json
 - 内置 Plan 插件位于 `ouro/builtin_plugins/plan`，展示了产品内置插件如何复用与用户插件相同的 Context/Tool Policy、Generation 与可恢复工具契约；
 - 内置 Agent Context 插件位于 `ouro/builtin_plugins/agent_context`，展示了分层 `AGENTS.md`、请求级 system
   prompt fragment、运行环境边界和默认启用 builtin 的组合方式；
-- [`worker-tool`](../../examples/plugins/worker-tool)：stdio worker Tool。
+- [`worker-tool`](../../examples/plugins/worker-tool)：stdio worker Tool；
+- [`review-driver`](../../examples/plugins/review-driver)：原生模型调用、工具批次、审批等待与 Driver checkpoint。
+- [`delegating-driver`](../../examples/plugins/delegating-driver)：Agent 端口、并发子任务、等待恢复及条件工具执行。
 
-五个 `examples/plugins` package 由测试执行真实 validate/install/enable 生命周期；内置 Plan 则由 builtin
+`examples/plugins` package 由测试执行真实 validate/install/enable 生命周期；内置 Plan 则由 builtin
 enable/disable、Generation、工具恢复与跨进程 Run 集成测试覆盖，避免文档示例与实现漂移。

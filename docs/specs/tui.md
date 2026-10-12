@@ -134,6 +134,10 @@ Session 历史读取与模型执行配置解耦。模型路由失效、Provider 
 
 ## 输入与运行控制
 
+计划确认使用公开的 `ouro.sdk.plugins.interactions` DTO。TUI 为有效的 `plan_confirmation` 请求提供计划预览、
+方案选择及接受／修改／拒绝动作，适用于 builtin 和 user 插件；未知或无效结构使用通用输入。界面只提交用户
+选择，计划校验、恢复、权限和 Session 控制仍由 Application 与请求所属插件处理。
+
 会话正文、思考正文、流式文本与多行输入按终端 cell 宽度软换行。可用宽度由组件扣除边框、内边距、
 滚动条及光标预留后提供。中文等非空白分词文本使用 Unicode 断行边界，英文单词优先保持完整，
 超长单位按完整字形折行。纯文本中的显式换行保留；软换行不向输入或 canonical 消息插入字符。
@@ -298,6 +302,10 @@ Session 操作。root interaction inbox 中的 child 审批与 AskUser 仍由 co
 
 时间线分别呈现用户文本、assistant Markdown、reasoning、工具活动、压缩和 Run 状态。Provider delta 是输入事实，
 不是 UI 重绘单位：TUI 按帧合并连续增量，保持到达顺序，并在完成边界冻结稳定块。
+
+首次冻结内容时，历史组件负责等待布局并完成初始行缓冲渲染，再交还 live 内容的展示所有权。
+进入执行中的 Session 时，即使任务输入因 scaffold 规则隐藏，也必须呈现工具前已产生的 assistant 内容。
+切换 Session 时，缓存历史与其保存的滚动位置共同恢复；首次可见帧不得混用上一 Session 的滚动位置。
 
 思考、工具调用（含子智能体）、压缩和 Run 的耗时统一通过 TUI 的 `format_duration` 呈现，实时与历史复用同一规则。
 不足一秒显示整数毫秒；其余按天、时、分、秒进位，使用 `d/h/m/s`，秒保留一位小数。

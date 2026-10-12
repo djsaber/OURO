@@ -46,6 +46,5 @@ Before requesting review:
 - identify supported data formats, security assumptions, and intentionally deferred work;
 - avoid bundling unrelated refactors into the same change.
 
-The repository does not yet declare a distribution license. Contributors and maintainers must
-resolve that legal choice before publishing packages or accepting contributions under an assumed
-license.
+OURO is distributed under the [MIT License](LICENSE). Contributions to this repository are
+provided under the same license. Preserve applicable copyright and license notices.

@@ -48,6 +48,7 @@ class PluginDetail(PluginSummary):
     capabilities: list[str] = Field(default_factory=list)
     permissions: list[dict[str, object]] = Field(default_factory=list)
     contributions: dict[str, list[str]] = Field(default_factory=dict)
+    exports: list[dict[str, object]] = Field(default_factory=list)
     dependencies: list[dict[str, str | None]] = Field(default_factory=list)
     active_generations: list[dict[str, object]] = Field(default_factory=list)
     diagnostics: list[PluginDiagnostic] = Field(default_factory=list)
@@ -86,6 +87,18 @@ class PluginActionResult(OuroModel):
     changed: bool = True
     package_digest: str | None = None
     diagnostics: list[PluginDiagnostic] = Field(default_factory=list)
+    retained_by: list[str] = Field(default_factory=list)
+
+
+class PluginMaintenanceResult(OuroModel):
+    plugin_id: str
+    status: Literal["succeeded", "failed"]
+    returncode: int | None
+    timed_out: bool
+    stdout: str
+    stderr: str
+    stdout_truncated: bool
+    stderr_truncated: bool
 
 
 class PluginCommandArgumentView(OuroModel):

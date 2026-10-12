@@ -13,6 +13,7 @@ from types import ModuleType
 
 import pytest
 
+import ouro.plugins.worker as worker_module
 from ouro.application.plugins import PluginOperationNotAllowedError, PluginService
 from ouro.core.base import utc_now
 from ouro.core.compaction import CompactionStrategyRegistry
@@ -84,7 +85,7 @@ from ouro.plugins.store import (
     PluginStoreIOError,
 )
 from ouro.plugins.worker import JsonRpcWorkerClient, WorkerProtocolError
-from ouro.sdk.plugins.v2 import ContributionSet
+from ouro.sdk.plugins.v3 import ContributionSet
 from ouro.sessions import LocalSessionStore
 from ouro.skills import SkillMetadata
 from ouro.tools import (
@@ -116,7 +117,7 @@ def _write_native_plugin(
         "name": plugin_id.rsplit(".", 1)[-1].title(),
         "version": version,
         "namespace": plugin_id.rsplit(".", 1)[-1].replace("-", "_"),
-        "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^3.0.0"},
+        "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
         "runtime": runtime or {"kind": "declarative"},
         "contributes": contributes or {},
         "permissions": [],
@@ -191,7 +192,7 @@ def _builtin_plugin(
                 "name": plugin_id.rsplit(".", 1)[-1].title(),
                 "version": version,
                 "namespace": namespace,
-                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": f"{namespace}_plugin:create_plugin",
@@ -825,7 +826,7 @@ async def test_inprocess_owned_package_dependency_is_unloaded_with_generation(tm
     (package / "helper.py").write_text("VALUE = 'owned'\n", encoding="utf-8")
     (package / "__init__.py").write_text(
         """from .helper import VALUE
-from ouro.sdk.plugins.v2 import ContributionSet
+from ouro.sdk.plugins.v3 import ContributionSet
 class Plugin:
     async def prepare(self): return ContributionSet()
     async def start(self): assert VALUE == 'owned'
@@ -858,7 +859,7 @@ async def test_inprocess_loaded_top_level_namespace_conflict_rejects_activation(
         runtime={"kind": "python-inprocess", "entrypoint": "echo_plugin:create_plugin"},
     )
     (source / "echo_plugin.py").write_text(
-        "from ouro.sdk.plugins.v2 import ContributionSet\n"
+        "from ouro.sdk.plugins.v3 import ContributionSet\n"
         "class Plugin:\n"
         "    async def prepare(self): return ContributionSet()\n"
         "    async def start(self): pass\n"
@@ -883,7 +884,7 @@ async def test_inprocess_loaded_top_level_namespace_conflict_rejects_activation(
 
 
 @pytest.mark.asyncio
-async def test_inprocess_lifecycle_requires_separate_grants_and_drains_snapshot(
+async def test_inprocess_lifecycle_revokes_stale_snapshots_and_releases_resources(
     tmp_path,
 ) -> None:
     source = tmp_path / "source"
@@ -910,7 +911,7 @@ async def test_inprocess_lifecycle_requires_separate_grants_and_drains_snapshot(
         },
     )
     (source / "echo_plugin.py").write_text(
-        """from ouro.sdk.plugins.v2 import ContributionSet, ToolContribution, ToolOutput
+        """from ouro.sdk.plugins.v3 import ContributionSet, ToolContribution, ToolOutput
 
 class Plugin:
     def __init__(self, context):
@@ -932,7 +933,7 @@ class Plugin:
         ])
 
     async def start(self):
-        self.context.data.write_bytes('status.txt', b'started')
+        pass
 
     async def stop(self, reason, deadline):
         self.context.data.write_bytes('status.txt', reason.encode())
@@ -984,8 +985,6 @@ def create_plugin(context):
 
     snapshot = runtime.snapshot()
     disabling = asyncio.create_task(service.disable("dev.ouro.echo"))
-    await asyncio.sleep(0)
-    assert disabling.done()
     assert (await disabling).status == "disabled"
     with pytest.raises(PluginGenerationUnavailableError):
         await snapshot.tools.get("echo__run").execute(
@@ -1032,7 +1031,7 @@ async def test_immutable_catalogs_allow_nonblocking_generation_switches(tmp_path
         encoding="utf-8",
     )
     (source / "echo_plugin.py").write_text(
-        """from ouro.sdk.plugins.v2 import ContributionSet, ToolContribution, ToolOutput
+        """from ouro.sdk.plugins.v3 import ContributionSet, ToolContribution, ToolOutput
 class Plugin:
     async def prepare(self):
         async def run(call):
@@ -1051,10 +1050,8 @@ def create_plugin(context): return Plugin()
     service.install(source)
 
     empty_snapshot = runtime.snapshot()
-    enabling = asyncio.create_task(service.enable("dev.ouro.echo"))
-    await asyncio.sleep(0)
-    assert enabling.done()
-    assert (await enabling).status == "active"
+    enabled = await asyncio.wait_for(service.enable("dev.ouro.echo"), timeout=1)
+    assert enabled.status == "active"
     assert empty_snapshot.tools.names() == []
     assert tools.names() == []
 
@@ -1272,7 +1269,7 @@ async def test_executable_plugin_runs_only_after_explicit_enable(tmp_path) -> No
     )
     (source / "echo_plugin.py").write_text(
         f"""from pathlib import Path
-from ouro.sdk.plugins.v2 import ContributionSet
+from ouro.sdk.plugins.v3 import ContributionSet
 Path({json.dumps(str(import_marker))}).write_text('imported', encoding='utf-8')
 class Plugin:
     def __init__(self, context):
@@ -1359,7 +1356,7 @@ async def test_commands_and_background_services_use_owned_lifecycle(tmp_path) ->
         },
     )
     (source / "echo_plugin.py").write_text(
-        """from ouro.sdk.plugins.v2 import (
+        """from ouro.sdk.plugins.v3 import (
     BackgroundServiceContribution, CommandContribution, ContributionSet,
 )
 class Plugin:
@@ -1936,6 +1933,50 @@ for line in sys.stdin:
         assert not _process_is_running(child_pid)
     finally:
         _terminate_test_process(child_pid)
+
+
+async def test_cancelled_worker_close_retains_the_process_cleanup(tmp_path, monkeypatch):
+    (tmp_path / "worker.py").write_text(
+        "import json, sys\n"
+        "for line in sys.stdin:\n"
+        "    request = json.loads(line)\n"
+        "    if 'id' in request:\n"
+        "        response = {'jsonrpc': '2.0', 'id': request['id'], 'result': {}}\n"
+        "        print(json.dumps(response), flush=True)\n",
+        encoding="utf-8",
+    )
+    entered, finish = asyncio.Event(), asyncio.Event()
+    close = worker_module.LocalProcess.close
+    attempts = []
+
+    async def close_after_release(owner):
+        attempts.append(owner.process.pid)
+        entered.set()
+        await finish.wait()
+        await close(owner)
+
+    monkeypatch.setattr(worker_module.LocalProcess, "close", close_after_release)
+    client = JsonRpcWorkerClient(
+        ["{python}", "./worker.py"], cwd=tmp_path, diagnostic=lambda _code, _message: None
+    )
+    await client.request("probe")
+    process = client.process
+    assert process is not None
+    closing = asyncio.create_task(client.close(timeout=0.2))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=3)
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+        assert process.returncode is None
+    finally:
+        finish.set()
+        await client.close(timeout=0.2)
+    assert attempts == [process.pid]
+    assert process.returncode is not None
+    assert client.process is None
+    with pytest.raises(WorkerProtocolError, match="closed"):
+        await client.request("probe")
 
 
 @pytest.mark.asyncio
@@ -2761,7 +2802,7 @@ async def test_inprocess_resolved_credentials_are_redacted_from_all_plugin_outpu
         },
     )
     (source / "inprocess_credentials_plugin.py").write_text(
-        """from ouro.sdk.plugins.v2 import ContributionSet
+        """from ouro.sdk.plugins.v3 import ContributionSet
 class Plugin:
     def __init__(self, context): self.context = context
     async def prepare(self): return ContributionSet()
@@ -2893,7 +2934,7 @@ async def test_failed_dependency_blocks_dependant_and_retry_recovers_closure(tmp
         runtime={"kind": "python-inprocess", "entrypoint": "dependency_plugin:create_plugin"},
     )
     (dependency_v1 / "dependency_plugin.py").write_text(
-        """from ouro.sdk.plugins.v2 import ContributionSet
+        """from ouro.sdk.plugins.v3 import ContributionSet
 class Plugin:
     async def prepare(self): return ContributionSet()
     async def start(self): raise RuntimeError('dependency failed')
@@ -2969,7 +3010,7 @@ async def test_supervised_task_failure_projects_degraded_consistently(tmp_path) 
     )
     (source / "degraded_plugin.py").write_text(
         """import asyncio
-from ouro.sdk.plugins.v2 import ContributionSet
+from ouro.sdk.plugins.v3 import ContributionSet
 class Plugin:
     def __init__(self, context): self.context = context
     async def prepare(self): return ContributionSet()
@@ -2985,7 +3026,8 @@ def create_plugin(context): return Plugin(context)
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    assert (await service.enable("dev.ouro.degraded")).status == "active"
+    enabled = await service.enable("dev.ouro.degraded")
+    assert enabled.status == service.check("dev.ouro.degraded").status
     await asyncio.sleep(0.01)
 
     assert service.show("dev.ouro.degraded").status == "degraded"
@@ -3018,7 +3060,7 @@ async def test_missing_optional_contribution_projects_degraded(tmp_path) -> None
         },
     )
     (source / "optional_plugin.py").write_text(
-        """from ouro.sdk.plugins.v2 import ContributionSet
+        """from ouro.sdk.plugins.v3 import ContributionSet
 class Plugin:
     async def prepare(self): return ContributionSet()
     async def start(self): pass
@@ -3088,7 +3130,7 @@ async def test_failed_digest_selection_never_replaces_previous_active_generation
         contributes=contributes,
     )
     (first_source / "echo_plugin.py").write_text(
-        """from ouro.sdk.plugins.v2 import ContributionSet, ToolContribution
+        """from ouro.sdk.plugins.v3 import ContributionSet, ToolContribution
 class Plugin:
     async def prepare(self):
         async def run(call): return 'first'
@@ -3103,7 +3145,7 @@ def create_plugin(context): return Plugin()
         encoding="utf-8",
     )
     (second_source / "echo_plugin.py").write_text(
-        """from ouro.sdk.plugins.v2 import ContributionSet, ToolContribution
+        """from ouro.sdk.plugins.v3 import ContributionSet, ToolContribution
 class Plugin:
     async def prepare(self):
         async def run(call): return 'second'
@@ -3165,7 +3207,7 @@ async def test_failed_active_configuration_never_commits_candidate_revision(tmp_
         encoding="utf-8",
     )
     (source / "configuration_plugin.py").write_text(
-        """from ouro.sdk.plugins.v2 import ContributionSet
+        """from ouro.sdk.plugins.v3 import ContributionSet
 class Plugin:
     def __init__(self, context): self.fail = context.configuration['fail']
     async def prepare(self): return ContributionSet()
@@ -3220,7 +3262,7 @@ async def test_sdk_tool_id_must_match_manifest_even_when_exposed_name_matches(tm
         },
     )
     (source / "tool_identity_plugin.py").write_text(
-        """from ouro.sdk.plugins.v2 import ContributionSet, ToolContribution
+        """from ouro.sdk.plugins.v3 import ContributionSet, ToolContribution
 class Plugin:
     async def prepare(self):
         async def run(call): return 'bad'
@@ -3267,7 +3309,7 @@ async def test_sdk_tool_permission_contract_must_match_manifest(tmp_path) -> Non
         },
     )
     (source / "tool_permission_plugin.py").write_text(
-        """from ouro.sdk.plugins.v2 import ContributionSet, ToolContribution
+        """from ouro.sdk.plugins.v3 import ContributionSet, ToolContribution
 class Plugin:
     async def prepare(self):
         async def control(call): return 'bad'
@@ -3313,7 +3355,7 @@ async def test_sdk_tool_description_must_match_manifest(tmp_path) -> None:
         },
     )
     (source / "tool_description_plugin.py").write_text(
-        """from ouro.sdk.plugins.v2 import ContributionSet, ToolContribution
+        """from ouro.sdk.plugins.v3 import ContributionSet, ToolContribution
 class Plugin:
     async def prepare(self):
         async def inspect(call): return 'bad'
@@ -3539,23 +3581,21 @@ async def test_catalog_leases_replace_lifecycle_blocks_and_enable_is_idempotent(
 
 
 @pytest.mark.asyncio
-async def test_failed_candidate_discards_staged_data_and_desired_state(tmp_path) -> None:
-    source = tmp_path / "staged-candidate"
+async def test_failed_candidate_cannot_write_private_data_or_change_selection(tmp_path) -> None:
+    source = tmp_path / "readonly-candidate"
     source.mkdir()
     _write_native_plugin(
         source,
         runtime={"kind": "python-inprocess", "entrypoint": "echo_plugin:create_plugin"},
     )
     (source / "echo_plugin.py").write_text(
-        """from ouro.sdk.plugins.v2 import ContributionSet
+        """from ouro.sdk.plugins.v3 import ContributionSet
 class Plugin:
     def __init__(self, context): self.context = context
     async def prepare(self): return ContributionSet()
     async def start(self):
         self.context.data.write_bytes('candidate.txt', b'must-not-commit')
-        raise RuntimeError('candidate rejected')
-    async def stop(self, reason, deadline):
-        self.context.data.write_bytes('candidate.txt', reason.encode())
+    async def stop(self, reason, deadline): pass
 def create_plugin(context): return Plugin(context)
 """,
         encoding="utf-8",
@@ -3686,7 +3726,7 @@ async def test_background_service_ownership_handover_is_ordered(tmp_path) -> Non
         encoding="utf-8",
     )
     (source / "service_handover_plugin.py").write_text(
-        """from ouro.sdk.plugins.v2 import BackgroundServiceContribution, ContributionSet
+        """from ouro.sdk.plugins.v3 import BackgroundServiceContribution, ContributionSet
 class Plugin:
     def __init__(self, context): self.context = context
     def append(self, value):
@@ -3780,6 +3820,48 @@ async def test_remove_scans_runs_without_loading_session_journals(tmp_path) -> N
 
     assert result.status == "disabled"
     await runtime.close()
+
+
+async def test_remove_keeps_package_and_data_until_failed_cleanup_succeeds(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_native_plugin(
+        source, runtime={"kind": "python-inprocess", "entrypoint": "echo_plugin:create_plugin"}
+    )
+    (source / "echo_plugin.py").write_text(
+        """from ouro.sdk.plugins.v3 import ContributionSet
+class Plugin:
+    def __init__(self, context): self.context = context
+    async def prepare(self): return ContributionSet()
+    async def start(self): pass
+    async def stop(self, reason, deadline):
+        self.context.data.read_bytes('released.txt')
+def create_plugin(context): return Plugin(context)
+""",
+        encoding="utf-8",
+    )
+    runtime, *_ = _runtime(tmp_path / "home")
+    service = PluginService(runtime.store, runtime=runtime)
+    installed = service.install(source)
+    data = runtime.store.data_root / "dev.ouro.echo"
+    data.mkdir(parents=True, exist_ok=True)
+    (data / "state.txt").write_bytes(b"owned")
+    await service.enable("dev.ouro.echo")
+    try:
+        with pytest.raises(ValueError, match="resources"):
+            await service.remove("dev.ouro.echo", purge_data=True)
+        assert (data / "state.txt").read_bytes() == b"owned"
+        assert service.show("dev.ouro.echo").status == "failed"
+        assert service.gc() == []
+        assert runtime.store.package_path("dev.ouro.echo", installed.package_digest).exists()
+        (data / "released.txt").write_bytes(b"released")
+        assert (await service.disable("dev.ouro.echo")).status == "disabled"
+        assert (await service.remove("dev.ouro.echo", purge_data=True)).status == "disabled"
+        assert not data.exists()
+    finally:
+        if data.exists():
+            (data / "released.txt").write_bytes(b"released")
+        await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -3901,7 +3983,7 @@ def test_native_manifest_model_ignores_unknown_fields() -> None:
             "name": "Strict",
             "version": "1.0.0",
             "namespace": "strict",
-            "engines": {"ouro": "^0.1.0", "plugin_api": "^3.0.0"},
+            "engines": {"ouro": "^0.2.0", "plugin_api": "^3.0.0"},
             "verified": True,
         }
     )
@@ -3918,7 +4000,7 @@ def test_native_manifest_rejects_tool_controlled_approval_permission() -> None:
                 "name": "Control",
                 "version": "1.0.0",
                 "namespace": "control",
-                "engines": {"ouro": "^0.1.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": "^0.2.0", "plugin_api": "^3.0.0"},
                 "contributes": {
                     "tools": [
                         {
@@ -3943,7 +4025,7 @@ def test_native_manifest_rejects_unknown_activation_binding() -> None:
                 "name": "Bound",
                 "version": "1.0.0",
                 "namespace": "bound",
-                "engines": {"ouro": "^0.1.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": "^0.2.0", "plugin_api": "^3.0.0"},
                 "contributes": {"context_providers": [{"id": "context", "active_when": "missing"}]},
             }
         )
@@ -3958,7 +4040,7 @@ def test_native_manifest_rejects_unknown_interaction_controller() -> None:
                 "name": "Bound",
                 "version": "1.0.0",
                 "namespace": "bound",
-                "engines": {"ouro": "^0.1.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": "^0.2.0", "plugin_api": "^3.0.0"},
                 "contributes": {
                     "tools": [
                         {

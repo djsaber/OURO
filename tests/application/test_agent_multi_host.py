@@ -12,7 +12,7 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.local_application import LocalApplication
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
-from ouro.tools import ToolExecutionContext, ToolProcessResult, ToolRegistry
+from ouro.tools import ProcessResult, ToolExecutionContext, ToolRegistry
 from ouro.tools.builtin_shell import CommandShell, builtin_command_tool
 
 
@@ -333,7 +333,7 @@ async def test_competing_hosts_resolve_one_approval_once_and_converge(
         executed.append(arguments)
         entered.set()
         await release.wait()
-        return ToolProcessResult(stdout="System information", stderr="", returncode=0)
+        return ProcessResult(stdout="System information", stderr="", returncode=0)
 
     monkeypatch.setattr(ToolExecutionContext, "run_process", process)
     async with first, second:
@@ -407,7 +407,7 @@ async def test_child_approvals_and_follow_up_can_move_between_shell_install_path
 
     async def process(self, arguments, **kwargs):
         executed.append(arguments[0])
-        return ToolProcessResult(stdout="System information", stderr="", returncode=0)
+        return ProcessResult(stdout="System information", stderr="", returncode=0)
 
     monkeypatch.setattr(ToolExecutionContext, "run_process", process)
     first_path = "C:/Users/Test/WindowsApps/pwsh.EXE"

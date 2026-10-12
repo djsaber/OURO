@@ -81,7 +81,19 @@ class ToolCallRequest(OuroModel):
         return self.name
 
 
+class ToolCallProducer(OuroModel):
+    kind: Literal["model", "driver"] = "model"
+    driver_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> Self:
+        if (self.kind == "driver") != bool(self.driver_id):
+            raise ValueError("only Driver tool calls require a Driver identity")
+        return self
+
+
 class ToolInvocation(OuroModel):
+    producer: ToolCallProducer = Field(default_factory=ToolCallProducer)
     tool_call_id: str = Field(default_factory=lambda: new_id("tool"))
     session_id: str
     run_id: str

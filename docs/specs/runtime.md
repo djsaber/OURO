@@ -38,12 +38,85 @@ Run 表示一次可恢复执行。状态集合为：
 
 运行阶段为：`model_streaming`、`tool_preflight`、`human_interaction`、`tool_execution`、
 `subagent_join`、`result_commit`。Run 保存模型摘要、usage、活动工具批次、待审批身份、终止请求和错误信息。
-ProviderStreamEvent 的 error 可附带供应商无关 error_code；inner loop 将其传给 Application，
+ProviderStreamEvent 的 error 可附带供应商无关 error_code；原生模型请求将其传给 Driver 执行边界，
 写入 run_failed.payload.error_code 并进入 CLI JSON 的 events。Core 不解释认证状态或 HTTP 对象，
 不在 RunRecord 复制认证状态；请求侧分类见[请求认证规格](request-authentication.md)。
 
 活动 Run 可在 model turn 边界切换路由，因此不能仅凭 `RunRecord.model` 重建逐轮模型历史；每次实际 Provider
 请求使用的 provider、endpoint 与 model 以 `model_request_started` 事件和 usage 记录为权威。
+
+### Run Driver 与原生端口
+
+Run 记录使用 schema 5，Message 记录使用 schema 4。Run 保存不可变的 `driver` 绑定。默认算法的身份为
+`ouro.default`；插件 Driver 保存 `plugin_id/run_drivers/id`、贡献契约，以及所属插件和传递依赖的实现引用。
+每个实现引用包含 plugin identity/class、release、配置修订 ID 和执行契约哈希，不保存解析后的凭据。
+Host 在执行前校验精确契约，缺失或不匹配时报告错误，不切换算法。Driver 调用只租用所属插件及其依赖，
+模型轮次的工具与上下文目录仍在原生边界刷新。
+
+当前目录不包含所需契约时，Host 从已安装的不可变包和配置修订按需构建所需 generation，校验完整契约后开放调用。
+该装载不修改插件选版、不发布全局贡献、不启动后台服务。并发调用可复用仍持有租约的相同实现；进入等待或结束后
+释放租约并关闭不再使用的 generation。已禁用的插件或依赖不参与恢复；禁用沿实际 generation 依赖关系撤销在途调用。
+Builtin 必须匹配当前应用提供的发布契约。装载使用当前插件私有数据，不复制或回滚数据格式。
+
+`RuntimeService.run(driver_id=...)`、Host 输入和 SDK `SessionInput(driver_id=...)` 在接受 follow-up 输入时
+选择算法，完整实现契约随排队输入保存；消费时据此创建 Run。升级不改变已接受输入的 Driver 或依赖，排队引用也
+参与包保留检查。`steer` 不能选择 Driver。原子输入 batch 必须选择同一 Driver，`all_at_once` 不合并不同契约。
+Host 输入的相同 queue ID 重试复用已接受回执，不重新选版；已有 Run 的 Driver 不能由后续输入改变。
+自定义 Driver 使用原生模型请求、工具批次、输入交付和 Agent 控制端口，计数、用量、上下文、工具权限和审批由 Host 执行。
+模型请求执行原生模型预算；Agent 控制保留共享预算与 Delegation 约束。
+Driver 的完成意图由 Host 写入终态；默认算法的 turn policy 不自动作用于自定义算法。
+默认算法和插件算法均以 `RunDriverHandler` 调用同一 `NativeRunDriverContext`。默认算法在模型轮次和工具批次
+后检查插入输入，并在无工具响应后评估 turn policy；完成策略由 `NativeRunTurns` 接入。
+
+`steer` 由 Host 的原生输入边界交付给当前 Run。每次模型决策前，Host 消费待交付输入并将消息纳入该次上下文。
+SDK `context.inputs.consume()` 允许算法显式声明一个安全决策边界，返回已提交的 `RunInput` 视图；
+算法可以在模型、工具或普通插件服务之间读取输入，不要求实现默认循环。显式消费后紧接的模型请求不再消费额外单元；
+后续模型或工具操作结算后重新开放隐式边界。再次显式调用表示算法主动开始另一个决策边界。
+交付遵循 `one_by_one`／`all_at_once` 和原子 batch 的队列规则，保留 Prompt Policy、来源、媒体及资源引用，
+不消费 `follow_up`。返回视图与 Host 记录分离，修改视图不改写历史。输入读取只加载 Session 队列元数据，不重复读取完整历史。
+
+未结算的模型工具响应、正在执行的原生操作以及暂停／已关闭的调用不能接受输入消费；输入只能在工具结果完成提交后交付。
+审批等等待期间，steering 保留在持久队列，恢复 Driver 后仍交付给同一 Run。取消或策略拒绝不提前移除未交付输入。
+自定义算法负责决定何时完成；没有进一步安全决策边界的剩余输入依照排队输入终结规则处理，Host 不擅自重跑算法。
+
+`DriverFinished(text, response_id=...)` 可以选定当前已保存的无工具模型响应作为最终答复。Host 校验句柄和文本，
+保留原消息的推理、路由、时间和 Provider continuation，不重复写入 assistant 消息。省略句柄时，文本作为 Driver
+自己的最终输出保存。后续模型请求或程序化工具调用使先前的最终响应句柄失效。
+
+工具批次、调用与 canonical 结果记录 `producer`。模型批次绑定真实 assistant 消息；程序化批次记录 Driver 身份，
+不创建 assistant tool call、不增加模型计数。两种来源共用原生 preflight、权限、审批、执行和恢复链路。
+Provider 边界将程序化结果投影为带 `driver-tool-result` 来源标记的用户角色输入，保留协议支持的媒体、降级不支持的
+媒体，不生成模型工具请求或 function output。上下文与压缩不要求程序化结果具有配对的模型请求。
+
+Agent 端口将类型化的 spawn、send、interrupt 请求交给原生工具边界，复用 Agent catalog、Delegation、子 Session
+和同步等待。批次遵循 Host 工具并发配置，子任务遵循原生调度并发限制。重启后加载会话会恢复其有限 Agent 聚合，
+已完成的子任务结果继续结算原父 Run，不重新创建子任务。
+
+可等待的工具调用携带最多 64 KiB UTF-8 JSON checkpoint。checkpoint 与具体原生批次绑定，并在批次开始前
+通过同一个 Session commit 持久化，工具副作用不能先于它发生。状态为：
+
+- `pending`：原生工具批次尚未结算，包含审批、用户输入和子任务等待；
+- `ready`：原生结果已提交，完成的批次保留在 Run 上供 Driver 恢复；
+- `consumed`：Host 已原子标记消费并移除活动批次，允许把 checkpoint 与工具结果交给 Driver 一次。
+
+结果沿用原生工具事实，不建立独立 Driver 操作账本。立即完成的工具批次也在返回调用者前消费 checkpoint。
+结果已持久化但批次完成提交中断时，恢复协调器根据已保存的结果和 canonical 回执完成 checkpoint，保留媒体、资源
+引用与执行时间，不重新执行工具。执行中断且没有可靠结果时记录未知结果，不推断外部副作用已经撤销。
+进入等待后 Driver 返回 `DriverSuspended`，结束调用并释放执行所有权；恢复先结算原生批次，再校验原 Driver、
+消费 checkpoint 并调用其恢复入口。消费前中断可以继续交付已结算结果；消费后中断不能从插件函数开头自动重跑。
+没有可恢复 checkpoint 的自定义 Run 不支持任意位置重放。默认算法也使用原生批次 checkpoint；其逻辑只通过
+原生执行端口产生事实，因此可以在 checkpoint 已消费后的中断中，从已结算历史继续模型轮次，不重放已执行工具。
+
+原生端口只在所属 Driver 调用期间有效，同一 Run 的调用按顺序等待。Host 在结算 Driver 前取消并等待未完成的
+原生调用，避免调用越过 Run 终态。插件撤销和 Run 中断均传播到模型流、工具及 worker 的父子调用。
+用户中断时，原生端口先取消所属工作并完成结果结算，Driver 外层再取消剩余算法代码；工具取消回执与批次终态
+先于 Run 的中断终态发布。
+
+默认和插件 Driver 均建立所属 Run 的原生调用作用域。新的子 Run 使用自己的 Session、Run 及工作区事实，不继承
+已结束父回调的身份。普通插件服务可通过 `PluginContext.models/tools/agents` 复用调用链上的原生端口；服务不另建
+Run 或预算。嵌套调用继承只读约束，需要声明 `sessions.write`，且不能在另一原生操作内部重入当前 Run。
+调用结束后旧上下文失效，不能借另一个 Run 的活跃回调重新使用它。worker 的原生路由沿 Host 保存的父请求上下文
+解析目标；peer 提供的 Run ID 不构成授权。服务业务 RPC 跟随调用生命周期，模型和工具继续使用原生预算与取消。
 
 ### Run/Session 状态转移
 
@@ -94,8 +167,8 @@ application 用例仍负责取得 mutation lock、准备业务字段、先保存
 3. 取得 session run lock；锁竞争失败时返回 active Run 或明确的 `SessionBusyError`。
 4. `RunLifecycle.start` 持久化 active Session/Run。
 5. 输入消息按提供方给出的 role、scaffold、semantic tag 和 provenance 原样持久化并产生事件。
-6. `InnerAgentLoop` 复用已加载的 canonical messages 构建上下文并调用 request-local `RuntimeAdapter`；正常
-   模型轮次不得重新加载完整 Session 事件历史。
+6. `InnerAgentLoop` 通过 `RunModelRequests` 请求模型。宿主复用已加载的 canonical messages 准备上下文，
+   检查预算、提交请求计数并调用 request-local `RuntimeAdapter`；正常模型轮次不得重新加载完整 Session 事件历史。
 7. 模型文本、reasoning 和工具调用增量到达时依次形成事件；`done` 后完整工具调用交给
    `ToolCallCoordinator`，最终消息则完成 Run。
 8. waiting 状态通过 approve/reject/AskUser 或 child 结果恢复同一 Run。
@@ -126,15 +199,23 @@ Session 继续的整体前提。持久 ToolInvocation、控制 activation 和 De
 
 ## Inner loop 边界
 
-`InnerAgentLoop` 只拥有一个 active Run 内的模型回合循环。`InnerLoopPorts` 按变化原因分成三组协作者，
-事件和工具批次保留为两个直接边界：
+`InnerAgentLoop` 是默认 `RunDriverHandler`，只拥有“模型 → 工具 → 模型”算法及默认 turn 规则：
 
-- `InnerLoopContext`：上下文准备和 provider completion 记账；
-- `InnerLoopRunBoundaries`：usage、abort 观察、waiting 持久化与 complete/fail/pause durable boundary；
-- `InnerLoopTurnBoundaries`：turn input/policy、model request checkpoint 和共享预算；
-- `emit` 与 `handle_tool_batch`：事件顺序和完整工具批次交付。
+- `RunDriverContext.request_model` 返回本次真实模型响应及句柄。
+- `RunDriverContext.execute_model_tools` 使用句柄执行原生批次；进入等待时算法返回 `DriverSuspended`。
+- `DefaultRunTurns` 提供插入输入消费与完成策略；`NativeRunTurns` 将其连接到原生会话状态。
+- `DriverFinished` 表达完成意图，`NativeRunDriverContext` 统一管理完成、失败、暂停、取消和 checkpoint 消费。
 
-应用层不得在 core 中引入 SessionStore、CLI 或 Provider factory。
+`RunModelRequests` 属于 Application，负责能力绑定、路由解析、上下文准备、本 Run 与共享预算检查、请求计数、
+用量入账和事件发布。它执行一次请求，不执行工具或决定 Run 终态。用量以原请求身份写入原生账本，
+即使响应不可用或记账期间收到取消，已报告的用量仍属于该 Run。
+
+`execute_model_request` 属于 Core，负责响应流的所有权、增量聚合、完成原因判断、工具参数解析及响应时间记录。
+它返回包含部分输出的 `ModelExecutionResult`；不持久化 Session/Run，不选择下一步算法。
+
+工具等待由 `ToolCallCoordinator` 通过 `RunLifecycle.save_batch_state` 原子提交。返回值使用提交后的记录，
+包含已消费的 harness change 和绑定的交互身份；Driver 上下文直接消费已提交的等待结果。
+上述请求类型是宿主内部契约。Core 不依赖 SessionStore、CLI、插件 Manifest 或 Provider factory。
 
 ## Provider 流契约
 
@@ -147,15 +228,18 @@ Session 继续的整体前提。持久 ToolInvocation、控制 activation 和 De
   事件边界。Provider 原始 chunk 边界不属于 Core 的稳定语义。
 - Provider 异常必须在已排队事件之后按序交付，不能转换为正常 `done`。消费者结束、取消或 abort 时必须取消 reader
   并关闭 provider async iterator，不能遗留网络读取任务。
+- 模型请求执行器以第一个 `done` 或 `error` 为终止边界，返回前关闭 adapter 及其 provider 流。
+  Python task cancellation 在关闭流后向调用方传播；AbortSignal 返回部分输出，宿主结算原生取消状态。
 - Provider 必须把流式 chunk 与非流式完整调用都在 adapter 边界规范化为 `tool_call_delta`；Core 不接受第二种
   完整 `tool_call` event。流式路径不得在 Provider 内等待完整响应后再
   一次性提交；只支持非流式响应的 Provider 为每个完整调用产生一个包含全部字段的 delta event。
 - `tool_call_delta.index` 是当前 assistant 响应内从零开始的工具调用序号，并稳定关联同一调用；Provider
   适配器必须在统一边界内把供应商原生 content-block 坐标归一化，不能向 Core 泄漏。`id_delta`、
   `name_delta` 和 `arguments_delta` 字段均保持追加分片语义。
-- `InnerAgentLoop` 按到达顺序产生 `model_tool_call_delta`，并只在 `done` 边界聚合工具调用、解析 arguments
-  JSON、校验身份和批次唯一性。
-- Provider 可在工具调用响应中产生一个 `continuation` 事件；Inner loop 只接受一个类型化 artifact，并与
+- `RunModelRequests` 按到达顺序发布 `model_tool_call_delta`。Core 执行器按工具 index 追加分片，
+  完成时一次拼接并解析 arguments JSON，校验身份和批次唯一性；不逐分片复制累积参数。
+- 完成事件的用量记录先于输出可用性判断。输出长度受限、过滤或不完整时，不执行工具片段，不保留可重放 continuation。
+- Provider 可在工具调用响应中产生一个 `continuation` 事件；执行器只接受一个类型化 artifact，并与
   assistant 工具消息原子提交。普通最终回答不保存协议续接状态。
 - `done` 只携带完成边界和 usage，不重复携带工具调用，避免增量流和最终快照成为两个互相竞争的真相来源。
 
@@ -228,6 +312,16 @@ SessionStore 定点恢复；Host 的历史展示读取不触发恢复，进程�
 `waiting_child` 与其他 durable waiting 状态不占 execution permit；child 或恢复后的 parent 作为独立工作重新进入
 既有 FIFO，不增加第二个 worker pool。
 
+durable Run 等待与本地执行回执分别表达结果可用和调度占用释放。一个已持久化的 queued 后续 Run 若遇到同一
+Session 的前一个本地工作尚未收尾，只有在前一个 Run 已进入终态时才等待其回执释放，再核对当前 Run 与调度
+占用后入队；运行中的前驱和同一 Run 的重复提交均拒绝。
+接纳持久 queued Run 时，Supervisor 经 `RunExecutionOwnership` 取得该 Run 的 Session 执行锁，并在锁内
+复核 queued 身份。开始执行时一次性移交同一把锁，交接没有无主窗口；接纳取消、排队终止、关闭或执行前失败均
+释放未移交的锁。恢复、普通输入、插件输入与 Host 输入读取相同的原生所有权，其他 Host 也能识别排队工作。
+终止本地排队 Run 时由其 reservation 授权结算，无须等待尚未开始的 worker；进程失去所有权后仍按原规则恢复。
+终态收尾检查待处理输入时只读取当前快照；已接受但尚未执行的后续 Run 仍属于活动工作，不能由前驱的收尾路径
+判定为崩溃遗留。执行恢复仅在明确的恢复入口进行。
+
 `RunExecutionOwnership` 是 Runtime 内唯一的进程内执行所有权组件：它取得/释放 Session run lock、登记和释放
 AbortSignal，并从 durable Run 轮询 abort 事实。它不写 Run status、不发事件，也不处理 queued input 或 terminal
 产品语义。Run 命令由 `RunLifecycle` 负责；approval/AskUser/child wait 仍由 RuntimeService 作为跨协作者事务入口；
@@ -259,7 +353,7 @@ Runtime 在一个环境绑定内惰性构造并复用 `ToolCallCoordinator`。�
 ## 失败语义
 
 - 配置、持久化和 session lock 错误必须保持类型化异常。
-- Provider 失败转换为模型流 error event，再由 inner loop 结束 Run。
+- Provider 失败转换为模型流 error event，再由原生 Driver 执行边界结束 Run。
 - Observer 和 Host event sink 失败隔离为 diagnostic/event，不破坏 durable Run。父子终态级联、等待解析与结果固化属于
   `RuntimeService` 的显式 terminal semantic boundary，不得挂在观察型 event sink 上。
 - 工具失败作为 `ToolResult` 回灌模型；协调器自身失败才结束 Run。

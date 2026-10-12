@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import ConfigDict, Field, model_validator
 
+from ouro import __version__
 from ouro.core.base import Metadata, MetadataField, OuroModel, utc_now
 from ouro.plugins.manifest import PluginManifest, PluginRuntimeKind, PluginStatus
 
@@ -22,7 +23,7 @@ class PluginProvenance(OuroModel):
     resolved_reference: str | None = None
     package_digest: str
     installed_at: datetime = Field(default_factory=utc_now)
-    installer_version: str = "0.1.0"
+    installer_version: str = __version__
 
 
 class InstalledPlugin(OuroModel):
@@ -85,14 +86,9 @@ class PluginActivationState(OuroModel):
             self.active_configuration_revision_id = revision.revision_id
 
     def remove_configuration_for(self, package_digest: str) -> None:
-        revision_id = self.configuration_revision_by_digest.pop(package_digest, None)
-        if revision_id is None:
-            return
-        referenced = set(self.configuration_revision_by_digest.values())
-        if self.active_configuration_revision_id is not None:
-            referenced.add(self.active_configuration_revision_id)
-        if revision_id not in referenced:
-            self.configuration_revisions.pop(revision_id, None)
+        # Revisions belong to the plugin, not a selected package. A Run may
+        # still reference a revision after that package's configuration changes.
+        self.configuration_revision_by_digest.pop(package_digest, None)
 
 
 class PluginRecord(OuroModel):

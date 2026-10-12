@@ -7,7 +7,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from ouro.sdk.plugins.v2 import (
+from ouro.sdk.plugins.interactions import (
+    PlanConfirmationAnswer,
+    PlanConfirmationRequest,
+    PlanOption,
+)
+from ouro.sdk.plugins.v3 import (
     CommandContribution,
     CommandOutput,
     ContextContribution,
@@ -28,21 +33,12 @@ from ouro.sdk.plugins.v2 import (
     UnattendedResolution,
 )
 
-from .interaction import (
-    PlanConfirmationAnswer,
-    PlanConfirmationRequest,
-    PlanOption,
-)
 from .state import (
     PlanStateRepository,
     SessionPlanState,
     validate_session_id,
 )
 
-_OWN_TOOLS = {
-    "dev.ouro.plan/tools/enter",
-    "dev.ouro.plan/tools/exit",
-}
 _PLAN_WRITERS = {
     "ouro.host/tools/Write",
     "ouro.host/tools/Edit",
@@ -109,6 +105,10 @@ class PlanPlugin:
         if context.artifact_root is None:
             raise RuntimeError("plan mode requires a Host-managed artifact root")
         self._artifact_root = Path(context.artifact_root).expanduser().resolve(strict=False)
+        self._own_tools = {
+            f"{context.identity.plugin_id}/tools/enter",
+            f"{context.identity.plugin_id}/tools/exit",
+        }
 
     async def prepare(self) -> ContributionSet:
         return ContributionSet(
@@ -324,7 +324,7 @@ class PlanPlugin:
     def plan_tool_gate(self, call) -> ToolPolicyDecision:
         repository = PlanStateRepository(call.session_state)
         state = repository.load()
-        if call.canonical_tool_id in _OWN_TOOLS:
+        if call.canonical_tool_id in self._own_tools:
             return ToolPolicyDecision()
         if call.canonical_tool_id in _PLAN_WRITERS:
             if state.plan_path is not None and self._targets_plan_file(

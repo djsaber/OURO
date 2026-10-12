@@ -5,6 +5,7 @@ import webbrowser
 from collections.abc import Mapping
 
 from textual import events, on
+from textual.worker import Worker
 
 from ouro.application.provider_auth import AuthError, ProviderAuthService
 from ouro.application.provider_auth_models import LoginChallenge, LoginOperation
@@ -48,7 +49,9 @@ class ProviderAuthenticationScreen(ChoiceScreen):
 
     def on_screen_resume(self) -> None:
         super().on_screen_resume()
-        self.run_worker(self._refresh_authentication(), exclusive=True, group="auth-status")
+        _worker: Worker[None] = self.run_worker(
+            self._refresh_authentication, exclusive=True, group="auth-status"
+        )
 
     async def _refresh_authentication(self) -> None:
         self.update_choices(await self._authentication_choices())
@@ -305,7 +308,9 @@ class ProviderCredentialsScreen(ChoiceScreen):
 
     def on_screen_resume(self) -> None:
         super().on_screen_resume()
-        self.run_worker(self._refresh_credentials(), exclusive=True, group="auth-credentials")
+        _worker: Worker[None] = self.run_worker(
+            self._refresh_credentials, exclusive=True, group="auth-credentials"
+        )
 
     async def _refresh_credentials(self) -> None:
         self.update_choices(await self._credential_choices())

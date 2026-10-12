@@ -14,6 +14,7 @@ _SAMPLE = """
 import asyncio
 import json
 import tempfile
+from pathlib import Path
 from time import perf_counter
 
 started = perf_counter()
@@ -33,6 +34,7 @@ async def sample():
             assert not app.query_one(Composer).disabled
             ready = perf_counter()
     return {
+        "source_root": str(Path(ouro.__file__).resolve().parent.parent),
         "import_ms": (imported - started) * 1000,
         "headless_ready_ms": (ready - started) * 1000,
     }
@@ -59,11 +61,14 @@ def main() -> None:
             text=True,
             encoding="utf-8",
         )
+        sample = json.loads(result.stdout)
+        if Path(sample["source_root"]).resolve() != args.root.resolve():
+            raise RuntimeError(f"startup imported a different checkout: {sample['source_root']}")
         print(
             json.dumps(
                 {
                     "sample": index + 1,
-                    **json.loads(result.stdout),
+                    **sample,
                     "process_and_shutdown_ms": (perf_counter() - started) * 1000,
                 }
             ),

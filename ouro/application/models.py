@@ -98,7 +98,7 @@ class ConfiguredModelCatalog:
     def __init__(
         self,
         configs: ProviderConfigManager,
-        default_adapter: RuntimeAdapter,
+        default_adapter: RuntimeAdapter | None = None,
         *,
         adapter_builder: AdapterBuilder,
         default_overrides: ProviderRuntimeOptions | None = None,
@@ -112,6 +112,10 @@ class ConfiguredModelCatalog:
         self._adapter_lock = Lock()
         self._closed = False
         self._default_overrides = default_overrides or ProviderRuntimeOptions()
+        self._default_is_configured = False
+        self._default_route_pinned = False
+        if default_adapter is None:
+            return
         default = default_adapter.model
         provider = configs.get_provider(default.provider_id)
         self._default_is_configured = (
@@ -173,6 +177,8 @@ class ConfiguredModelCatalog:
         falls back to the last known startup route.
         """
 
+        if self._default_adapter is None:
+            return self.configured_default_model()
         if not self._default_route_pinned:
             route = self._configured_default_route()
             if route is not None:
@@ -205,9 +211,10 @@ class ConfiguredModelCatalog:
         if exact is not None:
             return exact
 
-        runtime_default = _available_model(self._default_adapter.model)
-        if normalized == runtime_default.key:
-            return runtime_default
+        if self._default_adapter is not None:
+            runtime_default = _available_model(self._default_adapter.model)
+            if normalized == runtime_default.key:
+                return runtime_default
         raise ConfigError(f"model not found: {selector}")
 
     def adapter_for(self, selector: str) -> RuntimeAdapter:
@@ -220,8 +227,10 @@ class ConfiguredModelCatalog:
 
     def _adapter_for(self, selector: str) -> RuntimeAdapter:
         model = self.resolve(selector)
-        if not self._default_is_configured and model.key == model_route_key(
-            self._default_adapter.model
+        if (
+            self._default_adapter is not None
+            and not self._default_is_configured
+            and model.key == model_route_key(self._default_adapter.model)
         ):
             return self._default_adapter
         provider = self._configs.get_provider(model.provider_id)
@@ -246,7 +255,8 @@ class ConfiguredModelCatalog:
     def _options_for(self, provider_id: str, endpoint_id: str) -> ProviderRuntimeOptions:
         overrides = (
             self._default_overrides
-            if f"{provider_id}/{endpoint_id}" == model_route_key(self._default_adapter.model)
+            if self._default_adapter is not None
+            and f"{provider_id}/{endpoint_id}" == model_route_key(self._default_adapter.model)
             else ProviderRuntimeOptions()
         )
         return self._configs.resolve_runtime_options(
@@ -259,7 +269,7 @@ class ConfiguredModelCatalog:
                 return
             self._closed = True
             adapters = (
-                self._default_adapter,
+                *((self._default_adapter,) if self._default_adapter is not None else ()),
                 *(adapter for _, adapter in self._configured_adapters.values()),
                 *self._retired_adapters,
             )

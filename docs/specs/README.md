@@ -41,7 +41,7 @@
 | [工具与人机协同](tools-and-interactions.md) | 工具契约、权限、批执行、审批、AskUser、AFK 与取消 | `ouro/tools`、`ouro/application/tool_calls.py` |
 | [Skills 与扩展](skills.md) | Skills、显式激活、扩展边界与来源策略 | `ouro/skills`、`ouro/application/skill_activations.py` |
 | [MCP 客户端](mcp.md) | transport、握手、工具发现/调用、重连、诊断与关闭 | `ouro/mcp`、`ouro/tools/registry.py` |
-| [插件系统](plugins.md) | 包、安装、Catalog/generation、13 类 contribution、策略与恢复 | `ouro/plugins`、`ouro/sdk/plugins/v2.py` |
+| [插件系统](plugins.md) | 包、安装、Catalog/generation、15 类 contribution、策略与恢复 | `ouro/plugins`、`ouro/sdk/plugins/v3.py` |
 | [Goal 插件](goal-plugin.md) | 目标状态、命令、预算、自动继续及恢复契约 | `ouro/builtin_plugins/goal` |
 | [AFK](afk.md) | 无人值守审批、输入 resolution 与 Plan 组合 | `ouro/core`、`ouro/application` |
 

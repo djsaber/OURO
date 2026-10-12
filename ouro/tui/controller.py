@@ -78,7 +78,6 @@ from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.supervisor import RuntimeSubscription
 from ouro.application.supervisor_models import RunHandle
 from ouro.application.tasks import TaskService
-from ouro.automation.models import TaskConfiguration, TaskCounts, TaskExecution, TaskRecord
 from ouro.config import (
     EndpointReasoningConfig,
     ProviderProtocol,
@@ -106,6 +105,7 @@ from ouro.core.reasoning import ReasoningRequest, resolve_reasoning
 from ouro.core.results import RunResult
 from ouro.core.session_commits import SessionCommitConflict
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.tasks import TaskConfiguration, TaskCounts, TaskExecution, TaskRecord
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode, ToolEffect, ToolSource
 from ouro.core.usage_queries import UsageSummary, UsageTotals
@@ -1045,10 +1045,9 @@ class TuiController:
     async def interrupt_task(self, task: TaskRecord) -> None:
         if task.active_execution_id is None:
             return
-        if task.session_id is None or self._application is None:
-            raise RuntimeError("Task has no execution session")
-        await self._application.supervisor.abort(task.session_id, reason="Task interrupted by user")
-        self._tasks().changed.set()
+        if self._application is None or self._application.task_scheduler is None:
+            raise RuntimeError("Task execution controls are unavailable")
+        await self._application.task_scheduler.execution.interrupt(task)
 
     async def set_session_archived(self, session_id: str, *, archived: bool) -> None:
         sessions = self._runtime().sessions

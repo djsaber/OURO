@@ -1,0 +1,16 @@
+{
+  "schema_version": 3,
+  "plugin_id": "dev.ouro.examples.model_review",
+  "namespace": "model_review",
+  "name": "Model Review",
+  "version": "0.1.0",
+  "engines": {"ouro": "^0.2.0", "plugin_api": "^3.0.0"},
+  "runtime": {"kind": "python-inprocess", "entrypoint": "model_review_plugin:create_plugin"},
+  "permissions": [{"id": "models.request", "reason": "Review text with a configured model."}],
+  "contributes": {"commands": [{
+    "id": "model-review",
+    "description": "Review text using one independent model request.",
+    "usage": "<default|provider/endpoint> <text>",
+    "timeout_seconds": 125
+  }]}
+}

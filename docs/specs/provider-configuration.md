@@ -14,7 +14,7 @@ Provider 表示供应商级连接和默认值：
 - `provider_id`：框架生成的内部实例身份，不接受用户配置；
 - `display_name`：必填的用户展示名，不承担身份语义；
 - `provider_type`：集成厂商产品档案，或 `custom` 通用入口；
-- `protocol`：`faux`、`openai-chat-completions`、`openai-responses` 或 `anthropic-messages`，只负责线协议 adapter 选择；
+- `protocol`：内置协议 `faux`、`openai-chat-completions`、`openai-responses`、`anthropic-messages`，或插件贡献身份 `<plugin_id>/providers/<id>`，只负责线协议 adapter 选择；
 - `auth_driver`：认证选择，省略时为 `static`；
 - `credential_ref`；
 - `base_url`、`api_path`、timeout 和 retry policy；
@@ -32,6 +32,27 @@ Endpoint 表示一个具体可调用模型：
 
 Endpoint 使用单一正整数 `max_output_tokens` 定义输出预算，同时用于本地上下文预算预留；该值不能超过 context window。默认服务将其发送为请求输出上限；受信服务声明不支持输出上限时不发送该字段，仅保留本地预算语义，实际输出可能超过该值，使用入口必须明确标注这一限制。服务能力通过 ProviderRequestPolicy 注入，不由认证方式推断，也不增加 Endpoint 预留参数或 nullable/server-default 模式。思考能力、原生编码和运行时意图使用下文的统一契约；
 `request_options` 不能同时拥有 reasoning profile 已管理的顶层字段。
+
+## 插件协议
+
+`custom` Provider 可以选择一个具名插件协议，使用静态认证。配置读取只验证协议身份与 Endpoint 的领域约束，
+不加载或启用插件。模型目录继续拥有 Provider/Endpoint 路由、模型参数与缓存；协议插件不创建平行模型目录。
+
+`ProviderContribution` 提供异步 stream 和 connection check。请求 DTO 包含解析后的连接、有限请求上下文、
+本次有效模型参数、模型可见消息与工具 schema。模型消息保留多模态顺序、语义标签、Skill 激活内容、工具帧、
+工具来源和 opaque continuation；框架不把这些内容压缩成纯文本输入。SDK 不暴露 Session 存储或 Runtime 对象。Provider 保留请求归属与父级约束，
+不继承 Driver 的循环控制端口；协议处理不能通过独立模型生成绕过活跃 Run 的预算。
+
+内置协议的编码规则在配置阶段校验；插件负责自己的 URL、选项、输入编码及 reasoning profile 校验。
+协议能力不会自动启用 Endpoint 的输入能力。插件应明确拒绝无法编码的请求，不能静默丢弃内容。
+
+每次 stream/check 在调用前同步插件意图并局部绑定 Provider 及其依赖代次。闲置路由不持有插件租约，
+升级后的请求使用当前代次，在途请求完成后释放原代次；禁用撤销调用并关闭受管资源。
+移除插件不删除模型路由，也不以其他 Provider 替代不可用协议。
+
+流式输出逐项等待接收，Host 缓冲有界。原生与自定义 Driver、独立生成和连接检查使用相同协议边界。
+框架拥有完成事件校验、取消、用量归属及账本；插件报告实际响应事实，不能另行提交框架用量。
+请求异常和插件诊断使用本代次的凭证脱敏器。只有实际请求绑定的插件会收到该连接的 API key 和已解析 header。
 
 ## 输入模态契约
 
@@ -64,7 +85,7 @@ Endpoint 用三个相互独立、默认为 `false` 的字段声明服务实际�
 Base64 data URI，编码为 `format=wav/mp3`；视频使用 `video/mp4` 的 data URI 或 HTTP(S) URL。
 本地路径由附件服务观察为媒体内容，不能直接作为模型可读取的 URL 发送。视频输入声明不保证服务处理音轨。
 
-`ProviderProtocolSpec.encodable_input_modalities` 描述 OURO adapter 能编码的媒体输入集合，
+内置 `ProviderProtocolSpec.encodable_input_modalities` 描述 OURO adapter 能编码的媒体输入集合，
 Endpoint 的 `supports_<modality>_input` 描述具体服务与模型实际接受的输入。端点声明的集合必须是协议可编码集合的子集；
 协议具备编码能力不会自动启用端点能力。图片、音频和视频使用相同校验；配置、模板和直接 adapter 构造均拒绝无法编码的声明。
 Adapter 只按协议分派，不按厂商或模型名称猜测格式。原始 codec 调用遇到不支持的内容、格式或角色明确失败；
@@ -155,7 +176,9 @@ Provider 的 `headers` 是独立于请求体参数的 HTTP 连接配置，适用
 | `provider.id` | 最终所选 ModelMetadata 的供应商配置实例 ID | 所有 HTTP 模型调用 |
 | `endpoint.id` | 最终所选 ModelMetadata 的 Endpoint ID | 已配置路由；临时模型没有 Endpoint 时缺失 |
 | `model.id` | 最终所选 ModelMetadata 的模型 ID | 所有 HTTP 模型调用 |
-| `request.purpose` | 调用用途：`chat`、`compaction`、`connection_check`；直接推理默认为 `inference` | 所有 HTTP 模型调用 |
+| `request.purpose` | 调用用途：`chat`、`compaction`、`connection_check`、`plugin`；直接推理默认为 `inference` | 所有 HTTP 模型调用 |
+| `request.id` | Host 分配的独立请求 ID | 插件独立模型请求 |
+| `plugin.id` | 发起请求的插件 ID | 插件独立模型请求 |
 
 模型路由字段由协议适配入口根据实际模型提供，覆盖调用方可能携带的旧路由信息。请求头解析器不理解
 字段的业务意义。字段可用范围不一致是明确契约：例如配置必须引用 `run.id` 时，无 Run 的连接检查

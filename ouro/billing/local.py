@@ -21,7 +21,7 @@ from ouro.core.usage_queries import (
 )
 from ouro.local_locks import FileMutationLock
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _APPLICATION_ID = 0x4F555242
 _MEASURES = (
     "input_tokens",
@@ -35,8 +35,8 @@ _SCHEMA = (
     """CREATE TABLE entries (
         entry_id TEXT PRIMARY KEY, occurred_at TEXT NOT NULL, day TEXT NOT NULL,
         provider_id TEXT NOT NULL, endpoint_id TEXT, model_id TEXT NOT NULL, workspace TEXT,
-        session_id TEXT NOT NULL, run_id TEXT NOT NULL,
-        purpose TEXT NOT NULL, billing_mode TEXT NOT NULL,
+        session_id TEXT, run_id TEXT,
+        purpose TEXT NOT NULL, plugin_id TEXT, billing_mode TEXT NOT NULL,
         input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
         cache_read_tokens INTEGER NOT NULL, cache_write_tokens INTEGER NOT NULL, estimated_cost REAL
     )""",

@@ -3,27 +3,51 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
-import signal
-import subprocess
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
-from dataclasses import dataclass
+from contextvars import Context, ContextVar, copy_context
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from ouro.core.message_semantics import validate_semantic_tag
 from ouro.core.redaction import SensitiveValueRedactor
+from ouro.local_processes import LocalProcess, start_process
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.package import PLUGIN_API_VERSION
 from ouro.plugins.paths import portable_relative_path
 from ouro.plugins.tool_content import decode_worker_content
-from ouro.sdk.plugins import v2 as sdk
+from ouro.plugins.tool_groups import PluginToolGroups, ToolGroupPublication
+from ouro.plugins.worker_drivers import WorkerDriverBridge
+from ouro.plugins.worker_models import WorkerModelBridge
+from ouro.plugins.worker_processes import WorkerProcessBridge
+from ouro.plugins.worker_providers import WorkerProviderBridge
+from ouro.plugins.worker_scheduling import WorkerSchedulerBridge
+from ouro.plugins.worker_services import WorkerServiceBridge
+from ouro.plugins.worker_tool_groups import WorkerToolGroupBridge
+from ouro.sdk.plugins import v3 as sdk
 
 
 class WorkerProtocolError(RuntimeError):
     pass
+
+
+WorkerRequestHandler = Callable[[str, Mapping[str, object]], Awaitable[object]]
+_CURRENT_REQUESTS: ContextVar[tuple[tuple[object, int | str], ...]] = ContextVar(
+    "ouro_worker_host_requests", default=()
+)
+
+
+@dataclass
+class _IncomingRequest:
+    task: asyncio.Task[None]
+    parent: int | None
+    nested: bool
+    executing: bool = True
 
 
 class JsonRpcWorkerClient:
@@ -37,7 +61,12 @@ class JsonRpcWorkerClient:
         redaction_values: tuple[str, ...] = (),
         request_timeout: float = 30.0,
         max_message_bytes: int = 4 * 1024 * 1024,
+        request_handler: WorkerRequestHandler | None = None,
+        max_incoming_requests: int = 32,
+        max_pending_requests: int = 128,
     ) -> None:
+        if min(max_incoming_requests, max_pending_requests) < 1:
+            raise ValueError("worker request concurrency must be positive")
         self.command = _resolve_worker_command(command, cwd)
         self.cwd = cwd
         self.diagnostic = diagnostic
@@ -45,13 +74,21 @@ class JsonRpcWorkerClient:
         self.redactor = SensitiveValueRedactor(redaction_values)
         self.request_timeout = request_timeout
         self.max_message_bytes = max_message_bytes
+        self.request_handler = request_handler
+        self.max_incoming_requests = max_incoming_requests
+        self.max_pending_requests = max_pending_requests
         self.process: asyncio.subprocess.Process | None = None
+        self._process_owner: LocalProcess | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
         self._pending: dict[int, asyncio.Future[object]] = {}
+        self._pending_contexts: dict[int, Context] = {}
+        self._incoming: dict[int | str, _IncomingRequest] = {}
         self._request_id = 0
         self._write_lock = asyncio.Lock()
+        self._start_lock = asyncio.Lock()
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
 
     @property
     def is_healthy(self) -> bool:
@@ -65,8 +102,14 @@ class JsonRpcWorkerClient:
         )
 
     async def start(self) -> None:
+        async with self._start_lock:
+            await self._start_locked()
+
+    async def _start_locked(self) -> None:
         if self.process is not None:
             return
+        if self._closed:
+            raise WorkerProtocolError("plugin worker is closed")
         environment = {
             key: value
             for key, value in os.environ.items()
@@ -74,16 +117,16 @@ class JsonRpcWorkerClient:
         }
         environment.update(self.environment)
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
-        self.process = await asyncio.create_subprocess_exec(
+        self._process_owner = await start_process(
             *self.command,
             cwd=self.cwd,
             env=environment,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            start_new_session=os.name != "nt",
             limit=self.max_message_bytes + 1,
         )
+        self.process = self._process_owner.process
         self._reader_task = asyncio.create_task(self._read_stdout())
         self._stderr_task = asyncio.create_task(self._read_stderr())
 
@@ -95,24 +138,34 @@ class JsonRpcWorkerClient:
         timeout: float | None = None,
     ) -> object:
         await self.start()
+        if self._closed and method != "shutdown":
+            raise WorkerProtocolError("plugin worker is closed")
         process = self.process
         assert process is not None and process.stdin is not None
         if process.returncode is not None:
             raise WorkerProtocolError(f"plugin worker exited with code {process.returncode}")
+        if len(self._pending) >= self.max_pending_requests:
+            raise WorkerProtocolError("plugin worker request capacity is exhausted")
         self._request_id += 1
         request_id = self._request_id
         future: asyncio.Future[object] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
+        self._pending_contexts[request_id] = copy_context()
+        request_timeout = timeout if timeout is not None else self.request_timeout
         try:
-            await self._write(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "method": method,
-                    "params": dict(params or {}),
-                }
-            )
-            return await asyncio.wait_for(future, timeout=timeout or self.request_timeout)
+            message: dict[str, object] = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": dict(params or {}),
+                "timeout_seconds": request_timeout,
+            }
+            for client, identity in reversed(_CURRENT_REQUESTS.get()):
+                if client is self:
+                    message["parent_id"] = identity
+                    break
+            await self._write(message)
+            return await asyncio.wait_for(future, timeout=request_timeout or None)
         except TimeoutError:
             with suppress(Exception):
                 await self.notify("cancel", {"id": request_id})
@@ -123,22 +176,41 @@ class JsonRpcWorkerClient:
             raise
         finally:
             self._pending.pop(request_id, None)
+            self._pending_contexts.pop(request_id, None)
+            children = [item.task for item in self._incoming.values() if item.parent == request_id]
+            for task in children:
+                task.cancel()
+            if children:
+                await asyncio.gather(*children, return_exceptions=True)
 
     async def notify(self, method: str, params: Mapping[str, object] | None = None) -> None:
         await self.start()
         await self._write({"jsonrpc": "2.0", "method": method, "params": dict(params or {})})
 
     async def close(self, *, timeout: float = 5.0) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        process = self.process
+        if self._close_task is not None and self._close_task.done():
+            if self._close_task.cancelled() or self._close_task.exception() is not None:
+                self._close_task = None
+        if self._close_task is None:
+            self._closed = True
+            self._close_task = asyncio.create_task(self._close(timeout=timeout))
+        await asyncio.shield(self._close_task)
+
+    async def _close(self, *, timeout: float) -> None:
+        async with self._start_lock:
+            process = self.process
         if process is None:
             return
         if os.name != "nt" and process.returncode is None:
             with suppress(Exception):
                 await self.request("shutdown", timeout=min(timeout, 2.0))
-        await _terminate_process_tree(process, timeout=timeout)
+        assert self._process_owner is not None
+        await self._process_owner.close()
+        callbacks = [item.task for item in self._incoming.values()]
+        for task in callbacks:
+            task.cancel()
+        if callbacks:
+            await asyncio.gather(*callbacks, return_exceptions=True)
         if process.stdin is not None:
             process.stdin.close()
             with suppress(BrokenPipeError, ConnectionError):
@@ -154,6 +226,7 @@ class JsonRpcWorkerClient:
         )
         await process.wait()
         self.process = None
+        self._process_owner = None
         self._reader_task = None
         self._stderr_task = None
         error = WorkerProtocolError("plugin worker closed")
@@ -197,6 +270,18 @@ class JsonRpcWorkerClient:
                 if message.get("jsonrpc") != "2.0":
                     raise WorkerProtocolError("plugin worker response has invalid JSON-RPC version")
                 request_id = message.get("id")
+                method = message.get("method")
+                if isinstance(method, str) and request_id is not None:
+                    await self._dispatch_request(message)
+                    continue
+                if method == "cancel":
+                    params = message.get("params")
+                    if not isinstance(params, dict) or type(params.get("id")) not in (int, str):
+                        raise WorkerProtocolError("worker cancellation requires a request id")
+                    incoming = self._incoming.get(params["id"])
+                    if incoming is not None:
+                        incoming.task.cancel()
+                    continue
                 if type(request_id) is int:
                     has_result = "result" in message
                     has_error = "error" in message
@@ -248,6 +333,99 @@ class JsonRpcWorkerClient:
                 if not future.done():
                     future.set_exception(error)
 
+    async def _dispatch_request(self, message: dict[str, Any]) -> None:
+        request_id = message["id"]
+        if type(request_id) not in (int, str):
+            raise WorkerProtocolError("worker request id must be an integer or string")
+        if request_id in self._incoming:
+            raise WorkerProtocolError("worker reused an outstanding request id")
+        params = message.get("params", {})
+        parent = message.get("parent_id")
+        timeout = message.get("timeout_seconds", self.request_timeout)
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout < 0:
+            await self._reply_error(
+                request_id, -32602, "request timeout must be finite and nonnegative"
+            )
+            return
+        if not isinstance(params, dict) or (
+            parent is not None and (type(parent) is not int or parent not in self._pending)
+        ):
+            await self._reply_error(request_id, -32602, "invalid request parameters or parent")
+            return
+        if self._closed:
+            await self._reply_error(request_id, -32000, "plugin worker is closing")
+            return
+        if self.request_handler is None:
+            await self._reply_error(request_id, -32601, "Host requests are unavailable")
+            return
+        context = self._pending_contexts[parent].copy() if parent is not None else Context()
+        ancestors = context.get(_CURRENT_REQUESTS, ())
+        nested = any(client is self for client, _ in ancestors)
+        if len(self._incoming) >= self.max_pending_requests or (
+            not nested
+            and sum(not item.nested and item.executing for item in self._incoming.values())
+            >= self.max_incoming_requests
+        ):
+            # Never wait for a business slot in the reader. A waiting Host
+            # request still needs this reader to receive its worker response.
+            await self._reply_error(request_id, -32001, "Host request capacity is exhausted")
+            return
+        task = asyncio.create_task(
+            self._serve_request(request_id, message["method"], params, parent, timeout),
+            name=f"ouro-worker-request-{request_id}",
+            context=context,
+        )
+        self._incoming[request_id] = _IncomingRequest(task, parent, nested)
+        task.add_done_callback(self._request_finished)
+
+    def _request_finished(self, task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and (error := task.exception()) is not None:
+            self._emit_diagnostic("worker_host_request_failed", str(error))
+
+    async def _serve_request(
+        self,
+        request_id: int | str,
+        method: str,
+        params: Mapping[str, object],
+        parent: int | None,
+        timeout: float,
+    ) -> None:
+        token = _CURRENT_REQUESTS.set((*_CURRENT_REQUESTS.get(), (self, request_id)))
+        try:
+            assert self.request_handler is not None
+            try:
+                async with asyncio.timeout(timeout or None):
+                    result = await self.request_handler(method, params)
+                self._incoming[request_id].executing = False
+                if not self._closed and (parent is None or parent in self._pending):
+                    await self._write({"jsonrpc": "2.0", "id": request_id, "result": result})
+            except asyncio.CancelledError:
+                if parent is None or parent in self._pending:
+                    await self._reply_error(request_id, -32800, "Host request cancelled")
+                raise
+            except Exception as exc:
+                await self._reply_error(request_id, -32000, self._redact(str(exc)))
+        finally:
+            _CURRENT_REQUESTS.reset(token)
+            self._incoming.pop(request_id, None)
+
+    async def _reply_error(self, request_id: int | str, code: int, message: str) -> None:
+        if self._closed:
+            return
+        if incoming := self._incoming.get(request_id):
+            incoming.executing = False
+        try:
+            await self._write(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": code, "message": _bounded_text(message, limit=4096)},
+                }
+            )
+        except BrokenPipeError, ConnectionError:
+            # The peer may exit while its accepted requests are being settled.
+            return
+
     async def _read_stderr(self) -> None:
         process = self.process
         assert process is not None and process.stderr is not None
@@ -286,6 +464,14 @@ class WorkerPluginInstance:
         data_directory: Path,
         credentials: Mapping[str, str],
         diagnostic: Callable[[str, str], None],
+        services: sdk.PluginServices | None = None,
+        processes: sdk.PluginProcesses | None = None,
+        environment: sdk.PluginEnvironment | None = None,
+        models: sdk.PluginModels | None = None,
+        inputs: sdk.RunInputs | None = None,
+        tools: sdk.RunTools | None = None,
+        tool_groups: PluginToolGroups | None = None,
+        scheduler: sdk.PluginScheduler | None = None,
     ) -> None:
         self.manifest = manifest
         self.package_digest = package_digest
@@ -293,6 +479,7 @@ class WorkerPluginInstance:
         self.configuration = dict(configuration)
         self.data_directory = data_directory
         self.credentials = dict(credentials)
+        self.environment = environment
         credential_environment = {
             slot: _credential_environment_name(manifest.plugin_id, slot)
             for slot in self.credentials
@@ -307,7 +494,51 @@ class WorkerPluginInstance:
             redaction_values=tuple(self.credentials.values()),
         )
         self.credential_environment = credential_environment
+        self.service_bridge = (
+            WorkerServiceBridge(self.client, services) if services is not None else None
+        )
+        self.process_bridge = (
+            WorkerProcessBridge(self.client, processes) if processes is not None else None
+        )
+        self.provider_bridge = WorkerProviderBridge(self.client)
+        self.driver_bridge = WorkerDriverBridge(
+            self.client, models=models, tools=tools, inputs=inputs
+        )
+        self.model_bridge = WorkerModelBridge(self.client, models) if models is not None else None
+        self.tool_group_bridge = (
+            WorkerToolGroupBridge(
+                self.client, tool_groups, self._tool_handler, self._tool_resume_handler, diagnostic
+            )
+            if tool_groups is not None
+            else None
+        )
+        self.initial_tool_groups: list[ToolGroupPublication] = []
+        self.scheduler_bridge = WorkerSchedulerBridge(scheduler) if scheduler is not None else None
+        self.client.request_handler = self._host_request
         self._initialized = False
+
+    async def _host_request(self, method: str, params: Mapping[str, object]) -> object:
+        if method == "providers.output":
+            await self.provider_bridge.output(params)
+            return None
+        if method == "models.generate" and self.model_bridge is not None:
+            return await self.model_bridge.generate(params)
+        if method.startswith("scheduler.") and self.scheduler_bridge is not None:
+            return await self.scheduler_bridge.dispatch(method, params)
+        if method.startswith("tool_groups.") and self.tool_group_bridge is not None:
+            return await self.tool_group_bridge.dispatch(method, params)
+        if method.startswith("run."):
+            return await self.driver_bridge.dispatch(method, params)
+        if method == "environment.agent_instructions" and self.environment is not None:
+            workspace = params.get("workspace")
+            if workspace is not None and not isinstance(workspace, str):
+                raise ValueError("workspace must be a string or null")
+            return [asdict(item) for item in await self.environment.agent_instructions(workspace)]
+        if method == "processes.run" and self.process_bridge is not None:
+            return await self.process_bridge.run(params)
+        if self.service_bridge is not None:
+            return await self.service_bridge.dispatch(method, params)
+        raise ValueError(f"Host method is unavailable: {method}")
 
     @property
     def is_healthy(self) -> bool:
@@ -339,8 +570,18 @@ class WorkerPluginInstance:
                     "session_inputs",
                     "session_input_batches",
                     "tool_input_requests",
+                    *(["services", "host_requests"] if self.service_bridge is not None else []),
+                    *(["processes"] if self.process_bridge is not None else []),
+                    *(["environment"] if self.environment is not None else []),
+                    *(["tool_groups"] if self.tool_group_bridge is not None else []),
+                    *(["scheduler"] if self.scheduler_bridge is not None else []),
+                    *(["models"] if self.model_bridge is not None else []),
                 ],
-                "limits": {"max_message_bytes": self.client.max_message_bytes},
+                "limits": {
+                    "max_message_bytes": self.client.max_message_bytes,
+                    "max_incoming_requests": self.client.max_incoming_requests,
+                    "max_pending_requests": self.client.max_pending_requests,
+                },
             },
         )
         result = self._result(initialization, "initialize", _decode_worker_initialization)
@@ -356,6 +597,10 @@ class WorkerPluginInstance:
         available = _worker_contribution_ids(raw)
         _validate_worker_declarations(self.manifest, available)
         contributions = sdk.ContributionSet()
+        if self.tool_group_bridge is not None:
+            self.initial_tool_groups = self.tool_group_bridge.prepare(raw.get("tool_groups", {}))
+        if self.service_bridge is not None:
+            contributions.services = self.service_bridge.contributions(self.manifest.exports)
         for contribution_type in contribution_types:
             adapter = contribution_type.worker
             if adapter is None:
@@ -371,12 +616,31 @@ class WorkerPluginInstance:
         if self._initialized:
             await self.client.request("lifecycle.start")
 
+    def _background_handler(self, service_id: str, *, start: bool) -> sdk.BackgroundHandler:
+        async def handler() -> None:
+            if not start and not self.client.is_healthy:
+                await self.client.close()
+                return
+            await self.client.request(
+                "background.start" if start else "background.stop",
+                {"contribution_id": service_id},
+            )
+
+        return handler
+
     async def stop(self, reason: sdk.StopReason, deadline: float) -> None:
-        del deadline
-        if self._initialized:
-            with suppress(Exception):
-                await self.client.request("lifecycle.stop", {"reason": reason}, timeout=2.0)
-        await self.client.close()
+        try:
+            if self._initialized:
+                with suppress(Exception):
+                    await self.client.request(
+                        "lifecycle.stop",
+                        {"reason": reason},
+                        timeout=max(0.01, min(2.0, deadline - monotonic())),
+                    )
+        finally:
+            await self.client.close(timeout=max(0.01, deadline - monotonic()))
+            if self.tool_group_bridge is not None:
+                await self.tool_group_bridge.close()
 
     def _result[T](
         self,
@@ -416,6 +680,7 @@ class WorkerPluginInstance:
         *,
         decode: Callable[[dict[str, Any], str], T],
         state_view: sdk.PluginSessionStateView | None,
+        timeout: float | None = None,
     ) -> T:
         """Exchange an owner snapshot and a staged replacement through the call protocol."""
 
@@ -453,15 +718,16 @@ class WorkerPluginInstance:
                     ),
                 },
             }
-        raw = await self.client.request(method, params)
+        raw = await self.client.request(method, params, timeout=timeout)
         return self._result(raw, method, decode, state_view=state_view)
 
-    def _tool_handler(self, identity: str):
+    def _tool_handler(self, identity: str, registration_id: str | None = None):
         async def handler(call: sdk.ToolCall) -> sdk.ToolOutput | sdk.ToolInputRequest:
             return await self._session_request(
-                "tool.call",
+                "tool.call" if registration_id is None else "tool_groups.call",
                 {
                     "contribution_id": identity,
+                    **({"registration_id": registration_id} if registration_id is not None else {}),
                     "call": {
                         "tool_call_id": call.tool_call_id,
                         "session_id": call.session_id,
@@ -474,18 +740,20 @@ class WorkerPluginInstance:
                 },
                 decode=_decode_worker_tool,
                 state_view=call.session_state,
+                timeout=0,
             )
 
         return handler
 
-    def _tool_resume_handler(self, identity: str):
+    def _tool_resume_handler(self, identity: str, registration_id: str | None = None):
         async def handler(
             call: sdk.ToolResumeCall,
         ) -> sdk.ToolOutput | sdk.ToolInputRequest:
             return await self._session_request(
-                "tool.resume",
+                "tool.resume" if registration_id is None else "tool_groups.resume",
                 {
                     "contribution_id": identity,
+                    **({"registration_id": registration_id} if registration_id is not None else {}),
                     "call": {
                         "tool_call_id": call.tool_call_id,
                         "session_id": call.session_id,
@@ -500,6 +768,7 @@ class WorkerPluginInstance:
                 },
                 decode=_decode_worker_tool,
                 state_view=call.session_state,
+                timeout=0,
             )
 
         return handler
@@ -866,8 +1135,8 @@ def _worker_background_services(
     return [
         sdk.BackgroundServiceContribution(
             id=item.id,
-            start=_noop_background_lifecycle,
-            stop=_noop_background_lifecycle,
+            start=instance._background_handler(item.id, start=True),
+            stop=instance._background_handler(item.id, start=False),
         )
         for item in instance.manifest.contributes.background_services
         if item.id in available.get("background_services", set())
@@ -976,6 +1245,32 @@ BACKGROUND_SERVICE_WORKER_ADAPTER = WorkerContributionAdapter(
     "background_services",
     _worker_background_services,
 )
+
+
+def _worker_run_drivers(
+    instance: WorkerPluginInstance, raw: object, available: dict[str, set[str]]
+) -> list[Any]:
+    return [
+        sdk.RunDriverContribution(item.id, instance.driver_bridge.handler(item.id))
+        for item in instance.manifest.contributes.run_drivers
+        if item.id in available.get("run_drivers", set())
+    ]
+
+
+def _worker_providers(
+    instance: WorkerPluginInstance, raw: object, available: dict[str, set[str]]
+) -> list[Any]:
+    return [
+        instance.provider_bridge.contribution(item.id)
+        for item in instance.manifest.contributes.providers
+        if item.id in available.get("providers", set())
+    ]
+
+
+PROVIDER_WORKER_ADAPTER = WorkerContributionAdapter("providers", "providers", _worker_providers)
+RUN_DRIVER_WORKER_ADAPTER = WorkerContributionAdapter(
+    "run_drivers", "run_drivers", _worker_run_drivers
+)
 CONTINUATION_WORKER_ADAPTER = WorkerContributionAdapter(
     "continuation_policies",
     "continuation_policies",
@@ -1001,52 +1296,6 @@ SESSION_CONTROLLER_WORKER_ADAPTER = WorkerContributionAdapter(
     "session_controllers",
     _worker_session_controllers,
 )
-
-
-async def _terminate_process_tree(
-    process: asyncio.subprocess.Process,
-    *,
-    timeout: float,
-) -> None:
-    if os.name == "nt":
-        killer: asyncio.subprocess.Process | None = None
-        try:
-            killer = await asyncio.create_subprocess_exec(
-                "taskkill",
-                "/PID",
-                str(process.pid),
-                "/T",
-                "/F",
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            # `timeout` controls the worker-facing close budget.  The OS tree
-            # terminator needs its own small cleanup budget: abandoning it can
-            # leave descendants holding the worker pipe handles open.
-            await asyncio.wait_for(killer.wait(), timeout=2.0)
-        except OSError, TimeoutError:
-            if killer is not None and killer.returncode is None:
-                with suppress(ProcessLookupError):
-                    killer.kill()
-                await killer.wait()
-        if process.returncode is None:
-            with suppress(ProcessLookupError):
-                process.kill()
-        await process.wait()
-        return
-
-    with suppress(ProcessLookupError):
-        os.kill(-process.pid, signal.SIGTERM)
-    try:
-        await asyncio.wait_for(process.wait(), timeout=timeout)
-    except TimeoutError:
-        with suppress(ProcessLookupError):
-            os.kill(-process.pid, 9)
-        if process.returncode is None:
-            process.kill()
-        await process.wait()
 
 
 def _bounded_text(value: str, *, limit: int, fallback: str = "") -> str:
@@ -1105,9 +1354,13 @@ def _validate_worker_declarations(
         for contribution_type in contribution_type_adapters()
         if contribution_type.worker is not None
     }
-    unknown = set(available) - worker_kinds
+    unknown = set(available) - worker_kinds - {"services", "tool_groups"}
     if unknown:
         raise WorkerProtocolError(f"worker returned unknown contribution types: {sorted(unknown)}")
+    if available.get("services", set()) != {item.id for item in manifest.exports}:
+        raise WorkerProtocolError("worker service exports do not match manifest")
+    if available.get("tool_groups", set()) - {item.id for item in manifest.tool_groups}:
+        raise WorkerProtocolError("worker returned undeclared tool groups")
     for contribution_type in contribution_type_adapters():
         if contribution_type.worker is None:
             continue
@@ -1445,6 +1698,9 @@ def _worker_session_inputs(raw: dict[str, Any]) -> tuple[sdk.SessionInput, ...]:
         role = value.get("role", "system")
         scaffold = _worker_scaffold(value.get("scaffold", True))
         semantic_tag = _worker_semantic_tag(value.get("semantic_tag"))
+        driver_id = value.get("driver_id")
+        if driver_id is not None and not isinstance(driver_id, str):
+            raise WorkerProtocolError("worker session input Driver must be a string")
         if not isinstance(prompt, str) or not prompt.strip():
             raise WorkerProtocolError("worker session input prompt must not be empty")
         if mode not in {"follow_up", "steer"}:
@@ -1460,6 +1716,7 @@ def _worker_session_inputs(raw: dict[str, Any]) -> tuple[sdk.SessionInput, ...]:
                 role=role,
                 scaffold=scaffold,
                 semantic_tag=semantic_tag,
+                driver_id=driver_id,
             )
         )
     return tuple(inputs)
@@ -1569,12 +1826,6 @@ def _worker_context_fragment(raw: object) -> str | sdk.ContextFragment:
         scaffold=scaffold,
         semantic_tag=semantic_tag,
     )
-
-
-async def _noop_background_lifecycle() -> None:
-    # Worker background resources are owned by lifecycle.start/stop.  These
-    # descriptors provide stable identities to the host contribution contract.
-    return None
 
 
 def _credential_environment_name(plugin_id: str, slot: str) -> str:

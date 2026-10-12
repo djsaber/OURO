@@ -110,6 +110,9 @@ uv run --frozen ouro provider endpoint list <provider_id> --home ./.ouro-dev
 `provider add/replace --type custom` 必须通过 `--protocol` 显式选择线协议：
 `openai-chat-completions`、`openai-responses` 或 `anthropic-messages`，默认 API 路径分别为
 `/chat/completions`、`/responses` 和 `/v1/messages`。集成产品类型使用模板协议。
+自定义连接也可指定 `<plugin_id>/providers/<id>`，使用已安装并启用的插件协议。
+插件协议通过 CLI 创建；URL、原生选项和模型能力遵循对应插件的说明。
+可运行的注册样例见 [Faux Provider](../../examples/plugins/faux-provider)。
 TUI 在 `Add provider` 的 `Custom connection` 分组直接提供三个协议入口；创建时可以切换协议，
 仍为默认值的 API 路径随之更新，自定义路径保持不变。已有供应商的协议只读，普通编辑保留协议和 Endpoint。
 

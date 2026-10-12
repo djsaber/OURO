@@ -50,8 +50,8 @@ schema 检查、WAL 设置和版本记录创建在同一初始化所有权内完
 
 当前格式的未完成提交仍按原生决定恢复，不重新运行插件、转换 schema 或重写审计事实。
 owner 业务状态由相应执行契约读取，不支持的 schema 明确拒绝；没有状态迁移命令。
-当前格式的 Session、Run、消息与 Harness 可在插件变化后继续读取。新记录的 ToolInvocation 保存 resumable 声明及
-Host 工具定义摘要；未携带这些可选字段的当前格式调用仍检查已保存的 plugin 契约及当前定义，不能推断未知私有状态。
+当前格式的 Session、Run、消息与 Harness 可在插件变化后继续读取。ToolInvocation 保存 resumable 声明及
+实际执行所需的插件契约或 Host 工具定义摘要；恢复核对保存的执行契约、当前定义及授权，不能推断未知私有状态。
 历史 Catalog/generation 摘要仅用于审计；队列接受凭据不授权恢复旧环境。
 
 ## Canonical 数据与投影
@@ -76,7 +76,7 @@ canonical Session 不可读或隐藏事件。派生索引维护是 best-effort �
 offset 0 由索引缺失隐式表达，只有游标能跳过非空历史前缀时才落盘。
 
 Session、Run、Message、Event、Compaction、ContextSnapshot 和 Delegation 是独立持久化根记录。每个 payload
-必须显式携带各自当前 `schema_version`：Session/Run/Event 为 2，Message 为 3，ContextSnapshot 为 4，Compaction/Delegation 为 1。
+必须显式携带各自当前 `schema_version`：Session/Event 为 2，Run 为 5，Message/ContextSnapshot 为 4，Compaction/Delegation 为 1。
 缺失、非整数、旧版本或未来版本均由共享 versioned decoder 在 adapter
 读取边界抛出 `UnsupportedDataVersionError`。领域模型校验各自版本，未知版本不能被验证为当前记录。
 Store 不通过字段默认值猜测旧格式，也不提供历史版本转换。

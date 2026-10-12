@@ -29,6 +29,7 @@ from ouro.core.messages import (
 from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunPauseReason
+from ouro.core.run_drivers import DriverCheckpoint, DriverResume
 from ouro.core.run_transitions import plan_run_transition
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict, SessionCommitStep
 from ouro.core.state import (
@@ -39,7 +40,7 @@ from ouro.core.state import (
     SessionRecord,
 )
 from ouro.core.tool_batches import ToolCallBatchRecord
-from ouro.core.tools import ToolCallRequest, ToolResult
+from ouro.core.tools import ToolCallProducer, ToolCallRequest, ToolResult
 from ouro.sessions import RuntimeSessionSnapshot, SessionStore
 
 
@@ -310,6 +311,7 @@ class RunLifecycle:
         result: ToolResult,
         sequence: int,
         turn_id: str | None = None,
+        producer: ToolCallProducer | None = None,
     ) -> MessageRecord:
         return self.append_tool_result_messages(
             session=session,
@@ -317,6 +319,7 @@ class RunLifecycle:
             results=[result],
             first_sequence=sequence,
             turn_id=turn_id,
+            producer=producer,
         )[0]
 
     def append_tool_result_messages(
@@ -327,6 +330,7 @@ class RunLifecycle:
         results: list[ToolResult],
         first_sequence: int,
         turn_id: str | None = None,
+        producer: ToolCallProducer | None = None,
     ) -> list[MessageRecord]:
         """Validate and commit one ordered tool-result message batch."""
 
@@ -356,6 +360,7 @@ class RunLifecycle:
                 session_id=session.session_id,
                 run_id=run.run_id,
                 role="tool_result",
+                scaffold=producer is not None and producer.kind == "driver",
                 content=[*result.content_blocks],
                 sequence=first_sequence + index,
                 turn_id=turn_id,
@@ -365,6 +370,7 @@ class RunLifecycle:
                     "tool_result": ToolResultReference(
                         tool_call_id=result.tool_call_id,
                         tool_name=result.tool_name,
+                        producer=producer or ToolCallProducer(),
                         is_error=result.is_error,
                     ),
                     "tool_execution": ToolExecutionTiming(
@@ -450,27 +456,41 @@ class RunLifecycle:
             purpose=purpose,
         )
 
-    def save_waiting_state(self, *, session: SessionRecord, run: RunRecord) -> SessionRecord:
-        with self.store.session_mutation(session.session_id):
-            latest_session = self.store.load_session_record(session.session_id)
-            latest_run = self.store.load_run(session.session_id, run.run_id)
-            self._require_active(latest_run)
-            updated_run = run.model_copy(
+    def consume_driver_checkpoint(
+        self, session_id: str, run_id: str
+    ) -> tuple[RunRecord, DriverResume]:
+        """Commit consumption and return its Run and native results in one store operation."""
+        with self.store.session_mutation(session_id):
+            session = self.store.load_session_record(session_id)
+            run = self.store.load_run(session_id, run_id)
+            self._require_active(run)
+            checkpoint = run.driver_checkpoint
+            batch = run.active_tool_batch
+            if checkpoint is not None and checkpoint.state == "consumed":
+                raise ValueError(
+                    "Driver checkpoint was consumed; interrupted plugin code cannot be replayed"
+                )
+            if (
+                checkpoint is None
+                or checkpoint.state != "ready"
+                or batch is None
+                or batch.batch_id != checkpoint.batch_id
+                or batch.phase != "completed"
+            ):
+                raise ValueError("Run has no ready Driver checkpoint")
+            if run.history_epoch != session.history_epoch:
+                raise SessionCommitConflict("Run belongs to withdrawn Session history")
+            updated = run.model_copy(
                 update={
-                    "usage": latest_run.usage,
-                    "abort_requested": latest_run.abort_requested,
+                    "driver_checkpoint": checkpoint.model_copy(update={"state": "consumed"}),
+                    "active_tool_batch": None,
                 }
             )
-            transition = plan_run_transition(
-                latest_session,
-                current_run=latest_run,
-                next_run=updated_run,
+            self.store.commit_session(SessionCommit(before=session, after=session, runs=(updated,)))
+            return updated, DriverResume(
+                checkpoint=checkpoint.payload,
+                results=tuple(call.result for call in batch.calls if call.result is not None),
             )
-            self.store.save_run(transition.run)
-            self.store.save_session(transition.session)
-            updated_session = transition.session
-        self.store.refresh_catalog(updated_session.session_id)
-        return updated_session
 
     def save_batch_state(
         self,
@@ -481,6 +501,7 @@ class RunLifecycle:
         status: RunStatus,
         phase: RunPhase,
         harness: HarnessCallSnapshot | None = None,
+        driver_checkpoint: DriverCheckpoint | None = None,
     ) -> tuple[SessionRecord, RunRecord]:
         with self.store.session_mutation(session.session_id):
             latest_session = self.store.load_session_record(session.session_id)
@@ -550,11 +571,31 @@ class RunLifecycle:
                     }
                 )
             pending = batch.pending_approvals if batch is not None else []
+            checkpoint = driver_checkpoint or latest_run.driver_checkpoint
+            if driver_checkpoint is not None:
+                if (
+                    batch is None
+                    or driver_checkpoint.batch_id != batch.batch_id
+                    or driver_checkpoint.state != "pending"
+                    or (
+                        latest_run.driver_checkpoint is not None
+                        and latest_run.driver_checkpoint.state != "consumed"
+                    )
+                ):
+                    raise ValueError("Driver checkpoint must bind one new native tool batch")
+            if batch is not None and batch.phase == "completed":
+                if checkpoint is not None and checkpoint.state == "pending":
+                    if checkpoint.batch_id != batch.batch_id:
+                        raise ValueError("Driver checkpoint batch changed")
+                    checkpoint = checkpoint.model_copy(update={"state": "ready"})
+                else:
+                    batch = None
             updated_run = latest_run.model_copy(
                 update={
                     "status": status,
                     "phase": phase,
                     "active_tool_batch": batch,
+                    "driver_checkpoint": checkpoint,
                     "pending_approval_id": pending[0].approval_id if pending else None,
                 }
             )
@@ -619,6 +660,7 @@ class RunLifecycle:
         provider_continuation: ProviderContinuationArtifact | None = None,
         turn_id: str | None = None,
         tool_results: list[ToolResult],
+        assistant_already_committed: bool = False,
     ) -> RunResult:
         persisted = await run_blocking(
             self._complete,
@@ -632,6 +674,7 @@ class RunLifecycle:
             provider_continuation=provider_continuation,
             turn_id=turn_id,
             tool_results=tool_results,
+            assistant_already_committed=assistant_already_committed,
         )
         if isinstance(persisted, RunResult):
             return persisted
@@ -665,6 +708,7 @@ class RunLifecycle:
         provider_continuation: ProviderContinuationArtifact | None,
         turn_id: str | None,
         tool_results: list[ToolResult],
+        assistant_already_committed: bool,
     ) -> tuple[SessionRecord, RunRecord] | RunResult:
         """Persist the complete transition as one blocking operation."""
 
@@ -678,7 +722,9 @@ class RunLifecycle:
                     events=emitted,
                     tool_results=tool_results,
                 )
-            if final_text or reasoning_content or provider_continuation is not None:
+            if not assistant_already_committed and (
+                final_text or reasoning_content or provider_continuation is not None
+            ):
                 assistant_message = MessageRecord.text(
                     session_id=session.session_id,
                     run_id=run.run_id,

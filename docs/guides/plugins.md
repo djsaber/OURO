@@ -24,7 +24,19 @@ uv run --frozen ouro plugin reload dev.example.plugin ./my-plugin --home ./.ouro
 uv run --frozen ouro plugin rollback dev.example.plugin <package_digest> --home ./.ouro-dev
 uv run --frozen ouro plugin disable dev.example.plugin --home ./.ouro-dev
 uv run --frozen ouro plugin remove dev.example.plugin --home ./.ouro-dev
+uv run --frozen ouro plugin purge-data dev.example.plugin --home ./.ouro-dev
 ```
+
+`plugin maintain <id> --home <home> --timeout 300 --execute <程序及参数>` 在停用插件的私有目录中执行明确指定的
+维护程序。所有 OURO 参数放在 `--execute` 之前；脚本、解释器和备份路径建议使用绝对路径。入口与数据清理共享
+独占访问检查，不启动插件或模型，不自动重新启用。备份和恢复规则由维护程序负责，参见
+[Scheduled Sync 样例](../../examples/plugins/scheduled-sync/README.md)。
+
+`remove` 移除安装记录，默认保留插件私有数据；有可恢复工作引用时，结果列出包代码的保留原因。保留代码不等于
+仍然安装或启用；继续相关工作前需明确安装所需包并满足其配置契约，或结束工作后执行 `gc` 回收代码。
+`purge-data` 显式删除私有数据，可在卸载后单独执行。先停用插件并等待所有
+Host 的相关资源退出；仍有占用或可恢复工作的引用时，清理会拒绝。它不删除 Session 历史、Task 记录、用量、
+制品或其他插件的数据，也不会为执行清理启动插件。
 
 ## 权限与版本生命周期
 

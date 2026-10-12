@@ -4,9 +4,10 @@ from datetime import time
 from typing import Literal, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import AwareDatetime, ConfigDict, Field, field_validator, model_validator
+from pydantic import AwareDatetime, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from ouro.core.base import OuroModel
+from ouro.core.plugin_tasks import PluginTaskCall, PluginTaskTarget
 from ouro.core.reasoning import ReasoningRequest
 
 TaskStatus = Literal["waiting", "running", "paused", "completed", "failed", "interrupted"]
@@ -61,30 +62,48 @@ class TaskSchedule(OuroModel):
         return self
 
 
-class TaskConfiguration(OuroModel):
+class AgentTaskTarget(OuroModel):
+    """Instructions and execution settings for a scheduled Agent Run."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
-    title: str | None = Field(default=None, max_length=160)
-    description: str = Field(min_length=1, max_length=100000)
+    kind: Literal["agent"] = "agent"
+    prompt: str = Field(min_length=1, max_length=100000)
     workspace: str = Field(min_length=1)
     approval_mode: TaskApprovalPreset = "afk"
     model: str = Field(min_length=1)
     reasoning: ReasoningRequest = Field(default_factory=ReasoningRequest)
-    schedule: TaskSchedule
     session_mode: Literal["new", "reuse"] = "new"
 
-    @field_validator("title", "description", "workspace", "model", mode="before")
+    @field_validator("prompt", "workspace", "model", mode="before")
     @classmethod
     def strip_text(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
 
+
+class TaskConfiguration(OuroModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    title: str | None = Field(default=None, max_length=160)
+    schedule: TaskSchedule
+    target: AgentTaskTarget | PluginTaskTarget = Field(discriminator="kind")
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def strip_title(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
     @property
     def display_title(self) -> str:
-        return self.title or " ".join(self.description.split())[:60]
+        if self.title:
+            return self.title
+        if isinstance(self.target, AgentTaskTarget):
+            return " ".join(self.target.prompt.split())[:60]
+        return f"{self.target.plugin_id}/{self.target.service}/{self.target.method}"
 
 
 class TaskRecord(OuroModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     task_id: str
+    owner_id: str | None = Field(default=None, min_length=1)
     revision: int = Field(default=1, ge=1)
     configuration: TaskConfiguration
     enabled: bool = True
@@ -98,15 +117,26 @@ class TaskRecord(OuroModel):
     error: str | None = None
 
 
+class AgentTaskRun(OuroModel):
+    """Exact Run identity reserved for one claimed Agent task occurrence."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    kind: Literal["agent"] = "agent"
+    session_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+
+
 class TaskExecution(OuroModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     execution_id: str
     task_id: str
+    owner_id: str | None = Field(default=None, min_length=1)
     scheduled_at: AwareDatetime
     created_at: AwareDatetime
     updated_at: AwareDatetime
-    session_id: str
-    run_id: str
+    target: AgentTaskRun | PluginTaskCall = Field(discriminator="kind")
+    result: JsonValue = None
+    cancel_requested: bool = False
     status: TaskStatus = "waiting"
     awaiting_approval: bool = False
     error: str | None = None

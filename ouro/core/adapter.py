@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
-from contextlib import suppress
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import aclosing, suppress
 from dataclasses import dataclass
 
 from ouro.core.cancellation import AbortSignal
@@ -44,7 +44,7 @@ class RuntimeAdapter:
         signal: AbortSignal | None = None,
         max_output_tokens: int | None = None,
         on_stream_start: Callable[[], None] | None = None,
-    ) -> AsyncIterator[ProviderStreamEvent]:
+    ) -> AsyncGenerator[ProviderStreamEvent]:
         model = self.model
         if max_output_tokens is not None:
             if max_output_tokens < 1 or max_output_tokens > self.model.context_window:
@@ -58,12 +58,15 @@ class RuntimeAdapter:
             tools=provider_context.tools,
             request_context=request_context,
         )
-        async for event in _interruptible(
-            provider_events,
-            signal=signal,
-            on_stream_start=on_stream_start,
-        ):
-            yield event
+        async with aclosing(
+            _interruptible(
+                provider_events,
+                signal=signal,
+                on_stream_start=on_stream_start,
+            )
+        ) as events:
+            async for event in events:
+                yield event
 
 
 async def _interruptible(
@@ -72,7 +75,7 @@ async def _interruptible(
     signal: AbortSignal | None,
     on_stream_start: Callable[[], None] | None = None,
     poll_interval: float = 0.05,
-) -> AsyncIterator[ProviderStreamEvent]:
+) -> AsyncGenerator[ProviderStreamEvent]:
     """Read the provider independently from persistence and presentation.
 
     The reader is the sole owner of ``events`` and the consumer is the sole

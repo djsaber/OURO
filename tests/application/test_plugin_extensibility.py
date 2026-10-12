@@ -24,7 +24,7 @@ from ouro.core.tools import ToolInvocation
 from ouro.local_application import LocalApplication
 from ouro.plugins.api import adapt_sdk_contributions
 from ouro.providers import FauxProvider
-from ouro.sdk.plugins import v2 as sdk
+from ouro.sdk.plugins import v3 as sdk
 from ouro.sessions import LocalSessionStore
 from ouro.tools import (
     Tool,
@@ -231,9 +231,7 @@ async def test_inprocess_prompt_policy_uses_the_run_catalog_and_denies_without_s
 
     allowed = await runtime.run("ordinary input")
     seen = json.loads(
-        (home / "plugins" / "data" / "dev.ouro.prompt_guard" / "seen.json").read_text(
-            encoding="utf-8"
-        )
+        (await application.plugins.execute_command("dev.ouro.prompt_guard:inspect")).output
     )
     generation = allowed.run.metadata["extension_generations"][0]
     assert seen["catalog_id"] == allowed.run.metadata["extension_catalog_id"]
@@ -293,12 +291,12 @@ async def test_observer_timeout_releases_catalog_lease_after_plugin_disable(tmp_
         ),
         release=lease.close,
     )
-    started = home / "plugins" / "data" / "dev.ouro.observer_retire" / "started"
     for _ in range(100):
-        if started.exists():
+        observed = await application.plugins.execute_command("dev.ouro.observer_retire:inspect")
+        if observed.output == "started":
             break
         await asyncio.sleep(0.005)
-    assert started.exists()
+    assert observed.output == "started"
 
     assert (await application.plugins.disable("dev.ouro.observer_retire")).status == "disabled"
     stopped = home / "plugins" / "data" / "dev.ouro.observer_retire" / "stopped"
@@ -344,12 +342,12 @@ async def test_model_decision_uses_current_catalog_after_prompt_admission(tmp_pa
         old_generation = initial.generations[0].generation_id
 
     run_task = asyncio.create_task(runtime.run("slow marker input"))
-    seen_path = home / "plugins" / "data" / "dev.ouro.prompt_guard" / "seen.json"
     for _ in range(100):
-        if seen_path.exists():
+        seen = await application.plugins.execute_command("dev.ouro.prompt_guard:inspect")
+        if json.loads(seen.output) is not None:
             break
         await asyncio.sleep(0.005)
-    assert seen_path.exists()
+    assert json.loads(seen.output) is not None
     assert store.list_sessions() == []
 
     assert await application.plugin_runtime.restart("dev.ouro.prompt_guard") == "active"
@@ -411,7 +409,7 @@ async def test_queued_inputs_share_current_consumption_environment(tmp_path) -> 
     assert (await application.plugins.enable("dev.ouro.prompt_guard")).status == "active"
 
     first_task = asyncio.create_task(runtime.run("first input"))
-    await provider.started.wait()
+    await asyncio.wait_for(provider.started.wait(), 5)
     session = store.list_sessions()[0]
     first_run = store.load_runtime_session(session.session_id).runs[0]
     old_generation = first_run.metadata["extension_generations"][0]["generation_id"]
@@ -492,7 +490,7 @@ async def test_steering_admission_and_consumption_use_current_policy(tmp_path) -
     assert (await application.plugins.enable("dev.ouro.prompt_guard")).status == "active"
 
     first_task = asyncio.create_task(runtime.run("first input"))
-    await provider.started.wait()
+    await asyncio.wait_for(provider.started.wait(), 5)
     session = store.list_sessions()[0]
     active_run = store.load_runtime_session(session.session_id).runs[0]
     active_catalog_id = active_run.metadata["extension_catalog_id"]
@@ -508,9 +506,7 @@ async def test_steering_admission_and_consumption_use_current_policy(tmp_path) -
     assert queued["extension_catalog_id"] != active_catalog_id
     assert queued["extension_generations"][0]["generation_id"] != active_generation
     seen = json.loads(
-        (home / "plugins" / "data" / "dev.ouro.prompt_guard" / "seen.json").read_text(
-            encoding="utf-8"
-        )
+        (await application.plugins.execute_command("dev.ouro.prompt_guard:inspect")).output
     )
     assert seen["catalog_id"] == queued["extension_catalog_id"]
 
@@ -1447,7 +1443,7 @@ def _write_guard_plugin(source, command_tool_name: str) -> None:
                 "name": "Guard",
                 "version": "1.0.0",
                 "namespace": "guard",
-                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "guard_plugin:create_plugin",
@@ -1462,7 +1458,7 @@ def _write_guard_plugin(source, command_tool_name: str) -> None:
         ),
         encoding="utf-8",
     )
-    plugin_source = """from ouro.sdk.plugins.v2 import (
+    plugin_source = """from ouro.sdk.plugins.v3 import (
     ContributionSet,
     ToolPolicyContribution,
     ToolPolicyDecision,
@@ -1506,19 +1502,20 @@ def _write_observer_retire_plugin(source) -> None:
                 "name": "Observer Retire",
                 "version": "1.0.0",
                 "namespace": "observer_retire",
-                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "observer_retire_plugin:create_plugin",
                 },
                 "contributes": {
+                    "commands": [{"id": "inspect", "description": "Read observer state."}],
                     "observers": [
                         {
                             "id": "stuck",
                             "event": "context_prepared",
                             "timeout_seconds": 0.2,
                         }
-                    ]
+                    ],
                 },
                 "permissions": [],
                 "dependencies": {"plugins": []},
@@ -1529,20 +1526,29 @@ def _write_observer_retire_plugin(source) -> None:
     )
     (source / "observer_retire_plugin.py").write_text(
         """import asyncio
-from ouro.sdk.plugins.v2 import ContributionSet, ObserverContribution
+from ouro.sdk.plugins.v3 import CommandContribution, ContributionSet, ObserverContribution
 
 class Plugin:
     def __init__(self, context):
         self.context = context
+        self.started = False
 
     async def prepare(self):
         async def observe(_observation):
-            self.context.data.write_bytes('started', b'1')
+            self.started = True
             await asyncio.Event().wait()
 
-        return ContributionSet(observers=[ObserverContribution(
-            id='stuck', event='context_prepared', handler=observe,
-        )])
+        async def inspect(_call):
+            return 'started' if self.started else 'idle'
+
+        return ContributionSet(
+            observers=[ObserverContribution(
+                id='stuck', event='context_prepared', handler=observe,
+            )],
+            commands=[CommandContribution(
+                id='inspect', description='Read observer state.', handler=inspect,
+            )],
+        )
 
     async def start(self): pass
 
@@ -1567,15 +1573,16 @@ def _write_prompt_policy_plugin(source) -> None:
                 "name": "Prompt Guard",
                 "version": "1.0.0",
                 "namespace": "prompt_guard",
-                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "prompt_guard_plugin:create_plugin",
                 },
                 "contributes": {
+                    "commands": [{"id": "inspect", "description": "Read policy observation."}],
                     "prompt_policies": [
                         {"id": "blocked_marker", "priority": 10, "timeout_seconds": 2}
-                    ]
+                    ],
                 },
                 "permissions": [
                     {
@@ -1592,7 +1599,8 @@ def _write_prompt_policy_plugin(source) -> None:
     (source / "prompt_guard_plugin.py").write_text(
         """import asyncio
 import json
-from ouro.sdk.plugins.v2 import (
+from ouro.sdk.plugins.v3 import (
+    CommandContribution,
     ContributionSet,
     PromptPolicyContribution,
     PromptPolicyDecision,
@@ -1602,16 +1610,14 @@ class Plugin:
     def __init__(self, context):
         self.context = context
         self.plugin_id = context.identity.plugin_id
+        self.seen = None
 
     async def prepare(self):
         async def inspect_prompt(call):
-            self.context.data.write_bytes(
-                'seen.json',
-                json.dumps({
-                    'catalog_id': call.catalog_id,
-                    'execution_contract': call.execution_contracts.get(self.plugin_id),
-                }).encode('utf-8'),
-            )
+            self.seen = {
+                'catalog_id': call.catalog_id,
+                'execution_contract': call.execution_contracts.get(self.plugin_id),
+            }
             if 'slow marker' in call.prompt:
                 await asyncio.sleep(0.1)
             if 'blocked marker' in call.prompt:
@@ -1620,9 +1626,17 @@ class Plugin:
                 )
             return PromptPolicyDecision()
 
-        return ContributionSet(prompt_policies=[PromptPolicyContribution(
-            id='blocked_marker', handler=inspect_prompt,
-        )])
+        async def inspect(_call):
+            return json.dumps(self.seen)
+
+        return ContributionSet(
+            prompt_policies=[PromptPolicyContribution(
+                id='blocked_marker', handler=inspect_prompt,
+            )],
+            commands=[CommandContribution(
+                id='inspect', description='Read policy observation.', handler=inspect,
+            )],
+        )
 
     async def start(self): pass
     async def stop(self, reason, deadline): pass
@@ -1660,7 +1674,7 @@ def _write_catalog_plugin(source, *, version: str = "1.0.0") -> None:
                 "name": "Catalog",
                 "version": version,
                 "namespace": "catalog",
-                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "catalog_plugin:create_plugin",
@@ -1688,7 +1702,7 @@ def _write_catalog_plugin(source, *, version: str = "1.0.0") -> None:
         encoding="utf-8",
     )
     (source / "catalog_plugin.py").write_text(
-        """from ouro.sdk.plugins.v2 import (
+        """from ouro.sdk.plugins.v3 import (
     CommandContribution,
     CommandOutput,
     ContributionSet,
@@ -1737,7 +1751,7 @@ def _write_resumable_plugin(source) -> None:
                 "name": "Resume",
                 "version": "1.0.0",
                 "namespace": "resume",
-                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "resume_plugin:create_plugin",
@@ -1763,7 +1777,7 @@ def _write_resumable_plugin(source) -> None:
         encoding="utf-8",
     )
     (source / "resume_plugin.py").write_text(
-        """from ouro.sdk.plugins.v2 import (
+        """from ouro.sdk.plugins.v3 import (
     ContributionSet,
     ToolContribution,
     ToolInputRequest,
@@ -1818,7 +1832,7 @@ def _write_skill_plugin(source) -> None:
                 "name": "Skill Prompt",
                 "version": "1.0.0",
                 "namespace": "skill_prompt",
-                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
                 "runtime": {"kind": "declarative"},
                 "contributes": {"skills": [{"id": "calendar", "path": "./skills/calendar"}]},
                 "permissions": [],

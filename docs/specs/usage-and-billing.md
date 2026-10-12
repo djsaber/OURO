@@ -7,7 +7,7 @@
 
 `Usage` 承载供应商返回的 token 与可确认的 USD 估算金额，上下文估算不进入账本。input 包含 cached input，缓存读写只提供细分，不重复加入 total；reasoning token 不重复计入 output。普通回合与压缩请求在供应商响应完成后经同一 UsageService 记账，后续摘要校验失败不撤销已发生的用量。
 
-每条 ProviderUsageEntry 记录请求身份、provider、endpoint、model、工作空间、Session、Run、用途及带时区的发生时间。运行时从所属会话取得工作空间并固定到账单；未指定工作空间保存 None。历史用量查询只依赖账本，不加载 Session、Run 或当前配置。Session 归档、撤销对话或删除会话不改变账单。
+每条 ProviderUsageEntry 记录请求身份、provider、endpoint、model、工作空间、用途及带时区的发生时间。`agent` 和 `compaction` 用量必须关联真实 Session 与 Run；`plugin` 用量必须关联插件 ID，Run 身份为空，Session 与工作空间仅在调用来源存在时保存。独立请求不创建会话或 Run。历史用量查询只依赖账本，不加载 Session、Run 或当前配置。Session 归档、撤销对话或删除会话不改变账单。
 
 计费模式仅表示服务连接的声明，取值为 unknown、usage_based、subscription。组合根的 ProviderRequestPolicy 经 adapter factory 固定到当次 ModelMetadata，UsageService 将其写入 metadata.billing_mode。不得从登录方式、账户身份或模型名称推断计费方式。进行中的请求保留其 adapter 声明，下一请求使用重新解析的 adapter。
 
@@ -15,7 +15,7 @@
 
 ## 存储与一致性
 
-本地账本位于 `OURO_HOME/billing/usage.sqlite3`，使用 SQLite WAL，与 Session 后端独立。数据库文件不存在时自动初始化，目录中的其他文件不参与初始化判断。数据库标识和 user_version 只接受当前版本，持久化记录校验 schema_version。
+本地账本位于 `OURO_HOME/billing/usage.sqlite3`，使用 SQLite WAL，与 Session 后端独立。数据库文件不存在时自动初始化，目录中的其他文件不参与初始化判断。数据库 user_version、请求记录和审计事件的 schema_version 均为 2。只接受当前格式，不自动迁移或删除不支持的数据。
 
 首次建库通过同目录 `usage.init.lock` 协调跨实例与跨进程初始化，锁等待上限为 5 秒。获得锁后重新检查 schema，
 再设置 WAL 并在事务内创建表，避免多个空库读取者同时切换日志模式。现有数据库只验证 schema，不获取初始化
@@ -26,13 +26,13 @@
 - scopes 保存请求与原生预算 owner/scope 的去重关联。预算读取按 Session 索引聚合有效 token，修订与 reset 即时生效。
 - 每次写入在同一事务内更新有效值、关联与审计。失败全部回滚；读事务观察一致快照，列表计数与当前页来自同一快照。
 
-请求身份由 Run、request_id、用途和模型路由确定。相同请求重复提交必须与首次事实一致，接收时钟差异不参与幂等判定；即使有效数值已人工修订，也仍校验原始数值、工作空间及计费归属。修订使用递增 revision 防止覆盖并发修改，只能修改 token 和金额，必须保留原因。reset 按有效记录执行筛选，返回同一事务内计算的受影响总量，保留完整审计。
+请求身份由所属 Run 或插件、request_id、用途和模型路由确定。相同请求重复提交必须与首次事实一致，接收时钟差异不参与幂等判定；即使有效数值已人工修订，也仍校验原始数值、工作空间及计费归属。修订使用递增 revision 防止覆盖并发修改，只能修改 token 和金额，必须保留原因。reset 按有效记录执行筛选，返回同一事务内计算的受影响总量，保留完整审计。
 
 ## 查询契约
 
-UsageFilter 支持带时区的 occurred_from（含）与 occurred_to（不含），以及 provider_ids、endpoint_ids、model_ids、workspaces、session_ids、run_ids、purposes、billing_modes。空集合表示不限；同维度多个值取并集，不同维度取交集。endpoint_ids 和 workspaces 可包含 None，选择未归属记录。字符串归属按保存值精确匹配。
+UsageFilter 支持带时区的 occurred_from（含）与 occurred_to（不含），以及 provider_ids、endpoint_ids、model_ids、workspaces、session_ids、run_ids、plugin_ids、purposes、billing_modes。空集合表示不限；同维度多个值取并集，不同维度取交集。endpoint_ids、workspaces、session_ids、run_ids 和 plugin_ids 可包含 None，选择未归属记录。字符串归属按保存值精确匹配。
 
-summary 支持 date、provider、endpoint、model、workspace、session、run、purpose、billing_mode 的有序复合分组。date 使用 UTC 日期。group_by 是维度元组，group.key 按同一顺序提供值；未归属值保留 None，不使用可能与真实值冲突的占位字符串。分组键升序排列，None 在字符串之前；总量由同一分组结果合并，不再次扫描明细。
+summary 支持 date、provider、endpoint、model、workspace、session、run、plugin、purpose、billing_mode 的有序复合分组。date 使用 UTC 日期。group_by 是维度元组，group.key 按同一顺序提供值；未归属值保留 None，不使用可能与真实值冲突的占位字符串。分组键升序排列，None 在字符串之前；总量由同一分组结果合并，不再次扫描明细。
 
 详情使用 `(occurred_at, entry_id)` 降序游标，审计使用单调递增提交序号的降序游标。limit 范围为 1–10000，next_cursor 为 None 表示已读完。total_matching / total_events 表示本次快照的全部匹配数量，truncated 表示该页之后还有记录。后续页是新的读取快照；游标避免新记录插入导致已有页整体位移，不承诺跨页冻结正在发生的修改或 reset。
 

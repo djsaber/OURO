@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from ouro.core.agents import AgentWaitRequest
 from ouro.core.approvals import ApprovalRecord
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id, utc_now
 from ouro.core.interactions import ToolInputResolution
-from ouro.core.messages import MessageRecord
-from ouro.core.tools import ToolCallRequest, ToolInputRequest, ToolInvocation, ToolResult
+from ouro.core.tools import (
+    ToolCallProducer,
+    ToolCallRequest,
+    ToolInputRequest,
+    ToolInvocation,
+    ToolResult,
+)
 
 ToolExecutionMode = Literal["sequential", "parallel"]
 ToolBatchPhase = Literal[
@@ -58,7 +63,8 @@ class ToolBatchCall(OuroModel):
 class ToolCallBatchRecord(OuroModel):
     batch_id: str = Field(default_factory=lambda: new_id("batch"))
     turn_id: str
-    assistant_message_id: str
+    assistant_message_id: str | None = None
+    producer: ToolCallProducer = Field(default_factory=ToolCallProducer)
     phase: ToolBatchPhase = "planned"
     execution_mode: ToolExecutionMode = "sequential"
     max_concurrency: int = Field(default=4, ge=1)
@@ -66,6 +72,12 @@ class ToolCallBatchRecord(OuroModel):
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     metadata: Metadata = MetadataField
+
+    @model_validator(mode="after")
+    def validate_origin(self) -> Self:
+        if (self.producer.kind == "model") != bool(self.assistant_message_id):
+            raise ValueError("only model tool batches require an assistant message")
+        return self
 
     @property
     def pending_approvals(self) -> list[ApprovalRecord]:
@@ -81,12 +93,3 @@ class ToolCallBatchRecord(OuroModel):
             call.status not in {"awaiting_approval", "waiting_user", "waiting_child"}
             for call in self.calls
         )
-
-
-class ToolBatchHandlingResult(OuroModel):
-    status: ToolBatchOutcomeStatus
-    batch: ToolCallBatchRecord
-    messages: list[MessageRecord] = Field(default_factory=list)
-    results: list[ToolResult] = Field(default_factory=list)
-    input_request: ToolInputRequest | None = None
-    sequence: int = 0

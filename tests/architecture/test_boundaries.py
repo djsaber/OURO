@@ -17,6 +17,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
             "billing",
             "config",
             "core",
+            "local_processes",
             "mcp",
             "plugins",
             "prompts",
@@ -29,7 +30,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
     "billing": frozenset({"core", "local_io", "local_locks"}),
     "auth": frozenset({"core", "local_io", "local_locks"}),
     "automation": frozenset({"core", "local_io", "local_locks"}),
-    "builtin_plugins": frozenset({"core", "plugins", "sdk", "sessions"}),
+    "builtin_plugins": frozenset({"plugins", "sdk"}),
     "cli": frozenset(
         {
             "data_commands",
@@ -61,6 +62,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
             "config",
             "core",
             "deployment",
+            "local_providers",
             "mcp",
             "plugins",
             "providers",
@@ -70,29 +72,33 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
             "tools",
         }
     ),
+    "local_providers": frozenset({"core", "plugins", "providers", "sdk"}),
     "local_io": frozenset({"core"}),
     "local_locks": frozenset(),
+    "local_processes": frozenset({"core"}),
     "mcp": frozenset({"config", "core", "tools"}),
-    "plugins": frozenset({"core", "local_locks", "mcp", "sdk", "sessions", "skills", "tools"}),
+    "plugins": frozenset(
+        {"core", "local_processes", "local_locks", "mcp", "sdk", "sessions", "skills", "tools"}
+    ),
     "prompts": frozenset(),
     "providers": frozenset({"auth", "config", "core"}),
     "resources": frozenset({"core", "local_io", "local_locks"}),
     "sdk": frozenset(),
     "sessions": frozenset({"core", "local_io", "local_locks", "resources"}),
     "skills": frozenset({"config", "core"}),
-    "tools": frozenset({"core"}),
+    "tools": frozenset({"core", "local_processes"}),
     "tui": frozenset(
         {
             "data_commands",
             "automation",
             "application",
-            "builtin_plugins",
             "config",
             "core",
             "deployment",
             "local_application",
             "local_io",
             "mcp",
+            "sdk",
             "skills",
             "tools",
         }

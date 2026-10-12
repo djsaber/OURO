@@ -6,7 +6,7 @@
   "description": "Contributes a Tool through the strict stdio worker protocol.",
   "namespace": "worker_tool",
   "engines": {
-    "ouro": ">=0.1.0,<0.2.0",
+    "ouro": ">=0.2.0,<0.3.0",
     "plugin_api": "^3.0.0"
   },
   "runtime": {

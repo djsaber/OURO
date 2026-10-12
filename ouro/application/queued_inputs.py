@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from datetime import datetime
 from typing import Literal
 
@@ -13,6 +14,7 @@ from ouro.core.input_content import InputContent, InputFile
 from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import SkillActivationContent
+from ouro.core.run_drivers import RunDriverBinding
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
 from ouro.core.session_controls import HostSessionInput, SessionInputMode, SessionInputRequest
 from ouro.core.state import SessionRecord
@@ -45,6 +47,7 @@ class QueuedInput(OuroModel):
     prompt: str = ""
     skill_activation: SkillActivationContent | None = None
     mode: QueuedInputMode
+    driver: RunDriverBinding | None = None
     title: str | None = None
     resource_refs: tuple[str, ...] = ()
     attachments: tuple[InputFile, ...] = Field(default=(), max_length=16)
@@ -82,6 +85,8 @@ class QueuedInput(OuroModel):
 
     @model_validator(mode="after")
     def validate_source(self) -> QueuedInput:
+        if self.driver is not None and self.mode != "follow_up":
+            raise ValueError("Driver selection cannot steer an existing Run")
         plugin_attribution = (
             self.plugin_id,
             self.contribution_id,
@@ -180,6 +185,8 @@ class QueuedInputQueue:
         self,
         session_id: str,
         request: HostSessionInput,
+        *,
+        select_driver: Callable[[str | None], RunDriverBinding | None] | None = None,
     ) -> tuple[HostInputReceipt, QueuedInput | None, SessionRecord]:
         """Atomically accept an input or return its pending/consumed receipt.
 
@@ -201,6 +208,7 @@ class QueuedInputQueue:
                     or existing.role != request.role
                     or existing.scaffold != request.scaffold
                     or existing.semantic_tag != request.semantic_tag
+                    or (existing.driver.driver_id if existing.driver else None) != request.driver_id
                 ):
                     raise ValueError("Host input queue id is already bound to another input")
                 return (
@@ -222,6 +230,7 @@ class QueuedInputQueue:
                     or message.role != request.role
                     or message.scaffold != request.scaffold
                     or message.semantic_tag != request.semantic_tag
+                    or message.metadata.get("input_driver_id") != request.driver_id
                 ):
                     raise ValueError("Host input queue id is already bound to another input")
                 return (
@@ -239,9 +248,13 @@ class QueuedInputQueue:
                 raise ValueError(
                     "Host input was already accepted and has been withdrawn or cancelled"
                 )
+            if request.driver_id is not None and select_driver is None:
+                raise ValueError("Host input Driver selection is unavailable")
+            driver = select_driver(request.driver_id) if select_driver is not None else None
             session, item, _ = self.enqueue(
                 snapshot=RuntimeSessionSnapshot(session=session),
                 prompt=request.prompt,
+                driver=driver,
                 mode=request.mode,
                 title=request.title,
                 resource_refs=request.resource_refs,
@@ -269,6 +282,7 @@ class QueuedInputQueue:
         *,
         snapshot: RuntimeSessionSnapshot,
         prompt: str,
+        driver: RunDriverBinding | None = None,
         skill_activation: SkillActivationContent | None = None,
         mode: QueuedInputMode = "follow_up",
         title: str | None,
@@ -303,6 +317,7 @@ class QueuedInputQueue:
             queue_id=queue_id or new_id("queued"),
             prompt=prompt,
             skill_activation=skill_activation,
+            driver=driver,
             mode=mode,
             title=title,
             resource_refs=resource_refs,
@@ -364,6 +379,7 @@ class QueuedInputQueue:
         contribution_id: str,
         generation_id: str,
         execution_contract_hash: str,
+        driver: RunDriverBinding | None = None,
         coalesce_key: str | None = None,
         caused_by_run_id: str | None = None,
         session_control_controller_id: str | None = None,
@@ -381,6 +397,7 @@ class QueuedInputQueue:
                 history_epoch=snapshot.session.history_epoch,
                 queue_id=new_id("queued"),
                 prompt=item.prompt,
+                driver=driver,
                 mode=item.mode,
                 title=item.title,
                 queued_at=utc_now(),
@@ -417,6 +434,8 @@ class QueuedInputQueue:
         if any(item.history_epoch != session.history_epoch for item in queued_items):
             raise SessionCommitConflict("Queued input belongs to withdrawn Session history")
         first = queued_items[0]
+        if any(item.driver != first.driver for item in queued_items):
+            raise ValueError("an atomic input batch must select one Driver contract")
         metadata = dict(session.metadata)
         superseded: list[QueuedInput] = []
         retained: list[object] = []
@@ -449,6 +468,14 @@ class QueuedInputQueue:
         """Return valid eligible items without acknowledging durable queue state."""
 
         return self.eligible_session(snapshot.session, mode=mode, limit=limit)
+
+    def bound_drivers(self, session: SessionRecord) -> tuple[RunDriverBinding, ...]:
+        """Read contracts retained by persisted queue entries without changing the queue."""
+        return tuple(
+            item.driver
+            for raw in self._raw_queue(session.metadata)
+            if (item := self._parse_item(raw)) is not None and item.driver is not None
+        )
 
     def eligible_session(
         self,
@@ -517,6 +544,7 @@ class QueuedInputQueue:
             if (
                 len(candidate) != item.batch_size
                 or any(member.batch_id != item.batch_id for member in candidate)
+                or any(member.driver != item.driver for member in candidate)
                 or [member.batch_index for member in candidate] != list(range(item.batch_size))
             ):
                 index += 1

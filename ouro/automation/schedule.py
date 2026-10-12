@@ -4,7 +4,7 @@ import calendar
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from ouro.automation.models import TaskSchedule
+from ouro.core.tasks import TaskSchedule
 
 
 def next_occurrence(

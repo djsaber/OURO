@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol
 
-from ouro.automation.models import TaskCounts, TaskExecution, TaskRecord
+from ouro.core.tasks import TaskCounts, TaskExecution, TaskRecord
 
 
 class TaskRepository(Protocol):
@@ -13,7 +13,9 @@ class TaskRepository(Protocol):
     def acquire_scheduler(self) -> bool: ...
     def release_scheduler(self) -> None: ...
     def get(self, task_id: str) -> TaskRecord: ...
-    def list(self, *, limit: int = 200, offset: int = 0) -> tuple[TaskRecord, ...]: ...
+    def list(
+        self, *, limit: int = 200, offset: int = 0, owner_id: str | None = None
+    ) -> tuple[TaskRecord, ...]: ...
     def counts(self) -> TaskCounts: ...
     def due(
         self,

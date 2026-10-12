@@ -5,6 +5,37 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Protocol
 
+from .content import (
+    ToolAudioContent,
+    ToolContent,
+    ToolImageContent,
+    ToolTextContent,
+    ToolVideoContent,
+)
+from .environment import PluginEnvironment
+from .models import PluginModels
+from .processes import PluginProcesses
+from .providers import ProviderContribution
+from .run_drivers import (
+    AgentTask,
+    DriverFinished,
+    DriverResume,
+    DriverSuspended,
+    ModelResponse,
+    ModelToolCall,
+    NativeToolResult,
+    RunAgents,
+    RunDriverContext,
+    RunDriverContribution,
+    RunInput,
+    RunInputs,
+    RunModels,
+    RunToolCall,
+    RunTools,
+    ToolBatchResult,
+)
+from .scheduling import PluginScheduler
+from .services import PluginServices, Registration, ServiceContribution
 from .state import (
     JsonValue,
     PluginRunControl,
@@ -111,7 +142,14 @@ class PluginContext:
     diagnostics: DiagnosticEmitter
     permissions: frozenset[str] = frozenset()
     artifact_root: str | None = None
-    host_home: str | None = None
+    environment: PluginEnvironment | None = None
+    services: PluginServices | None = None
+    processes: PluginProcesses | None = None
+    models: PluginModels | None = None
+    tools: RunTools | None = None
+    agents: RunAgents | None = None
+    tool_groups: PluginToolGroups | None = None
+    scheduler: PluginScheduler | None = None
 
 
 class CancellationContext(Protocol):
@@ -156,38 +194,6 @@ class ToolCall:
     arguments: Mapping[str, object]
     workspace: str | None = None
     workspace_only: bool = False
-
-
-@dataclass(frozen=True)
-class ToolTextContent:
-    text: str
-    type: Literal["text"] = field(default="text", init=False)
-
-
-@dataclass(frozen=True)
-class ToolImageContent:
-    uri: str
-    media_type: str = ""
-    type: Literal["image"] = field(default="image", init=False)
-
-
-@dataclass(frozen=True)
-class ToolAudioContent:
-    uri: str
-    media_type: str
-    type: Literal["audio"] = field(default="audio", init=False)
-
-
-@dataclass(frozen=True)
-class ToolVideoContent:
-    uri: str
-    media_type: str
-    type: Literal["video"] = field(default="video", init=False)
-
-
-ToolContent = (
-    str | tuple[ToolTextContent | ToolImageContent | ToolAudioContent | ToolVideoContent, ...]
-)
 
 
 @dataclass(frozen=True)
@@ -268,6 +274,7 @@ class SessionInput:
 
     Model role, scaffold origin and semantic labeling are independent. The
     producer declares each field; the Host preserves them without inference.
+    ``driver_id`` selects the algorithm of a follow-up Run at input acceptance.
     """
 
     prompt: str
@@ -276,14 +283,19 @@ class SessionInput:
     role: SessionInputRole = "system"
     scaffold: bool = True
     semantic_tag: str | None = None
+    driver_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.driver_id is not None and (not self.driver_id.strip() or self.mode != "follow_up"):
+            raise ValueError("Driver selection requires a nonempty identity and follow-up input")
 
 
 @dataclass(frozen=True)
 class SessionInputBatch:
     """Submit one non-empty, ordered group of inputs as a single delivery unit.
 
-    Every input must use the same delivery mode. ``coalesce_key`` may be used
-    for replaceable pending projections owned by the same command.
+    Every input must use the same delivery mode and Driver selection.
+    ``coalesce_key`` may replace pending projections owned by the same command.
     """
 
     inputs: tuple[SessionInput, ...]
@@ -294,6 +306,8 @@ class SessionInputBatch:
             raise ValueError("session input batch cannot be empty")
         if len({item.mode for item in self.inputs}) != 1:
             raise ValueError("all inputs in a session input batch must use the same mode")
+        if len({item.driver_id for item in self.inputs}) != 1:
+            raise ValueError("all inputs in a session input batch must select the same Driver")
         if self.coalesce_key is not None and not self.coalesce_key.strip():
             raise ValueError("session input batch coalesce key cannot be blank")
 
@@ -314,6 +328,19 @@ class ToolContribution:
     supports_unattended: bool = False
     active_when: str | None = None
     interaction_controller: str | None = None
+
+
+@dataclass(frozen=True)
+class ToolGroupContribution:
+    """One complete tool group; revision identifies its implementation semantics."""
+
+    id: str
+    revision: str
+    tools: tuple[ToolContribution, ...] = ()
+
+
+class PluginToolGroups(Protocol):
+    async def publish(self, group: ToolGroupContribution) -> Registration: ...
 
 
 ToolPolicyAction = Literal["ignore", "require_approval", "deny"]
@@ -780,12 +807,16 @@ class CompactionContribution:
 
 @dataclass
 class ContributionSet:
+    tool_groups: list[ToolGroupContribution] = field(default_factory=list)
+    services: list[ServiceContribution] = field(default_factory=list)
     tools: list[ToolContribution] = field(default_factory=list)
     observers: list[ObserverContribution] = field(default_factory=list)
     commands: list[CommandContribution] = field(default_factory=list)
     context_providers: list[ContextContribution] = field(default_factory=list)
     compaction_strategies: list[CompactionContribution] = field(default_factory=list)
     background_services: list[BackgroundServiceContribution] = field(default_factory=list)
+    providers: list[ProviderContribution] = field(default_factory=list)
+    run_drivers: list[RunDriverContribution] = field(default_factory=list)
     continuation_policies: list[ContinuationPolicyContribution] = field(default_factory=list)
     prompt_policies: list[PromptPolicyContribution] = field(default_factory=list)
     turn_policies: list[TurnPolicyContribution] = field(default_factory=list)
@@ -805,6 +836,26 @@ PluginFactory = Callable[[PluginContext], PluginInstance | Awaitable[PluginInsta
 
 
 __all__ = [
+    "RunInput",
+    "RunInputs",
+    "PluginToolGroups",
+    "ToolGroupContribution",
+    "Registration",
+    "AgentTask",
+    "RunAgents",
+    "RunDriverContribution",
+    "RunDriverContext",
+    "DriverResume",
+    "DriverFinished",
+    "DriverSuspended",
+    "ModelResponse",
+    "ModelToolCall",
+    "NativeToolResult",
+    "ToolBatchResult",
+    "RunModels",
+    "PluginModels",
+    "RunTools",
+    "RunToolCall",
     "AnswerResolution",
     "BackgroundServiceContribution",
     "CommandCall",
@@ -831,6 +882,10 @@ __all__ = [
     "ObservationName",
     "ObserverContribution",
     "PluginContext",
+    "PluginEnvironment",
+    "PluginProcesses",
+    "PluginServices",
+    "PluginScheduler",
     "PluginCredentialResolver",
     "PluginDataStore",
     "PluginFactory",
@@ -855,6 +910,7 @@ __all__ = [
     "RunOrigin",
     "RunStatus",
     "SessionControlAccess",
+    "ServiceContribution",
     "SessionControlClaim",
     "SessionControlTransition",
     "SessionControlTransitionAction",

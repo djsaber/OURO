@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 
 from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal, settle_owned_tasks
@@ -9,6 +10,33 @@ from ouro.core.results import RunResult
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, RunStatus, SessionRecord
 from ouro.core.tools import ToolResult
 from ouro.sessions import SessionLock, SessionStore
+
+
+@dataclass
+class RunReservation:
+    """One queued Run's lock, transferred once to its execution attempt."""
+
+    session_id: str
+    run_id: str
+    _lock: SessionLock | None
+
+    def owns(self, session_id: str, run_id: str) -> bool:
+        return self._lock is not None and (session_id, run_id) == (
+            self.session_id,
+            self.run_id,
+        )
+
+    def take(self, session_id: str, run_id: str) -> SessionLock:
+        if not self.owns(session_id, run_id):
+            raise ValueError("reservation does not own this queued Run")
+        lock, self._lock = self._lock, None
+        assert lock is not None
+        return lock
+
+    def release(self) -> None:
+        if self._lock is not None:
+            lock, self._lock = self._lock, None
+            lock.release()
 
 
 class RunExecutionOwnership:
@@ -20,7 +48,19 @@ class RunExecutionOwnership:
         self._abort_states: dict[str, tuple[SessionRecord, RunRecord]] = {}
         self._abort_pollers: dict[str, asyncio.Task[None]] = {}
 
-    async def acquire(self, session_id: str, run_id: str) -> SessionLock | None:
+    async def reserve(self, session_id: str, run_id: str) -> RunReservation | None:
+        lock = await self.acquire(session_id, run_id)
+        return RunReservation(session_id, run_id, lock) if lock is not None else None
+
+    async def acquire(
+        self,
+        session_id: str,
+        run_id: str,
+        *,
+        reservation: RunReservation | None = None,
+    ) -> SessionLock | None:
+        if reservation is not None:
+            return reservation.take(session_id, run_id)
         task = asyncio.create_task(
             asyncio.to_thread(self.store.acquire_session_lock, session_id, run_id)
         )

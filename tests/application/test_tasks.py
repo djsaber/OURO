@@ -13,13 +13,20 @@ from ouro.application.task_execution import TaskExecutionCoordinator
 from ouro.application.task_scheduler import TaskScheduler
 from ouro.application.tasks import TaskService
 from ouro.automation.local_files import LocalTaskRepository
-from ouro.automation.models import TaskConfiguration, TaskConflictError, TaskRecord, TaskSchedule
 from ouro.automation.sqlite import SQLiteTaskRepository
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError, PersistenceError
 from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.state import RunRecord
+from ouro.core.tasks import (
+    AgentTaskRun,
+    AgentTaskTarget,
+    TaskConfiguration,
+    TaskConflictError,
+    TaskRecord,
+    TaskSchedule,
+)
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
@@ -63,13 +70,16 @@ async def task_runtime(home, *, provider=None, backend="files", task_backend="fi
         repository.release_scheduler()
 
 
-def configuration(home, **changes) -> TaskConfiguration:
+def configuration(home, *, title=None, **target_changes) -> TaskConfiguration:
     return TaskConfiguration(
-        workspace=str(home),
-        model="faux/task",
-        description="Run the scheduled instruction",
+        title=title,
+        target=AgentTaskTarget(
+            workspace=str(home),
+            model="faux/task",
+            prompt="Run the scheduled instruction",
+            **target_changes,
+        ),
         schedule=TaskSchedule(frequency="hourly", starts_at=NOW),
-        **changes,
     )
 
 
@@ -111,10 +121,10 @@ async def test_due_task_runs_with_persisted_configuration_through_shared_runtime
         assert session.session.approval_mode == "auto"
         assert session.session.interaction_mode == "unattended"
         assert session.session.current_model == "faux/task"
-        assert session.runs[0].run_id == entries[0].run_id
+        assert session.runs[0].run_id == entries[0].target.run_id
         assert session.runs[0].origin == "host"
         assert any(
-            message.text_content == task.configuration.description for message in session.messages
+            message.text_content == task.configuration.target.prompt for message in session.messages
         )
         counts = await tasks.counts()
         assert completed.status == "waiting"
@@ -132,7 +142,10 @@ async def test_default_task_model_is_resolved_at_dispatch_without_freezing_confi
     tmp_path, monkeypatch
 ) -> None:
     async with task_runtime(tmp_path) as (tasks, execution, _, _):
-        config = configuration(tmp_path).model_copy(update={"model": DEFAULT_MODEL})
+        config = configuration(tmp_path)
+        config = config.model_copy(
+            update={"target": config.target.model_copy(update={"model": DEFAULT_MODEL})}
+        )
         with pytest.raises(ConfigError, match="system default endpoint is not configured"):
             await tasks.create(config)
 
@@ -140,7 +153,7 @@ async def test_default_task_model_is_resolved_at_dispatch_without_freezing_confi
             tasks.runtime, "configured_default_model", lambda: tasks.runtime.current_model()
         )
         task = await tasks.create(config)
-        assert task.configuration.model == DEFAULT_MODEL
+        assert task.configuration.target.model == DEFAULT_MODEL
         await execution.tick()
         completed = await settle(tasks, execution, task.task_id)
         session = tasks.runtime.store.load_session(completed.session_id)
@@ -185,10 +198,24 @@ async def test_task_crud_validates_and_detects_concurrent_edits(tmp_path):
         assert enabled.next_run_at >= now[0]
         with pytest.raises(ValueError, match="absolute directory"):
             await tasks.create(
-                task.configuration.model_copy(update={"workspace": "missing-relative"})
+                task.configuration.model_copy(
+                    update={
+                        "target": task.configuration.target.model_copy(
+                            update={"workspace": "missing-relative"}
+                        )
+                    }
+                )
             )
         with pytest.raises(ConfigError, match="not found"):
-            await tasks.create(task.configuration.model_copy(update={"model": "missing/model"}))
+            await tasks.create(
+                task.configuration.model_copy(
+                    update={
+                        "target": task.configuration.target.model_copy(
+                            update={"model": "missing/model"}
+                        )
+                    }
+                )
+            )
         await tasks.delete(task.task_id, expected_revision=enabled.revision)
         assert not await tasks.list()
 
@@ -198,8 +225,8 @@ async def test_missed_occurrences_coalesce_and_claim_is_atomic(tmp_path):
         task = await tasks.create(configuration(tmp_path))
         now[0] += timedelta(days=1000)
         results = await asyncio.gather(
-            tasks.claim(task, "ses_a"),
-            tasks.claim(task, "ses_b"),
+            tasks.claim(task, AgentTaskRun(session_id="ses_a", run_id="run_a")),
+            tasks.claim(task, AgentTaskRun(session_id="ses_b", run_id="run_b")),
             return_exceptions=True,
         )
         assert sum(isinstance(result, TaskConflictError) for result in results) == 1
@@ -221,10 +248,18 @@ async def test_scheduler_election_and_startup_dispatch(tmp_path):
         assert not peer.acquire_scheduler()
         tasks.repository.release_scheduler()
         assert peer.acquire_scheduler()
-        scheduler = TaskScheduler(tasks, execution, refresh_seconds=0.02)
+        refreshed = asyncio.Event()
+
+        async def refresh_environment():
+            refreshed.set()
+
+        scheduler = TaskScheduler(
+            tasks, execution, refresh_seconds=0.02, refresh_environment=refresh_environment
+        )
         await scheduler.start()
         try:
-            await asyncio.sleep(0.06)
+            async with asyncio.timeout(5):
+                await refreshed.wait()
             assert not await tasks.executions(task.task_id)
             peer.release_scheduler()
             async with asyncio.timeout(10):
@@ -264,14 +299,14 @@ async def test_approval_pauses_until_user_resumes_the_same_run(tmp_path):
         await execution.tick()
         assert len(await tasks.executions(task.task_id)) == 1
         record = (await tasks.executions(task.task_id))[0]
-        run = tasks.runtime.store.load_run(record.session_id, record.run_id)
+        run = tasks.runtime.store.load_run(record.target.session_id, record.target.run_id)
         result = await tasks.runtime.approve_tool(
-            session_id=record.session_id,
-            run_id=record.run_id,
+            session_id=record.target.session_id,
+            run_id=record.target.run_id,
             approval_id=run.pending_approval_id,
             approved=True,
         )
-        assert result.run.run_id == record.run_id
+        assert result.run.run_id == record.target.run_id
         await settle(tasks, execution, task.task_id)
         assert target.read_text() == "approved"
         assert (await tasks.counts()).awaiting_approval == 0
@@ -292,6 +327,48 @@ class SelectivelyBlockingProvider:
         yield ProviderStreamEvent(type="done")
 
 
+@pytest.mark.parametrize("task_backend", ["files", "sqlite"])
+async def test_target_edit_during_execution_applies_only_to_next_occurrence(tmp_path, task_backend):
+    provider = SelectivelyBlockingProvider()
+    async with task_runtime(tmp_path, provider=provider, task_backend=task_backend) as (
+        tasks,
+        execution,
+        _,
+        now,
+    ):
+        task = await tasks.create(configuration(tmp_path))
+        await execution.tick()
+        async with asyncio.timeout(5):
+            await provider.started.wait()
+        accepted = (await tasks.executions(task.task_id))[0]
+        active = await tasks.get(task.task_id)
+        replacement = active.configuration.model_copy(
+            update={
+                "target": active.configuration.target.model_copy(
+                    update={"prompt": "New instruction"}
+                )
+            }
+        )
+        await tasks.update(task.task_id, replacement, expected_revision=active.revision)
+        provider.release.set()
+        await settle(tasks, execution, task.task_id)
+        completed = (await tasks.executions(task.task_id))[0]
+        assert completed.target == accepted.target
+        first = tasks.runtime.store.load_session(completed.target.session_id)
+        assert any(
+            message.text_content == task.configuration.target.prompt for message in first.messages
+        )
+        assert not any(message.text_content == "New instruction" for message in first.messages)
+        assert (await tasks.get(task.task_id)).configuration == replacement
+        now[0] += timedelta(hours=1)
+        await execution.tick()
+        await settle(tasks, execution, task.task_id)
+        latest = (await tasks.executions(task.task_id))[0]
+        assert latest.target.run_id != completed.target.run_id
+        second = tasks.runtime.store.load_session(latest.target.session_id)
+        assert any(message.text_content == "New instruction" for message in second.messages)
+
+
 async def test_background_concurrency_preserves_interactive_execution_and_abort(tmp_path):
     provider = SelectivelyBlockingProvider()
     async with task_runtime(tmp_path, provider=provider) as (tasks, execution, supervisor, now):
@@ -310,7 +387,7 @@ async def test_background_concurrency_preserves_interactive_execution_and_abort(
             assert (await supervisor.wait(foreground)).status == "completed"
         supervisor.release_handle(foreground)
         active = tasks.repository.active()
-        await supervisor.abort(active[0].session_id)
+        await supervisor.abort(active[0].target.session_id)
         await settle(tasks, execution, active[0].task_id, status="interrupted")
         provider.release.set()
 
@@ -364,7 +441,9 @@ async def test_execution_result_is_separate_from_remaining_schedule(tmp_path, ou
                 update={"schedule": config.schedule.model_copy(update={"ends_at": end})}
             )
         task = await tasks.create(config)
-        receipt = await tasks.claim(task, "ses_scheduled")
+        receipt = await tasks.claim(
+            task, AgentTaskRun(session_id="ses_scheduled", run_id="run_scheduled")
+        )
         assert receipt is not None
         task = await tasks.get(task.task_id)
         if plan == "disabled":
@@ -436,10 +515,10 @@ async def test_restart_preserves_pending_approval_and_exact_run_identity(tmp_pat
         assert (await tasks.get(task.task_id)).status == "paused"
         assert (await tasks.counts()).awaiting_approval == 1
         assert not target.exists()
-        run = tasks.runtime.store.load_run(receipt.session_id, receipt.run_id)
+        run = tasks.runtime.store.load_run(receipt.target.session_id, receipt.target.run_id)
         handle = await supervisor.resolve_tool_approval(
-            session_id=receipt.session_id,
-            run_id=receipt.run_id,
+            session_id=receipt.target.session_id,
+            run_id=receipt.target.run_id,
             approval_id=run.pending_approval_id,
             approved=True,
         )
@@ -482,9 +561,9 @@ async def test_busy_reusable_sessions_do_not_starve_tasks_beyond_admission_windo
         config = configuration(tmp_path, session_mode="reuse")
         tasks.runtime.prepare_run(
             RunRecord(session_id=session.session_id),
-            model=config.model,
-            reasoning=config.reasoning,
-            workspace=config.workspace,
+            model=config.target.model,
+            reasoning=config.target.reasoning,
+            workspace=config.target.workspace,
             approval_mode="auto",
             interaction_mode="interactive",
         )

@@ -13,11 +13,11 @@ from ouro.application.configuration import ConfigurationFacade
 from ouro.application.models import AvailableModel
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
-from ouro.automation.models import TaskConfiguration, TaskCounts, TaskSchedule
 from ouro.automation.schedule import next_occurrence
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
+from ouro.core.tasks import AgentTaskTarget, TaskConfiguration, TaskCounts, TaskSchedule
 from ouro.local_application import LocalApplication
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
@@ -37,6 +37,54 @@ async def choose(pilot, app, value):
     await pilot.pause()
     await pilot.press("enter")
     await pilot.pause()
+
+
+async def test_plugin_task_editor_and_history_use_service_arguments_and_result(tmp_path):
+    from tests.application.test_plugin_tasks import NOW, PLUGIN, configuration, package, settle
+
+    application = _application(tmp_path)
+    application.plugins.install(package(tmp_path / "package", "python-inprocess"))
+    app = OuroTuiApp(application=application)
+    async with run_ready_app(app, size=(120, 40)) as pilot:
+        await application.task_scheduler.stop()
+        assert (await application.plugins.enable(PLUGIN)).status == "active"
+        application.tasks.clock = lambda: NOW
+        task = await application.tasks.create(configuration(value="original"))
+        await application.task_scheduler.execution.tick()
+        receipt = await settle(
+            application.tasks, application.task_scheduler.execution, task.task_id
+        )
+        assert receipt.status == "completed", receipt.error
+        await pilot.press("ctrl+t")
+        await _wait_for_screen(app, ChoiceScreen, title="Tasks")
+        await choose(pilot, app, task.configuration.display_title)
+        await _wait_for_screen(
+            app,
+            ChoiceScreen,
+            title=theme_for(app).section_separator.join(("TASK", task.configuration.display_title)),
+        )
+        await choose(pilot, app, "History")
+        await _wait_for_screen(
+            app,
+            ChoiceScreen,
+            title=theme_for(app).section_separator.join(("TASK EXECUTIONS", "LATEST 50")),
+        )
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="TASK EXECUTION")
+        assert next(item for item in app.screen._choices if item.value == "result").description
+        assert app._controller.session_id is None
+        await pilot.press("escape", "escape")
+        await choose(pilot, app, "Edit")
+        await _wait_for_screen(app, TaskConfigurationScreen, title="EDIT TASK")
+        screen = app.screen
+        assert {item.value for item in screen._choices}.isdisjoint(
+            {"model", "workspace", "session", "approval"}
+        )
+        await screen._save_field("arguments", '{"value": "edited"}')
+        await choose(pilot, app, "Save")
+        assert (await application.tasks.get(task.task_id)).configuration.target.arguments == {
+            "value": "edited"
+        }
 
 
 @pytest.mark.parametrize(
@@ -85,7 +133,7 @@ def test_new_task_uses_system_wall_time_and_edit_preserves_explicit_zone(
     with pytest.raises(ValueError, match="System default endpoint is not configured"):
         screen.draft()
     screen._system_default_model = model
-    assert screen.draft().model == "default"
+    assert screen.draft().target.model == "default"
     with_default = TaskConfigurationScreen(
         models=(model,),
         workspace=str(tmp_path),
@@ -168,9 +216,9 @@ async def test_task_menu_saves_multiline_instructions_and_pauses_schedule(tmp_pa
         tasks = await application.tasks.list()
         assert len(tasks) == 1
         task = tasks[0]
-        assert task.configuration.description == description
-        assert task.configuration.approval_mode == "afk"
-        assert task.configuration.session_mode == "new"
+        assert task.configuration.target.prompt == description
+        assert task.configuration.target.approval_mode == "afk"
+        assert task.configuration.target.session_mode == "new"
         assert task.configuration.schedule.timezone == "Asia/Shanghai"
         await choose(pilot, app, "Manage tasks")
         await _wait_for_screen(app, ChoiceScreen, title="Tasks")
@@ -192,11 +240,11 @@ async def test_task_delete_and_status_actions_stay_on_shared_menu(tmp_path):
         model = (await app._controller.models())[0]
         task = await application.tasks.create(
             TaskConfiguration(
-                description="Delete this scheduled task",
-                workspace=str(tmp_path),
-                model=model.key,
                 schedule=TaskSchedule(
                     frequency="daily", starts_at=datetime.now(UTC) + timedelta(days=1)
+                ),
+                target=AgentTaskTarget(
+                    prompt="Delete this scheduled task", workspace=str(tmp_path), model=model.key
                 ),
             )
         )
@@ -240,11 +288,13 @@ async def test_task_list_lowlight_keeps_inactive_tasks_selectable(tmp_path, monk
     async with run_ready_app(app, size=(100, 34)) as pilot:
         task = await application.tasks.create(
             TaskConfiguration(
-                description="Paused task",
-                workspace=str(tmp_path),
-                model=(await app._controller.models())[0].key,
                 schedule=TaskSchedule(
                     frequency="daily", starts_at=datetime.now(UTC) + timedelta(days=1)
+                ),
+                target=AgentTaskTarget(
+                    prompt="Paused task",
+                    workspace=str(tmp_path),
+                    model=(await app._controller.models())[0].key,
                 ),
             )
         )
@@ -506,11 +556,11 @@ async def test_background_run_stays_silent_and_attaching_restores_live_stream(tm
         task = await application.tasks.create(
             TaskConfiguration(
                 title="Background stream",
-                description="Describe the workspace",
-                workspace=str(tmp_path),
-                model="faux/faux",
                 schedule=TaskSchedule(
                     frequency="custom", unit="minutes", starts_at=now + timedelta(seconds=0.1)
+                ),
+                target=AgentTaskTarget(
+                    prompt="Describe the workspace", workspace=str(tmp_path), model="faux/faux"
                 ),
             )
         )
@@ -528,7 +578,17 @@ async def test_background_run_stays_silent_and_attaching_restores_live_stream(tm
             await pilot.press("ctrl+t")
             await _wait_for_screen(app, ChoiceScreen, title="Tasks")
             await choose(pilot, app, "Background stream")
+            await _wait_for_screen(
+                app,
+                ChoiceScreen,
+                title=theme_for(app).section_separator.join(("TASK", "Background stream")),
+            )
             await choose(pilot, app, "History")
+            await _wait_for_screen(
+                app,
+                ChoiceScreen,
+                title=theme_for(app).section_separator.join(("TASK EXECUTIONS", "LATEST 50")),
+            )
             await pilot.press("enter")
         async with asyncio.timeout(5):
             while app._projection is None or app._projection.session_id != current.session_id:
@@ -571,13 +631,15 @@ async def test_tui_cancels_a_queued_task_before_it_can_start(tmp_path, entry):
             await provider.started.wait()
         task = await application.tasks.create(
             TaskConfiguration(
-                description="Task must never reach the model",
-                workspace=str(tmp_path),
-                model="faux/faux",
                 schedule=TaskSchedule(
                     frequency="custom",
                     unit="minutes",
                     starts_at=datetime.now(UTC) + timedelta(seconds=0.1),
+                ),
+                target=AgentTaskTarget(
+                    prompt="Task must never reach the model",
+                    workspace=str(tmp_path),
+                    model="faux/faux",
                 ),
             )
         )
@@ -633,11 +695,13 @@ async def test_task_model_change_resets_and_validates_thinking(tmp_path):
     )
     start = datetime(2026, 9, 7, 9, 12, 34, 123456, tzinfo=UTC)
     config = TaskConfiguration(
-        description="Do the scheduled work",
-        workspace=str(tmp_path),
-        model=thinking.key,
-        reasoning=ReasoningRequest(mode="enabled", effort="high"),
         schedule=TaskSchedule(frequency="daily", starts_at=start),
+        target=AgentTaskTarget(
+            prompt="Do the scheduled work",
+            workspace=str(tmp_path),
+            model=thinking.key,
+            reasoning=ReasoningRequest(mode="enabled", effort="high"),
+        ),
     )
     screen = TaskConfigurationScreen(models=(thinking, plain), workspace=None, configuration=config)
     assert screen.draft() == config
@@ -653,7 +717,7 @@ async def test_task_model_change_resets_and_validates_thinking(tmp_path):
         assert [choice.value for choice in app.screen._choices if choice.marker] == ["high"]
         await choose(pilot, app, "Low")
         await _wait_for_screen(app, TaskConfigurationScreen, title="EDIT TASK")
-        assert screen.draft().reasoning.effort == "low"
+        assert screen.draft().target.reasoning.effort == "low"
         screen.query_one("#choice-filter", Input).value = ""
         await pilot.pause()
         options = screen.query_one(OptionList)
@@ -663,7 +727,7 @@ async def test_task_model_change_resets_and_validates_thinking(tmp_path):
         assert [choice.value for choice in app.screen._choices if choice.marker] == [thinking.key]
         await choose(pilot, app, "plain")
         await _wait_for_screen(app, TaskConfigurationScreen, title="EDIT TASK")
-        assert screen.draft().reasoning == ReasoningRequest()
+        assert screen.draft().target.reasoning == ReasoningRequest()
         assert "high" not in screen.reasoning_options()
         assert next(row for row in screen._choices if row.value == "reasoning").disabled
         screen._reasoning = ReasoningRequest(mode="enabled", effort="high")

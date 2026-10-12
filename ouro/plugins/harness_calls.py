@@ -5,10 +5,11 @@ from dataclasses import replace
 from inspect import Parameter, iscoroutinefunction, signature
 from typing import Any, Literal
 
-from ouro.core.callbacks import invoke_callback, invoke_owned_callback
+from ouro.core.callbacks import invoke_owned_callback
 from ouro.core.cancellation import AbortSignal
 from ouro.core.harness_calls import HarnessCallSnapshot, HarnessInvocation, HarnessStateChange
 from ouro.core.session_extensions import SessionExtensionStateRecord
+from ouro.plugins.invocation import plugin_invocation
 from ouro.sdk.plugins.state import (
     JsonValue,
     PluginRunControl,
@@ -107,7 +108,6 @@ async def invoke_plugin_callback(
     writable: bool,
     signal: AbortSignal | None = None,
     context: object | None = None,
-    owned: bool = False,
 ) -> tuple[Any, HarnessStateChange | None]:
     """Give one callback a state view and close it before returning its proposal."""
 
@@ -119,12 +119,21 @@ async def invoke_plugin_callback(
     try:
         bound_call = replace(call, session_state=view)
         args = (bound_call,) if context is None else (bound_call, context)
-        if owned:
-            raw = await invoke_owned_callback(
-                handler, *args, on_cancel=view.close if view is not None else None
-            )
-        else:
-            raw = await invoke_callback(handler, *args)
+        with plugin_invocation(
+            owner_id,
+            writable=writable,
+            session_id=snapshot.session_id if snapshot is not None else None,
+            run_id=getattr(call, "run_id", None),
+            workspace=getattr(call, "workspace", None),
+            workspace_only=getattr(call, "workspace_only", False),
+        ) as invocation:
+
+            def close() -> None:
+                invocation.close()
+                if view is not None:
+                    view.close()
+
+            raw = await invoke_owned_callback(handler, *args, on_cancel=close)
         return raw, view.finish() if view is not None else None
     finally:
         if view is not None:

@@ -16,6 +16,8 @@ REQUEST_CONTEXT_KEYS = frozenset(
         "endpoint.id",
         "model.id",
         "request.purpose",
+        "request.id",
+        "plugin.id",
     }
 )
 

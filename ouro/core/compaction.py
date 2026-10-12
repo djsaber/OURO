@@ -447,7 +447,11 @@ def _tool_call_ids(message: MessageRecord) -> set[str]:
 
 
 def _tool_result_id(message: MessageRecord) -> str | None:
-    return message.tool_result.tool_call_id if message.tool_result is not None else None
+    return (
+        message.tool_result.tool_call_id
+        if message.tool_result is not None and message.tool_result.producer.kind == "model"
+        else None
+    )
 
 
 def _is_complete_frame(frame: Sequence[MessageRecord]) -> bool:

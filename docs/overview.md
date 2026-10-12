@@ -13,7 +13,7 @@ OURO 是本地优先的个人智能体运行时。会话历史、运行状态、
 
 | 领域 | 已实现范围 | 精确契约 |
 |---|---|---|
-| 运行 | 流式多轮模型 / 工具循环、顺序或并行批次、取消、运行预算、恢复、follow-up / steer 排队输入 | [运行时](specs/runtime.md) |
+| 运行 | 默认与可替换 Run Driver、共享模型 / 工具 / Agent 执行端口、顺序或并行批次、取消、预算、恢复、follow-up / steer 排队输入 | [运行时](specs/runtime.md) |
 | 会话 | 创建、继续、重命名、归档、置顶、搜索、分支、事件回放、回收站、游标查询和消息撤销 | [持久化](specs/session-persistence.md)、[撤销](specs/session-undo.md) |
 | 存储 | 文件与 SQLite 会话后端，共用契约；显式校验导入、原子提交和恢复 | [会话持久化](specs/session-persistence.md) |
 | 模型 | Faux、OpenAI Chat Completions、OpenAI Responses、Anthropic Messages；Provider / Endpoint、模板与自定义连接、推理能力配置 | [Provider 配置](specs/provider-configuration.md)、[协议](specs/provider-protocols.md) |
@@ -21,9 +21,9 @@ OURO 是本地优先的个人智能体运行时。会话历史、运行状态、
 | 上下文 | 原子模型帧、分层 AGENTS.md、Skills、动态 Context Provider、真实请求快照、摘要压缩和硬预算 | [上下文与压缩](specs/context-and-compaction.md) |
 | 工具与交互 | Read、Write、Edit、Glob、Grep、TodoList、宿主 Shell、AskUser；权限、审批、结构化输入和 AFK | [工具与交互](specs/tools-and-interactions.md)、[AFK](specs/afk.md) |
 | 子智能体 | 内置 general 与用户定义、冻结派遣目录、单层 sync / async 子会话、结果交付、根交互路由和恢复对账 | [子智能体](specs/subagents.md) |
-| 扩展 | 插件安装与版本选择、不可变包、Catalog 租约、13 类贡献、Goal / Plan；Skills 发现与管理；MCP 连接与工具调用 | [插件](specs/plugins.md)、[Skills](specs/skills.md)、[MCP](specs/mcp.md) |
+| 扩展 | 插件安装与版本选择、不可变包、精确依赖租约、15 类原生贡献、具名服务与动态工具、双向 worker、受管理进程及后台服务；Goal / Plan、Skills 与 MCP | [插件](specs/plugins.md)、[Skills](specs/skills.md)、[MCP](specs/mcp.md) |
 | 资源 | 会话独立附件、原路径引用、完整性校验、复制与导出，以及有界文本 / 原生图片输入 | [资源与监督](specs/resources-and-supervision.md) |
-| 自动任务 | 时区和日历计划、原子领取、新建或复用会话、审批挂起、执行历史与恢复；文件 / SQLite 任务后端 | [自动任务](specs/automated-tasks.md) |
+| 自动任务 | 时区和日历计划、原子领取、会话任务与插件 handler、审批挂起、执行历史与恢复；文件 / SQLite 任务后端 | [自动任务](specs/automated-tasks.md) |
 | 用量 | 请求级 token / 费用账本、计费归属、过滤汇总、审计修改和选择性重置 | [用量与计费](specs/usage-and-billing.md) |
 | 数据传输 | 各配置域、原生 Skills、完整会话树和附件的验证导入导出及跨会话后端传输 | [数据传输](specs/data-transfer.md) |
 | Host | Textual 全屏 TUI、CLI 单次文本 / JSON 输出、配置与维护命令、类型化事件观察 | [CLI](specs/cli-and-hosts.md)、[TUI](specs/tui.md)、[会话观察](specs/session-observation.md) |

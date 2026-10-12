@@ -8,8 +8,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ValidationError
 
-from ouro.automation.models import TaskConflictError, TaskCounts, TaskExecution, TaskRecord
 from ouro.core.errors import PersistenceError
+from ouro.core.tasks import TaskConflictError, TaskCounts, TaskExecution, TaskRecord
 from ouro.local_locks import FileMutationLock, FileOwnerLock
 
 
@@ -50,19 +50,20 @@ class SQLiteTaskRepository:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in {0, 1}:
-                raise PersistenceError(f"Unsupported task store version: {version}; expected 1")
+            if version not in {0, 3}:
+                raise PersistenceError(f"Unsupported task store version: {version}; expected 3")
             connection.execute("PRAGMA journal_mode=WAL")
             connection.executescript("""
                 CREATE TABLE IF NOT EXISTS tasks (
                     task_id TEXT PRIMARY KEY, revision INTEGER NOT NULL,
                     enabled INTEGER NOT NULL, next_run_at TEXT,
                     active_execution_id TEXT, status TEXT NOT NULL,
-                    updated_at TEXT NOT NULL, payload TEXT NOT NULL
+                    updated_at TEXT NOT NULL, payload TEXT NOT NULL, owner_id TEXT
                 );
                 CREATE INDEX IF NOT EXISTS tasks_due ON tasks(next_run_at, task_id)
                     WHERE enabled = 1 AND active_execution_id IS NULL;
                 CREATE INDEX IF NOT EXISTS tasks_status ON tasks(status);
+                CREATE INDEX IF NOT EXISTS tasks_owner ON tasks(owner_id, updated_at DESC, task_id);
                 CREATE TABLE IF NOT EXISTS task_executions (
                     execution_id TEXT PRIMARY KEY,
                     task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
@@ -75,7 +76,7 @@ class SQLiteTaskRepository:
                 CREATE INDEX IF NOT EXISTS executions_outcome
                     ON task_executions(json_extract(payload, '$.status'))
                     WHERE ended_at IS NOT NULL;
-                PRAGMA user_version=1;
+                PRAGMA user_version=3;
             """)
 
     def acquire_scheduler(self) -> bool:
@@ -96,12 +97,18 @@ class SQLiteTaskRepository:
             raise KeyError(f"Task not found: {task_id}")
         return _decode(TaskRecord, row[0])
 
-    def list(self, *, limit: int = 200, offset: int = 0) -> tuple[TaskRecord, ...]:
+    def list(
+        self, *, limit: int = 200, offset: int = 0, owner_id: str | None = None
+    ) -> tuple[TaskRecord, ...]:
         _validate_page(limit, offset)
+        where = " WHERE owner_id=?" if owner_id is not None else ""
+        parameters = (owner_id, limit, offset) if owner_id is not None else (limit, offset)
         with self._connection() as connection:
             rows = connection.execute(
-                "SELECT payload FROM tasks ORDER BY updated_at DESC, task_id LIMIT ? OFFSET ?",
-                (limit, offset),
+                "SELECT payload FROM tasks"
+                + where
+                + " ORDER BY updated_at DESC, task_id LIMIT ? OFFSET ?",
+                parameters,
             ).fetchall()
         return tuple(_decode(TaskRecord, row[0]) for row in rows)
 
@@ -178,13 +185,15 @@ class SQLiteTaskRepository:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT revision FROM tasks WHERE task_id=?", (task.task_id,)
+                "SELECT revision, owner_id FROM tasks WHERE task_id=?", (task.task_id,)
             ).fetchone()
             actual = row[0] if row else None
             if actual != expected_revision or task.revision != (actual or 0) + 1:
                 raise TaskConflictError("Task changed; reload it before saving")
+            if row and row[1] != task.owner_id:
+                raise TaskConflictError("Task owner cannot change")
             connection.execute(
-                "INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(task_id) DO UPDATE SET revision=excluded.revision, "
                 "enabled=excluded.enabled, next_run_at=excluded.next_run_at, "
                 "active_execution_id=excluded.active_execution_id, status=excluded.status, "
@@ -198,25 +207,34 @@ class SQLiteTaskRepository:
                     task.status,
                     _timestamp(task.updated_at),
                     task.model_dump_json(),
+                    task.owner_id,
                 ),
             )
             if execution is not None:
                 if execution.task_id != task.task_id:
                     raise ValueError("Execution belongs to another task")
+                if execution.owner_id != task.owner_id:
+                    raise ValueError("Execution owner must match its task")
                 identity = (
                     execution.execution_id,
                     execution.task_id,
                     _timestamp(execution.scheduled_at),
                 )
                 occurrences = connection.execute(
-                    "SELECT execution_id, task_id, scheduled_at FROM task_executions "
+                    "SELECT execution_id, task_id, scheduled_at, payload FROM task_executions "
                     "WHERE execution_id=? OR (task_id=? AND scheduled_at=?)",
                     identity,
                 ).fetchall()
-                if any(occurrence != identity for occurrence in occurrences):
+                if any(occurrence[:3] != identity for occurrence in occurrences):
                     raise TaskConflictError(
                         "Execution identity conflicts with a persisted occurrence"
                     )
+                if occurrences:
+                    previous = _decode(TaskExecution, occurrences[0][3])
+                    if previous.target != execution.target:
+                        raise TaskConflictError("Execution target cannot change after claim")
+                    if previous.cancel_requested:
+                        execution = execution.model_copy(update={"cancel_requested": True})
                 connection.execute(
                     "INSERT INTO task_executions VALUES (?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT(execution_id) DO UPDATE SET ended_at=excluded.ended_at, "

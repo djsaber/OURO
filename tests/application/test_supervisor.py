@@ -932,6 +932,10 @@ async def test_recovery_preserves_a_supervised_queued_run(tmp_path) -> None:
         handle = await supervisor.submit_prepared(
             run, HostSessionInput(prompt="queued", host_source_id="test")
         )
+        with pytest.raises(SessionBusyError, match="supervised run"):
+            await supervisor.submit_prepared(
+                run, HostSessionInput(prompt="duplicate", host_source_id="test")
+            )
 
         await supervisor.recover_session(session.session_id)
 

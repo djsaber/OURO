@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable
 from typing import cast
 from zoneinfo import ZoneInfo
 
-from ouro.automation.models import TaskConfiguration, TaskRecord
 from ouro.core.model_selection import DEFAULT_MODEL
+from ouro.core.tasks import AgentTaskRun, PluginTaskTarget, TaskConfiguration, TaskRecord
 from ouro.tui.plugin_workflows import PluginManagementWorkflows
 from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
 from ouro.tui.task_screens import FREQUENCY_LABELS, TASK_STATUS_LABELS, TaskConfigurationScreen
@@ -93,8 +94,13 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
         self, task: TaskRecord | None, *, menu: ChoiceScreen | None = None
     ) -> None:
         try:
-            models = await self._controller.models()
-            system_default_model = await self._controller.configured_default_model()
+            plugin_task = task is not None and isinstance(
+                task.configuration.target, PluginTaskTarget
+            )
+            models = () if plugin_task else await self._controller.models()
+            system_default_model = (
+                None if plugin_task else await self._controller.configured_default_model()
+            )
             screen = TaskConfigurationScreen(
                 models=models,
                 workspace=self._controller.draft_workspace,
@@ -208,7 +214,8 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
                     item.execution_id,
                     item.scheduled_at.astimezone().strftime("%Y-%m-%d %H:%M:%S"),
                     trailing=TASK_STATUS_LABELS[item.status],
-                    description=item.error or "Open session",
+                    description=item.error
+                    or ("Open session" if isinstance(item.target, AgentTaskRun) else "View result"),
                 )
                 for item in executions
             ) or (Choice("empty", "No executions yet", disabled=True),)
@@ -220,9 +227,37 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
             )
             if execution is None:
                 return await choices()
+            if not isinstance(execution.target, AgentTaskRun):
+                request = execution.target.request
+                menu.push_page(
+                    title="TASK EXECUTION",
+                    placeholder="Execution details",
+                    choices=(
+                        Choice(
+                            "service",
+                            "Service",
+                            description=f"{request.plugin_id}/{request.service}/{request.method}",
+                            disabled=True,
+                        ),
+                        Choice(
+                            "status",
+                            "Status",
+                            description=TASK_STATUS_LABELS[execution.status],
+                            disabled=True,
+                        ),
+                        Choice(
+                            "result",
+                            "Result",
+                            description=execution.error
+                            or json.dumps(execution.result, ensure_ascii=False),
+                            disabled=True,
+                        ),
+                    ),
+                )
+                return None
             menu.dismiss(None)
             try:
-                await self._open_session(execution.session_id)
+                await self._open_session(execution.target.session_id)
             except Exception as exc:
                 self.notify(str(exc), severity="error", markup=False)
             return None

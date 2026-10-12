@@ -13,8 +13,8 @@ from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
 from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.plugins.api import adapt_sdk_contributions
 from ouro.providers import FauxProvider
-from ouro.sdk.plugins import v2 as sdk
-from ouro.sessions import LocalSessionStore
+from ouro.sdk.plugins import v3 as sdk
+from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 
 
@@ -70,6 +70,141 @@ def test_runtime_reuses_one_tool_coordinator_for_each_run(tmp_path) -> None:
     second = runtime._tool_calls_for_run("run_scope")
 
     assert first is second
+
+
+@pytest.mark.asyncio
+async def test_approval_wait_is_committed_once_without_a_snapshot_rewrite(
+    tmp_path, monkeypatch
+) -> None:
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            definition=ToolDefinition(
+                name="Deploy", description="Deploy changes.", permission_mode="approval"
+            ),
+            handler=lambda invocation, context: _result(invocation, "deployed"),
+        )
+    )
+    runtime = _runtime(
+        tmp_path, registry=registry, first_calls=[ToolCallRequest(id="deploy", name="Deploy")]
+    )
+    commits = []
+    snapshot_writes = []
+    original_commit = runtime.store.commit_session
+    original_save_run = runtime.store.save_run
+
+    def commit(request):
+        commits.extend(run for run in request.runs if run.status == "waiting_approval")
+        return original_commit(request)
+
+    def save_run(run):
+        if run.status == "waiting_approval":
+            snapshot_writes.append(run)
+        original_save_run(run)
+
+    monkeypatch.setattr(runtime.store, "commit_session", commit)
+    monkeypatch.setattr(runtime.store, "save_run", save_run)
+    try:
+        result = await runtime.run("deploy")
+        persisted = runtime.store.load_run(result.session.session_id, result.run.run_id)
+
+        assert result.run.status == "waiting_approval"
+        assert len(commits) == 1
+        assert snapshot_writes == []
+        assert result.run == persisted
+        assert result.run.active_tool_batch == commits[0].active_tool_batch
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.parametrize("store_type", [LocalSessionStore, SQLiteSessionStore])
+@pytest.mark.asyncio
+async def test_tool_wait_returns_consumed_state_change_and_resumes_committed_state(
+    tmp_path, store_type, monkeypatch
+) -> None:
+    seen = []
+    outcomes = []
+
+    def begin(call: sdk.ToolCall) -> sdk.ToolInputRequest:
+        seen.append("begin")
+        call.session_state.replace(state_schema_version=1, payload={"stage": "waiting"})
+        return sdk.ToolInputRequest(data={"question": "continue?"})
+
+    def resume(call: sdk.ToolResumeCall) -> sdk.ToolOutput:
+        seen.append(call.session_state.read().payload)
+        call.session_state.replace(state_schema_version=1, payload={"stage": "finished"})
+        return sdk.ToolOutput(content="accepted")
+
+    contribution = adapt_sdk_contributions(
+        owner_id="example.plugin",
+        contributions=sdk.ContributionSet(
+            tools=[
+                sdk.ToolContribution(
+                    id="workflow",
+                    exposed_name="workflow__advance",
+                    description="Advance workflow.",
+                    permission_mode="auto",
+                    handler=begin,
+                    resume_handler=resume,
+                )
+            ]
+        ),
+    ).tools[0]
+    registry = ToolRegistry()
+    registry.register(contribution)
+    store = store_type(
+        tmp_path / "sessions.sqlite3" if store_type is SQLiteSessionStore else tmp_path
+    )
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        tools=registry,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                event_batches=[
+                    [
+                        ProviderStreamEvent.from_tool_call(
+                            {"id": "workflow", "name": "workflow__advance", "arguments": {}}
+                        ),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                    [
+                        ProviderStreamEvent(type="text_delta", text="done"),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                ]
+            ),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+    )
+    original_request = runtime._execute_model_tool_batch
+
+    async def request_tools(request):
+        result = await original_request(request)
+        outcomes.append(result)
+        return result
+
+    monkeypatch.setattr(runtime, "_execute_model_tool_batch", request_tools)
+    try:
+        waiting = await runtime.run("advance")
+        assert waiting.run.status == "waiting_user"
+        batch = waiting.run.active_tool_batch
+        assert batch is not None
+        assert batch.calls[0].input_request.harness_change is None
+        assert outcomes[0].input_request == batch.calls[0].input_request
+        persisted = store.load_run(waiting.session.session_id, waiting.run.run_id)
+        assert persisted.active_tool_batch == batch
+
+        completed = await runtime.answer_user(
+            session_id=waiting.session.session_id,
+            run_id=waiting.run.run_id,
+            answer={"accepted": True},
+        )
+        assert completed.run.status == "completed"
+        assert seen == ["begin", {"stage": "waiting"}]
+        assert completed.tool_results[0].content == "accepted"
+    finally:
+        await runtime.close()
 
 
 def test_completed_tool_result_timing_uses_monotonic_elapsed(monkeypatch) -> None:
