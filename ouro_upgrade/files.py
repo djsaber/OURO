@@ -27,7 +27,7 @@ from ouro_upgrade.workspace import Workspace
 
 def read_json(work: Workspace, relative: str) -> dict[str, Any]:
     try:
-        return loads(work.source(relative).read_text("utf-8"))
+        return loads(work.read_bytes(relative).decode("utf-8"))
     except UpgradeError as exc:
         raise UpgradeError(f"{relative}: {exc}") from exc
     except OSError as exc:
@@ -35,7 +35,19 @@ def read_json(work: Workspace, relative: str) -> dict[str, Any]:
 
 
 def record(work: Workspace, relative: str, kind: str) -> dict[str, Any]:
-    raw = read_json(work, relative)
+    return _record(work, relative, kind, read_json(work, relative))
+
+
+def records(work: Workspace, paths: list[Path], kind: str) -> Iterator[tuple[Path, dict[str, Any]]]:
+    for relative, data in work.read_many(path.relative_to(work.home).as_posix() for path in paths):
+        try:
+            raw = loads(data.decode("utf-8"))
+        except UpgradeError as exc:
+            raise UpgradeError(f"{relative}: {exc}") from exc
+        yield work.home / relative, _record(work, relative, kind, raw)
+
+
+def _record(work: Workspace, relative: str, kind: str, raw: dict[str, Any]) -> dict[str, Any]:
     try:
         value = convert(kind, raw)
     except UpgradeError as exc:
@@ -73,7 +85,6 @@ def journal(work: Workspace, relative: str, kind: str) -> Iterator[dict[str, Any
             yield value
     if temporary.exists():
         work.stage(relative, temporary)
-        temporary.unlink()
 
 
 def children(path: Path, pattern: str) -> list[Path]:
@@ -93,6 +104,7 @@ def sessions(work: Workspace) -> int:
     require(layout.get("data_layout_version") == 9, "layout.json", "expected layout 9")
     initial_changes = len(work.changes)
     entries = []
+    work.progress("sessions", 0, len(directories))
     for directory in directories:
         relative = directory.relative_to(work.home).as_posix()
         # Attachments for a SQLite-only store are not file Session records.
@@ -106,8 +118,7 @@ def sessions(work: Workspace) -> int:
         session = SessionRecord.model_validate(raw_session)
         require(session.session_id == directory.name, relative, "Session identity mismatch")
         harness = set()
-        for path in children(directory / "harness", "*.json"):
-            value = record(work, path.relative_to(work.home).as_posix(), "harness")
+        for path, value in records(work, children(directory / "harness", "*.json"), "harness"):
             require(
                 value["session_id"] == session.session_id and value["version_id"] == path.stem,
                 relative,
@@ -117,8 +128,7 @@ def sessions(work: Workspace) -> int:
         require(session.harness_version in harness, relative, "missing current Harness checkpoint")
         runs = set()
         latest_run = None
-        for path in children(directory / "runs", "*.json"):
-            value = record(work, path.relative_to(work.home).as_posix(), "run")
+        for path, value in records(work, children(directory / "runs", "*.json"), "run"):
             require(
                 value["session_id"] == session.session_id and value["run_id"] == path.stem,
                 relative,
@@ -131,7 +141,7 @@ def sessions(work: Workspace) -> int:
             require(run_id is None or run_id in runs, relative, "missing Session Run reference")
         resource_ids = _resources(work, relative)
         messages: set[str] = set()
-        latest_message = None
+        latest_message_raw = None
         for value in journal(work, f"{relative}/messages.jsonl", "message"):
             require(value["session_id"] == session.session_id, relative, "foreign message")
             require(value["message_id"] not in messages, relative, "duplicate message identity")
@@ -149,7 +159,10 @@ def sessions(work: Workspace) -> int:
                 "missing message resource reference",
             )
             messages.add(value["message_id"])
-            latest_message = MessageRecord.model_validate(value)
+            latest_message_raw = value
+        latest_message = (
+            MessageRecord.model_validate(latest_message_raw) if latest_message_raw else None
+        )
         require(session.message_count == len(messages), relative, "Session message count mismatch")
         require(
             session.last_message_id == (latest_message.message_id if latest_message else None),
@@ -164,8 +177,8 @@ def sessions(work: Workspace) -> int:
         for value in journal(work, f"{relative}/compactions.jsonl", "compaction"):
             require(value["session_id"] == session.session_id, relative, "foreign compaction")
         for folder, kind in (("operations", "commit"), ("delegations", "delegation")):
-            for path in children(directory / folder, "*.json"):
-                record(work, path.relative_to(work.home).as_posix(), kind)
+            for _ in records(work, children(directory / folder, "*.json"), kind):
+                pass
         if work.source(f"{relative}/context.json").exists():
             value = record(work, f"{relative}/context.json", "context")
             require(value["session_id"] == session.session_id, relative, "foreign context")
@@ -177,6 +190,7 @@ def sessions(work: Workspace) -> int:
             resource_count=len(resource_ids),
         )
         entries.append(catalog_entry_from_projection(session, projection))
+        work.progress("sessions", len(entries), len(directories))
     if len(work.changes) != initial_changes:
         work.json(
             "sessions/index.json",
@@ -230,15 +244,16 @@ def tasks(work: Workspace) -> int:
     )
     entries = {}
     initial_changes = len(work.changes)
-    for directory in children(work.home / "tasks/records", "*"):
+    directories = children(work.home / "tasks/records", "*")
+    work.progress("tasks", 0, len(directories))
+    for directory in directories:
         relative = directory.relative_to(work.home).as_posix()
         raw = record(work, f"{relative}/task.json", "task")
         task = StoredTask.model_validate(raw)
         require(task.task.task_id == directory.name, relative, "task identity mismatch")
         executions: dict[str, str | None] = {}
         occurrences: dict[str, str] = {}
-        for path in children(directory / "executions", "*.json"):
-            value = record(work, path.relative_to(work.home).as_posix(), "execution")
+        for path, value in records(work, children(directory / "executions", "*.json"), "execution"):
             execution = value["execution"]
             require(
                 execution["task_id"] == directory.name and execution["execution_id"] == path.stem,
@@ -274,6 +289,7 @@ def tasks(work: Workspace) -> int:
             )
         require(not occurrences, relative, "missing occurrence marker")
         entries[directory.name] = TaskIndexEntry.from_record(task)
+        work.progress("tasks", len(entries), len(directories))
     if layout["schema_version"] == 1 or len(work.changes) != initial_changes:
         work.json("tasks/index.json", TaskFileIndex(tasks=entries).model_dump(mode="json"))
         work.json(layout_path, {"schema_version": 3})

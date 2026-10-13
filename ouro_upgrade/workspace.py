@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import stat
+from collections.abc import Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile
@@ -55,16 +58,29 @@ def sync_directory(path: Path) -> None:
             os.close(descriptor)
 
 
-def copy_durable(source: Path, target: Path) -> None:
+def copy_durable(source: Path, target: Path) -> str:
+    """Copy and sync rollback bytes, returning the digest of the copied stream."""
+    checksum = hashlib.sha256()
     with source.open("rb") as src, target.open("xb") as dst:
-        shutil.copyfileobj(src, dst, length=1024 * 1024)
+        while block := src.read(1024 * 1024):
+            dst.write(block)
+            checksum.update(block)
         dst.flush()
         os.fsync(dst.fileno())
+    return checksum.hexdigest()
 
 
-def install(source: Path | None, target: Path, mode: int | None) -> None:
+def install(source: Path | None, target: Path, mode: int | None, *, consume: bool = False) -> None:
     if source is None:
         target.unlink(missing_ok=True)
+    elif consume:
+        # Staged files are already durable and share the home's filesystem. Only
+        # rollback copies must survive installation for a repeatable restore.
+        target.parent.mkdir(parents=True, exist_ok=True)
+        restrict_to_user(source)
+        if mode is not None and os.name != "nt":
+            source.chmod(mode)
+        replace_path_with_retry(source, target)
     else:
         target.parent.mkdir(parents=True, exist_ok=True)
         with NamedTemporaryFile(dir=target.parent, delete=False) as stream:
@@ -105,6 +121,7 @@ class Workspace:
         self.changes: dict[str, Change] = {}
         self.published = False
         self._progress = progress
+        self._reader = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ouro-upgrade-read")
 
     def progress(self, phase: UpgradePhase, completed: int = 0, total: int | None = None) -> None:
         if self._progress is not None:
@@ -124,6 +141,7 @@ class Workspace:
 
     def __exit__(self, *_: object) -> None:
         try:
+            self._reader.shutdown(wait=True, cancel_futures=True)
             if self.run.exists() and not self.published:
                 shutil.rmtree(self.run)
         finally:
@@ -147,20 +165,55 @@ class Workspace:
             self.observed[relative] = digest(path)
         return path
 
+    def read_bytes(self, relative: str) -> bytes:
+        """Read a record and fingerprint the exact bytes being parsed in one pass."""
+        return self._observe(relative, safe_path(self.home, relative).read_bytes())
+
+    def read_many(self, relatives: Iterable[str]) -> Iterator[tuple[str, bytes]]:
+        """Prefetch independent files; observation and all mutations stay on the caller."""
+
+        def read(relative: str) -> tuple[str, bytes]:
+            try:
+                return relative, safe_path(self.home, relative).read_bytes()
+            except OSError as exc:
+                raise UpgradeError(
+                    f"{relative}: cannot read record ({type(exc).__name__})"
+                ) from exc
+
+        for relative, data in self._reader.map(read, relatives, buffersize=4):
+            yield relative, self._observe(relative, data)
+
+    def _observe(self, relative: str, data: bytes) -> bytes:
+        if relative not in self.observed:
+            self.observed[relative] = hashlib.sha256(data).hexdigest()
+        return data
+
     def temporary(self) -> Path:
         return self.run / "scratch" / uuid4().hex
 
-    def stage(self, relative: str, source: Path | None) -> None:
+    def stage(self, relative: str, source: bytes | Path | None) -> None:
+        """Stage bytes or take ownership of a closed scratch file; None deletes."""
         original = self.source(relative)
         before = self.observed[relative]
-        after = digest(source) if source is not None else None
+        after = (
+            hashlib.sha256(source).hexdigest()
+            if isinstance(source, bytes)
+            else digest(source)
+            if source is not None
+            else None
+        )
         if before == after:
+            if isinstance(source, Path):
+                source.unlink()
             return
         index = len(self.changes)
         if relative in self.changes:
             raise UpgradeError("duplicate planned replacement")
-        if source is not None:
-            copy_durable(source, self.run / "new" / str(index))
+        target = self.run / "new" / str(index)
+        if isinstance(source, bytes):
+            target.write_bytes(source)
+        elif source is not None:
+            replace_path_with_retry(source, target)
         self.changes[relative] = Change(
             relative,
             before,
@@ -169,26 +222,30 @@ class Workspace:
         )
 
     def json(self, relative: str, value: object) -> None:
-        temporary = self.temporary()
-        write_json_atomic(temporary, value)
-        self.stage(relative, temporary)
-        temporary.unlink()
+        data = json.dumps(value, ensure_ascii=False, indent=2, default=str) + "\n"
+        self.stage(relative, data.encode("utf-8"))
 
     def verify_source(self) -> None:
-        self.progress("verify_source")
-        for relative, expected in self.observed.items():
+        total = len(self.observed)
+        self.progress("verify_source", 0, total)
+        for completed, (relative, expected) in enumerate(self.observed.items(), 1):
             if digest(safe_path(self.home, relative)) != expected:
                 raise UpgradeError(f"source changed during upgrade: {relative}")
+            self.progress("verify_source", completed, total)
 
     def publish(self, report: dict[str, object]) -> None:
-        self.verify_source()
         changes = list(self.changes.values())
         self.progress("backup", 0, len(changes))
         for index, change in enumerate(changes):
+            if change.after is not None:
+                staged = self.run / "new" / str(index)
+                with staged.open("rb+") as stream:
+                    if hashlib.file_digest(stream, "sha256").hexdigest() != change.after:
+                        raise UpgradeError(f"staged data changed: {change.path}")
+                    os.fsync(stream.fileno())
             if change.before is not None:
                 backup = self.run / "before" / str(index)
-                copy_durable(self.source(change.path), backup)
-                if digest(backup) != change.before:
+                if copy_durable(self.source(change.path), backup) != change.before:
                     raise UpgradeError(f"source changed during backup: {change.path}")
             self.progress("backup", index + 1, len(changes))
         write_json_atomic(
@@ -208,8 +265,10 @@ class Workspace:
         self.progress("publish", 0, len(changes))
         for index, change in enumerate(changes):
             source = self.run / "new" / str(index) if change.after is not None else None
-            install(source, safe_path(self.home, change.path), change.mode)
+            install(source, safe_path(self.home, change.path), change.mode, consume=True)
             self.progress("publish", index + 1, len(changes))
+        # Persist removal of the staged names as well as each destination rename.
+        sync_directory(self.run / "new")
         self.progress("verify")
         for change in changes:
             if digest(safe_path(self.home, change.path)) != change.after:

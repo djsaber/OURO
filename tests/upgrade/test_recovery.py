@@ -129,7 +129,7 @@ async def test_initialize_requires_confirmation_and_cancel_keeps_all_data(tmp_pa
 def test_progress_reports_phases_and_success_only_after_publish(historical_home) -> None:
     events = []
     report = upgrade(historical_home, progress=events.append)
-    phases = [event.phase for event in events]
+    phases = list(dict.fromkeys(event.phase for event in events))
     assert phases[:4] == ["configuration", "sessions", "tasks", "usage"]
     assert phases[-1] == "complete"
     count = len(report["files"])
@@ -137,6 +137,10 @@ def test_progress_reports_phases_and_success_only_after_publish(historical_home)
         progress = [event for event in events if event.phase == phase]
         assert progress[0].completed == 0
         assert progress[-1] == UpgradeProgress(phase, count, count)
+    for phase in ("sessions", "tasks", "verify_source"):
+        progress = [event for event in events if event.phase == phase and event.total is not None]
+        assert progress[0].completed == 0
+        assert progress[-1].completed == progress[-1].total > 0
 
 
 def test_standard_hosts_and_maintenance_exclude_each_other(tmp_path) -> None:

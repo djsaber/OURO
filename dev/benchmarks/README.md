@@ -1,8 +1,26 @@
 # 本地性能测量
 
-基准使用临时目录、合成会话和 Provider，不访问网络模型或个人 OURO 数据。使用锁定依赖，独立运行，
-不要与 pytest 或其他基准争用资源。输出为 JSON Lines，包含环境、原始样本和统计量；需要保存时写入本地忽略目录。
-基准结果只适用于测量环境，不能替代真实终端和网络 Provider 验证，也不作为 CI 的固定时间断言。
+基准默认使用临时目录、合成会话和 Provider，不访问网络模型或个人 OURO 数据；数据升级基准可显式指定已有 home 的只读输入副本。
+使用锁定依赖，独立运行，不要与 pytest 或其他基准争用资源。输出为 JSON Lines，包含环境、原始样本和统计量；需要保存时写入本
+地忽略目录。基准结果只适用于测量环境，不能替代真实终端和网络 Provider 验证，也不作为 CI 的固定时间断言。
+
+## 历史数据升级
+
+```powershell
+uv run --frozen python -m dev.benchmarks.data_upgrade --operations 1000 --repeat 3
+uv run --frozen python -m dev.benchmarks.data_upgrade --backend sqlite --operations 1000 --repeat 3
+uv run --frozen python -m dev.benchmarks.data_upgrade --check --operations 1000 --repeat 3
+```
+
+使用固定历史夹具，增加指定数量的 Session 提交记录，保留夹具中的消息、任务和用量数据。
+每个样本重新准备临时 home，输出总时间、阶段时间、变更文件数，以及 Python `os.fsync` 的调用次数和耗时；
+同步计数不包括 SQLite 内部调用或物理磁盘写入。计时包含升级工作区初始化及收尾，不包含输入构造、复制和 Python 导入，
+不清除 OS 缓存。`--profile PATH --repeat 1` 可保存 cProfile 数据，采样开销计入该次测量。
+
+排查实际数据时可使用 `--source-home 'C:\data\ouro-home' --repeat 1`；请替换路径并停止该 home 的写入者。
+该选项将输入复制到权限受限的临时目录后再测试，排除 `.upgrade`，不调用原 home 的升级或数据库连接。
+Session 和 Task 使用同一个 `--backend` 选择，必须与样本对应；输出只包含统计，不输出记录内容。
+临时副本在结束时清理，需要足够的副本与升级备份空间。
 
 ## 导入与首屏就绪
 

@@ -20,9 +20,8 @@ from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference
 from ouro.core.session_commits import SessionCommitResult
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.core.tasks import TaskExecution, TaskRecord
 from ouro_upgrade.errors import UpgradeError
-from ouro_upgrade.steps import UpgradeStep, migrate
+from ouro_upgrade.steps import UpgradeStep, advance, migrate
 
 MODELS: dict[str, type[BaseModel]] = {
     "session": SessionRecord,
@@ -235,26 +234,40 @@ def convert(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
 
 def _convert_nested(kind: str, value: dict[str, Any]) -> None:
     if kind == "context":
-        value["source_messages"] = [convert("message", item) for item in value["source_messages"]]
+        for item in value["source_messages"]:
+            _convert_owned("message", item)
         for message in value["injected_messages"]:
             result = message.get("tool_result")
             if result is not None and "producer" not in result:
                 _producer(result)
     elif kind == "commit":
-        value["session"] = convert("session", value["session"])
-        value["messages"] = [convert("message", item) for item in value["messages"]]
-        value["events"] = [convert("event", item) for item in value["events"]]
+        _convert_owned("session", value["session"])
+        for item in value["messages"]:
+            _convert_owned("message", item)
+        for item in value["events"]:
+            _convert_owned("event", item)
         if value.get("truncation") is not None:
             for key in ("first_removed", "last_retained"):
                 if value["truncation"].get(key) is not None:
-                    value["truncation"][key] = convert("message", value["truncation"][key])
+                    _convert_owned("message", value["truncation"][key])
     elif kind == "usage_event":
         if value.get("entry") is not None:
-            value["entry"] = convert("usage", value["entry"])
+            _convert_owned("usage", value["entry"])
+
+
+def _convert_owned(kind: str, value: dict[str, Any]) -> None:
+    # The outer conversion owns this subtree. Its final model validation checks
+    # the complete record graph, including required persisted facts, exactly once.
+    advance(
+        kind,
+        value,
+        target=MODELS[kind].model_fields["schema_version"].default,
+        steps=VERSION_STEPS.get(kind, {}),
+    )
+    _convert_nested(kind, value)
 
 
 def convert_task(kind: str, raw: dict[str, Any], version: int) -> dict[str, Any]:
     """SQLite's container version selects the unversioned task payload contract."""
     value = convert(kind, {"schema_version": version, kind: raw})[kind]
-    validate(TaskRecord if kind == "task" else TaskExecution, value)
     return value

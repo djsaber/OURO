@@ -108,12 +108,12 @@ def test_failure_blocks_entry_points_and_restores_all_bytes(
     original = workspace.install
     calls = 0
 
-    def interrupt(source, target, mode):
+    def interrupt(source, target, mode, **kwargs):
         nonlocal calls
         calls += 1
         if calls == 3:
             raise OSError("simulated write failure")
-        original(source, target, mode)
+        original(source, target, mode, **kwargs)
 
     monkeypatch.setattr(workspace, "install", interrupt)
     with pytest.raises(UpgradeError, match="I/O"):
@@ -247,8 +247,8 @@ os._exit(0)
     before = hashes(home)
     original = workspace.install
 
-    def interrupt(source, target, mode):
-        original(source, target, mode)
+    def interrupt(source, target, mode, **kwargs):
+        original(source, target, mode, **kwargs)
         if target == path:
             raise OSError("interrupted after main database replacement")
 
@@ -266,7 +266,7 @@ os._exit(0)
 def test_damaged_backup_does_not_allow_partial_restore(historical_home: Path, monkeypatch) -> None:
     home = historical_home
     original = workspace.install
-    monkeypatch.setattr(workspace, "install", lambda *_: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(workspace, "install", lambda *_, **__: (_ for _ in ()).throw(OSError()))
     with pytest.raises(UpgradeError):
         upgrade(home)
     marker = loads((home / ".upgrade/in-progress.json").read_text("utf-8"))

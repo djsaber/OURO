@@ -91,7 +91,6 @@ def upgrade(
                     "credentials, plugins and plugin-private data",
                 ],
             }
-            work.verify_source()
             if work.changes and not check:
                 report.update(
                     status="upgraded",
@@ -100,6 +99,8 @@ def upgrade(
                     manifest=f".upgrade/{work.identifier}/manifest.json",
                 )
                 work.publish(report)
+            else:
+                work.verify_source()
             work.progress("complete")
             return report
     except UpgradeError:

@@ -93,8 +93,8 @@ def test_interrupted_provider_upgrade_restores_original_bytes(provider_home, mon
     before = hashes(provider_home)
     original = workspace.install
 
-    def interrupt(source, target, mode):
-        original(source, target, mode)
+    def interrupt(source, target, mode, **kwargs):
+        original(source, target, mode, **kwargs)
         raise OSError("interrupted after configuration replacement")
 
     monkeypatch.setattr(workspace, "install", interrupt)

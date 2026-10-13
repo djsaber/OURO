@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from collections.abc import Callable
 from contextlib import closing
@@ -13,7 +14,7 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions.catalog import SessionCatalogProjection, catalog_entry_from_projection
 from ouro_upgrade.errors import UpgradeError, require
 from ouro_upgrade.records import convert, convert_task, dumps, loads
-from ouro_upgrade.workspace import Workspace, copy_durable
+from ouro_upgrade.workspace import Workspace
 
 _IDENTITIES = {
     "session": ("session_id",),
@@ -47,12 +48,15 @@ def database(
         original = work.source(relative + suffix)
         # SHM is a coordination cache. Rebuild it on the private copy.
         if original.exists() and suffix != "-shm":
-            copy_durable(original, target.with_name(target.name + suffix))
+            shutil.copyfile(original, target.with_name(target.name + suffix))
     try:
         with closing(sqlite3.connect(target)) as connection:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA trusted_schema=OFF")
             connection.execute("PRAGMA foreign_keys=OFF")
+            # This disposable database cannot be published until Workspace syncs
+            # its closed, validated main file together with the rollback material.
+            connection.execute("PRAGMA synchronous=OFF")
             check_integrity(connection)
             changed = transform(connection)
             connection.commit()

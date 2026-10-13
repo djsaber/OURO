@@ -79,3 +79,24 @@ def test_current_envelope_still_converts_independently_versioned_nested_records(
     assert result["messages"][0] == raw["messages"][0]
     assert all(message["schema_version"] == 4 for message in result["messages"])
     assert result["request_digest"] == raw["request_digest"]
+
+
+@pytest.mark.parametrize("damage", ["extra", "identity", "facts", "version"])
+def test_envelope_validation_rejects_invalid_nested_records_without_mutating_input(damage):
+    raw = loads(
+        (FIXTURES / "files/sessions/ses_fixture/operations/op_fixture.json").read_text("utf-8")
+    )
+    message = raw["messages"][-1]
+    if damage == "extra":
+        message["unknown_native_field"] = "private-nested-value"
+    elif damage == "identity":
+        del message["message_id"]
+    elif damage == "facts":
+        del message["sequence"]
+    else:
+        message["schema_version"] = 999
+    before = copy.deepcopy(raw)
+    with pytest.raises(UpgradeError) as error:
+        convert("commit", raw)
+    assert "private-nested-value" not in str(error.value)
+    assert raw == before
