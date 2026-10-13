@@ -38,6 +38,41 @@ uv run --frozen ouro plugin purge-data dev.example.plugin --home ./.ouro-dev
 Host 的相关资源退出；仍有占用或可恢复工作的引用时，清理会拒绝。它不删除 Session 历史、Task 记录、用量、
 制品或其他插件的数据，也不会为执行清理启动插件。
 
+## 配置插件
+
+TUI 的 Plugins 菜单中，插件操作提供 **Edit settings**。普通字段使用现有输入与选择控件；复杂字段以 JSON
+编辑，并根据 Schema 显示示例。**Settings (JSON)** 编辑整份普通值，凭据使用独立引用字段。输入不会立即写入有效配置；
+**Validate draft** 只做静态预检，**Apply configuration** 才提交。失败保留当前面板中的草稿；发生冲突后，
+通过 **Reload saved configuration** 确认丢弃草稿、读取最新值与基线后重新编辑。取消刷新会保留当前草稿，
+关闭整个配置面板则放弃尚未应用的编辑。
+
+用下面的 PowerShell 命令体验不执行业务逻辑的配置展示插件：
+
+```powershell
+uv run ouro plugin install ./examples/plugins/configuration-playground --home ./.ouro-dev
+uv run ouro plugin configuration dev.ouro.configuration_playground --home ./.ouro-dev --export ./plugin-draft.json --json
+```
+
+导出的 JSON 包含插件身份、目标包 digest、编辑基线、普通 `values` 及 `credential_refs`。编辑取值时保留
+身份和基线，将必填 `example_key` 绑定为 `env:OURO_CONFIGURATION_EXAMPLE_KEY`。该示例不请求远程服务；
+停用状态保存只检查引用形式，启用时才要求当前 Host 的环境变量存在且非空。
+
+```powershell
+uv run ouro plugin configure dev.ouro.configuration_playground --home ./.ouro-dev --file ./plugin-draft.json --preview --json
+uv run ouro plugin configure dev.ouro.configuration_playground --home ./.ouro-dev --file ./plugin-draft.json --json
+```
+
+`--preview` 不启动插件或更改状态。`--values` 可直接提交完整普通值对象，`--credentials` 提交完整槽位引用映射，
+省略后者表示空映射。仅凭据插件允许只提供 `--credentials`。`--digest` 固定编辑某个已安装包；
+`--expected-revision` 可为内联提交指定已知基线。文件提交始终保留文件中的原始基线，过期时拒绝覆盖。
+
+返回结果区分 `unchanged`、`saved` 和 `published`，分别表示未变化、保存但未激活，以及当前 Host 已发布。
+发布后的 `status` 可以为 `degraded`，应查看诊断；其他 Host 按各自同步边界与环境落实配置。普通值和凭据
+引用均是完整替换，缺失字段按 Schema 默认规则处理，不表示保留旧值。不要直接编辑插件 state 或包内文件。
+
+结构、默认值、凭据和运行时语义见[配置规格](../specs/plugin-configuration.md)。示例的字段与操作说明见
+[Configuration Playground](../../examples/plugins/configuration-playground/README.md)。
+
 ## 权限与版本生命周期
 
 `python-inprocess` 执行与 OURO 同进程的受信代码；worker 提供进程和协议隔离，但不是 OS 沙箱。启用、选择、重载或回滚精确的包 digest 才执行相应代码；`update` 只安装候选版本，不自动切换。

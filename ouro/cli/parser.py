@@ -282,6 +282,16 @@ def _add_plugin_parser(subparsers: argparse._SubParsersAction) -> None:
     show.add_argument("plugin_id")
     _add_plugin_output(show)
 
+    configuration = commands.add_parser(
+        "configuration", help="Inspect a plugin configuration contract"
+    )
+    configuration.add_argument("plugin_id")
+    configuration.add_argument("--digest", help="Inspect this installed digest")
+    configuration.add_argument(
+        "--export", dest="export_path", help="Export a complete JSON editing draft"
+    )
+    _add_plugin_output(configuration)
+
     list_commands = commands.add_parser("commands", help="List active plugin commands")
     _add_plugin_output(list_commands)
     run_command = commands.add_parser("run-command", help="Run an active plugin command")
@@ -298,9 +308,14 @@ def _add_plugin_parser(subparsers: argparse._SubParsersAction) -> None:
 
     configure = commands.add_parser("configure", help="Set validated plugin configuration")
     configure.add_argument("plugin_id")
-    configure.add_argument("--values", required=True, help="JSON object")
+    config_input = configure.add_mutually_exclusive_group()
+    config_input.add_argument("--values", help="Complete JSON values object")
+    config_input.add_argument("--file", help="Complete JSON draft exported by plugin configuration")
     configure.add_argument("--credentials", help="JSON slot-to-reference object")
     configure.add_argument("--digest", help="Configure an installed candidate digest")
+    configure.add_argument(
+        "--expected-revision", help="Require this configuration editing baseline"
+    )
     _add_plugin_mutation_args(configure)
 
     select = commands.add_parser("select", help="Select one installed immutable digest")

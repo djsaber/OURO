@@ -146,7 +146,12 @@ async def test_provider_request_preserves_model_visible_semantics_and_multimodal
         )
     ]
     raw = json.loads(events[0].text)
-    assert raw["messages"] == [item.model_dump(mode="json") for item in messages]
+    expected_messages = [item.model_dump(mode="json") for item in messages]
+    # Editing coordinates stay in canonical history, outside the Provider contract.
+    expected_messages[0]["content"][4] = content[4].model_dump(
+        mode="json", exclude={"text_offset", "order"}
+    )
+    assert raw["messages"] == expected_messages
     assert raw["context"]["request.id"] == "req"
     assert raw["tools"][0]["name"] == "read"
     assert events[-1].usage.input_tokens == 7

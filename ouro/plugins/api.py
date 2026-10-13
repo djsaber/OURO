@@ -67,6 +67,7 @@ from ouro.core.turn_policies import (
     TurnPolicyRegistration,
 )
 from ouro.plugins.candidates import PluginRuntimeCandidate
+from ouro.plugins.configuration_values import freeze_configuration
 from ouro.plugins.contributions import PluginContributions
 from ouro.plugins.harness_calls import bind_context_callback, invoke_plugin_callback
 from ouro.plugins.models import PluginDiagnostic, PluginGenerationRecord
@@ -113,7 +114,13 @@ class BoundCredentialResolver:
             raise PermissionError(f"credential slot is not bound: {slot}") from exc
         if self._resolve_reference is None:
             raise RuntimeError("credential resolver is unavailable")
-        value = self._resolve_reference(reference)
+        try:
+            value = self._resolve_reference(reference)
+        except Exception:
+            # Resolver failures may contain transport payloads or secret material.
+            raise RuntimeError(f"credential slot cannot be resolved: {slot}") from None
+        if not value:
+            raise RuntimeError(f"credential slot cannot be resolved: {slot}")
         self._redactor.add(value)
         return value
 
@@ -331,7 +338,7 @@ def build_plugin_context(
             source_kind=candidate.source_kind,
             public_source=candidate.public_source,
         ),
-        configuration=MappingProxyType(dict(configuration)),
+        configuration=freeze_configuration(configuration),
         data=data_store or ScopedPluginDataStore(data_root / candidate.plugin_id),
         credentials=BoundCredentialResolver(
             credential_bindings,

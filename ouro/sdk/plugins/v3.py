@@ -132,6 +132,8 @@ class DiagnosticEmitter(Protocol):
 
 @dataclass(frozen=True)
 class PluginContext:
+    """Generation context; configuration objects are read-only mappings and arrays are tuples."""
+
     identity: PluginIdentity
     provenance: PluginProvenanceSummary
     configuration: Mapping[str, object]

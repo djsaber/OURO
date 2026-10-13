@@ -5,6 +5,7 @@ These packages are focused examples and validate against the current development
 - `faux-provider`: a typed model protocol contribution, configured through ordinary Provider/Endpoint routes; shared in-process and worker handlers, native usage and request-scoped generation ownership.
 
 - `declarative-skill`: no executable plugin code; contributes one Agent Skill.
+- [`configuration-playground`](configuration-playground/README.md): no business logic; exercises scalar, nested, mapping, array, union, conditional and recursive configuration, typed choices and credential references through generic Host editors.
 - `inprocess-command`: trusted Python in-process command contribution.
 - `inprocess-observer`: non-blocking typed observation of a completed Run.
 - `inprocess-prompt-policy`: fail-closed rejection before a user prompt is persisted.

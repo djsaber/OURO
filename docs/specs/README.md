@@ -2,7 +2,7 @@
 
 本目录保存 OURO 独立维护的正式规格（Spec），按业务领域定义实现与回归验收共同遵循的模型、状态、不变量、失败语义和权限边界。操作步骤见[使用指南](../README.md#入门与使用)，模块职责与设计取舍见[架构](../architecture/README.md)。
 
-规格与实现不一致时，结合调用链、可重复测试和既定行为约束判断应修正文档还是实现；不能仅因代码目前如此就覆盖已承诺的契约。局部未验收能力必须明确标注；目标状态与待办统一放在[规划](../plans/README.md)。
+规格与实现不一致时，结合调用链、可重复测试和既定行为约束判断应修正文档还是实现；不能仅因代码目前如此就覆盖已承诺的契约。目标规格与局部未验收能力必须明确标注，不能作为已发布能力说明；实施任务与验收安排统一放在[规划](../plans/README.md)。
 
 ## 运行、会话与调度
 
@@ -42,6 +42,7 @@
 | [Skills 与扩展](skills.md) | Skills、显式激活、扩展边界与来源策略 | `ouro/skills`、`ouro/application/skill_activations.py` |
 | [MCP 客户端](mcp.md) | transport、握手、工具发现/调用、重连、诊断与关闭 | `ouro/mcp`、`ouro/tools/registry.py` |
 | [插件系统](plugins.md) | 包、安装、Catalog/generation、15 类 contribution、策略与恢复 | `ouro/plugins`、`ouro/sdk/plugins/v3.py` |
+| [插件配置](plugin-configuration.md) | 通用 Schema、凭据槽、统一配置管线、Host 自动交互与修订生效 | `ouro/plugins/configuration*.py`、`ouro/application/plugin_configuration*.py`、CLI/TUI |
 | [Goal 插件](goal-plugin.md) | 目标状态、命令、预算、自动继续及恢复契约 | `ouro/builtin_plugins/goal` |
 | [AFK](afk.md) | 无人值守审批、输入 resolution 与 Plan 组合 | `ouro/core`、`ouro/application` |
 

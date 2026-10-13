@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Configuration playground",
+  "type": "object",
+  "properties": {
+    "label": {"type": "string", "title": "Display label", "description": "An ordinary string, including spaces.", "minLength": 1, "maxLength": 80, "default": "Example"},
+    "enabled": {"type": "boolean", "title": "Feature enabled", "default": false},
+    "attempts": {"type": "integer", "title": "Attempts", "minimum": 1, "maximum": 20, "default": 3},
+    "weight": {"type": "number", "title": "Weight", "minimum": 0, "maximum": 1, "multipleOf": 0.05, "default": 0.5},
+    "note": {"type": "string", "title": "Optional note", "description": "Unset and an empty string are different values."},
+    "threshold": {"type": ["number", "null"], "title": "Nullable threshold", "minimum": 0, "default": null},
+    "mode": {"type": "string", "title": "Mode", "enum": ["basic", "advanced"], "default": "basic"},
+    "typed_choice": {"title": "Typed choices", "description": "Enum values retain their JSON types.", "enum": [false, 2, "two", {"kind": "custom"}], "default": false},
+    "contract": {"title": "Fixed value", "const": "example-v1", "default": "example-v1"},
+    "retry": {"$ref": "#/$defs/retry", "title": "Nested retry settings", "default": {}},
+    "tags": {"type": "object", "title": "Dynamic mapping", "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"}, "additionalProperties": {"type": "string"}, "examples": [{"team": "example", "region": "local"}]},
+    "metrics": {"type": "object", "title": "Pattern mapping", "patternProperties": {"^count_": {"type": "integer", "minimum": 0}, "^ratio_": {"type": "number", "minimum": 0, "maximum": 1}}, "additionalProperties": false, "examples": [{"count_ready": 2, "ratio_ready": 0.5}]},
+    "labels": {"type": "array", "title": "Unique labels", "items": {"type": "string", "minLength": 1}, "uniqueItems": true, "maxItems": 8, "default": [], "examples": [["first", "second"]]},
+    "connections": {"type": "array", "title": "Object list", "items": {"type": "object", "properties": {"name": {"type": "string"}, "endpoint": {"type": "string", "format": "uri"}, "timeout": {"type": "number", "exclusiveMinimum": 0, "default": 15}}, "required": ["name", "endpoint"], "additionalProperties": false}, "examples": [[{"name": "primary", "endpoint": "https://example.invalid", "timeout": 15}]]},
+    "pair": {"type": "array", "title": "Tuple", "prefixItems": [{"type": "string"}, {"type": "number"}], "items": false, "minItems": 2, "examples": [["score", 0.75]]},
+    "selection": {"title": "Tagged union", "oneOf": [{"type": "object", "properties": {"kind": {"const": "single"}, "value": {"type": "string"}}, "required": ["kind", "value"], "additionalProperties": false}, {"type": "object", "properties": {"kind": {"const": "many"}, "values": {"type": "array", "items": {"type": "integer"}, "minItems": 1}}, "required": ["kind", "values"], "additionalProperties": false}], "examples": [{"kind": "many", "values": [1, 2]}]},
+    "advanced_options": {"type": "object", "title": "Conditional options", "description": "Required when mode is advanced.", "properties": {"window": {"type": "integer", "minimum": 1}, "strategy": {"enum": ["first", "last"]}}, "required": ["window", "strategy"], "additionalProperties": false, "examples": [{"window": 5, "strategy": "last"}]},
+    "dependency": {"type": "object", "title": "Dependent fields", "properties": {"source": {"type": "string"}, "destination": {"type": "string"}}, "dependentRequired": {"source": ["destination"]}, "additionalProperties": false, "examples": [{"source": "a", "destination": "b"}]},
+    "composition": {"type": "object", "title": "Combined constraints", "allOf": [{"properties": {"lower": {"type": "integer", "minimum": 0}}, "required": ["lower"]}, {"properties": {"upper": {"type": "integer", "maximum": 100}}, "required": ["upper"]}], "unevaluatedProperties": false, "examples": [{"lower": 1, "upper": 10}]},
+    "tree": {"$ref": "#/$defs/node", "title": "Recursive tree", "examples": [{"name": "root", "children": [{"name": "leaf", "children": []}]}]},
+    "payload": {"title": "Any JSON value", "description": "Demonstrates an unconstrained finite JSON value.", "examples": [{"nested": [null, true, 3, "text"]}]}
+  },
+  "required": ["label", "mode"],
+  "if": {"properties": {"mode": {"const": "advanced"}}, "required": ["mode"]},
+  "then": {"required": ["advanced_options"]},
+  "additionalProperties": false,
+  "$defs": {
+    "retry": {"type": "object", "properties": {"count": {"type": "integer", "minimum": 0, "default": 2}, "delay": {"type": "number", "minimum": 0, "default": 0.5}}, "required": ["count", "delay"], "additionalProperties": false},
+    "node": {"type": "object", "properties": {"name": {"type": "string"}, "children": {"type": "array", "items": {"$ref": "#/$defs/node"}, "default": []}}, "required": ["name"], "additionalProperties": false}
+  }
+}

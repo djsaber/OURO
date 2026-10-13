@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Literal
+from types import MappingProxyType
+from typing import Any, Literal, Self
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from ouro import __version__
 from ouro.core.base import Metadata, MetadataField, OuroModel, utc_now
+from ouro.plugins.configuration_values import (
+    configuration_dict,
+    copy_configuration_values,
+    freeze_configuration,
+)
 from ouro.plugins.manifest import PluginManifest, PluginRuntimeKind, PluginStatus
 
 PluginSourceKind = Literal["local", "git", "archive"]
@@ -41,9 +48,34 @@ class PluginConfigurationRevision(OuroModel):
     model_config = ConfigDict(frozen=True)
 
     revision_id: str
-    values: dict[str, object] = Field(default_factory=dict)
-    credential_refs: dict[str, str] = Field(default_factory=dict)
-    schema_version: int | None = None
+    values: Mapping[str, object] = Field(default_factory=dict)
+    credential_refs: Mapping[str, str] = Field(default_factory=dict)
+    schema_version: int | None = Field(default=None, ge=1, strict=True)
+
+    @field_validator("values", mode="before")
+    @classmethod
+    def _validate_values(cls, value: object) -> dict[str, object]:
+        return copy_configuration_values(value)
+
+    @field_serializer("values")
+    def _serialize_values(self, values: Mapping[str, object]) -> dict[str, object]:
+        return configuration_dict(values)
+
+    @field_serializer("credential_refs")
+    def _serialize_references(self, values: Mapping[str, str]) -> dict[str, str]:
+        return dict(values)
+
+    def __copy__(self) -> Self:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any] | None = None) -> Self:
+        return self
+
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
+        # This immutable value can be shared; updates must still verify its digest.
+        if not update:
+            return self
+        return type(self).model_validate({**self.model_dump(), **update})
 
     @model_validator(mode="after")
     def _validate_revision_id(self) -> PluginConfigurationRevision:
@@ -54,7 +86,12 @@ class PluginConfigurationRevision(OuroModel):
         )
         if self.revision_id != expected:
             raise ValueError("plugin configuration revision id does not match its content")
+        object.__setattr__(self, "values", freeze_configuration(self.values))
+        object.__setattr__(self, "credential_refs", MappingProxyType(dict(self.credential_refs)))
         return self
+
+    def values_dict(self) -> dict[str, object]:
+        return configuration_dict(self.values)
 
 
 class PluginActivationState(OuroModel):
@@ -235,10 +272,13 @@ def create_configuration_revision(
     credential_refs: dict[str, str] | None = None,
     schema_version: int | None = None,
 ) -> PluginConfigurationRevision:
-    normalized_values = _normalize_json_object(values or {}, field="values")
-    normalized_references = {
-        str(key): str(value) for key, value in sorted((credential_refs or {}).items())
-    }
+    normalized_values = copy_configuration_values(values if values is not None else {})
+    normalized_references = dict(credential_refs) if credential_refs is not None else {}
+    if any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in normalized_references.items()
+    ):
+        raise ValueError("Plugin credential references must map strings to strings")
     return PluginConfigurationRevision(
         revision_id=configuration_revision_id(
             values=normalized_values,
@@ -253,38 +293,22 @@ def create_configuration_revision(
 
 def configuration_revision_id(
     *,
-    values: dict[str, object],
-    credential_refs: dict[str, str],
+    values: Mapping[str, object],
+    credential_refs: Mapping[str, str],
     schema_version: int | None,
 ) -> str:
     encoded = json.dumps(
         {
             "schema_version": schema_version,
-            "values": values,
-            "credential_refs": credential_refs,
+            "values": configuration_dict(values),
+            "credential_refs": dict(credential_refs),
         },
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
-
-
-def _normalize_json_object(value: dict[str, object], *, field: str) -> dict[str, object]:
-    try:
-        normalized = json.loads(
-            json.dumps(
-                value,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-        )
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"plugin configuration {field} must contain JSON values") from exc
-    if not isinstance(normalized, dict):
-        raise ValueError(f"plugin configuration {field} must be an object")
-    return {str(key): item for key, item in normalized.items()}
 
 
 def _is_sha256_digest(value: str) -> bool:

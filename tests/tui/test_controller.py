@@ -1210,11 +1210,8 @@ async def test_controller_installs_and_configures_user_plugin(tmp_path: Path) ->
         installed_detail = await controller.plugin(installed.plugin_id)
         assert installed_detail.configuration_supported is True
 
-        configured = await controller.configure_plugin(
-            installed.plugin_id,
-            {"mode": "safe"},
-            {},
-        )
+        view = await controller.plugin_configuration(installed.plugin_id)
+        configured = await controller.configure_plugin(view.candidate(values={"mode": "safe"}))
         assert configured.status == "disabled"
         detail = await controller.plugin(installed.plugin_id)
         assert detail.configuration_values == {"mode": "safe"}

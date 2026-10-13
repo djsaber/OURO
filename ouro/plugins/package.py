@@ -8,16 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from jsonschema import Draft202012Validator
-from jsonschema.exceptions import SchemaError
-
 from ouro import __version__
+from ouro.plugins.configuration_schema import ConfigurationSchema, ConfigurationSchemaError
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.paths import portable_relative_path
 from ouro.plugins.semver import version_satisfies
 
 OURO_VERSION = __version__
-PLUGIN_API_VERSION = "3.0.0"
+PLUGIN_API_VERSION = "3.1.0"
 WORKER_PROTOCOL_VERSION = "3.0"
 NATIVE_MANIFEST = Path(".ouro-plugin") / "plugin.json"
 
@@ -42,6 +40,7 @@ class ValidatedPluginPackage:
     package_digest: str
     file_count: int
     total_bytes: int
+    configuration_schema: ConfigurationSchema | None = None
 
 
 def validate_plugin_package(
@@ -55,7 +54,7 @@ def validate_plugin_package(
         raise PluginPackageError(f"plugin package is not a directory: {package_root}")
     manifest = load_plugin_manifest(package_root)
     file_count, total_bytes = validate_package_tree(package_root, limits=limits)
-    validate_manifest_paths(package_root, manifest)
+    configuration_schema = validate_manifest_paths(package_root, manifest)
     if manifest.contributes.mcp_servers:
         # Local import keeps package-path primitives below the MCP adapter while
         # still making installation a complete, side-effect-free static audit.
@@ -70,6 +69,7 @@ def validate_plugin_package(
         package_digest=compute_tree_digest(package_root),
         file_count=file_count,
         total_bytes=total_bytes,
+        configuration_schema=configuration_schema,
     )
 
 
@@ -97,27 +97,15 @@ def validate_manifest_compatibility(manifest: PluginManifest) -> None:
         )
 
 
-def validate_manifest_paths(root: Path, manifest: PluginManifest) -> None:
+def validate_manifest_paths(root: Path, manifest: PluginManifest) -> ConfigurationSchema | None:
     paths: list[tuple[str, bool]] = []
-    if manifest.configuration is not None:
+    if manifest.configuration is not None and manifest.configuration.schema_path is not None:
         paths.append((manifest.configuration.schema_path, False))
     paths.extend((item.path, True) for item in manifest.contributes.skills)
     paths.extend((item.path, False) for item in manifest.contributes.mcp_servers)
     for value, allow_directory in paths:
         resolve_manifest_path(root, value, allow_directory=allow_directory)
-    if manifest.configuration is not None:
-        schema_path = resolve_manifest_path(
-            root,
-            manifest.configuration.schema_path,
-            allow_directory=False,
-        )
-        try:
-            schema = json.loads(schema_path.read_text(encoding="utf-8"))
-            Draft202012Validator.check_schema(schema)
-        except (OSError, UnicodeError, json.JSONDecodeError, SchemaError, ValueError) as exc:
-            raise PluginPackageError(
-                f"invalid plugin configuration schema: {type(exc).__name__}: {exc}"
-            ) from exc
+    schema = load_configuration_schema(root, manifest)
     if manifest.runtime.kind == "python-inprocess":
         assert manifest.runtime.entrypoint is not None
         module_name = manifest.runtime.entrypoint.partition(":")[0]
@@ -129,6 +117,19 @@ def validate_manifest_paths(root: Path, manifest: PluginManifest) -> None:
         _assert_plain_path(module_file if module_file.is_file() else package_init, root=root)
     if manifest.runtime.kind == "worker":
         _validate_worker_command(root, manifest.runtime.command)
+    return schema
+
+
+def load_configuration_schema(root: Path, manifest: PluginManifest) -> ConfigurationSchema | None:
+    specification = manifest.configuration
+    if specification is None or specification.schema_path is None:
+        return None
+    path = resolve_manifest_path(root, specification.schema_path, allow_directory=False)
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        return ConfigurationSchema(document)
+    except OSError, UnicodeError, ValueError, ConfigurationSchemaError:
+        raise PluginPackageError("invalid plugin configuration schema") from None
 
 
 def _validate_worker_command(root: Path, command: list[str]) -> None:

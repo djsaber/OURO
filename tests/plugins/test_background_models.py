@@ -81,13 +81,17 @@ async def test_background_models_initialize_after_enable_configure_and_cold_star
     configuration = {"events": str(log)}
     async with LocalApplication.build(home) as app:
         app.plugins.install(package(tmp_path, kind, scope))
-        await app.plugins.configure(PLUGIN, configuration)
+        await app.plugins.configure(
+            app.plugins.configuration(PLUGIN).candidate(values=configuration)
+        )
         assert (await app.plugins.enable(PLUGIN)).status == "active"
         if scope == "home":
             await app.plugin_runtime.start_home_services()
         assert [phase for phase, _ in events(log)] == ["starting", "request", "started"]
         first = events(log)[0][1]
-        await app.plugins.configure(PLUGIN, {**configuration, "revision": 2})
+        await app.plugins.configure(
+            app.plugins.configuration(PLUGIN).candidate(values={**configuration, "revision": 2})
+        )
         assert app.plugin_runtime.status(PLUGIN) == "active", app.plugins.diagnostics(PLUGIN)
         phases = [phase for phase, _ in events(log)]
         assert phases == [
@@ -117,7 +121,11 @@ async def test_cancelled_enable_settles_published_service_before_next_mutation(t
     configure_model(home)
     async with LocalApplication.build(home) as app:
         app.plugins.install(package(tmp_path, kind, "host"))
-        await app.plugins.configure(PLUGIN, {"events": str(log), "release": str(release)})
+        await app.plugins.configure(
+            app.plugins.configuration(PLUGIN).candidate(
+                values={"events": str(log), "release": str(release)}
+            )
+        )
         enabling = asyncio.create_task(app.plugins.enable(PLUGIN))
         try:
             async with asyncio.timeout(10):
@@ -147,7 +155,11 @@ async def test_failed_background_stop_prevents_replacement_model_initialization(
     configure_model(home)
     async with LocalApplication.build(home) as app:
         app.plugins.install(package(tmp_path, kind, "host"))
-        await app.plugins.configure(PLUGIN, {"events": str(log), "fail_stop": str(marker)})
+        await app.plugins.configure(
+            app.plugins.configuration(PLUGIN).candidate(
+                values={"events": str(log), "fail_stop": str(marker)}
+            )
+        )
         assert (await app.plugins.enable(PLUGIN)).status == "active"
         marker.touch()
         try:
@@ -165,7 +177,11 @@ async def test_published_callback_finishes_before_observing_external_disable(tmp
     configure_model(home)
     async with LocalApplication.build(home) as app:
         app.plugins.install(package(tmp_path, kind, "host"))
-        await app.plugins.configure(PLUGIN, {"events": str(log), "release": str(release)})
+        await app.plugins.configure(
+            app.plugins.configuration(PLUGIN).candidate(
+                values={"events": str(log), "release": str(release)}
+            )
+        )
         enabling = asyncio.create_task(app.plugins.enable(PLUGIN))
         try:
             async with asyncio.timeout(10):
@@ -190,7 +206,9 @@ async def test_inherited_lifecycle_admission_expires_before_independent_work(tmp
     configure_model(home)
     async with LocalApplication.build(home) as app:
         app.plugins.install(package(tmp_path, "python-inprocess", "host"))
-        await app.plugins.configure(PLUGIN, {"events": str(log)})
+        await app.plugins.configure(
+            app.plugins.configuration(PLUGIN).candidate(values={"events": str(log)})
+        )
         assert (await app.plugins.enable(PLUGIN)).status == "active"
         release = asyncio.Event()
 

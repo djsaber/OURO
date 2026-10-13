@@ -145,7 +145,9 @@ def test_windows_console_reset_restores_captured_modes(
     ]
 
 
-def test_run_tui_sets_title_before_starting_textual(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_tui_sets_title_before_starting_textual(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     calls: list[str] = []
 
     @contextmanager
@@ -157,6 +159,8 @@ def test_run_tui_sets_title_before_starting_textual(monkeypatch: pytest.MonkeyPa
             calls.append("guard:exit")
 
     class FakeApp:
+        startup_data_error = None
+
         def __init__(self, **_kwargs: object) -> None:
             calls.append("app")
 
@@ -168,5 +172,5 @@ def test_run_tui_sets_title_before_starting_textual(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(entry, "tui_terminal_guard", fake_terminal_guard)
     monkeypatch.setattr("ouro.tui.app.OuroTuiApp", FakeApp)
 
-    assert entry.run_tui() == 0
+    assert entry.run_tui(home=tmp_path) == 0
     assert calls == ["guard:enter", "title:OURO", "app", "run", "guard:exit"]

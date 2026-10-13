@@ -149,7 +149,7 @@ class PluginMCPResourceAdapter:
             request.candidate.manifest,
             request.package_root,
             resolve_credential=request.credential_resolver,
-            credential_bindings=request.configuration.credential_refs,
+            credential_bindings=dict(request.configuration.credential_refs),
         )
         request.own_resource(resource)
         tools = await resource.start()

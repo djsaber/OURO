@@ -223,7 +223,7 @@ calendar-plugin/
   "namespace": "calendar",
   "engines": {
     "ouro": ">=0.2.0,<0.3.0",
-    "plugin_api": "^3.0.0"
+    "plugin_api": "^3.1.0"
   },
   "runtime": {
     "kind": "python-inprocess",
@@ -549,7 +549,7 @@ Host capability 清单由以下 15 类组成。这里的“消费者”指真正
 prepare、contract、projection 与文档删除，不保留空 adapter 或迁移别名。
 
 观察型扩展只公开 `observers`；`prompt_policies` 是独立语义边界。Manifest schema 3 不接受 `hooks` 字段；
-Plugin API 使用 3.0，worker protocol 使用 3.0；Python SDK 入口为 `ouro.sdk.plugins.v3`。
+Plugin API 使用 3.1.0，worker protocol 使用 3.0；Python SDK 入口为 `ouro.sdk.plugins.v3`。
 
 公开交互 DTO 位于 `ouro.sdk.plugins.interactions`。计划确认请求包含预览文本、计划引用、可选方案和明确的动作，
 答案包含动作及用户选择或反馈。Host 按 DTO 类型呈现，不以 builtin 身份或工具显示名赋予特殊界面；请求来源仍
@@ -843,14 +843,14 @@ Permission id 必须由 OURO 核心注册表定义。每个 id 都要有真实�
 
 ## 12. Configuration 与 Data
 
-- Configuration schema 安装时静态校验；
-- 每个 installed digest 可保存多个 immutable configuration revision；
-- configuration 规范化后保存，credential secret 不进入 revision；
-- 没有 configuration schema 时使用规范化空 revision；只有 schema required 字段未满足时才缺少有效 revision；
-- 缺少 active configuration revision 时不得执行 runtime；
-- 配置先校验并创建候选 revision，再构建候选 generation；
-- 候选失败时 current selection、active revision 和 catalog 不变；
-- 插件只能读取自身 configuration；
+配置采用自包含 Draft 2020-12 Schema 与独立 credential slots。静态查询、预检、完整候选、默认值、不可变
+修订、编辑冲突和 Host 自动交互的精确契约由[插件配置规格](plugin-configuration.md)统一维护。
+配置修订属于插件记录，每个 installed digest 引用一个当前修订；不删除仍被执行契约使用的历史修订。
+安装落实默认值并保持禁用，缺少必填值或凭据绑定时为未就绪。期望启用的选中包通过候选 generation 应用
+配置，候选失败不切换持久引用或 Catalog；发布后的状态按本规格的服务交接规则报告。
+
+插件只能读取自身配置快照和已声明、已绑定的 credential slots。配置不承载业务数据：
+
 - candidate generation 的 Host data API 只允许读取；写入和删除明确失败。发布只改变访问权限，不执行数据提交 I/O；
 - generation 关闭后撤销私有 data 写入；停止回调可以在清理完成前保存自身状态；
 - `python-inprocess` 是 full trust，直接绕过 Host data API 的 Python/OS 写入不受上述边界约束，也不伪装成沙箱能力。

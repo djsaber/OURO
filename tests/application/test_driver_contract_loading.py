@@ -79,8 +79,12 @@ async def install_original(service, packages, *, wait=False):
     driver, dependency = packages
     service.install(dependency)
     service.install(driver)
-    await service.configure(DEPENDENCY, {"label": "old dependency"})
-    await service.configure(PLUGIN, {"label": "old driver", "wait": wait})
+    await service.configure(
+        service.configuration(DEPENDENCY).candidate(values={"label": "old dependency"})
+    )
+    await service.configure(
+        service.configuration(PLUGIN).candidate(values={"label": "old driver", "wait": wait})
+    )
     assert (await service.enable(PLUGIN)).status == "active"
 
 
@@ -94,7 +98,9 @@ async def upgrade(service, packages):
     write_json(manifest_path, manifest)
     installed = service.install(driver)
     await service.configure(
-        PLUGIN, {"label": "new driver"}, package_digest=installed.package_digest
+        service.configuration(PLUGIN, package_digest=installed.package_digest).candidate(
+            values={"label": "new driver"}
+        )
     )
     assert (await service.select(PLUGIN, installed.package_digest)).status == "active"
     manifest_path = dependency / ".ouro-plugin/plugin.json"
@@ -109,7 +115,9 @@ async def upgrade(service, packages):
     )
     installed = service.install(dependency)
     await service.configure(
-        DEPENDENCY, {"label": "new dependency"}, package_digest=installed.package_digest
+        service.configuration(DEPENDENCY, package_digest=installed.package_digest).candidate(
+            values={"label": "new dependency"}
+        )
     )
     assert (await service.select(DEPENDENCY, installed.package_digest)).status == "active"
 
@@ -219,8 +227,12 @@ async def test_same_package_configuration_change_preserves_the_waiting_driver_co
     try:
         await install_original(service, configured_packages(tmp_path))
         pending = await runtime.run("deploy", driver_id=DRIVER)
-        await service.configure(PLUGIN, {"label": "new driver"})
-        await service.configure(DEPENDENCY, {"label": "new dependency"})
+        await service.configure(
+            service.configuration(PLUGIN).candidate(values={"label": "new driver"})
+        )
+        await service.configure(
+            service.configuration(DEPENDENCY).candidate(values={"label": "new dependency"})
+        )
         result = await approve(runtime, pending)
         assert result.run.status == "completed", result.run.error
         assert result.final_text == "old driver/original:old dependency"
@@ -240,7 +252,9 @@ async def test_removing_an_unused_release_keeps_configuration_referenced_by_anot
     try:
         await install_original(service, packages)
         pending = await runtime.run("deploy", driver_id=DRIVER)
-        await service.configure(PLUGIN, {"label": "new configuration"})
+        await service.configure(
+            service.configuration(PLUGIN).candidate(values={"label": "new configuration"})
+        )
         driver, _ = packages
         manifest_path = driver / ".ouro-plugin/plugin.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -248,7 +262,9 @@ async def test_removing_an_unused_release_keeps_configuration_referenced_by_anot
         write_json(manifest_path, manifest)
         unused = service.install(driver)
         await service.configure(
-            PLUGIN, {"label": "old driver", "wait": False}, package_digest=unused.package_digest
+            service.configuration(PLUGIN, package_digest=unused.package_digest).candidate(
+                values={"label": "old driver", "wait": False}
+            )
         )
         await service.remove(PLUGIN, package_digest=unused.package_digest)
         result = await approve(runtime, pending)
@@ -413,7 +429,9 @@ async def test_unavailable_original_contract_keeps_results_and_releases_candidat
             )
         elif fault == "configuration":
             await service.configure(
-                PLUGIN, {"label": "changed"}, package_digest=original.release_id
+                service.configuration(PLUGIN, package_digest=original.release_id).candidate(
+                    values={"label": "changed"}
+                )
             )
 
             def lose_revision(state):

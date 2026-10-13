@@ -628,7 +628,9 @@ async def test_configuration_is_content_addressed_and_schema_less_values_are_rej
     assert record.activation.active_configuration_revision_id == revision.revision_id
 
     with pytest.raises(PluginPackageError, match="requires an empty configuration"):
-        await service.configure("dev.ouro.echo", {"undeclared": True})
+        await service.configure(
+            service.configuration("dev.ouro.echo").candidate(values={"undeclared": True})
+        )
 
     raw_state = json.loads(service.store.state_path.read_text(encoding="utf-8"))
     revisions = raw_state["plugins"]["dev.ouro.echo"]["activation"]["configuration_revisions"]
@@ -1058,7 +1060,9 @@ def create_plugin(context): return Plugin()
     first_snapshot = runtime.snapshot()
     first_generation = first_snapshot.generations[0].generation_id
     assert first_snapshot.tools.names() == ["safe__run"]
-    configured = await service.configure("dev.ouro.echo", {"mode": "new"})
+    configured = await service.configure(
+        service.configuration("dev.ouro.echo").candidate(values={"mode": "new"})
+    )
     assert configured.status == "active"
     with runtime.snapshot() as second_snapshot:
         assert second_snapshot.generations[0].generation_id != first_generation
@@ -2758,14 +2762,14 @@ for line in sys.stdin:
 
     with pytest.raises(PluginPackageError, match="credential slot"):
         await service.configure(
-            "dev.ouro.credentials",
-            {},
-            credential_refs={"undeclared": "env:OURO_PLUGIN_TEST_SECRET"},
+            service.configuration("dev.ouro.credentials").candidate(
+                values={}, credential_refs={"undeclared": "env:OURO_PLUGIN_TEST_SECRET"}
+            )
         )
     await service.configure(
-        "dev.ouro.credentials",
-        {},
-        credential_refs={"calendar_api": "env:OURO_PLUGIN_TEST_SECRET"},
+        service.configuration("dev.ouro.credentials").candidate(
+            values={}, credential_refs={"calendar_api": "env:OURO_PLUGIN_TEST_SECRET"}
+        )
     )
     assert (await service.enable("dev.ouro.credentials")).status == "active"
     await asyncio.sleep(0.05)
@@ -2822,9 +2826,9 @@ def create_plugin(context): return Plugin(context)
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
     await service.configure(
-        "dev.ouro.inprocess_credentials",
-        {},
-        credential_refs={"service_api": "env:OURO_INPROCESS_SECRET"},
+        service.configuration("dev.ouro.inprocess_credentials").candidate(
+            values={}, credential_refs={"service_api": "env:OURO_INPROCESS_SECRET"}
+        )
     )
 
     assert (await service.enable("dev.ouro.inprocess_credentials")).status == "failed"
@@ -3221,13 +3225,17 @@ def create_plugin(context): return Plugin(context)
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    await service.configure("dev.ouro.configuration", {"fail": False})
+    await service.configure(
+        service.configuration("dev.ouro.configuration").candidate(values={"fail": False})
+    )
     assert (await service.enable("dev.ouro.configuration")).status == "active"
     with runtime.snapshot() as before:
         previous_generation_id = before.generations[0].generation_id
 
     with pytest.raises(RuntimeError, match="new configuration failed"):
-        await service.configure("dev.ouro.configuration", {"fail": True})
+        await service.configure(
+            service.configuration("dev.ouro.configuration").candidate(values={"fail": True})
+        )
 
     record = service.store.read_state().plugins["dev.ouro.configuration"]
     selected = record.selected()
@@ -3522,7 +3530,7 @@ async def test_builtin_plugin_uses_generation_lifecycle_and_persisted_override(t
     with pytest.raises(PluginOperationNotAllowedError, match="cannot remove builtin plugin"):
         await service.remove("dev.ouro.builtin")
     with pytest.raises(PluginOperationNotAllowedError, match="cannot configure builtin plugin"):
-        await service.configure("dev.ouro.builtin", {})
+        await service.configure(service.configuration("dev.ouro.builtin").candidate(values={}))
     await runtime.close()
 
     restarted, *_ = _runtime(home, builtin_plugins=builtin_plugins)
@@ -3574,7 +3582,9 @@ async def test_catalog_leases_replace_lifecycle_blocks_and_enable_is_idempotent(
 
     assert (await service.restart("dev.ouro.echo")).status == "active"
     assert (await service.select("dev.ouro.echo", second.package_digest)).status == "active"
-    assert (await service.configure("dev.ouro.echo", {})).status == "active"
+    assert (
+        await service.configure(service.configuration("dev.ouro.echo").candidate(values={}))
+    ).status == "active"
     assert service.show("dev.ouro.echo").package_digest == second.package_digest
     await service.disable("dev.ouro.echo")
     await runtime.close()
@@ -3656,7 +3666,9 @@ async def test_configuration_rebuilds_transitive_desired_dependants(tmp_path) ->
     service.install(root)
     service.install(middle)
     service.install(leaf)
-    await service.configure("dev.ouro.root", {"mode": "old"})
+    await service.configure(
+        service.configuration("dev.ouro.root").candidate(values={"mode": "old"})
+    )
     assert (await service.enable("dev.ouro.leaf")).status == "active"
     with runtime.snapshot() as before:
         old_generations = {
@@ -3671,7 +3683,11 @@ async def test_configuration_rebuilds_transitive_desired_dependants(tmp_path) ->
             for generation in before.generations
         }
 
-    assert (await service.configure("dev.ouro.root", {"mode": "new"})).status == "active"
+    assert (
+        await service.configure(
+            service.configuration("dev.ouro.root").candidate(values={"mode": "new"})
+        )
+    ).status == "active"
     with runtime.snapshot() as after:
         new_generations = {
             generation.plugin_id: generation.generation_id for generation in after.generations
@@ -3750,9 +3766,13 @@ def create_plugin(context): return Plugin(context)
     runtime, *_ = _runtime(home)
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    await service.configure("dev.ouro.service_handover", {"mode": "old"})
+    await service.configure(
+        service.configuration("dev.ouro.service_handover").candidate(values={"mode": "old"})
+    )
     assert (await service.enable("dev.ouro.service_handover")).status == "active"
-    await service.configure("dev.ouro.service_handover", {"mode": "new"})
+    await service.configure(
+        service.configuration("dev.ouro.service_handover").candidate(values={"mode": "new"})
+    )
 
     events = (
         (home / "plugins" / "data" / "dev.ouro.service_handover" / "events.txt")

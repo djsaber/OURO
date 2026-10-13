@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from ouro.mcp import MCPManager, MCPServerConfig
+from ouro.plugins.configuration import declared_credential_slots
 from ouro.plugins.manifest import PathContributionSpec, PluginManifest
 from ouro.plugins.package import PluginPackageError, resolve_manifest_path
-from ouro.plugins.readiness import declared_credential_slots
 from ouro.tools import Tool, ToolRegistry
 
 

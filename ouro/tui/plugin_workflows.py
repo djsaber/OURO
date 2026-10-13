@@ -4,14 +4,16 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import cast
 
+from ouro.application.plugin_configuration_models import PluginConfigurationResult
 from ouro.application.plugin_models import PluginDetail, PluginSummary
-from ouro.tui.configuration_screens import PluginConfigurationScreen, PluginInstallScreen
+from ouro.tui.configuration_screens import PluginInstallScreen
 from ouro.tui.controller import (
     TuiController,
     TuiPluginInstallConfiguration,
     TuiSystemStatus,
     project_plugin_system_status,
 )
+from ouro.tui.plugin_configuration_screen import PluginConfigurationScreen
 from ouro.tui.provider_workflows import ProviderConfigurationWorkflows
 from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
@@ -259,27 +261,43 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         *,
         menu: ChoiceScreen | None,
     ) -> None:
-        plugin = await self._controller.plugin(plugin_id)
-        if not plugin.configuration_supported:
-            self.notify(f"Plugin has no configuration schema: {plugin_id}", severity="warning")
-            return
-        draft = await (
-            menu.open_child(PluginConfigurationScreen(plugin, theme=theme_for(self)))
-            if menu is not None
-            else self.push_screen_wait(PluginConfigurationScreen(plugin, theme=theme_for(self)))
-        )
-        if draft is None:
-            return
-        values, credential_refs = cast(tuple[dict[str, object], dict[str, str]], draft)
         try:
-            await self._controller.configure_plugin(
-                plugin_id,
-                values,
-                credential_refs,
+            view = await self._controller.plugin_configuration(plugin_id)
+            if not view.configuration_supported:
+                self.notify(f"Plugin has no configurable fields: {plugin_id}", severity="warning")
+                return
+
+            async def reload_configuration():
+                return await self._controller.plugin_configuration(
+                    plugin_id, package_digest=view.package_digest
+                )
+
+            screen = PluginConfigurationScreen(
+                view,
+                preview=self._controller.preview_plugin_configuration,
+                apply=self._controller.configure_plugin,
+                reload=reload_configuration,
+                theme=theme_for(self),
+            )
+            result = await (
+                menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
             )
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
+        if result is None:
+            return
+        applied = cast(PluginConfigurationResult, result)
+        self.notify(
+            theme_for(self).inline_separator.join(
+                (f"Plugin configuration: {applied.outcome}", applied.status)
+            )
+        )
+        if applied.status in {"degraded", "failed"}:
+            await self.query_one(ConversationView).add_notice(
+                "; ".join(item.message for item in applied.diagnostics) or applied.status,
+                error=applied.status == "failed",
+            )
         await self._refresh_plugin_system_status()
 
     async def _set_plugin_enabled(self, plugin_id: str, *, enabled: bool) -> bool:

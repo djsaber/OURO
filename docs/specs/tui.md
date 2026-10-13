@@ -256,6 +256,11 @@ Actions/设置界面当前覆盖主题、reasoning 展开、输入草稿、排�
 策略、Provider/Endpoint、MCP、插件、Skills 及来源。编辑使用 Configuration/Application 命令的 revision 与
 校验规则；UI 不直接合并共享配置。
 
+插件 **Edit settings** 从 Application 取得完整 Schema、凭据槽和固定编辑基线。字符串与数值使用行内输入，
+布尔、枚举与常量复用选择菜单，复杂结构使用带 Schema 示例占位符的 JSON 输入；整份 JSON 编辑保留原生
+表单未呈现的字段。凭据单独编辑引用。校验失败或冲突保留草稿，刷新须确认丢弃；只有显式 Apply 才提交。
+控件能力不限制配置表达能力，完整约束和生效语义见[插件配置规格](plugin-configuration.md)。
+
 端点列表在当前 Session 或待建会话选中的完整 `provider/endpoint` 路由左侧显示主题选定标记，与菜单焦点独立。
 全局默认端点通过右侧 `default` 标签展示，两者可以同时出现；修改默认配置不覆盖已有会话选择。
 列表刷新时同步更新标记与标签；当前选择无法解析时不显示选定标记，仍允许浏览端点菜单。

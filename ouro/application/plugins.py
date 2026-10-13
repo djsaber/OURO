@@ -9,6 +9,13 @@ from typing import Literal
 from ouro.application.dto import Diagnostic
 from ouro.application.harness import capture_session_harness
 from ouro.application.plugin_commands import execute_plugin_command
+from ouro.application.plugin_configuration import PluginConfigurationService
+from ouro.application.plugin_configuration_models import (
+    PluginConfigurationCandidate,
+    PluginConfigurationPreview,
+    PluginConfigurationResult,
+    PluginConfigurationView,
+)
 from ouro.application.plugin_models import (
     CompatibilityItemView,
     CompatibilityReportView,
@@ -35,6 +42,7 @@ from ouro.core.state import SessionRecord
 from ouro.local_processes.commands import run_process
 from ouro.plugins.builtin import BuiltinPluginDefinition, BuiltinPluginRegistry
 from ouro.plugins.compatibility import inspect_community_package
+from ouro.plugins.configuration import declared_credential_slots
 from ouro.plugins.dependencies import (
     PluginDependencyError,
     active_dependents,
@@ -51,7 +59,6 @@ from ouro.plugins.models import (
     PluginDiagnostic,
     PluginRecord,
     PluginStateDocument,
-    create_configuration_revision,
 )
 from ouro.plugins.package import PluginPackageError
 from ouro.plugins.readiness import configuration_errors, plugin_install_readiness
@@ -100,6 +107,7 @@ class PluginService:
             builtin_plugins=self.builtin_plugins,
         )
         self.runtime = runtime
+        self._configuration = PluginConfigurationService(store, runtime)
         self.session_store = session_store
         self.usage_service = usage_service
         self.session_controls = (
@@ -261,8 +269,14 @@ class PluginService:
             ],
             active_generations=generations,
             diagnostics=(self.runtime.diagnostics(plugin_id) if self.runtime is not None else []),
-            configuration_supported=manifest.configuration is not None,
-            configuration_values=(dict(configuration.values) if configuration is not None else {}),
+            configuration_supported=(
+                (
+                    manifest.configuration is not None
+                    and manifest.configuration.schema_path is not None
+                )
+                or bool(declared_credential_slots(manifest))
+            ),
+            configuration_values=(configuration.values_dict() if configuration is not None else {}),
             credential_refs=(
                 dict(configuration.credential_refs) if configuration is not None else {}
             ),
@@ -415,74 +429,26 @@ class PluginService:
             suggested_target=report.suggested_target,
         )
 
+    def configuration(
+        self, plugin_id: str, *, package_digest: str | None = None
+    ) -> PluginConfigurationView:
+        self._require_user_operation(plugin_id, "configure")
+        return self._configuration.view(plugin_id, package_digest)
+
+    def preview_configuration(
+        self, candidate: PluginConfigurationCandidate
+    ) -> PluginConfigurationPreview:
+        self._require_user_operation(candidate.plugin_id, "configure")
+        return self._configuration.preview(candidate)
+
     async def configure(
         self,
-        plugin_id: str,
-        values: dict[str, object],
+        candidate: PluginConfigurationCandidate,
         *,
-        credential_refs: dict[str, str] | None = None,
-        package_digest: str | None = None,
         request_id: str | None = None,
-        preview: bool = False,
-    ) -> PluginActionResult:
-        self._require_user_operation(plugin_id, "configure")
-        expected = self.store.read_state()
-        record = _state_plugin_record(expected, plugin_id)
-        installed = _select_install(record, package_digest)
-        previous_configuration = record.activation.configuration_for(installed.package_digest)
-        if previous_configuration is None:
-            raise PluginPackageError("plugin has no configuration revision for this digest")
-        candidate_activation = record.activation.model_copy(deep=True)
-        next_credential_refs = (
-            previous_configuration.credential_refs if credential_refs is None else credential_refs
-        )
-        if any(not reference.startswith("env:") for reference in next_credential_refs.values()):
-            raise ValueError("plugin credential bindings must use env: references")
-        specification = installed.manifest.configuration
-        configuration = create_configuration_revision(
-            values=values,
-            credential_refs=dict(next_credential_refs),
-            schema_version=specification.version if specification is not None else None,
-        )
-        candidate_activation.set_configuration(
-            installed.package_digest,
-            configuration,
-            activate=candidate_activation.selected_digest == installed.package_digest,
-        )
-        errors = configuration_errors(
-            installed,
-            candidate_activation,
-            self.store.package_path(plugin_id, installed.package_digest),
-        )
-        if errors:
-            raise PluginPackageError("invalid plugin configuration: " + "; ".join(errors))
-        if preview:
-            return PluginActionResult(
-                action="configure",
-                plugin_id=plugin_id,
-                status=self._status(record),
-                changed=False,
-                package_digest=installed.package_digest,
-            )
-        rebuild_active = (
-            record.activation.selected_digest == installed.package_digest
-            and self.runtime is not None
-            and self.runtime.status(plugin_id) in {"active", "degraded"}
-        )
-        candidate = expected.model_copy(deep=True)
-        candidate.plugins[plugin_id].activation = candidate_activation
-        if rebuild_active:
-            assert self.runtime is not None
-            await self.runtime.apply_candidate_state(
-                expected=expected,
-                candidate=candidate,
-                roots={plugin_id},
-                reason="configure",
-            )
-        else:
-            self.store.commit_candidate_state(expected, candidate)
-        self._audit("configure", installed, request_id)
-        return self._action("configure", plugin_id, installed.package_digest)
+    ) -> PluginConfigurationResult:
+        self._require_user_operation(candidate.plugin_id, "configure")
+        return await self._configuration.apply(candidate, request_id=request_id)
 
     async def select(
         self,

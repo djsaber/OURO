@@ -1,0 +1,22 @@
+{
+  "schema_version": 3,
+  "plugin_id": "dev.ouro.configuration_playground",
+  "name": "Configuration Playground",
+  "description": "Explore the generic plugin configuration contract without business logic.",
+  "version": "1.0.0",
+  "namespace": "configuration_playground",
+  "engines": {"ouro": ">=0.2.2,<0.3.0", "plugin_api": ">=3.1.0,<4.0.0"},
+  "runtime": {"kind": "declarative"},
+  "configuration": {
+    "schema": "./configuration.schema.json",
+    "version": 1,
+    "credentials": {
+      "example_key": {"title": "Example key", "description": "A required reference for testing configuration readiness; no service is contacted.", "required": true},
+      "optional_key": {"title": "Optional key", "description": "Leave unbound to exercise an optional credential slot."}
+    }
+  },
+  "permissions": [{"id": "credentials.use", "scopes": ["example_key", "optional_key"], "reason": "Exercise declared credential references without making remote requests."}],
+  "contributes": {},
+  "dependencies": {"plugins": []},
+  "metadata": {}
+}

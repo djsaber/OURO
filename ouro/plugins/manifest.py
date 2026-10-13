@@ -4,7 +4,7 @@ import re
 from typing import Any, Literal, get_args
 
 from jsonschema import Draft202012Validator
-from pydantic import Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
 from ouro.core.events import EventType
@@ -428,9 +428,20 @@ class PluginContributes(OuroModel):
         return {kind for kind, values in self.by_kind().items() if values}
 
 
+class PluginCredentialSpec(OuroModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = None
+    description: str | None = None
+    required: bool = False
+
+
 class PluginConfigurationSpec(OuroModel):
-    schema_path: str = Field(alias="schema")
+    model_config = ConfigDict(extra="forbid")
+
+    schema_path: str | None = Field(default=None, alias="schema")
     version: int = Field(default=1, ge=1)
+    credentials: dict[str, PluginCredentialSpec] = Field(default_factory=dict)
 
 
 class PluginDependencySpec(OuroModel):
@@ -544,6 +555,17 @@ class PluginManifest(OuroModel):
         identities = [request.id for request in self.permissions]
         if len(identities) != len(set(identities)):
             raise ValueError("duplicate permission request id")
+        if self.configuration is not None:
+            slots = {
+                slot
+                for request in self.permissions
+                if request.id == "credentials.use"
+                for slot in request.scopes
+            }
+            if set(self.configuration.credentials) - slots:
+                raise ValueError(
+                    "configuration credential slot must be declared in credentials.use"
+                )
         if self.contributes.prompt_policies and "sessions.prompt.inspect" not in identities:
             raise ValueError("prompt_policies require the sessions.prompt.inspect permission")
         dependencies = [item.plugin_id for item in self.dependencies.plugins]

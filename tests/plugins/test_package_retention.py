@@ -96,10 +96,10 @@ def test_gc_cannot_delete_a_package_between_publication_and_install_commit(tmp_p
     entered, release = Event(), Event()
     record = installer._record_install
 
-    def delayed(installed):
+    def delayed(installed, configuration):
         entered.set()
         assert release.wait(5)
-        return record(installed)
+        return record(installed, configuration)
 
     monkeypatch.setattr(installer, "_record_install", delayed)
     with ThreadPoolExecutor(max_workers=2) as executor:

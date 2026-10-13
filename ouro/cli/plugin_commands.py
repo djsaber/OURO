@@ -7,6 +7,15 @@ from contextlib import asynccontextmanager, nullcontext, redirect_stdout
 from io import StringIO
 from pathlib import Path
 
+from ouro.application.plugin_configuration import (
+    PluginConfigurationConflictError,
+    PluginConfigurationValidationError,
+)
+from ouro.application.plugin_configuration_models import (
+    PluginConfigurationCandidate,
+    PluginConfigurationPreview,
+    PluginConfigurationResult,
+)
 from ouro.application.plugin_models import PluginActionResult
 from ouro.application.plugins import PluginService
 from ouro.core.base import OuroModel
@@ -23,6 +32,36 @@ from ouro.local_application import (
 def run_plugin_command(args) -> int:
     try:
         return _run_plugin_command(args)
+    except PluginConfigurationValidationError as exc:
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "error": {
+                            "code": "invalid_configuration",
+                            "issues": [issue.model_dump() for issue in exc.issues],
+                        }
+                    }
+                )
+            )
+            return 1
+        raise OuroError(str(exc)) from None
+    except PluginConfigurationConflictError as exc:
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "error": {
+                            "code": "configuration_conflict",
+                            "plugin_id": exc.plugin_id,
+                            "package_digest": exc.package_digest,
+                            "current_revision_id": exc.current_revision_id,
+                        }
+                    }
+                )
+            )
+            return 1
+        raise OuroError(str(exc)) from None
     except OuroError:
         raise
     except Exception as exc:
@@ -70,6 +109,13 @@ def _run_plugin_command(args) -> int:
         return _emit_many(service.list(), json_mode=args.json)
     if command == "show":
         return _emit(service.show(args.plugin_id), json_mode=args.json)
+    if command == "configuration":
+        view = service.configuration(args.plugin_id, package_digest=args.digest)
+        if args.export_path:
+            Path(args.export_path).write_text(
+                view.candidate().model_dump_json(indent=2) + "\n", encoding="utf-8"
+            )
+        return _emit(view, json_mode=args.json)
     if command in {"commands", "run-command"}:
         return asyncio.run(_plugin_contributed_command(home, args))
     if command == "install":
@@ -82,21 +128,17 @@ def _run_plugin_command(args) -> int:
         )
         return _emit(install_result, json_mode=args.json)
     if command == "configure":
-        values = _json_object(args.values, option="--values")
-        credentials = (
-            _json_string_map(args.credentials, option="--credentials")
-            if args.credentials is not None
-            else None
-        )
+        candidate = _configuration_candidate(service, args)
+        preview = service.preview_configuration(candidate)
+        if args.preview or not preview.valid:
+            _emit(preview, json_mode=args.json)
+            return 0 if preview.valid else 1
         return asyncio.run(
             _configure_command(
                 home,
-                args.plugin_id,
-                values,
-                credential_refs=credentials,
-                package_digest=args.digest,
+                candidate,
+                needs_runtime=preview.scope == "current_host",
                 request_id=args.request_id,
-                preview=args.preview,
                 json_mode=args.json,
             )
         )
@@ -191,25 +233,51 @@ async def _plugin_contributed_command(home: Path, args) -> int:
 
 async def _configure_command(
     home: Path,
-    plugin_id: str,
-    values: dict[str, object],
+    candidate: PluginConfigurationCandidate,
     *,
-    credential_refs: dict[str, str] | None,
-    package_digest: str | None,
+    needs_runtime: bool,
     request_id: str | None,
-    preview: bool,
     json_mode: bool,
 ) -> int:
-    async with _plugin_session(home, quiet=json_mode) as service:
-        result = await service.configure(
-            plugin_id,
-            values,
-            credential_refs=credential_refs,
-            package_digest=package_digest,
-            request_id=request_id,
-            preview=preview,
-        )
+    if needs_runtime:
+        async with _plugin_session(home, quiet=json_mode) as service:
+            result = await service.configure(candidate, request_id=request_id)
+    else:
+        result = await build_local_plugin_service(home).configure(candidate, request_id=request_id)
     return _emit(result, json_mode=json_mode)
+
+
+def _configuration_candidate(service: PluginService, args) -> PluginConfigurationCandidate:
+    if args.file:
+        if args.credentials is not None:
+            raise ValueError("--file already contains credential references")
+        candidate = PluginConfigurationCandidate.model_validate_json(
+            Path(args.file).read_text(encoding="utf-8")
+        )
+        if candidate.plugin_id != args.plugin_id or (
+            args.digest is not None and candidate.package_digest != args.digest
+        ):
+            raise ValueError("Configuration file target does not match the command target")
+        if (
+            args.expected_revision is not None
+            and args.expected_revision != candidate.expected_configuration_revision_id
+        ):
+            raise ValueError("Configuration file baseline does not match --expected-revision")
+        return candidate
+    view = service.configuration(args.plugin_id, package_digest=args.digest)
+    if args.values is None and (view.schema_document is not None or args.credentials is None):
+        raise ValueError(
+            "Provide --values or --file; credential-only plugins may use --credentials"
+        )
+    candidate = view.candidate(
+        values=_json_object(args.values, option="--values") if args.values is not None else {},
+        credential_refs=_json_string_map(args.credentials, option="--credentials")
+        if args.credentials is not None
+        else {},
+    )
+    if args.expected_revision is not None:
+        candidate.expected_configuration_revision_id = args.expected_revision
+    return candidate
 
 
 async def _select_command(
@@ -332,6 +400,14 @@ def _json_string_map(value: str, *, option: str) -> dict[str, str]:
 def _emit(value, *, json_mode: bool) -> int:
     if json_mode:
         print(value.model_dump_json(exclude_none=True))
+    elif isinstance(value, PluginConfigurationResult):
+        print(f"configure: {value.plugin_id}: {value.outcome} ({value.status}, {value.scope})")
+        for diagnostic in value.diagnostics:
+            print(f"[{diagnostic.severity}] {diagnostic.code}: {diagnostic.message}")
+    elif isinstance(value, PluginConfigurationPreview):
+        print(f"configuration preview: {'valid' if value.valid else 'invalid'} ({value.scope})")
+        for issue in value.issues:
+            print(f"{issue.path}: {issue.code}: {issue.message}")
     elif isinstance(value, PluginActionResult):
         suffix = f" ({value.package_digest})" if value.package_digest else ""
         print(f"{value.action}: {value.plugin_id}: {value.status}{suffix}")

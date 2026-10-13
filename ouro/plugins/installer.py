@@ -84,9 +84,13 @@ class PluginInstaller:
                 manifest=package.manifest,
                 provenance=provenance,
             )
+            schema = package.configuration_schema
+            configuration = _initial_configuration_revision(
+                installed, values=schema.normalize({}) if schema is not None else {}
+            )
             with self.store.plugin_lock(installed.plugin_id):
                 self.store.publish(package)
-                result = self._record_install(installed)
+                result = self._record_install(installed, configuration)
         self.store.append_audit(
             PluginAuditEvent(
                 action="install",
@@ -149,7 +153,9 @@ class PluginInstaller:
             )
         )
 
-    def _record_install(self, installed: InstalledPlugin) -> PluginInstallResult:
+    def _record_install(
+        self, installed: InstalledPlugin, configuration: PluginConfigurationRevision
+    ) -> PluginInstallResult:
         diagnostics: list[PluginDiagnostic] = []
         already_installed = False
 
@@ -157,7 +163,6 @@ class PluginInstaller:
             nonlocal already_installed
             record = state.plugins.get(installed.plugin_id)
             if record is None:
-                configuration = _initial_configuration_revision(installed)
                 activation = PluginActivationState(selected_digest=installed.package_digest)
                 activation.set_configuration(
                     installed.package_digest,
@@ -200,7 +205,6 @@ class PluginInstaller:
                     )
                 )
             record.installs.append(installed)
-            configuration = _initial_configuration_revision(installed)
             record.activation.set_configuration(
                 installed.package_digest,
                 configuration,
@@ -219,8 +223,11 @@ class PluginInstaller:
         )
 
 
-def _initial_configuration_revision(installed: InstalledPlugin) -> PluginConfigurationRevision:
+def _initial_configuration_revision(
+    installed: InstalledPlugin, *, values: dict[str, object]
+) -> PluginConfigurationRevision:
     specification = installed.manifest.configuration
     return create_configuration_revision(
+        values=values,
         schema_version=specification.version if specification is not None else None,
     )

@@ -21,7 +21,6 @@ from ouro.application.configuration_models import (
     ToolExecutionConfigView,
 )
 from ouro.application.models import AvailableModel
-from ouro.application.plugin_models import PluginDetail
 from ouro.core.agents import AgentDefinition, ExecutionMode, ToolSelection
 from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.reasoning import ReasoningRequest
@@ -1423,99 +1422,6 @@ class PluginInstallScreen(EditableChoiceScreen):
         )
 
 
-class PluginConfigurationScreen(EditableChoiceScreen):
-    """Edit the application-owned plugin configuration JSON contract."""
-
-    def __init__(
-        self,
-        plugin: PluginDetail,
-        *,
-        theme: TuiTheme = DEFAULT_TUI_THEME,
-    ) -> None:
-        self._initial_tui_theme = theme
-        self._plugin_id = plugin.plugin_id
-        self._values = {
-            "plugin-config-values": json.dumps(
-                plugin.configuration_values,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-            "plugin-config-credentials": json.dumps(
-                plugin.credential_refs,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-        }
-        super().__init__(
-            title=theme_for(self).inline_separator.join(("EDIT PLUGIN", plugin.name)),
-            placeholder="Filter plugin configuration…",
-            choices=self._configuration_choices(),
-            on_save=self._save_field,
-        )
-
-    async def _select_choice(self, selected: str) -> None:
-        if self._editing_value is None and selected == "plugin-config-save":
-            self._submit()
-            return
-        await super()._select_choice(selected)
-
-    async def _save_field(self, field_id: str, value: str) -> tuple[Choice, ...] | None:
-        self._values[field_id] = value.strip()
-        return self._configuration_choices()
-
-    def _draft(self) -> tuple[dict[str, object], dict[str, str]]:
-        values = _json_object(self._values["plugin-config-values"], "Settings (JSON)")
-        credentials = _json_string_object(
-            self._values["plugin-config-credentials"],
-            "Credential references",
-        )
-        if any(not reference.startswith("env:") for reference in credentials.values()):
-            raise ValueError("Credential references must use env: references")
-        return values, credentials
-
-    def _validation_error(self) -> str:
-        try:
-            self._draft()
-        except ValueError as exc:
-            return str(exc)
-        return ""
-
-    def _submit(self) -> None:
-        try:
-            draft = self._draft()
-        except ValueError:
-            return
-        self.dismiss(draft)  # type: ignore[arg-type]
-
-    def _configuration_choices(self) -> tuple[Choice, ...]:
-        error = self._validation_error()
-        return (
-            Choice(
-                "plugin-config-values",
-                "Settings (JSON)",
-                trailing=self._values["plugin-config-values"],
-                group="SETTINGS",
-                edit_value=self._values["plugin-config-values"],
-                edit_placeholder="Enter a JSON object",
-            ),
-            Choice(
-                "plugin-config-credentials",
-                "Credential references",
-                trailing=self._values["plugin-config-credentials"],
-                group="SETTINGS",
-                edit_value=self._values["plugin-config-credentials"],
-                edit_placeholder='Enter slot-to-env references, e.g. {"api":"env:API_KEY"}',
-            ),
-            Choice(
-                "plugin-config-save",
-                "Save",
-                trailing=error,
-                group="ACTIONS",
-                disabled=bool(error),
-            ),
-        )
-
-
 class SkillInstallScreen(EditableChoiceScreen):
     """Collect a skill installation through the shared grouped menu."""
 
@@ -1638,20 +1544,6 @@ def _optional_json_string_list(raw: str, label: str) -> list[str] | None:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise ValueError(f"{label} must be a JSON string array")
     return value
-
-
-def _json_object(raw: str, label: str) -> dict[str, object]:
-    value = _optional_json(raw, label)
-    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
-        raise ValueError(f"{label} must be a JSON object")
-    return dict(value)
-
-
-def _json_string_object(raw: str, label: str) -> dict[str, str]:
-    value = _json_object(raw, label)
-    if any(not isinstance(item, str) for item in value.values()):
-        raise ValueError(f"{label} must contain string values")
-    return cast(dict[str, str], value)
 
 
 def _enabled_label(enabled: bool) -> str:

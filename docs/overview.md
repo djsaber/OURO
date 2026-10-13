@@ -22,6 +22,7 @@ OURO 是本地优先的个人智能体运行时。会话历史、运行状态、
 | 工具与交互 | Read、Write、Edit、Glob、Grep、TodoList、宿主 Shell、AskUser；权限、审批、结构化输入和 AFK | [工具与交互](specs/tools-and-interactions.md)、[AFK](specs/afk.md) |
 | 子智能体 | 内置 general 与用户定义、冻结派遣目录、单层 sync / async 子会话、结果交付、根交互路由和恢复对账 | [子智能体](specs/subagents.md) |
 | 扩展 | 插件安装与版本选择、不可变包、精确依赖租约、15 类原生贡献、具名服务与动态工具、双向 worker、受管理进程及后台服务；Goal / Plan、Skills 与 MCP | [插件](specs/plugins.md)、[Skills](specs/skills.md)、[MCP](specs/mcp.md) |
+| 插件配置 | 自包含 JSON Schema、独立凭据引用、静态预检、带编辑基线的完整提交、不可变快照；CLI 与 TUI 复用统一应用管线 | [插件配置](specs/plugin-configuration.md) |
 | 资源 | 会话独立附件、原路径引用、完整性校验、复制与导出，以及有界文本 / 原生图片输入 | [资源与监督](specs/resources-and-supervision.md) |
 | 自动任务 | 时区和日历计划、原子领取、会话任务与插件 handler、审批挂起、执行历史与恢复；文件 / SQLite 任务后端 | [自动任务](specs/automated-tasks.md) |
 | 用量 | 请求级 token / 费用账本、计费归属、过滤汇总、审计修改和选择性重置 | [用量与计费](specs/usage-and-billing.md) |

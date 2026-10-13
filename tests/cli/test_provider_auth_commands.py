@@ -110,7 +110,13 @@ def test_both_driver_kinds_work_through_real_cli_and_lightweight_composition(
             "user_code",
         ):
             assert forbidden not in serialized
-    assert {item.name for item in tmp_path.iterdir()} <= {"config", "locks", "credentials"}
+    assert {item.name for item in tmp_path.iterdir()} <= {
+        "config",
+        "locks",
+        "credentials",
+        ".upgrade",
+    }
+    assert {item.name for item in (tmp_path / ".upgrade").iterdir()} == {"lock"}
 
 
 def test_empty_home_and_static_provider_need_no_runtime_or_secret_directory(tmp_path, capsys):
@@ -122,7 +128,8 @@ def test_empty_home_and_static_provider_need_no_runtime_or_secret_directory(tmp_
     assert json.loads(capsys.readouterr().out)["authentication"]["state"] == "static"
     assert main(command(tmp_path, "login", "faux")) == 3
     assert json.loads(capsys.readouterr().out)["error_code"] == "authorization_unsupported"
-    assert list(tmp_path.iterdir()) == []
+    assert {item.name for item in tmp_path.iterdir()} == {".upgrade"}
+    assert {item.name for item in (tmp_path / ".upgrade").iterdir()} == {"lock"}
 
 
 def test_home_precedence_and_auth_help(tmp_path, capsys):

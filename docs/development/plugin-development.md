@@ -293,7 +293,8 @@ Harness 版本、history_epoch 和消息头前置条件处理。
 
 ### 调用内会话状态
 
-Python SDK 入口为 `ouro.sdk.plugins.v3`，manifest 使用 Plugin API `^3.0.0`，worker 使用 protocol `3.0`。
+Python SDK 入口为 `ouro.sdk.plugins.v3`，当前 Host 的 Plugin API 为 `3.1.0`，worker 使用 protocol `3.0`。
+依赖通用配置契约的插件在 `engines.plugin_api` 声明 `>=3.1.0,<4.0.0`。
 PluginContext 不提供会话状态写入器。可修改状态的回调使用本次调用的 owner 视图：
 
 ```python
@@ -439,6 +440,33 @@ OURO 保留个人智能体所需的基础边界：
 `prepare/start` 期间 Host data API 只读；写入、删除会明确失败。将需要持久写入的自主工作放入 Background Service，
 框架会在发布后启动它。通过 task group 登记的任务同样延迟到发布后运行。候选失败时框架清理其已获取资源；
 直接绕过 Host API 的 in-process OS 写入不受该边界约束。
+
+### 声明和消费配置
+
+在 Manifest 的 `configuration` 中声明包内 `schema` 路径、正整数业务 `version` 和可选 credential 描述。
+普通值使用自包含 JSON Schema Draft 2020-12，根类型为 object；可以自由组合嵌套、动态映射、数组、元组、
+联合、条件、依赖、引用和递归结构。不要为 CLI/TUI 编写另一份字段清单或让 Host 导入插件业务模型。
+
+`configuration.credentials` 的 key 必须已出现在 `credentials.use.scopes` 中；每个描述可以包含 `title`、
+`description` 和 `required`。仅凭据插件可以省略普通 Schema，普通值保持 `{}`。凭据值通过
+`context.credentials.resolve(slot)` 获取，配置只保存 `env:VARIABLE` 引用，不声明普通 API Key 字符串字段。
+
+in-process 插件从 `context.configuration` 读取固定的运行实例快照，其中对象为递归只读 Mapping，数组为
+tuple。业务模型可以接受这些只读集合或显式转换；不要修改它们，也不要读取框架内部 state 文件。
+worker 在 initialize 中接收独立的普通 JSON 对象，秘密沿既有临时环境变量通道传递。
+
+默认值由框架在安装和接受完整候选时确定性填充；组合或条件分支的默认值是提示，不自动选择分支。
+已保存修订在重启和持久调用恢复时不重新填默认值。`format` 是注解；跨字段计算、文件可写性和远程服务
+权限等业务检查属于候选生命周期或实际操作边界，静态发现与预检不执行这些逻辑。
+
+插件字段应说明单位和路径基准，私有路径以插件 data 根为基准，不依赖 Host 工作目录。改变路径不自动迁移
+业务数据。调度默认参数可以是配置；已有持久 Task 的修改仍通过原生调度接口完成，不由配置提交隐式重写。
+
+Host 使用 `PluginService.configuration()` 获取定义与固定基线，用视图的 `candidate()` 建立完整草稿，
+调用 `preview_configuration()` 做静态预检，再调用 `await configure(candidate)` 应用。草稿应在开始编辑时
+创建，不在提交前重新读取基线覆盖它；凭据和普通值一起全量提交。精确字段、生效及失败规则见
+[配置规格](../specs/plugin-configuration.md)，可直接验证的完整声明见
+[Configuration Playground](../../examples/plugins/configuration-playground/README.md)。
 
 ### 具名服务与可撤销注册
 
@@ -631,7 +659,7 @@ worker tool 以 `{"input_request": <任意 JSON 值>}` 返回同一种挂起请�
 还必须在 manifest 中声明 `supports_unattended=true`。Worker protocol `3.0` 只接受 `resolution` 判别联合；出现
 `answer` 字段时协议校验失败。
 协议 `3.0` 在 `session_controller.call` 输入中提供 `session_kind`，允许 `continuation.call` 输出
-`session_control_transitions`，与 in-process Plugin API `3.0.0` 使用相同状态及结算语义。
+`session_control_transitions`，与 in-process Plugin API `3.1.0` 使用相同状态及结算语义。
 `context.call` 的 `fragments` 既接受字符串，也接受带 `text`、`persistence`、`target`、`role`、`scaffold` 和
 可选 `semantic_tag` 的对象。Worker 应传递自己选择的字段；Host 不从 target、persistence 或 provenance 反推
 消息属性。

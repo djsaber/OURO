@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import threading
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -19,6 +19,7 @@ from ouro.core.run_drivers import DEFAULT_DRIVER_ID, RunDriverBinding
 from ouro.core.task_ports import TaskServicePort
 from ouro.core.tasks import AgentTaskTarget
 from ouro.plugins.api import (
+    BoundCredentialResolver,
     adapt_sdk_contributions,
     build_plugin_context,
     load_plugin_factory,
@@ -1748,6 +1749,15 @@ class PluginRuntimeResource:
             active.data_lock = self.store.data_lock(candidate.plugin_id)
             if not active.data_lock.acquire():
                 raise RuntimeError(f"plugin data is in use for maintenance: {candidate.plugin_id}")
+            credential_slots = BoundCredentialResolver(
+                dict(configuration.credential_refs), self.credential_resolver, redactor
+            )
+            resolved_credentials: dict[str, str] = {}
+            specification = candidate.manifest.configuration
+            if specification is not None:
+                for slot, declaration in specification.credentials.items():
+                    if declaration.required:
+                        resolved_credentials[slot] = credential_slots.resolve(slot)
             if candidate.manifest.runtime.kind == "python-inprocess":
                 if candidate.plugin_class == "builtin":
                     factory = candidate.factory
@@ -1769,8 +1779,8 @@ class PluginRuntimeResource:
                     candidate,
                     generation,
                     data_root=self.store.data_root,
-                    configuration=configuration.values,
-                    credential_bindings=configuration.credential_refs,
+                    configuration=configuration.values_dict(),
+                    credential_bindings=dict(configuration.credential_refs),
                     credential_resolver=self.credential_resolver,
                     tasks=tasks,
                     diagnostics=diagnostics,
@@ -1819,20 +1829,17 @@ class PluginRuntimeResource:
                         if self._active.get(candidate.plugin_id) is active:
                             self._schedule_generation_failure(active)
 
-                credentials = _resolve_worker_credentials(
-                    configuration.credential_refs,
-                    self.credential_resolver,
-                )
-                for value in credentials.values():
-                    redactor.add(value)
+                for slot in configuration.credential_refs:
+                    if slot not in resolved_credentials:
+                        resolved_credentials[slot] = credential_slots.resolve(slot)
                 active.instance = WorkerPluginInstance(
                     candidate.manifest,
                     package_root=package_root,
                     package_digest=candidate.release_id,
                     permissions=frozenset(request.id for request in candidate.manifest.permissions),
-                    configuration=configuration.values,
+                    configuration=configuration.values_dict(),
                     data_directory=self.store.data_root / candidate.plugin_id,
-                    credentials=credentials,
+                    credentials=resolved_credentials,
                     diagnostic=worker_diagnostic,
                     environment=environment,
                     services=active.services,
@@ -2089,14 +2096,3 @@ def _retirement_reason(
     if new is not None and new.candidate.release_id != old.candidate.release_id:
         return "upgrade"
     return "restart"
-
-
-def _resolve_worker_credentials(
-    bindings: dict[str, str],
-    resolver: Callable[[str], str] | None,
-) -> dict[str, str]:
-    if not bindings:
-        return {}
-    if resolver is None:
-        raise RuntimeError("plugin credential resolver is unavailable")
-    return {slot: resolver(reference) for slot, reference in bindings.items()}

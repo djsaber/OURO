@@ -76,8 +76,10 @@ TUI 经 `TuiController` 调用 Application，使用 Runtime 事件与 Session ob
 - `config prompt|permissions|skills|tool-execution|queued-inputs|run-budget|agents|compaction` 管理独立配置分区；
   permissions 同时支持 tool 与 plugin 默认权限，agents 覆盖完整的可配置 AgentSpawnPolicy；
 - `mcp list/show/set/remove/check` 管理 MCP server 配置和连接检查；
-- `plugin scaffold/validate/import-report/list/show/commands/run-command/install/configure/select/enable/disable/restart/check/update/reload/rollback/remove/gc`
+- `plugin scaffold/validate/import-report/list/show/configuration/commands/run-command/install/configure/select/enable/disable/restart/check/update/reload/rollback/remove/gc`
   管理插件包、运行状态和命令；
+- `plugin configuration --export` 输出完整编辑候选，`configure --file|--values` 通过统一配置用例提交；
+  `--preview` 为不启动插件的静态预检，目标 digest 和编辑基线固定，规则见[插件配置](plugin-configuration.md)；
 - `skills list/show/roots/prompt/validate/install/update/remove/enable/disable` 管理 Agent Skills；
 - `usage summary/list/show/modify/reset/audit` 查询并审计 Provider 返回的 Token 用量；
 - `usage summary` 支持日期、路由、工作空间、Session、Run、用途、计费模式的组合筛选与重复 `--group-by` 复合分组；`list` 与 `audit` 使用 `--before` 游标分页；

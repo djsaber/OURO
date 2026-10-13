@@ -53,6 +53,12 @@ from ouro.application.dto import ApplicationStartupReport
 from ouro.application.events import RuntimeEventSinkRegistration
 from ouro.application.models import AvailableModel, ModelReasoningState
 from ouro.application.plugin_commands import consume_plugin_command, submit_plugin_command
+from ouro.application.plugin_configuration_models import (
+    PluginConfigurationCandidate,
+    PluginConfigurationPreview,
+    PluginConfigurationResult,
+    PluginConfigurationView,
+)
 from ouro.application.plugin_models import (
     PluginActionResult,
     PluginCommandExecutionView,
@@ -2040,20 +2046,32 @@ class TuiController:
             raise RuntimeError("plugin install unexpectedly returned a validation result")
         return result
 
-    async def configure_plugin(
-        self,
-        plugin_id: str,
-        values: dict[str, object],
-        credential_refs: dict[str, str],
-    ) -> PluginActionResult:
+    async def plugin_configuration(
+        self, plugin_id: str, *, package_digest: str | None = None
+    ) -> PluginConfigurationView:
         application = self._application
         if application is None or application.plugins is None:
             raise RuntimeError("plugin management is unavailable")
-        return await application.plugins.configure(
-            plugin_id,
-            values,
-            credential_refs=credential_refs,
+        return await asyncio.to_thread(
+            application.plugins.configuration, plugin_id, package_digest=package_digest
         )
+
+    async def preview_plugin_configuration(
+        self, candidate: PluginConfigurationCandidate
+    ) -> PluginConfigurationPreview:
+        application = self._application
+        if application is None or application.plugins is None:
+            raise RuntimeError("plugin management is unavailable")
+        return await asyncio.to_thread(application.plugins.preview_configuration, candidate)
+
+    async def configure_plugin(
+        self,
+        candidate: PluginConfigurationCandidate,
+    ) -> PluginConfigurationResult:
+        application = self._application
+        if application is None or application.plugins is None:
+            raise RuntimeError("plugin management is unavailable")
+        return await application.plugins.configure(candidate)
 
     async def enable_plugin(self, plugin_id: str) -> PluginActionResult:
         return await self._plugin_operation("enable", plugin_id)
