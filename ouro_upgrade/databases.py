@@ -13,7 +13,7 @@ from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions.catalog import SessionCatalogProjection, catalog_entry_from_projection
 from ouro_upgrade.errors import UpgradeError, require
-from ouro_upgrade.records import convert, convert_task, dumps, loads
+from ouro_upgrade.records import convert, convert_task, dumps, loads, validate
 from ouro_upgrade.workspace import Workspace
 
 _IDENTITIES = {
@@ -57,10 +57,18 @@ def database(
             # This disposable database cannot be published until Workspace syncs
             # its closed, validated main file together with the rollback material.
             connection.execute("PRAGMA synchronous=OFF")
-            check_integrity(connection)
+            require(
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type IN ('trigger','view') LIMIT 1"
+                ).fetchone()
+                is None,
+                "SQLite",
+                "custom triggers and views are outside the supported schema",
+            )
             changed = transform(connection)
             connection.commit()
-            check_integrity(connection)
+            if changed:
+                check_integrity(connection)
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             connection.execute("PRAGMA journal_mode=DELETE")
     except sqlite3.Error as exc:
@@ -74,14 +82,6 @@ def database(
 
 
 def check_integrity(connection: sqlite3.Connection) -> None:
-    require(
-        connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type IN ('trigger','view') LIMIT 1"
-        ).fetchone()
-        is None,
-        "SQLite",
-        "custom triggers and views are outside the supported schema",
-    )
     require(
         connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok",
         "SQLite",
@@ -102,12 +102,12 @@ def payloads(connection: sqlite3.Connection, table: str, kind: str, *, version: 
         for row in rows:
             raw = loads(row["payload"])
             value = convert_task(kind, raw, version) if version else convert(kind, raw)
-            require(
-                all(row[key] == value.get(key) for key in _IDENTITIES[kind]),
-                table,
-                "record projection identity mismatch",
-            )
-            if raw != value:
+            if value is not raw:
+                require(
+                    all(row[key] == value.get(key) for key in _IDENTITIES[kind]),
+                    table,
+                    "record projection identity mismatch",
+                )
                 connection.execute(
                     f"UPDATE {table} SET payload=? WHERE rowid=?",
                     (dumps(value), row["upgrade_rowid"]),
@@ -141,35 +141,7 @@ def usage(connection: sqlite3.Connection) -> bool:
             connection.execute(statement)
         connection.execute("PRAGMA user_version=2")
         changed = True
-    # The projection is retained, not replayed from audit (which includes reset entries).
-    require(
-        connection.execute(
-            "SELECT 1 FROM entries LEFT JOIN entry_records USING(entry_id) "
-            "WHERE entry_records.entry_id IS NULL LIMIT 1"
-        ).fetchone()
-        is None,
-        "usage",
-        "missing current entry record",
-    )
-    for row in connection.execute("SELECT * FROM entries JOIN entry_records USING(entry_id)"):
-        value = loads(row["payload"])
-        for key in (
-            "entry_id",
-            "provider_id",
-            "endpoint_id",
-            "model_id",
-            "session_id",
-            "run_id",
-            "workspace",
-            "purpose",
-            "plugin_id",
-            "input_tokens",
-            "output_tokens",
-            "cache_read_tokens",
-            "cache_write_tokens",
-            "estimated_cost",
-        ):
-            require(row[key] == value.get(key), "usage", "entry projection mismatch")
+    # Preserve the projection; audit history includes resets and is not replayed.
     return changed
 
 
@@ -183,13 +155,6 @@ def tasks(connection: sqlite3.Connection) -> bool:
         connection.execute("CREATE INDEX tasks_owner ON tasks(owner_id, updated_at DESC, task_id)")
         connection.execute("PRAGMA user_version=3")
         changed = True
-    for table, keys in (
-        ("tasks", ("task_id", "revision", "status", "owner_id")),
-        ("task_executions", ("execution_id", "task_id")),
-    ):
-        for row in connection.execute(f"SELECT * FROM {table}"):
-            value = loads(row["payload"])
-            require(all(row[key] == value[key] for key in keys), table, "record identity mismatch")
     return changed
 
 
@@ -199,6 +164,7 @@ def sessions(connection: sqlite3.Connection) -> bool:
     ).fetchone()
     require(row is not None and row[0] == "7", "sessions", "expected database schema 7")
     changed = False
+    catalog_changed = False
     for table, kind in (
         ("sessions", "session"),
         ("messages", "message"),
@@ -211,39 +177,31 @@ def sessions(connection: sqlite3.Connection) -> bool:
         ("session_commits", "commit"),
         ("delegations", "delegation"),
     ):
-        changed = payloads(connection, table, kind) or changed
-    for table, reference in (
-        ("sessions", "harness_version"),
-        ("messages", "before_harness_version"),
-    ):
-        missing = connection.execute(
-            f"SELECT 1 FROM {table} AS record LEFT JOIN harness_versions AS harness "
-            "ON record.session_id=harness.session_id "
-            f"AND json_extract(record.payload, '$.{reference}')=harness.version_id "
-            "WHERE harness.version_id IS NULL LIMIT 1"
-        ).fetchone()
-        require(missing is None, table, "missing Harness checkpoint")
+        table_changed = payloads(connection, table, kind)
+        changed = table_changed or changed
+        if table in {"sessions", "messages", "runs", "resource_references"}:
+            catalog_changed = table_changed or catalog_changed
+    if not catalog_changed:
+        return changed
     for row in connection.execute("SELECT session_id,payload FROM sessions"):
-        session = SessionRecord.model_validate(loads(row["payload"]))
+        session = validate(SessionRecord, loads(row["payload"]))
         require(row["session_id"] == session.session_id, "sessions", "identity mismatch")
         latest_run = _one(connection, "runs", "run_id", session.last_run_id, session.session_id)
         latest_message = _one(
             connection, "messages", "message_id", session.last_message_id, session.session_id
         )
         projection = SessionCatalogProjection(
-            latest_run=RunRecord.model_validate(latest_run) if latest_run else None,
-            latest_message=MessageRecord.model_validate(latest_message) if latest_message else None,
+            latest_run=validate(RunRecord, latest_run) if latest_run else None,
+            latest_message=validate(MessageRecord, latest_message) if latest_message else None,
             message_count=_count(connection, "messages", session.session_id),
             run_count=_count(connection, "runs", session.session_id),
             resource_count=_count(connection, "resource_references", session.session_id),
         )
-        require(projection.message_count == session.message_count, "sessions", "count mismatch")
-        if changed:
-            entry = catalog_entry_from_projection(session, projection)
-            connection.execute(
-                "INSERT OR REPLACE INTO session_catalog(session_id,payload) VALUES (?,?)",
-                (session.session_id, entry.model_dump_json()),
-            )
+        entry = catalog_entry_from_projection(session, projection)
+        connection.execute(
+            "INSERT OR REPLACE INTO session_catalog(session_id,payload) VALUES (?,?)",
+            (session.session_id, entry.model_dump_json()),
+        )
     return changed
 
 

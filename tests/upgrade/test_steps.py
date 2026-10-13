@@ -4,6 +4,7 @@ import copy
 
 import pytest
 
+from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord
 from ouro_upgrade import records
 from ouro_upgrade.errors import UpgradeError
@@ -100,3 +101,35 @@ def test_envelope_validation_rejects_invalid_nested_records_without_mutating_inp
         convert("commit", raw)
     assert "private-nested-value" not in str(error.value)
     assert raw == before
+
+
+def test_current_records_are_preserved_without_auditing_their_payloads() -> None:
+    raw = {"schema_version": EventRecord.model_fields["schema_version"].default, "payload": {}}
+    assert convert("event", raw) is raw
+
+
+def test_new_event_step_is_used_even_when_the_kind_previously_needed_no_upgrade(monkeypatch):
+    class FutureEvent(EventRecord):
+        schema_version: int = EventRecord.model_fields["schema_version"].default + 1
+        category: str
+
+    def categorize(value):
+        value["category"] = "historical"
+
+    raw = EventRecord(session_id="ses_fixture", event_type="fixture", sequence=1).model_dump(
+        mode="json"
+    )
+    monkeypatch.setitem(records.MODELS, "event", FutureEvent)
+    monkeypatch.setitem(
+        records.VERSION_STEPS,
+        "event",
+        {
+            raw["schema_version"]: UpgradeStep(
+                FutureEvent.model_fields["schema_version"].default, categorize
+            )
+        },
+    )
+    result = convert("event", raw)
+    assert result["schema_version"] == FutureEvent.model_fields["schema_version"].default
+    assert result["category"] == "historical"
+    assert convert("event", result) is result

@@ -133,7 +133,7 @@ def test_progress_reports_phases_and_success_only_after_publish(historical_home)
     assert phases[:4] == ["configuration", "sessions", "tasks", "usage"]
     assert phases[-1] == "complete"
     count = len(report["files"])
-    for phase in ("backup", "publish"):
+    for phase in ("prepare", "publish", "verify_source"):
         progress = [event for event in events if event.phase == phase]
         assert progress[0].completed == 0
         assert progress[-1] == UpgradeProgress(phase, count, count)

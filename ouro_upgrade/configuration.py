@@ -80,7 +80,7 @@ def convert_providers(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def providers(work: Workspace) -> None:
-    if not work.source(_PATH).exists():
+    if not work.path(_PATH).exists():
         return
     raw = read_json(work, _PATH)
     converted = convert_providers(raw)

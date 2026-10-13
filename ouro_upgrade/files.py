@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterator
 from contextlib import ExitStack
-from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -13,15 +12,15 @@ from ouro.auth.file_permissions import reject_link
 from ouro.automation.file_records import StoredTask, TaskFileIndex, TaskIndexEntry
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.core.tasks import TaskExecution
 from ouro.sessions.catalog import (
     SessionCatalogProjection,
     catalog_entry_from_projection,
     sort_catalog_entries,
 )
 from ouro.sessions.index import SessionIndex
+from ouro.sessions.layout import DATA_LAYOUT_VERSION
 from ouro_upgrade.errors import UpgradeError, require
-from ouro_upgrade.records import convert, dumps, loads
+from ouro_upgrade.records import VERSION_STEPS, convert, dumps, loads, validate
 from ouro_upgrade.workspace import Workspace
 
 
@@ -52,25 +51,27 @@ def _record(work: Workspace, relative: str, kind: str, raw: dict[str, Any]) -> d
         value = convert(kind, raw)
     except UpgradeError as exc:
         raise UpgradeError(f"{relative}: {exc}") from exc
-    if value != raw:
+    if value is not raw:
         work.json(relative, value)
     return value
 
 
 def journal(work: Workspace, relative: str, kind: str) -> Iterator[dict[str, Any]]:
-    source = work.source(relative)
+    source = work.path(relative)
     if not source.exists():
         return
     temporary = work.temporary()
+    checksum = hashlib.sha256()
     with source.open("rb") as src, ExitStack() as opened:
         dst = None
         for number, line in enumerate(src, 1):
+            checksum.update(line)
             try:
                 raw = loads(line.decode("utf-8"))
                 value = convert(kind, raw)
             except UpgradeError as exc:
                 raise UpgradeError(f"{relative}:{number}: {exc}") from exc
-            if raw != value and dst is None:
+            if value is not raw and dst is None:
                 dst = opened.enter_context(temporary.open("wb"))
                 # Keep an unchanged prefix verbatim, without buffering the journal.
                 remaining = src.tell() - len(line)
@@ -81,9 +82,10 @@ def journal(work: Workspace, relative: str, kind: str) -> Iterator[dict[str, Any
                         dst.write(block)
                         remaining -= len(block)
             if dst is not None:
-                dst.write(line if raw == value else dumps(value).encode("utf-8"))
+                dst.write(line if value is raw else dumps(value).encode("utf-8"))
             yield value
     if temporary.exists():
+        work.observed[relative] = checksum.hexdigest()
         work.stage(relative, temporary)
 
 
@@ -101,8 +103,12 @@ def sessions(work: Workspace) -> int:
     if not directories:
         return 0
     layout = read_json(work, "layout.json")
-    require(layout.get("data_layout_version") == 9, "layout.json", "expected layout 9")
-    initial_changes = len(work.changes)
+    require(
+        layout.get("data_layout_version") == DATA_LAYOUT_VERSION,
+        "layout.json",
+        f"expected layout {DATA_LAYOUT_VERSION}",
+    )
+    catalog_changed = False
     entries = []
     work.progress("sessions", 0, len(directories))
     for directory in directories:
@@ -110,88 +116,62 @@ def sessions(work: Workspace) -> int:
         # Attachments for a SQLite-only store are not file Session records.
         require((directory / "session.json").is_file(), relative, "missing Session record")
         require(
-            not work.source(f"{relative}/commit.json").exists(),
+            not work.path(f"{relative}/commit.json").exists(),
             relative,
             "unfinished Session commit; recover using its original OURO version",
         )
         raw_session = record(work, f"{relative}/session.json", "session")
-        session = SessionRecord.model_validate(raw_session)
+        session = validate(SessionRecord, raw_session)
         require(session.session_id == directory.name, relative, "Session identity mismatch")
-        harness = set()
-        for path, value in records(work, children(directory / "harness", "*.json"), "harness"):
-            require(
-                value["session_id"] == session.session_id and value["version_id"] == path.stem,
-                relative,
-                "Harness identity mismatch",
-            )
-            harness.add(path.stem)
-        require(session.harness_version in harness, relative, "missing current Harness checkpoint")
-        runs = set()
+        run_count = 0
         latest_run = None
         for path, value in records(work, children(directory / "runs", "*.json"), "run"):
-            require(
-                value["session_id"] == session.session_id and value["run_id"] == path.stem,
-                relative,
-                "Run identity mismatch",
-            )
-            runs.add(path.stem)
+            run_count += 1
             if path.stem == session.last_run_id:
-                latest_run = RunRecord.model_validate(value)
-        for run_id in (session.last_run_id, session.active_run_id):
-            require(run_id is None or run_id in runs, relative, "missing Session Run reference")
-        resource_ids = _resources(work, relative)
-        messages: set[str] = set()
+                latest_run = validate(RunRecord, value)
+        resource_count = _resources(work, relative)
+        message_count = 0
         latest_message_raw = None
         for value in journal(work, f"{relative}/messages.jsonl", "message"):
-            require(value["session_id"] == session.session_id, relative, "foreign message")
-            require(value["message_id"] not in messages, relative, "duplicate message identity")
-            require(
-                value.get("sequence") == len(messages) + 1, relative, "invalid message sequence"
-            )
-            require(
-                value.get("before_harness_version") in harness,
-                relative,
-                "missing message Harness checkpoint",
-            )
-            require(
-                set(value.get("resource_refs", ())) <= resource_ids,
-                relative,
-                "missing message resource reference",
-            )
-            messages.add(value["message_id"])
+            message_count += 1
             latest_message_raw = value
-        latest_message = (
-            MessageRecord.model_validate(latest_message_raw) if latest_message_raw else None
+        latest_message = validate(MessageRecord, latest_message_raw) if latest_message_raw else None
+        catalog_changed = catalog_changed or any(
+            path in work.changes
+            for path in (
+                f"{relative}/session.json",
+                f"{relative}/messages.jsonl",
+                f"{relative}/resources/index.json",
+                f"{relative}/runs/{session.last_run_id}.json",
+            )
         )
-        require(session.message_count == len(messages), relative, "Session message count mismatch")
-        require(
-            session.last_message_id == (latest_message.message_id if latest_message else None),
-            relative,
-            "Session message head mismatch",
-        )
-        previous_sequence = 0
-        for value in journal(work, f"{relative}/events.jsonl", "event"):
-            require(value["session_id"] == session.session_id, relative, "foreign event")
-            require(value["sequence"] > previous_sequence, relative, "invalid event sequence")
-            previous_sequence = value["sequence"]
-        for value in journal(work, f"{relative}/compactions.jsonl", "compaction"):
-            require(value["session_id"] == session.session_id, relative, "foreign compaction")
-        for folder, kind in (("operations", "commit"), ("delegations", "delegation")):
+        for filename, kind in (("events.jsonl", "event"), ("compactions.jsonl", "compaction")):
+            for _ in journal(work, f"{relative}/{filename}", kind):
+                pass
+        if f"{relative}/events.jsonl" in work.changes:
+            # Byte offsets belong to a particular journal representation.
+            for path in children(directory / "event-index/runs", "*.json"):
+                work.stage(path.relative_to(work.home).as_posix(), None)
+            work.stage(f"{relative}/event-index/sequences.bin", None)
+        for folder, kind in (
+            ("harness", "harness"),
+            ("operations", "commit"),
+            ("delegations", "delegation"),
+        ):
             for _ in records(work, children(directory / folder, "*.json"), kind):
                 pass
-        if work.source(f"{relative}/context.json").exists():
-            value = record(work, f"{relative}/context.json", "context")
-            require(value["session_id"] == session.session_id, relative, "foreign context")
+        if work.path(f"{relative}/context.json").exists():
+            record(work, f"{relative}/context.json", "context")
         projection = SessionCatalogProjection(
             latest_run=latest_run,
             latest_message=latest_message,
-            message_count=len(messages),
-            run_count=len(runs),
-            resource_count=len(resource_ids),
+            message_count=message_count,
+            run_count=run_count,
+            resource_count=resource_count,
         )
         entries.append(catalog_entry_from_projection(session, projection))
         work.progress("sessions", len(entries), len(directories))
-    if len(work.changes) != initial_changes:
+    if catalog_changed:
         work.json(
             "sessions/index.json",
             SessionIndex(sessions=sort_catalog_entries(entries)).model_dump(mode="json"),
@@ -199,98 +179,54 @@ def sessions(work: Workspace) -> int:
     return len(entries)
 
 
-def _resources(work: Workspace, relative: str) -> set[str]:
+def _resources(work: Workspace, relative: str) -> int:
     index = f"{relative}/resources/index.json"
-    if not work.source(index).exists():
-        return set()
+    if not work.path(index).exists():
+        return 0
     raw = read_json(work, index)
     require(set(raw) == {"resources"}, index, "unknown resource index structure")
-    identities = set()
-    for value in raw["resources"]:
-        resource = convert("resource", value)
-        resource_id = resource["resource_id"]
-        require(resource_id not in identities, index, "duplicate resource identity")
-        identities.add(resource_id)
-        path = f"{relative}/resources/files/{resource['filename']}"
-        source = work.source(path)
-        require(
-            source.exists() and source.stat().st_size == resource["size"],
-            path,
-            "missing or incomplete attachment",
-        )
-        require(
-            f"sha256:{work.observed[path]}" == resource["digest"],
-            path,
-            "attachment digest mismatch",
-        )
-    return identities
+    converted = [convert("resource", value) for value in raw["resources"]]
+    if any(
+        value is not original for value, original in zip(converted, raw["resources"], strict=True)
+    ):
+        work.json(index, {"resources": converted})
+    return len(converted)
 
 
 def tasks(work: Workspace) -> int:
     layout_path = "tasks/layout.json"
-    if not work.source(layout_path).exists():
+    if not work.path(layout_path).exists():
         require(not (work.home / "tasks/records").exists(), "tasks", "missing layout")
         return 0
     require(
-        not work.source("tasks/transaction.json").exists(),
+        not work.path("tasks/transaction.json").exists(),
         "tasks",
         "unfinished task transaction; recover using its original OURO version",
     )
     layout = read_json(work, layout_path)
+    target = StoredTask.model_fields["schema_version"].default
     require(
-        layout in ({"schema_version": 1}, {"schema_version": 3}),
+        type(layout.get("schema_version")) is int
+        and layout
+        in ({"schema_version": version} for version in (*VERSION_STEPS.get("task", {}), target)),
         layout_path,
         "unsupported task file layout",
     )
     entries = {}
-    initial_changes = len(work.changes)
+    catalog_changed = layout["schema_version"] != target
     directories = children(work.home / "tasks/records", "*")
     work.progress("tasks", 0, len(directories))
     for directory in directories:
         relative = directory.relative_to(work.home).as_posix()
         raw = record(work, f"{relative}/task.json", "task")
-        task = StoredTask.model_validate(raw)
+        task = validate(StoredTask, raw)
         require(task.task.task_id == directory.name, relative, "task identity mismatch")
-        executions: dict[str, str | None] = {}
-        occurrences: dict[str, str] = {}
-        for path, value in records(work, children(directory / "executions", "*.json"), "execution"):
-            execution = value["execution"]
-            require(
-                execution["task_id"] == directory.name and execution["execution_id"] == path.stem,
-                relative,
-                "execution identity mismatch",
-            )
-            executions[path.stem] = value.get("previous")
-            scheduled = TaskExecution.model_validate(execution).scheduled_at
-            timestamp = scheduled.astimezone(UTC).isoformat(timespec="microseconds")
-            occurrence = hashlib.sha256(timestamp.encode("ascii")).hexdigest()
-            require(occurrence not in occurrences, relative, "duplicate scheduled occurrence")
-            occurrences[occurrence] = path.stem
-        visited = set()
-        head = task.history_head
-        while head is not None:
-            require(
-                head in executions and head not in visited,
-                relative,
-                "broken execution history chain",
-            )
-            visited.add(head)
-            head = executions[head]
-        require(visited == executions.keys(), relative, "unlinked execution history")
-        for identity in (task.task.active_execution_id, task.task.last_execution_id):
-            require(identity is None or identity in executions, relative, "missing task execution")
-        for path in children(directory / "occurrences", "*"):
-            relative_occurrence = path.relative_to(work.home).as_posix()
-            identity = work.source(relative_occurrence).read_text("utf-8").strip()
-            require(
-                occurrences.pop(path.name, None) == identity,
-                relative_occurrence,
-                "occurrence identity mismatch",
-            )
-        require(not occurrences, relative, "missing occurrence marker")
+        catalog_changed = catalog_changed or f"{relative}/task.json" in work.changes
+        for _ in records(work, children(directory / "executions", "*.json"), "execution"):
+            pass
         entries[directory.name] = TaskIndexEntry.from_record(task)
         work.progress("tasks", len(entries), len(directories))
-    if layout["schema_version"] == 1 or len(work.changes) != initial_changes:
+    if catalog_changed:
         work.json("tasks/index.json", TaskFileIndex(tasks=entries).model_dump(mode="json"))
-        work.json(layout_path, {"schema_version": 3})
+        work.json(layout_path, {"schema_version": target})
     return len(entries)

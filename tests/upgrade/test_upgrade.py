@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -36,6 +38,14 @@ def test_historical_home_upgrades_for_current_readers(historical_home: Path) -> 
     backend = "sqlite" if (home / "sessions.sqlite3").exists() else "files"
     options = {"session_backend": backend, "task_backend": backend}
     before = hashes(home)
+    if backend == "files":
+        commit_raw = (home / "sessions/ses_fixture/operations/op_fixture.json").read_text("utf-8")
+    else:
+        with closing(sqlite3.connect(home / "sessions.sqlite3")) as connection:
+            commit_raw = connection.execute(
+                "SELECT payload FROM session_commits WHERE operation_id='op_fixture'"
+            ).fetchone()[0]
+    request_digest = loads(commit_raw)["request_digest"]
     assert upgrade(home, check=True, **options)["status"] == "upgrade_required"
     assert hashes(home) == before
     report = upgrade(home, **options)
@@ -75,6 +85,10 @@ def test_historical_home_upgrades_for_current_readers(historical_home: Path) -> 
     assert context.context_digest == "sha256:" + "a" * 64
     assert context.source_messages[-1].tool_result.producer.kind == "model"
     assert context.injected_messages[-1].tool_result.producer.kind == "model"
+    commit = store.load_commit("ses_fixture", "op_fixture")
+    assert commit is not None
+    assert commit.messages[-1].tool_result.producer.kind == "model"
+    assert commit.request_digest == request_digest
     repo = LocalTaskRepository(home) if backend == "files" else SQLiteTaskRepository(home)
     repo.initialize()
     task = repo.get("task_fixture")
@@ -140,7 +154,7 @@ def test_failure_blocks_entry_points_and_restores_all_bytes(
     assert upgrade(home)["status"] == "upgraded"
 
 
-@pytest.mark.parametrize("damage", ["version", "identity", "extra", "commit", "occurrence"])
+@pytest.mark.parametrize("damage", ["version", "identity", "extra", "commit"])
 def test_unsupported_data_is_rejected_before_business_writes(historical_home: Path, damage) -> None:
     home = historical_home
     path = home / "sessions/ses_fixture/runs/run_fixture.json"
@@ -153,8 +167,6 @@ def test_unsupported_data_is_rejected_before_business_writes(historical_home: Pa
         value["unknown_native_field"] = "secret-input-must-not-be-logged"
     elif damage == "commit":
         (home / "sessions/ses_fixture/commit.json").write_text("{}", encoding="utf-8")
-    else:
-        next((home / "tasks/records/task_fixture/occurrences").iterdir()).unlink()
     path.write_text(json.dumps(value), encoding="utf-8")
     before = hashes(home)
     with pytest.raises(UpgradeError) as error:

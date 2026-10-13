@@ -22,11 +22,14 @@ from ouro_upgrade.progress import ProgressCallback, UpgradePhase, UpgradeProgres
 from ouro_upgrade.records import loads
 
 
-def digest(path: Path) -> str | None:
+def digest(path: Path, *, sync: bool = False) -> str | None:
     if not path.exists():
         return None
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+    with path.open("rb+") if sync and os.name == "nt" else path.open("rb") as stream:
+        checksum = hashlib.file_digest(stream, "sha256").hexdigest()
+        if sync:
+            os.fsync(stream.fileno())
+        return checksum
 
 
 def safe_path(root: Path, relative: str) -> Path:
@@ -56,18 +59,6 @@ def sync_directory(path: Path) -> None:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-
-
-def copy_durable(source: Path, target: Path) -> str:
-    """Copy and sync rollback bytes, returning the digest of the copied stream."""
-    checksum = hashlib.sha256()
-    with source.open("rb") as src, target.open("xb") as dst:
-        while block := src.read(1024 * 1024):
-            dst.write(block)
-            checksum.update(block)
-        dst.flush()
-        os.fsync(dst.fileno())
-    return checksum.hexdigest()
 
 
 def install(source: Path | None, target: Path, mode: int | None, *, consume: bool = False) -> None:
@@ -110,7 +101,9 @@ class Change:
 class Workspace:
     """Own one offline attempt and its immutable rollback materials."""
 
-    def __init__(self, home: Path, *, progress: ProgressCallback | None = None) -> None:
+    def __init__(
+        self, home: Path, *, progress: ProgressCallback | None = None, check_only: bool = False
+    ) -> None:
         self.home = home
         self.root = home / ".upgrade"
         self.marker = self.root / "in-progress.json"
@@ -121,6 +114,7 @@ class Workspace:
         self.changes: dict[str, Change] = {}
         self.published = False
         self._progress = progress
+        self._check_only = check_only
         self._reader = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ouro-upgrade-read")
 
     def progress(self, phase: UpgradePhase, completed: int = 0, total: int | None = None) -> None:
@@ -159,8 +153,11 @@ class Workspace:
         (self.run / "before").mkdir()
         (self.run / "scratch").mkdir()
 
+    def path(self, relative: str) -> Path:
+        return safe_path(self.home, relative)
+
     def source(self, relative: str) -> Path:
-        path = safe_path(self.home, relative)
+        path = self.path(relative)
         if relative not in self.observed:
             self.observed[relative] = digest(path)
         return path
@@ -198,7 +195,7 @@ class Workspace:
         after = (
             hashlib.sha256(source).hexdigest()
             if isinstance(source, bytes)
-            else digest(source)
+            else digest(source, sync=not self._check_only)
             if source is not None
             else None
         )
@@ -211,7 +208,11 @@ class Workspace:
             raise UpgradeError("duplicate planned replacement")
         target = self.run / "new" / str(index)
         if isinstance(source, bytes):
-            target.write_bytes(source)
+            with target.open("wb") as stream:
+                stream.write(source)
+                if not self._check_only:
+                    stream.flush()
+                    os.fsync(stream.fileno())
         elif source is not None:
             replace_path_with_retry(source, target)
         self.changes[relative] = Change(
@@ -226,37 +227,29 @@ class Workspace:
         self.stage(relative, data.encode("utf-8"))
 
     def verify_source(self) -> None:
-        total = len(self.observed)
+        total = len(self.changes)
         self.progress("verify_source", 0, total)
-        for completed, (relative, expected) in enumerate(self.observed.items(), 1):
-            if digest(safe_path(self.home, relative)) != expected:
-                raise UpgradeError(f"source changed during upgrade: {relative}")
+        for completed, change in enumerate(self.changes.values(), 1):
+            # The existing file becomes the backup; sync its data while verifying it.
+            if digest(self.path(change.path), sync=True) != change.before:
+                raise UpgradeError(f"source changed during upgrade: {change.path}")
             self.progress("verify_source", completed, total)
 
     def publish(self, report: dict[str, object]) -> None:
+        if self._check_only:
+            raise UpgradeError("a check-only workspace cannot publish")
         changes = list(self.changes.values())
-        self.progress("backup", 0, len(changes))
-        for index, change in enumerate(changes):
-            if change.after is not None:
-                staged = self.run / "new" / str(index)
-                with staged.open("rb+") as stream:
-                    if hashlib.file_digest(stream, "sha256").hexdigest() != change.after:
-                        raise UpgradeError(f"staged data changed: {change.path}")
-                    os.fsync(stream.fileno())
-            if change.before is not None:
-                backup = self.run / "before" / str(index)
-                if copy_durable(self.source(change.path), backup) != change.before:
-                    raise UpgradeError(f"source changed during backup: {change.path}")
-            self.progress("backup", index + 1, len(changes))
+        self.progress("prepare", 0, len(changes))
         write_json_atomic(
             self.run / "manifest.json",
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "changes": [asdict(change) for change in changes],
             },
         )
         for directory in (self.run / "new", self.run / "before", self.run):
             sync_directory(directory)
+        self.progress("prepare", len(changes), len(changes))
         self.verify_source()
         # From this point even a failed marker write retains recovery materials.
         self.published = True
@@ -264,15 +257,20 @@ class Workspace:
         sync_directory(self.root)
         self.progress("publish", 0, len(changes))
         for index, change in enumerate(changes):
+            target = self.path(change.path)
+            if change.before is not None:
+                backup = self.run / "before" / str(index)
+                replace_path_with_retry(target, backup)
+                restrict_to_user(backup)
+                # Persist the original's new name before installing its replacement.
+                sync_directory(backup.parent)
+                sync_directory(target.parent)
             source = self.run / "new" / str(index) if change.after is not None else None
-            install(source, safe_path(self.home, change.path), change.mode, consume=True)
+            install(source, target, change.mode, consume=True)
             self.progress("publish", index + 1, len(changes))
         # Persist removal of the staged names as well as each destination rename.
         sync_directory(self.run / "new")
-        self.progress("verify")
-        for change in changes:
-            if digest(safe_path(self.home, change.path)) != change.after:
-                raise UpgradeError(f"write verification failed: {change.path}")
+        self.progress("finalize")
         receipts = self.root / "receipts"
         reject_link(receipts)
         receipts.mkdir(exist_ok=True)
@@ -303,26 +301,34 @@ class Workspace:
             reject_link(path)
         manifest = loads((run / "manifest.json").read_text("utf-8"))
         try:
-            if manifest["schema_version"] != 1:
+            version = manifest["schema_version"]
+            if version not in (1, 2):
                 raise UpgradeError("unsupported upgrade manifest")
             changes = [Change(**item) for item in manifest["changes"]]
         except (KeyError, TypeError) as exc:
             raise UpgradeError("invalid upgrade manifest") from exc
         seen: set[str] = set()
+        sources: list[Path | None] = []
         for index, change in enumerate(changes):
-            safe_path(self.home, change.path)
+            target = self.path(change.path)
             if change.path in seen:
                 raise UpgradeError("duplicate path in upgrade manifest")
             seen.add(change.path)
             if change.before is not None:
                 backup = run / "before" / str(index)
                 reject_link(backup)
-                if digest(backup) != change.before:
+                # A version 2 publication may stop before moving this original.
+                rollback = target if version == 2 and not backup.exists() else backup
+                if digest(rollback) != change.before:
                     raise UpgradeError(f"missing or damaged backup: {change.path}")
+                sources.append(rollback)
+            else:
+                sources.append(None)
         self.progress("restore", 0, len(changes))
-        for index, change in enumerate(changes):
-            source = run / "before" / str(index) if change.before is not None else None
-            install(source, safe_path(self.home, change.path), change.mode)
+        for index, (change, source) in enumerate(zip(changes, sources, strict=True)):
+            target = self.path(change.path)
+            if source != target:
+                install(source, target, change.mode)
             self.progress("restore", index + 1, len(changes))
         self.progress("verify")
         for change in changes:

@@ -6,6 +6,8 @@ import sqlite3
 from pathlib import Path
 from typing import Literal
 
+from pydantic import ValidationError
+
 from ouro.deployment import (
     SessionBackend,
     TaskBackend,
@@ -48,7 +50,7 @@ def upgrade(
     # absolute() deliberately does not resolve aliases before Workspace rejects links.
     root = Path(home).expanduser().absolute()
     try:
-        with Workspace(root, progress=progress) as work:
+        with Workspace(root, progress=progress, check_only=check) as work:
             if restore:
                 count = work.restore()
                 work.progress("complete")
@@ -99,12 +101,13 @@ def upgrade(
                     manifest=f".upgrade/{work.identifier}/manifest.json",
                 )
                 work.publish(report)
-            else:
-                work.verify_source()
             work.progress("complete")
             return report
     except UpgradeError:
         raise
+    except ValidationError:
+        # Catalog projections also parse current records; never expose their inputs.
+        raise UpgradeError("invalid record used for catalog projection") from None
     except (OSError, UnicodeError, sqlite3.Error) as exc:
         raise UpgradeError(
             f"upgrade I/O failed ({type(exc).__name__}); "

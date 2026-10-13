@@ -20,7 +20,9 @@ uv run --frozen python -m dev.benchmarks.data_upgrade --check --operations 1000 
 排查实际数据时可使用 `--source-home 'C:\data\ouro-home' --repeat 1`；请替换路径并停止该 home 的写入者。
 该选项将输入复制到权限受限的临时目录后再测试，排除 `.upgrade`，不调用原 home 的升级或数据库连接。
 Session 和 Task 使用同一个 `--backend` 选择，必须与样本对应；输出只包含统计，不输出记录内容。
-临时副本在结束时清理，需要足够的副本与升级备份空间。
+临时副本在结束时清理，需要足够的输入副本、转换产物和 SQLite 临时文件空间。
+数据域阶段包含产物写入与同步；`prepare` 是发布清单准备，`verify_source` 是修改集合复核与原文件同步，
+`publish` 包含原文件移入备份和新文件安装，`finalize` 是报告与清理。`--check` 不进入这些发布阶段。
 
 ## 导入与首屏就绪
 

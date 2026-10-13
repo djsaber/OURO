@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Iterator
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -79,7 +80,7 @@ def dumps(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
 
 
-def validate(model: type[BaseModel], value: dict[str, Any]) -> BaseModel:
+def validate[Model: BaseModel](model: type[Model], value: dict[str, Any]) -> Model:
     try:
         parsed = model.model_validate(value, extra="forbid")
     except ValidationError as exc:
@@ -217,8 +218,11 @@ VERSION_STEPS: dict[str, dict[int, UpgradeStep]] = {
 
 
 def convert(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
+    """Return current records unchanged; own and validate only a converted graph."""
     model = MODELS[kind]
     try:
+        if not _needs_upgrade(kind, raw):
+            return raw
         value = migrate(
             kind,
             raw,
@@ -232,27 +236,50 @@ def convert(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
-def _convert_nested(kind: str, value: dict[str, Any]) -> None:
+def _nested(kind: str, value: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Visit only schema-owned records, never dictionaries containing opaque data."""
     if kind == "context":
-        for item in value["source_messages"]:
-            _convert_owned("message", item)
-        for message in value["injected_messages"]:
-            result = message.get("tool_result")
-            if result is not None and "producer" not in result:
-                _producer(result)
+        for item in value.get("source_messages", ()):
+            yield "message", item
     elif kind == "commit":
-        _convert_owned("session", value["session"])
-        for item in value["messages"]:
-            _convert_owned("message", item)
-        for item in value["events"]:
-            _convert_owned("event", item)
+        yield "session", value["session"]
+        for item in value.get("messages", ()):
+            yield "message", item
+        for item in value.get("events", ()):
+            yield "event", item
         if value.get("truncation") is not None:
             for key in ("first_removed", "last_retained"):
                 if value["truncation"].get(key) is not None:
-                    _convert_owned("message", value["truncation"][key])
+                    yield "message", value["truncation"][key]
     elif kind == "usage_event":
         if value.get("entry") is not None:
-            _convert_owned("usage", value["entry"])
+            yield "usage", value["entry"]
+
+
+def _legacy_tool_results(kind: str, value: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    # Injected model messages have no independent schema version.
+    if kind == "context":
+        for message in value.get("injected_messages", ()):
+            result = message.get("tool_result")
+            if result is not None and "producer" not in result:
+                yield result
+
+
+def _needs_upgrade(kind: str, value: dict[str, Any]) -> bool:
+    version = value.get("schema_version")
+    if type(version) is not int or version != MODELS[kind].model_fields["schema_version"].default:
+        # The transition executor rejects unsupported versions before transforming.
+        return True
+    return any(_needs_upgrade(child, raw) for child, raw in _nested(kind, value)) or any(
+        True for _ in _legacy_tool_results(kind, value)
+    )
+
+
+def _convert_nested(kind: str, value: dict[str, Any]) -> None:
+    for child, raw in _nested(kind, value):
+        _convert_owned(child, raw)
+    for result in _legacy_tool_results(kind, value):
+        _producer(result)
 
 
 def _convert_owned(kind: str, value: dict[str, Any]) -> None:
