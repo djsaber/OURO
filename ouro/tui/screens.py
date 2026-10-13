@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import Literal, TypeVar
+from typing import Literal, TypeVar, cast
 
 from rich.cells import get_character_cell_size
 from rich.style import Style
@@ -15,8 +15,11 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.color import Color
 from textual.containers import Vertical
+from textual.css.styles import RulesMap
 from textual.screen import ModalScreen
 from textual.timer import Timer
+from textual.visual import RichVisual, Visual
+from textual.widget import Widget
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 from textual.worker import Worker, WorkerCancelled
@@ -155,7 +158,24 @@ class _ChoicePage:
     interaction_hint: str | None
 
 
-class _ChoiceGroupHeader(Table):
+class _ChoiceRowTable(Table):
+    """A single table row whose cells truncate horizontally instead of wrapping."""
+
+    content_height = 1
+
+
+class _ChoiceRowVisual(RichVisual):
+    def __init__(self, widget: Widget, table: _ChoiceRowTable) -> None:
+        super().__init__(widget, table)
+        self._height = table.content_height
+
+    def get_height(self, rules: RulesMap, width: int) -> int:
+        # Layout needs only the explicit line count, not a Rich render of every
+        # off-screen table. Rich still renders visible cells at their actual width.
+        return self._height
+
+
+class _ChoiceGroupHeader(_ChoiceRowTable):
     """Marks a table-backed group heading without conflating it with disabled rows."""
 
 
@@ -167,6 +187,13 @@ class _ChoiceOptionList(OptionList):
     """Option list with a local foreground projection for theme previews."""
 
     _accent_preview: Color | None = None
+
+    def _get_visual(self, option: Option) -> Visual:
+        if isinstance(option.prompt, _ChoiceRowTable):
+            if option._visual is None:
+                option._visual = _ChoiceRowVisual(self, option.prompt)
+            return option._visual
+        return super()._get_visual(option)
 
     def set_accent_preview(self, color: Color | None) -> None:
         if color == self._accent_preview:
@@ -213,7 +240,8 @@ def _choice_option(
                 else theme.session_node_mark
             )
             palette.append(mark, style=color)
-        row = Table.grid(expand=True, padding=0)
+        row = cast(_ChoiceRowTable, _ChoiceRowTable.grid(expand=True, padding=0))
+        row.content_height = choice.label.count("\n") + 1
         row.add_column(width=len(choice.swatches) + 3, no_wrap=True)
         row.add_column(width=2)
         row.add_column(justify="right", overflow="ellipsis", no_wrap=True)
@@ -231,7 +259,7 @@ def _choice_option(
         label.append(f"{' '.join(markers)} ", style=f"bold {group_accent}")
     label.append(choice.label, style=choice.accent or "")
     if choice.trailing or choice.trailing_badge:
-        row = Table.grid(expand=True, padding=0)
+        row = cast(_ChoiceRowTable, _ChoiceRowTable.grid(expand=True, padding=0))
         row.add_column(ratio=2, overflow="ellipsis", no_wrap=True)
         row.add_column(ratio=1)
         row.add_column(width=2)
@@ -246,6 +274,7 @@ def _choice_option(
             trailing.append(theme.inline_separator, style=theme.separator_tone)
             trailing.append(theme.session_node_mark, style=choice.trailing_swatch)
         row.add_row(label, "", "", trailing)
+        row.content_height = max(label.plain.count("\n"), trailing.plain.count("\n")) + 1
         return Option(row, id=choice.value, disabled=choice.disabled)
     if choice.description:
         label.append(
@@ -278,12 +307,15 @@ def grouped_choice_options(
                     options.append(Option(Text(" "), disabled=True))
                 group_header: Text | Table
                 if choice.group_trailing:
-                    row = _ChoiceGroupHeader.grid(expand=True, padding=0)
+                    row = cast(_ChoiceGroupHeader, _ChoiceGroupHeader.grid(expand=True, padding=0))
                     row.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
                     row.add_column(justify="right", no_wrap=True)
                     row.add_row(
                         Text(choice.group, style=f"bold {resolved_group_accent}"),
                         Text(choice.group_trailing, style=theme.text_choice),
+                    )
+                    row.content_height = (
+                        max(choice.group.count("\n"), choice.group_trailing.count("\n")) + 1
                     )
                     group_header = row
                 else:

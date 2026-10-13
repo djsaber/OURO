@@ -62,9 +62,11 @@ class ArchivePathScreen(EditableChoiceScreen):
             archives: list[Choice] = []
             folders: list[Choice] = []
             for path in sorted(self._directory.iterdir(), key=lambda item: item.name.casefold()):
-                if path.is_dir():
+                if path.info.is_dir():
                     folders.append(Choice(f"directory:{path.name}", path.name, group="FOLDERS"))
-                elif self._filename is None and path.is_file() and path.suffix.lower() == ".zip":
+                elif (
+                    self._filename is None and path.suffix.lower() == ".zip" and path.info.is_file()
+                ):
                     archives.append(Choice(f"file:{path.name}", path.name, group="ARCHIVES"))
             rows.extend(archives)
             rows.extend(folders)

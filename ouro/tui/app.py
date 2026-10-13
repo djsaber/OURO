@@ -2476,8 +2476,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     ) -> str:
         ask_user = self.query_one(AskUserPanel)
         plan_panel = self.query_one(PlanConfirmationPanel)
-        if (ask_user.display and ask_user.awaiting_freeform) or (
-            plan_panel.display and plan_panel.awaiting_feedback
+        if (
+            (ask_user.display and ask_user.awaiting_freeform)
+            or (plan_panel.display and plan_panel.awaiting_feedback)
+            or composer.attachment_menu_open
         ):
             return ""
         context = composer.command_context()
@@ -2489,6 +2491,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         _command_name, separator, argument = command_text.partition(" ")
         if not separator:
             return ""
+        if (suggestion := popup.suggestion_for(command_text)) is not None:
+            return suggestion
         catalog = command_catalog if command_catalog is not None else self._command_catalog()
         command, _normalized_argument = resolve_command(command_text, catalog)
         if command is None or not command.takes_arguments:

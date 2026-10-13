@@ -23,6 +23,7 @@ from textual.message import Message
 from textual.strip import Strip
 from textual.style import Style
 from textual.timer import Timer
+from textual.widget import Widget
 from textual.widgets import Label, Static, TextArea
 
 from ouro.application.agent_models import AgentTreeNode
@@ -44,7 +45,7 @@ from ouro.sdk.plugins.interactions import (
 )
 from ouro.tui.attachment_editor import AttachmentTextArea, file_count_label
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
-from ouro.tui.commands import TuiCommand, TuiCommandArgument
+from ouro.tui.commands import TuiCommand, TuiCommandArgument, argument_suggestion
 from ouro.tui.controller import TuiApprovalPreset, TuiSystemStatus
 from ouro.tui.conversation_history import (
     AssistantMarkdownStream,
@@ -167,7 +168,7 @@ _FAILED_SUBAGENT_STATUSES = frozenset({"failed", "aborted", "recoverable"})
 _CONTEXT_PROGRESS_WIDTH = 11
 _HEADER_MIN_GAP = 3
 _TOOL_ARGUMENT_STREAM_WINDOW_CELLS = 48
-_SINGLE_LINE_TOOL_ARGUMENT_TRANSLATION = str.maketrans("\r\n\t", "   ")
+_SINGLE_LINE_TRANSLATION = str.maketrans("\r\n\t", "   ")
 
 
 class BrandHeader(Static):
@@ -937,7 +938,7 @@ def _tool_activity_text(
 def _tool_argument_stream_window(value: str) -> str:
     """Return the rightmost argument cells in a fixed-width sliding window."""
 
-    value = value.translate(_SINGLE_LINE_TOOL_ARGUMENT_TRANSLATION)
+    value = value.translate(_SINGLE_LINE_TRANSLATION)
     used = 0
     start = len(value)
     for index in range(len(value) - 1, -1, -1):
@@ -1099,8 +1100,9 @@ class WelcomePanel(WelcomeHost):
 
     def constrain_input(self, region: Region, viewport: Size) -> None:
         above, below = region.y, viewport.height - region.bottom
-        self._bound_command_popup(max(1, max(above, below)))
-        self._command_popup.styles.offset = (0, "-100%" if above >= below else region.height)
+        place_above = above >= COMMAND_POPUP_MIN_HEIGHT or above >= below
+        self._bound_command_popup(max(1, above if place_above else below))
+        self._command_popup.styles.offset = (0, "-100%" if place_above else region.height)
 
     def _bound_command_popup(self, available: int) -> None:
         self._command_popup.styles.max_height = min(COMMAND_POPUP_MAX_HEIGHT, available)
@@ -2576,6 +2578,28 @@ class PlanConfirmationPanel(ApprovalPanel):
         self._controls.update(content)
 
 
+class _CommandPopupRows(Widget):
+    """One logical item per line; Textual requests only the visible strips."""
+
+    def __init__(self, render_row: Callable[[int, int], Text]) -> None:
+        super().__init__(id="command-popup-content")
+        self.row_count = 0
+        self._render_row = render_row
+
+    def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
+        return self.row_count
+
+    def render_line(self, y: int) -> Strip:
+        width = self.size.width
+        style = self.visual_style.rich_style
+        if not 0 <= y < self.row_count:
+            return Strip.blank(width, style)
+        row = self._render_row(y, width)
+        row.plain = row.plain.translate(_SINGLE_LINE_TRANSLATION)
+        row.truncate(width, overflow="ellipsis", pad=True)
+        return Strip(row.render(self.app.console, end=""), width).apply_style(style)
+
+
 class CommandPopup(VerticalScroll):
     """Composer-controlled command panel with keyboard-owned hidden scrolling."""
 
@@ -2585,8 +2609,12 @@ class CommandPopup(VerticalScroll):
         self._commands: tuple[TuiCommand, ...] = ()
         self._argument_command: TuiCommand | None = None
         self._arguments: tuple[TuiCommandArgument, ...] = ()
+        self._argument_query = ""
+        self._argument_input_hint = ""
         self._selected: int | None = 0
-        self._content = Static(id="command-popup-content")
+        self._content = _CommandPopupRows(self._render_row)
+        self._label_width = 0
+        self._has_selection_marks = False
         self._heading_widget = Static(id="command-popup-heading")
         self._heading_widget.display = False
         self._heading = ""
@@ -2613,6 +2641,24 @@ class CommandPopup(VerticalScroll):
             return None
         return self._arguments[self._selected]
 
+    def suggestion_for(self, command_text: str) -> str | None:
+        """Reuse the displayed candidates only while the input still matches them."""
+        command = self._argument_command
+        name, separator, query = command_text.partition(" ")
+        if (
+            not self.display
+            or command is None
+            or not separator
+            or name.casefold()
+            not in (value.casefold() for value in (command.name, *command.aliases))
+            or query != self._argument_query
+        ):
+            return None
+        if not query.strip():
+            return self._argument_input_hint
+        selected = self.selected_argument or (self._arguments[0] if self._arguments else None)
+        return argument_suggestion(command, query, selected)
+
     def show_commands(self, commands: tuple[TuiCommand, ...]) -> None:
         if not commands:
             self.hide()
@@ -2631,7 +2677,8 @@ class CommandPopup(VerticalScroll):
                 0,
             )
             self.display = True
-            self._render_commands()
+            self._label_width = max(cell_len(command.name) for command in commands)
+            self._refresh_rows()
 
     def show_arguments(
         self,
@@ -2652,8 +2699,12 @@ class CommandPopup(VerticalScroll):
             self._commands = ()
             self._argument_command = command
             self._arguments = arguments
+            self._argument_query = query
+            self._argument_input_hint = command.input_hint or ""
             self._heading, self._hint = heading, hint
             self._selection_count = selection_count
+            self._label_width = max((cell_len(item.display_label) for item in arguments), default=0)
+            self._has_selection_marks = any(item.checked is not None for item in arguments)
             self._selected = None
             if not query.strip() or not any(item.is_suggestion for item in arguments):
                 self._selected = next(
@@ -2662,7 +2713,7 @@ class CommandPopup(VerticalScroll):
                 )
             self.display = bool(heading) or bool(arguments) or not query.strip()
             if self.display:
-                self._render_arguments()
+                self._refresh_rows()
 
     def hide(self) -> None:
         if (
@@ -2687,167 +2738,111 @@ class CommandPopup(VerticalScroll):
         items = self._arguments if self._argument_command is not None else self._commands
         if not items:
             return
+        previous = self._selected
         if self._selected is None:
             self._selected = 0 if offset > 0 else len(items) - 1
         else:
             self._selected = (self._selected + offset) % len(items)
-        if self._argument_command is not None:
-            self._render_arguments()
-        else:
-            self._render_commands()
+        for index in (previous, self._selected):
+            if index is not None:
+                self._content.refresh(Region(0, index, self._content.size.width, 1))
+        self._scroll_selected_into_view()
 
     def refresh_theme(self) -> None:
-        if self._argument_command is not None:
-            self._render_arguments()
-        elif self._commands:
-            self._render_commands()
+        self._refresh_rows()
 
-    def _render_commands(self) -> None:
-        if not self._commands:
+    def on_resize(self, event: events.Resize) -> None:
+        self._refresh_rows()
+
+    def _refresh_rows(self) -> None:
+        count = len(self._arguments) if self._argument_command is not None else len(self._commands)
+        row_count = max(1, count) + bool(self._hint)
+        resized = row_count != self._content.row_count
+        self._content.row_count = row_count
+        self._heading_widget.display = bool(self._heading)
+        self._render_heading()
+        self._content.refresh(layout=resized)
+        # Data changes and terminal resizing need the new layout before scrolling.
+        self.call_after_refresh(self._scroll_selected_into_view)
+
+    def _render_heading(self) -> None:
+        if not self._heading:
             return
+        width = self.scrollable_content_region.width
         theme = theme_for(self)
-        name_width = max(len(command.name) for command in self._commands)
-        rows: list[Text] = []
-        for index, command in enumerate(self._commands):
-            selected = index == self._selected
-            row = Text(style=f"on {theme.highlight}" if selected else "")
-            row.append("› " if selected else "  ", style=theme.accent if selected else "")
+        heading = Text(self._heading, style=theme.text_lowlight)
+        if self._selection_count is not None:
+            heading = _trailing_badge(
+                heading, str(self._selection_count), width, theme.text_lowlight
+            )
+        if width > 0:
+            heading.truncate(width, overflow="ellipsis", pad=True)
+        self._heading_widget.update(heading)
+
+    def _render_row(self, index: int, width: int) -> Text:
+        theme = theme_for(self)
+        if self._hint and index == self._content.row_count - 1:
+            return Text(self._hint, style=theme.text_faint)
+        if self._argument_command is not None and not self._arguments:
+            return Text.assemble(
+                ("› ", theme.accent), (self._argument_command.title, theme.text_primary)
+            )
+        selected = index == self._selected
+        row = Text(style=f"on {theme.highlight}" if selected else "")
+        row.append("› " if selected else "  ", style=theme.accent if selected else "")
+        if self._argument_command is None:
+            if not self._commands:
+                return Text()
+            command = self._commands[index]
             row.append(
-                command.name.ljust(name_width),
-                style=(theme.accent_bright if selected else theme.text_primary),
+                command.name + " " * (self._label_width - cell_len(command.name)),
+                style=theme.accent_bright if selected else theme.text_primary,
             )
             row.append(
                 f"  {command.title}",
-                style=(theme.text_primary if selected else theme.text_lowlight),
+                style=theme.text_primary if selected else theme.text_lowlight,
             )
-            rows.append(row)
-        self._render_rows(tuple(rows))
-
-    def on_resize(self, event: events.Resize) -> None:
-        if self._argument_command is not None:
-            self._render_arguments()
-        elif self._commands:
-            self._render_commands()
-
-    def _render_arguments(self, *, retry_after_layout: bool = True) -> None:
-        command = self._argument_command
-        if command is None:
-            return
-        theme = theme_for(self)
-        if not self._arguments:
-            content = Text()
-            content.append("› ", style=theme.accent)
-            content.append(command.title, style=theme.text_primary)
-            self._render_rows((content,))
-            return
-        value_width = max(len(argument.display_label) for argument in self._arguments)
-        has_selection_marks = any(argument.checked is not None for argument in self._arguments)
-        rows: list[Text] = []
-        for index, argument in enumerate(self._arguments):
-            selected = index == self._selected
-            row = Text(style=f"on {theme.highlight}" if selected else "")
-            row.append("› " if selected else "  ", style=theme.accent if selected else "")
-            if argument.checked is not None:
-                marker = (
-                    theme.selected_choice_marker
-                    if argument.checked
-                    else theme.unselected_choice_marker
-                )
-                row.append(
-                    f"{marker} ",
-                    style=theme.accent if argument.checked else theme.text_lowlight,
-                )
-            elif has_selection_marks:
-                row.append("  ")
+            return row
+        argument = self._arguments[index]
+        if argument.checked is not None:
+            marker = (
+                theme.selected_choice_marker if argument.checked else theme.unselected_choice_marker
+            )
             row.append(
-                argument.display_label.ljust(value_width),
-                style=(
-                    argument.accent or (theme.accent_bright if selected else theme.text_primary)
-                ),
+                f"{marker} ",
+                style=theme.accent if argument.checked else theme.text_lowlight,
             )
-            if argument.description:
-                row.append(
-                    f"  {argument.description}",
-                    style=(theme.text_secondary if selected else theme.text_lowlight),
-                )
-            if argument.trailing_badge:
-                row = _trailing_badge(
-                    row, argument.trailing_badge, self.scrollable_content_region.width, theme.accent
-                )
-            rows.append(row)
-        self._render_rows(tuple(rows))
-        if retry_after_layout and self.scrollable_content_region.width <= 0:
-            self.call_after_refresh(self._render_arguments, retry_after_layout=False)
-
-    def _render_rows(self, rows: tuple[Text, ...]) -> None:
-        theme = theme_for(self)
-        self._heading_widget.display = bool(self._heading)
-        if self._hint:
-            rows = (*rows, Text(self._hint, style=theme.text_faint))
-        self._render_rows_at_width(rows, retry_after_layout=True)
-
-    def _render_rows_at_width(
-        self,
-        rows: tuple[Text, ...],
-        *,
-        retry_after_layout: bool,
-    ) -> None:
-        width = self.scrollable_content_region.width
-        if self._heading:
-            theme = theme_for(self)
-            heading = Text(self._heading, style=theme.text_lowlight)
-            if self._selection_count is not None:
-                heading = _trailing_badge(
-                    heading, str(self._selection_count), width, theme.text_lowlight
-                )
-            if width > 0:
-                heading.truncate(width, overflow="ellipsis", pad=True)
-            self._heading_widget.update(heading)
-        if width <= 0:
-            self._content.update(Text("\n").join(rows))
-            if retry_after_layout:
-                self.call_after_refresh(
-                    self._render_rows_at_width,
-                    rows,
-                    retry_after_layout=False,
-                )
-            return
-
-        fitted_rows = tuple(row.copy() for row in rows)
-        for row in fitted_rows:
-            row.truncate(width, overflow="ellipsis", pad=True)
-        self._content.styles.width = width
-        self._content.update(Text("\n").join(fitted_rows))
-        self.call_after_refresh(self._scroll_selected_into_view, fitted_rows)
-
-    def _scroll_selected_into_view(self, rows: tuple[Text, ...]) -> None:
-        if self._selected is None:
-            return
-        selected = self._selected
-        if not rows or selected >= len(rows):
-            return
-        width = self.scrollable_content_region.width
-        if width <= 0:
-            return
-        if self._content.content_region.width != width:
-            self._content.styles.width = width
-            self.call_after_refresh(self._scroll_selected_into_view, rows)
-            return
-        heights = tuple(max(1, len(row.wrap(self.app.console, width))) for row in rows)
-        spacing = self._content.dock_gutter
-        selected_region = Region(
-            0,
-            spacing.top + sum(heights[:selected]),
-            width,
-            heights[selected],
+        elif self._has_selection_marks:
+            row.append("  ")
+        label = argument.display_label.translate(_SINGLE_LINE_TRANSLATION)
+        row.append(
+            label,
+            style=argument.accent or (theme.accent_bright if selected else theme.text_primary),
         )
+        if argument.description:
+            row.append(" " * max(0, self._label_width - cell_len(label)))
+            row.append(
+                "  " + argument.description,
+                style=theme.text_secondary if selected else theme.text_lowlight,
+            )
+        if argument.trailing_badge:
+            row = _trailing_badge(row, argument.trailing_badge, width, theme.accent)
+        return row
+
+    def _scroll_selected_into_view(self) -> None:
+        count = len(self._arguments) if self._argument_command is not None else len(self._commands)
+        if not self.display or self._selected is None or self._selected >= count:
+            return
+        # Every item is truncated to one terminal row. Its position is its index,
+        # independent of directory size, label length, and display-cell width.
+        spacing = self._content.dock_gutter
         self.scroll_to_region(
-            selected_region,
+            Region(0, spacing.top + self._selected, self.scrollable_content_region.width, 1),
             animate=False,
-            # The popup suppresses scrollbar chrome, but selection still owns its viewport.
             force=True,
             x_axis=False,
             spacing=spacing,
+            immediate=True,
         )
 
 

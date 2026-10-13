@@ -173,7 +173,7 @@ from ouro.tui.widgets import (
     _brand_header_content,
     _tool_activities_from_messages,
 )
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import command_popup_text, run_ready_app
 
 
 async def _wait_for_screen(
@@ -3128,7 +3128,7 @@ async def test_fork_command_uses_inline_targets_for_full_and_user_boundary(
             "Full",
             "#1",
         ]
-        popup_text = popup.query_one("#command-popup-content", Static).render().plain
+        popup_text = command_popup_text(popup).plain
         assert "Fork the complete current session" in popup_text
         assert "fork" in popup_text
         assert not isinstance(app.screen, ChoiceScreen)
@@ -3840,7 +3840,7 @@ async def test_unqueue_command_selects_message_and_returns_it_to_composer(
         await pilot.press("slash", *"unqueue", "enter")
         await pilot.pause()
         popup = app.query_one(CommandPopup)
-        choices = popup.query_one("#command-popup-content", Static).render().plain
+        choices = command_popup_text(popup).plain
         assert popup.argument_command is not None
         assert popup.argument_command.name == "/unqueue"
         assert "1. keep queued" in choices
@@ -7660,9 +7660,7 @@ async def test_thinking_completion_and_modal_share_supported_choices(
         await pilot.press("slash", *"thinking", "space")
         await pilot.pause()
 
-        inline = (
-            app.query_one(CommandPopup).query_one("#command-popup-content", Static).render().plain
-        )
+        inline = command_popup_text(app.query_one(CommandPopup)).plain
         for value in ("Off", "Low", "High"):
             assert value in inline
         for value in ("default", "enabled", "minimal", "medium", "xhigh", "max"):
@@ -11516,7 +11514,7 @@ async def test_plugin_commands_complete_and_execute_through_controller_boundary(
         await pilot.press("slash")
         await pilot.pause()
         popup = app.query_one(CommandPopup)
-        popup_text = popup.query_one("#command-popup-content", Static).render().plain
+        popup_text = command_popup_text(popup).plain
         assert "/hello" in popup_text
         app.query_one(Composer).clear()
 
@@ -11565,7 +11563,7 @@ async def test_slash_popup_loads_active_runtime_plugin_commands(tmp_path: Path) 
         await pilot.pause()
 
         popup = app.query_one(CommandPopup)
-        content = popup.query_one("#command-popup-content", Static).render().plain
+        content = command_popup_text(popup).plain
         assert "/goal" in content
 
 
@@ -11617,10 +11615,10 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
 
         popup = app.query_one(CommandPopup)
         assert popup.display is True
-        popup_content = popup.query_one("#command-popup-content", Static)
+        popup_content = popup._content
         assert popup_content.content_region.width == popup.scrollable_content_region.width
         assert "abort" in app.export_screenshot()
-        popup_text = popup_content.render().plain
+        popup_text = command_popup_text(popup).plain
         assert "/config" not in popup_text
         assert "/tools" not in popup_text
         assert "/mcp" not in popup_text
@@ -11748,12 +11746,13 @@ async def test_workspace_command_selects_paths_only_before_session_and_keeps_cle
         ]
         assert all(not argument.description for argument in popup._arguments)
         assert popup._arguments[-1].accent == DEFAULT_TUI_THEME.danger
-        workspace_menu = popup.query_one("#command-popup-content", Static).render()
-        assert isinstance(workspace_menu, Content)
+        workspace_menu = command_popup_text(popup)
         assert "Current workspace" not in workspace_menu.plain
         assert "Recent workspace" not in workspace_menu.plain
-        clear_style = workspace_menu.get_style_at_offset(workspace_menu.plain.index("clear"))
-        assert clear_style.foreground == Color.parse(DEFAULT_TUI_THEME.danger)
+        clear_style = workspace_menu.get_style_at_offset(
+            app.console, workspace_menu.plain.index("clear")
+        )
+        assert clear_style.color == Style.parse(DEFAULT_TUI_THEME.danger).color
 
         await pilot.press("down", "enter")
         await pilot.pause()
@@ -12181,8 +12180,8 @@ async def test_model_command_shows_endpoint_and_provider_without_changing_route_
         assert argument.description == "Supplier"
         assert composer.suggestion == ""
 
-        content = popup.query_one("#command-popup-content", Static)
-        rendered = content.render().plain.splitlines()[0]
+        content = popup._content
+        rendered = command_popup_text(popup).plain.splitlines()[0]
         assert rendered.startswith("› Model display  Supplier")
         assert rendered.rindex("Supplier") < content.content_region.width - len("Supplier")
 
@@ -12450,7 +12449,7 @@ async def test_parameterized_command_opens_argument_menu_and_executes_selection(
         assert popup.selected_argument is not None
         assert popup.selected_argument.value == "pause"
         assert composer.suggestion == "se"
-        content = popup.query_one("#command-popup-content", Static).render().plain
+        content = command_popup_text(popup).plain
         assert "pause" in content
         assert "status" not in content
 

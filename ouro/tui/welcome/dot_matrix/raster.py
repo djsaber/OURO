@@ -17,11 +17,12 @@ from ouro.tui.welcome.dot_matrix.field import DotArtwork, DotGrid, Field, buffer
 
 _BRAILLE_BITS = (1, 8, 2, 16, 4, 32, 64, 128)
 _THRESHOLDS = (0.08, 0.48, 0.68, 0.28, 0.23, 0.63, 0.43, 0.13)
+_COLOR_THRESHOLDS = tuple(value * 0.25 for value in _THRESHOLDS)
 
 
 @lru_cache(maxsize=4096)
-def _led_style(red: int, green: int, blue: int) -> Style:
-    return Style(color=Color.from_rgb(red, green, blue))
+def _led_style(rgb: tuple[int, int, int] | None) -> Style:
+    return Style() if rgb is None else Style(color=Color.from_rgb(*rgb))
 
 
 class PhosphorRaster:
@@ -76,7 +77,12 @@ class PhosphorRaster:
                 lane[row * columns : (row + 1) * columns] = field[start + dx : start + width : 2]
 
     def frame(
-        self, seconds: float, elapsed: float, *, monochrome: bool = False
+        self,
+        seconds: float,
+        elapsed: float,
+        *,
+        monochrome: bool = False,
+        background: tuple[int, int, int] = (0, 0, 0),
     ) -> tuple[Strip, ...]:
         decay = exp(-max(0, elapsed) / 0.085)
         for light, emission, mapped in zip(
@@ -87,37 +93,33 @@ class PhosphorRaster:
         maximum(self._luminance, self._mapped[2], self._luminance, self._scratch)
         self._split_dots(self._luminance)
         masks = []
+        thresholds = _THRESHOLDS if monochrome else _COLOR_THRESHOLDS
+        minimum = min(thresholds)
         for values in zip(*self._lanes, strict=True):
-            if monochrome:
+            peak = max(values)
+            if peak <= minimum:
+                mask = 0
+            else:
+                contour = 0.0 if monochrome else peak * 0.30
+                # Fade by coverage as well as color: terminals may raise the
+                # contrast of dark foregrounds, but cannot brighten absent dots.
                 mask = sum(
                     bit
-                    for value, bit, threshold in zip(
-                        values, _BRAILLE_BITS, _THRESHOLDS, strict=True
-                    )
-                    if value > threshold
-                )
-            else:
-                peak = max(values)
-                mask = (
-                    255
-                    if peak < 0.05
-                    else sum(
-                        bit
-                        for value, bit in zip(values, _BRAILLE_BITS, strict=True)
-                        if value >= peak * 0.30
-                    )
+                    for value, bit, threshold in zip(values, _BRAILLE_BITS, thresholds, strict=True)
+                    if value >= contour and value > threshold
                 )
             masks.append(mask)
-        for mapped, minimum, rgb in zip(
-            self._mapped, (0.055, 0.065, 0.067), self._rgb, strict=True
-        ):
+        for mapped, rgb, base in zip(self._mapped, self._rgb, background, strict=True):
             self._split_dots(mapped)
             self._color[:] = self._lanes[0]
             for lane in self._lanes[1:]:
                 af.add(self._color, lane)
             af.mul(self._color, 1.25 / 8)
-            clip(self._color, minimum, 1.0, self._color_scratch)
-            af.mul(self._color, 255.0)
+            clip(self._color, 0.0, 1.0, self._color_scratch)
+            # Screen-compose emitted light over the actual canvas. Zero light
+            # leaves the background unchanged, including in individual channels.
+            af.mul(self._color, float(255 - base))
+            af.add(self._color, float(base))
             af.convert(self._color, rgb)
         rows = []
         damage = []
@@ -128,19 +130,21 @@ class PhosphorRaster:
             previous: tuple[int, int, int] | None = None
             first, last = self.grid.columns, -1
             for index in range(row * self.grid.columns, (row + 1) * self.grid.columns):
-                key = next(colors)
-                cell = (key[0] << 24) | (key[1] << 16) | (key[2] << 8) | masks[index]
+                red, green, blue = next(colors)
+                mask = masks[index]
+                key = (red, green, blue) if mask else None
+                cell = (red << 24) | (green << 16) | (blue << 8) | mask if mask else 0
                 if not self._lines or self._cells[index] != cell:
                     column = index % self.grid.columns
                     first, last = min(first, column), column
                     self._cells[index] = cell
-                if previous is not None and key != previous:
-                    segments.append(Segment(run, _led_style(*previous)))
+                if run and key != previous:
+                    segments.append(Segment(run, _led_style(previous)))
                     run = ""
-                run += chr(0x2800 + masks[index])
+                run += chr(0x2800 + mask) if mask else " "
                 previous = key
-            if previous is not None:
-                segments.append(Segment(run, _led_style(*previous)))
+            if run:
+                segments.append(Segment(run, _led_style(previous)))
             if last < 0:
                 rows.append(self._lines[row])
             else:

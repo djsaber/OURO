@@ -2,14 +2,49 @@ from __future__ import annotations
 
 import pytest
 from rich.style import Style
+from textual import events
 from textual.widgets import Static
 
 from ouro.core.input_content import InputContent, InputFileReference, InputSkillReference
 from ouro.skills import SkillLoader
 from ouro.tui.app import OuroTuiApp
+from ouro.tui.attachment_picker import AttachmentEntry, AttachmentPicker
 from ouro.tui.widgets import CommandPopup, Composer
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import command_popup_text, run_ready_app
 from tests.tui.test_history_commands import application_at
+
+
+async def test_large_file_menu_drains_arrow_bursts_then_filters_and_selects(tmp_path, monkeypatch):
+    entries = tuple(
+        AttachmentEntry(tmp_path / f"file-{index:05}.txt", False) for index in range(10000)
+    )
+    monkeypatch.setattr(AttachmentPicker, "read_directory", staticmethod(lambda _: entries))
+    app = OuroTuiApp(application=application_at(tmp_path))
+    async with run_ready_app(app, size=(60, 26)) as pilot:
+        app._active_workspace = str(tmp_path)
+        composer = app.query_one(Composer)
+        await pilot.press("@", *"file", "enter")
+        await app.workers.wait_for_complete(
+            [worker for worker in app.workers if worker.group == "attachment-directory"]
+        )
+        await pilot.pause()
+        popup = app.query_one(CommandPopup)
+        # Feed real key messages without Pilot's per-key idle waits.
+        for key in ["down"] * 120 + ["up"] * 40:
+            app.post_message(events.Key(key, None))
+        await pilot.pause()
+        assert popup.selected_argument.value == str(entries[79].path)
+        assert popup._content.region.y + 80 >= popup._heading_widget.region.bottom
+        assert popup._content.region.y + 80 < popup.content_region.bottom
+        assert app.focused is composer and composer.text == "@file "
+        await pilot.press("space")
+        assert app._attachment_picker.selected == [entries[79].path]
+        composer.set_attachment_query("file-00079")
+        await pilot.pause()
+        assert len(popup._arguments) == 1 and popup.selected_argument.checked
+        assert popup.scroll_y == 0
+        await pilot.press("escape")
+        assert not popup.display and composer.input_content.is_empty
 
 
 @pytest.mark.parametrize("kind", ("file", "skill"))
@@ -48,7 +83,7 @@ async def test_reference_heading_and_count_stay_visible_while_scrolling_and_filt
         assert heading.content.get_style_at_offset(
             app.console, len(heading.content.plain) - 1
         ) == Style.parse(app.tui_theme.text_lowlight)
-        assert "Reference selected" not in popup._content.content.plain
+        assert "Reference selected" not in command_popup_text(popup).plain
         assert popup.region.bottom == composer.region.y
         assert popup.region.right <= 44
         assert popup._content.region.y + 19 >= heading.region.bottom

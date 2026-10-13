@@ -21,7 +21,7 @@ from ouro.tui.widgets import (
     WelcomePanel,
     _project_transcript_entries,
 )
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import command_popup_text, run_ready_app
 from tests.tui.test_history_commands import application_at
 
 
@@ -113,17 +113,17 @@ async def test_directory_navigation_keeps_visible_listing_until_read_completes(
 
             monkeypatch.setattr(picker, "read_directory", delayed_read)
             before = (popup._arguments, popup._heading, popup.region, composer.text)
-            visible = popup._content.content
+            visible = command_popup_text(popup)
             worker = app._load_attachment_directory(destination)
             try:
                 await asyncio.wait_for(entered.wait(), timeout=5)
                 await pilot.pause()
                 assert (popup._arguments, popup._heading, popup.region, composer.text) == before
-                assert popup._content.content == visible
+                assert command_popup_text(popup) == visible
                 if destination == child:
                     composer.set_attachment_query("nested-3")
                     await pilot.pause()
-                    assert popup._content.content == visible
+                    assert command_popup_text(popup) == visible
             finally:
                 release.set()
                 await worker.wait()
@@ -151,7 +151,7 @@ async def test_unreadable_directory_retains_listing_filter_and_selection(tmp_pat
         composer.set_attachment_query("child")
         await pilot.pause()
         popup = app.query_one(CommandPopup)
-        visible = popup._content.content
+        visible = command_popup_text(popup)
         errors = []
 
         def unreadable(_directory):
@@ -162,7 +162,7 @@ async def test_unreadable_directory_retains_listing_filter_and_selection(tmp_pat
         await app._load_attachment_directory(child).wait()
         await pilot.pause()
         assert errors == ["Directory access denied"]
-        assert popup._content.content == visible and composer.text == "@file child"
+        assert command_popup_text(popup) == visible and composer.text == "@file child"
         assert picker.directory == tmp_path and picker.selected == [path]
         assert not picker.loading
 
@@ -235,7 +235,7 @@ async def test_picker_retains_multiselection_across_directories_and_confirms_dir
         assert popup.display and popup.region.bottom == composer.region.y
         folder = next(item for item in popup._arguments if item.value == str(child))
         assert folder.display_label == "child"
-        rows = popup._content.content.plain.splitlines()
+        rows = command_popup_text(popup).plain.splitlines()
         for name in ("..", "child", "one.txt"):
             assert next(row for row in rows if name in row).index(name) == 4
         assert next(row for row in rows if "one.txt" in row).strip() == (
@@ -252,7 +252,7 @@ async def test_picker_retains_multiselection_across_directories_and_confirms_dir
         await pilot.press("space")
         picker = app._attachment_picker
         assert picker.selected == [one]
-        rows = popup._content.content.plain.splitlines()
+        rows = command_popup_text(popup).plain.splitlines()
         assert next(row for row in rows if "one.txt" in row).strip() == (
             f"› {app.tui_theme.selected_choice_marker} one.txt"
         )

@@ -23,7 +23,8 @@ Host 负责业务状态、持久输入组件、菜单、配置与生命周期。
 | `refresh_theme()` | 更新所消费的界面语义 token |
 
 `place_input` 是同步、无 I/O 的布局函数，不修改组件或读写业务状态。包使用 `measure` 返回的高度安排输入，
-并为短终端留出可用位置。Host 按输入区上下剩余空间选择命令弹窗方向并限制高度。
+并为短终端留出可用位置。Host 将命令弹窗紧贴输入区上方，高度受上方可用空间限制；
+仅上方不足最小菜单高度且下方空间更大时向下展开。
 
 页面可以实现 `render()`、`render_line()`，也可以通过 `compose()`、TCSS 或 Textual `Layout` 组合任意子组件。
 全屏字节瀑布可以直接绘制页面每一行，背景会覆盖输入区之外的全部终端；包也可以把输入放在顶部、底部或侧栏。
@@ -114,6 +115,9 @@ Host 在离开欢迎页、打开覆盖菜单或替换页面时发送 `active=Fal
 
 每个终端 cell 对应 2×4 个固定 Braille 点位。包只计算这些采样位置的辐射值；大小变化时重新构建网格，
 动画期间只改变亮度、颜色和开关状态。一个 cell 的点共享终端前景色，点的开关保留子 cell 轮廓。
+彩色模式使用相对亮度保留轮廓，并以固定空间阈值逐步熄灭暗部点位；无光 cell 输出无前景色的普通空格，
+直接继承页面背景。RGB 不设固定颜色下限，曝光后的各通道按 `background + (255 - background) * light`
+与当前画布合成，避免低亮点比背景更暗。淡出同时依靠颜色和点位覆盖率，不依赖终端准确显示近黑前景色。
 无颜色模式使用固定空间阈值保留亮度结构。标准库 `array('d')` 保存连续双精度数据，
 `arrayfunc` 在 C 中批量计算，Rich/Textual 处理终端绘制；运行和测试均不依赖 NumPy。
 
@@ -127,8 +131,10 @@ Host 在离开欢迎页、打开覆盖菜单或替换页面时发送 `active=Fal
 在主循环外完成。每个组件只保留一个计算任务；计算未结束时跳过动画 tick，尺寸变更合并到最新请求。
 后台任务独占光栅缓冲，不访问挂载组件；主循环只发布当前版本的结果。暂停、缩放和卸载使过期结果失效，
 卸载不等待不可中断的数值计算，也不接受其完成结果。时钟只计算播放期间的时间，不补播积压帧。
+背景色随帧请求传入后台；主题变化会在当前动画时间重绘一帧，暂停状态也保持正确配色。
 
 光栅按最终 Braille 位和 RGB 值比较终端 cell，复用未变化行的 Strip，仅刷新每行变化点之间的区域。
+空白 cell 使用统一状态，不因不可见的光照变化触发刷新。
 未变化帧不触发重绘；输入焦点、布局和硬件光标由 Textual 管理，不随艺术计算更新。
 Windows 控制台的完整帧提交由终端适配器负责，与欢迎页包无关，见 [TUI 规范](../specs/tui.md)。
 
@@ -144,6 +150,7 @@ Windows 控制台的完整帧提交由终端适配器负责，与欢迎页包无
 uv run --frozen pytest tests/tui/test_welcome_styles.py tests/tui/test_welcome_layout.py tests/tui/test_welcome_refresh.py tests/tui/test_preferences.py
 uv run --frozen pytest tests/tui/test_app.py -k 'welcome or theme or composer_growth or session_input_surface or startup'
 uv run --frozen pytest tests/tui/test_dot_animation.py tests/tui/test_windows_driver.py
+uv run --frozen pytest tests/tui/test_dot_raster.py
 ```
 
 自定义包需验证全视口绘制、公共组件组合、输入布局与增长、短终端、命令弹窗方向、局部样式撤销、

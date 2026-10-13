@@ -31,11 +31,12 @@ def _render_frame(
     seconds: float,
     delta: float,
     monochrome: bool,
+    background: tuple[int, int, int],
 ) -> tuple[PhosphorRaster, tuple[Strip, ...], tuple[Region, ...]]:
     """Compute with exclusive raster ownership and no access to mounted widgets."""
     if raster is None:
         raster = PhosphorRaster(artwork, size.width, size.height)
-    lines = raster.frame(seconds, delta, monochrome=monochrome)
+    lines = raster.frame(seconds, delta, monochrome=monochrome, background=background)
     return raster, lines, raster.damage
 
 
@@ -58,7 +59,7 @@ class DotMatrix(Widget):
         self._lines: tuple[Strip, ...] = ()
         self._rendering = False
         self._render_revision = 0
-        self._pending_frame: tuple[Size, float, float, bool] | None = None
+        self._pending_frame: tuple[Size, float, float, bool, tuple[int, int, int]] | None = None
 
     def on_mount(self) -> None:
         self._timer = self.set_interval(1 / 30, self._tick, pause=True)
@@ -113,6 +114,10 @@ class DotMatrix(Widget):
         # A new size needs a frame even when animation playback is paused.
         self._paint(0)
 
+    def refresh_theme(self) -> None:
+        if self.is_mounted:
+            self._paint(0)
+
     def _paint(self, delta: float) -> None:
         self._render_revision += 1
         self._pending_frame = None
@@ -120,7 +125,13 @@ class DotMatrix(Widget):
         columns, rows = size
         if columns < 1 or rows < 1:
             return
-        self._pending_frame = size, self.elapsed, delta, self.app.no_color
+        self._pending_frame = (
+            size,
+            self.elapsed,
+            delta,
+            self.app.no_color,
+            self.background_colors[1].rgb,
+        )
         if not self._rendering:
             self._rendering = True
             _worker: Worker[None] = self.run_worker(self._render_frames, group="welcome-artwork")
@@ -129,7 +140,7 @@ class DotMatrix(Widget):
         try:
             while self._pending_frame is not None:
                 revision = self._render_revision
-                size, seconds, delta, monochrome = self._pending_frame
+                size, seconds, delta, monochrome, background = self._pending_frame
                 self._pending_frame = None
                 raster, lines, damage = await asyncio.to_thread(
                     _render_frame,
@@ -139,6 +150,7 @@ class DotMatrix(Widget):
                     seconds,
                     delta,
                     monochrome,
+                    background,
                 )
                 if not self.is_mounted or revision != self._render_revision:
                     # Its persistence and damage buffers advanced without being

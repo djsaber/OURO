@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,11 +27,14 @@ class AttachmentPicker:
 
     @staticmethod
     def read_directory(directory: Path) -> tuple[AttachmentEntry, ...]:
-        entries = (
-            AttachmentEntry(path, path.is_dir())
-            for path in directory.iterdir()
-            if not path.is_symlink() and (path.is_dir() or path.is_file())
-        )
+        entries = []
+        # Directory enumeration already supplies type metadata on Windows and
+        # most local filesystems; keep it instead of stat-ing each Path again.
+        with os.scandir(directory) as children:
+            for child in children:
+                is_directory = child.is_dir(follow_symlinks=False)
+                if is_directory or child.is_file(follow_symlinks=False):
+                    entries.append(AttachmentEntry(Path(child.path), is_directory))
         return tuple(
             sorted(
                 entries,

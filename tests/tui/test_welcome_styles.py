@@ -105,11 +105,17 @@ def test_artwork_matches_reference_colors_braille_and_persistence(case):
     for seconds, encoded in zip(REFERENCE_FRAMES["times"], case["frames"], strict=True):
         expected = base64.b64decode(encoded)
         actual = bytearray()
-        for row in raster.frame(seconds, 1 / 30, monochrome=case["monochrome"]):
+        for row in raster.frame(
+            seconds,
+            1 / 30,
+            monochrome=case["monochrome"],
+            background=tuple(REFERENCE_FRAMES["background"]),
+        ):
             for segment in row:
-                rgb = segment.style.color.get_truecolor()
+                rgb = segment.style.color.get_truecolor() if segment.style.color else (0, 0, 0)
                 for character in segment.text:
-                    actual.extend((ord(character) - 0x2800, *rgb))
+                    mask = 0 if character == " " else ord(character) - 0x2800
+                    actual.extend((mask, *rgb))
         assert actual[::4] == expected[::4]
         # Different platform libm kernels may round a color channel by one unit.
         assert all(
@@ -130,11 +136,13 @@ def test_raster_uses_only_fixed_braille_addresses_and_bounded_terminal_rows(styl
         assert len(frame) == 14
         for row in frame:
             assert row.cell_length == len(row.text) == 80
-            assert all(0x2800 <= ord(character) <= 0x28FF for character in row.text)
+            assert all(
+                character == " " or 0x2801 <= ord(character) <= 0x28FF for character in row.text
+            )
             assert all(segment.style is not None for segment in row)
     if monochrome:
-        assert any("\u2800" in row.text for row in frames[0])
-        assert any(any(character != "\u2800" for character in row.text) for row in frames[0])
+        assert any(" " in row.text for row in frames[0])
+        assert any(row.text.strip() for row in frames[0])
 
 
 class CustomPage(WelcomePage):

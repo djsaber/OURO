@@ -5,6 +5,8 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from rich.text import Text
+
 from ouro.application.models import AvailableModel, close_runtime_adapters
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
@@ -15,6 +17,16 @@ from ouro.local_application import LocalApplication
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
+from ouro.tui.widgets import CommandPopup
+
+
+def command_popup_text(popup: CommandPopup) -> Text:
+    """Inspect logical menu rows through the same per-line renderer as the screen."""
+    rows = (
+        Text.assemble(*((segment.text, segment.style) for segment in popup._content.render_line(y)))
+        for y in range(popup._content.row_count)
+    )
+    return Text("\n").join(rows)
 
 
 @asynccontextmanager

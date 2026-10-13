@@ -7,6 +7,31 @@ from textual.widgets import OptionList
 from ouro.tui.archive_paths import ArchivePathScreen
 
 
+async def test_archive_listing_reuses_directory_entry_types(tmp_path, monkeypatch):
+    (tmp_path / "folder").mkdir()
+    (tmp_path / "archive.zip").touch()
+    (tmp_path / "ignored.txt").touch()
+    screen = ArchivePathScreen(directory=tmp_path, filename=None)
+    type_queries = 0
+    original_is_dir, original_is_file = Path.is_dir, Path.is_file
+
+    def counted_is_dir(self):
+        nonlocal type_queries
+        type_queries += 1
+        return original_is_dir(self)
+
+    def counted_is_file(self):
+        nonlocal type_queries
+        type_queries += 1
+        return original_is_file(self)
+
+    monkeypatch.setattr(Path, "is_dir", counted_is_dir)
+    monkeypatch.setattr(Path, "is_file", counted_is_file)
+    choices = await screen._path_choices()
+    assert {choice.value for choice in choices} >= {"directory:folder", "file:archive.zip"}
+    assert type_queries == 0
+
+
 async def test_import_choices_list_archives_before_one_contiguous_folder_group(tmp_path) -> None:
     (tmp_path / "zeta").mkdir()
     (tmp_path / "Alpha").mkdir()

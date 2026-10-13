@@ -37,6 +37,14 @@ uv run --frozen python -m dev.benchmarks.startup --repeat 5
 ## 会话管线与 TUI
 
 ```powershell
+uv run --frozen python -m dev.benchmarks.file_menu C:\Windows\System32 --keys 60
+```
+
+文件菜单基准只读枚举指定目录，在 100×32 的 Textual headless 窗口加载完整候选集；分别输出目录读取、候选项构造、
+打开菜单到完成绘制，以及连续移动到完成绘制的中位数和 P95。计时包含 Textual 布局和刷新调度，
+不包含操作系统终端输出或键盘输入链路；不清除文件系统缓存。目录不会被修改。
+
+```powershell
 uv run --frozen python -m dev.benchmarks.text_wrapping --repeat 15
 ```
 
