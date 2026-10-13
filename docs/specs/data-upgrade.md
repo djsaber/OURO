@@ -19,7 +19,8 @@
 
 ## 支持矩阵
 
-固定历史写入基线为 `96ebb7e`，包版本 `0.1.0`；夹具和来源说明位于
+固定历史写入基线为 `96ebb7e`，包版本 `0.1.0`；ContextSnapshot 3 夹具由 `aa94cc5` 的模型序列化。
+夹具和来源说明位于
 [tests/upgrade/fixtures](../../tests/upgrade/fixtures/README.md)。以下数据契约可组合升级，当前格式直接验证：
 
 | 容器 / 记录 | 接受的源格式 | 当前格式与处理 |
@@ -29,7 +30,7 @@
 | Session / Event / Harness / Compaction / Delegation / Resource | 2 / 2 / 1 / 1 / 1 / 2 | 验证宿主结构并保留数据 |
 | Run | 2、5 | 目标 5；源 2 绑定 `ouro.default/1`，implementation 为 null、dependencies 为空、checkpoint 为 null |
 | Message | 3、4 | 目标 4；源 3 的工具结果补 model producer |
-| ContextSnapshot | 4 | 转换 source_messages；为缺失来源的 injected tool result 补 model producer |
+| ContextSnapshot | 3、4 | 目标由当前模型定义；源 3 的 supports_vision 转为 supports_image_input，音频、视频输入能力设为 false；转换 source_messages，为缺失来源的 injected tool result 补 model producer |
 | SessionCommitResult | 1 | 转换 messages、Session、Event 及 truncation 中的 Message |
 | 文件任务 / SQLite 任务 | 1、3 | 目标 3；迁移 agent target、owner、result 与 cancel 字段，保留历史链与防重标记 |
 | 用量 SQLite / 用量记录 / 审计 | 1、2 | 目标 2；增加 plugin 归属，保留原 Run 归属，更新表结构及审计内嵌记录 |
@@ -44,6 +45,11 @@ workspace、model、reasoning、approval_mode、session_mode 移入该 target；
 未列出的历史布局、记录版本或中间版本明确拒绝。SQLite Session schema 1 不在支持范围。
 选定后端中的未知原生字段、缺失的必要事实、重复 JSON 键、非有限数字和不可解析数据均在业务写回前拒绝。
 不通过当前模型的默认值补造 ID、时间、revision 或执行状态。
+
+ContextSnapshot 按源版本登记到下一版本的转换步骤，依次执行到当前模型的 schema_version，
+再转换嵌套消息并验证目标结构。增加版本时需提供相邻版本转换和对应夹具；缺少任一步骤即拒绝升级。
+步骤只修改明确列出的字段，保留快照内容、身份、时间、metrics、metadata 与原 context_digest。
+文件和 SQLite 后端共用此转换，不在存储层或 TUI 中实现版本兼容。
 
 ## 转换不变量
 

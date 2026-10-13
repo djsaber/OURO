@@ -5,6 +5,13 @@ using `LocalSessionStore` / `SQLiteSessionStore`, `LocalTaskRepository` /
 `SQLiteTaskRepository`, and `LocalUsageLedger`. These are frozen writer outputs,
 not target models with edited version numbers. They contain no user data.
 
+`records/context-v3.json` is serialized by the unmodified `ContextSnapshotRecord`
+at `aa94cc5`. Its synthetic inputs share the Session, Run and messages of the
+file fixture, with `supports_vision=true`, an inline PNG and opaque context
+metadata. Tests install this record in both file and SQLite homes, exercise
+both vision flag values, and verify snapshot preservation and nested message
+conversion. No user data is included.
+
 `files/` contains layout 9, Session 2, Run 2, Message 3, ContextSnapshot 4,
 SessionCommitResult 1, HarnessVersion 1, file tasks 1 and usage SQLite 1.
 `sqlite/` contains session schema 7, task schema 1 and usage schema 1 as SQL dumps;

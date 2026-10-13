@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -44,7 +45,6 @@ VERSIONS = {
     "run": (2, 5),
     "message": (3, 4),
     "event": (2,),
-    "context": (4,),
     "compaction": (1,),
     "harness": (1,),
     "delegation": (1,),
@@ -140,12 +140,35 @@ def _producer(value: dict[str, Any]) -> None:
     _add(value, "producer", {"kind": "model", "driver_id": None})
 
 
+def _context_v3_to_v4(value: dict[str, Any]) -> None:
+    _add(value, "supports_image_input", value.pop("supports_vision"))
+    _add(value, "supports_audio_input", False)
+    _add(value, "supports_video_input", False)
+
+
+# Each step converts its source version to the next; the model defines the target.
+VERSION_STEPS: dict[str, dict[int, Callable[[dict[str, Any]], None]]] = {
+    "context": {3: _context_v3_to_v4},
+}
+
+
 def convert(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
     version = raw.get("schema_version")
-    if type(version) is not int or version not in VERSIONS[kind]:
-        raise UpgradeError(f"unsupported {kind} version; expected {VERSIONS[kind]}")
+    steps = VERSION_STEPS.get(kind)
+    target = MODELS[kind].model_fields["schema_version"].default
+    versions = (*steps, target) if steps is not None else VERSIONS[kind]
+    if type(version) is not int or version not in versions:
+        raise UpgradeError(f"unsupported {kind} version; expected {versions}")
     value = copy.deepcopy(raw)
     try:
+        if steps is not None:
+            while version < target:
+                step = steps.get(version)
+                if step is None:
+                    raise UpgradeError(f"missing {kind} upgrade step from version {version}")
+                step(value)
+                version += 1
+                value["schema_version"] = version
         _convert(kind, value, version)
         validate(MODELS[kind], value)
     except (KeyError, TypeError, AttributeError) as exc:
