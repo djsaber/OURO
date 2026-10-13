@@ -5,7 +5,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from ouro.application.dto import Diagnostic
-from ouro.application.file_inputs import FileInputProjector
+from ouro.application.file_inputs import FileInputProjector, with_attachment_read_paths
 from ouro.application.queued_inputs import QueuedInputQueue
 from ouro.application.resource_models import (
     ResourceExportResult,
@@ -278,6 +278,24 @@ class ResourceService:
                 update={"attached_at": utc_now(), "copied_from_session_id": source_session_id}
             )
             for identity in dict.fromkeys(resource_ids)
+        ]
+
+    def rebind_input_paths(
+        self, messages: list[MessageRecord], records: Iterable[ResourceRecord]
+    ) -> list[MessageRecord]:
+        """Bind copied scaffolds before publishing the destination Session snapshot."""
+        by_id = {record.resource_id: record for record in records}
+        return [
+            with_attachment_read_paths(
+                message,
+                (
+                    self._store.path_for(message.session_id, by_id[identity])
+                    for identity in dict.fromkeys(message.resource_refs)
+                ),
+            )
+            if message.semantic_tag == "attachments"
+            else message
+            for message in messages
         ]
 
     def contents_for(

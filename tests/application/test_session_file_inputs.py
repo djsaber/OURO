@@ -4,8 +4,11 @@ import base64
 
 import pytest
 
+from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.core import input_content
+from ouro.core.errors import SessionBranchError
 from ouro.core.messages import ImageContent
+from tests.application.test_skill_activations import CapturingProvider
 from tests.tui.test_history_commands import application_at
 
 
@@ -54,6 +57,10 @@ async def test_same_named_uploads_have_unambiguous_model_file_labels(tmp_path):
         )
         projected = app.runtime.sessions.context(session.session_id).provider_context.messages[0]
         assert f'"{filename}": ' in projected.text_content
+    for item in items:
+        path = app.runtime.resources.resource_path(session.session_id, item.resource_id)
+        assert path.as_posix() in receipt.text_content
+    assert projected.text_content.count("Session attachment read paths:") == 1
     await app.close()
 
 
@@ -65,6 +72,16 @@ async def test_paired_attachment_scaffold_is_not_a_separate_undo_input(tmp_path,
     item = input_content.InputFileReference(name=path.name, path=str(path))
     result = await app.runtime.run("Keep this question", attachments=(item,))
     before = app.runtime.store.load_runtime_session(result.session.session_id)
+    for invalid_fork_target in (
+        None,
+        before.messages[0].message_id,
+        before.messages[-1].message_id,
+    ):
+        with pytest.raises(SessionBranchError, match="user message is not a fork point"):
+            app.runtime.sessions.branch(
+                result.session.session_id, invalid_fork_target, before_input=True
+            )
+    assert len(app.runtime.store.list_sessions()) == 1
     with pytest.raises(ValueError, match="directly submitted user input"):
         await app.runtime.undo(result.session.session_id, message_id=before.messages[0].message_id)
     assert (
@@ -212,7 +229,12 @@ async def test_branch_owns_its_upload_after_source_is_trashed(tmp_path, backend)
     message = app.runtime.store.load_runtime_session(session.session_id).messages[0]
     branch = app.runtime.sessions.branch(session.session_id, message.message_id).session
     branch_path = resources.resource_path(branch.session_id, record.resource_id)
-    assert branch_path != resources.resource_path(session.session_id, record.resource_id)
+    source_path = resources.resource_path(session.session_id, record.resource_id)
+    assert branch_path != source_path
+    copied = app.runtime.store.load_runtime_session(branch.session_id).messages[0]
+    assert branch_path.as_posix() in copied.text_content
+    assert source_path.as_posix() not in copied.text_content
+    assert source_path.as_posix() in message.text_content
     app.runtime.sessions.trash(session.session_id)
     source.unlink()
     await app.runtime.run("Continue", session_id=branch.session_id)
@@ -221,6 +243,63 @@ async def test_branch_owns_its_upload_after_source_is_trashed(tmp_path, backend)
         branch_path.as_posix()
         in app.runtime.sessions.context(branch.session_id).provider_context.messages[0].text_content
     )
+    assert source_path.as_posix() not in (
+        app.runtime.sessions.context(branch.session_id).provider_context.messages[0].text_content
+    )
+    await app.close()
+
+
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+@pytest.mark.parametrize("fork_point", (0, 1))
+async def test_branch_preserves_observed_files_and_skill_instructions(
+    tmp_path, backend, fork_point
+):
+    skill = tmp_path / "skills" / "reviewer" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\nname: reviewer\ndescription: Review.\n---\nFrozen review instructions.\n",
+        encoding="utf-8",
+    )
+    provider = CapturingProvider()
+    app = application_at(tmp_path, provider, backend=backend)
+    runtime = app.runtime
+    session = runtime.create_session(title="mixed history", workspace=tmp_path)
+    source = tmp_path / "upload.txt"
+    source.write_text("Frozen upload.", encoding="utf-8")
+    reference = tmp_path / "reference.txt"
+    reference.write_text("Frozen reference.", encoding="utf-8")
+    resource = runtime.resources.import_resource(session.session_id, source).resource
+    await runtime.run(
+        "Review",
+        session_id=session.session_id,
+        attachments=(
+            input_content.InputAttachment(name=source.name, resource_id=resource.resource_id),
+            input_content.InputFileReference(name=reference.name, path=str(reference)),
+        ),
+        skill_invocation=SkillInvocationRequest(name="reviewer", arguments="Review"),
+    )
+    saved_context = runtime.sessions.context(session.session_id)
+    before = runtime.store.load_runtime_session(session.session_id).messages
+    branch = runtime.sessions.branch(session.session_id, before[fork_point].message_id).session
+    copied = runtime.store.load_runtime_session(branch.session_id).messages
+    assert len(copied) == 2
+    assert copied[1].skill_activations == before[1].skill_activations
+    source_path = runtime.resources.resource_path(session.session_id, resource.resource_id)
+    branch_path = runtime.resources.resource_path(branch.session_id, resource.resource_id)
+    assert branch_path.as_posix() in copied[0].text_content
+    assert source_path.as_posix() not in copied[0].text_content
+    assert reference.as_posix() in copied[0].text_content
+    assert runtime.sessions.context(session.session_id) == saved_context
+    runtime.sessions.trash(session.session_id)
+    for path in (source, reference, skill):
+        path.unlink()
+    result = await runtime.run("Continue reviewing", session_id=branch.session_id)
+    assert result.run.status == "completed"
+    sent = "\n".join(message.text_content for message in provider.calls[-1])
+    for contents in ("Frozen upload.", "Frozen reference.", "Frozen review instructions."):
+        assert sent.count(contents) == 1
+    assert branch_path.as_posix() in sent and source_path.as_posix() not in sent
+    assert sent.count("Session attachment read paths:") == 1
     await app.close()
 
 

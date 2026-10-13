@@ -41,11 +41,12 @@ from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.supervisor import RuntimeSubscription
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.approvals import SessionApprovalMode
+from ouro.core.attachment_input import editable_input_content
 from ouro.core.errors import OuroError, PersistenceError, UnsupportedDataVersionError
 from ouro.core.events import EventRecord
 from ouro.core.input_content import InputContent, InputFile, InputSkillReference
 from ouro.core.interactions import SessionInteractionMode
-from ouro.core.messages import MessageRecord, SkillActivationContent
+from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import REASONING_EFFORTS, ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.core.state import DEFAULT_SESSION_TITLE
@@ -150,7 +151,6 @@ from ouro.tui.widgets import (
     QueuedInputPanel,
     StatusLine,
     WelcomePanel,
-    user_message_text,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -4077,24 +4077,20 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             if command == "/undo":
                 selected = await self._controller.undo()
-                text = selected.input.text_content
                 attachments = selected.attachments or await self._controller.input_attachments(
                     selected.session.session_id, selected.resource_refs
                 )
-                skills = tuple(
-                    InputSkillReference(
-                        name=block.name, text_offset=block.text_offset, order=block.order
-                    )
-                    for block in selected.input.content
-                    if isinstance(block, SkillActivationContent)
-                )
+                content = editable_input_content(selected.input, attachments)
                 self._remember_input_draft(
-                    selected.session.session_id, text, attachments=attachments, skills=skills
+                    selected.session.session_id,
+                    content.text,
+                    attachments=content.attachments,
+                    skills=content.skills,
                 )
                 if not self._owns_session_surface(session_id):
                     return
                 await self._show_main_session()
-                self._edit_draft(InputContent(text=text, attachments=attachments, skills=skills))
+                self._edit_draft(content)
                 if selected.resource_refs:
                     self.notify(
                         f"Restored {len(selected.resource_refs)} attachment(s) to this input"
@@ -4130,7 +4126,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         if self._controller.session_id is None:
             return
-        selected_message: MessageRecord | None = None
+        content: InputContent | None = None
         previous_projection = self._projection
         self._activity_override = "forking"
         self.query_one(StatusLine).set_activity(self._activity_override)
@@ -4146,6 +4142,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     raise ValueError(f"user message is not a fork point: {target}")
                 selected_message = points[index]
                 result = await self._controller.branch_session(selected_message.message_id)
+                attachments = (
+                    selected_message.input_attachments
+                    or await self._controller.input_attachments(
+                        result.session.session_id, tuple(selected_message.resource_refs)
+                    )
+                )
+                content = editable_input_content(selected_message, attachments)
+                self._remember_input_draft(
+                    result.session.session_id,
+                    content.text,
+                    attachments=content.attachments,
+                    skills=content.skills,
+                )
             menu = self._active_navigation_menu()
             if menu is not None:
                 menu.dismiss(None)
@@ -4160,8 +4169,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._restore_projection_activity(previous_projection)
             self.notify(str(exc), severity="error", markup=False)
             return
-        if selected_message is not None:
-            self._edit_draft(user_message_text(selected_message))
+        if content is not None and self._owns_session_surface(result.session.session_id):
+            self._edit_draft(content)
 
     def _restore_projection_activity(
         self,

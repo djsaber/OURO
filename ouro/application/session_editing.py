@@ -3,6 +3,7 @@ from __future__ import annotations
 from ouro.application.queued_inputs import QueuedInputQueue
 from ouro.application.session_models import SessionUndoResult
 from ouro.application.session_recovery import SessionRecoveryService
+from ouro.core.attachment_input import is_editable_user_input
 from ouro.core.base import new_id
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
@@ -183,13 +184,8 @@ def undo_user_input(
 
 
 def _direct_user_message(message: MessageRecord) -> bool:
-    return message.role == "user" and (
-        (not message.scaffold and message.metadata.get("session_input_source") == "user")
-        or (
-            message.semantic_tag == "attachments"
-            and bool(message.input_attachments)
-            and message.metadata.get("session_input_batch_size") == 1
-        )
+    return is_editable_user_input(message) and (
+        message.scaffold or message.metadata.get("session_input_source") == "user"
     )
 
 

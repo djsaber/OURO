@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ouro.application.session_models import ReplayFrame
+from ouro.core.attachment_input import is_editable_user_input
 from ouro.core.base import new_id
 from ouro.core.compaction import (
     CompactionRecord,
@@ -11,8 +12,40 @@ from ouro.core.context import estimate_message_tokens
 from ouro.core.errors import CompactionStateError, SessionBranchError
 from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessState, HarnessVersion
+from ouro.core.input_content import InputAttachment
 from ouro.core.messages import MessageRecord
 from ouro.core.session_controls import SessionControlState
+
+
+def branch_input_boundary(
+    messages: list[MessageRecord], message_id: str | None
+) -> tuple[str | None, tuple[str, ...]]:
+    """Exclude the complete editable input while retaining its draft's uploaded resources."""
+    index = next(
+        (index for index, message in enumerate(messages) if message.message_id == message_id),
+        None,
+    )
+    if index is None or not is_editable_user_input(messages[index]):
+        raise SessionBranchError(f"user message is not a fork point: {message_id}")
+    selected = messages[index]
+    resource_refs = tuple(
+        dict.fromkeys(
+            [
+                item.resource_id
+                for item in selected.input_attachments
+                if isinstance(item, InputAttachment)
+            ]
+            + selected.resource_refs
+        )
+    )
+    batch_id = selected.metadata.get("session_input_batch_id")
+    while (
+        index > 0
+        and batch_id is not None
+        and messages[index - 1].metadata.get("session_input_batch_id") == batch_id
+    ):
+        index -= 1
+    return messages[index - 1].message_id if index else None, resource_refs
 
 
 def select_branch_messages(

@@ -91,6 +91,7 @@ from ouro.core.approvals import (
     SessionApprovalMode,
     ToolPermissionControl,
 )
+from ouro.core.attachment_input import is_editable_user_input
 from ouro.core.base import Metadata
 from ouro.core.billing import UsageFilter
 from ouro.core.compaction import CompactionCommandResult, CompactionRecord
@@ -1092,7 +1093,7 @@ class TuiController:
             lambda: tuple(
                 message
                 for message in self._session_messages(session_id)
-                if message.role == "user" and not message.scaffold
+                if is_editable_user_input(message)
             )
         )
 
@@ -1101,39 +1102,15 @@ class TuiController:
         if message_id is None:
             return await asyncio.to_thread(self._branch_current_session, session_id)
         return await asyncio.to_thread(
-            self._branch_at_user_message,
+            self._runtime().sessions.branch,
             session_id,
             message_id,
+            before_input=True,
         )
 
     def _branch_current_session(self, session_id: str) -> SessionBranchResult:
         session = self._runtime().store.load_session_record(session_id)
         return self._runtime().sessions.branch(session_id, session.last_message_id)
-
-    def _branch_at_user_message(
-        self,
-        session_id: str,
-        message_id: str,
-    ) -> SessionBranchResult:
-        messages = self._session_messages(session_id)
-        selected_index = next(
-            (
-                index
-                for index, message in enumerate(messages)
-                if (
-                    message.message_id == message_id
-                    and message.role == "user"
-                    and not message.scaffold
-                )
-            ),
-            None,
-        )
-        if selected_index is None:
-            raise ValueError(f"user message is not a fork point in this session: {message_id}")
-        boundary_message_id = (
-            messages[selected_index - 1].message_id if selected_index > 0 else None
-        )
-        return self._runtime().sessions.branch(session_id, boundary_message_id)
 
     async def queued_user_inputs(
         self,

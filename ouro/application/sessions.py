@@ -11,6 +11,7 @@ from ouro.application.runs import abort_run_state, find_run
 from ouro.application.session_editing import undo_user_input
 from ouro.application.session_history import (
     apply_extension_branch_policies,
+    branch_input_boundary,
     copy_branch_compactions,
     copy_branch_messages,
     project_replay_frames,
@@ -748,8 +749,10 @@ class SessionService:
         self,
         source_session_id: str,
         message_id: str | None,
+        *,
+        before_input: bool = False,
     ) -> SessionBranchResult:
-        """Fork through any canonical message, or from an empty history boundary."""
+        """Fork through a message, or before its complete input while copying draft uploads."""
 
         self._load_session_record(source_session_id)
         lock = self._store.acquire_session_lock(source_session_id, new_id("branch"))
@@ -762,6 +765,7 @@ class SessionService:
                 return self._branch_locked(
                     source_session_id,
                     message_id,
+                    before_input=before_input,
                 )
         finally:
             lock.release()
@@ -770,6 +774,8 @@ class SessionService:
         self,
         source_session_id: str,
         message_id: str | None,
+        *,
+        before_input: bool,
     ) -> SessionBranchResult:
         source = self._load_session_record(source_session_id)
         messages = self._load_messages(source_session_id)
@@ -786,6 +792,9 @@ class SessionService:
             raise SessionBusyError(
                 f"cannot branch Session while it has an active Run: {source_session_id}"
             )
+        resource_refs: tuple[str, ...] = ()
+        if before_input:
+            message_id, resource_refs = branch_input_boundary(messages, message_id)
         selected_messages, source_message = select_branch_messages(messages, message_id)
         head_version = (
             source.harness_version
@@ -833,9 +842,12 @@ class SessionService:
         )
         resource_ids = list(
             dict.fromkeys(
-                resource_id
-                for message in selected_messages
-                for resource_id in message.resource_refs
+                [
+                    resource_id
+                    for message in selected_messages
+                    for resource_id in message.resource_refs
+                ]
+                + list(resource_refs)
             )
         )
         if resource_ids and self._resources is None:
@@ -847,6 +859,15 @@ class SessionService:
             branch.session_id,
             selected_messages,
         )
+        resource_references = (
+            self._resources.branch_references(source_session_id, resource_ids)
+            if self._resources is not None
+            else []
+        )
+        if self._resources is not None:
+            copied_messages = self._resources.rebind_input_paths(
+                copied_messages, resource_references
+            )
         for message in copied_messages:
             if message.before_harness_version is not None:
                 message.before_harness_version = version_ids_map[message.before_harness_version]
@@ -879,14 +900,6 @@ class SessionService:
                     copied_compactions[-1].compaction_id if copied_compactions else None
                 ),
             }
-        )
-        resource_references = (
-            self._resources.branch_references(
-                source_session_id,
-                resource_ids,
-            )
-            if self._resources is not None
-            else []
         )
         self._store.create_session_snapshot(
             branch,

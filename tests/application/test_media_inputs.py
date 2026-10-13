@@ -168,7 +168,19 @@ async def test_media_observation_survives_source_removal_model_switch_and_reopen
         assert encoded in str(replay.requests[-1])
         branch = reopened.runtime.sessions.branch(session.session_id, observed.message_id)
         branched = reopened.runtime.store.load_runtime_session(branch.session.session_id)
-        assert branched.messages[0].content == observed.content
+        if source_kind == "upload":
+            # Observed media and metadata stay frozen; only the generated path table moves.
+            assert branched.messages[0].content[:-1] == observed.content[:-1]
+            branch_path = reopened.runtime.resources.resource_path(
+                branch.session.session_id, resource.resource_id
+            )
+            source_path = reopened.runtime.resources.resource_path(
+                session.session_id, resource.resource_id
+            )
+            assert branch_path.as_posix() in branched.messages[0].text_content
+            assert source_path.as_posix() not in branched.messages[0].text_content
+        else:
+            assert branched.messages[0].content == observed.content
     finally:
         await reopened.close()
 

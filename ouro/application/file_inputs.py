@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -42,6 +42,33 @@ def _media_budget_message(kind: MediaModality) -> str:
 
 
 Blocks = list[TextContent | MediaContent]
+
+
+def with_attachment_read_paths(message: MessageRecord, paths: Iterable[Path]) -> MessageRecord:
+    """Replace only the generated trailing path table, preserving observed file content."""
+    paths = tuple(paths)
+    if not paths:
+        return message
+    prefix = "\n\nSession attachment read paths:\n"
+    content = list(message.content)
+    if (
+        message.semantic_tag == "attachments"
+        and content
+        and isinstance(content[-1], TextContent)
+        and content[-1].text.startswith(prefix)
+    ):
+        content.pop()
+    content.append(
+        TextContent(
+            text=prefix
+            + "\n".join(
+                f"{json.dumps(path.name, ensure_ascii=False)}: "
+                f"{json.dumps(path.as_posix(), ensure_ascii=False)}"
+                for path in paths
+            )
+        )
+    )
+    return message.model_copy(update={"content": content})
 
 
 def _input_media_omission(
@@ -92,7 +119,7 @@ class _Source:
 
     def header(self) -> str:
         # Uploaded bytes are stable, but their Session address changes on copy/import.
-        # Resolve that address at request construction; original references keep their path.
+        # Keep addresses in a separate, rebindable table; original references keep their path.
         label = "Session attachment" if self.kind == "upload" else "Original file reference"
         path = (
             f"Read path: {json.dumps(self.path.as_posix(), ensure_ascii=False)}\n"
@@ -183,7 +210,13 @@ class FileInputProjector:
             content.extend(blocks)
             content_left -= used
             media_left -= media_used
-        return message.model_copy(update={"content": content})
+        return with_attachment_read_paths(
+            message.model_copy(update={"content": content}),
+            (
+                self._upload_source(message.session_id, identity).path
+                for identity in dict.fromkeys(message.resource_refs)
+            ),
+        )
 
     def _upload_source(self, session_id: str, resource_id: str, name: str | None = None) -> _Source:
         record = self.record(session_id, resource_id)
@@ -289,18 +322,15 @@ class FileInputProjector:
                     content_left -= used
                     media_left -= media_used
                     seen.add(key)
-            if message.resource_refs:
-                paths = []
-                for identity in dict.fromkeys(message.resource_refs):
-                    source = self._upload_source(message.session_id, identity)
-                    paths.append(
-                        f"{json.dumps(source.path.name, ensure_ascii=False)}: "
-                        f"{json.dumps(source.path.as_posix(), ensure_ascii=False)}"
-                    )
-                content.append(
-                    TextContent(text="\n\nSession attachment read paths:\n" + "\n".join(paths))
+            projected.append(
+                with_attachment_read_paths(
+                    message.model_copy(update={"content": content}),
+                    (
+                        self._upload_source(message.session_id, identity).path
+                        for identity in dict.fromkeys(message.resource_refs)
+                    ),
                 )
-            projected.append(message.model_copy(update={"content": content}))
+            )
         return list(reversed(projected))
 
     @staticmethod

@@ -156,6 +156,8 @@ async def test_runtime_persists_typed_user_activation_and_exposes_it_to_prompt_p
     assert user_message.text_content == "Review this change"
     assert isinstance(user_message.content[0], SkillActivationContent)
     assert user_message.skill_activations[0].name == "reviewer"
+    assert user_message.skill_activations[0].location == str(root / "SKILL.md")
+    assert user_message.skill_activations[0].base_directory == str(root)
     assert policy_calls[0].skill_activation is not None
     assert policy_calls[0].skill_activation.name == "reviewer"
     assert policy_calls[0].skill_activation.content_digest == (

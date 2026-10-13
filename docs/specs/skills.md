@@ -75,6 +75,9 @@
 存在文件时全部文件共用一条完整附件骨架，不为每个技能或文件创建骨架，也不逐项启动 Run。
 排队保存同一输入及全部冻结指令，后续技能文件变化不改变已接受内容。
 
+激活块保存 `SKILL.md` 的完整绝对路径与技能基目录，并将二者提供给模型；完整分支保留已冻结的激活块。
+按消息 fork 和 `/undo` 恢复结构化技能元素，与附件一同重新提交时按当前可用目录重新激活，不把 `@名称` 显示文字当作技能身份。
+
 ## Observer 与 Prompt Policy
 
 当前 Observer 包含 `runtime_event`、`context_prepared`、`tool_call_requested`、`tool_call_finished` 和

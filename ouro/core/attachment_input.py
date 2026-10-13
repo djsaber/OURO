@@ -3,8 +3,34 @@
 from __future__ import annotations
 
 from ouro.core.base import new_id
-from ouro.core.input_content import InputFile
-from ouro.core.messages import MessageRecord, TextContent
+from ouro.core.input_content import InputContent, InputFile, InputSkillReference
+from ouro.core.messages import MessageRecord, ModelMessage, SkillActivationContent, TextContent
+
+
+def is_editable_user_input(message: MessageRecord) -> bool:
+    return message.role == "user" and (
+        not message.scaffold
+        or (
+            message.semantic_tag == "attachments"
+            and bool(message.input_attachments)
+            and message.metadata.get("session_input_batch_size") == 1
+        )
+    )
+
+
+def editable_input_content(
+    message: MessageRecord | ModelMessage, attachments: tuple[InputFile, ...]
+) -> InputContent:
+    """Restore editor elements without turning display labels or scaffolds into user text."""
+    return InputContent(
+        text="" if message.semantic_tag == "attachments" else message.text_content,
+        attachments=attachments,
+        skills=tuple(
+            InputSkillReference(name=block.name, text_offset=block.text_offset, order=block.order)
+            for block in message.content
+            if isinstance(block, SkillActivationContent)
+        ),
+    )
 
 
 def separate_attachments(
