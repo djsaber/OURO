@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import copy
 import json
-from collections.abc import Callable
+import math
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -23,6 +22,7 @@ from ouro.core.session_commits import SessionCommitResult
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tasks import TaskExecution, TaskRecord
 from ouro_upgrade.errors import UpgradeError
+from ouro_upgrade.steps import UpgradeStep, migrate
 
 MODELS: dict[str, type[BaseModel]] = {
     "session": SessionRecord,
@@ -40,21 +40,6 @@ MODELS: dict[str, type[BaseModel]] = {
     "usage": ProviderUsageEntry,
     "usage_event": UsageLedgerEvent,
 }
-VERSIONS = {
-    "session": (2,),
-    "run": (2, 5),
-    "message": (3, 4),
-    "event": (2,),
-    "compaction": (1,),
-    "harness": (1,),
-    "delegation": (1,),
-    "resource": (2,),
-    "commit": (1,),
-    "task": (1, 3),
-    "execution": (1, 3),
-    "usage": (1, 2),
-    "usage_event": (1, 2),
-}
 
 
 def loads(text: str) -> dict[str, Any]:
@@ -67,7 +52,12 @@ def loads(text: str) -> dict[str, Any]:
         return result
 
     try:
-        value = json.loads(text, object_pairs_hook=pairs, parse_constant=_invalid_constant)
+        value = json.loads(
+            text,
+            object_pairs_hook=pairs,
+            parse_constant=_invalid_constant,
+            parse_float=_finite_float,
+        )
     except (ValueError, RecursionError) as exc:
         raise UpgradeError("invalid JSON object") from exc
     if not isinstance(value, dict):
@@ -77,6 +67,13 @@ def loads(text: str) -> dict[str, Any]:
 
 def _invalid_constant(_: str) -> None:
     raise UpgradeError("non-finite JSON number")
+
+
+def _finite_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise UpgradeError("non-finite JSON number")
+    return value
 
 
 def dumps(value: object) -> str:
@@ -141,66 +138,103 @@ def _producer(value: dict[str, Any]) -> None:
 
 
 def _context_v3_to_v4(value: dict[str, Any]) -> None:
+    if type(value["supports_vision"]) is not bool:
+        raise UpgradeError("invalid historical context vision capability")
     _add(value, "supports_image_input", value.pop("supports_vision"))
     _add(value, "supports_audio_input", False)
     _add(value, "supports_video_input", False)
 
 
-# Each step converts its source version to the next; the model defines the target.
-VERSION_STEPS: dict[str, dict[int, Callable[[dict[str, Any]], None]]] = {
-    "context": {3: _context_v3_to_v4},
+def _run_v2_to_v5(value: dict[str, Any]) -> None:
+    _add(
+        value,
+        "driver",
+        {
+            "driver_id": "ouro.default",
+            "contract_hash": "ouro.default/1",
+            "implementation": None,
+            "dependencies": [],
+        },
+    )
+    _add(value, "driver_checkpoint", None)
+    batch = value.get("active_tool_batch")
+    if batch is not None:
+        _producer(batch)
+        for call in batch["calls"]:
+            if call.get("invocation") is not None:
+                _producer(call["invocation"])
+
+
+def _message_v3_to_v4(value: dict[str, Any]) -> None:
+    if value.get("tool_result") is not None:
+        _producer(value["tool_result"])
+
+
+def _task_v1_to_v3(value: dict[str, Any]) -> None:
+    record = value["task"]
+    _add(record, "owner_id", None)
+    config = record["configuration"]
+    target = {
+        key: config.pop(key)
+        for key in ("workspace", "approval_mode", "model", "reasoning", "session_mode")
+    }
+    target.update(kind="agent", prompt=config.pop("description"))
+    _add(config, "target", target)
+
+
+def _execution_v1_to_v3(value: dict[str, Any]) -> None:
+    record = value["execution"]
+    _add(record, "owner_id", None)
+    _add(
+        record,
+        "target",
+        {
+            "kind": "agent",
+            "session_id": record.pop("session_id"),
+            "run_id": record.pop("run_id"),
+        },
+    )
+    _add(record, "result", None)
+    _add(record, "cancel_requested", False)
+
+
+def _usage_v1_to_v2(value: dict[str, Any]) -> None:
+    _add(value, "plugin_id", None)
+
+
+def _usage_event_v1_to_v2(value: dict[str, Any]) -> None:
+    """The envelope is unchanged; its entry has an independent schema conversion."""
+
+
+VERSION_STEPS: dict[str, dict[int, UpgradeStep]] = {
+    "context": {3: UpgradeStep(4, _context_v3_to_v4)},
+    "run": {2: UpgradeStep(5, _run_v2_to_v5)},
+    "message": {3: UpgradeStep(4, _message_v3_to_v4)},
+    "task": {1: UpgradeStep(3, _task_v1_to_v3)},
+    "execution": {1: UpgradeStep(3, _execution_v1_to_v3)},
+    "usage": {1: UpgradeStep(2, _usage_v1_to_v2)},
+    "usage_event": {1: UpgradeStep(2, _usage_event_v1_to_v2)},
 }
 
 
 def convert(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
-    version = raw.get("schema_version")
-    steps = VERSION_STEPS.get(kind)
-    target = MODELS[kind].model_fields["schema_version"].default
-    versions = (*steps, target) if steps is not None else VERSIONS[kind]
-    if type(version) is not int or version not in versions:
-        raise UpgradeError(f"unsupported {kind} version; expected {versions}")
-    value = copy.deepcopy(raw)
+    model = MODELS[kind]
     try:
-        if steps is not None:
-            while version < target:
-                step = steps.get(version)
-                if step is None:
-                    raise UpgradeError(f"missing {kind} upgrade step from version {version}")
-                step(value)
-                version += 1
-                value["schema_version"] = version
-        _convert(kind, value, version)
-        validate(MODELS[kind], value)
+        value = migrate(
+            kind,
+            raw,
+            target=model.model_fields["schema_version"].default,
+            steps=VERSION_STEPS.get(kind, {}),
+        )
+        _convert_nested(kind, value)
+        validate(model, value)
     except (KeyError, TypeError, AttributeError) as exc:
         raise UpgradeError(f"incomplete historical {kind} structure") from exc
     return value
 
 
-def _convert(kind: str, value: dict[str, Any], version: int) -> None:
-    if kind == "run" and version == 2:
-        _add(
-            value,
-            "driver",
-            {
-                "driver_id": "ouro.default",
-                "contract_hash": "ouro.default/1",
-                "implementation": None,
-                "dependencies": [],
-            },
-        )
-        _add(value, "driver_checkpoint", None)
-        batch = value.get("active_tool_batch")
-        if batch is not None:
-            _producer(batch)
-            for call in batch["calls"]:
-                if call.get("invocation") is not None:
-                    _producer(call["invocation"])
-        value["schema_version"] = 5
-    elif kind == "message" and version == 3:
-        if value.get("tool_result") is not None:
-            _producer(value["tool_result"])
-        value["schema_version"] = 4
-    elif kind == "context":
+def _convert_nested(kind: str, value: dict[str, Any]) -> None:
+    if kind == "context":
         value["source_messages"] = [convert("message", item) for item in value["source_messages"]]
         for message in value["injected_messages"]:
             result = message.get("tool_result")
@@ -214,37 +248,9 @@ def _convert(kind: str, value: dict[str, Any], version: int) -> None:
             for key in ("first_removed", "last_retained"):
                 if value["truncation"].get(key) is not None:
                     value["truncation"][key] = convert("message", value["truncation"][key])
-    elif kind in {"task", "execution"} and version == 1:
-        record = value[kind]
-        _add(record, "owner_id", None)
-        if kind == "task":
-            config = record["configuration"]
-            target = {
-                key: config.pop(key)
-                for key in ("workspace", "approval_mode", "model", "reasoning", "session_mode")
-            }
-            target.update(kind="agent", prompt=config.pop("description"))
-            _add(config, "target", target)
-        else:
-            _add(
-                record,
-                "target",
-                {
-                    "kind": "agent",
-                    "session_id": record.pop("session_id"),
-                    "run_id": record.pop("run_id"),
-                },
-            )
-            _add(record, "result", None)
-            _add(record, "cancel_requested", False)
-        value["schema_version"] = 3
-    elif kind == "usage" and version == 1:
-        _add(value, "plugin_id", None)
-        value["schema_version"] = 2
     elif kind == "usage_event":
         if value.get("entry") is not None:
             value["entry"] = convert("usage", value["entry"])
-        value["schema_version"] = 2
 
 
 def convert_task(kind: str, raw: dict[str, Any], version: int) -> dict[str, Any]:

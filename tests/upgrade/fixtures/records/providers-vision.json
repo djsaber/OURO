@@ -1,0 +1,75 @@
+{
+  "providers": {
+    "default": "provider_fixture",
+    "items": {
+      "provider_fixture": {
+        "provider_type": "openai",
+        "protocol": "openai-responses",
+        "display_name": "Fixture provider",
+        "enabled": true,
+        "timeout_seconds": 60.0,
+        "default_endpoint": "image",
+        "endpoints": {
+          "image": {
+            "model_id": "fixture-image",
+            "context_window": 1000000,
+            "max_output_tokens": 32768,
+            "supports_tools": true,
+            "supports_vision": true,
+            "supports_streaming": true,
+            "supports_structured_output": true,
+            "reasoning": {
+              "capability": {
+                "activation": "unsupported",
+                "supported_efforts": [],
+                "default": {
+                  "mode": "default"
+                },
+                "output": "none",
+                "continuation": "none"
+              }
+            },
+            "metadata": {
+              "supports_vision": "opaque"
+            }
+          },
+          "text": {
+            "model_id": "fixture-text",
+            "context_window": 1000000,
+            "max_output_tokens": 32768,
+            "supports_tools": true,
+            "supports_vision": false,
+            "supports_streaming": true,
+            "supports_structured_output": true,
+            "reasoning": {
+              "capability": {
+                "activation": "unsupported",
+                "supported_efforts": [],
+                "default": {
+                  "mode": "default"
+                },
+                "output": "none",
+                "continuation": "none"
+              }
+            }
+          }
+        },
+        "credential_ref": {
+          "type": "inline",
+          "value": "fixture-not-a-real-secret"
+        },
+        "base_url": "https://example.invalid/v1",
+        "headers": {
+          "x-fixture": {
+            "source": "literal",
+            "value": "opaque"
+          }
+        },
+        "provider_options": {
+          "schema_version": 999,
+          "supports_vision": "opaque"
+        }
+      }
+    }
+  }
+}

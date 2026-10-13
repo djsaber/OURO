@@ -12,6 +12,19 @@ metadata. Tests install this record in both file and SQLite homes, exercise
 both vision flag values, and verify snapshot preservation and nested message
 conversion. No user data is included.
 
+`records/providers-vision.json` is serialized by `provider_config_to_raw` at
+`aa94cc5`. It contains image-enabled and text-only endpoints, a fake inline
+credential, a header declaration and opaque options/metadata. Tests cover
+offline conversion, preservation, backup restoration and TUI recovery without
+contacting a provider or resolving credentials.
+
+Each supported source schema needs synthetic writer output and conversion tests.
+Record steps declare source and target schemas independently of package versions;
+unregistered intermediate schemas are not inferred. Future-schema and structural
+composition tests use synthetic models and fields confined to tests. They verify
+that extending the registered steps retains existing conversion paths, rejects
+gaps or invalid transitions, and preserves source inputs and opaque content.
+
 `files/` contains layout 9, Session 2, Run 2, Message 3, ContextSnapshot 4,
 SessionCommitResult 1, HarnessVersion 1, file tasks 1 and usage SQLite 1.
 `sqlite/` contains session schema 7, task schema 1 and usage schema 1 as SQL dumps;

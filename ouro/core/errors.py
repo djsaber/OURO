@@ -27,6 +27,10 @@ class UnsupportedDataVersionError(PersistenceError):
     """Persisted data uses a format this build does not support."""
 
 
+class UnsupportedConfigVersionError(ConfigError, UnsupportedDataVersionError):
+    """Persisted configuration uses a recognized historical format."""
+
+
 class SessionBusyError(OuroError):
     """A session cannot accept the requested operation while another run owns it."""
 

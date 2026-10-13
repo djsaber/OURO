@@ -12,7 +12,7 @@
 认证刷新或任务调度；不修复损坏、不推测执行结果、不保证旧 Run 能恢复执行，也不处理插件私有数据升级。
 正常 OURO reader 继续只接受当前格式，历史转换集中在独立的 `ouro_upgrade` 包。
 
-升级成功表示所选后端的受支持核心数据已完成转换和验证。回收站、维护备份、未选后端、配置、凭据、
+升级成功表示所选后端的受支持核心数据及提供方配置已完成转换和验证。回收站、维护备份、未选后端、其他配置、凭据、
 插件包及插件私有文件保留原样，并在结果的 `preserved_outside_scope` 中列出；它们不属于升级可用性保证。
 尤其不能直接将旧回收站内容恢复到在线数据中并假定它已升级。归档但仍保存在在线 Session 存储中的会话
 按普通 Session 处理。
@@ -34,6 +34,7 @@
 | SessionCommitResult | 1 | 转换 messages、Session、Event 及 truncation 中的 Message |
 | 文件任务 / SQLite 任务 | 1、3 | 目标 3；迁移 agent target、owner、result 与 cancel 字段，保留历史链与防重标记 |
 | 用量 SQLite / 用量记录 / 审计 | 1、2 | 目标 2；增加 plugin 归属，保留原 Run 归属，更新表结构及审计内嵌记录 |
+| `config/providers.json` | providers.items 下的具名端点配置；旧 supports_vision 或当前能力字段 | 旧字段改为 supports_image_input，音频、视频输入能力设为 false；使用当前配置 codec 校验 |
 
 Run 2 的工具批次和 invocation 同样补 model producer。任务的 description 成为 agent target 的 prompt，
 workspace、model、reasoning、approval_mode、session_mode 移入该 target；execution 的 Session / Run
@@ -46,10 +47,19 @@ workspace、model、reasoning、approval_mode、session_mode 移入该 target；
 选定后端中的未知原生字段、缺失的必要事实、重复 JSON 键、非有限数字和不可解析数据均在业务写回前拒绝。
 不通过当前模型的默认值补造 ID、时间、revision 或执行状态。
 
-ContextSnapshot 按源版本登记到下一版本的转换步骤，依次执行到当前模型的 schema_version，
-再转换嵌套消息并验证目标结构。增加版本时需提供相邻版本转换和对应夹具；缺少任一步骤即拒绝升级。
-步骤只修改明确列出的字段，保留快照内容、身份、时间、metrics、metadata 与原 context_digest。
-文件和 SQLite 后端共用此转换，不在存储层或 TUI 中实现版本兼容。
+版本化记录按记录类型和源版本登记唯一转换步骤，每步声明目标版本，最终目标从当前模型的 schema_version 读取。
+执行器只沿已登记的前向步骤推进；支持 Run 2→5、任务 1→3 等明确验证的跨版本转换，不因此接受中间版本。
+缺失步骤、停留原版本、版本倒退或越过当前模型版本均拒绝。增加格式版本时保留已有步骤，追加转换与合成历史夹具。
+外层记录完成升级后，已知嵌套记录按自己的版本独立转换，再验证完整目标结构；外层版本已是当前版本也不能跳过嵌套转换。
+转换始终作用于输入副本，只修改规则指定字段。ContextSnapshot 保留快照内容、身份、时间、metrics、metadata 与原 context_digest。
+文件和 SQLite 后端共用记录转换，不在存储层或 TUI 中实现记录版本兼容。
+
+提供方配置没有 schema_version，使用有序的结构转换步骤，每步仅处理明确识别的端点字段结构，全部步骤完成后由当前 codec 校验。
+不推测应用版本，不为无版本数据编造持久化版本号；无法识别的结构由校验拒绝。旧能力字段必须为布尔值；同一端点混用新旧能力字段、
+未知根、提供方或端点字段及无效默认提供方引用均拒绝。转换保留提供方与端点身份、默认选择、连接设置、凭据引用、headers、
+模板绑定及开放 metadata，不解析或刷新凭据，不递归修改开放内容中的同名字段。
+配置与核心数据使用同一暂存、备份和恢复事务；当前格式不改写。其他配置文件，包括 provider-templates.json，
+仍在升级范围外，模板目录沿用自身的读取与回退策略。
 
 ## 转换不变量
 
@@ -110,6 +120,8 @@ journal 与主库作为同一个修改集合备份和恢复。自定义 trigger 
 | `ouro_upgrade/cli.py` | 参数与结果输出；`--check` / `--restore` 互斥 |
 | `engine.py` | 编排所选后端、报告、有限支持边界 |
 | `records.py` | 无 I/O 的显式历史记录转换、目标模型验证 |
+| `steps.py` | 记录版本的前向迁移执行；检查明确目标、缺失步骤和非法推进 |
+| `configuration.py` | 提供方配置的明确历史字段转换、当前 codec 校验与暂存 |
 | `files.py` | 文件记录、JSONL、引用检查和派生索引 |
 | `databases.py` | 私有 SQLite 副本的 schema / payload 转换 |
 | `workspace.py` | 工具锁、路径检查、暂存、备份、写回、未完成升级恢复 |
@@ -129,7 +141,9 @@ journal 与主库作为同一个修改集合备份和恢复。自定义 trigger 
 正常 reader 用 `UnsupportedDataVersionError` 区分版本不符与一般持久化失败。TUI 的启动和显式恢复会话过程中，
 数据版本错误会结束当前 Host，待服务关闭、共享访问锁释放后，进入不创建 Runtime 的恢复 App。
 恢复 App 在后台线程调用同一升级引擎，成功后启动新的 Host 并返回主页，保留原 home 和后端选择。
-一次启动最多自动尝试一次升级；再次失败只显示恢复选项。普通配置错误不触发升级，正常启动不扫描全量历史数据。
+一次启动最多自动尝试一次升级；再次失败只显示恢复选项。读取器将已识别的旧提供方能力结构标记为
+UnsupportedConfigVersionError，同时属于配置错误和数据版本错误，因此可进入相同升级流程。
+普通配置错误不触发升级，正常启动不扫描全量历史数据。
 
 恢复界面复用 `ChoiceScreen`、`ConfirmationScreen` 和共享菜单样式，采用同主题背景上的居中无边框布局，
 不叠加遮罩。工作线程仅更新最新进度，UI 每 100 ms 合并读取，避免大量文件导致消息队列积压；

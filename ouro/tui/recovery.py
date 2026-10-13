@@ -36,6 +36,7 @@ from ouro_upgrade.reset import reset_home
 type RecoveryResult = Literal["upgraded", "initialized"]
 
 _PHASE_LABELS: dict[UpgradePhase, str] = {
+    "configuration": "Checking and upgrading provider configuration",
     "sessions": "Checking and upgrading sessions",
     "tasks": "Checking and upgrading tasks",
     "usage": "Checking and upgrading usage records",

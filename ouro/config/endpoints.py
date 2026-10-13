@@ -7,6 +7,7 @@ from pydantic import Field, field_validator, model_validator
 
 from ouro.config.reasoning import EndpointReasoningConfig
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id
+from ouro.core.errors import UnsupportedConfigVersionError
 
 _SENSITIVE_PUBLIC_KEYS = frozenset(
     {
@@ -109,6 +110,10 @@ def endpoint_config_from_mapping(
     raw: Mapping[str, Any],
 ) -> ProviderEndpointConfig:
     unsupported = sorted(set(raw) - _ENDPOINT_FIELDS)
+    if unsupported == ["supports_vision"]:
+        raise UnsupportedConfigVersionError(
+            "unsupported endpoint capability format: supports_vision; run ouro-upgrade"
+        )
     if unsupported:
         raise ValueError(f"unsupported endpoint config fields: {', '.join(unsupported)}")
     model_id = _optional_str(raw.get("model_id"))

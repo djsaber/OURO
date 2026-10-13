@@ -15,6 +15,7 @@ from ouro_upgrade import records
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError
 from ouro_upgrade.records import convert, loads
+from ouro_upgrade.steps import UpgradeStep
 from tests.upgrade.conftest import FIXTURES
 from tests.upgrade.test_upgrade import hashes
 
@@ -74,6 +75,7 @@ def test_current_context_keeps_audio_and_video_capabilities() -> None:
     [
         "missing_vision",
         "invalid_vision",
+        "invalid_vision_string",
         "supports_image_input",
         "supports_audio_input",
         "supports_video_input",
@@ -87,6 +89,8 @@ def test_context_upgrade_rejects_incomplete_or_ambiguous_records(context_v3: dic
         del context_v3["supports_vision"]
     elif damage == "invalid_vision":
         context_v3["supports_vision"] = None
+    elif damage == "invalid_vision_string":
+        context_v3["supports_vision"] = "false"
     elif damage in {"past_version", "future_version"}:
         context_v3["schema_version"] = 2 if damage == "past_version" else 5
     else:
@@ -109,7 +113,7 @@ def test_context_upgrade_runs_each_step_to_the_model_version(context_v3: dict, m
         value["future_capability"] = False
 
     monkeypatch.setitem(records.MODELS, "context", FutureContext)
-    monkeypatch.setitem(records.VERSION_STEPS["context"], 4, from_v4)
+    monkeypatch.setitem(records.VERSION_STEPS["context"], 4, UpgradeStep(5, from_v4))
     result = convert("context", context_v3)
     assert result["schema_version"] == 5
     assert result["future_capability"] is False

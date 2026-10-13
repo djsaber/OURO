@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 UpgradePhase = Literal[
+    "configuration",
     "sessions",
     "tasks",
     "usage",

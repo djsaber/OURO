@@ -185,7 +185,9 @@ def test_mixed_journal_keeps_current_prefix_bytes(historical_home: Path) -> None
     assert path.read_bytes().startswith(prefix.encode("utf-8"))
 
 
-@pytest.mark.parametrize("text", ['{"a":1,"a":2}', '{"a":NaN}', "[]"])
+@pytest.mark.parametrize(
+    "text", ['{"a":1,"a":2}', '{"a":NaN}', '{"metadata":{"value":1e999}}', "[]"]
+)
 def test_ambiguous_json_is_rejected(text: str) -> None:
     with pytest.raises(UpgradeError):
         loads(text)
