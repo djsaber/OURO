@@ -278,4 +278,12 @@ def responses_usage(raw: object) -> Usage | None:
     cached = details.get("cached_tokens", 0)
     if type(cached) is not int or not 0 <= cached <= input_tokens:
         raise OpenAIResponsesError("invalid_usage")
-    return Usage(input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cached)
+    written = details.get("cache_write_tokens", 0)
+    if type(written) is not int or not 0 <= written <= input_tokens:
+        raise OpenAIResponsesError("invalid_usage")
+    return Usage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cached,
+        cache_write_tokens=written,
+    )

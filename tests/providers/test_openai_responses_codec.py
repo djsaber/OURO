@@ -301,16 +301,23 @@ def test_tools_keep_optional_parameters_without_forcing_strict_schema():
     assert tools == before
 
 
-def test_usage_counts_cached_and_reasoning_as_subsets_and_leaves_cost_unknown():
+@pytest.mark.parametrize(
+    "write_details,expected_write",
+    [({}, 0), ({"cache_write_tokens": 0}, 0), ({"cache_write_tokens": 7}, 7)],
+)
+def test_usage_counts_cached_and_reasoning_as_subsets_and_leaves_cost_unknown(
+    write_details, expected_write
+):
     usage = responses_usage(
         {
             "input_tokens": 20,
             "output_tokens": 10,
-            "input_tokens_details": {"cached_tokens": 5},
+            "input_tokens_details": {"cached_tokens": 5, **write_details},
             "output_tokens_details": {"reasoning_tokens": 4},
         }
     )
     assert usage.input_tokens == 20 and usage.output_tokens == 10 and usage.cache_read_tokens == 5
+    assert usage.cache_write_tokens == expected_write
     assert usage.estimated_cost is None and responses_usage(None) is None
 
 
@@ -326,3 +333,15 @@ def test_usage_counts_cached_and_reasoning_as_subsets_and_leaves_cost_unknown():
 def test_invalid_usage_does_not_become_an_invented_zero(usage):
     with pytest.raises(OpenAIResponsesError, match="invalid_usage"):
         responses_usage(usage)
+
+
+@pytest.mark.parametrize("written", [-1, True, "7", 1.5, None, 21])
+def test_invalid_cache_write_usage_is_rejected(written):
+    with pytest.raises(OpenAIResponsesError, match="invalid_usage"):
+        responses_usage(
+            {
+                "input_tokens": 20,
+                "output_tokens": 10,
+                "input_tokens_details": {"cache_write_tokens": written},
+            }
+        )
