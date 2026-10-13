@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from functools import partial
 from pathlib import Path
 from threading import Lock
-from typing import Literal
+from typing import Any, Literal, cast
 
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -31,9 +30,9 @@ from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES, TuiTheme, theme_for
 from ouro_upgrade.engine import pending_operation, upgrade
 from ouro_upgrade.errors import UpgradeError
 from ouro_upgrade.progress import UpgradePhase, UpgradeProgress
-from ouro_upgrade.reset import reset_home
+from ouro_upgrade.units import UpgradeFailure, UpgradeUnit
 
-type RecoveryResult = Literal["upgraded", "initialized"]
+type RecoveryResult = Literal["upgraded"]
 
 _PHASE_LABELS: dict[UpgradePhase, str] = {
     "configuration": "Checking and upgrading provider configuration",
@@ -46,7 +45,6 @@ _PHASE_LABELS: dict[UpgradePhase, str] = {
     "publish": "Writing upgraded files",
     "verify": "Verifying data",
     "restore": "Restoring original files",
-    "reset": "Clearing user data",
     "complete": "Complete",
 }
 
@@ -105,16 +103,29 @@ class _RecoveryScreen(ChoiceScreen):
         self.query_one("#choice-list", OptionList).focus()
 
 
-class _InitializationScreen(ConfirmationScreen):
-    """Keep the full destructive scope visible, including long home paths."""
+def _unit_label(unit: UpgradeUnit) -> str:
+    labels = {
+        "session": "Session",
+        "task": "Task",
+        "configuration": "Provider configuration",
+        "session_store": "Session store",
+        "task_store": "Task store",
+        "usage": "Usage ledger",
+    }
+    return f"{labels[unit.kind]}: {unit.identity}"
 
-    def __init__(self, home: Path) -> None:
+
+class _DiscardScreen(ConfirmationScreen):
+    """Show the identified deletion boundaries; successful data stays in place."""
+
+    def __init__(self, home: Path, units: tuple[UpgradeUnit, ...]) -> None:
         super().__init__(
-            title="DELETE ALL USER DATA",
-            message="This cannot be undone.",
-            confirm_label="DELETE ALL DATA and initialize",
+            title="DELETE FAILED DATA",
+            message="Delete only the listed data that still fails the upgrade?",
+            confirm_label="Delete failed data and retry",
         )
         self._home = home
+        self._units = units
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-panel"):
@@ -122,9 +133,10 @@ class _InitializationScreen(ConfirmationScreen):
             yield Static(Text(str(self._home)), id="recovery-home")
             yield Static(
                 Text(
-                    "ALL DATA in this home will be permanently deleted, including sessions, "
-                    "tasks, files, configuration, credentials, plugins and backups.\n"
-                    "Stop all other OURO processes first.",
+                    "Only the following failed units will be removed from active storage, "
+                    "including their owned history and files. Successful data is kept.\n"
+                    + "\n".join(_unit_label(unit) for unit in self._units)
+                    + "\nStop all other OURO processes first.",
                     style=theme_for(self).danger,
                 ),
                 id="recovery-status",
@@ -167,8 +179,9 @@ class DataRecoveryApp(App[RecoveryResult]):
                 # Broken presentation preferences must not prevent recovery.
                 theme = DEFAULT_TUI_THEME
         self.tui_theme = theme
+        self._failures: tuple[UpgradeFailure, ...] = ()
         self._busy = False
-        self._operation: asyncio.Task[object] | None = None
+        self._operation: asyncio.Task[dict[str, object]] | None = None
         self._progress_lock = Lock()
         self._latest_progress: UpgradeProgress | None = None
         self._displayed_progress: UpgradeProgress | None = None
@@ -205,29 +218,34 @@ class DataRecoveryApp(App[RecoveryResult]):
     def _show_failure(self, error: str) -> None:
         pending = pending_operation(self.home)
         if pending == "reset":
-            error = "Initialization was interrupted. Initialize again to clear the remaining data."
+            error = "An earlier full reset was interrupted. Manual recovery is required."
+        if self._failures:
+            error += "\n" + "\n".join(
+                f"{_unit_label(failure.unit)} — {failure.error}" for failure in self._failures
+            )
         self._status(error, failed=True)
         choices = []
         if pending == "upgrade":
             choices.append(
                 Choice(
                     "restore",
-                    "Restore backup and retry upgrade",
-                    "Restore the unfinished upgrade. Stop other OURO processes first.",
+                    "Restore unfinished changes and retry",
+                    "Restore only the interrupted operation. Earlier successful upgrades are kept.",
                 )
             )
-        choices.extend(
-            (
-                Choice(
-                    "initialize",
-                    "Initialize user data — DELETE ALL DATA",
-                    "Permanently clear this home, including credentials and backups.",
-                    accent=self.tui_theme.danger,
-                    destructive=True,
-                ),
-                Choice("exit", "Exit", "Keep data for manual recovery."),
-            )
-        )
+        elif pending is None:
+            choices.append(Choice("retry", "Retry upgrade", "Check and upgrade remaining data."))
+            if any(failure.discardable for failure in self._failures):
+                choices.append(
+                    Choice(
+                        "discard",
+                        "Delete failed data and retry",
+                        "Review failed units before deletion. Successful data is kept.",
+                        accent=self.tui_theme.danger,
+                        destructive=True,
+                    )
+                )
+        choices.append(Choice("exit", "Exit", "Keep data for manual recovery."))
         self._menu.update_choices(
             tuple(choices), preferred_value="exit", title="OURO DATA RECOVERY"
         )
@@ -241,15 +259,21 @@ class DataRecoveryApp(App[RecoveryResult]):
             self.exit()
         elif selected == "restore":
             await self._upgrade(restore=True)
-        elif selected == "initialize":
-            confirmation = await self._menu.open_child(_InitializationScreen(self.home))
+        elif selected == "retry":
+            await self._upgrade()
+        elif selected == "discard":
+            units = tuple(failure.unit for failure in self._failures if failure.discardable)
+            confirmation = await self._menu.open_child(_DiscardScreen(self.home, units))
             if ConfirmationScreen.confirmed(confirmation):
-                await self._run_operation(
-                    partial(reset_home, self.home, progress=self._receive_progress), "initialized"
-                )
+                await self._upgrade(discard=frozenset(units))
 
-    async def _upgrade(self, *, restore: bool = False) -> None:
-        def perform() -> object:
+    async def _upgrade(
+        self,
+        *,
+        restore: bool = False,
+        discard: frozenset[UpgradeUnit] = frozenset(),
+    ) -> None:
+        def perform() -> dict[str, object]:
             if restore:
                 upgrade(self.home, restore=True, progress=self._receive_progress)
             return upgrade(
@@ -257,11 +281,14 @@ class DataRecoveryApp(App[RecoveryResult]):
                 session_backend=self._session_backend,
                 task_backend=self._task_backend,
                 progress=self._receive_progress,
+                isolate_failures=True,
+                discard=discard,
             )
 
-        await self._run_operation(perform, "upgraded")
+        await self._run_operation(perform)
 
-    async def _run_operation(self, operation: Callable[[], object], result: RecoveryResult) -> None:
+    async def _run_operation(self, operation: Callable[[], dict[str, object]]) -> None:
+        self._failures = ()
         self._busy = True
         with self._progress_lock:
             self._latest_progress = None
@@ -269,19 +296,28 @@ class DataRecoveryApp(App[RecoveryResult]):
         self._status("Preparing data. Keep this terminal open until the operation finishes.")
         self._menu.update_choices(
             (Choice("progress", "Starting…", loading=True, disabled=True),),
-            title="OURO DATA INITIALIZATION" if result == "initialized" else "OURO DATA UPGRADE",
+            title="OURO DATA UPGRADE",
         )
         self._menu.query_one("#choice-hint", Static).update("Please wait…")
         self._progress_timer.resume()
         self._operation = asyncio.create_task(asyncio.to_thread(operation))
         try:
-            await asyncio.shield(self._operation)
+            report = await asyncio.shield(self._operation)
         except (UpgradeError, OuroError) as exc:
             self._show_failure(str(exc))
         except Exception as exc:  # noqa: BLE001 - contain worker failures without exposing payloads.
             self._show_failure(f"Data maintenance failed ({type(exc).__name__}).")
         else:
-            self.exit(result)
+            self._failures = tuple(
+                UpgradeFailure(UpgradeUnit(**item["unit"]), item["error"], item["discardable"])
+                for item in cast(list[dict[str, Any]], report.get("failures", []))
+            )
+            if self._failures:
+                self._show_failure(
+                    "Some data could not be upgraded. Successful upgrades are saved."
+                )
+            else:
+                self.exit("upgraded")
         finally:
             self._progress_timer.pause()
             self._busy = False

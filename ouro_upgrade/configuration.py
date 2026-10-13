@@ -9,7 +9,7 @@ from typing import Any
 from ouro.config.provider_codec import provider_config_from_mapping
 from ouro.config.provider_models import BUILTIN_FAUX_PROVIDER_ID
 from ouro.core.errors import ConfigError
-from ouro_upgrade.errors import UpgradeError, require
+from ouro_upgrade.errors import UpgradeDataError, require
 from ouro_upgrade.files import read_json
 from ouro_upgrade.workspace import Workspace
 
@@ -59,7 +59,7 @@ def convert_providers(raw: dict[str, Any]) -> dict[str, Any]:
             parsed = provider_config_from_mapping(provider_id, provider)
         except ConfigError, TypeError, ValueError:
             # Codec validation errors can include inline credentials or header values.
-            raise UpgradeError(f"{_PATH}: invalid provider configuration") from None
+            raise UpgradeDataError(f"{_PATH}: invalid provider configuration") from None
         require(
             parsed.provider_id != BUILTIN_FAUX_PROVIDER_ID
             and parsed.provider_type != "faux"

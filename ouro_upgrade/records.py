@@ -21,7 +21,7 @@ from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference
 from ouro.core.session_commits import SessionCommitResult
 from ouro.core.state import RunRecord, SessionRecord
-from ouro_upgrade.errors import UpgradeError
+from ouro_upgrade.errors import UpgradeDataError
 from ouro_upgrade.steps import UpgradeStep, advance, migrate
 
 MODELS: dict[str, type[BaseModel]] = {
@@ -47,7 +47,7 @@ def loads(text: str) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in items:
             if key in result:
-                raise UpgradeError("duplicate JSON key")
+                raise UpgradeDataError("duplicate JSON key")
             result[key] = value
         return result
 
@@ -59,20 +59,20 @@ def loads(text: str) -> dict[str, Any]:
             parse_float=_finite_float,
         )
     except (ValueError, RecursionError) as exc:
-        raise UpgradeError("invalid JSON object") from exc
+        raise UpgradeDataError("invalid JSON object") from exc
     if not isinstance(value, dict):
-        raise UpgradeError("expected JSON object")
+        raise UpgradeDataError("expected JSON object")
     return value
 
 
 def _invalid_constant(_: str) -> None:
-    raise UpgradeError("non-finite JSON number")
+    raise UpgradeDataError("non-finite JSON number")
 
 
 def _finite_float(text: str) -> float:
     value = float(text)
     if not math.isfinite(value):
-        raise UpgradeError("non-finite JSON number")
+        raise UpgradeDataError("non-finite JSON number")
     return value
 
 
@@ -86,7 +86,7 @@ def validate[Model: BaseModel](model: type[Model], value: dict[str, Any]) -> Mod
     except ValidationError as exc:
         # Pydantic's normal message includes input values (possibly credentials).
         reason = exc.errors(include_input=False, include_context=False)[0]["type"]
-        raise UpgradeError(f"invalid {model.__name__} ({reason})") from exc
+        raise UpgradeDataError(f"invalid {model.__name__} ({reason})") from exc
     _required_facts(parsed, value)
     return parsed
 
@@ -107,18 +107,18 @@ def _required_facts(parsed: object, raw: object) -> None:
             "ToolInvocation": ("producer",),
         }.get(type(parsed).__name__, ())
         if any(name not in raw for name in required):
-            raise UpgradeError(f"missing persisted {type(parsed).__name__} facts")
+            raise UpgradeDataError(f"missing persisted {type(parsed).__name__} facts")
         if isinstance(parsed, VersionedOuroModel):
             expected = type(parsed).model_fields["schema_version"].default
             if type(raw.get("schema_version")) is not int or raw["schema_version"] != expected:
-                raise UpgradeError(f"missing or unsupported {type(parsed).__name__} version")
+                raise UpgradeDataError(f"missing or unsupported {type(parsed).__name__} version")
         for name, field in type(parsed).model_fields.items():
             if (
                 field.default_factory is not None
                 and (name.endswith(("_id", "_at", "_version")))
                 and name not in raw
             ):
-                raise UpgradeError(f"missing persisted {type(parsed).__name__}.{name}")
+                raise UpgradeDataError(f"missing persisted {type(parsed).__name__}.{name}")
             if name in raw:
                 _required_facts(getattr(parsed, name), raw[name])
     elif isinstance(parsed, (list, tuple)) and isinstance(raw, list):
@@ -129,7 +129,7 @@ def _required_facts(parsed: object, raw: object) -> None:
 
 def _add(value: dict[str, Any], key: str, default: object) -> None:
     if key in value:
-        raise UpgradeError(f"unexpected field in historical contract: {key}")
+        raise UpgradeDataError(f"unexpected field in historical contract: {key}")
     value[key] = default
 
 
@@ -139,7 +139,7 @@ def _producer(value: dict[str, Any]) -> None:
 
 def _context_v3_to_v4(value: dict[str, Any]) -> None:
     if type(value["supports_vision"]) is not bool:
-        raise UpgradeError("invalid historical context vision capability")
+        raise UpgradeDataError("invalid historical context vision capability")
     _add(value, "supports_image_input", value.pop("supports_vision"))
     _add(value, "supports_audio_input", False)
     _add(value, "supports_video_input", False)
@@ -232,7 +232,7 @@ def convert(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
         _convert_nested(kind, value)
         validate(model, value)
     except (KeyError, TypeError, AttributeError) as exc:
-        raise UpgradeError(f"incomplete historical {kind} structure") from exc
+        raise UpgradeDataError(f"incomplete historical {kind} structure") from exc
     return value
 
 

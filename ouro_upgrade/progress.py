@@ -15,7 +15,6 @@ UpgradePhase = Literal[
     "finalize",
     "verify",
     "restore",
-    "reset",
     "complete",
 ]
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from functools import partial
 from pathlib import Path
 from typing import Literal
 
@@ -18,6 +19,7 @@ from ouro_upgrade import configuration, databases, files
 from ouro_upgrade.errors import UpgradeError, require
 from ouro_upgrade.progress import ProgressCallback
 from ouro_upgrade.records import loads
+from ouro_upgrade.units import UpgradeUnit, UpgradeUnits
 from ouro_upgrade.workspace import Workspace
 
 
@@ -43,10 +45,14 @@ def upgrade(
     session_backend: SessionBackend | None = None,
     task_backend: TaskBackend | None = None,
     progress: ProgressCallback | None = None,
+    isolate_failures: bool = False,
+    discard: frozenset[UpgradeUnit] = frozenset(),
 ) -> dict[str, object]:
     """Upgrade one stopped home in place; --check may write only .upgrade scratch files."""
     if check and restore:
         raise UpgradeError("check and restore are mutually exclusive")
+    if discard and (not isolate_failures or check or restore):
+        raise UpgradeError("discard requires an isolated upgrade, without check or restore")
     # absolute() deliberately does not resolve aliases before Workspace rejects links.
     root = Path(home).expanduser().absolute()
     try:
@@ -58,6 +64,7 @@ def upgrade(
             sessions = resolve_session_backend(session_backend)
             tasks = resolve_task_backend(task_backend)
             work.start()
+            units = UpgradeUnits(work, isolate=isolate_failures, discard=discard)
             for directory, pattern in (
                 (root, ".session-import-*"),
                 (root / "trash/sessions", ".*.staging"),
@@ -68,19 +75,41 @@ def upgrade(
                     "unfinished publication; recover using original OURO version",
                 )
             work.progress("configuration")
-            configuration.providers(work)
+            units.run(
+                UpgradeUnit("configuration", "config/providers.json"),
+                partial(configuration.providers, work),
+                remove=partial(work.stage, "config/providers.json", None),
+            )
             work.progress("sessions")
             if sessions == "files":
-                files.sessions(work)
+                units.run(
+                    UpgradeUnit("session_store", "files"), partial(files.sessions, work, units)
+                )
             else:
-                databases.database(work, "sessions.sqlite3", databases.sessions)
+                units.run(
+                    UpgradeUnit("session_store", "sqlite"),
+                    partial(
+                        databases.database,
+                        work,
+                        "sessions.sqlite3",
+                        partial(databases.sessions, units=units),
+                    ),
+                )
             work.progress("tasks")
             if tasks == "files":
-                files.tasks(work)
+                units.run(UpgradeUnit("task_store", "files"), partial(files.tasks, work, units))
             else:
-                databases.database(work, "tasks.sqlite3", databases.tasks)
+                units.run(
+                    UpgradeUnit("task_store", "sqlite"),
+                    partial(databases.database, work, "tasks.sqlite3", databases.tasks),
+                    remove=partial(databases.remove_database, work, "tasks.sqlite3"),
+                )
             work.progress("usage")
-            databases.database(work, "billing/usage.sqlite3", databases.usage)
+            units.run(
+                UpgradeUnit("usage", "billing/usage.sqlite3"),
+                partial(databases.database, work, "billing/usage.sqlite3", databases.usage),
+                remove=partial(databases.remove_database, work, "billing/usage.sqlite3"),
+            )
             report: dict[str, object] = {
                 "status": "upgrade_required" if work.changes else "current",
                 "session_backend": sessions,
@@ -92,10 +121,13 @@ def upgrade(
                     "configuration other than config/providers.json",
                     "credentials, plugins and plugin-private data",
                 ],
+                **units.report(),
             }
+            if units.failures:
+                report["status"] = "partial"
             if work.changes and not check:
                 report.update(
-                    status="upgraded",
+                    status="partial" if units.failures else "upgraded",
                     upgrade_id=work.identifier,
                     backup=f".upgrade/{work.identifier}/before",
                     manifest=f".upgrade/{work.identifier}/manifest.json",

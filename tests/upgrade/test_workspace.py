@@ -261,7 +261,8 @@ def test_partial_publication_restores_updates_deletions_and_additions(
 
 
 @pytest.mark.parametrize("missing_backup", [False, True])
-def test_version_one_manifest_requires_and_restores_complete_backups(tmp_path, missing_backup):
+@pytest.mark.parametrize("version", [1, 2])
+def test_legacy_manifests_restore_according_to_backup_contract(tmp_path, missing_backup, version):
     home = tmp_path / "home"
     home.mkdir()
     (home / "record").write_bytes(b"original")
@@ -273,11 +274,17 @@ def test_version_one_manifest_requires_and_restores_complete_backups(tmp_path, m
             (home / "record").write_bytes(b"updated")
         workspace.write_json_atomic(
             work.run / "manifest.json",
-            {"schema_version": 1, "changes": [asdict(item) for item in work.changes.values()]},
+            {
+                "schema_version": version,
+                "changes": [
+                    {key: value for key, value in asdict(item).items() if key != "directory"}
+                    for item in work.changes.values()
+                ],
+            },
         )
         workspace.write_json_atomic(work.marker, {"upgrade_id": work.identifier})
         work.published = True
-    if missing_backup:
+    if missing_backup and version == 1:
         with pytest.raises(UpgradeError, match="missing or damaged backup"):
             upgrade(home, restore=True)
     else:

@@ -14,12 +14,11 @@ from ouro.deployment import access_home, ensure_home_available
 from ouro.tui import recovery
 from ouro.tui.recovery import DataRecoveryApp
 from ouro.tui.screens import ConfirmationScreen
-from ouro_upgrade import reset
-from ouro_upgrade.engine import pending_operation, upgrade
+from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError
 from ouro_upgrade.progress import UpgradeProgress
-from ouro_upgrade.reset import reset_home
 from ouro_upgrade.workspace import Workspace
+from tests.upgrade.test_isolation import clone_files
 from tests.upgrade.test_upgrade import hashes
 
 
@@ -77,16 +76,21 @@ async def test_progress_animates_and_cannot_be_cancelled_mid_write(tmp_path, mon
 
 
 async def test_unsupported_upgrade_preserves_data_and_offers_safe_default(
-    historical_home, monkeypatch
+    historical_home,
 ) -> None:
     layout = historical_home / "tasks/layout.json"
     layout.write_text('{"schema_version":99}', encoding="utf-8")
     before = hashes(historical_home)
     app = DataRecoveryApp(home=historical_home, error="old schema", auto_upgrade=True)
     async with app.run_test(size=(100, 32)) as pilot:
-        await wait_until(lambda: any(choice.value == "initialize" for choice in app._menu._choices))
+        await wait_until(lambda: bool(app._failures) and not app._busy)
         assert not app._busy
-        assert hashes(historical_home) == before
+        assert all(
+            hashes(historical_home)[name] == value
+            for name, value in before.items()
+            if name.startswith("tasks/")
+        )
+        assert {choice.value for choice in app._menu._choices} == {"retry", "exit"}
         options = app.screen.query_one(OptionList)
         assert options.get_option_at_index(options.highlighted).id == "exit"
         assert (
@@ -97,33 +101,49 @@ async def test_unsupported_upgrade_preserves_data_and_offers_safe_default(
         assert app.screen.styles.background.a == 1
         assert panel.region.x + panel.region.width // 2 == app.size.width // 2
         await pilot.press("escape")
-    assert hashes(historical_home) == before
+    assert hashes(historical_home) != before
 
 
-async def test_initialize_requires_confirmation_and_cancel_keeps_all_data(tmp_path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    (home / "user-data.json").write_text("original data", encoding="utf-8")
+async def test_discard_confirmation_defaults_to_cancel_and_preserves_successful_data(
+    historical_home,
+) -> None:
+    home = historical_home
+    bad = clone_files(home, "sessions/ses_fixture", "ses_bad")
+    (bad / "context.json").write_bytes(b'{"schema_version":999}')
     (home / "plugins").mkdir()
     (home / "plugins/private.json").write_text("plugin data", encoding="utf-8")
-    app = DataRecoveryApp(home=home, error="unsupported schema", auto_upgrade=False)
+    (home / "credentials.json").write_text("private credentials", encoding="utf-8")
+    app = DataRecoveryApp(home=home, error="old schema", auto_upgrade=True)
     async with app.run_test(size=(100, 32)) as pilot:
+        await wait_until(lambda: bool(app._failures) and not app._busy)
+        successful = hashes(home)
         await pilot.press("up", "enter")
         await wait_until(lambda: isinstance(app.screen, ConfirmationScreen))
-        assert "DELETE ALL" in app.screen.page_title
+        assert "DELETE FAILED" in app.screen.page_title
         assert app.screen._choices[1].destructive
+        assert "ses_bad" in str(app.screen.query_one("#recovery-status", Static).render())
         await pilot.press("enter")  # The confirmation defaults to Cancel.
         await wait_until(lambda: app.screen is app._menu)
-        assert (home / "user-data.json").read_text("utf-8") == "original data"
+        assert hashes(home) == successful
         await pilot.press("enter")
         await wait_until(lambda: isinstance(app.screen, ConfirmationScreen))
         await pilot.press("down", "enter")
-        await wait_until(lambda: app.return_value == "initialized")
-    assert {p.relative_to(home).as_posix() for p in home.rglob("*")} == {
-        ".upgrade",
-        ".upgrade/lock",
-    }
+        await wait_until(lambda: app.return_value == "upgraded")
+    assert not bad.exists()
+    after = hashes(home)
+    assert all(
+        after[name] == checksum
+        for name, checksum in successful.items()
+        if name != "sessions/index.json" and not name.startswith("sessions/ses_bad/")
+    )
     assert ensure_home_available(home) == home
+
+
+async def test_unknown_failure_never_offers_unscoped_deletion(tmp_path) -> None:
+    app = DataRecoveryApp(home=tmp_path, error="unknown startup failure", auto_upgrade=False)
+    async with app.run_test(size=(100, 32)) as pilot:
+        assert {choice.value for choice in app._menu._choices} == {"retry", "exit"}
+        await pilot.press("escape")
 
 
 def test_progress_reports_phases_and_success_only_after_publish(historical_home) -> None:
@@ -147,45 +167,11 @@ def test_standard_hosts_and_maintenance_exclude_each_other(tmp_path) -> None:
     with access_home(tmp_path), access_home(tmp_path):
         with pytest.raises(UpgradeError, match="another"):
             upgrade(tmp_path)
-        with pytest.raises(UpgradeError, match="another"):
-            reset_home(tmp_path)
     with Workspace(tmp_path):
         with pytest.raises(PersistenceError, match="maintenance"):
             with access_home(tmp_path):
                 pytest.fail("Host entered a home during maintenance")
     assert upgrade(tmp_path)["status"] == "current"
-
-
-def test_interrupted_reset_remains_blocked_and_can_be_repeated(tmp_path, monkeypatch) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    (home / "sessions").mkdir()
-    (home / "sessions/record.json").write_text("test data", encoding="utf-8")
-    original = reset.shutil.rmtree
-
-    def fail(path):
-        raise OSError("cannot remove")
-
-    monkeypatch.setattr(reset.shutil, "rmtree", fail)
-    with pytest.raises(UpgradeError, match="initialization failed"):
-        reset_home(home)
-    assert pending_operation(home) == "reset"
-    with pytest.raises(PersistenceError):
-        ensure_home_available(home)
-    with pytest.raises(UpgradeError, match="unfinished initialization"):
-        upgrade(home, restore=True)
-    with pytest.raises(UpgradeError, match="unfinished"):
-        upgrade(home)
-    monkeypatch.setattr(reset.shutil, "rmtree", original)
-    reset_home(home)
-    assert pending_operation(home) is None
-    assert not (home / "sessions").exists()
-
-
-@pytest.mark.parametrize("path", [Path.cwd(), Path.home(), Path(Path.cwd().anchor)])
-def test_reset_rejects_broad_target_without_mutation(path) -> None:
-    with pytest.raises(UpgradeError, match="refusing"):
-        reset_home(path)
 
 
 def test_entry_releases_host_before_upgrade_and_reloads_homepage(tmp_path, monkeypatch) -> None:

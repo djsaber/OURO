@@ -22,17 +22,27 @@ from ouro_upgrade.progress import ProgressCallback, UpgradePhase, UpgradeProgres
 from ouro_upgrade.records import loads
 
 
-def digest(path: Path, *, sync: bool = False) -> str | None:
+def digest(path: Path, *, sync: bool = False, directory: bool = False) -> str | None:
     if not path.exists():
         return None
+    if directory:
+        checksum = hashlib.sha256()
+        for item in sorted(path.iterdir()):
+            reject_link(item)
+            is_directory = item.is_dir()
+            value = digest(item, sync=sync, directory=is_directory)
+            checksum.update(json.dumps([item.name, is_directory, value]).encode("utf-8"))
+        if sync:
+            sync_directory(path)
+        return checksum.hexdigest()
     with path.open("rb+") if sync and os.name == "nt" else path.open("rb") as stream:
-        checksum = hashlib.file_digest(stream, "sha256").hexdigest()
+        file_checksum = hashlib.file_digest(stream, "sha256").hexdigest()
         if sync:
             os.fsync(stream.fileno())
-        return checksum
+        return file_checksum
 
 
-def safe_path(root: Path, relative: str) -> Path:
+def safe_path(root: Path, relative: str, *, directory: bool = False) -> Path:
     if not isinstance(relative, str) or PurePosixPath(relative).as_posix() != relative:
         raise UpgradeError("invalid relative upgrade path")
     parts = PurePosixPath(relative).parts
@@ -47,8 +57,8 @@ def safe_path(root: Path, relative: str) -> Path:
     for part in parts:
         path /= part
         reject_link(path)
-    if path.exists() and not path.is_file():
-        raise UpgradeError(f"expected regular file: {relative}")
+    if path.exists() and not (path.is_dir() if directory else path.is_file()):
+        raise UpgradeError(f"unexpected path type: {relative}")
     return path
 
 
@@ -90,12 +100,25 @@ def install(source: Path | None, target: Path, mode: int | None, *, consume: boo
     sync_directory(target.parent)
 
 
+def restore_directory(source: Path, target: Path, mode: int | None) -> None:
+    # Both roots have been validated, and the complete backup was checked before
+    # restore began. Keep the backup so an interrupted copy can be repeated.
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(source, target)
+    if mode is not None and os.name != "nt":
+        target.chmod(mode)
+    digest(target, sync=True, directory=True)
+    sync_directory(target.parent)
+
+
 @dataclass(frozen=True)
 class Change:
     path: str
     before: str | None
     after: str | None
     mode: int | None
+    directory: bool = False
 
 
 class Workspace:
@@ -188,6 +211,23 @@ class Workspace:
     def temporary(self) -> Path:
         return self.run / "scratch" / uuid4().hex
 
+    def rollback_staging(self, checkpoint: int) -> None:
+        """Discard an unsuccessful unit's private outputs, leaving its source intact."""
+        while len(self.changes) > checkpoint:
+            self.changes.popitem()
+            (self.run / "new" / str(len(self.changes))).unlink(missing_ok=True)
+
+    def remove_directory(self, relative: str) -> None:
+        path = safe_path(self.home, relative, directory=True)
+        before = digest(path, directory=True)
+        if before is None:
+            return
+        if any(name == relative or name.startswith(relative + "/") for name in self.changes):
+            raise UpgradeError("directory removal overlaps staged replacements")
+        self.changes[relative] = Change(
+            relative, before, None, stat.S_IMODE(path.stat().st_mode), directory=True
+        )
+
     def stage(self, relative: str, source: bytes | Path | None) -> None:
         """Stage bytes or take ownership of a closed scratch file; None deletes."""
         original = self.source(relative)
@@ -231,7 +271,8 @@ class Workspace:
         self.progress("verify_source", 0, total)
         for completed, change in enumerate(self.changes.values(), 1):
             # The existing file becomes the backup; sync its data while verifying it.
-            if digest(self.path(change.path), sync=True) != change.before:
+            path = safe_path(self.home, change.path, directory=change.directory)
+            if digest(path, sync=True, directory=change.directory) != change.before:
                 raise UpgradeError(f"source changed during upgrade: {change.path}")
             self.progress("verify_source", completed, total)
 
@@ -243,7 +284,7 @@ class Workspace:
         write_json_atomic(
             self.run / "manifest.json",
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "changes": [asdict(change) for change in changes],
             },
         )
@@ -257,16 +298,17 @@ class Workspace:
         sync_directory(self.root)
         self.progress("publish", 0, len(changes))
         for index, change in enumerate(changes):
-            target = self.path(change.path)
+            target = safe_path(self.home, change.path, directory=change.directory)
             if change.before is not None:
                 backup = self.run / "before" / str(index)
                 replace_path_with_retry(target, backup)
-                restrict_to_user(backup)
+                restrict_to_user(backup, directory=change.directory)
                 # Persist the original's new name before installing its replacement.
                 sync_directory(backup.parent)
                 sync_directory(target.parent)
             source = self.run / "new" / str(index) if change.after is not None else None
-            install(source, target, change.mode, consume=True)
+            if not change.directory:
+                install(source, target, change.mode, consume=True)
             self.progress("publish", index + 1, len(changes))
         # Persist removal of the staged names as well as each destination rename.
         sync_directory(self.run / "new")
@@ -288,7 +330,7 @@ class Workspace:
             raise UpgradeError("no unfinished upgrade to restore")
         marker = loads(self.marker.read_text("utf-8"))
         if marker.get("operation") == "reset":
-            raise UpgradeError("unfinished initialization; open the TUI and initialize again")
+            raise UpgradeError("unfinished full reset; manual recovery is required")
         identifier = marker.get("upgrade_id")
         if (
             not isinstance(identifier, str)
@@ -302,7 +344,7 @@ class Workspace:
         manifest = loads((run / "manifest.json").read_text("utf-8"))
         try:
             version = manifest["schema_version"]
-            if version not in (1, 2):
+            if version not in (1, 2, 3):
                 raise UpgradeError("unsupported upgrade manifest")
             changes = [Change(**item) for item in manifest["changes"]]
         except (KeyError, TypeError) as exc:
@@ -310,7 +352,11 @@ class Workspace:
         seen: set[str] = set()
         sources: list[Path | None] = []
         for index, change in enumerate(changes):
-            target = self.path(change.path)
+            target = safe_path(self.home, change.path, directory=change.directory)
+            if change.directory and (
+                version != 3 or change.before is None or change.after is not None
+            ):
+                raise UpgradeError("invalid directory removal in upgrade manifest")
             if change.path in seen:
                 raise UpgradeError("duplicate path in upgrade manifest")
             seen.add(change.path)
@@ -318,21 +364,31 @@ class Workspace:
                 backup = run / "before" / str(index)
                 reject_link(backup)
                 # A version 2 publication may stop before moving this original.
-                rollback = target if version == 2 and not backup.exists() else backup
-                if digest(rollback) != change.before:
+                rollback = target if version >= 2 and not backup.exists() else backup
+                if digest(rollback, directory=change.directory) != change.before:
                     raise UpgradeError(f"missing or damaged backup: {change.path}")
                 sources.append(rollback)
             else:
                 sources.append(None)
         self.progress("restore", 0, len(changes))
         for index, (change, source) in enumerate(zip(changes, sources, strict=True)):
-            target = self.path(change.path)
+            target = safe_path(self.home, change.path, directory=change.directory)
             if source != target:
-                install(source, target, change.mode)
+                if change.directory:
+                    assert source is not None
+                    restore_directory(source, target, change.mode)
+                else:
+                    install(source, target, change.mode)
             self.progress("restore", index + 1, len(changes))
         self.progress("verify")
         for change in changes:
-            if digest(safe_path(self.home, change.path)) != change.before:
+            if (
+                digest(
+                    safe_path(self.home, change.path, directory=change.directory),
+                    directory=change.directory,
+                )
+                != change.before
+            ):
                 raise UpgradeError(f"restore verification failed: {change.path}")
         self.marker.unlink()
         sync_directory(self.root)

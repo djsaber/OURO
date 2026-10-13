@@ -66,7 +66,7 @@ def run_tui(
                 task_backend=task_backend,
                 theme=recovery_theme,
             ).run()
-            if recovery not in {"upgraded", "initialized"}:
+            if recovery != "upgraded":
                 return 1
             attempted_upgrade = True
             # Return to the homepage; the previous selection may no longer exist.
