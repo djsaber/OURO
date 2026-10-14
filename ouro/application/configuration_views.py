@@ -155,6 +155,7 @@ def provider_template_view(
         credential_env=template.credential_env,
         base_url=template.base_url,
         api_path=template.api_path,
+        headers=public_provider_headers(template.headers),
         default_endpoint=template.default_endpoint,
         endpoints=[
             endpoint_view(endpoint, default_endpoint=template.default_endpoint)

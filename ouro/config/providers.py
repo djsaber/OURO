@@ -789,7 +789,7 @@ class ProviderConfigManager:
                 enabled=(enabled if enabled is not None else True),
                 timeout_seconds=(timeout_seconds if timeout_seconds is not None else 60.0),
                 retry_policy=retry_policy or ProviderRetryPolicy(),
-                headers=dict(headers or {}),
+                headers=dict(headers) if headers is not None else dict(template.headers),
                 extra=(dict(provider_options) if provider_options is not None else {}),
                 template=_provider_template_binding(
                     template,

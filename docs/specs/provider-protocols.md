@@ -22,10 +22,12 @@ Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它�
 ## 产品类型与协议
 
 集成厂商类型包括 `openai`、`openai-codex`、`anthropic`、`gemini`、`deepseek`、`qwen`、`kimi`、`glm`、`grok`、
-`mistral`、`minimax`、`doubao` 和 `cohere`。它们提供已核验的模板。`ProviderTypeSpec` 保存可选默认连接组合和明确的备选组合；
+`mistral`、`minimax`、`doubao`、`cohere`、`opencode-go`、`opencode-go-responses` 和 `opencode-go-messages`。
+它们提供已核验的模板。`ProviderTypeSpec` 保存可选默认连接组合和明确的备选组合；
 每个 `ProviderConnectionSpec` 包含 protocol、auth_driver 及可选服务规则引用，managed 组合必须声明服务规则引用。
 连接声明可携带只读 notice，由 Application 投影到 Provider/Template DTO 并交给 CLI/TUI 展示；不写入用户配置，也不由 Host 判断厂商。
 `openai` 默认使用 Responses + static，支持 Chat Completions + static 备选组合。
+三个 OpenCode Go 类型分别使用 Chat Completions、Responses 和 Anthropic Messages，均通过静态 API Key 认证。
 `openai-codex` 仅声明 Responses + 同名浏览器认证驱动及服务策略。模型目录与后端能力见
 [预置供应商配置](provider-presets.md)。订阅上下文和 max_output_tokens 为本地预算，
 服务限制通过连接 notice 和模板描述披露；两套模板均通过 Responses adapter 支持图像输入。
@@ -62,7 +64,7 @@ continuation：OpenAI Chat Completions 支持 `none/text`，Responses 与 Anthro
 ## 分层职责
 
 - `ouro/config/provider_models.py` 定义类型、协议档案、组合校验和持久化领域模型；
-- `ouro/config/provider_templates.py` 提供厂商产品档案的连接和 Endpoint 默认值；
+- `ouro/config/provider_templates/` 提供厂商产品档案的连接和 Endpoint 默认值；
 - `ouro/providers/factory.py` 只按 `ProviderProtocol` 注册表选择 adapter，不读取 `provider_type`；
 - `ouro/application` 暴露包含 `provider_type`、`protocol` 与 `auth_driver` 的类型化 DTO，并编排配置用例；
 - CLI 只解析创建、更新或替换意图并格式化结果，冲突规则由配置/application 层执行。

@@ -403,6 +403,9 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
         "minimax",
         "doubao",
         "cohere",
+        "opencode-go",
+        "opencode-go-responses",
+        "opencode-go-messages",
     ]
     assert facade.provider_template("anthropic").provider_type == "anthropic"
     assert facade.provider_template("anthropic").protocol == "anthropic-messages"

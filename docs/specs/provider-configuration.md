@@ -190,7 +190,7 @@ Provider 的 `headers` 是独立于请求体参数的 HTTP 连接配置，适用
 仅配置引用的字段被发送，运行值不写回配置、不进入共享 adapter 状态或模型消息。
 
 配置 mutation 对 `headers` 使用整组原子替换：省略表示保留，空对象表示清空。Provider 创建和 replace
-省略时使用空配置。模板同步保留用户请求头，除非调用方显式替换；请求头声明参与运行参数指纹，
+省略时采用所选模板的请求头默认值；不使用模板时为空配置。模板同步保留实例请求头，除非调用方显式替换；请求头声明参与运行参数指纹，
 使后续路由选择读取有效配置。环境变量在每次模型调用开始时解析，重试复用本次解析结果；认证材料仍
 按每次尝试独立获取。`faux` 不接受 HTTP 请求头。
 
@@ -281,7 +281,7 @@ manager。Provider retry 的关联字段作为一个原子 mutation 提交，不
 
 ## 内置模板
 
-`config/provider_templates.py` 保存经过核验的只读模板目录。模板是配置域数据；多个
+`config/provider_templates/` 保存经过核验的只读模板目录。模板是配置域数据；多个
 厂商可复用同一线协议。每项包含稳定 template id、必填展示名、默认模板 Endpoint 身份、非空且模板身份唯一的
 Endpoint 集合、连接地址、凭据环境变量、Endpoint capability、官方文档和核验日期。默认 Endpoint 必须存在于
 模板 Endpoint 集合中；模板 Endpoint 身份只服务模板版本合并，实例化时不会复用为运行时 Endpoint ID。

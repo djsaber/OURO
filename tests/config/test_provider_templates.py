@@ -66,6 +66,52 @@ _EXPECTED_ENDPOINTS = {
         {"doubao-seed-2-1-pro-260915", "doubao-seed-2-1-lite-260915"},
     ),
     "cohere": ("command-a-plus-05-2026", {"command-a-plus-05-2026"}),
+    "opencode-go": (
+        "kimi-k3",
+        {
+            "glm-5.3-flash",
+            "glm-5.3",
+            "glm-5.2",
+            "kimi-k3",
+            "kimi-k2.7-code",
+            "kimi-k2.6",
+            "longcat-2.0",
+            "deepseek-v4.1-flash",
+            "deepseek-v4-pro",
+            "mimo-v2.6-flash",
+            "mimo-v2.6-pro",
+            "mimo-v2.5",
+            "mimo-v2.5-pro",
+            "hy4-preview",
+            "hy3",
+            "space-bunny",
+            "longcat-2.5-preview-free",
+            "step-5-preview-free",
+            "cat-jam-free",
+        },
+    ),
+    "opencode-go-responses": (
+        "gpt-6-luna",
+        {
+            "grok-4.7",
+            "grok-4.6",
+            "gpt-6-luna",
+            "gpt-5.6-luna",
+            "muse-spark-1.3-contributor",
+            "muse-spark-1.2-contributor",
+        },
+    ),
+    "opencode-go-messages": (
+        "minimax-m3",
+        {
+            "claude-haiku-5-5",
+            "minimax-m3",
+            "minimax-m2.7",
+            "qwen3.8-max",
+            "qwen3.8-flash",
+            "qwen3.7-plus",
+        },
+    ),
 }
 
 
@@ -96,6 +142,7 @@ def test_builtin_provider_templates_expose_reviewed_endpoint_sets() -> None:
     for template_id, (default_endpoint, endpoint_ids) in _EXPECTED_ENDPOINTS.items():
         template = templates[template_id]
         assert template.default_endpoint == default_endpoint
+        is_opencode = template_id.startswith("opencode-go")
         assert template.provider_type == template_id
         assert template.protocol in {
             "openai-chat-completions",
@@ -105,7 +152,7 @@ def test_builtin_provider_templates_expose_reviewed_endpoint_sets() -> None:
         assert {endpoint.endpoint_id for endpoint in template.endpoints} == endpoint_ids
         assert template.display_name.strip()
         assert all(endpoint.display_name for endpoint in template.endpoints)
-        assert template.verified_on == "2026-10-10"
+        assert template.verified_on == ("2026-10-14" if is_opencode else "2026-10-10")
 
 
 def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:

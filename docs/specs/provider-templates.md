@@ -8,10 +8,22 @@
 结构版本边界与失败处理。模板是配置域蓝图数据；模板与实际 Provider 配置的
 实例化关系、类型与协议拆分由 [Provider 与配置](provider-configuration.md)和
 [Provider 类型与协议](provider-protocols.md)定义。内联模板目录由
-`ouro/config/provider_templates.py` 维护。
+`ouro/config/provider_templates/` 维护。
+
+该包的 `schema.py` 定义 `ProviderTemplate` 及其校验；每个供应商模块集中维护连接参数、模型端点、
+思考映射、核验日期和修订号。OpenAI API 与 Codex 订阅共用 `openai.py`，OpenCode Go 的三个协议模板
+共用 `opencode_go.py`，使同一服务的相关配置在一处维护。供应商模块只依赖公共模型和配置能力，彼此不导入。
+`__init__.py` 显式汇总各模块的 `TEMPLATES`，确定目录顺序并提供查询接口，不扫描目录或动态注册。
+调用方通过 `ouro.config.provider_templates` 导入 `ProviderTemplate`、`provider_templates` 和
+`get_provider_template`。
 
 模型目录、连接参数、能力声明与官方依据见[预置供应商配置](provider-presets.md)。
 `verified_on` 表示官方文档核对日期。
+
+模板可通过 `headers` 声明默认请求头，使用与 Provider 相同的 literal、env、context 来源和校验。
+创建或替换 Provider 时，未显式传入请求头则复制模板声明；显式 `{}` 清空，非空对象整组替换。
+普通模板更新保留实例请求头。模板不写入会话运行值；`context` 来源在每次调用时解析。
+省略 `headers` 等同空对象；该可选字段不改变文件结构版本。公开模板查询对 literal 值脱敏。
 
 ## 总体模型
 

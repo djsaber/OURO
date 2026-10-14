@@ -1,9 +1,9 @@
 # 预置供应商配置
 
 > 文档类型：配置参考
-> 配置事实来源：[provider_templates.py](../../ouro/config/provider_templates.py)；代码记录的模板核对日期为 2026-10-10。
+> 配置事实来源：[模板目录](../../ouro/config/provider_templates/)、[OpenCode Go 端点](../../ouro/config/provider_templates/opencode_go.py)；各模板通过 `verified_on` 记录核对日期。
 
-预置目录包含 13 个模板、47 个模型端点，覆盖通用、编程、多模态及成本敏感场景。
+预置目录包含 16 个模板、78 个模型端点，覆盖通用、编程、多模态及成本敏感场景。
 端点声明模型 ID、上下文预算、输出预算、工具调用、图像/音频/视频输入、流式输出、结构化输出与思考配置。
 启用条件与配置方式见[输入模态契约](provider-configuration.md#输入模态契约)。
 OpenRouter 等聚合平台通过 `custom` 与兼容协议配置。
@@ -26,6 +26,7 @@ OpenRouter 等聚合平台通过 `custom` 与兼容协议配置。
 | MiniMax | `MiniMax-M3` | [OpenAI 接口](https://platform.minimax.cn/docs/api-reference/text-openai-api)、[参数与预算](https://platform.minimax.cn/docs/api-reference/text-chat-openai) |
 | Doubao | `doubao-seed-2-1-pro-260915` | [模型目录](https://docs.volcengine.com/docs/ark/model-list?lang=zh)、[思考模式](https://docs.volcengine.com/docs/ark/deep-thinking?lang=zh) |
 | Cohere | `command-a-plus-05-2026` | [模型说明](https://docs.cohere.com/docs/command-a-plus)、[OpenAI 接口](https://docs.cohere.com/docs/compatibility-api) |
+| OpenCode Go（三个协议） | `kimi-k3` / `gpt-6-luna` / `minimax-m3` | [Go 端点与客户端要求](https://opencode.ai/docs/go/)、[Models.dev Go 目录](https://models.dev/api.json) |
 
 ## 连接配置
 
@@ -44,8 +45,12 @@ OpenRouter 等聚合平台通过 `custom` 与兼容协议配置。
 | `minimax` | `https://api.minimax.cn/v1` | Chat Completions | `MINIMAX_API_KEY` |
 | `doubao` | `https://ark.cn-beijing.volces.com/api/v3` | Chat Completions | `ARK_API_KEY` |
 | `cohere` | `https://api.cohere.ai/compatibility/v1` | Chat Completions | `COHERE_API_KEY` |
+| `opencode-go` | `https://opencode.ai/inference/go/v1` | Chat Completions | `OPENCODE_API_KEY` |
+| `opencode-go-responses` | `https://opencode.ai/inference/go/v1` | Responses | `OPENCODE_API_KEY` |
+| `opencode-go-messages` | `https://opencode.ai/inference/go/v1` | Anthropic Messages，路径 `/messages` | `OPENCODE_API_KEY` |
 
-Responses、Chat Completions 和 Anthropic Messages 的 API 路径分别为 `/responses`、`/chat/completions` 和 `/v1/messages`。
+Responses、Chat Completions 和 Anthropic Messages 的默认 API 路径分别为 `/responses`、`/chat/completions` 和 `/v1/messages`；
+OpenCode Go Messages 的 Base URL 已包含 `/v1`，因此模板显式使用 `/messages`。
 API Key 必须与模板所选平台、区域匹配。MiniMax 使用中国站，豆包使用北京区域；豆包模型需先在方舟开通。
 
 ## 端点字段
@@ -272,3 +277,86 @@ uv run --frozen ouro provider list --home ./.ouro-dev --json
 创建命令装载整组预置端点，并从上表所列环境变量获取 API Key。订阅实例使用独立持久凭据，流程见
 [订阅使用指南](../guides/subscriptions.md)。从命令输出取得 Provider ID 与 Endpoint ID，路由格式为 `<provider_id>/<endpoint_id>`。
 创建、更新和替换操作见[配置指南](../guides/providers.md)；模板文件与版本契约见[供应商模板规格](provider-templates.md)。
+
+## OpenCode Go
+
+三个模板按 OpenCode Go 官方端点表划分，核对日期为 2026-10-14。仅收录当前 Go 文档列出的模型；
+模型列表 API 中额外的别名、旧型号和未公开路由不自动加入。Gemini 4 Argon Contributor 使用 Google 原生协议，
+不属于这三个模板支持的协议。目录为本地预制数据，启动与模型调用不访问远程模型目录。
+
+模型 ID、协议和服务地址来自 [Go 官方文档](https://opencode.ai/docs/go/)；上下文、输出上限、
+工具、输入模态和结构化输出声明来自 OpenCode 使用的 [Models.dev](https://opencode.ai/docs/models/)
+中 `opencode-go` 专属条目（[数据 API](https://models.dev/api.json)）。不将直连厂商的模型配置套用到 Go。
+
+三个模板默认声明 `x-opencode-session: {"source": "context", "key": "session.id"}`，
+每次请求解析为当前 OURO 会话 ID；恢复会话沿用同一 ID，独立会话使用不同 ID。
+协议适配器默认发送 `User-Agent: ouro/<version>`。API Key 在创建实例时输入，或显式绑定 `OPENCODE_API_KEY`。
+密钥和会话运行值均不属于模板内容。
+
+所有模型默认输出预算为 32,768 tokens；表中的服务输出上限另存于 `metadata.provider_output_limit`，
+官方单列的输入上限保存为 `metadata.provider_input_limit`，它是参考信息，不是独立的本地输入限额。
+上下文窗口与服务输出上限不表示两者可同时取满。所有端点支持工具调用与流式输出。
+
+输入能力按 Go 与 OURO 编码方式的交集启用：表中“图片”表示已启用图片附件；音频和视频均关闭。
+Models.dev 的模型模态声明不单独证明 Go 接受 OURO 的 `input_audio` / Base64 `video_url` 编码；
+Messages 和 Responses 适配器本身也仅编码图片。Messages 的结构化输出关闭，因为当前 OURO 适配器不编码该功能。
+
+思考默认交由 Go 服务决定；模板不声明未经 Go 文档确认的开关或 effort 档位，
+`reasoning.capability.activation=unsupported` 表示不提供本地思考控制，并不表示模型没有推理能力。
+Chat Completions 在目录明确 `reasoning_content` 时保留文本续接；Hy3、Hy4 未声明该字段，不启用文本续接。
+Responses 与 Messages 保留 opaque 续接，不混用直连厂商的思考请求参数。
+
+### OpenCode Go (Chat Completions)
+
+模板 ID：`opencode-go`；默认模型：`kimi-k3`。
+
+| 模型 ID | 上下文 | 服务输出上限 | OURO 图片输入 | OURO 结构化输出 |
+|---|---:|---:|---|---|
+| `glm-5.3-flash` | 1,000,000 | 131,072 | 开启 | 开启 |
+| `glm-5.3` | 1,000,000 | 131,072 | 关闭 | 开启 |
+| `glm-5.2` | 1,000,000 | 131,072 | 关闭 | 开启 |
+| `kimi-k3` | 1,048,576 | 131,072 | 开启 | 开启 |
+| `kimi-k2.7-code` | 262,144 | 262,144 | 开启 | 开启 |
+| `kimi-k2.6` | 262,144 | 65,536 | 开启 | 关闭 |
+| `longcat-2.0` | 1,000,000 | 131,072 | 关闭 | 关闭 |
+| `deepseek-v4.1-flash` | 1,000,000 | 384,000 | 开启 | 开启 |
+| `deepseek-v4-pro` | 1,000,000 | 384,000 | 关闭 | 开启 |
+| `mimo-v2.6-flash` | 1,048,576 | 131,072 | 开启 | 关闭 |
+| `mimo-v2.6-pro` | 1,048,576 | 131,072 | 开启 | 关闭 |
+| `mimo-v2.5` | 1,000,000 | 128,000 | 开启 | 关闭 |
+| `mimo-v2.5-pro` | 1,048,576 | 128,000 | 关闭 | 关闭 |
+| `hy4-preview` | 1,024,000 | 64,000 | 关闭 | 关闭 |
+| `hy3` | 256,000 | 128,000 | 关闭 | 关闭 |
+| `space-bunny` | 1,048,576 | 524,288 | 开启 | 关闭 |
+| `longcat-2.5-preview-free` | 1,000,000 | 131,072 | 开启 | 关闭 |
+| `step-5-preview-free` | 1,000,000 | 65,536 | 开启 | 开启 |
+| `cat-jam-free` | 262,144 | 131,072 | 关闭 | 开启 |
+
+### OpenCode Go (Responses)
+
+模板 ID：`opencode-go-responses`；默认模型：`gpt-6-luna`。
+
+| 模型 ID | 上下文 | 服务输出上限 | OURO 图片输入 | OURO 结构化输出 |
+|---|---:|---:|---|---|
+| `grok-4.7` | 500,000 | 500,000 | 开启 | 开启 |
+| `grok-4.6` | 500,000 | 500,000 | 开启 | 开启 |
+| `gpt-6-luna` | 1,050,000 | 128,000 | 开启 | 开启 |
+| `gpt-5.6-luna` | 1,050,000 | 128,000 | 开启 | 开启 |
+| `muse-spark-1.3-contributor` | 1,048,576 | 131,072 | 开启 | 开启 |
+| `muse-spark-1.2-contributor` | 1,048,576 | 131,072 | 开启 | 开启 |
+
+### OpenCode Go (Messages)
+
+模板 ID：`opencode-go-messages`；默认模型：`minimax-m3`。
+
+| 模型 ID | 上下文 | 服务输出上限 | OURO 图片输入 | OURO 结构化输出 |
+|---|---:|---:|---|---|
+| `claude-haiku-5-5` | 1,000,000 | 128,000 | 开启 | 关闭 |
+| `minimax-m3` | 1,000,000 | 131,072 | 开启 | 关闭 |
+| `minimax-m2.7` | 204,800 | 131,072 | 关闭 | 关闭 |
+| `qwen3.8-max` | 1,000,000 | 131,072 | 开启 | 关闭 |
+| `qwen3.8-flash` | 1,000,000 | 131,072 | 开启 | 关闭 |
+| `qwen3.7-plus` | 1,000,000 | 65,536 | 开启 | 关闭 |
+
+Go 的服务可用性、临时免费模型、区域限制和使用额度由 OpenCode 决定；
+Muse Spark Contributor 的输入和输出可能用于模型训练，具体数据政策以 [Go 隐私说明](https://opencode.ai/docs/go/#privacy)为准。

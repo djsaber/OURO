@@ -64,6 +64,7 @@ class ProviderSetupProfile:
     preset: bool
     auth_driver: str = "static"
     notice: str | None = None
+    header_count: int = 0
 
     @classmethod
     def from_template(cls, template: ProviderTemplateView) -> ProviderSetupProfile:
@@ -79,6 +80,7 @@ class ProviderSetupProfile:
             preset=True,
             auth_driver=template.auth_driver,
             notice=template.notice,
+            header_count=len(template.headers),
         )
 
 
@@ -325,12 +327,17 @@ class ProviderConfigurationScreen(CredentialEditableChoiceScreen):
                 trailing=(
                     "Replace"
                     if self._values["provider-headers"]
-                    else f"Keep ({len(self._existing.headers) if self._existing else 0} configured)"
+                    else f"Keep ({len(self._existing.headers)} configured)"
+                    if self._existing is not None
+                    else f"Default ({self._profile.header_count} configured)"
                 ),
-                description="Blank keeps existing headers; {} clears; a JSON object replaces all.",
+                description=(
+                    "Blank keeps existing headers or uses preset defaults; "
+                    "{} clears; a JSON object replaces all."
+                ),
                 group="REQUEST",
                 edit_value=self._values["provider-headers"],
-                edit_placeholder="Header declarations as JSON; blank keeps existing",
+                edit_placeholder="JSON headers; blank uses existing or preset headers",
             ),
             Choice(
                 "provider-options",

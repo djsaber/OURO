@@ -10,6 +10,60 @@ from ouro.config import ProviderConfigManager
 from ouro.config.provider_templates import get_provider_template
 
 
+@pytest.mark.parametrize(
+    "provider_type,protocol,count",
+    [
+        ("opencode-go", "openai-chat-completions", 19),
+        ("opencode-go-responses", "openai-responses", 6),
+        ("opencode-go-messages", "anthropic-messages", 6),
+    ],
+)
+def test_add_go_preset_creates_matching_route_and_automatic_headers(
+    tmp_path, capsys, provider_type, protocol, count
+):
+    assert (
+        main(
+            [
+                "provider",
+                "add",
+                "OpenCode Go",
+                "--type",
+                provider_type,
+                "--api-key-env",
+                "OPENCODE_API_KEY",
+                "--home",
+                str(tmp_path),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    provider = ProviderConfigManager(tmp_path).snapshot(include_builtin=False).providers[0]
+    assert provider.protocol == protocol
+    assert len(provider.endpoints) == count
+    assert provider.template.template_id == provider_type
+    assert provider.headers["x-opencode-session"].key == "session.id"
+    assert provider.credential_ref.name == "OPENCODE_API_KEY"
+    assert (
+        main(
+            [
+                "provider",
+                "update",
+                provider.provider_id,
+                "--home",
+                str(tmp_path),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    saved = ProviderConfigManager(tmp_path).get_provider(provider.provider_id)
+    assert saved.protocol == protocol
+    assert saved.headers == provider.headers
+
+
 def test_provider_templates_command_lists_builtin_catalog(capsys) -> None:
     code = main(["provider", "templates", "--json"])
 

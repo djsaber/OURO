@@ -31,7 +31,7 @@ TUI 的供应商配置页选中 **API key** 后按 Enter 直接编辑，Tab 切�
 CLI 的 `--api-key` 与 `--api-key-env` 分别对应这两种来源。
 
 当前模板包括 OpenAI（API 与 Codex 订阅）、Anthropic、Gemini、DeepSeek、Qwen、KIMI、GLM、Grok、Mistral、
-MiniMax、豆包和 Cohere；每个模板携带
+MiniMax、豆包、Cohere 和 OpenCode Go（三个协议）；每个模板携带
 一个明确的默认 Endpoint、仓库预制的模型 Endpoint、预定义展示名、官方文档链接与核验日期。列表不是服务端实时目录。`--model`
 只覆盖默认 Endpoint 的模型标识。模型与视觉能力的核对依据见[预置供应商配置](../specs/provider-presets.md)。
 OpenRouter 等聚合服务通过 `custom` 与兼容协议配置。`add` 根据 `--type` 自动判断是否装载内置模板并返回生成的 Provider ID。
@@ -43,6 +43,19 @@ OpenRouter 等聚合服务通过 `custom` 与兼容协议配置。`add` 根据 `
 CLI 更新会在文本或 `--json` 输出中给出 added/updated/removed/preserved/conflicts 报告；TUI 可在供应商列表选中
 Provider 回车后，通过 `Update from preset` 执行同一更新逻辑。模板已删除、禁用或来源发生替换时，更新失败且
 Provider 保持不变。
+
+OpenCode Go 按协议提供三种预置供应商。选择所需类型并配置同一 Go API Key，即可获得对应模型目录、
+服务地址和会话请求头；不需要手工分配协议或填写 `x-opencode-session`。使用环境变量时：
+
+```bash
+uv run --frozen ouro provider add "OpenCode Go Chat" --type opencode-go --api-key-env OPENCODE_API_KEY
+uv run --frozen ouro provider add "OpenCode Go Responses" --type opencode-go-responses --api-key-env OPENCODE_API_KEY
+uv run --frozen ouro provider add "OpenCode Go Messages" --type opencode-go-messages --api-key-env OPENCODE_API_KEY
+```
+
+TUI 新建供应商时选择对应的 **OpenCode Go** 模板即可。模型能力与限制见
+[OpenCode Go 预置说明](../specs/provider-presets.md#opencode-go)。已有自定义供应商继续保留，
+新建预置供应商不会覆盖已有密钥、端点或默认路由。
 
 受管理 Provider 可在 TUI 的 `Manage providers → Provider → Authentication` 中登录、查看状态和注销，
 或通过 `Manage local credentials` 清理共享及未绑定的本地凭据。登录方法由已注册驱动提供；浏览器只在选择

@@ -39,7 +39,7 @@ OpenCode 主仓库的内置 Codex 插件提供浏览器 PKCE 和设备码登录�
 | `config/provider_models.py`、`provider_codec.py` | 产品、协议、认证驱动和凭据引用的结构与组合校验 |
 | `config/credentials.py`、`providers/factory.py` | 静态引用解析、协议选择与请求认证端口注入 |
 | `application/models.py` | 模型路由与 adapter 生命周期；请求认证独立取得当前凭据 |
-| `config/provider_templates.py` | 产品默认连接与模型数据，模板不保存账户 |
+| `config/provider_templates/` | 产品默认连接与模型数据，模板不保存账户 |
 | `application/configuration_views.py` | 对 Host 投影安全配置和认证状态 |
 | `providers/http_transport.py`、`retrying.py` | HTTP/SSE、统一尝试预算和输出前认证恢复 |
 | `core/messages.py` | 不透明 continuation；Responses envelope 与 scope 由协议层解释 |

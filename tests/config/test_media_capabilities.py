@@ -70,6 +70,9 @@ def test_presets_only_enable_media_supported_by_the_configured_connection():
         "MiniMax-M2.7-highspeed",
     }
     for template in provider_templates():
+        if template.template_id.startswith("opencode-go"):
+            # Go's gateway contracts are covered separately from direct-provider presets.
+            continue
         for endpoint in template.endpoints:
             assert endpoint.supports_image_input == (endpoint.model_id not in text_only_models)
             assert endpoint.supports_audio_input == (endpoint.model_id in audio_models)

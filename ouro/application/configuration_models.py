@@ -151,6 +151,7 @@ class ProviderTemplateView(ApplicationDTO):
     credential_env: str | None = None
     base_url: str
     api_path: str
+    headers: dict[str, dict[str, str]] = Field(default_factory=dict)
     default_endpoint: str
     endpoints: list[ProviderEndpointView] = Field(default_factory=list)
     documentation_url: str
