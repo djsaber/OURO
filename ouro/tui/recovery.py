@@ -11,7 +11,6 @@ from typing import Any, Literal, cast
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
 from textual.widgets import OptionList, Static
 from textual.worker import Worker
 
@@ -89,14 +88,9 @@ class _RecoveryScreen(ChoiceScreen):
         )
         self._home = home
 
-    def compose(self) -> ComposeResult:
-        with Vertical(id="choice-panel"):
-            yield Static(self._title, id="choice-title")
-            yield Static(Text(str(self._home)), id="recovery-home")
-            yield Static(id="recovery-status")
-            yield self._filter_input()
-            yield self._choice_list()
-            yield Static(self._resolved_hint(), id="choice-hint")
+    def _context_widgets(self) -> ComposeResult:
+        yield Static(Text(str(self._home)), id="recovery-home")
+        yield Static(id="recovery-status")
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -127,23 +121,18 @@ class _DiscardScreen(ConfirmationScreen):
         self._home = home
         self._units = units
 
-    def compose(self) -> ComposeResult:
-        with Vertical(id="choice-panel"):
-            yield Static(self._title, id="choice-title")
-            yield Static(Text(str(self._home)), id="recovery-home")
-            yield Static(
-                Text(
-                    "Only the following failed units will be removed from active storage, "
-                    "including their owned history and files. Successful data is kept.\n"
-                    + "\n".join(_unit_label(unit) for unit in self._units)
-                    + "\nStop all other OURO processes first.",
-                    style=theme_for(self).danger,
-                ),
-                id="recovery-status",
-            )
-            yield self._filter_input()
-            yield self._choice_list()
-            yield Static(self._resolved_hint(), id="choice-hint")
+    def _context_widgets(self) -> ComposeResult:
+        yield Static(Text(str(self._home)), id="recovery-home")
+        yield Static(
+            Text(
+                "Only the following failed units will be removed from active storage, "
+                "including their owned history and files. Successful data is kept.\n"
+                + "\n".join(_unit_label(unit) for unit in self._units)
+                + "\nStop all other OURO processes first.",
+                style=theme_for(self).danger,
+            ),
+            id="recovery-status",
+        )
 
 
 class DataRecoveryApp(App[RecoveryResult]):

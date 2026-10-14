@@ -28,7 +28,7 @@ OURO 是本地优先的个人智能体运行时。会话历史、运行状态、
 | 用量 | 请求级 token / 费用账本、计费归属、过滤汇总、审计修改和选择性重置 | [用量与计费](specs/usage-and-billing.md) |
 | 数据传输 | 各配置域、原生 Skills、完整会话树和附件的验证导入导出及跨会话后端传输 | [数据传输](specs/data-transfer.md) |
 | 数据升级 | 按数据契约版本在原 home 升级有限历史核心格式、备份与中断恢复；TUI 自动升级和需危险确认的初始化兜底 | [数据升级](specs/data-upgrade.md) |
-| Host | Textual 全屏 TUI、CLI 单次文本 / JSON 输出、配置与维护命令、类型化事件观察 | [CLI](specs/cli-and-hosts.md)、[TUI](specs/tui.md)、[会话观察](specs/session-observation.md) |
+| Host | Textual 全屏 TUI、可选欢迎页主题拓展、CLI 单次文本 / JSON 输出、配置与维护命令、类型化事件观察 | [CLI](specs/cli-and-hosts.md)、[TUI](specs/tui.md)、[会话观察](specs/session-observation.md) |
 
 模型目录声明、OURO adapter 能力和真实服务验收是不同事实。浏览器订阅与预制模型的验证范围见[订阅指南](guides/subscriptions.md#证据范围)和[预制配置](specs/provider-presets.md)，不能从模板存在推断账户可用性或全部参数已验收。
 

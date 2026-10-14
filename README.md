@@ -12,7 +12,7 @@ OURO 让你在终端中与模型协作，处理文件、调用工具、管理会
 
 ![OURO v0.2.0 的终端交互界面](https://raw.githubusercontent.com/djsaber/OURO/v0.2.0/docs/assets/tui-welcome.png)
 
-*OURO TUI · Horizon 欢迎页 · 尚未配置模型的初始状态*
+*OURO TUI · 可选 Horizon 欢迎页主题 · 尚未配置模型的状态*
 
 [使用文档](https://github.com/djsaber/OURO/blob/main/docs/README.md) · [版本记录](https://github.com/djsaber/OURO/blob/main/CHANGELOG.md) · [源码](https://github.com/djsaber/OURO) · [问题反馈](https://github.com/djsaber/OURO/issues)
 
@@ -52,6 +52,19 @@ ouro --version
 ```
 
 PyPI 包名是 `ouro-agent`，安装后的命令是 `ouro`。
+
+### TUI 欢迎页主题拓展
+
+基础安装包含完整 TUI 和默认的 Still 欢迎页。可选主题通过 `themes` extra 安装：
+
+```bash
+uv tool install --python 3.14 "ouro-agent[themes]"
+```
+
+使用 pip 时，在 OURO 所在虚拟环境执行 `python -m pip install "ouro-agent[themes]"`。
+重启 TUI 后，在 `Ctrl+P → Theme → Welcome style` 中选择可用主题。安装拓展不会改变已有选择。
+点阵主题依赖 `arrayfunc`；Linux 源码构建的工具链要求与安装参数见
+[欢迎页主题指南](https://github.com/djsaber/OURO/blob/main/docs/guides/running.md#欢迎页主题)。
 
 ## 第一次使用
 
@@ -144,6 +157,8 @@ uv tool upgrade ouro-agent
 ```bash
 python -m pip install --upgrade ouro-agent
 ```
+
+使用 pip 且需要主题拓展时，升级命令中的包名使用 `"ouro-agent[themes]"`。
 
 ## 文档与源码
 

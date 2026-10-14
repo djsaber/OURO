@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from html import escape
 
 import pytest
@@ -98,7 +99,8 @@ async def test_fork_and_undo_restore_complete_input_without_reupload(
 
         for attempt in range(3):
             await pilot.press("enter")
-            await app.workers.wait_for_complete([w for w in app.workers if w.group == "run"])
+            if workers := [w for w in app.workers if w.group == "run"]:
+                await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=10)
             await pilot.pause()
             sent = "\n".join(m.text_content for m in provider.calls[-1])
             for path in upload_paths:

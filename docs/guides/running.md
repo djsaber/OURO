@@ -61,7 +61,36 @@ TUI 欢迎页可通过 `/workspace <path>` 为尚未创建的会话选择工作�
 `Settings` 分组统一提供主题、思考内容展开方式、输入草稿记忆、排队输入交付方式和上下文压缩策略；关闭草稿
 记忆会清空已保存草稿。排队输入交付方式与压缩策略的更新在下一次启动时生效。
 
-通过 `Ctrl+P → Theme` 菜单前面的 `Welcome style` 分组直接选择欢迎页样式，后面的 `Theme color`
-分组选择界面配色。内置 Still 静态字标与 Horizon、Bloom、Labyrinth、Tide、Iris、Prism 六种动态点阵艺术包，
-默认使用 Horizon。`Animation` 可暂停或恢复动画。样式与播放偏好立即保存，独立于界面配色；
-所选作品立即显示在菜单后方，菜单打开期间暂停动画。自定义包接入见[欢迎页样式包开发](../development/welcome-styles.md)。
+### 欢迎页主题
+
+通过 `Ctrl+P → Theme` 菜单前面的 `Welcome style` 分组选择欢迎页主题，后面的 `Theme color`
+分组选择界面配色。基础安装默认使用 Still 静态字标，包含完整的 TUI 功能。
+
+安装可选主题拓展（PowerShell、bash 或 zsh）：
+
+```bash
+uv tool install --python 3.14 "ouro-agent[themes]"
+```
+
+使用 pip 时，在 OURO 所在虚拟环境执行 `python -m pip install "ouro-agent[themes]"`。
+uv tool 使用独立环境，向系统 Python 或其他虚拟环境安装依赖不会改变 OURO 的可用主题。
+
+点阵主题 Horizon、Bloom、Labyrinth、Tide、Iris、Prism 需要 `arrayfunc>=8.5.7,<9`。
+该依赖提供 Windows x64 / CPython 3.14 wheel；没有匹配 wheel 的平台需要 C 编译器和对应 Python
+开发头文件。Linux x86_64 上，uv 的 Python 与系统 C 编译器组合可能需要显式启用 SSE4.1。
+确认 `grep -w sse4_1 /proc/cpuinfo` 有输出后，可在 bash 中执行：
+
+```bash
+CFLAGS="${CFLAGS:+$CFLAGS }-msse4.1" uv tool install --python 3.14 "ouro-agent[themes]"
+```
+
+此参数仅适用于支持 SSE4.1 的 x86_64 CPU，不适用于 ARM。源码构建要求见
+[arrayfunc 安装说明](https://pypi.org/project/arrayfunc/8.5.7/#installation)。基础安装无需该依赖。
+
+TUI 每次启动检测主题所需依赖，只列出可用主题；安装依赖后需要重启。安装拓展只增加可选项，不自动
+切换主题。已保存的主题暂不可用时，本次显示 Still 并提示原因，保留原选择；恢复依赖后再次启动即可
+恢复该主题。使用同一 OURO 环境中手动安装的兼容依赖，也能启用对应主题。
+
+`Animation` 独立控制当前主题的动画播放；主题也可以是静态页面。主题与播放偏好立即保存，独立于界面配色。
+所选作品立即显示在菜单后方，菜单打开期间暂停动画。自定义主题接入见
+[欢迎页样式包开发](../development/welcome-styles.md)。

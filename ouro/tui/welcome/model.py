@@ -54,12 +54,18 @@ class WelcomePage(Widget):
 
 @dataclass(frozen=True)
 class WelcomeStyle:
-    """A stable identity and a factory returning a fresh, unmounted page."""
+    """A page factory with stable metadata and an optional dependency check.
+
+    The check returns an unavailability reason, or None when usable. It runs
+    once per App, shared by styles using the same check. Factories load optional
+    renderers only when selected; metadata remains usable without them.
+    """
 
     style_id: str
     label: str
     description: str
     create: Callable[[], WelcomePage]
+    check_requirements: Callable[[], str | None] | None = None
 
     def __post_init__(self) -> None:
         if re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", self.style_id) is None:

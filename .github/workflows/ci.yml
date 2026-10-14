@@ -32,17 +32,19 @@ jobs:
         run: uv sync --frozen --all-groups
 
       - name: Check architecture and core units
-        run: uv run --frozen pytest -q tests/architecture tests/core
+        run: uv run --frozen pytest -q tests/architecture tests/core tests/tui/test_optional_welcome_styles.py
 
   quality:
     name: Python 3.14 / ${{ matrix.os }}
     needs: architecture-unit
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      CFLAGS: ${{ matrix.os == 'ubuntu-latest' && '-msse4.1' || '' }}
 
     steps:
       - name: Check out repository
@@ -56,26 +58,35 @@ jobs:
           enable-cache: true
 
       - name: Sync locked dependencies
-        run: uv sync --frozen --all-groups
+        run: uv sync --frozen --all-groups --extra themes
 
       - name: Run tests
-        run: uv run --frozen pytest
+        if: runner.os != 'Linux'
+        run: uv run --frozen --extra themes pytest
+
+      - name: Run tests with coverage
+        if: runner.os == 'Linux'
+        run: uv run --frozen --extra themes pytest --cov=ouro --cov-report=term-missing
 
       - name: Check lint
-        run: uv run --frozen ruff check ouro tests
+        run: uv run --frozen --extra themes ruff check ouro tests dev/check_distribution.py
 
       - name: Check formatting
-        run: uv run --frozen ruff format --check ouro tests
+        run: uv run --frozen --extra themes ruff format --check ouro tests dev/check_distribution.py
 
       - name: Check types
-        run: uv run --frozen mypy ouro
+        run: uv run --frozen --extra themes mypy ouro
 
       - name: Compile package
-        run: uv run --frozen python -m compileall -q ouro
+        run: uv run --frozen --extra themes python -m compileall -q ouro
 
       - name: Build distributions
         run: uv build
 
-      - name: Enforce coverage floor
-        if: runner.os == 'Linux'
-        run: uv run --frozen pytest --cov=ouro --cov-report=term-missing
+      - name: Check installed base and theme distributions
+        shell: bash
+        run: |
+          for wheel in dist/*.whl; do
+            uv run --isolated --no-project --with "$wheel" python -I dev/check_distribution.py
+            uv run --isolated --no-project --with "$wheel[themes]" python -I dev/check_distribution.py --themes
+          done

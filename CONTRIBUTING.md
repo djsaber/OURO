@@ -11,14 +11,35 @@ uv run --frozen pytest -q tests/architecture tests/core
 Before handoff, run the complete local quality gate:
 
 ```bash
-uv sync --frozen --all-groups
-uv run --frozen pytest --cov=ouro --cov-report=term-missing
-uv run --frozen ruff check ouro tests
-uv run --frozen ruff format --check ouro tests
-uv run --frozen mypy ouro
-uv run --frozen python -m compileall -q ouro
+uv sync --frozen --all-groups --extra themes
+uv run --frozen --extra themes pytest --cov=ouro --cov-report=term-missing
+uv run --frozen --extra themes ruff check ouro tests dev/check_distribution.py
+uv run --frozen --extra themes ruff format --check ouro tests dev/check_distribution.py
+uv run --frozen --extra themes mypy ouro
+uv run --frozen --extra themes python -m compileall -q ouro
 uv build
 ```
+
+The full suite includes optional theme renderers. `--all-groups` selects development groups;
+`--extra themes` selects the user-facing theme dependencies. Linux source builds may need the
+compiler settings in the [theme installation guide](docs/guides/running.md#欢迎页主题).
+
+Also verify the base installation in a separate environment without optional dependencies:
+
+```bash
+uv run --isolated --frozen pytest -q tests/architecture tests/core tests/tui/test_optional_welcome_styles.py
+```
+
+After building, run the installed-distribution smoke check twice in isolated environments, using
+the wheel path in place of `<wheel>` (quote the requirement in PowerShell, bash or zsh):
+
+```bash
+uv run --isolated --no-project --with "<wheel>" python -I dev/check_distribution.py
+uv run --isolated --no-project --with "<wheel>[themes]" python -I dev/check_distribution.py --themes
+```
+
+These checks verify dependency metadata, CLI entry points, actual installed module paths, TUI
+startup, available theme choices and preference preservation without relying on the source checkout.
 
 Run platform-specific checks on their actual target systems and report skipped or unverified
 platforms separately; a passing local gate is not cross-platform evidence.

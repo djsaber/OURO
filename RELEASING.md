@@ -21,7 +21,10 @@ For a release:
 2. Update `pyproject.toml` and `ouro.__version__`, align plugin host-version ranges, and regenerate `uv.lock`.
 3. Run the full commands from `CONTRIBUTING.md`, including the coverage floor.
 4. Build with `uv build` and inspect both wheel and source archive for secrets and unintended files.
-5. Test installation and `ouro --help` from a clean environment.
+5. Test both the base wheel and its `themes` extra from separate clean environments using
+   `dev/check_distribution.py` as described in `CONTRIBUTING.md`. Verify that `arrayfunc` is absent
+   from the base installation and available to the theme installation. Run platform checks on the
+   actual target systems; preserve documented compiler requirements for optional source builds.
 6. Commit the release metadata, create an annotated `vX.Y.Z` tag, and publish release notes from
    the reviewed changelog entry. Keep guides and specs focused on current behavior; release history
    belongs in the changelog.

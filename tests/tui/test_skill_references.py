@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from ouro.application.skill_activations import SkillInvocationRequest
@@ -92,9 +94,8 @@ async def test_mixed_references_survive_restart_and_form_one_complete_attachment
         composer = restarted.query_one(Composer)
         assert composer.input_content == original and composer.text == display
         await pilot.press("enter")
-        await restarted.workers.wait_for_complete(
-            [w for w in restarted.workers if w.group == "run"]
-        )
+        if workers := [w for w in restarted.workers if w.group == "run"]:
+            await asyncio.wait_for(restarted.workers.wait_for_complete(workers), timeout=10)
         await pilot.pause()
         assert not errors
         snapshot = application.runtime.store.load_runtime_session(restarted._controller.session_id)
@@ -144,7 +145,8 @@ async def test_rejected_skill_submission_restores_all_elements(tmp_path):
         )
         original = composer.input_content
         await pilot.press("enter")
-        await app.workers.wait_for_complete([w for w in app.workers if w.group == "run"])
+        if workers := [w for w in app.workers if w.group == "run"]:
+            await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=10)
         await pilot.pause()
         assert composer.input_content == original
         assert app._controller.session_id is None

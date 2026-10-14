@@ -5,7 +5,6 @@ from array import array
 import arrayfunc as af  # type: ignore[import-untyped]
 
 from ouro.tui.welcome.dot_matrix.field import DotGrid, Radiance, Sampler, Spectrum, band, buffer
-from ouro.tui.welcome.dot_matrix.widget import dot_style
 
 _SPECTRUM = ((0.025, 0.19, 0.25), (0.07, 0.66, 0.63), (0.49, 0.95, 0.77), (0.95, 1.0, 0.86))
 
@@ -55,6 +54,3 @@ def prepare(grid: DotGrid) -> Sampler:
         return spectrum.sample(position, light)
 
     return sample
-
-
-STYLE = dot_style("interference", "Tide", "Jade light woven into a breathing caustic.", prepare)

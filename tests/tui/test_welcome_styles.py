@@ -318,6 +318,7 @@ async def test_full_page_controls_viewport_input_layout_composition_and_style_sc
 
 
 async def test_invalid_factory_keeps_the_mounted_page_and_input(tmp_path):
+    TuiPreferencesStore(tmp_path).save(TuiPreferences(welcome_style="event-horizon"))
     app = OuroTuiApp(application=two_route_application(tmp_path))
     async with run_ready_app(app):
         host = app.query_one(WelcomePanel)
@@ -434,7 +435,7 @@ async def test_theme_menu_groups_inline_styles_and_keeps_color_settings_independ
             "Ember",
         ]
         options = menu.query_one(OptionList)
-        assert options.get_option_at_index(options.highlighted).id == "welcome:event-horizon"
+        assert options.get_option_at_index(options.highlighted).id == "welcome:basic"
         assert options.get_option_at_index(0).disabled
         assert options.get_option_at_index(0).prompt.plain == "Welcome style"
         assert all(
@@ -525,6 +526,7 @@ async def test_picker_mounts_arbitrary_custom_package_preserves_input_and_persis
 async def test_dot_playback_pauses_for_menu_conversation_and_motion_setting_and_releases_timer(
     tmp_path: Path,
 ):
+    TuiPreferencesStore(tmp_path).save(TuiPreferences(welcome_style="event-horizon"))
     app = OuroTuiApp(application=two_route_application(tmp_path))
     async with run_ready_app(app, size=(100, 40)) as pilot:
         panel = app.query_one(WelcomePanel)
@@ -623,8 +625,8 @@ async def test_failed_style_save_keeps_current_package_and_preference(tmp_path, 
         monkeypatch.setattr(app._preferences_store, "save", fail_save)
         await select_menu(app, pilot, "Bloom")
         assert app.query_one(WelcomePanel).page is original
-        assert app._preferences.welcome_style == "event-horizon"
-        assert app._preferences_store.load().welcome_style == "event-horizon"
+        assert app._preferences.welcome_style == "basic"
+        assert app._preferences_store.load().welcome_style == "basic"
 
 
 @pytest.mark.parametrize(

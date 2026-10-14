@@ -34,7 +34,9 @@ async def test_openai_preset_sends_native_responses_tools_and_reasoning(
 ):
     monkeypatch.setenv("OPENAI_API_KEY", "fixture-key")
     manager = ProviderConfigManager(tmp_path)
-    provider = manager.create_from_template(get_provider_template("openai"))
+    provider = manager.create_from_template(
+        get_provider_template("openai"), api_key_env="OPENAI_API_KEY"
+    )
     endpoint = next(item for item in provider.endpoints if item.model_id == model_id)
     requests = []
 

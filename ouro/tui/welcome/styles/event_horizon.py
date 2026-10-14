@@ -14,7 +14,6 @@ from ouro.tui.welcome.dot_matrix.field import (
     buffer,
     clip,
 )
-from ouro.tui.welcome.dot_matrix.widget import dot_style
 
 _SPECTRUM = ((0.30, 0.045, 0.008), (1.0, 0.27, 0.045), (1.0, 0.78, 0.38), (1.0, 0.98, 0.86))
 
@@ -88,6 +87,3 @@ def prepare(grid: DotGrid) -> Sampler:
         return spectrum.sample(position, light)
 
     return sample
-
-
-STYLE = dot_style("event-horizon", "Horizon", "An ember disk folded around a dark sun.", prepare)

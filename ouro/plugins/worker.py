@@ -217,13 +217,16 @@ class JsonRpcWorkerClient:
                 await process.stdin.wait_closed()
 
         # A subprocess transport is not closed until the process and every pipe
-        # have finished.  Once the whole process tree is gone, stdout/stderr
-        # must reach EOF; consuming that EOF keeps ownership explicit and avoids
-        # leaving platform transports to object finalizers.
+        # have finished. Protocol readers can stop before EOF after invalid
+        # output; drain any remaining bytes to resume paused pipe transports.
         await asyncio.gather(
             *(task for task in (self._reader_task, self._stderr_task) if task is not None),
             return_exceptions=True,
         )
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                while await stream.read(64 * 1024):
+                    pass
         await process.wait()
         self.process = None
         self._process_owner = None

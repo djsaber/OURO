@@ -67,9 +67,23 @@ run_tui(welcome_styles=(byte_page,))
 ```
 
 `OuroTuiApp` 接受相同的 `welcome_styles` 参数。每个 App 将这些包与内置包组成自己的只读目录；
-重复 ID 在组合边界报错。包自动出现在 `Theme` 菜单的 `Welcome style` 分组中，以 `label` 单行展示；
+重复 ID 在组合边界报错。可用包出现在 `Theme` 菜单的 `Welcome style` 分组中，以 `label` 单行展示；
 `description` 保留为包元数据，不显示在菜单中。保存自定义包后，后续启动
 需要注册同一 ID；未知 ID 明确报告配置错误。JSON 只保存身份与呈现偏好，不加载 Python 路径或执行代码。
+
+## 可选主题依赖
+
+`ouro-agent[themes]` 是欢迎页主题拓展的标准 extra。基础安装默认显示 `basic`，TUI 其余功能完整可用。
+主题是完整页面，可以静态展示，也可以播放动画；`welcome_motion` 只控制页面内部的播放行为。
+
+`WelcomeStyle` 的元数据和工厂必须能在缺少可选依赖时导入。需要可选依赖的包通过
+`check_requirements` 提供检查函数：可用时返回 `None`，否则返回含修复说明的原因。
+App 在启动时执行检查，使用相同函数的主题共用一次结果；不做运行中的环境扫描或依赖安装。
+工厂在选用主题时加载渲染实现，依赖检查只处理其明确负责的依赖错误，不吞掉主题代码的编程错误。
+
+已知目录用于验证和保存主题身份，可用性用于菜单筛选与实际显示。所选主题暂不可用时，显示基础页并
+提示原因，保留用户选择；配色和播放偏好的写入也保留该身份。恢复依赖并重启后恢复原选择。
+完整配置与回退契约见 [TUI 规格](../specs/tui.md#欢迎页样式)。
 
 ## 公共组件与局部样式
 
@@ -106,7 +120,8 @@ Host 在离开欢迎页、打开覆盖菜单或替换页面时发送 `active=Fal
 
 ## 点阵艺术包
 
-`styles/` 中的六个艺术包各自定义数学场、节奏和光谱；`basic.py` 实现静态字标。
+`styles/__init__.py` 保存内置主题描述；六个点阵实现模块各自定义数学场、节奏和光谱，按需加载。
+`basic.py` 实现静态字标。
 `dot_matrix/` 是艺术包可选择复用的引擎：
 
 - `field.py`：只读网格、按视口准备的 RGB 采样器，以及光谱插值。
@@ -138,19 +153,19 @@ Host 在离开欢迎页、打开覆盖菜单或替换页面时发送 `active=Fal
 未变化帧不触发重绘；输入焦点、布局和硬件光标由 Textual 管理，不随艺术计算更新。
 Windows 控制台的完整帧提交由终端适配器负责，与欢迎页包无关，见 [TUI 规范](../specs/tui.md)。
 
-`arrayfunc` 是 C 扩展。当前锁定版本提供 Windows x64 / CPython 3.14 wheel；
-没有匹配 wheel 的平台需要 C 编译器和 Python 开发头文件，详见
-[上游安装说明](https://pypi.org/project/arrayfunc/8.5.7/#installation)。
+`dot_matrix` 的加载边界负责检查 `arrayfunc` 版本与实际导入能力，再由页面工厂加载渲染器和采样器。
+它使用 `packaging` 解析标准版本约束；主题目录和基础页面的导入不加载 `arrayfunc` 或点阵实现。
+构建工具链与平台参数见[欢迎页主题指南](../guides/running.md#欢迎页主题)。
 
 ## 验证
 
 针对欢迎页的回归入口：
 
 ```bash
-uv run --frozen pytest tests/tui/test_welcome_styles.py tests/tui/test_welcome_layout.py tests/tui/test_welcome_refresh.py tests/tui/test_preferences.py
-uv run --frozen pytest tests/tui/test_app.py -k 'welcome or theme or composer_growth or session_input_surface or startup'
-uv run --frozen pytest tests/tui/test_dot_animation.py tests/tui/test_windows_driver.py
-uv run --frozen pytest tests/tui/test_dot_raster.py
+uv run --frozen --extra themes pytest tests/tui/test_optional_welcome_styles.py tests/tui/test_welcome_styles.py tests/tui/test_welcome_layout.py tests/tui/test_welcome_refresh.py tests/tui/test_preferences.py
+uv run --frozen --extra themes pytest tests/tui/test_app.py -k 'welcome or theme or composer_growth or session_input_surface or startup'
+uv run --frozen --extra themes pytest tests/tui/test_dot_animation.py tests/tui/test_windows_driver.py
+uv run --frozen --extra themes pytest tests/tui/test_dot_raster.py
 ```
 
 自定义包需验证全视口绘制、公共组件组合、输入布局与增长、短终端、命令弹窗方向、局部样式撤销、

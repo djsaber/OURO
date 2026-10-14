@@ -6,7 +6,6 @@ from math import cos, exp, sin
 import arrayfunc as af  # type: ignore[import-untyped]
 
 from ouro.tui.welcome.dot_matrix.field import DotGrid, Radiance, Sampler, Spectrum, band, buffer
-from ouro.tui.welcome.dot_matrix.widget import dot_style
 
 _SPECTRUM = ((0.21, 0.12, 0.58), (0.51, 0.34, 1.0), (0.38, 0.86, 1.0), (0.92, 0.98, 1.0))
 _DEPTHS = tuple(-2.2 + index * (4.4 / 13) for index in range(13)) + (2.2,)
@@ -90,6 +89,3 @@ def prepare(grid: DotGrid) -> Sampler:
         return spectrum.sample(position, light)
 
     return sample
-
-
-STYLE = dot_style("clifford-torus", "Iris", "An iris of folded ultraviolet light.", prepare)

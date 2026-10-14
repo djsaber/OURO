@@ -438,11 +438,17 @@ class ChoiceScreen(ModalScreen[str | None]):
             description.styles.max_height = description_height
             description.display = bool(description_height)
             yield description
+            yield from self._context_widgets()
             yield self._filter_input()
             choice_list = self._choice_list()
             choice_list.styles.max_height = self._responsive_list_height(self.app.size.height)
             yield choice_list
             yield Static(self._resolved_hint(), id="choice-hint")
+
+    def _context_widgets(self) -> ComposeResult:
+        """Add screen-specific context without replacing the shared menu frame."""
+
+        return ()
 
     def _filter_input(self) -> Input:
         return TuiInput(

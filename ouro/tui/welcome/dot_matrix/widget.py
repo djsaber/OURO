@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
-from functools import partial
 from time import monotonic
 
 from rich.text import Text
@@ -19,9 +17,8 @@ from textual.worker import Worker
 
 from ouro.tui.theme import theme_for
 from ouro.tui.welcome.centered import CenteredWelcomePage
-from ouro.tui.welcome.dot_matrix.field import DotArtwork, DotGrid, Sampler
+from ouro.tui.welcome.dot_matrix.field import DotArtwork
 from ouro.tui.welcome.dot_matrix.raster import PhosphorRaster
-from ouro.tui.welcome.model import WelcomeStyle
 
 
 def _render_frame(
@@ -201,12 +198,3 @@ class DotWelcomePage(CenteredWelcomePage):
         caption = Text("O U R O", style=theme.text_primary)
         caption.append(f"  /  {self.artwork.label.upper()}", style=theme.text_faint)
         self._caption.update(caption)
-
-
-def dot_style(
-    style_id: str, label: str, description: str, prepare: Callable[[DotGrid], Sampler]
-) -> WelcomeStyle:
-    """Package factory shortcut; the welcome framework has no sampling contract."""
-    return WelcomeStyle(
-        style_id, label, description, partial(DotWelcomePage, DotArtwork(label, prepare))
-    )

@@ -202,7 +202,8 @@ async def test_welcome_upload_stays_in_draft_until_message_is_sent(tmp_path, sou
             snapshot = application.runtime.store.load_runtime_session(session_id)
             assert not snapshot.runs and not snapshot.messages
         await pilot.press("enter")
-        await app.workers.wait_for_complete([w for w in app.workers if w.group == "run"])
+        if workers := [w for w in app.workers if w.group == "run"]:
+            await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=10)
         await pilot.pause()
         assert not app.query_one(WelcomePanel).has_class("welcome-page")
         assert not app.query_one(ConversationView).showing_welcome
@@ -427,7 +428,8 @@ async def test_accepted_input_is_not_restored_when_rendering_fails(tmp_path, mon
         monkeypatch.setattr(app, "_apply_run_result", fail)
         await pilot.press("enter")
         await pilot.pause()
-        await app.workers.wait_for_complete([w for w in app.workers if w.group == "run"])
+        if workers := [w for w in app.workers if w.group == "run"]:
+            await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=10)
         assert app.query_one(Composer).input_content.is_empty
         assert (
             application.runtime.store.load_runtime_session(session.session_id)

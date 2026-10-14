@@ -1,17 +1,17 @@
 [project]
 name = "ouro-agent"
-version = "0.2.3"
+version = "0.2.4"
 description = "Local-first personal agent runtime."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.14"
 dependencies = [
-    "arrayfunc>=8.5.7,<9",
     "httpx>=0.28",
     "httpx-sse>=0.4.3",
     "jsonschema>=4.25",
     "mcp>=1.28,<2",
+    "packaging>=24.2",
     "pathspec>=1.1.1",
     "pillow>=12.3,<13",
     "pydantic>=2.13",
@@ -25,6 +25,9 @@ dependencies = [
     "unicode-segmentation-rs>=0.3.3,<0.4",
     "wcmatch>=11.0",
 ]
+
+[project.optional-dependencies]
+themes = ["arrayfunc>=8.5.7,<9"]
 
 [project.urls]
 Homepage = "https://github.com/djsaber/OURO"

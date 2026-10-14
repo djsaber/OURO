@@ -32,9 +32,12 @@ from tests.tui.helpers import run_ready_app
 from tests.tui.test_app import _application, _wait_for_screen
 
 
-async def choose(pilot, app, value):
+async def choose(pilot, app, value, *, identity=None):
     app.screen.query_one("#choice-filter", Input).value = value
     await pilot.pause()
+    if identity is not None:
+        options = app.screen.query_one("#choice-list", OptionList)
+        options.highlighted = options.get_option_index(identity)
     await pilot.press("enter")
     await pilot.pause()
 
@@ -81,7 +84,7 @@ async def test_plugin_task_editor_and_history_use_service_arguments_and_result(t
             {"model", "workspace", "session", "approval"}
         )
         await screen._save_field("arguments", '{"value": "edited"}')
-        await choose(pilot, app, "Save")
+        await choose(pilot, app, "Save", identity="save")
         assert (await application.tasks.get(task.task_id)).configuration.target.arguments == {
             "value": "edited"
         }
@@ -211,7 +214,7 @@ async def test_task_menu_saves_multiline_instructions_and_pauses_schedule(tmp_pa
         await _wait_for_screen(app, ChoiceScreen, title="TASK TIME ZONE")
         await choose(pilot, app, "Shanghai")
         await _wait_for_screen(app, TaskConfigurationScreen, title="CREATE TASK")
-        await choose(pilot, app, "Save")
+        await choose(pilot, app, "Save", identity="save")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         tasks = await application.tasks.list()
         assert len(tasks) == 1

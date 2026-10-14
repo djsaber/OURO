@@ -133,7 +133,12 @@ from ouro.tui.theme import (
     TUI_THEMES,
     TuiTheme,
 )
-from ouro.tui.welcome import WelcomeStyle, welcome_catalog
+from ouro.tui.welcome import (
+    DEFAULT_WELCOME_STYLE,
+    WelcomeStyle,
+    unavailable_styles,
+    welcome_catalog,
+)
 from ouro.tui.widgets import (
     COMMAND_POPUP_MAX_HEIGHT,
     COMMAND_POPUP_MIN_HEIGHT,
@@ -859,6 +864,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             else home
         )
         self._welcome_styles = welcome_catalog(welcome_styles)
+        self._unavailable_welcome_styles = unavailable_styles(self._welcome_styles)
+        for reason in dict.fromkeys(self._unavailable_welcome_styles.values()):
+            _LOG.info("Welcome styles unavailable: %s", reason)
         self._preferences_store = TuiPreferencesStore(
             preference_home, welcome_styles=self._welcome_styles
         )
@@ -991,7 +999,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 system_status_changed=self._set_welcome_system_status,
             )
             self._input_surface = WelcomePanel(
-                welcome_style=self._welcome_styles[self._preferences.welcome_style],
+                welcome_style=self._welcome_style,
                 welcome_motion=self._preferences.welcome_motion,
             )
             yield self._input_surface
@@ -1067,6 +1075,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         _worker: Worker[None] = self.run_worker(self._start, name="tui-start", exclusive=True)
         if self._preferences_error is not None:
             self.notify(self._preferences_error, severity="warning")
+        if reason := self._unavailable_welcome_styles.get(self._preferences.welcome_style):
+            selected = self._welcome_styles[self._preferences.welcome_style]
+            self.notify(
+                f"{selected.label} is unavailable; using {self._welcome_style.label}. {reason}",
+                severity="warning",
+                markup=False,
+            )
         if self._input_drafts_error is not None:
             self._input_draft_error_notified = True
             self.notify(self._input_drafts_error, severity="warning", markup=False)
@@ -4747,7 +4762,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 title="THEME",
                 placeholder="Filter styles and colors…",
                 choices=theme_choices(),
-                initial_value=f"{_WELCOME_STYLE_PREFIX}{self._preferences.welcome_style}",
+                initial_value=f"{_WELCOME_STYLE_PREFIX}{self._welcome_style.style_id}",
                 on_highlight=lambda theme_id: preview_theme(menu, theme_id),
                 on_select=select_choice,
                 on_refresh=refresh_themes,
@@ -4771,7 +4786,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             title="THEME",
             placeholder="Filter styles and colors…",
             choices=theme_choices(),
-            initial_value=f"{_WELCOME_STYLE_PREFIX}{self._preferences.welcome_style}",
+            initial_value=f"{_WELCOME_STYLE_PREFIX}{self._welcome_style.style_id}",
             on_highlight=preview_standalone_theme,
             on_select=select_choice,
             on_refresh=refresh_themes,
@@ -4787,7 +4802,17 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._register_theme_picker(theme_screen)
         await self.push_screen_wait(theme_screen)
 
+    @property
+    def _welcome_style(self) -> WelcomeStyle:
+        identity = self._preferences.welcome_style
+        if identity in self._unavailable_welcome_styles:
+            identity = DEFAULT_WELCOME_STYLE
+        return self._welcome_styles[identity]
+
     async def _set_welcome_style(self, value: str) -> bool:
+        if reason := self._unavailable_welcome_styles.get(value):
+            self.notify(reason, severity="warning", markup=False)
+            return False
         async with self._preferences_save_lock:
             update = (
                 {"welcome_motion": not self._preferences.welcome_motion}
@@ -4804,7 +4829,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 return False
             self._preferences = preferences
             await self.query_one(WelcomePanel).set_welcome_style(
-                self._welcome_styles[preferences.welcome_style],
+                self._welcome_style,
                 motion=preferences.welcome_motion,
             )
         return True
@@ -4968,11 +4993,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     group="Welcome style",
                     marker=(
                         self._tui_theme.selected_choice_marker
-                        if style.style_id == self._preferences.welcome_style
+                        if style.style_id == self._welcome_style.style_id
                         else ""
                     ),
                 )
                 for style in self._welcome_styles.values()
+                if style.style_id not in self._unavailable_welcome_styles
             ),
             Choice(
                 _WELCOME_MOTION_ACTION,

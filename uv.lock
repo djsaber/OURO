@@ -516,14 +516,14 @@ wheels = [
 
 [[package]]
 name = "ouro-agent"
-version = "0.2.3"
+version = "0.2.4"
 source = { editable = "." }
 dependencies = [
-    { name = "arrayfunc" },
     { name = "httpx" },
     { name = "httpx-sse" },
     { name = "jsonschema" },
     { name = "mcp" },
+    { name = "packaging" },
     { name = "pathspec" },
     { name = "pillow" },
     { name = "pydantic" },
@@ -536,6 +536,11 @@ dependencies = [
     { name = "tzlocal" },
     { name = "unicode-segmentation-rs" },
     { name = "wcmatch" },
+]
+
+[package.optional-dependencies]
+themes = [
+    { name = "arrayfunc" },
 ]
 
 [package.dev-dependencies]
@@ -552,11 +557,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "arrayfunc", specifier = ">=8.5.7,<9" },
+    { name = "arrayfunc", marker = "extra == 'themes'", specifier = ">=8.5.7,<9" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "httpx-sse", specifier = ">=0.4.3" },
     { name = "jsonschema", specifier = ">=4.25" },
     { name = "mcp", specifier = ">=1.28,<2" },
+    { name = "packaging", specifier = ">=24.2" },
     { name = "pathspec", specifier = ">=1.1.1" },
     { name = "pillow", specifier = ">=12.3,<13" },
     { name = "pydantic", specifier = ">=2.13" },
@@ -570,6 +576,7 @@ requires-dist = [
     { name = "unicode-segmentation-rs", specifier = ">=0.3.3,<0.4" },
     { name = "wcmatch", specifier = ">=11.0" },
 ]
+provides-extras = ["themes"]
 
 [package.metadata.requires-dev]
 dev = [

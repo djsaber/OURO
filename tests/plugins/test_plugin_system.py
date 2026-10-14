@@ -1887,7 +1887,12 @@ async def test_worker_stdout_pollution_and_oversize_are_fatal_bounded_diagnostic
     assert diagnostics[-1][0] == "worker_exit"
     assert expected in diagnostics[-1][1]
     assert len(diagnostics[-1][1]) <= 4096
+    process = client.process
+    assert process is not None
     await client.close(timeout=0.2)
+    assert process.returncode is not None
+    assert process.stdout is not None and process.stdout.at_eof()
+    assert process.stderr is not None and process.stderr.at_eof()
 
 
 @pytest.mark.asyncio

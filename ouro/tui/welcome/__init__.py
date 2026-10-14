@@ -1,34 +1,13 @@
 """Welcome style catalog, independent of the interface color theme."""
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from types import MappingProxyType
 
 from ouro.tui.welcome.model import WelcomePage, WelcomeStyle
-from ouro.tui.welcome.styles import (
-    basic,
-    clifford,
-    crystal,
-    electron_bloom,
-    event_horizon,
-    interference,
-    julia_reliquary,
-)
+from ouro.tui.welcome.styles import STYLES
 
-WELCOME_STYLES = MappingProxyType(
-    {
-        style.style_id: style
-        for style in (
-            basic.STYLE,
-            event_horizon.STYLE,
-            electron_bloom.STYLE,
-            julia_reliquary.STYLE,
-            interference.STYLE,
-            clifford.STYLE,
-            crystal.STYLE,
-        )
-    }
-)
-DEFAULT_WELCOME_STYLE = event_horizon.STYLE.style_id
+WELCOME_STYLES = MappingProxyType({style.style_id: style for style in STYLES})
+DEFAULT_WELCOME_STYLE = "basic"
 
 
 def welcome_catalog(styles: Iterable[WelcomeStyle] = ()) -> Mapping[str, WelcomeStyle]:
@@ -41,10 +20,26 @@ def welcome_catalog(styles: Iterable[WelcomeStyle] = ()) -> Mapping[str, Welcome
     return MappingProxyType(catalog)
 
 
+def unavailable_styles(styles: Mapping[str, WelcomeStyle]) -> Mapping[str, str]:
+    """Evaluate each shared dependency check once for this App's catalog."""
+    checks: dict[Callable[[], str | None], str | None] = {}
+    unavailable = {}
+    for identity, style in styles.items():
+        check = style.check_requirements
+        if check is None:
+            continue
+        if check not in checks:
+            checks[check] = check()
+        if reason := checks[check]:
+            unavailable[identity] = reason
+    return MappingProxyType(unavailable)
+
+
 __all__ = [
     "DEFAULT_WELCOME_STYLE",
     "WELCOME_STYLES",
     "WelcomeStyle",
     "WelcomePage",
     "welcome_catalog",
+    "unavailable_styles",
 ]

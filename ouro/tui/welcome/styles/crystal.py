@@ -14,7 +14,6 @@ from ouro.tui.welcome.dot_matrix.field import (
     buffer,
     clip,
 )
-from ouro.tui.welcome.dot_matrix.widget import dot_style
 
 _SPECTRUM = ((0.29, 0.05, 0.09), (0.86, 0.21, 0.19), (1.0, 0.64, 0.39), (1.0, 0.97, 0.82))
 
@@ -66,6 +65,3 @@ def prepare(grid: DotGrid) -> Sampler:
         return spectrum.sample(position, light)
 
     return sample
-
-
-STYLE = dot_style("quasicrystal", "Prism", "An aperiodic rose cut from copper and light.", prepare)

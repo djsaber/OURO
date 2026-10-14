@@ -14,7 +14,6 @@ from ouro.tui.welcome.dot_matrix.field import (
     buffer,
     clip,
 )
-from ouro.tui.welcome.dot_matrix.widget import dot_style
 
 _SPECTRUM = ((0.26, 0.09, 0.48), (0.78, 0.31, 0.83), (1.0, 0.67, 0.47), (1.0, 0.96, 0.54))
 
@@ -154,8 +153,3 @@ def prepare(grid: DotGrid) -> Sampler:
         return output
 
     return sample
-
-
-STYLE = dot_style(
-    "julia-reliquary", "Labyrinth", "A violet labyrinth with a molten gold edge.", prepare
-)
