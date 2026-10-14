@@ -607,7 +607,7 @@ class ProviderConfigManager:
             old_credential = CredentialRef.parse(
                 f"env:{previous.credential_env}" if previous.credential_env else None
             )
-            if current.credential_ref == old_credential:
+            if current.credential_ref.type == "env" and current.credential_ref == old_credential:
                 next_credential = CredentialRef.parse(
                     f"env:{template.credential_env}" if template.credential_env else None
                 )
@@ -754,8 +754,6 @@ class ProviderConfigManager:
         credential_ref = self._updated_credential(
             credential_ref, api_key=api_key, api_key_env=api_key_env
         )
-        if credential_ref.type == "none" and template.credential_env is not None:
-            credential_ref = CredentialRef.parse(f"env:{template.credential_env}")
 
         try:
             endpoints: dict[str, ProviderEndpointConfig] = {}
@@ -1151,7 +1149,7 @@ class ProviderConfigManager:
         if api_key is not None:
             if not api_key:
                 raise ConfigError("api key is required")
-            return CredentialRef.parse(api_key)
+            return CredentialRef(type="inline", value=api_key)
         return current
 
     def _store_provider(

@@ -10,9 +10,9 @@
 - `auth/contracts.py` 定义凭据记录、授权结果、安全摘要、错误码、Store port 和刷新/提交回调；不导入具体实现。
 - `CredentialService` 唯一编排 revision 条件提交、刷新、注销和操作收尾，不读取 Provider 配置，不调用 HTTP。
 - `FileCredentialStore` 提供原子文件快照、受限写入和同 credential 跨进程互斥；复用 `local_io` 的读取/替换及 `local_locks` 的描述符锁原语。
-- `auth/file_permissions.py` 集中实现权限控制，driver、Application 和 Host 无需处理 ACL。
+- `local_permissions.py` 集中实现本地秘密文件的权限控制，供认证存储、插件存储和显式配置导出复用。
 
-依赖限于 `auth → core/local_io/local_locks`。刷新通过调用方注入的异步 `RefreshCredential(record) → CredentialGrant` 完成；驱动端口和单次授权资源生命周期见[认证驱动与授权规格](authorization.md)。具体驱动由本地组合注册；静态与受管理请求认证使用同一端口，见[请求认证规格](request-authentication.md)。
+依赖限于 `auth → core/local_io/local_locks/local_permissions`。刷新通过调用方注入的异步 `RefreshCredential(record) → CredentialGrant` 完成；驱动端口和单次授权资源生命周期见[认证驱动与授权规格](authorization.md)。具体驱动由本地组合注册；静态与受管理请求认证使用同一端口，见[请求认证规格](request-authentication.md)。
 
 ## 持久化与安全摘要
 

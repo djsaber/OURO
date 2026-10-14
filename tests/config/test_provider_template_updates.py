@@ -45,6 +45,19 @@ def _template(
     )
 
 
+@pytest.mark.parametrize("previous_env", (None, "OPENAI_API_KEY"))
+def test_template_update_does_not_bind_unconfigured_credentials(tmp_path, previous_env):
+    manager = ProviderConfigManager(tmp_path)
+    original = _template(1, _endpoint("primary")).model_copy(
+        update={"credential_env": previous_env}
+    )
+    provider = manager.create_from_template(original)
+    assert provider.credential_ref.type == "none"
+    latest = _template(2, _endpoint("primary")).model_copy(update={"credential_env": "NEW_KEY"})
+    updated = manager.update_from_template(latest, provider_id=provider.provider_id)
+    assert updated.provider.credential_ref.type == "none"
+
+
 def test_template_update_merges_managed_values_and_preserves_user_ownership(
     tmp_path,
 ) -> None:

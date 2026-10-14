@@ -11,7 +11,7 @@
     "schema": "./configuration.schema.json",
     "version": 1,
     "credentials": {
-      "example_key": {"title": "Example key", "description": "A required reference for testing configuration readiness; no service is contacted.", "required": true},
+      "example_key": {"title": "Example key", "description": "A required credential for testing saved keys or environment references; no service is contacted.", "required": true},
       "optional_key": {"title": "Optional key", "description": "Leave unbound to exercise an optional credential slot."}
     }
   },

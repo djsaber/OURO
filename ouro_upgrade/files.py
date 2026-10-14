@@ -9,10 +9,10 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from ouro.auth.file_permissions import reject_link
 from ouro.automation.file_records import StoredTask, TaskFileIndex, TaskIndexEntry
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.local_permissions import reject_link
 from ouro.sessions.catalog import (
     SessionCatalogProjection,
     catalog_entry_from_projection,

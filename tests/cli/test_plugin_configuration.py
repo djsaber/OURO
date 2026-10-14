@@ -78,3 +78,38 @@ def test_cli_static_preview_of_enabled_plugin_does_not_start_runtime(tmp_path, c
     result = json.loads(capsys.readouterr().out)
     assert result["valid"] and result["scope"] == "current_host"
     assert service.store.read_state() == before
+
+
+def test_cli_inline_keys_are_redacted_in_output_and_preserved_in_explicit_export(tmp_path, capsys):
+    _package(tmp_path / "package")
+    home = tmp_path / "home"
+    service = PluginService(PluginPackageStore(home))
+    service.install(tmp_path / "package")
+    suffix = ["--home", str(home), "--json"]
+    secret = "opaque-cli-test-key"
+    command = [
+        "plugin",
+        "configure",
+        "dev.ouro.echo",
+        "--values",
+        "{}",
+        "--credentials",
+        json.dumps({"optional": {"type": "inline", "value": secret}}),
+        *suffix,
+    ]
+    assert main([*command, "--preview"]) == 0
+    assert secret not in capsys.readouterr().out
+    assert main(command) == 0
+    assert secret not in capsys.readouterr().out
+    for action in ("show", "configuration"):
+        assert main(["plugin", action, "dev.ouro.echo", *suffix]) == 0
+        assert secret not in capsys.readouterr().out
+    exported = tmp_path / "draft.json"
+    assert (
+        main(["plugin", "configuration", "dev.ouro.echo", "--export", str(exported), *suffix]) == 0
+    )
+    assert secret not in capsys.readouterr().out
+    payload = json.loads(exported.read_text(encoding="utf-8"))
+    assert payload["credential_refs"]["optional"]["value"] == secret
+    assert main(["plugin", "configure", "dev.ouro.echo", "--file", str(exported), *suffix]) == 0
+    assert json.loads(capsys.readouterr().out)["outcome"] == "unchanged"

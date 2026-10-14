@@ -171,11 +171,14 @@ async def test_create_custom_provider_through_protocol_entry_and_preserve_on_edi
         for field, value in (
             ("provider-display-name", "Gateway"),
             ("provider-base-url", "https://gateway.test/v1"),
-            ("provider-api-key-env", "GATEWAY_KEY"),
         ):
             await select_choice(app, pilot, field)
             await pilot.press("ctrl+u", *value, "enter")
             await pilot.pause()
+        await select_choice(app, pilot, "provider-credential")
+        await pilot.press("tab")
+        await pilot.press(*"env:GATEWAY_KEY", "enter")
+        await pilot.pause()
         await select_choice(app, pilot, "provider-save")
         facade = ConfigurationFacade(tmp_path)
         providers = facade.provider_catalog().providers
@@ -244,6 +247,22 @@ def test_template_protocol_is_visible_and_fixed(tmp_path, provider_type):
     assert choice.disabled
     assert screen._draft().protocol == template.protocol
     assert screen._draft().auth_driver == template.auth_driver
+    assert screen._draft().api_key_env is None
+
+
+def test_static_preset_credentials_remain_unbound_until_explicitly_configured(tmp_path):
+    facade = ConfigurationFacade(tmp_path)
+    template = facade.provider_template("deepseek")
+    profile = ProviderSetupProfile.from_template(template)
+    screen = ProviderConfigurationScreen(profile)
+    credential = next(choice for choice in screen._choices if choice.value == "provider-credential")
+    assert credential.trailing == ""
+    assert screen._draft().api_key is None and screen._draft().api_key_env is None
+    created = facade.add_provider(display_name="DeepSeek", provider_type="deepseek")
+    provider = facade.provider(created.changed_provider_id)
+    assert provider.credential.reference == "none"
+    reopened = ProviderConfigurationScreen(profile, provider)
+    assert reopened._draft().api_key_env is None
 
 
 @pytest.mark.parametrize("profile", CUSTOM_PROVIDER_PROFILES)

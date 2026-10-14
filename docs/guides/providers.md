@@ -11,10 +11,10 @@ Provider 用展示名、`provider_type` 和 `protocol` 表达用户配置；`pro
 uv run --frozen ouro provider templates
 uv run --frozen ouro provider templates anthropic --json
 
-# 默认引用模板建议的环境变量；此例为 ANTHROPIC_API_KEY
-uv run --frozen ouro provider add "Anthropic" --type anthropic --home ./.ouro-dev --default
+# 显式绑定环境变量；模板中的名称只是建议
+uv run --frozen ouro provider add "Anthropic" --type anthropic --api-key-env ANTHROPIC_API_KEY --home ./.ouro-dev --default
 
-# 可覆盖默认 Endpoint 的模型 ID、Base URL 或凭据环境变量
+# 可指定默认 Endpoint 的模型 ID、Base URL 和凭据环境变量
 uv run --frozen ouro provider add "Google Gemini" \
   --home ./.ouro-dev \
   --type gemini \
@@ -22,6 +22,13 @@ uv run --frozen ouro provider add "Google Gemini" \
   --api-key-env GEMINI_API_KEY \
   --default
 ```
+
+TUI 的供应商配置页选中 **API key** 后按 Enter 直接编辑，Tab 切换 **KEY / ENV**。KEY 输入直接密钥，ENV
+输入 `env:VARIABLE` 环境变量引用；右侧类型标签随切换更新，两种类型分别保留本次编辑的输入。
+未配置的凭据项保持空白，预置供应商不会自动绑定模板建议的变量。已有绑定显示遮蔽符及 `[KEY]` / `[ENV]`，
+进入编辑不会读取已保存密钥的明文；Esc 取消本次修改，留空保留当前凭据，Enter 保存当前输入与类型，
+最后通过供应商页面的 Save 提交。KEY 保留密钥原文，即使以 `env:` 开头也不会被解释为环境引用；
+CLI 的 `--api-key` 与 `--api-key-env` 分别对应这两种来源。
 
 当前模板包括 OpenAI（API 与 Codex 订阅）、Anthropic、Gemini、DeepSeek、Qwen、KIMI、GLM、Grok、Mistral、
 MiniMax、豆包和 Cohere；每个模板携带

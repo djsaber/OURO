@@ -429,7 +429,7 @@ OURO 保留个人智能体所需的基础边界：
 
 - 安装默认禁用，显式 enable/select/reload/rollback 只接受目标 immutable digest；
 - 封闭 permission id 与真实 Host 能力检查；
-- credential 只保存 `env:VARIABLE` binding reference，秘密不进入 manifest/state/worker initialize JSON；
+- credential 保存 `env:VARIABLE` 引用或 `{"type":"inline","value":"key"}` 直接密钥绑定；直接密钥持久化在受保护的本地 state 中，不进入 manifest、普通查询或 worker initialize JSON；
 - user plugin Tool 始终经过 Host schema、审批、Tool Policy 和 `ToolExecutor`；
 - package、workspace path 与 owner 生命周期校验。
 
@@ -449,7 +449,27 @@ OURO 保留个人智能体所需的基础边界：
 
 `configuration.credentials` 的 key 必须已出现在 `credentials.use.scopes` 中；每个描述可以包含 `title`、
 `description` 和 `required`。仅凭据插件可以省略普通 Schema，普通值保持 `{}`。凭据值通过
-`context.credentials.resolve(slot)` 获取，配置只保存 `env:VARIABLE` 引用，不声明普通 API Key 字符串字段。
+`context.credentials.resolve(slot)` 获取。每个槽位都支持由用户选择环境变量引用或直接保存密钥，开发者无需
+为同一个凭据声明两个槽位，也不在普通 Schema 中声明 API Key 字符串字段。
+
+例如，用户可为同一个 `service_api` 槽位提交以下任一绑定：
+
+```json
+{"credential_refs":{"service_api":"env:SERVICE_API_KEY"}}
+```
+
+```json
+{"credential_refs":{"service_api":{"type":"inline","value":"actual-key"}}}
+```
+
+直接密钥必须非空白，框架保留完整值；切换来源替换槽位绑定，省略槽位解除绑定。SDK 的读取方式保持一致：
+
+```python
+api_key = context.credentials.resolve("service_api")
+```
+
+普通查询、预检 JSON 和日志对密钥脱敏；显式 `plugin configuration --export` 输出完整编辑草稿，包含保存的
+直接密钥，并将文件权限限制为当前用户。环境引用在导出时不解析环境变量。
 
 in-process 插件从 `context.configuration` 读取固定的运行实例快照，其中对象为递归只读 Mapping，数组为
 tuple。业务模型可以接受这些只读集合或显式转换；不要修改它们，也不要读取框架内部 state 文件。

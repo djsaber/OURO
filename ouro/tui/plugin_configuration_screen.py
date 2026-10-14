@@ -4,25 +4,31 @@ import json
 from collections.abc import Awaitable, Callable, Iterator
 from typing import cast
 
-from pydantic import JsonValue
+from pydantic import JsonValue, SecretStr
 
 from ouro.application.plugin_configuration_models import (
     ConfigurationIssue,
+    InlinePluginCredential,
     PluginConfigurationCandidate,
     PluginConfigurationPreview,
     PluginConfigurationResult,
     PluginConfigurationView,
+)
+from ouro.tui.credential_editor import (
+    CredentialEdit,
+    CredentialEditableChoiceScreen,
+    credential_trailing,
 )
 from ouro.tui.plugin_configuration_schema import (
     configuration_fields,
     json_text,
     schema_placeholder,
 )
-from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen, EditableChoiceScreen
+from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 
 
-class PluginConfigurationScreen(EditableChoiceScreen):
+class PluginConfigurationScreen(CredentialEditableChoiceScreen):
     """Edit a full application draft with shared menus, inputs and explicit application."""
 
     def __init__(
@@ -121,11 +127,9 @@ class PluginConfigurationScreen(EditableChoiceScreen):
             choice = await self.open_child(
                 ChoiceScreen(
                     title=field.title,
-                    placeholder="Choose a value…",
+                    placeholder=field.description or "Choose a value…",
                     choices=(
-                        Choice(
-                            "unset", "Unset", description="Use the declared default when applied."
-                        ),
+                        Choice("unset", "Unset", trailing="Use default"),
                         *(
                             Choice(str(index), json_text(value))
                             for index, value in enumerate(field.options)
@@ -144,6 +148,26 @@ class PluginConfigurationScreen(EditableChoiceScreen):
             return
         await super()._select_choice(selected)
 
+    def _credential_value(self, field_id: str) -> CredentialEdit | None:
+        if not field_id.startswith("credential:"):
+            return None
+        binding = self._draft.credential_refs.get(field_id.removeprefix("credential:"))
+        if isinstance(binding, str):
+            return CredentialEdit("env", binding)
+        return CredentialEdit("inline", binding.value.get_secret_value() if binding else "")
+
+    async def _save_credential(self, field_id: str, edit: CredentialEdit) -> tuple[Choice, ...]:
+        slot = field_id.removeprefix("credential:")
+        value = edit.value if edit.source == "inline" else edit.value.strip()
+        if value:
+            self._draft.credential_refs[slot] = (
+                InlinePluginCredential(value=SecretStr(value)) if edit.source == "inline" else value
+            )
+        else:
+            self._draft.credential_refs.pop(slot, None)
+        await self._check()
+        return self._configuration_choices()
+
     async def _save_field(self, field_id: str, value: str) -> tuple[Choice, ...] | None:
         try:
             if field_id == "values-json":
@@ -151,12 +175,6 @@ class PluginConfigurationScreen(EditableChoiceScreen):
                 if not isinstance(parsed, dict):
                     raise ValueError("Settings must be a JSON object.")
                 self._draft.values = parsed
-            elif field_id.startswith("credential:"):
-                slot = field_id.removeprefix("credential:")
-                if value.strip():
-                    self._draft.credential_refs[slot] = value.strip()
-                else:
-                    self._draft.credential_refs.pop(slot, None)
             else:
                 field = self._fields[field_id]
                 parsed = value if field.kind == "string" else _parse_json(value)
@@ -200,6 +218,7 @@ class PluginConfigurationScreen(EditableChoiceScreen):
 
     def _configuration_choices(self) -> tuple[Choice, ...]:
         choices = []
+        theme = theme_for(self)
         document = self._view.schema_document or {}
         for field_id, field in self._fields.items():
             value = self._draft.values.get(field.key)
@@ -223,13 +242,15 @@ class PluginConfigurationScreen(EditableChoiceScreen):
             if constraints:
                 description = " · ".join(filter(None, (description, ", ".join(constraints))))
             placeholder = schema_placeholder(field.schema, document)
+            if field.kind == "json":
+                placeholder = f"Example: {placeholder}"
+            placeholder = theme.inline_separator.join(filter(None, (placeholder, description)))
             choices.append(
                 Choice(
                     field_id,
                     field.title,
-                    description=description,
-                    trailing=json_text(value) if present else "Unset",
-                    trailing_badge="required" if field.required else "",
+                    trailing=json_text(value) if present else "",
+                    trailing_badge="required" if field.required and not present else "",
                     group="SETTINGS",
                     edit_value=None
                     if field.kind == "select"
@@ -240,10 +261,7 @@ class PluginConfigurationScreen(EditableChoiceScreen):
                         if present and field.kind != "string"
                         else ""
                     ),
-                    edit_placeholder=f"Example: {placeholder}"
-                    if field.kind == "json"
-                    else placeholder,
-                    edit_lines=3 if field.kind == "json" else 1,
+                    edit_placeholder=placeholder,
                 )
             )
         if self._view.schema_document is not None:
@@ -251,26 +269,28 @@ class PluginConfigurationScreen(EditableChoiceScreen):
                 Choice(
                     "values-json",
                     "Settings (JSON)",
-                    description="Edit the complete object; preserves fields outside this form.",
-                    trailing=json_text(self._draft.values),
+                    trailing=json_text(self._draft.values) if self._draft.values else "",
                     group="SETTINGS",
                     edit_value=json_text(self._draft.values),
-                    edit_placeholder=f"Example structure: {schema_placeholder(document, document)}",
-                    edit_lines=4,
+                    edit_placeholder=f"Example: {schema_placeholder(document, document)}",
                 )
             )
         for slot in self._view.credential_slots:
-            reference = self._draft.credential_refs.get(slot.slot, "")
+            binding = self._draft.credential_refs.get(slot.slot)
+            field_id = f"credential:{slot.slot}"
+            edit = self._credential_value(field_id)
+            assert edit is not None
             choices.append(
                 Choice(
-                    f"credential:{slot.slot}",
+                    field_id,
                     slot.title,
-                    description=slot.description,
-                    trailing=reference or "Unbound",
-                    trailing_badge="required" if slot.required else "",
-                    group="CREDENTIAL REFERENCES",
-                    edit_value=reference,
-                    edit_placeholder="env:VARIABLE — leave blank to unbind",
+                    trailing=credential_trailing(edit, configured=bool(binding), theme=theme),
+                    trailing_badge="required" if slot.required and not binding else "",
+                    group="CREDENTIALS",
+                    edit_value=edit.value,
+                    edit_placeholder=theme.inline_separator.join(
+                        filter(None, ("blank to unbind", slot.description))
+                    ),
                 )
             )
         for key, issue in _issue_rows(self._issues):
@@ -288,8 +308,8 @@ class PluginConfigurationScreen(EditableChoiceScreen):
             choices.append(
                 Choice(
                     "failure",
-                    "Configuration could not be applied",
-                    description=self._failure,
+                    "Apply failed",
+                    trailing=" ".join(self._failure.splitlines()),
                     group="VALIDATION",
                     disabled=True,
                 )
@@ -298,27 +318,28 @@ class PluginConfigurationScreen(EditableChoiceScreen):
             (
                 Choice(
                     "unset",
-                    "Unset a field",
-                    description="Remove an explicit value; defaults are applied on submit.",
+                    "Unset field",
+                    trailing="Use default",
                     group="ACTIONS",
                     disabled=not self._fields,
                 ),
                 Choice(
                     "null",
-                    "Set a nullable field to null",
+                    "Set null",
+                    trailing="Nullable fields",
                     group="ACTIONS",
                     disabled=not any(field.nullable for field in self._fields.values()),
                 ),
-                Choice("preview", "Validate draft", group="ACTIONS"),
+                Choice("preview", "Validate", group="ACTIONS"),
                 Choice(
                     "reload",
-                    "Reload saved configuration",
-                    description="Discard draft and refresh its editing baseline.",
+                    "Reload",
+                    trailing="Discard draft",
                     group="ACTIONS",
                 ),
                 Choice(
                     "save",
-                    "Apply configuration",
+                    "Apply",
                     group="ACTIONS",
                     trailing="Current host"
                     if self._view.selected and self._view.desired_enabled

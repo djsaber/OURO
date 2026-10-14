@@ -144,6 +144,7 @@ class _ChoicePage:
     navigation_id: MenuDestination | None
     retain_for_switching: bool
     title: str
+    description: str
     placeholder: str
     choices: tuple[Choice, ...]
     initial_value: str | None
@@ -260,11 +261,13 @@ def _choice_option(
     label.append(choice.label, style=choice.accent or "")
     if choice.trailing or choice.trailing_badge:
         row = cast(_ChoiceRowTable, _ChoiceRowTable.grid(expand=True, padding=0))
-        row.add_column(ratio=2, overflow="ellipsis", no_wrap=True)
+        # Let Rich shrink the wider content column first; the Text cells keep
+        # both columns on one line. Only the gap expands into unused space.
+        row.add_column(overflow="ellipsis")
         row.add_column(ratio=1)
         row.add_column(width=2)
-        row.add_column(justify="right", no_wrap=True)
-        trailing = Text()
+        row.add_column(justify="right", overflow="ellipsis")
+        trailing = Text(overflow="ellipsis", no_wrap=True)
         if choice.trailing_badge:
             trailing.append(choice.trailing_badge, style=theme.accent)
             if choice.trailing:
@@ -366,6 +369,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         title: str,
         placeholder: str,
         choices: tuple[Choice, ...],
+        description: str = "",
         initial_value: str | None = None,
         on_highlight: Callable[[str], None] | None = None,
         on_select: ChoiceSelectionHandler | None = None,
@@ -380,6 +384,7 @@ class ChoiceScreen(ModalScreen[str | None]):
     ) -> None:
         super().__init__()
         self._title = title
+        self._description = description.strip()
         self._placeholder = placeholder
         self._choices = choices
         self._initial_value = initial_value
@@ -428,6 +433,11 @@ class ChoiceScreen(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-panel"):
             yield Static(self._title, id="choice-title")
+            description = Static(self._description, id="choice-description", markup=False)
+            description_height = self._description_height(self.app.size.height)
+            description.styles.max_height = description_height
+            description.display = bool(description_height)
+            yield description
             yield self._filter_input()
             choice_list = self._choice_list()
             choice_list.styles.max_height = self._responsive_list_height(self.app.size.height)
@@ -485,15 +495,35 @@ class ChoiceScreen(ModalScreen[str | None]):
     def on_resize(self, event: events.Resize) -> None:
         """Keep the scrollable menu body within a bounded share of the terminal."""
 
-        self.query_one("#choice-list", OptionList).styles.max_height = self._responsive_list_height(
-            event.size.height
+        self._update_description(self._description)
+
+    def _description_height(self, viewport_height: int) -> int:
+        return (
+            min(3, max(0, viewport_height - self.MENU_CHROME_HEIGHT - self.MIN_LIST_HEIGHT))
+            if self._description
+            else 0
         )
 
-    @classmethod
-    def _responsive_list_height(cls, viewport_height: int) -> int:
+    def _responsive_list_height(self, viewport_height: int) -> int:
         responsive_panel_height = viewport_height * 4 // 5
-        list_height = responsive_panel_height - cls.MENU_CHROME_HEIGHT
-        return max(cls.MIN_LIST_HEIGHT, min(cls.MAX_LIST_HEIGHT, list_height))
+        description_height = self._description_height(viewport_height)
+        list_height = responsive_panel_height - self.MENU_CHROME_HEIGHT - description_height
+        return max(
+            self.MIN_LIST_HEIGHT, min(self.MAX_LIST_HEIGHT - description_height, list_height)
+        )
+
+    def _update_description(self, description: str) -> None:
+        """Keep page context separate from selectable and filterable actions."""
+
+        self._description = description.strip()
+        widget = self.query_one("#choice-description", Static)
+        widget.update(self._description)
+        description_height = self._description_height(self.app.size.height)
+        widget.styles.max_height = description_height
+        widget.display = bool(description_height)
+        self.query_one("#choice-list", OptionList).styles.max_height = self._responsive_list_height(
+            self.app.size.height
+        )
 
     def on_unmount(self) -> None:
         if self._spinner_timer is not None:
@@ -506,6 +536,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         title: str,
         placeholder: str,
         choices: tuple[Choice, ...],
+        description: str = "",
         initial_value: str | None = None,
         filter_value: str = "",
         on_highlight: Callable[[str], None] | None = None,
@@ -537,6 +568,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._retain_for_switching = retain_for_switching
         self._interaction_hint = interaction_hint
         self.query_one("#choice-title", Static).update(title)
+        self._update_description(description)
         filter_input = self.query_one("#choice-filter", Input)
         filter_input.placeholder = placeholder
         with self.prevent(Input.Changed):
@@ -553,6 +585,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         title: str,
         placeholder: str,
         choices: tuple[Choice, ...],
+        description: str = "",
         initial_value: str | None = None,
         on_highlight: Callable[[str], None] | None = None,
         on_select: ChoiceSelectionHandler | None = None,
@@ -579,6 +612,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self.replace_page(
             navigation_id=navigation_id,
             title=title,
+            description=description,
             placeholder=placeholder,
             choices=choices,
             initial_value=initial_value,
@@ -601,6 +635,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         title: str,
         placeholder: str,
         choices: tuple[Choice, ...],
+        description: str = "",
         initial_value: str | None = None,
         on_highlight: Callable[[str], None] | None = None,
         on_select: ChoiceSelectionHandler | None = None,
@@ -618,6 +653,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._page_stack.append(self._page())
         self.replace_page(
             title=title,
+            description=description,
             placeholder=placeholder,
             choices=choices,
             initial_value=initial_value,
@@ -646,6 +682,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         page = self._page_stack.pop()
         self.replace_page(
             title=page.title,
+            description=page.description,
             placeholder=page.placeholder,
             choices=choices if choices is not None else page.choices,
             initial_value=initial_value if initial_value is not None else page.initial_value,
@@ -726,6 +763,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         title = self.query_one("#choice-title", Static)
         title.styles.color = color
         title.styles.border_left = ("solid", color)
+        self.query_one("#choice-description", Static).styles.border_left = ("solid", color)
         self.query_one("#choice-filter", Input).styles.border_left = ("solid", color)
         self.query_one("#choice-list", _ChoiceOptionList).set_accent_preview(color)
 
@@ -739,6 +777,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         title = self.query_one("#choice-title", Static)
         title.styles.color = None
         title.styles.border_left = None
+        self.query_one("#choice-description", Static).styles.border_left = None
         self.query_one("#choice-filter", Input).styles.border_left = None
         self.query_one("#choice-list", _ChoiceOptionList).set_accent_preview(None)
 
@@ -816,6 +855,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             navigation_id=self._navigation_id,
             retain_for_switching=self._retain_for_switching,
             title=self._title,
+            description=self._description,
             placeholder=self._placeholder,
             choices=self._choices,
             initial_value=self._selected_value(),
@@ -1325,6 +1365,8 @@ class EditableChoiceScreen(ChoiceScreen):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "switch_domain" and self._editing_value is not None:
             return False
+        if action in {"previous_group", "next_group"} and self._editing_value is not None:
+            return True
         if action.startswith("edit_"):
             return self._editing_value is not None
         return super().check_action(action, parameters)
@@ -1565,16 +1607,14 @@ class EditableChoiceScreen(ChoiceScreen):
         cursor_style = f"not bold reverse {accent}" if self._edit_cursor_visible else "not bold"
         if not display_text:
             prompt.append(" ", style=cursor_style)
-            choice = next(
-                (choice for choice in self._choices if choice.value == editing_value),
-                None,
-            )
-            if choice is not None and choice.edit_placeholder:
+            placeholder = self._editor_placeholder()
+            if placeholder:
                 prompt.append(
-                    choice.edit_placeholder,
+                    " ".join(placeholder.splitlines()),
                     style=f"not bold {theme.text_choice} italic",
                 )
-            options.replace_option_prompt_at_index(option_index, prompt)
+            prompt.truncate(self._editor_width(), overflow="ellipsis")
+            options.replace_option_prompt_at_index(option_index, self._editor_prompt(prompt))
             return
         editor_width = self._editor_width()
         view_start, view_end = self._editor_view_bounds(display_text, editor_width)
@@ -1594,14 +1634,30 @@ class EditableChoiceScreen(ChoiceScreen):
             prompt.append(" ", style=cursor_style)
         if view_end < len(display_text):
             prompt.append("…", style=f"not bold {theme.text_choice}")
-        options.replace_option_prompt_at_index(option_index, prompt)
+        options.replace_option_prompt_at_index(option_index, self._editor_prompt(prompt))
+
+    def _editor_placeholder(self) -> str:
+        choice = next((c for c in self._choices if c.value == self._editing_value), None)
+        return choice.edit_placeholder if choice is not None else ""
+
+    def _editor_trailing(self) -> str:
+        return ""
+
+    def _editor_prompt(self, prompt: Text) -> Text:
+        trailing = self._editor_trailing()
+        if trailing:
+            prompt.pad_right(max(0, self._editor_width() - prompt.cell_len) + 2)
+            prompt.append(trailing, style=f"not bold {theme_for(self).text_lowlight}")
+        return prompt
 
     def _editor_width(self) -> int:
         options = self.query_one("#choice-list", OptionList)
+        trailing = self._editor_trailing()
         return max(
             1,
             options.scrollable_content_region.width
-            - options.get_component_styles("option-list--option").padding.width,
+            - options.get_component_styles("option-list--option").padding.width
+            - (Text(trailing).cell_len + 2 if trailing else 0),
         )
 
     def _editor_view_bounds(self, display_text: str, width: int) -> tuple[int, int]:

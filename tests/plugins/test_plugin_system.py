@@ -57,6 +57,7 @@ from ouro.plugins.contributions import (
     PluginContributions,
     PreparedContributionSet,
 )
+from ouro.plugins.credentials import parse_credential_bindings
 from ouro.plugins.dependencies import (
     PluginDependencyError,
     resolve_plugin_dependencies,
@@ -2704,9 +2705,11 @@ for line in sys.stdin:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("inline", (False, True))
 async def test_worker_credentials_use_declared_slots_without_protocol_or_log_leaks(
     tmp_path,
     monkeypatch,
+    inline,
 ) -> None:
     source = tmp_path / "worker-credentials"
     source.mkdir()
@@ -2768,7 +2771,14 @@ for line in sys.stdin:
         )
     await service.configure(
         service.configuration("dev.ouro.credentials").candidate(
-            values={}, credential_refs={"calendar_api": "env:OURO_PLUGIN_TEST_SECRET"}
+            values={},
+            credential_refs=parse_credential_bindings(
+                {
+                    "calendar_api": {"type": "inline", "value": "calendar-secret-value"}
+                    if inline
+                    else "env:OURO_PLUGIN_TEST_SECRET"
+                }
+            ),
         )
     )
     assert (await service.enable("dev.ouro.credentials")).status == "active"
@@ -2781,10 +2791,12 @@ for line in sys.stdin:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("inline", (False, True))
 async def test_inprocess_resolved_credentials_are_redacted_from_all_plugin_outputs(
     tmp_path,
     monkeypatch,
     caplog,
+    inline,
 ) -> None:
     source = tmp_path / "inprocess-credentials"
     source.mkdir()
@@ -2827,7 +2839,14 @@ def create_plugin(context): return Plugin(context)
     service.install(source)
     await service.configure(
         service.configuration("dev.ouro.inprocess_credentials").candidate(
-            values={}, credential_refs={"service_api": "env:OURO_INPROCESS_SECRET"}
+            values={},
+            credential_refs=parse_credential_bindings(
+                {
+                    "service_api": {"type": "inline", "value": "opaque-inprocess-secret-value"}
+                    if inline
+                    else "env:OURO_INPROCESS_SECRET"
+                }
+            ),
         )
     )
 

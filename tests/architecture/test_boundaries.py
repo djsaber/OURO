@@ -28,7 +28,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
         }
     ),
     "billing": frozenset({"core", "local_io", "local_locks"}),
-    "auth": frozenset({"core", "local_io", "local_locks"}),
+    "auth": frozenset({"core", "local_io", "local_locks", "local_permissions"}),
     "automation": frozenset({"core", "local_io", "local_locks"}),
     "builtin_plugins": frozenset({"plugins", "sdk"}),
     "cli": frozenset(
@@ -40,6 +40,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
             "core",
             "deployment",
             "local_application",
+            "local_permissions",
             "mcp",
             "sdk",
             "skills",
@@ -75,10 +76,21 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
     "local_providers": frozenset({"core", "plugins", "providers", "sdk"}),
     "local_io": frozenset({"core"}),
     "local_locks": frozenset(),
+    "local_permissions": frozenset(),
     "local_processes": frozenset({"core"}),
     "mcp": frozenset({"config", "core", "tools"}),
     "plugins": frozenset(
-        {"core", "local_processes", "local_locks", "mcp", "sdk", "sessions", "skills", "tools"}
+        {
+            "core",
+            "local_processes",
+            "local_locks",
+            "local_permissions",
+            "mcp",
+            "sdk",
+            "sessions",
+            "skills",
+            "tools",
+        }
     ),
     "prompts": frozenset(),
     "providers": frozenset({"auth", "config", "core"}),
@@ -160,7 +172,7 @@ def test_auth_contracts_do_not_load_concrete_storage_or_lifecycle() -> None:
             module.startswith(
                 (
                     "ouro.auth.store",
-                    "ouro.auth.file_permissions",
+                    "ouro.local_permissions",
                     "ouro.auth.credentials",
                     "ouro.auth.authorization",
                     "ouro.auth.drivers",
@@ -186,7 +198,7 @@ def test_application_auth_only_uses_injected_drivers_and_credential_service() ->
             module.startswith(
                 (
                     "ouro.auth.store",
-                    "ouro.auth.file_permissions",
+                    "ouro.local_permissions",
                     "ouro.auth.drivers",
                     "ouro.auth.authorization",
                     "ouro.providers",
@@ -206,7 +218,7 @@ def test_auth_drivers_do_not_own_storage_configuration_or_host_interaction() -> 
                     "ouro.auth.store",
                     "ouro.auth.credentials",
                     "ouro.auth.managed_requests",
-                    "ouro.auth.file_permissions",
+                    "ouro.local_permissions",
                     "ouro.local_io",
                     "ouro.local_locks",
                     "ouro.config",

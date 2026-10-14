@@ -317,9 +317,10 @@ Provider 级模板值，以及每个模板 Endpoint 到配置 Endpoint 的 id �
 | 最新模板移除已修改或被用户选为默认的 Endpoint | 保留并解除模板管理 |
 | 配置中的未知 Endpoint | 始终保留 |
 
-Provider 级 `base_url`、`api_path`、静态模板凭据环境变量和默认 Endpoint 采用同样的旧值比较：当前值仍等于旧模板值
+Provider 级 `base_url`、`api_path`、已绑定的静态模板凭据环境变量和默认 Endpoint 采用同样的旧值比较：当前值仍等于旧模板值
 才跟随新模板，否则保留用户值。`enabled`、timeout、retry、provider options 和展示名归用户管理；Provider id
 始终由框架管理。
+未绑定凭据的实例不会因模板新增或修改环境变量建议而自动绑定。
 实例 `auth_driver` 和 managed 引用始终保留；模板认证默认值改变时不自动切换实例认证。只有实例、旧基线和新模板
 均使用 static 时，才合并环境变量变化。创建或显式替换可选择允许的认证组合；managed 每次生成新的 credential id。
 Endpoint model、连接和凭据等本次 CLI 显式参数在合并后应用，并作为用户覆盖留待后续合并识别。

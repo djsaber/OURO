@@ -69,6 +69,7 @@ from ouro.core.turn_policies import (
 from ouro.plugins.candidates import PluginRuntimeCandidate
 from ouro.plugins.configuration_values import freeze_configuration
 from ouro.plugins.contributions import PluginContributions
+from ouro.plugins.credentials import PluginCredentialBinding, resolve_credential_binding
 from ouro.plugins.harness_calls import bind_context_callback, invoke_plugin_callback
 from ouro.plugins.models import PluginDiagnostic, PluginGenerationRecord
 from ouro.plugins.providers import adapt_provider
@@ -99,7 +100,7 @@ from ouro.tools import (
 class BoundCredentialResolver:
     def __init__(
         self,
-        bindings: dict[str, str],
+        bindings: dict[str, PluginCredentialBinding],
         resolve_reference: Callable[[str], str] | None,
         redactor: SensitiveValueRedactor,
     ) -> None:
@@ -112,10 +113,8 @@ class BoundCredentialResolver:
             reference = self._bindings[slot]
         except KeyError as exc:
             raise PermissionError(f"credential slot is not bound: {slot}") from exc
-        if self._resolve_reference is None:
-            raise RuntimeError("credential resolver is unavailable")
         try:
-            value = self._resolve_reference(reference)
+            value = resolve_credential_binding(reference, self._resolve_reference)
         except Exception:
             # Resolver failures may contain transport payloads or secret material.
             raise RuntimeError(f"credential slot cannot be resolved: {slot}") from None
@@ -309,7 +308,7 @@ def build_plugin_context(
     *,
     data_root: Path,
     configuration: dict[str, object],
-    credential_bindings: dict[str, str],
+    credential_bindings: dict[str, PluginCredentialBinding],
     credential_resolver: Callable[[str], str] | None,
     tasks: OwnedTaskGroup,
     diagnostics: list[PluginDiagnostic],

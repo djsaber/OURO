@@ -404,7 +404,7 @@ def test_template_creates_instance_id_and_update_preserves_auth_choice(tmp_path,
         display_name="First",
     )
     assert replacement.auth_driver == "static"
-    assert replacement.credential_ref == CredentialRef.parse("env:NEW_KEY")
+    assert replacement.credential_ref.type == "none"
 
 
 def test_template_auth_override_is_explicit_and_update_does_not_switch_it(

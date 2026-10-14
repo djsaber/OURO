@@ -13,6 +13,7 @@ from uuid import uuid4
 from ouro.core.base import utc_now
 from ouro.core.errors import PersistenceError
 from ouro.local_locks import FileAccessLock, FileMutationLock
+from ouro.local_permissions import restrict_to_user
 from ouro.plugins.manifest import validate_plugin_id
 from ouro.plugins.models import PluginAuditEvent, PluginStateDocument
 from ouro.plugins.package import (
@@ -310,11 +311,16 @@ class PluginPackageStore:
                 dir=self.state_path.parent,
                 delete=False,
             ) as stream:
-                stream.write(state.model_dump_json(indent=2, exclude_none=True))
+                temporary = Path(stream.name)
+                restrict_to_user(temporary)
+                stream.write(
+                    state.model_dump_json(
+                        indent=2, exclude_none=True, context={"include_secrets": True}
+                    )
+                )
                 stream.write("\n")
                 stream.flush()
                 os.fsync(stream.fileno())
-                temporary = Path(stream.name)
             os.replace(temporary, self.state_path)
             _fsync_directory(self.state_path.parent)
         finally:

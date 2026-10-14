@@ -9089,8 +9089,7 @@ async def test_provider_configuration_uses_shared_grouped_inline_menu(
         options = screen.query_one("#choice-list", OptionList)
         assert options.styles.scrollbar_size_vertical == 0
         assert [(choice.value, choice.group) for choice in screen._choices] == [
-            ("provider-api-key", "CREDENTIALS"),
-            ("provider-api-key-env", "CREDENTIALS"),
+            ("provider-credential", "CREDENTIALS"),
             ("provider-display-name", "DETAILS"),
             ("provider-base-url", "ADVANCED"),
             ("provider-api-path", "ADVANCED"),
@@ -9099,16 +9098,19 @@ async def test_provider_configuration_uses_shared_grouped_inline_menu(
             ("provider-options", "REQUEST"),
             ("provider-save", "ACTIONS"),
         ]
-        assert screen._values["provider-api-key-env"] == "GATEWAY_API_KEY"
+        assert screen._values["provider-api-key-env"] == ""
+        assert next(c for c in screen._choices if c.value == "provider-credential").trailing == ""
         assert screen._values["provider-base-url"] == "https://gateway.example.invalid/v1"
         assert screen._values["provider-api-path"] == "/chat/completions"
         assert screen._values["provider-timeout"] == "60.0"
         assert screen._values["provider-options"] == "{}"
 
-        options.highlighted = options.get_option_index("provider-api-key")
+        options.highlighted = options.get_option_index("provider-credential")
         options.focus()
         await pilot.press("enter")
         await pilot.pause()
+        assert app.screen is screen
+        assert screen._credential_source == "inline"
         await pilot.press(*"pre", "left")
         monkeypatch.setattr(
             "ouro.tui.screens.read_system_clipboard",
@@ -9117,7 +9119,7 @@ async def test_provider_configuration_uses_shared_grouped_inline_menu(
         await pilot.click(options, offset=(8, 1), button=3)
         await pilot.pause()
         assert screen._edit_text == "prpasted on two linese"
-        assert "pasted" not in str(options.get_option("provider-api-key").prompt)
+        assert "pasted" not in str(options.get_option("provider-credential").prompt)
         await pilot.press("enter")
         await pilot.pause()
         assert screen._values["provider-api-key"] == "prpasted on two linese"
@@ -9336,9 +9338,12 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Agent Context")
         assert app.screen is plugin_screen
+        description = plugin_screen.query_one("#choice-description", Static)
+        detail = await app._controller.plugin("dev.ouro.agent_context")
+        assert description.display and str(description.content) == detail.description
         assert [choice.label for choice in plugin_screen._choices] == [
             "Disable",
-            "Check plugin",
+            "Check",
             "Restart",
         ]
         assert (
@@ -9364,6 +9369,7 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
 
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGINS")
+        assert not description.display
         refreshed = next(
             choice for choice in plugin_screen._choices if choice.value == "dev.ouro.agent_context"
         )

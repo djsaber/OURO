@@ -15,6 +15,7 @@ from ouro.application.plugin_configuration_models import (
     PluginConfigurationCandidate,
     PluginConfigurationPreview,
     PluginConfigurationResult,
+    parse_credential_bindings,
 )
 from ouro.application.plugin_models import PluginActionResult
 from ouro.application.plugins import PluginService
@@ -27,6 +28,7 @@ from ouro.local_application import (
     open_local_plugins,
     resolve_local_home,
 )
+from ouro.local_permissions import reject_link, restrict_to_user
 
 
 def run_plugin_command(args) -> int:
@@ -112,8 +114,14 @@ def _run_plugin_command(args) -> int:
     if command == "configuration":
         view = service.configuration(args.plugin_id, package_digest=args.digest)
         if args.export_path:
-            Path(args.export_path).write_text(
-                view.candidate().model_dump_json(indent=2) + "\n", encoding="utf-8"
+            export_path = Path(args.export_path)
+            reject_link(export_path)
+            export_path.touch(mode=0o600, exist_ok=True)
+            restrict_to_user(export_path)
+            export_path.write_text(
+                view.candidate().model_dump_json(indent=2, context={"include_secrets": True})
+                + "\n",
+                encoding="utf-8",
             )
         return _emit(view, json_mode=args.json)
     if command in {"commands", "run-command"}:
@@ -271,7 +279,9 @@ def _configuration_candidate(service: PluginService, args) -> PluginConfiguratio
         )
     candidate = view.candidate(
         values=_json_object(args.values, option="--values") if args.values is not None else {},
-        credential_refs=_json_string_map(args.credentials, option="--credentials")
+        credential_refs=parse_credential_bindings(
+            _json_object(args.credentials, option="--credentials")
+        )
         if args.credentials is not None
         else {},
     )
@@ -388,13 +398,6 @@ def _json_object(value: str, *, option: str) -> dict[str, object]:
     if not isinstance(raw, dict):
         raise ValueError(f"{option} must be a JSON object")
     return {str(key): item for key, item in raw.items()}
-
-
-def _json_string_map(value: str, *, option: str) -> dict[str, str]:
-    raw = _json_object(value, option=option)
-    if any(not isinstance(item, str) for item in raw.values()):
-        raise ValueError(f"{option} values must be strings")
-    return {key: str(item) for key, item in raw.items()}
 
 
 def _emit(value, *, json_mode: bool) -> int:

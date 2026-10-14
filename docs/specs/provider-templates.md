@@ -79,7 +79,8 @@
 模板中的 `endpoint_id` 是模板目录内部用于版本合并的稳定身份，不会成为实例 Endpoint ID；实例化时
 OURO 为 Provider 和每个 Endpoint 分别生成内部 ID。模板 auth_driver 默认 static；credential_env 可省略，
 managed 模板必须省略或置为 null。
-静态模板缺少 credential_env 时创建 none 引用，可在创建时显式提供 API Key。模板不提供 credential id 或账户材料；
+静态模板的 credential_env 是建议名称，创建时不自动绑定；未显式提供密钥或环境变量时创建 none 引用。
+模板不提供 credential id 或账户材料；
 managed 引用属于实例，创建/显式替换时生成。模板业务指纹包含认证默认值，实例模板绑定保存其基线；普通模板更新
 保留实例认证选择与 managed 引用，不因模板默认值改变而换绑。详细合并语义见 Provider 配置规格。
 

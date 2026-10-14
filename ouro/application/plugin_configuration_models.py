@@ -7,6 +7,9 @@ from pydantic import ConfigDict, Field, JsonValue, field_validator
 from ouro.core.base import OuroModel
 from ouro.plugins.configuration_schema import ConfigurationIssue as ConfigurationIssue
 from ouro.plugins.configuration_values import copy_configuration_values
+from ouro.plugins.credentials import InlinePluginCredential as InlinePluginCredential
+from ouro.plugins.credentials import PluginCredentialBinding
+from ouro.plugins.credentials import parse_credential_bindings as parse_credential_bindings
 from ouro.plugins.manifest import PluginStatus
 from ouro.plugins.models import PluginDiagnostic
 
@@ -27,7 +30,7 @@ class PluginConfigurationCandidate(OuroModel):
     package_digest: str
     expected_configuration_revision_id: str
     values: dict[str, JsonValue]
-    credential_refs: dict[str, str]
+    credential_refs: dict[str, PluginCredentialBinding]
 
     @field_validator("values", mode="before")
     @classmethod
@@ -36,6 +39,8 @@ class PluginConfigurationCandidate(OuroModel):
 
 
 class PluginConfigurationView(OuroModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     plugin_id: str
     name: str
     package_digest: str
@@ -47,14 +52,14 @@ class PluginConfigurationView(OuroModel):
     schema_document: dict[str, JsonValue] | None
     values: dict[str, JsonValue]
     credential_slots: tuple[PluginCredentialSlotView, ...]
-    credential_refs: dict[str, str]
+    credential_refs: dict[str, PluginCredentialBinding]
     issues: tuple[ConfigurationIssue, ...]
 
     def candidate(
         self,
         *,
         values: dict[str, object] | None = None,
-        credential_refs: dict[str, str] | None = None,
+        credential_refs: dict[str, PluginCredentialBinding] | None = None,
     ) -> PluginConfigurationCandidate:
         """Create a detached full draft retaining this view's target and edit baseline."""
 

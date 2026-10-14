@@ -4,6 +4,7 @@ import asyncio
 import json
 
 import pytest
+from pydantic import SecretStr
 
 from ouro.application.plugin_configuration import (
     PluginConfigurationConflictError,
@@ -12,8 +13,10 @@ from ouro.application.plugin_configuration import (
 from ouro.application.plugin_configuration_models import PluginConfigurationCandidate
 from ouro.application.plugins import PluginService
 from ouro.plugins import runtime as runtime_module
+from ouro.plugins import store as store_module
+from ouro.plugins.credentials import InlinePluginCredential
 from ouro.plugins.models import create_configuration_revision
-from ouro.plugins.store import PluginPackageStore, PluginStateConflictError
+from ouro.plugins.store import PluginPackageStore, PluginStateConflictError, PluginStateFormatError
 from tests.plugins.test_plugin_system import _runtime, _write_native_plugin
 
 
@@ -107,6 +110,90 @@ async def test_full_replacement_defaults_noop_and_safe_structured_errors(tmp_pat
         await service.configure(invalid)
     assert error.value.issues == preview.issues
     assert "PRIVATE_PAYLOAD" not in str(error.value)
+
+
+async def test_inline_keys_persist_across_services_and_replace_environment_bindings(tmp_path):
+    _package(tmp_path / "package")
+    home = tmp_path / "home"
+    service = PluginService(PluginPackageStore(home))
+    service.install(tmp_path / "package")
+    secret = "env:literal-persisted-key"
+    binding = InlinePluginCredential(value=SecretStr(secret))
+    result = await service.configure(
+        service.configuration("dev.ouro.echo").candidate(credential_refs={"optional": binding})
+    )
+    assert result.outcome == "saved"
+    reopened = PluginService(PluginPackageStore(home))
+    view = reopened.configuration("dev.ouro.echo")
+    assert view.credential_refs["optional"].value.get_secret_value() == secret
+    assert secret not in view.model_dump_json()
+    assert secret not in reopened.show("dev.ouro.echo").model_dump_json()
+    assert secret not in str(reopened.store.audit_events())
+    assert (await reopened.configure(view.candidate())).outcome == "unchanged"
+    await reopened.configure(view.candidate(credential_refs={"optional": "env:ENV_KEY"}))
+    assert reopened.configuration("dev.ouro.echo").credential_refs == {"optional": "env:ENV_KEY"}
+
+
+@pytest.mark.parametrize("secret", ("", "   "))
+async def test_empty_inline_keys_fail_preflight_without_changing_storage(tmp_path, secret):
+    _package(tmp_path / "package")
+    service = PluginService(PluginPackageStore(tmp_path / "home"))
+    service.install(tmp_path / "package")
+    before = service.store.read_state()
+    candidate = service.configuration("dev.ouro.echo").candidate(
+        credential_refs={"optional": InlinePluginCredential(value=SecretStr(secret))}
+    )
+    preview = service.preview_configuration(candidate)
+    assert not preview.valid
+    assert preview.issues[0].code == "credential_value"
+    with pytest.raises(PluginConfigurationValidationError):
+        await service.configure(candidate)
+    assert service.store.read_state() == before
+
+
+async def test_inline_key_permission_failure_leaves_saved_state_and_no_temporary_secret(
+    tmp_path, monkeypatch
+):
+    _package(tmp_path / "package")
+    service = PluginService(PluginPackageStore(tmp_path / "home"))
+    service.install(tmp_path / "package")
+    state_path = service.store.state_path
+    before = state_path.read_bytes()
+    files = set(state_path.parent.iterdir())
+
+    def cannot_protect(_path):
+        raise OSError("Cannot restrict file permissions")
+
+    monkeypatch.setattr(store_module, "restrict_to_user", cannot_protect)
+    with pytest.raises(OSError, match="permissions"):
+        await service.configure(
+            service.configuration("dev.ouro.echo").candidate(
+                credential_refs={
+                    "optional": InlinePluginCredential(value=SecretStr("new-private-key"))
+                }
+            )
+        )
+    assert state_path.read_bytes() == before
+    assert set(state_path.parent.iterdir()) == files
+
+
+async def test_invalid_saved_state_errors_do_not_include_inline_keys(tmp_path):
+    _package(tmp_path / "package")
+    service = PluginService(PluginPackageStore(tmp_path / "home"))
+    service.install(tmp_path / "package")
+    secret = "private-key-in-invalid-state"
+    await service.configure(
+        service.configuration("dev.ouro.echo").candidate(
+            credential_refs={"optional": InlinePluginCredential(value=SecretStr(secret))}
+        )
+    )
+    path = service.store.state_path
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["schema_version"] = 0
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(PluginStateFormatError) as error:
+        service.store.read_state()
+    assert secret not in str(error.value)
 
 
 async def test_stale_offline_draft_conflicts_even_when_its_values_match_latest(tmp_path):

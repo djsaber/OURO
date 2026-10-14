@@ -23,6 +23,11 @@ from ouro.config.provider_models import (
     validate_reasoning_protocol_compatibility,
 )
 from ouro.tui.controller import TuiEndpointConfiguration, TuiProviderConfiguration
+from ouro.tui.credential_editor import (
+    CredentialEdit,
+    CredentialEditableChoiceScreen,
+    credential_trailing,
+)
 from ouro.tui.screens import Choice, ChoiceScreen, EditableChoiceScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 
@@ -93,7 +98,7 @@ CUSTOM_PROVIDER_PROFILES = tuple(
 )
 
 
-class ProviderConfigurationScreen(EditableChoiceScreen):
+class ProviderConfigurationScreen(CredentialEditableChoiceScreen):
     """Edit provider settings through the shared grouped inline-edit menu."""
 
     def __init__(
@@ -117,7 +122,7 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
         provider_options = _json_text(existing.provider_options if existing is not None else {})
         self._values = {
             "provider-api-key": "",
-            "provider-api-key-env": _credential_environment(profile, existing),
+            "provider-api-key-env": _credential_environment(existing),
             "provider-display-name": (
                 existing.display_name if existing is not None else profile.display_name
             ),
@@ -142,6 +147,30 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
             return
         await super()._select_choice(selected)
 
+    def _credential_value(self, field_id: str) -> CredentialEdit | None:
+        if field_id != "provider-credential":
+            return None
+        env = self._values["provider-api-key-env"]
+        return (
+            CredentialEdit("env", f"env:{env}")
+            if env
+            else CredentialEdit("inline", self._values["provider-api-key"])
+        )
+
+    async def _save_credential(self, field_id: str, edit: CredentialEdit) -> tuple[Choice, ...]:
+        value = edit.value
+        if edit.source == "env":
+            value = value.strip().removeprefix("env:").strip()
+        if value.strip():
+            self._values["provider-api-key"] = value if edit.source == "inline" else ""
+            self._values["provider-api-key-env"] = value if edit.source == "env" else ""
+        return self._provider_choices()
+
+    def _has_saved_key(self) -> bool:
+        return self._existing is not None and self._existing.credential.reference.startswith(
+            "inline:"
+        )
+
     async def _save_field(
         self,
         field_id: str,
@@ -149,16 +178,7 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
     ) -> tuple[Choice, ...] | None:
         normalized = value.strip()
         self._values[field_id] = normalized
-        if normalized and field_id == "provider-api-key":
-            self._values["provider-api-key-env"] = ""
-        elif normalized and field_id == "provider-api-key-env":
-            self._values["provider-api-key"] = ""
         return self._provider_choices()
-
-    def _editor_display_text(self, value: str) -> str:
-        if self._editing_value == "provider-api-key":
-            return theme_for(self).mask_character * len(value)
-        return value
 
     def _submit(self) -> None:
         try:
@@ -222,32 +242,23 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
     def _provider_choices(self) -> tuple[Choice, ...]:
         theme = theme_for(self)
         api_key = self._values["provider-api-key"]
-        existing_credential = (
-            self._existing is not None and self._existing.credential.reference != "none"
-        )
-        api_key_display = (
-            theme.mask_character * 8
-            if api_key
-            else theme.inline_separator.join(("Configured", "preserved"))
-            if existing_credential and not self._values["provider-api-key-env"]
-            else "Not set"
-        )
+        edit = self._credential_value("provider-credential")
+        assert edit is not None
         error = self._validation_error()
         credential_choices = (
             (
                 Choice(
-                    "provider-api-key",
+                    "provider-credential",
                     "API key",
-                    trailing=api_key_display,
+                    trailing=credential_trailing(
+                        edit,
+                        configured=bool(api_key or self._values["provider-api-key-env"])
+                        or self._has_saved_key(),
+                        theme=theme,
+                    ),
                     group="CREDENTIALS",
-                    edit_value=api_key,
-                ),
-                Choice(
-                    "provider-api-key-env",
-                    "Environment variable",
-                    trailing=self._values["provider-api-key-env"] or "Not set",
-                    group="CREDENTIALS",
-                    edit_value=self._values["provider-api-key-env"],
+                    edit_value=edit.value,
+                    edit_placeholder="blank keeps current credential",
                 ),
             )
             if self._auth_driver == "static"
@@ -709,19 +720,12 @@ def profile_for_provider(
     return profile
 
 
-def _credential_environment(
-    profile: ProviderSetupProfile,
-    existing: ProviderView | None,
-) -> str:
-    if (existing.auth_driver if existing is not None else profile.auth_driver) != "static":
-        return ""
-    if existing is not None:
+def _credential_environment(existing: ProviderView | None) -> str:
+    if existing is not None and existing.auth_driver == "static":
         reference = existing.credential.reference
         if reference.startswith("env:"):
             return reference.removeprefix("env:")
-        if reference != "none":
-            return ""
-    return profile.credential_env or ""
+    return ""
 
 
 def _json_text(value: dict[str, object]) -> str:

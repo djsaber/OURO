@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 def reject_link(path: Path) -> None:
-    """Credential paths must not alias another file or a Windows reparse point."""
+    """Private paths must not alias another file or a Windows reparse point."""
 
     try:
         info = path.lstat()

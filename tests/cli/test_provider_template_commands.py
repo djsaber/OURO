@@ -142,7 +142,7 @@ def test_provider_add_grok_installs_latest_reviewed_endpoint(tmp_path, capsys) -
     assert configured is not None
     assert configured.base_url == "https://api.x.ai/v1"
     assert configured.api_path == "/chat/completions"
-    assert configured.credential_ref.display() == "env:XAI_API_KEY"
+    assert configured.credential_ref.type == "none"
 
 
 def test_provider_update_json_exposes_safe_template_merge_report(tmp_path, capsys) -> None:

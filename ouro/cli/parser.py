@@ -288,7 +288,9 @@ def _add_plugin_parser(subparsers: argparse._SubParsersAction) -> None:
     configuration.add_argument("plugin_id")
     configuration.add_argument("--digest", help="Inspect this installed digest")
     configuration.add_argument(
-        "--export", dest="export_path", help="Export a complete JSON editing draft"
+        "--export",
+        dest="export_path",
+        help="Export a complete JSON editing draft, including saved keys",
     )
     _add_plugin_output(configuration)
 
@@ -311,7 +313,10 @@ def _add_plugin_parser(subparsers: argparse._SubParsersAction) -> None:
     config_input = configure.add_mutually_exclusive_group()
     config_input.add_argument("--values", help="Complete JSON values object")
     config_input.add_argument("--file", help="Complete JSON draft exported by plugin configuration")
-    configure.add_argument("--credentials", help="JSON slot-to-reference object")
+    configure.add_argument(
+        "--credentials",
+        help='JSON slot bindings: "env:VARIABLE" or {"type":"inline","value":"key"}',
+    )
     configure.add_argument("--digest", help="Configure an installed candidate digest")
     configure.add_argument(
         "--expected-revision", help="Require this configuration editing baseline"

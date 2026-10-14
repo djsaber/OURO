@@ -201,21 +201,23 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                     _plugin_choices(await self._controller.plugins(), theme=theme_for(self)),
                     initial_value=plugin_id,
                 )
-                return _plugin_action_choices(refreshed)
+                return _plugin_action_choices(refreshed, theme=theme_for(self))
             return None
 
-        choices = _plugin_action_choices(plugin)
+        choices = _plugin_action_choices(plugin, theme=theme_for(self))
         if menu is not None:
 
             async def refresh_plugin_actions() -> tuple[Choice, ...] | None:
                 try:
-                    return _plugin_action_choices(await self._controller.plugin(plugin_id))
+                    refreshed = await self._controller.plugin(plugin_id)
+                    return _plugin_action_choices(refreshed, theme=theme_for(self))
                 except Exception as exc:  # noqa: BLE001
                     await self.query_one(ConversationView).add_notice(str(exc), error=True)
                     return None
 
             menu.push_page(
                 title=theme_for(self).inline_separator.join(("PLUGIN", plugin.name)),
+                description=plugin.description,
                 placeholder="Choose an action…",
                 choices=choices,
                 on_select=select_action,
@@ -225,6 +227,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title=theme_for(self).inline_separator.join(("PLUGIN", plugin.name)),
+                description=plugin.description,
                 placeholder="Choose an action…",
                 choices=choices,
             )
@@ -495,33 +498,43 @@ def _plugin_choices(
     )
 
 
-def _plugin_action_choices(plugin: PluginDetail) -> tuple[Choice, ...]:
-    actions = [
-        Choice(
-            "disable" if plugin.desired_enabled else "enable",
-            "Disable" if plugin.desired_enabled else "Enable",
-            trailing=plugin.status,
-            group="ACTIONS",
-        ),
-        Choice("check", "Check plugin", group="ACTIONS"),
-        Choice(
-            "restart",
-            "Restart",
-            group="ACTIONS",
-            disabled=plugin.status not in {"active", "degraded", "failed"},
-        ),
-    ]
+def _plugin_action_choices(
+    plugin: PluginDetail,
+    *,
+    theme: TuiTheme = DEFAULT_TUI_THEME,
+) -> tuple[Choice, ...]:
+    actions: list[Choice] = []
     if plugin.plugin_class == "user":
         if plugin.configuration_supported:
-            actions.append(Choice("configure", "Edit settings", group="SETTINGS"))
+            actions.append(Choice("configure", "Settings", group="ACTIONS"))
         if len(plugin.installs) > 1:
             actions.append(
                 Choice(
                     "select-install",
                     "Switch version",
                     trailing=f"{len(plugin.installs)} versions",
-                    group="VERSIONS",
+                    group="ACTIONS",
                 )
             )
-        actions.append(Choice("remove", "Delete current version", group="DELETE"))
+    actions.extend(
+        (
+            Choice(
+                "disable" if plugin.desired_enabled else "enable",
+                "Disable" if plugin.desired_enabled else "Enable",
+                trailing=plugin.status,
+                group="ACTIONS",
+            ),
+            Choice("check", "Check", group="ACTIONS"),
+            Choice(
+                "restart",
+                "Restart",
+                group="ACTIONS",
+                disabled=plugin.status not in {"active", "degraded", "failed"},
+            ),
+        )
+    )
+    if plugin.plugin_class == "user":
+        actions.append(
+            Choice("remove", "Delete", group="ACTIONS", accent=theme.danger, destructive=True)
+        )
     return tuple(actions)

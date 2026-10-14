@@ -7,6 +7,7 @@ from pydantic import Field
 from ouro.application.supervisor_models import HostInputReceipt
 from ouro.core.base import OuroModel
 from ouro.core.session_controls import AttributedSessionInput, AttributedSessionInputBatch
+from ouro.plugins.credentials import PluginCredentialBinding
 from ouro.plugins.manifest import PluginRuntimeKind, PluginStatus
 from ouro.plugins.models import PluginClass, PluginDiagnostic
 
@@ -54,7 +55,7 @@ class PluginDetail(PluginSummary):
     diagnostics: list[PluginDiagnostic] = Field(default_factory=list)
     configuration_supported: bool = False
     configuration_values: dict[str, object] = Field(default_factory=dict)
-    credential_refs: dict[str, str] = Field(default_factory=dict)
+    credential_refs: dict[str, PluginCredentialBinding] = Field(default_factory=dict)
 
 
 class PluginValidationView(OuroModel):

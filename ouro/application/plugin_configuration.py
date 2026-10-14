@@ -14,6 +14,7 @@ from ouro.application.plugin_configuration_models import (
 )
 from ouro.plugins.configuration import credential_binding_issues, declared_credential_slots
 from ouro.plugins.configuration_schema import ConfigurationIssue, ConfigurationSchema
+from ouro.plugins.credentials import PluginCredentialBinding
 from ouro.plugins.models import (
     InstalledPlugin,
     PluginAuditEvent,
@@ -67,7 +68,7 @@ class _ConfigurationTarget:
         return definition.version if definition is not None else None
 
     def issues(
-        self, values: dict[str, object], refs: dict[str, str]
+        self, values: dict[str, object], refs: dict[str, PluginCredentialBinding]
     ) -> tuple[ConfigurationIssue, ...]:
         issues = credential_binding_issues(self.installed.manifest, refs)
         if self.schema is not None:

@@ -112,7 +112,7 @@ ExtensionCatalog
 - `package_digest` 是规范化包文件树的 SHA-256；
 - `generation_id` 标识当前进程内资源 owner；
 - `execution_contract_hash` 标识可跨进程校验的运行契约；
-- `configuration_revision_id` 是规范化配置和 credential binding reference 的内容摘要，不包含秘密值；
+- `configuration_revision_id` 是规范化配置与完整凭据绑定的内容摘要；环境引用按引用计算，直接密钥按真实值计算；
 - 相同 version、不同 digest 是不同内容，不能静默覆盖。
 
 配置修订属于插件记录，包选版只引用其中一个修订。修改配置或移除某个包版本不删除既有修订，等待中的 Run 可以
@@ -834,9 +834,10 @@ Permission id 必须由 OURO 核心注册表定义。每个 id 都要有真实�
 ### 11.3 Credentials
 
 - Manifest 只声明 slot，不包含秘密或环境变量值；
-- activation configuration 把 slot 绑定到本地 credential reference；
+- activation configuration 把 slot 绑定到环境引用或直接密钥；
 - resolver 只解析本插件声明且绑定的 slot；
-- 秘密不进入 state、event、diagnostic、exception、worker initialize 或公开 DTO；
+- 凭据槽位支持 `env:VARIABLE` 或 `{"type":"inline","value":"key"}`，插件统一按槽位解析；
+- 直接密钥以明文保存在当前用户专属权限的 state 文件中；普通 DTO JSON、event、diagnostic、exception 和 worker initialize 不包含密钥；
 - worker 需要环境变量时使用 Host 生成的临时名称和 allowlisted environment。
 - worker close 必须拥有 worker、后代进程树、stdin/stdout/stderr 和 Windows tree-terminator 的完整生命周期；
   业务关闭预算不能通过遗弃 OS 清理进程或等待对象来实现。

@@ -8,7 +8,49 @@ from textual.widgets import Input, OptionList
 
 from ouro.tui.inline_editor import MultilineEditableChoiceScreen, multiline_edit_prompt
 from ouro.tui.keyboard import normalize_windows_modified_enter
-from ouro.tui.screens import Choice
+from ouro.tui.screens import Choice, EditableChoiceScreen
+
+
+async def test_empty_single_line_editor_bounds_placeholder_through_typing_and_resize():
+    choices = (
+        Choice("json", "Settings (JSON)", edit_value="", edit_placeholder="Example: 示例\n" * 40),
+    )
+
+    async def save(_field, _value):
+        return choices
+
+    app = App()
+    async with app.run_test(size=(70, 24)) as pilot:
+        form = EditableChoiceScreen(
+            title="SETTINGS", placeholder="Filter…", choices=choices, on_save=save
+        )
+        await app.push_screen(form)
+        await pilot.pause()
+        await pilot.press("enter")
+        options = form.query_one(OptionList)
+
+        async def assert_single_line():
+            await pilot.pause()
+            form._edit_cursor_visible = True
+            form._render_editor()
+            prompt = options.get_option("json").prompt
+            assert isinstance(prompt, Text)
+            assert prompt.cell_len <= form._editor_width()
+            assert (
+                options._get_visual(options.get_option("json")).get_height(
+                    options.styles, form._editor_width()
+                )
+                == 1
+            )
+            assert any("reverse" in str(span.style) for span in prompt.spans)
+
+        await assert_single_line()
+        await pilot.press("{")
+        await assert_single_line()
+        await pilot.press("ctrl+u")
+        await pilot.resize_terminal(30, 18)
+        await assert_single_line()
+        assert options.get_option("json").prompt.plain.endswith("…")
 
 
 async def test_reusable_multiline_form_preserves_newlines_across_save_reopen_and_cancel():

@@ -4,6 +4,7 @@ import re
 from collections.abc import Mapping
 
 from ouro.plugins.configuration_schema import ConfigurationIssue, configuration_pointer
+from ouro.plugins.credentials import InlinePluginCredential, PluginCredentialBinding
 from ouro.plugins.manifest import PluginManifest
 
 _ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -19,7 +20,7 @@ def declared_credential_slots(manifest: PluginManifest) -> frozenset[str]:
 
 
 def credential_binding_issues(
-    manifest: PluginManifest, bindings: Mapping[str, str]
+    manifest: PluginManifest, bindings: Mapping[str, PluginCredentialBinding]
 ) -> tuple[ConfigurationIssue, ...]:
     declared = declared_credential_slots(manifest)
     issues = []
@@ -29,9 +30,13 @@ def credential_binding_issues(
         if slot not in declared:
             code = "undeclared_credential"
             message = "credential slot is not declared by the manifest"
+        elif isinstance(reference, InlinePluginCredential):
+            if not reference.value.get_secret_value().strip():
+                code = "credential_value"
+                message = "inline credential must not be empty"
         elif not isinstance(reference, str) or not reference.startswith("env:"):
             code = "credential_reference"
-            message = "credential slot must use an env: reference"
+            message = "credential slot must use an env: reference or an inline key object"
         elif _ENVIRONMENT_NAME.fullmatch(reference[4:]) is None:
             code = "credential_reference"
             message = "credential slot has an invalid environment reference"

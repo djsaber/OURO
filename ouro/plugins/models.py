@@ -16,6 +16,11 @@ from ouro.plugins.configuration_values import (
     copy_configuration_values,
     freeze_configuration,
 )
+from ouro.plugins.credentials import (
+    PluginCredentialBinding,
+    credential_bindings_payload,
+    parse_credential_bindings,
+)
 from ouro.plugins.manifest import PluginManifest, PluginRuntimeKind, PluginStatus
 
 PluginSourceKind = Literal["local", "git", "archive"]
@@ -43,13 +48,13 @@ class InstalledPlugin(OuroModel):
 
 
 class PluginConfigurationRevision(OuroModel):
-    """Content-addressed plugin configuration without resolved secret values."""
+    """Immutable configuration with explicit env references or persisted inline keys."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, hide_input_in_errors=True)
 
     revision_id: str
     values: Mapping[str, object] = Field(default_factory=dict)
-    credential_refs: Mapping[str, str] = Field(default_factory=dict)
+    credential_refs: Mapping[str, PluginCredentialBinding] = Field(default_factory=dict)
     schema_version: int | None = Field(default=None, ge=1, strict=True)
 
     @field_validator("values", mode="before")
@@ -62,7 +67,9 @@ class PluginConfigurationRevision(OuroModel):
         return configuration_dict(values)
 
     @field_serializer("credential_refs")
-    def _serialize_references(self, values: Mapping[str, str]) -> dict[str, str]:
+    def _serialize_references(
+        self, values: Mapping[str, PluginCredentialBinding]
+    ) -> dict[str, PluginCredentialBinding]:
         return dict(values)
 
     def __copy__(self) -> Self:
@@ -145,6 +152,8 @@ class BuiltinPluginActivationOverride(OuroModel):
 
 
 class PluginStateDocument(OuroModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     schema_version: Literal[4] = 4
     plugins: dict[str, PluginRecord] = Field(default_factory=dict)
     builtin_activation_overrides: dict[str, BuiltinPluginActivationOverride] = Field(
@@ -269,16 +278,13 @@ class PluginAuditEvent(OuroModel):
 def create_configuration_revision(
     *,
     values: dict[str, object] | None = None,
-    credential_refs: dict[str, str] | None = None,
+    credential_refs: dict[str, PluginCredentialBinding] | None = None,
     schema_version: int | None = None,
 ) -> PluginConfigurationRevision:
     normalized_values = copy_configuration_values(values if values is not None else {})
-    normalized_references = dict(credential_refs) if credential_refs is not None else {}
-    if any(
-        not isinstance(key, str) or not isinstance(value, str)
-        for key, value in normalized_references.items()
-    ):
-        raise ValueError("Plugin credential references must map strings to strings")
+    normalized_references = parse_credential_bindings(
+        credential_refs if credential_refs is not None else {}
+    )
     return PluginConfigurationRevision(
         revision_id=configuration_revision_id(
             values=normalized_values,
@@ -294,14 +300,14 @@ def create_configuration_revision(
 def configuration_revision_id(
     *,
     values: Mapping[str, object],
-    credential_refs: Mapping[str, str],
+    credential_refs: Mapping[str, PluginCredentialBinding],
     schema_version: int | None,
 ) -> str:
     encoded = json.dumps(
         {
             "schema_version": schema_version,
             "values": configuration_dict(values),
-            "credential_refs": dict(credential_refs),
+            "credential_refs": credential_bindings_payload(credential_refs),
         },
         ensure_ascii=False,
         sort_keys=True,

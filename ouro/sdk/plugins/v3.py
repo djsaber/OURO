@@ -103,6 +103,8 @@ class PluginDataStore(Protocol):
 
 
 class PluginCredentialResolver(Protocol):
+    """Resolve a declared slot from its user-selected environment or saved-key binding."""
+
     def resolve(self, slot: str) -> str: ...
 
 

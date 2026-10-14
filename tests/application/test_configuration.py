@@ -105,21 +105,25 @@ def test_provider_commands_return_safe_views_and_explicit_effect_scope(
     assert "top-secret" not in provider.model_dump_json()
 
 
-def test_inline_provider_credential_is_never_exposed(tmp_path) -> None:
+@pytest.mark.parametrize("secret", ("inline-secret", "env:LITERAL_API_KEY"))
+def test_inline_provider_credential_is_never_exposed(tmp_path, secret) -> None:
     facade = ConfigurationFacade(tmp_path)
     created = facade.add_provider(
         display_name="Local",
         provider_type="custom",
         protocol="openai-chat-completions",
         base_url="https://example.test/v1",
-        api_key="inline-secret",
+        api_key=secret,
     )
 
     assert created.changed_provider_id is not None
     payload = facade.provider(created.changed_provider_id).model_dump_json()
 
-    assert "inline-secret" not in payload
+    assert secret not in payload
     assert "inline:***" in payload
+    stored = facade.providers.get_provider(created.changed_provider_id).credential_ref
+    assert stored.type == "inline"
+    assert stored.value == secret
 
 
 def test_configuration_section_commands_preserve_other_sections(tmp_path) -> None:
@@ -424,7 +428,7 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
     }
     assert provider.default_endpoint is not None
     assert facade.endpoint(provider_id, provider.default_endpoint).model_id == "gemini-3.8-flash"
-    assert provider.credential.reference == "env:GEMINI_API_KEY"
+    assert provider.credential.reference == "none"
     assert ConfigurationFacade(tmp_path).system_prompt().system_prompt == "Keep this section"
 
 

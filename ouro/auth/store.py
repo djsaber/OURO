@@ -10,9 +10,9 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from ouro.auth.contracts import CREDENTIAL_ID_PATTERN, AuthError, CredentialRecord
-from ouro.auth.file_permissions import reject_link, restrict_to_user
 from ouro.local_io import read_text_atomic, replace_path_with_retry
 from ouro.local_locks import try_lock_descriptor, unlock_descriptor
+from ouro.local_permissions import reject_link, restrict_to_user
 
 
 class FileCredentialStore:

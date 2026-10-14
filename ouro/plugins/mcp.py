@@ -9,6 +9,7 @@ from typing import Any
 
 from ouro.mcp import MCPManager, MCPServerConfig
 from ouro.plugins.configuration import declared_credential_slots
+from ouro.plugins.credentials import PluginCredentialBinding, resolve_credential_binding
 from ouro.plugins.manifest import PathContributionSpec, PluginManifest
 from ouro.plugins.package import PluginPackageError, resolve_manifest_path
 from ouro.tools import Tool, ToolRegistry
@@ -23,7 +24,7 @@ class PluginMCPResource:
         package_root: Path,
         *,
         resolve_credential: Callable[[str], str | None] | None = None,
-        credential_bindings: Mapping[str, str] | None = None,
+        credential_bindings: Mapping[str, PluginCredentialBinding] | None = None,
     ) -> None:
         self.manifest = manifest
         self.package_root = package_root
@@ -72,9 +73,10 @@ class PluginMCPResource:
             bound_reference = self._credential_bindings[slot]
         except KeyError as exc:
             raise PermissionError(f"plugin credential slot is not bound: {slot}") from exc
-        if self._resolve_reference is None:
-            raise RuntimeError("plugin credential resolver is unavailable")
-        return self._resolve_reference(bound_reference)
+        try:
+            return resolve_credential_binding(bound_reference, self._resolve_reference)
+        except Exception:
+            raise RuntimeError(f"plugin credential slot cannot be resolved: {slot}") from None
 
 
 def validate_plugin_mcp_descriptors(manifest: PluginManifest, package_root: Path) -> None:

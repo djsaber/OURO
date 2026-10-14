@@ -41,6 +41,16 @@ MENU_CSS = """
         border-left: solid $ouro-theme;
     }
 
+    #choice-description {
+        width: 100%;
+        height: auto;
+        max-height: 3;
+        padding: 0 2;
+        color: $ouro-text-lowlight;
+        background: transparent;
+        border-left: solid $ouro-theme;
+    }
+
     #choice-filter {
         width: 100%;
         height: 3;
