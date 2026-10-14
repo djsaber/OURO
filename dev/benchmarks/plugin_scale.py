@@ -86,7 +86,7 @@ def prepare_home(root: Path, kind: str, count: int) -> Path:
             "name": f"Probe {index}",
             "version": "1.0.0",
             "namespace": f"probe_{index}",
-            "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
+            "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^3.0.0"},
             "runtime": runtime,
             "contributes": contributes,
         }

@@ -27,7 +27,7 @@ def install_plugin(app, directory):
         "name": "Synthetic commands",
         "version": "1.0.0",
         "namespace": "command_probe",
-        "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
+        "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^3.0.0"},
         "runtime": {"kind": "python-inprocess", "entrypoint": "command_probe_plugin:create_plugin"},
         "contributes": {
             "commands": [

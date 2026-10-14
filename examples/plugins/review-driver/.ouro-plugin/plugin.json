@@ -4,7 +4,7 @@
   "name": "Review Run Driver",
   "namespace": "review_driver",
   "version": "0.1.0",
-  "engines": {"ouro": "^0.2.0", "plugin_api": "^3.0.0"},
+  "engines": {"ouro": "^0.3.0", "plugin_api": "^3.0.0"},
   "runtime": {"kind": "python-inprocess", "entrypoint": "review_driver_plugin:create_plugin"},
   "permissions": [
     {"id": "sessions.write", "reason": "Execute a user-selected Run algorithm through native ports."},

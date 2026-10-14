@@ -1443,7 +1443,7 @@ def _write_guard_plugin(source, command_tool_name: str) -> None:
                 "name": "Guard",
                 "version": "1.0.0",
                 "namespace": "guard",
-                "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^3.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "guard_plugin:create_plugin",
@@ -1502,7 +1502,7 @@ def _write_observer_retire_plugin(source) -> None:
                 "name": "Observer Retire",
                 "version": "1.0.0",
                 "namespace": "observer_retire",
-                "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^3.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "observer_retire_plugin:create_plugin",
@@ -1573,7 +1573,7 @@ def _write_prompt_policy_plugin(source) -> None:
                 "name": "Prompt Guard",
                 "version": "1.0.0",
                 "namespace": "prompt_guard",
-                "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^3.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "prompt_guard_plugin:create_plugin",
@@ -1674,7 +1674,7 @@ def _write_catalog_plugin(source, *, version: str = "1.0.0") -> None:
                 "name": "Catalog",
                 "version": version,
                 "namespace": "catalog",
-                "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^3.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "catalog_plugin:create_plugin",
@@ -1751,7 +1751,7 @@ def _write_resumable_plugin(source) -> None:
                 "name": "Resume",
                 "version": "1.0.0",
                 "namespace": "resume",
-                "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^3.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "resume_plugin:create_plugin",
@@ -1832,7 +1832,7 @@ def _write_skill_plugin(source) -> None:
                 "name": "Skill Prompt",
                 "version": "1.0.0",
                 "namespace": "skill_prompt",
-                "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^3.0.0"},
                 "runtime": {"kind": "declarative"},
                 "contributes": {"skills": [{"id": "calendar", "path": "./skills/calendar"}]},
                 "permissions": [],

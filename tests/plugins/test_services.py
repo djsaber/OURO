@@ -106,7 +106,7 @@ async def service_runtime(tmp_path):
                     "namespace": namespace,
                     "name": namespace,
                     "version": "1.0.0",
-                    "engines": {"ouro": "^0.2.0", "plugin_api": "^3.0.0"},
+                    "engines": {"ouro": "^0.3.0", "plugin_api": "^3.0.0"},
                     "runtime": {
                         "kind": "python-inprocess",
                         "entrypoint": f"{namespace}_plugin:create",

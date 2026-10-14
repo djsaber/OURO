@@ -88,7 +88,7 @@ def test_package_validation_checks_schema_without_importing_plugin_code(tmp_path
 def test_plugin_using_configuration_contract_can_require_its_api_version(tmp_path, monkeypatch):
     _write_native_plugin(
         tmp_path / "package",
-        extra={"engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": ">=3.1.0,<4.0.0"}},
+        extra={"engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": ">=3.1.0,<4.0.0"}},
     )
     validate_plugin_package(tmp_path / "package")
     monkeypatch.setattr(package_module, "PLUGIN_API_VERSION", "3.0.0")

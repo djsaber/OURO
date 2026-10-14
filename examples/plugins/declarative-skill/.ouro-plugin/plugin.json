@@ -6,7 +6,7 @@
   "description": "Contributes an Agent Skill without executable plugin code.",
   "namespace": "declarative_skill",
   "engines": {
-    "ouro": ">=0.2.0,<0.3.0",
+    "ouro": ">=0.3.0,<0.4.0",
     "plugin_api": "^3.0.0"
   },
   "runtime": {

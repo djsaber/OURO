@@ -260,7 +260,7 @@ def _write_goal_plugin(source) -> None:
                 "name": "Goal",
                 "version": "1.0.0",
                 "namespace": "goal",
-                "engines": {"ouro": ">=0.2.0,<0.3.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^3.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "goal_plugin:create_plugin",

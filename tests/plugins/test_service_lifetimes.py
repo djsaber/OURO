@@ -55,7 +55,7 @@ async def service_graph(tmp_path, request):
                     "namespace": identity.rsplit(".", 1)[1],
                     "name": identity,
                     "version": "1.0.0",
-                    "engines": {"ouro": "^0.2.0", "plugin_api": "^3.0.0"},
+                    "engines": {"ouro": "^0.3.0", "plugin_api": "^3.0.0"},
                     "runtime": execution,
                     "dependencies": {
                         "plugins": [
