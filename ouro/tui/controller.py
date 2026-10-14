@@ -449,7 +449,6 @@ class TuiSessionControlStatus:
 class TuiPluginCommandExecution:
     execution: PluginCommandExecutionView
     run_results: tuple[RunResult, ...] = ()
-    session_controls: tuple[TuiSessionControlStatus, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2121,6 +2120,8 @@ class TuiController:
         self,
         selector: str,
         argument: str,
+        *,
+        on_submitted: Callable[[], None] | None = None,
     ) -> TuiPluginCommandExecution | None:
         application = self._application
         if application is None or application.plugins is None:
@@ -2149,11 +2150,13 @@ class TuiController:
         )
         if submission is None:
             return None
+        # Presentation may refresh the committed state while input consumption runs.
+        if on_submitted is not None:
+            on_submitted()
         results = [result async for result in consume_plugin_command(runtime, submission)]
         return TuiPluginCommandExecution(
             execution=submission.execution,
             run_results=tuple(results),
-            session_controls=await self.session_control_statuses(),
         )
 
     async def session_control_statuses(self) -> tuple[TuiSessionControlStatus, ...]:

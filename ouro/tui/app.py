@@ -1222,6 +1222,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             status_line.set_session_controls(())
             return
         session_id = self._controller.session_id
+        revision = self._controller.selection_revision
         try:
             statuses = await self._controller.session_control_statuses()
         except Exception:  # noqa: BLE001 - status projection must not interrupt the Session.
@@ -1230,6 +1231,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             not self._surface_available()
             or self._visible_read_only
             or self._controller.session_id != session_id
+            or self._controller.selection_revision != revision
         ):
             return
         status_line = self.query_one(StatusLine)
@@ -1659,9 +1661,20 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         stream_parts: list[str] = []
         stream_started_at: datetime | None = None
         tools_dirty = False
-        refresh_session_controls = any(
-            event.event_type in _SESSION_CONTROL_REFRESH_EVENTS for event in events
-        )
+        if not self._visible_read_only and any(
+            event.session_id == projection.session_id
+            and event.history_epoch == projection.history_epoch
+            and event.sequence > projection.last_sequence
+            and (
+                event.event_type in _SESSION_CONTROL_REFRESH_EVENTS
+                or (
+                    event.event_type == "session_control_transition"
+                    and event.payload.get("phase") == "applied"
+                )
+            )
+            for event in events
+        ):
+            self._schedule_session_controls_refresh()
 
         async def flush_stream() -> None:
             nonlocal stream_kind, stream_started_at
@@ -1775,11 +1788,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         await flush_stream()
         await flush_tools()
-
-        if self._host_closing or not conversation.is_attached:
-            return
-        if refresh_session_controls and not self._visible_read_only:
-            self._schedule_session_controls_refresh()
 
         if self._host_closing or not conversation.is_attached:
             return
@@ -3326,8 +3334,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if creating_projection:
             self._waiting_for_session_event = True
             self.query_one(Composer).disabled = True
+
+        def submitted() -> None:
+            if revision == self._controller.selection_revision:
+                self._schedule_session_controls_refresh()
+
         try:
-            result = await self._controller.execute_plugin_command(selector, argument.strip())
+            result = await self._controller.execute_plugin_command(
+                selector, argument.strip(), on_submitted=submitted
+            )
             if revision != self._controller.selection_revision:
                 await self._refresh_welcome_status()
                 return
@@ -3339,9 +3354,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 )
                 return
             execution = result.execution
-            self.query_one(StatusLine).set_session_controls(
-                tuple(status.label for status in result.session_controls)
-            )
             command_output = (
                 execution.output if execution.command_output is None else execution.command_output
             )

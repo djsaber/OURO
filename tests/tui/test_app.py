@@ -11492,8 +11492,12 @@ async def test_plugin_commands_complete_and_execute_through_controller_boundary(
     app = OuroTuiApp(application=_application(tmp_path))
     executed: list[tuple[str, str]] = []
 
-    async def execute(selector: str, argument: str) -> TuiPluginCommandExecution:
+    async def execute(
+        selector: str, argument: str, *, on_submitted: Callable[[], None] | None = None
+    ) -> TuiPluginCommandExecution:
         executed.append((selector, argument))
+        if on_submitted is not None:
+            on_submitted()
         return TuiPluginCommandExecution(
             execution=PluginCommandExecutionView(
                 command_id="dev.ouro.demo:hello", output=output, data=data
@@ -12293,8 +12297,12 @@ async def test_command_selection_executes_complete_argument(
     app = OuroTuiApp(application=_application(tmp_path))
     executed: list[tuple[str, str]] = []
 
-    async def execute(selector: str, argument: str) -> TuiPluginCommandExecution:
+    async def execute(
+        selector: str, argument: str, *, on_submitted: Callable[[], None] | None = None
+    ) -> TuiPluginCommandExecution:
         executed.append((selector, argument))
+        if on_submitted is not None:
+            on_submitted()
         return TuiPluginCommandExecution(
             execution=PluginCommandExecutionView(command_id="dev.ouro.plan:plan")
         )
@@ -12377,8 +12385,12 @@ async def test_parameterized_command_opens_argument_menu_and_executes_selection(
     app = OuroTuiApp(application=_application(tmp_path))
     executed: list[tuple[str, str]] = []
 
-    async def execute(selector: str, argument: str) -> TuiPluginCommandExecution:
+    async def execute(
+        selector: str, argument: str, *, on_submitted: Callable[[], None] | None = None
+    ) -> TuiPluginCommandExecution:
         executed.append((selector, argument))
+        if on_submitted is not None:
+            on_submitted()
         return TuiPluginCommandExecution(
             execution=PluginCommandExecutionView(command_id="dev.ouro.goal:goal")
         )
