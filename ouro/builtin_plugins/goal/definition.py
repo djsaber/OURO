@@ -63,7 +63,7 @@ GOAL_PLUGIN = BuiltinPluginDefinition(
                         ),
                         "usage": (
                             "[--token-budget N | --no-token-budget] <objective> | status | pause | "
-                            "resume [--token-budget N | --no-token-budget] | cancel | clear | "
+                            "resume [--token-budget N | --no-token-budget] | cancel | "
                             "replace [--token-budget N | --no-token-budget] <objective>"
                         ),
                         "argument_options": [
@@ -82,10 +82,6 @@ GOAL_PLUGIN = BuiltinPluginDefinition(
                             },
                             {
                                 "value": "cancel",
-                                "description": "Cancel and remove the current Goal.",
-                            },
-                            {
-                                "value": "clear",
                                 "description": "Cancel and remove the current Goal.",
                             },
                             {
@@ -126,14 +122,6 @@ GOAL_PLUGIN = BuiltinPluginDefinition(
                         "priority": 10,
                         "timeout_seconds": 5,
                         "failure_mode": "block",
-                    }
-                ],
-                "tool_policies": [
-                    {
-                        "id": "goal-stopped-tools",
-                        "priority": 10,
-                        "timeout_seconds": 5,
-                        "active_when": "mode",
                     }
                 ],
             },

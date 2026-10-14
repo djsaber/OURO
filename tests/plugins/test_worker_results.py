@@ -192,6 +192,7 @@ async def test_worker_reuses_decoded_fragments_inputs_and_transitions(worker, mo
         ),
         ("context", {"fragments": [{"text": "bad", "scaffold": 1}]}, "scaffold"),
         ("command", {"data": []}, "data"),
+        ("command", {"run_action": "invalid"}, "run_action"),
         ("command", {"session_inputs": [{"prompt": ""}]}, "prompt"),
         ("command", {"session_input_batches": [1]}, "batch"),
         ("session_controller", {"usage_scope": 1}, "usage_scope"),
@@ -226,6 +227,12 @@ async def test_nonobject_worker_response_is_reported(worker, kind):
     with pytest.raises(WorkerProtocolError, match="must be an object"):
         await invoke(kind, [])
     assert diagnostics[0][0] == "worker_invalid_result"
+
+
+@pytest.mark.parametrize("action", ["stop", "continue"])
+async def test_worker_decodes_command_run_action(worker, action):
+    invoke, _ = worker
+    assert (await invoke("command", {"run_action": action})).run_action == action
 
 
 @pytest.mark.parametrize(

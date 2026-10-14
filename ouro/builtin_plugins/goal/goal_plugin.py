@@ -27,9 +27,6 @@ from ouro.sdk.plugins.v3 import (
     ToolCall,
     ToolContribution,
     ToolOutput,
-    ToolPolicyCall,
-    ToolPolicyContribution,
-    ToolPolicyDecision,
 )
 
 from .commands import GoalCommandService
@@ -120,11 +117,11 @@ class GoalPlugin:
                     parameters_schema={
                         "type": "object",
                         "properties": {
-                            "status": {"type": "string", "enum": ["complete", "blocked"]},
+                            "status": {"type": "string", "enum": ["active", "complete", "blocked"]},
                             "report": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "The result and evidence, or the exact blocker.",
+                                "description": "Result evidence, the blocker, or why to resume.",
                             },
                         },
                         "required": ["status", "report"],
@@ -142,7 +139,7 @@ class GoalPlugin:
                     description="Create and control the latest goal for this conversation.",
                     usage=(
                         "[--token-budget N | --no-token-budget] <objective> | status | pause | "
-                        "resume [--token-budget N | --no-token-budget] | cancel | clear | "
+                        "resume [--token-budget N | --no-token-budget] | cancel | "
                         "replace [--token-budget N | --no-token-budget] <objective>"
                     ),
                     handler=self.goal_command,
@@ -178,15 +175,6 @@ class GoalPlugin:
                     priority=10,
                     timeout_seconds=5,
                     failure_mode="block",
-                )
-            ],
-            tool_policies=[
-                ToolPolicyContribution(
-                    id="goal-stopped-tools",
-                    handler=self.goal_tool_gate,
-                    priority=10,
-                    timeout_seconds=5,
-                    active_when="mode",
                 )
             ],
         )
@@ -247,24 +235,47 @@ class GoalPlugin:
         repository = GoalStateRepository(call.session_state)
         status = call.arguments.get("status")
         report = _non_empty_text(call.arguments.get("report"))
-        if status not in {"complete", "blocked"}:
-            return _tool_error("invalid_status", "Status must be complete or blocked.")
+        if status not in {"active", "complete", "blocked"}:
+            return _tool_error("invalid_status", "Status must be active, complete or blocked.")
         if report is None:
             return _tool_error("invalid_report", "UpdateGoal requires a non-empty report.")
         goal = repository.load().goal
         control = repository.control()
         binding = repository.run_control()
-        if goal is None or goal.status != "active" or control is None:
+        if goal is None or control is None:
             return _tool_error("goal_not_active", "There is no active goal to update.")
         if (
             binding is None
             or binding.activation_id != control.activation_id
-            or binding.usage_scope != goal.goal_id
+            or (status != "active" and binding.usage_scope != goal.goal_id)
         ):
             return _tool_error(
                 "stale_goal_update",
                 "This work started before the current goal was created or updated.",
             )
+        if status == "active":
+            if goal.status not in {"paused", "blocked"}:
+                return _tool_error(
+                    "goal_not_resumable", "Only a paused or blocked goal can resume."
+                )
+            try:
+                _require_budget_above_usage(goal.token_budget, repository.tokens_used(goal))
+            except RuntimeError as exc:
+                return _tool_error("invalid_token_budget", str(exc))
+            return ToolOutput(
+                content="",
+                session_control_transitions=(
+                    SessionControlTransition(
+                        action="replace",
+                        controller_id="mode",
+                        replace_activation_ids=(control.activation_id,),
+                        payload={"operation": "resume", "token_budget": goal.token_budget},
+                        reason="goal_resumed",
+                    ),
+                ),
+            )
+        if goal.status != "active":
+            return _tool_error("goal_not_active", "There is no active goal to update.")
         payload: dict[str, JsonValue] = {"operation": status, "report": report}
         if status == "complete":
             transition = SessionControlTransition(
@@ -400,20 +411,6 @@ class GoalPlugin:
                     scaffold=True,
                     semantic_tag="goal-context",
                 ),
-            ),
-        )
-
-    def goal_tool_gate(self, call: ToolPolicyCall) -> ToolPolicyDecision:
-        repository = GoalStateRepository(call.session_state)
-        goal = repository.load().goal
-        if goal is None or goal.status in {"active", "complete"} or call.effect == "read_only":
-            return ToolPolicyDecision()
-        return ToolPolicyDecision(
-            action="deny",
-            reason=(
-                f"The goal is {goal.status}. Discussion and read-only tools are available. "
-                "Use /goal resume or /goal replace before making changes, "
-                "or /goal cancel to leave goal mode."
             ),
         )
 

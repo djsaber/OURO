@@ -107,18 +107,18 @@ class RunExecutionOwnership:
                 return None
             await asyncio.sleep(min(0.05, remaining))
 
-    async def wait_for_settlement(
+    async def wait_for_abort_settlement(
         self,
         session_id: str,
         run_id: str,
         *,
         poll_interval: float = 0.05,
     ) -> None:
-        """Wait until the durable Run is terminal or its execution owner releases the lock."""
+        """Wait while cancellation is pending and an execution owner is still present."""
 
         while await run_blocking(self.is_locked, session_id):
             run = await run_blocking(self.store.load_run, session_id, run_id)
-            if run.status not in ACTIVE_RUN_STATUSES:
+            if run.status not in ACTIVE_RUN_STATUSES or not run.abort_requested:
                 return
             await asyncio.sleep(poll_interval)
 

@@ -81,6 +81,41 @@ async def test_restart_after_continue_recovers_only_the_current_attempt(store, n
         await runtime.close()
 
 
+async def test_continue_waits_for_stopped_execution_to_release_ownership(store, monkeypatch):
+    session = SessionRecord()
+    store.create_session(session)
+    run = RunRecord(session_id=session.session_id, status="aborted", ended_at=utc_now())
+    store.save_run(run)
+    store.append_message(
+        MessageRecord.text(
+            session_id=session.session_id, run_id=run.run_id, role="user", text="retained input"
+        )
+    )
+    runtime = runtime_for(store)
+    lock = await runtime.run_ownership.acquire(session.session_id, run.run_id)
+    attempted = asyncio.Event()
+    acquire = runtime.run_ownership.acquire
+
+    async def observe_acquire(*args, **kwargs):
+        result = await acquire(*args, **kwargs)
+        attempted.set()
+        return result
+
+    monkeypatch.setattr(runtime.run_ownership, "acquire", observe_acquire)
+    task = asyncio.create_task(runtime.continue_run(session_id=session.session_id))
+    try:
+        await asyncio.wait_for(attempted.wait(), 5)
+        assert not task.done()
+    finally:
+        await runtime.run_ownership.release(run.run_id, lock)
+        try:
+            result = await asyncio.wait_for(task, 5)
+            assert result.run.status == "completed"
+            assert result.run.run_id == run.run_id
+        finally:
+            await runtime.close()
+
+
 @pytest.mark.parametrize("status", ["failed", "aborted", "recoverable", "running", "paused"])
 async def test_continue_keeps_run_input_and_partial_history(store, status):
     session = SessionRecord()

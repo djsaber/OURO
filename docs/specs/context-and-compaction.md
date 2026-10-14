@@ -20,6 +20,9 @@ semantic envelope renderer 包裹原始正文；未提供标签时直接拼接�
 
 ## 最近一次 Provider 请求快照
 
+最近请求快照记录已准备请求的事实。追加响应或更新 Harness 状态不会使它失效，进行中的请求仍使用原身份
+结算 Provider 用量。后续请求准备时替换快照；撤销历史则清除属于已撤回历史的快照。
+
 `ContextSnapshotRecord` 保存最近一次真正准备并交给 Provider 的请求，包括 system prompt、请求级 ephemeral
 Context Provider 注入、压缩/恢复后的 messages、tools、metrics、路由和实际 Provider 内容 digest。
 `session context` 读取该记录的 metrics；`session context --content` 与 TUI 的上下文详情通过

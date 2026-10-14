@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -37,6 +37,7 @@ class PluginCommandResult(OuroModel):
     harness_change: HarnessStateChange | None = None
     command_id: str
     output: str = ""
+    run_action: Literal["stop", "continue"] | None = None
     data: dict[str, Any] = Field(default_factory=dict)
     session_inputs: list[SessionInputRequest] = Field(default_factory=list)
     attributed_session_inputs: list[AttributedSessionInput] = Field(default_factory=list)
@@ -213,7 +214,7 @@ class PluginCommandRegistry:
         else:
             result = PluginCommandResult(command_id=command_id, data=dict(raw))
         if (
-            result.session_inputs or result.session_input_batches
+            result.session_inputs or result.session_input_batches or result.run_action
         ) and not command.allow_session_inputs:
             raise PluginCommandError(
                 "plugin command requires sessions.write and background.run permissions: "
@@ -223,10 +224,16 @@ class PluginCommandRegistry:
             raise PluginCommandError(
                 "plugin command cannot mix individual inputs with input batches"
             )
+        if result.run_action is not None:
+            if session_id is None:
+                raise PluginCommandError("plugin command run actions require a target Session")
+            if result.session_inputs or result.session_input_batches:
+                raise PluginCommandError("plugin command cannot mix run actions with new inputs")
         if (
             not result.session_inputs
             and not result.session_input_batches
             and not result.session_control_transitions
+            and result.run_action is None
         ):
             return result
         if command.generation_id is None or command.execution_contract_hash is None:

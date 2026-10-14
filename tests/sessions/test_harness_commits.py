@@ -54,9 +54,7 @@ def message(session_id: str, text: str) -> MessageRecord:
 
 
 @pytest.mark.parametrize("change", ["harness", "undo"])
-def test_response_append_preserves_request_context_until_business_state_or_history_changes(
-    store, change
-):
+def test_request_context_survives_harness_changes_but_not_history_withdrawal(store, change):
     session = SessionRecord()
     store.create_session(session)
     view = ContextBuilder().build(
@@ -91,7 +89,9 @@ def test_response_append_preserves_request_context_until_business_state_or_histo
         )
     )
     store.commit_session(request)
-    assert store.load_latest_context(session.session_id) is None
+    assert store.load_latest_context(session.session_id) == (
+        context if change == "harness" else None
+    )
 
 
 def test_file_session_enumeration_excludes_unpublished_creation(tmp_path, monkeypatch):

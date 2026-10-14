@@ -67,8 +67,8 @@ async def submit_plugin_command(
 ) -> PluginCommandSubmission | None:
     """Resolve and execute a command, preserving its target before input consumption.
 
-    Hosts may consume in their own foreground/background task. They never decide
-    between already accepted receipts, atomic batches and independent inputs.
+    Stops settle before returning. Hosts may consume new input or continuation in
+    their own foreground/background task without interpreting plugin semantics.
     """
 
     matches = [
@@ -118,6 +118,12 @@ async def submit_plugin_command(
         session_id=session_id,
         workspace=workspace,
     )
+    if execution.stop_requested_run_id is not None:
+        assert session_id is not None
+        await runtime.settle_run_abort(
+            session_id=session_id,
+            run_id=execution.stop_requested_run_id,
+        )
     if session_id is None and (execution.session_inputs or execution.session_input_batches):
         first = (
             execution.session_inputs[0]
@@ -135,6 +141,12 @@ async def consume_plugin_command(
     """Yield results through existing Runtime acceptance and FIFO boundaries."""
 
     execution = submission.execution
+    if execution.run_action == "continue":
+        assert submission.session_id is not None
+        result = await runtime.continue_session(session_id=submission.session_id)
+        if result is not None:
+            yield result
+        return
     if execution.accepted_inputs:
         for receipt in execution.accepted_inputs:
             yield await runtime.consume_host_input(receipt)
@@ -271,7 +283,12 @@ async def execute_plugin_command(
                     },
                 )
             )
-        if result.harness_change is not None or any(item.changed for item in controls) or batches:
+        if (
+            result.harness_change is not None
+            or any(item.changed for item in controls)
+            or batches
+            or result.run_action is not None
+        ):
             commit_request = SessionCommit(
                 before=before,
                 after=after,
@@ -285,6 +302,7 @@ async def execute_plugin_command(
         data["session_controls"] = [item.model_dump(mode="json") for item in controls]
     view = PluginCommandExecutionView(
         command_id=result.command_id,
+        run_action=result.run_action,
         output="\n".join(parts),
         data=data,
         command_output=result.output,
@@ -306,6 +324,9 @@ async def execute_plugin_command(
                 released_activation_ids=tuple(
                     identity for item in controls for identity in item.released_activation_ids
                 ),
+                stop_run_reason=f"Stopped by /{command_id}"
+                if result.run_action == "stop"
+                else None,
             )
         except asyncio.CancelledError:
             # run_blocking has settled the owned write before cancellation reaches us.
@@ -319,6 +340,9 @@ async def execute_plugin_command(
                 raise
             committed = recovered
         view = PluginCommandExecutionView.model_validate(committed.output["plugin_command"])
+        view = view.model_copy(
+            update={"stop_requested_run_id": committed.output.get("stop_requested_run_id")}
+        )
         if controls:
             data = dict(view.data)
             data["session_controls"] = [

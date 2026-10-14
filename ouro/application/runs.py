@@ -1177,11 +1177,10 @@ def abort_run_state(
 
     with store.session_mutation(session_id):
         session = store.load_session_record(session_id)
-        runs = store.load_runs(session_id)
         run = (
-            find_run(runs, run_id)
+            store.load_run(session_id, run_id)
             if run_id
-            else find_active_run(runs, history_epoch=session.history_epoch)
+            else find_active_run(store.load_runs(session_id), history_epoch=session.history_epoch)
         )
         if run.status not in ACTIVE_RUN_STATUSES:
             return session, run, False
@@ -1223,11 +1222,10 @@ def request_run_abort_state(
 
     with store.session_mutation(session_id):
         session = store.load_session_record(session_id)
-        runs = store.load_runs(session_id)
         run = (
-            find_run(runs, run_id)
+            store.load_run(session_id, run_id)
             if run_id
-            else find_active_run(runs, history_epoch=session.history_epoch)
+            else find_active_run(store.load_runs(session_id), history_epoch=session.history_epoch)
         )
         if run.status not in ACTIVE_RUN_STATUSES or run.abort_requested:
             return session, run, False

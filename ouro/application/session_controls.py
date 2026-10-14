@@ -26,7 +26,7 @@ from ouro.core.session_controls import (
     SessionControlState,
     SessionControlTransitionResult,
 )
-from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tools import ToolResult
 from ouro.plugins.session_controllers import (
     PluginSessionController,
@@ -271,8 +271,9 @@ class SessionControlCoordinator:
         *,
         released_activation_ids: tuple[str, ...] = (),
         resolving_tool_call_id: str | None = None,
+        stop_run_reason: str | None = None,
     ) -> SessionCommitResult:
-        """Include released controllers' pending work in the same durable decision."""
+        """Commit state, released controllers' pending work and an optional execution stop."""
         with self.store.session_mutation(request.before.session_id):
             after = (request.after or request.before).model_copy(
                 update={"updated_at": utc_now(), "last_activity_at": utc_now()},
@@ -300,6 +301,23 @@ class SessionControlCoordinator:
                     "queue_ids": list(queue_ids),
                 }
             output = dict(request.output)
+            if stop_run_reason is not None:
+                current = self.store.load_session_record(request.before.session_id)
+                if current.active_run_id is not None:
+                    run = next(
+                        (item for item in runs if item.run_id == current.active_run_id),
+                        None,
+                    ) or self.store.load_run(current.session_id, current.active_run_id)
+                    if run.status in ACTIVE_RUN_STATUSES:
+                        run = run.model_copy(
+                            update={
+                                "abort_requested": True,
+                                "metadata": {**run.metadata, "abort_reason": stop_run_reason},
+                            }
+                        )
+                        runs = [item for item in runs if item.run_id != run.run_id]
+                        runs.append(run)
+                        output["stop_requested_run_id"] = run.run_id
             if cancellations:
                 output["control_cancellations"] = cast(JsonValue, cancellations)
             prepared = request.model_copy(

@@ -2,7 +2,8 @@
 
 `dev.ouro.goal` maintains one user-requested objective for a primary conversation. The system
 continues at safe execution boundaries; the model checks evidence and explicitly reports completion
-or a genuine blocker. Users own pause, resume, objective changes, cancellation, and budgets.
+or a genuine blocker. Users own pause, objective changes, cancellation, and budgets.
+Users or the model can explicitly resume a stopped goal.
 
 ## Commands
 
@@ -14,12 +15,11 @@ or a genuine blocker. Users own pause, resume, objective changes, cancellation, 
 /goal resume [--token-budget N | --no-token-budget]
 /goal replace [--token-budget N | --no-token-budget] <objective>
 /goal cancel
-/goal clear
 ```
 
 Creation commits Goal state, control ownership, and an initial message batch before the model starts.
 It does not require a CreateGoal call. An unfinished Goal or another mode's ownership rejects creation.
-Bare /goal reads status; clear aliases cancel. Replace preserves identity, creation time, and usage.
+Bare /goal reads status; cancel removes the goal. Replace preserves identity, creation time, and usage.
 
 Creation without a budget is unbudgeted. Resume and replace preserve the existing budget by default.
 --token-budget N sets a positive cumulative total greater than usage; --no-token-budget removes the
@@ -35,7 +35,7 @@ policies still apply.
 |---|---|
 | GetGoal | Read objective, status, budget, actual usage, timestamps, and report |
 | CreateGoal | Create from an explicit natural-language request using the same transition as the command |
-| UpdateGoal | Set complete or blocked with evidence and a matching current request binding |
+| UpdateGoal | Resume with active, or set complete/blocked, with evidence and a matching request binding |
 
 Ordinary tasks do not authorize creation. Completion requires a checked result and no required work
 remaining. Blocking requires the same obstacle across three consecutive Goal work turns and no path
@@ -46,12 +46,18 @@ Resume starts a fresh blocker assessment.
 
 Temporary goal-context reads current state for each request, including after compaction. It contains
 the objective, status, total budget, relevant report, and action rules. Changing usage and timestamps
-stay out of the request prefix. Pending creation and lifecycle batches coalesce to the latest user
-action. Raw objective text remains a non-scaffold user message in the initial atomic batch.
+stay out of the request prefix. Pending creation, replacement and cancellation batches coalesce.
+Raw objective text remains a non-scaffold user message in the initial atomic batch.
 
-Paused, blocked, and budget-exhausted conversations accept additional information and discussion
-without resuming. Only declared read-only tools are allowed while stopped. Resume or replace permits
-execution; cancel or clear leaves Goal mode. Discussion has normal conversation usage but no Goal scope.
+Pause commits goal state with the framework's generic stop intent and cancels the current execution.
+Resume uses the generic continue intent to resume retained work or consume the initial pending input.
+Neither operation adds a scaffold or input message. The framework owns cancellation, settlement and
+checkpoint recovery; completed tool results are retained without replaying their execution.
+
+Stopped goals allow normal conversation, tools and /continue without automatic goal resumption.
+The model can call UpdateGoal(active) when current evidence justifies resuming, preserving the budget;
+the user can also use /goal resume. Exhausted budgets require user action. Discussion has normal
+conversation usage but no Goal scope. Cancel leaves Goal mode.
 
 ## Execution and Accounting
 
@@ -72,7 +78,7 @@ usage. Old requests cannot complete a newly activated objective.
 
 - Default-enabled in-process plugin, namespace goal, version 2.0.0.
 - Controller mode exclusively claims ouro.session.primary_behavior, shared with Plan.
-- Context goal-context; tool policy goal-stopped-tools; continuation goal-continuation.
+- Context goal-context; continuation goal-continuation.
 - Permissions: sessions.write and background.run.
 - State uses branch_policy=reset; only schema 4 is supported.
 - No private store, polling loop, history service, or permission escalation.

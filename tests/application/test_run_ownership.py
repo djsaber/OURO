@@ -97,8 +97,9 @@ async def test_run_execution_ownership_tracks_lock_and_signal_lifecycle(tmp_path
     assert ownership.signal_for(run.run_id) is signal
     assert not signal.is_aborted()
 
+    store.save_run(run.model_copy(update={"abort_requested": True}))
     settlement = asyncio.create_task(
-        RunExecutionOwnership(store).wait_for_settlement(
+        RunExecutionOwnership(store).wait_for_abort_settlement(
             session.session_id,
             run.run_id,
             poll_interval=0.001,

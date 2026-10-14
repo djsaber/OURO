@@ -119,8 +119,6 @@ class GoalStateRepository:
             projection_semantic_tags=(
                 "goal-create",
                 "goal-continue",
-                "goal-paused",
-                "goal-resumed",
                 "goal-updated",
                 "goal-cancelled",
             ),

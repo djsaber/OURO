@@ -572,6 +572,7 @@ class WorkerPluginInstance:
                     ),
                     "session_inputs",
                     "session_input_batches",
+                    "command_run_actions",
                     "tool_input_requests",
                     *(["services", "host_requests"] if self.service_bridge is not None else []),
                     *(["processes"] if self.process_bridge is not None else []),
@@ -1575,9 +1576,13 @@ def _decode_worker_context(result: dict[str, Any], method: str) -> sdk.ContextOu
 def _decode_worker_command(result: dict[str, Any], method: str) -> sdk.CommandOutput:
     _require_optional_type(result, "output", str, method)
     _require_optional_type(result, "data", dict, method)
+    run_action = result.get("run_action")
+    if run_action not in (None, "stop", "continue"):
+        raise WorkerProtocolError(f"worker {method} run_action must be stop or continue")
     return sdk.CommandOutput(
         output=result.get("output", ""),
         data=_object_value(result.get("data", {})),
+        run_action=run_action,
         session_inputs=_worker_session_inputs(result),
         session_input_batches=_worker_session_input_batches(result),
         session_control_transitions=_worker_control_transitions(result),

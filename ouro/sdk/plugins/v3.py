@@ -606,11 +606,14 @@ class CommandCall:
 
 @dataclass(frozen=True)
 class CommandOutput:
+    """Command effects; run_action controls existing work without adding model input."""
+
     output: str = ""
     data: Mapping[str, object] = field(default_factory=dict)
     session_inputs: tuple[SessionInput, ...] = ()
     session_input_batches: tuple[SessionInputBatch, ...] = ()
     session_control_transitions: tuple[SessionControlTransition, ...] = ()
+    run_action: Literal["stop", "continue"] | None = None
 
 
 CommandHandler = Callable[

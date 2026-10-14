@@ -1906,8 +1906,35 @@ class RuntimeService:
                 await self._agent_controls.reconcile_session(result.session)
         return result
 
+    async def continue_session(self, *, session_id: str) -> RunResult | None:
+        """Continue retained dialogue or consume its first pending input, without adding input."""
+        snapshot = await run_blocking(self.store.load_runtime_session, session_id)
+        active = maybe_active_run(snapshot.runs, history_epoch=snapshot.session.history_epoch)
+        if active is not None:
+            if not active.abort_requested:
+                return RunResult(session=snapshot.session, run=active)
+            await self.settle_run_abort(session_id=session_id, run_id=active.run_id)
+            snapshot = await run_blocking(self.store.load_runtime_session, session_id)
+        pending = self._pending_queued_inputs(snapshot)
+        if pending:
+            return await self.consume_host_input(
+                HostInputReceipt(
+                    session_id=session_id,
+                    queue_id=pending[0].queue_id,
+                    accepted_at=pending[0].queued_at,
+                )
+            )
+        if snapshot.messages:
+            return await self.continue_run(session_id=session_id, allow_completed=True)
+        return None
+
     async def continue_run(
-        self, *, session_id: str, run_id: str | None = None, history_epoch: int | None = None
+        self,
+        *,
+        session_id: str,
+        run_id: str | None = None,
+        history_epoch: int | None = None,
+        allow_completed: bool = False,
     ) -> RunResult:
         """Resume retained work without adding input or binding a provider route.
 
@@ -1918,10 +1945,12 @@ class RuntimeService:
         snapshot = await run_blocking(self.session_recovery.recover_runtime, session_id)
         if history_epoch is not None and history_epoch != snapshot.session.history_epoch:
             raise SessionCommitConflict("Continuation belongs to withdrawn Session history")
-        source = continuable_run(snapshot)
+        source = continuable_run(snapshot, allow_completed=allow_completed)
         if run_id is not None and source.run_id != run_id:
             raise SessionBusyError("The requested continuation is no longer the latest run")
-        fresh = source.history_epoch != snapshot.session.history_epoch
+        fresh = (
+            source.history_epoch != snapshot.session.history_epoch or source.status == "completed"
+        )
         run = (
             RunRecord(
                 session_id=session_id,
@@ -1932,7 +1961,13 @@ class RuntimeService:
             if fresh
             else source
         )
-        lock = await self.run_ownership.acquire(session_id, run.run_id)
+        lock = (
+            await self.run_ownership.acquire(session_id, run.run_id)
+            if fresh
+            else await self.run_ownership.acquire_parked(
+                session_id, run.run_id, expected_status=source.status
+            )
+        )
         if lock is None:
             raise SessionBusyError("The session already has an execution owner")
         signal: AbortSignal | None = None
@@ -1941,7 +1976,7 @@ class RuntimeService:
         started = False
         try:
             snapshot = await run_blocking(self.store.load_runtime_session, session_id)
-            latest_run = continuable_run(snapshot)
+            latest_run = continuable_run(snapshot, allow_completed=allow_completed)
             if (
                 latest_run.run_id != source.run_id
                 or run.history_epoch != snapshot.session.history_epoch
@@ -2372,73 +2407,66 @@ class RuntimeService:
         reason: str = "User aborted",
         _reservation: RunReservation | None = None,
     ) -> RunResult:
-        session, run = await run_blocking(self._load_abort_target, session_id, run_id)
-        if run.status not in ACTIVE_RUN_STATUSES:
-            return RunResult(session=session, run=run)
-
+        """Request cancellation once, then settle that durable intent."""
+        _, run, changed = await run_blocking(
+            request_run_abort_state,
+            self.store,
+            session_id=session_id,
+            run_id=run_id,
+            reason=reason,
+        )
         emitted: list[EventRecord] = []
+        if changed:
+            await self.event_recorder.emit(
+                emitted,
+                await run_blocking(self.store.latest_event_sequence, session_id),
+                session_id=session_id,
+                run_id=run.run_id,
+                event_type="run_abort_requested",
+                payload={"reason": reason},
+            )
+        result = await self.settle_run_abort(
+            session_id=session_id, run_id=run.run_id, _reservation=_reservation
+        )
+        return result.model_copy(update={"events": [*emitted, *result.events]})
+
+    async def settle_run_abort(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        _reservation: RunReservation | None = None,
+    ) -> RunResult:
+        """Settle an accepted cancellation without cancelling a resumed execution."""
+        signal = self.run_ownership.signal_for(run_id)
+        session, run = await run_blocking(self._load_abort_target, session_id, run_id)
+        if run.status not in ACTIVE_RUN_STATUSES or not run.abort_requested:
+            return RunResult(session=session, run=run)
+        if signal is not None and signal is self.run_ownership.signal_for(run_id):
+            self.run_ownership.record_abort_state(session, run)
         has_active_owner = await run_blocking(self.run_ownership.is_locked, session_id)
-        signal = self.run_ownership.signal_for(run.run_id)
         if has_active_owner and not (
             _reservation is not None and _reservation.owns(session_id, run.run_id)
         ):
-            session, run, changed = await run_blocking(
-                request_run_abort_state,
-                self.store,
-                session_id=session_id,
-                run_id=run.run_id,
-                reason=reason,
-            )
-            if changed:
-                await self.event_recorder.emit(
-                    emitted,
-                    await run_blocking(self.store.latest_event_sequence, session_id),
-                    session_id=session.session_id,
-                    run_id=run.run_id,
-                    event_type="run_abort_requested",
-                    payload={"reason": reason},
-                )
-            if signal is not None:
-                self.run_ownership.record_abort_state(session, run, reason=reason)
-            await self.run_ownership.wait_for_settlement(session_id, run.run_id)
+            await self.run_ownership.wait_for_abort_settlement(session_id, run.run_id)
             session, run = await run_blocking(
                 self._load_abort_target,
                 session_id,
                 run.run_id,
             )
-            if run.status not in ACTIVE_RUN_STATUSES:
-                return RunResult(session=session, run=run, events=emitted)
-
-        session, run, changed = await run_blocking(
-            abort_run_state,
-            self.store,
-            session_id=session_id,
-            run_id=run.run_id,
-            reason=reason,
-        )
-        if not changed:
-            return RunResult(session=session, run=run)
-        await self.event_recorder.emit(
-            emitted,
-            await run_blocking(self.store.latest_event_sequence, session_id),
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="run_aborted",
-            payload={"reason": reason},
-        )
-        result = RunResult(session=session, run=run, events=emitted)
-        return await self._finalize_run_boundary(result, drain_queued_inputs=False)
+            if run.status not in ACTIVE_RUN_STATUSES or not run.abort_requested:
+                return RunResult(session=session, run=run)
+        result = await self._finalize_requested_abort(RunResult(session=session, run=run))
+        if result.run.status == "aborted":
+            return await self._finalize_run_boundary(result, drain_queued_inputs=False)
+        return result
 
     def _load_abort_target(
         self,
         session_id: str,
-        run_id: str | None,
+        run_id: str,
     ) -> tuple[SessionRecord, RunRecord]:
-        session = self.store.load_session_record(session_id)
-        runs = self.store.load_runs(session_id)
-        return session, find_run(runs, run_id) if run_id else find_active_run(
-            runs, history_epoch=session.history_epoch
-        )
+        return self.store.load_session_record(session_id), self.store.load_run(session_id, run_id)
 
     async def submit_plugin_input(
         self,
@@ -3945,24 +3973,25 @@ class RuntimeService:
         session_id: str,
         run_id: str,
     ) -> tuple[SessionRecord, RunRecord, bool, str | None, int | None]:
-        latest_run = self.store.load_run(session_id, run_id)
-        if latest_run.status not in ACTIVE_RUN_STATUSES or not latest_run.abort_requested:
-            return (
-                self.store.load_session_record(latest_run.session_id),
-                latest_run,
-                False,
-                None,
-                None,
+        with self.store.session_mutation(session_id):
+            latest_run = self.store.load_run(session_id, run_id)
+            if latest_run.status not in ACTIVE_RUN_STATUSES or not latest_run.abort_requested:
+                return (
+                    self.store.load_session_record(latest_run.session_id),
+                    latest_run,
+                    False,
+                    None,
+                    None,
+                )
+            raw_reason = latest_run.metadata.get("abort_reason")
+            reason = raw_reason if isinstance(raw_reason, str) and raw_reason else "User aborted"
+            session, aborted_run, changed = abort_run_state(
+                self.store,
+                session_id=latest_run.session_id,
+                run_id=latest_run.run_id,
+                reason=reason,
             )
-        raw_reason = latest_run.metadata.get("abort_reason")
-        reason = raw_reason if isinstance(raw_reason, str) and raw_reason else "User aborted"
-        session, aborted_run, changed = abort_run_state(
-            self.store,
-            session_id=latest_run.session_id,
-            run_id=latest_run.run_id,
-            reason=reason,
-        )
-        sequence = self.store.latest_event_sequence(latest_run.session_id) if changed else None
+            sequence = self.store.latest_event_sequence(latest_run.session_id) if changed else None
         return session, aborted_run, changed, reason, sequence
 
     async def _finalize_run_boundary(

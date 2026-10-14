@@ -156,6 +156,145 @@ async def test_queries_and_unknown_or_ambiguous_names_do_not_create_sessions(sys
     assert len(system.calls) == 1
 
 
+async def test_stop_command_commits_abort_intent_and_settles_execution(system, monkeypatch):
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def stream(**kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+            yield ProviderStreamEvent(type="done")
+        finally:
+            stopped.set()
+
+    monkeypatch.setattr(system.runtime.adapter.provider, "stream", stream)
+    session = system.runtime.create_session()
+    service = system.plugins(
+        handler=lambda call: PluginCommandResult(command_id=call.command_id, run_action="stop")
+    )
+    task = asyncio.create_task(system.runtime.run("retained input", session_id=session.session_id))
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        before = system.store.load_session(session.session_id).messages
+        submitted = await asyncio.wait_for(
+            submit_plugin_command(
+                service, system.runtime, "example", "", session_id=session.session_id
+            ),
+            5,
+        )
+        assert stopped.is_set()
+        result = await task
+        assert submitted.execution.stop_requested_run_id == result.run.run_id
+        assert result.run.status == "aborted"
+        assert system.store.load_session(session.session_id).messages == before
+        assert [item async for item in consume_plugin_command(system.runtime, submitted)] == []
+    finally:
+        if not task.done():
+            await system.runtime.abort_run(session_id=session.session_id)
+        await task
+
+
+async def test_failed_stop_command_does_not_publish_abort_intent(system, monkeypatch):
+    session = system.runtime.create_session()
+    run = RunRecord(session_id=session.session_id, status="running")
+    system.store.save_run(run)
+    system.store.save_session(
+        session.model_copy(update={"active_run_id": run.run_id, "status": "running"})
+    )
+    service = system.plugins(
+        handler=lambda call: PluginCommandResult(command_id=call.command_id, run_action="stop")
+    )
+
+    def fail(request):
+        assert request.runs[0].abort_requested
+        raise PersistenceError("injected failure")
+
+    monkeypatch.setattr(system.store, "commit_session", fail)
+    with pytest.raises(PersistenceError, match="injected failure"):
+        await service.execute_command("dev.example:example", session_id=session.session_id)
+    assert not system.store.load_run(session.session_id, run.run_id).abort_requested
+
+
+async def test_delayed_stop_delivery_does_not_cancel_resumed_execution(system, monkeypatch):
+    first_started = asyncio.Event()
+    resumed_started = asyncio.Event()
+    deliver_command = asyncio.Event()
+    finish = asyncio.Event()
+    command_committed = asyncio.Event()
+
+    async def stream(**kwargs):
+        (resumed_started if first_started.is_set() else first_started).set()
+        await finish.wait()
+        yield ProviderStreamEvent(type="text_delta", text="Done.")
+        yield ProviderStreamEvent(type="done")
+
+    monkeypatch.setattr(system.runtime.adapter.provider, "stream", stream)
+    service = system.plugins(
+        handler=lambda call: PluginCommandResult(command_id=call.command_id, run_action="stop")
+    )
+    execute = service.execute_command
+
+    async def delayed_delivery(*args, **kwargs):
+        result = await execute(*args, **kwargs)
+        command_committed.set()
+        await deliver_command.wait()
+        return result
+
+    monkeypatch.setattr(service, "execute_command", delayed_delivery)
+    session = system.runtime.create_session()
+    initial = asyncio.create_task(
+        system.runtime.run("retained input", session_id=session.session_id)
+    )
+    command = resumed = None
+    try:
+        await asyncio.wait_for(first_started.wait(), 5)
+        command = asyncio.create_task(
+            submit_plugin_command(
+                service, system.runtime, "example", "", session_id=session.session_id
+            )
+        )
+        await asyncio.wait_for(command_committed.wait(), 5)
+        stopped = await asyncio.wait_for(initial, 5)
+        assert stopped.run.status == "aborted"
+        resumed = asyncio.create_task(system.runtime.continue_run(session_id=session.session_id))
+        await asyncio.wait_for(resumed_started.wait(), 5)
+        deliver_command.set()
+        await asyncio.wait_for(command, 5)
+        assert not system.store.load_run(session.session_id, stopped.run.run_id).abort_requested
+        finish.set()
+        assert (await asyncio.wait_for(resumed, 5)).run.status == "completed"
+    finally:
+        deliver_command.set()
+        finish.set()
+        await asyncio.gather(*(task for task in (initial, command, resumed) if task is not None))
+
+
+@pytest.mark.parametrize("problem", ["permission", "session", "contract", "inputs"])
+async def test_run_action_requires_execution_authority_and_cannot_add_inputs(problem):
+    registry = PluginCommandRegistry()
+    registry.register(
+        PluginCommand(
+            name="control",
+            plugin_id="dev.example",
+            allow_session_inputs=problem != "permission",
+            generation_id=None if problem == "contract" else "generation",
+            execution_contract_hash="contract",
+            handler=lambda call: PluginCommandResult(
+                command_id=call.command_id,
+                run_action="continue",
+                session_inputs=[SessionInputRequest(prompt="new input")]
+                if problem == "inputs"
+                else [],
+            ),
+        )
+    )
+    with pytest.raises(PluginCommandError):
+        await registry.execute(
+            "dev.example:control", session_id=None if problem == "session" else "session"
+        )
+
+
 @pytest.mark.parametrize("kind", ["single", "multiple", "batch"])
 @pytest.mark.parametrize("existing", [False, True])
 async def test_command_inputs_keep_fifo_batch_boundaries_and_attribution(system, kind, existing):

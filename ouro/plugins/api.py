@@ -693,6 +693,7 @@ def _adapt_command(contribution: sdk.CommandContribution, *, owner_id: str) -> P
                 harness_change=change,
                 command_id=request.command_id,
                 output=raw.output,
+                run_action=raw.run_action,
                 data=dict(raw.data),
                 session_inputs=[
                     SessionInputRequest(

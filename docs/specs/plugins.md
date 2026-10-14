@@ -418,6 +418,15 @@ Session Controller 的 activate/deactivate call 还必须提供 Host 已知的 `
 接受完整 batch，并在同一安全边界把整组转为 canonical messages；`one_by_one` 只能选择完整消费单位，不能拆分
 batch。SDK、in-process adapter、worker protocol、CLI 和 TUI 使用同一类型化契约。
 
+命令也可返回 `CommandOutput.run_action = stop | continue`，要求目标 Session、有效执行契约及
+`sessions.write`、`background.run` 权限；不能与新输入混用。`stop` 将当前执行的取消意图与命令状态共同提交，
+Host 提交用例经 Runtime 结算已接受的取消意图，不重复发起取消；迟到的提交返回不能停止已经恢复的执行。
+`continue` 保留没有取消请求的活动执行；存在取消请求时先完成收尾。会话空闲时先按 FIFO 消费已接受的排队输入；
+没有排队输入时恢复现有执行检查点，最近执行已完成时基于保留历史开始新的执行。
+续跑复用原生所有权交接，等待前一执行释放后才能取得锁；没有工作时不创建空输入。
+运行控制不生成消息，也不禁止之后的普通输入或手动续跑。框架负责执行所有权、取消和工具结果恢复，
+插件只声明意图，不直接操作 Run。Worker 通过 `command_run_actions` feature 宣告支持此契约。
+
 `SessionInput.driver_id` 可为 follow-up 选择 `plugin_id/run_drivers/id` 或 `ouro.default`；省略时使用默认算法。
 接受输入时保存完整 Driver 实现及依赖契约，队列消费不重新选版。batch 的所有成员必须使用相同选择，批量消费不
 合并不同的契约。`steer` 不能指定 Driver。命令在调用嵌套 Session Controller 前解析全部 Driver 选择；解析失败

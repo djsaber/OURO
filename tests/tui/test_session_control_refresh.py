@@ -13,6 +13,27 @@ from tests.tui.test_app import BlockingStreamProvider, _wait_for_worker_group, _
 from tests.tui.test_tasks import streaming_application
 
 
+async def test_pause_command_stops_blocked_execution_without_a_new_input(tmp_path):
+    provider = BlockingStreamProvider()
+    application = streaming_application(tmp_path, provider)
+    app = OuroTuiApp(application=application)
+    async with run_ready_app(app) as pilot:
+        await application.plugins.enable("dev.ouro.goal")
+        await app._dispatch_command("/goal Retain this objective")
+        await asyncio.wait_for(provider.first_chunk_sent.wait(), 5)
+        session_id = app._controller.session_id
+        before = application.runtime.store.load_session(session_id).messages
+        await app._dispatch_command("/goal pause")
+        await _wait_for_worker_group(app, pilot, group="plugin-command")
+        snapshot = application.runtime.store.load_runtime_session(session_id)
+        assert snapshot.runs[-1].status == "aborted"
+        assert snapshot.messages == before
+        goal = await application.plugins.execute_command(
+            "dev.ouro.goal:goal", "status", session_id=session_id
+        )
+        assert goal.data["goal"]["status"] == "paused"
+
+
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
 @pytest.mark.parametrize("existing_session", [False, True])
 async def test_command_mode_visible_while_first_model_response_is_blocked(

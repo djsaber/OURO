@@ -76,11 +76,11 @@ class GoalCommandService:
                     current,
                     tokens_used=tokens_used,
                 )
-            return _lifecycle_output(
-                replace(current, status="paused", report=None),
-                action="paused",
-                output="Pausing the current goal.",
-                transition=_replace_transition(control, operation="pause"),
+            return CommandOutput(
+                output="Paused the current goal.",
+                data={"action": "paused"},
+                run_action="stop",
+                session_control_transitions=(_replace_transition(control, operation="pause"),),
             )
         if parsed.action == "resume":
             if current.status not in {"paused", "blocked", "budget_exhausted"}:
@@ -96,15 +96,16 @@ class GoalCommandService:
                 return _command_error(
                     "invalid_token_budget", budget_error, current, tokens_used=tokens_used
                 )
-            resumed = replace(current, status="active", token_budget=token_budget, report=None)
-            return _lifecycle_output(
-                resumed,
-                action="resumed",
-                output="Resuming the current goal.",
-                transition=_replace_transition(
-                    control,
-                    operation="resume",
-                    token_budget=token_budget,
+            return CommandOutput(
+                output="Resumed the current goal.",
+                data={"action": "resumed"},
+                run_action="continue",
+                session_control_transitions=(
+                    _replace_transition(
+                        control,
+                        operation="resume",
+                        token_budget=token_budget,
+                    ),
                 ),
             )
         if parsed.action == "replace":
@@ -259,13 +260,13 @@ def parse_goal_command(argument: str) -> ParsedGoalCommand:
     parts = text.split(maxsplit=1)
     head, tail = parts[0], parts[1] if len(parts) == 2 else ""
     command = head.casefold()
-    if command in {"status", "pause", "cancel", "clear"}:
+    if command in {"status", "pause", "cancel"}:
         if tail.strip():
             return ParsedGoalCommand(
                 action=command,
                 error=f"/goal {command} does not accept additional arguments.",
             )
-        return ParsedGoalCommand(action="cancel" if command == "clear" else command)
+        return ParsedGoalCommand(action=command)
     if command == "resume":
         budget, clear_budget, remainder, error = _parse_budget_prefix(tail.strip())
         if error is not None:

@@ -13,7 +13,9 @@ from ouro.core.state import ACTIVE_RUN_STATUSES, RESUMABLE_RUN_STATUSES, RunReco
 from ouro.sessions import RuntimeSessionSnapshot, SessionStore
 
 
-def continuable_run(snapshot: RuntimeSessionSnapshot) -> RunRecord:
+def continuable_run(
+    snapshot: RuntimeSessionSnapshot, *, allow_completed: bool = False
+) -> RunRecord:
     """Select the latest dialogue execution, independently of maintenance Runs."""
 
     if any(
@@ -38,6 +40,7 @@ def continuable_run(snapshot: RuntimeSessionSnapshot) -> RunRecord:
     if (
         run.history_epoch == snapshot.session.history_epoch
         and run.status not in RESUMABLE_RUN_STATUSES
+        and not (allow_completed and run.status == "completed")
     ):
         raise ValueError(
             f"The latest agent run is {run.status}; there is no unfinished execution to continue"

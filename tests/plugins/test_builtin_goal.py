@@ -326,7 +326,10 @@ def test_manifest_and_tool_contract_are_minimal_and_generic() -> None:
         "update-goal",
     }
     assert [item.id for item in manifest.contributes.context_providers] == ["goal-context"]
-    assert [item.id for item in manifest.contributes.tool_policies] == ["goal-stopped-tools"]
+    assert not manifest.contributes.tool_policies
+    assert "clear" not in {
+        option.value for option in manifest.contributes.commands[0].argument_options
+    }
     assert not manifest.contributes.prompt_policies
     assert {item.active_when for item in manifest.contributes.tools} == {None}
     assert {item.permission_control for item in manifest.contributes.tools} == {"tool"}
@@ -405,9 +408,30 @@ async def test_resume_preserves_budget_until_explicitly_removed(goal_session) ->
     assert g.goal().token_budget is None
 
 
-async def test_clear_removes_goal_without_creating_a_new_objective(goal_session) -> None:
+async def test_model_resume_rejects_stale_work_and_preserves_budget(goal_session):
+    g = goal_session
+    await g.tool("CreateGoal", {"objective": "Ship", "token_budget": 10})
+    old_request = g.request()
+    g.record_usage(old_request, 5)
+    await g.command("pause")
+    stale = await g.tool("UpdateGoal", {"status": "active", "report": "Resume"}, run=old_request)
+    assert stale.structured["error_type"] == "stale_goal_update"
+    result = await g.tool(
+        "UpdateGoal", {"status": "active", "report": "New evidence allows progress"}
+    )
+    assert not result.is_error
+    assert g.goal().status == "active"
+    assert g.goal().token_budget == 10
+    g.record_usage(g.request(), 5)
+    await g.command("pause")
+    rejected = await g.tool("UpdateGoal", {"status": "active", "report": "Try again"})
+    assert rejected.structured["error_type"] == "invalid_token_budget"
+    assert g.goal().status == "paused"
+
+
+async def test_cancel_removes_goal_without_creating_a_new_objective(goal_session) -> None:
     await goal_session.tool("CreateGoal", {"objective": "Ship"})
-    await goal_session.command("clear")
+    await goal_session.command("cancel")
     assert goal_session.goal() is None
 
 
@@ -652,7 +676,7 @@ async def test_lifecycle_uses_native_controls_and_keeps_one_business_identity(go
         "resume --no-token-budget --token-budget 10",
         "replace --token-budget 10 --token-budget 20 Ship",
         "replace --no-token-budget",
-        "clear Ship",
+        "cancel Ship",
         "status extra",
     ],
 )
@@ -790,7 +814,7 @@ async def test_unavailable_usage_pauses_budgeted_goal_without_inventing_zero(goa
         assert "unavailable" in result.content
 
 
-async def test_blocked_goal_retains_claim_but_stops_usage_scope_and_gates_changes(goal_session):
+async def test_blocked_goal_retains_claim_but_stops_usage_scope(goal_session):
     g = goal_session
     await g.tool("CreateGoal", {"objective": "Ship"})
     run = g.request()
@@ -803,24 +827,6 @@ async def test_blocked_goal_retains_claim_but_stops_usage_scope_and_gates_change
     assert control.usage_scope is None
     g.record_usage(g.request(), 3)
     assert g.usage.session_scope_tokens(g.session.session_id)[PLUGIN_ID][g.goal().goal_id] == 8
-    snapshot = capture_harness(g.store, g.session.session_id, usage_service=g.usage)
-    decision, change = await invoke_plugin_callback(
-        g.plugin.goal_tool_gate,
-        sdk.ToolPolicyCall(
-            session_id=g.session.session_id,
-            run_id="next",
-            tool_call_id="edit",
-            tool_name="Edit",
-            canonical_tool_id="ouro.host/tools/Edit",
-            owner_id="ouro.host",
-            effect="state_changing",
-        ),
-        snapshot=snapshot,
-        owner_id=PLUGIN_ID,
-        writable=False,
-    )
-    assert decision.action == "deny"
-    assert change is None
 
 
 async def test_goal_undo_restores_business_state_but_keeps_real_usage(goal_session):

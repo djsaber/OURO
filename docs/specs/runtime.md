@@ -304,7 +304,9 @@ application 的 durable Delegation 编排，core 不递归调用 RuntimeService�
 
 ## 取消语义
 
-- abort 首先持久化 Run 的 aborted 状态，再通知进程内 `AbortSignal`。
+- `abort_run` 先持久化取消意图 `abort_requested`，再通过 `settle_run_abort` 通知原执行的 `AbortSignal` 并等待收尾。
+- 命令原子提交中的取消意图直接交给 `settle_run_abort`，不再次请求取消。已结算或已恢复的执行不会被迟到的收尾请求取消。
+- 原执行完成所属工作和结果结算后才进入 `aborted`。无活动执行者时由 Runtime 在同一状态校验边界结算；有 reservation 的排队工作复用其所有权。
 - Provider stream、工具和子进程通过协作式轮询观察 signal。
 - 未知外部副作用不能因恢复而自动重放。
 - terminal Run 的后续迟到写入不能把 Session 恢复为 running。
@@ -312,8 +314,8 @@ application 的 durable Delegation 编排，core 不递归调用 RuntimeService�
 ## 进程内监督
 
 `RuntimeSupervisor` 在 RuntimeService 外管理跨 Session FIFO 队列、全局并发上限、状态快照和 Host 订阅。
-它不复制本节的 durable Run 状态机。Host detach 只关闭订阅；explicit abort 通过 RuntimeService 先持久化
-aborted；shutdown 在有限时间内 wait 或显式 abort。未在超时内完成的 Run 在下次运行或提交所属 Session 时由
+它不复制本节的 durable Run 状态机。Host detach 只关闭订阅；explicit abort 通过 RuntimeService 提交取消意图并结算；
+shutdown 在有限时间内 wait 或显式 abort。未在超时内完成的 Run 在下次运行或提交所属 Session 时由
 SessionStore 定点恢复；Host 的历史展示读取不触发恢复，进程启动本身也不扫描历史 Session。
 `waiting_child` 与其他 durable waiting 状态不占 execution permit；child 或恢复后的 parent 作为独立工作重新进入
 既有 FIFO，不增加第二个 worker pool。

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 from dataclasses import dataclass, field
 
 import pytest
 
+from ouro.application.plugin_commands import consume_plugin_command, submit_plugin_command
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_controls import SessionControlConflictError
@@ -87,6 +89,11 @@ class GoalApplication:
     async def say(self, text):
         return await self.runtime.run(text, session_id=self.session.session_id)
 
+    async def submit(self, argument):
+        return await submit_plugin_command(
+            self.app.plugins, self.runtime, "goal", argument, session_id=self.session.session_id
+        )
+
 
 @pytest.fixture(params=["files", "sqlite"])
 async def goal_app(tmp_path, request):
@@ -143,15 +150,80 @@ async def goal_app(tmp_path, request):
         await app.close()
 
 
+@pytest.mark.parametrize("resume", ["command", "continue", "message"])
+async def test_pause_stops_stream_and_resume_keeps_existing_input(goal_app, monkeypatch, resume):
+    g = goal_app
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+    original = g.provider.stream
+
+    async def stream(**kwargs):
+        if not started.is_set():
+            started.set()
+            try:
+                yield ProviderStreamEvent(type="text_delta", text="Uncommitted response")
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+        else:
+            async for event in original(**kwargs):
+                yield event
+
+    monkeypatch.setattr(g.provider, "stream", stream)
+    await g.command("Finish the retained work")
+    task = asyncio.create_task(g.consume())
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        before = g.runtime.store.load_session(g.session.session_id).messages
+        await asyncio.wait_for(g.submit("pause"), 5)
+        assert stopped.is_set()
+        result = await asyncio.wait_for(task, 5)
+        assert result.run.status == "aborted"
+        assert (await g.goal())["status"] == "paused"
+        assert g.pending() == []
+        assert g.runtime.store.load_session(g.session.session_id).messages == before
+
+        resumed = await g.submit("resume") if resume == "command" else None
+        assert g.pending() == []
+        assert g.runtime.store.load_session(g.session.session_id).messages == before
+        if resume == "command":
+            g.provider.responses.append(
+                ToolCallRequest(
+                    id="finish",
+                    name="UpdateGoal",
+                    arguments={"status": "complete", "report": "Verified the retained work."},
+                )
+            )
+        g.provider.responses.append("Done.")
+        if resume == "command":
+            results = [item async for item in consume_plugin_command(g.runtime, resumed)]
+        elif resume == "continue":
+            results = [await g.runtime.continue_run(session_id=g.session.session_id)]
+        else:
+            results = [await g.say("Discuss the current information.")]
+        if resume != "message":
+            assert results[-1].run.run_id == result.run.run_id
+        assert results[-1].run.status == "completed"
+        assert (await g.goal())["status"] == ("complete" if resume == "command" else "paused")
+        messages = g.runtime.store.load_session(g.session.session_id).messages
+        inputs = [m for m in messages if m.role == "user"]
+        assert (inputs[:-1] if resume == "message" else inputs) == [
+            m for m in before if m.role == "user"
+        ]
+    finally:
+        if not task.done():
+            await g.runtime.abort_run(session_id=g.session.session_id)
+        await task
+
+
 @pytest.mark.parametrize("mode", ["one_by_one", "all_at_once"])
 @pytest.mark.parametrize(
     ("commands", "status", "tag"),
     [
-        (["pause"], "paused", "goal-paused"),
+        (["pause"], "paused", "goal-create"),
         (["replace Revised objective"], "active", "goal-updated"),
-        (["pause", "resume"], "active", "goal-resumed"),
+        (["pause", "resume"], "active", "goal-create"),
         (["cancel"], None, "goal-cancelled"),
-        (["clear"], None, "goal-cancelled"),
     ],
 )
 async def test_direct_creation_and_pending_lifecycle_coalescing(
@@ -168,7 +240,7 @@ async def test_direct_creation_and_pending_lifecycle_coalescing(
     goal = await g.goal()
     assert (goal["status"] if goal else None) == status
     pending = g.pending()
-    assert len(pending) == 1
+    assert len(pending) == (2 if tag == "goal-create" else 1)
     assert pending[0].semantic_tag == tag
     assert "Current goal state for this request" not in pending[0].prompt
     assert "Call CreateGoal once" not in pending[0].prompt
@@ -292,7 +364,7 @@ async def test_automatic_empty_work_pauses_and_user_information_does_not_resume(
 
 
 @pytest.mark.parametrize("status", ["paused", "blocked", "budget_exhausted"])
-async def test_stopped_goal_allows_discussion_and_reads_but_denies_changes(goal_app, status):
+async def test_stopped_goal_allows_normal_tools_without_resuming(goal_app, status):
     g = goal_app
     await g.command(
         "--token-budget 1 Read the information"
@@ -326,16 +398,13 @@ async def test_stopped_goal_allows_discussion_and_reads_but_denies_changes(goal_
         [
             ToolCallRequest(id="read", name="ReadInfo", arguments={}),
             ToolCallRequest(id="write", name="ChangeInfo", arguments={}),
-            "The information is available; changes require resuming the goal.",
+            "The requested independent change is done.",
         ]
     )
-    result = await g.say("Inspect the existing information and discuss the next step.")
+    result = await g.say("Inspect the information and make this independent change.")
     assert result.run.status == "completed"
-    assert g.executed_tools == ["ReadInfo"]
-    assert any(
-        tool_result.is_error and "before making changes" in tool_result.text_content
-        for tool_result in result.tool_results
-    )
+    assert g.executed_tools == ["ReadInfo", "ChangeInfo"]
+    assert not any(tool_result.is_error for tool_result in result.tool_results)
     assert (await g.goal())["status"] == status
     assert (await g.goal())["tokens_used"] == used
     assert g.pending() == []
@@ -362,9 +431,7 @@ async def test_compaction_preserves_current_goal_projection_without_persisting_i
     assert not any(message.semantic_tag == "goal-context" for message in canonical)
 
 
-async def test_pause_during_model_request_stops_its_changes_and_refreshes_context(
-    goal_app, monkeypatch
-):
+async def test_pause_during_model_request_discards_uncommitted_tool_calls(goal_app, monkeypatch):
     g = goal_app
     await g.command("Make the requested change")
     original_stream = g.provider.stream
@@ -383,11 +450,156 @@ async def test_pause_during_model_request_stops_its_changes_and_refreshes_contex
             "Paused.",
         ]
     )
-    await g.consume()
+    result = await g.consume()
+    assert result.run.status == "aborted"
     assert g.executed_tools == []
     assert (await g.goal())["status"] == "paused"
     assert "Status: active" in g.provider.requests[0][0].text_content
-    used = (await g.goal())["tokens_used"]
+    assert len(g.provider.requests) == 1
+    assert g.pending() == []
+
+
+async def test_model_can_resume_stopped_goal_without_changing_its_budget(goal_app):
+    g = goal_app
+    await g.command("--token-budget 100 Finish this objective")
+    await g.command("pause")
+    g.provider.responses.append("I have retained the objective.")
     await g.consume()
-    assert "Status: paused" in g.provider.requests[1][0].text_content
-    assert (await g.goal())["tokens_used"] == used
+    before = await g.goal()
+    g.provider.responses.extend(
+        [
+            ToolCallRequest(
+                id="resume",
+                name="UpdateGoal",
+                arguments={
+                    "status": "active",
+                    "report": "The missing information now allows progress.",
+                },
+            ),
+            ToolCallRequest(
+                id="finish",
+                name="UpdateGoal",
+                arguments={"status": "complete", "report": "The requested result was verified."},
+            ),
+            "Done.",
+        ]
+    )
+    result = await g.say("Here is the missing information. Assess the next step.")
+    assert result.run.status == "completed"
+    assert not any(item.is_error for item in result.tool_results)
+    after = await g.goal()
+    assert after["status"] == "complete"
+    assert after["token_budget"] == before["token_budget"]
+    assert after["created_at"] == before["created_at"]
+
+
+async def test_resume_after_completed_discussion_adds_no_input(goal_app):
+    g = goal_app
+    await g.command("Keep working")
+    await g.command("pause")
+    g.provider.responses.append("Information received.")
+    await g.consume()
+    before = g.runtime.store.load_session(g.session.session_id).messages
+    submission = await g.submit("resume")
+    g.provider.responses.extend(
+        [
+            ToolCallRequest(
+                id="finish",
+                name="UpdateGoal",
+                arguments={"status": "complete", "report": "Verified."},
+            ),
+            "Done.",
+        ]
+    )
+    results = [item async for item in consume_plugin_command(g.runtime, submission)]
+    assert results[-1].run.status == "completed"
+    messages = g.runtime.store.load_session(g.session.session_id).messages
+    assert [m for m in messages if m.role == "user"] == [m for m in before if m.role == "user"]
+
+
+@pytest.mark.parametrize("existing_dialogue", [False, True])
+async def test_resume_before_first_execution_consumes_original_creation(
+    goal_app, existing_dialogue
+):
+    g = goal_app
+    if existing_dialogue:
+        g.provider.responses.append("Earlier conversation.")
+        await g.say("Background discussion.")
+    await g.command("Start from the original objective")
+    pending = g.pending()
+    await g.submit("pause")
+    submission = await g.submit("resume")
+    assert g.pending() == pending
+    g.provider.responses.extend(
+        [
+            ToolCallRequest(
+                id="finish",
+                name="UpdateGoal",
+                arguments={"status": "complete", "report": "Verified."},
+            ),
+            "Done.",
+        ]
+    )
+    results = [item async for item in consume_plugin_command(g.runtime, submission)]
+    assert results[-1].run.status == "completed"
+    assert g.pending() == []
+    assert (await g.goal())["status"] == "complete"
+    assert any(
+        m.text_content == "Start from the original objective" for m in g.provider.requests[-1]
+    )
+
+
+async def test_pause_during_tool_execution_preserves_completed_results(goal_app, monkeypatch):
+    g = goal_app
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+    executions = 0
+
+    async def wait_tool(invocation, context):
+        nonlocal executions
+        executions += 1
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    monkeypatch.setattr(g.runtime.tools.get("ChangeInfo"), "handler", wait_tool)
+    g.provider.responses.extend(
+        [
+            ToolCallRequest(id="read", name="ReadInfo", arguments={}),
+            ToolCallRequest(id="change", name="ChangeInfo", arguments={}),
+        ]
+    )
+    await g.command("Check then change the information")
+    task = asyncio.create_task(g.consume())
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        await asyncio.wait_for(g.submit("pause"), 5)
+        assert stopped.is_set()
+        paused = await task
+        assert paused.run.status == "aborted"
+        assert g.executed_tools == ["ReadInfo"]
+        submission = await g.submit("resume")
+        g.provider.responses.extend(
+            [
+                ToolCallRequest(
+                    id="finish",
+                    name="UpdateGoal",
+                    arguments={"status": "complete", "report": "Verified the retained results."},
+                ),
+                "Done.",
+            ]
+        )
+        results = [item async for item in consume_plugin_command(g.runtime, submission)]
+        assert results[-1].run.status == "completed"
+        assert executions == 1
+        assert g.executed_tools == ["ReadInfo"]
+        messages = g.runtime.store.load_session(g.session.session_id).messages
+        receipts = [m.tool_result.tool_call_id for m in messages if m.tool_result]
+        assert receipts.count("read") == receipts.count("change") == 1
+        assert not any(m.semantic_tag in {"goal-paused", "goal-resumed"} for m in messages)
+    finally:
+        if not task.done():
+            await g.runtime.abort_run(session_id=g.session.session_id)
+        await task

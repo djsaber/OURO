@@ -18,7 +18,12 @@ CREATE_GOAL_DESCRIPTION = (
     "this tool again. After success, follow the current goal instructions."
 )
 
-UPDATE_GOAL_DESCRIPTION = """Report that the current goal is complete or blocked.
+UPDATE_GOAL_DESCRIPTION = """Resume the current goal or report that it is complete or blocked.
+
+Call with status="active" to resume a paused or blocked goal when the current request and
+available evidence justify continuing. Explain why in report, then continue from existing progress.
+Receiving a message or continuing the conversation does not itself resume the goal.
+Preserve the objective and budget. An exhausted or unverifiable budget requires the user's action.
 
 Call with status="complete" when the objective has been achieved, verified against concrete
 evidence, and no required work remains. Include the delivered result and verification in report.
@@ -34,9 +39,9 @@ After a blocked goal is resumed, start a fresh assessment; earlier turns do not 
 Do not repeat ineffective actions merely to reach three turns. Difficulty, uncertainty, an
 intermediate response, or a nearly exhausted budget does not establish completion or blocking.
 When a stopping condition is satisfied, call this tool rather than only describing that state.
-After success, report the outcome and stop goal work.
+After successfully setting complete or blocked, report the outcome and stop goal work.
 
-This tool cannot pause, resume, change the objective or budget, or declare a budget limit.
+This tool cannot pause, change the objective or budget, or declare a budget limit.
 Usage and timestamps are recorded automatically; do not guess them."""
 
 _ACTIVE_INSTRUCTIONS = """Work toward this objective using the conversation and available evidence.
@@ -54,17 +59,16 @@ not new turns.
 Do not repeat ineffective actions just to count turns. After either successful update, report
 the outcome and stop goal work. Budget exhaustion is not completion."""
 
-_STOPPED_INSTRUCTIONS = """The goal is stopped. You may receive additional information, discuss the
-status, and inspect existing information with read-only tools. Do not resume execution or make
-changes. Ordinary messages do not reactivate the goal or remove its budget.
-The user can use /goal resume or /goal replace to continue, or /goal cancel to leave goal mode."""
+_STOPPED_INSTRUCTIONS = """The goal is stopped. Handle the user's current request normally.
+Use tools as needed. Continuing the conversation does not reactivate the goal or remove its budget.
+Before continuing goal work, decide whether the current request and evidence justify resumption.
+If resumption is justified and the goal is paused or blocked, call UpdateGoal with status="active"
+and explain why.
+Proceed with goal work only after it succeeds. An exhausted budget requires the user's action.
+The user can also use /goal resume. Budget changes require the user.
+The user can remove the goal with /goal cancel."""
 
 _EVENTS = {
-    "paused": "The user has paused this goal.",
-    "resumed": (
-        "The user has resumed this goal. Continue from existing progress. Start a fresh "
-        "assessment of repeated obstacles; turns before this resumption do not count."
-    ),
     "updated": (
         "The user has changed this goal. Use the updated objective below, keeping relevant "
         "progress and constraints. Start a fresh assessment of obstacles for this objective."

@@ -121,6 +121,8 @@ class PluginCommandView(OuroModel):
 class PluginCommandExecutionView(OuroModel):
     command_id: str
     output: str = ""
+    run_action: Literal["stop", "continue"] | None = None
+    stop_requested_run_id: str | None = None
     data: dict[str, object] = Field(default_factory=dict)
     command_output: str | None = None
     command_data: dict[str, object] | None = None

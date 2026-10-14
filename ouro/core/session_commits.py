@@ -124,13 +124,11 @@ def prepare_session_commit(
     session = _merge_session(current, before, request.after)
     versions: list[HarnessVersion] = []
     messages: list[MessageRecord] = []
-    state_changed = False
     for step in request.steps:
         previous_version = harness.version_id
         if step.harness is not None and not harness.state.same_value(step.harness):
             harness = HarnessVersion(session_id=current.session_id, state=step.harness)
             versions.append(harness)
-            state_changed = True
         if step.message is not None:
             message = step.message.model_copy(
                 deep=True,
@@ -199,8 +197,8 @@ def prepare_session_commit(
         runs=request.runs,
         compactions=compactions,
         # The latest context records the last prepared request. Appending its response
-        # does not invalidate that fact; changing Harness or cutting history does.
-        invalidate_context=state_changed or truncation is not None,
+        # and updating Harness state do not invalidate that fact. History withdrawal does.
+        invalidate_context=truncation is not None,
     )
 
 
