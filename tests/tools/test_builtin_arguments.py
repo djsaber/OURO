@@ -12,6 +12,7 @@ from ouro.tools.schema import tool_argument_error
         ("Edit", {"path": "sample.txt", "old": "original", "new": "", "replace_all": 1}),
         ("Glob", {"pattern": "*", "include_ignored": "false"}),
         ("Grep", {"pattern": "original", "-n": 0}),
+        ("TodoList", {}),
         ("TodoList", {"todos": None}),
         ("TodoList", {"todos": [{"title": "x", "status": "pending", "unknown": True}]}),
     ],

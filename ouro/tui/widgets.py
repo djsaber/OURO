@@ -1134,7 +1134,7 @@ def _tool_activities_from_messages(
     history and live runs through one code path.
 
     ``MessageRecord`` does not store tool ``result_data``, so summaries that
-    depend on results (read line counts, todo state) degrade to
+    depend on results (read line counts) degrade to
     argument-only display.
     """
     activities: dict[str, RuntimeToolCallActivity] = {}

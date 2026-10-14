@@ -170,6 +170,13 @@ def test_todolist_presentation_exposes_progress_and_item_states() -> None:
         assert marker_style.color.triplet is not None
         assert marker_style.color.triplet.hex == DEFAULT_TUI_THEME.accent
 
+    empty = present_tool(_tool("TodoList", arguments={"todos": []}))
+    assert empty.summary == "empty"
+    assert not empty.lines
+    missing = present_tool(_tool("TodoList", arguments={}))
+    assert missing.summary is None
+    assert not missing.lines
+
 
 def test_spawn_agent_uses_agent_identity_and_places_task_below_header() -> None:
     tool = _tool(

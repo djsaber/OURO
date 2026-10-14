@@ -17,6 +17,7 @@ from ouro.providers import FauxProvider
 from ouro.sdk.plugins import v3 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
+from ouro.tools.builtin_todolist import builtin_todolist_tool
 
 
 def _result(invocation, content: str, *, is_error: bool = False) -> ToolResult:
@@ -370,6 +371,8 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(
     registry.register(
         Tool(definition=ToolDefinition(name="Second", description="second"), handler=second)
     )
+    registry.register(builtin_todolist_tool())
+    todos = [{"title": "Run both tools", "status": "in_progress"}]
     runtime = _runtime(
         tmp_path,
         registry=registry,
@@ -377,6 +380,9 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(
         first_calls=[
             ToolCallRequest(id="call_1", name="First", source_index=0),
             ToolCallRequest(id="call_2", name="Second", source_index=1),
+            ToolCallRequest(
+                id="call_todo", name="TodoList", arguments={"todos": todos}, source_index=2
+            ),
         ],
     )
     tool_result_batches: list[list[str]] = []
@@ -417,23 +423,29 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(
     result = await runtime.run("run both")
     snapshot = runtime.store.load_session(result.session.session_id)
 
+    assert result.run.status == "completed"
+    assert not any(item.is_error for item in result.tool_results)
+    assert result.tool_results[2].structured == {"todos": todos}
+    assert not runtime.store.load_harness(result.session.session_id).state.states
     assert completed == ["second", "first"]
     assert [message.role for message in snapshot.messages] == [
         "user",
         "assistant",
         "tool_result",
         "tool_result",
+        "tool_result",
         "assistant",
     ]
-    assert [call.id for call in snapshot.messages[1].tool_calls] == ["call_1", "call_2"]
-    assert planned_states == [("tool_preflight", "planned", ["planned", "planned"])]
+    call_ids = ["call_1", "call_2", "call_todo"]
+    assert [call.id for call in snapshot.messages[1].tool_calls] == call_ids
+    assert planned_states == [("tool_preflight", "planned", ["planned"] * 3)]
     assert [
         message.tool_result.tool_call_id
-        for message in snapshot.messages[2:4]
+        for message in snapshot.messages[2:5]
         if message.tool_result is not None
-    ] == ["call_1", "call_2"]
-    assert tool_result_batches == [["call_1", "call_2"]]
-    tool_timings = [message.tool_execution for message in snapshot.messages[2:4]]
+    ] == call_ids
+    assert tool_result_batches == [call_ids]
+    tool_timings = [message.tool_execution for message in snapshot.messages[2:5]]
     assert all(timing is not None for timing in tool_timings)
     assert all(
         timing.ended_at >= timing.started_at for timing in tool_timings if timing is not None

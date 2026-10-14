@@ -5,8 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from ouro.core.harness import HarnessState
-from ouro.core.harness_calls import HarnessCallSnapshot, accept_state_changes
 from ouro.tools import Tool, ToolExecutionContext, ToolInvocation, builtin_grep, builtin_tools
 
 
@@ -527,22 +525,14 @@ async def test_grep_reports_no_matches(
 # ---------------------------------------------------------------------------
 
 
-async def _todo(tool, arguments, state=None, *, session_id="s1"):
-    snapshot = state or HarnessCallSnapshot(
-        session_id=session_id,
-        harness_version="harness_test",
-        history_epoch=0,
-        state=HarnessState(),
-    )
-    output = await tool.execute(
+async def _todo(tool, arguments, *, session_id="s1"):
+    return await tool.execute(
         _call("TodoList", arguments, session_id=session_id),
-        context=ToolExecutionContext(harness=snapshot),
+        context=ToolExecutionContext(),
     )
-    change = output.harness_change
-    return output, accept_state_changes(snapshot, [change] if change else [])
 
 
-async def test_todolist_update_query_and_clear_cycle() -> None:
+async def test_todolist_renders_supplied_items_without_harness() -> None:
     tools = _tools()
     tool = tools["TodoList"]
     todos = [
@@ -550,41 +540,36 @@ async def test_todolist_update_query_and_clear_cycle() -> None:
         {"title": "任务 B - 进行中", "status": "in_progress"},
         {"title": "任务 C - 已完成", "status": "done"},
     ]
-    updated, state = await _todo(tool, {"todos": todos})
-    assert updated.content == (
-        "Todo list updated.\n"
-        "Current todo list:\n"
-        "  [pending] 任务 A - 新建待处理\n"
-        "  [in_progress] 任务 B - 进行中\n"
-        "  [done] 任务 C - 已完成\n"
-        "\n"
-        "Ensure that you continue to use the todo list to track progress. Mark tasks done "
-        "immediately after finishing them, and keep exactly one task in_progress when work "
-        "is underway."
-    )
-    queried, unchanged = await _todo(tool, {}, state)
-    assert unchanged is state
-    assert queried.content == (
+    result = await _todo(tool, {"todos": todos})
+    assert result.content.startswith(
         "Current todo list:\n"
         "  [pending] 任务 A - 新建待处理\n"
         "  [in_progress] 任务 B - 进行中\n"
         "  [done] 任务 C - 已完成"
     )
-    cleared, state = await _todo(tool, {"todos": []}, state)
-    assert cleared.content == "Todo list cleared."
-    empty, state = await _todo(tool, {}, state)
+    assert result.structured == {"todos": todos}
+    assert result.harness_change is None
+    empty = await _todo(tool, {"todos": []})
     assert empty.content == "Todo list is empty."
-    assert not state.state.states
+    assert empty.structured == {"todos": []}
+    assert empty.harness_change is None
 
 
-async def test_todolist_state_belongs_to_the_call_not_the_tool_instance() -> None:
-    first = _tools()
-    _, state = await _todo(first["TodoList"], {"todos": [{"title": "kept", "status": "pending"}]})
-    second = _tools()
-    queried, _ = await _todo(second["TodoList"], {}, state)
-    assert queried.content == "Current todo list:\n  [pending] kept"
-    other, _ = await _todo(first["TodoList"], {}, session_id="s2")
-    assert other.content == "Todo list is empty."
+@pytest.mark.parametrize("session_id", ["s1", "s2"])
+async def test_todolist_calls_are_independent(session_id) -> None:
+    tool = _tools()["TodoList"]
+    first_arguments = {"todos": [{"title": "first", "status": "pending"}]}
+    second_arguments = {"todos": [{"title": "second", "status": "done"}]}
+
+    first = await _todo(tool, first_arguments)
+    second = await _todo(tool, second_arguments, session_id=session_id)
+    repeated = await _todo(tool, first_arguments)
+
+    assert first.structured == repeated.structured == first_arguments
+    assert second.structured == second_arguments
+    assert first.content == repeated.content
+    assert "first" not in second.content
+    assert all(result.harness_change is None for result in (first, second, repeated))
 
 
 async def test_todolist_rejects_invalid_items() -> None:

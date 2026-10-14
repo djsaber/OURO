@@ -326,8 +326,7 @@ def handler(call):
 worker 随调用接收 `params.session_state` 中的 `writable`、`value` 和只读 `controls`、`run_controls`、
 `usage_tokens`；控制器结果使用可选 `usage_scope`，状态结果返回替换值，
 省略表示不变，null 表示删除。
-参见 [worker 示例](../../examples/plugins/worker-tool/worker.py)；宿主内置工具使用相同事务语义的实现可见
-[TodoList](../../ouro/tools/builtin_todolist.py)。
+参见 [worker 示例](../../examples/plugins/worker-tool/worker.py)。
 状态与消息共同提交、失败处理及撤销语义见
 [Harness 规格](../specs/session-undo.md)。撤销由框架恢复不透明状态版本，
 插件不提供 undo 钩子。计划等文件写入不随会话回滚；业务 payload 不保存可复活旧执行的任务、锁或审批许可。

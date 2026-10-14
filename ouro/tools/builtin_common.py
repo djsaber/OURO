@@ -7,7 +7,6 @@ from typing import Annotated
 from pydantic import BaseModel, BeforeValidator, ConfigDict
 
 from ouro.core.base import utc_now
-from ouro.core.harness_calls import HarnessStateChange
 from ouro.tools.base import ToolInvocation, ToolResult
 
 
@@ -32,7 +31,6 @@ def _tool_result(
     content: str,
     structured: dict[str, object] | None = None,
     is_error: bool = False,
-    harness_change: HarnessStateChange | None = None,
 ) -> ToolResult:
     return ToolResult(
         tool_call_id=invocation.tool_call_id,
@@ -40,6 +38,5 @@ def _tool_result(
         content=content,
         structured=structured or {},
         is_error=is_error,
-        harness_change=harness_change,
         ended_at=utc_now(),
     )

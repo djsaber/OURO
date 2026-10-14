@@ -58,7 +58,7 @@ def present_tool(
     if name in _COMMAND_TOOLS:
         return _present_command(tool.arguments)
     if name == "todolist":
-        return _present_todos(tool.arguments, tool.result_data, theme=theme)
+        return _present_todos(tool.arguments, theme=theme)
     if name == "spawnagent":
         return _present_spawn_agent(tool.arguments, tool.result_data)
     return ToolPresentation()
@@ -165,15 +165,12 @@ def _present_command(arguments: dict[str, JsonValue]) -> ToolPresentation:
 
 def _present_todos(
     arguments: dict[str, JsonValue],
-    result: dict[str, JsonValue],
     *,
     theme: TuiTheme,
 ) -> ToolPresentation:
     raw_todos = arguments.get("todos")
     if not isinstance(raw_todos, list):
-        raw_todos = result.get("todos")
-    if not isinstance(raw_todos, list):
-        return ToolPresentation(summary="read current plan")
+        return ToolPresentation()
 
     lines: list[ToolPresentationLine] = []
     done_count = 0

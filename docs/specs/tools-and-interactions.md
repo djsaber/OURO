@@ -46,7 +46,7 @@ Read、ViewImage、Write、Edit、Glob、Grep、TodoList 和命令行工具各�
 - 布尔字段只接受布尔值；这些工具及 TodoList 条目拒绝未知字段。参数错误必须在副作用前返回。
 - 省略字段使用模型默认值；只有声明可空的字段接受 `null`。搜索路径和命令工作目录可空，表示使用默认目录；
   Grep 的可空过滤条件表示不设该过滤，`-C` 可空表示分别采用 `-A`、`-B`。
-- TodoList 省略 `todos` 表示读取，显式 `[]` 表示清空，`null` 非法；命令超时必须是有限正数，省略时为 30 秒。
+- TodoList 必须传入完整的 `todos` 列表，`[]` 表示空列表，`null` 非法；命令超时必须是有限正数，省略时为 30 秒。
 
 AskUser 复用其交互参数模型；Agent 控制工具从 Run 目录投影参数契约。动态插件和 MCP 工具继续在适配边界
 发布和验证各自 schema。参数类型约束不替代权限、路径归属、文件状态和持久化提交等执行时条件；审批修改参数后
@@ -61,15 +61,16 @@ AskUser 复用其交互参数模型；Agent 控制工具从 Run 目录投影参�
 - Edit：执行精确字面文本替换，默认替换首处，可显式选择替换全部；
 - Glob：按文件名、扩展名或目录模式发现文件，遵循忽略规则并限制返回数量；
 - Grep：按正则表达式搜索文件内容，支持文件过滤、上下文、计数和分页输出；
-- TodoList：读取、替换或清空 Session 级任务列表，状态与工具结果同事务提交；
+- TodoList：校验并展示本次传入的完整任务列表，返回文本和结构化条目；
 - 命令行工具：启动时检测宿主可执行 shell，仅暴露一个与实际执行方言同名的工具；Windows 依次选择
   PowerShell 7、Windows PowerShell、Command Prompt，POSIX 系统依次选择 Bash、POSIX sh；
 - AskUser：暂停 Run 并请求用户输入。
 - SpawnAgent、SendAgentMessage、InterruptAgent：从 parent 当前决策绑定目录投影的
   product-owned Agent 控制工具；只在标准 Agent-capable composition 中出现。
 
-Glob/Grep 使用 `ToolExecutionContext` 的 workspace、忽略规则与有界输出；TodoList 使用原生 Harness
-中的宿主 owner 状态。三者由基础 `ToolRegistry` 在组合根注册，不依赖插件 generation 或启停生命周期。
+Glob/Grep 使用 `ToolExecutionContext` 的 workspace、忽略规则与有界输出。TodoList 是无状态工具，不读取或写入
+Harness；每次调用独立处理输入，可与其他兼容工具同批顺序或并行执行。任务列表通过普通工具调用与结果保留在
+会话历史中，模型每次提交完整列表。三者由基础 `ToolRegistry` 在组合根注册，不依赖插件 generation 或启停生命周期。
 
 写入、编辑和命令行工具默认可由权限配置要求审批。Read/ViewImage/Write/Edit 的路径和命令行工具的工作目录统一经过
 `ToolExecutionContext` 解析；默认限制在 Session workspace 或 Host 管理的 `OURO_HOME/artifacts` 制品根目录内，

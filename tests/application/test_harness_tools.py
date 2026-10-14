@@ -22,7 +22,7 @@ from ouro.providers import FauxProvider
 from ouro.sdk.plugins import v3 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.file_commits import FileSessionCommits
-from ouro.tools import ToolExecutionContext, ToolExecutor, ToolRegistry, builtin_tools
+from ouro.tools import ToolExecutionContext, ToolExecutor, ToolRegistry
 from tests.harness_state import replace_harness_state
 
 
@@ -40,15 +40,29 @@ def store(tmp_path, request):
 @pytest.fixture(params=["inprocess", "worker"])
 async def state_tool(tmp_path, request):
     if request.param == "inprocess":
-        todo = next(tool for tool in builtin_tools() if tool.definition.name == "TodoList")
-        owner = "ouro.host"
-        arguments = {"todos": [{"title": "verify", "status": "pending"}]}
-        yield (
-            todo,
-            owner,
-            arguments,
-            {"todos": arguments["todos"]},
-        )
+
+        def handler(call):
+            call.session_state.replace(state_schema_version=1, payload=dict(call.arguments))
+            return sdk.ToolOutput(content="updated")
+
+        owner = "example.state"
+        tool = adapt_sdk_contributions(
+            sdk.ContributionSet(
+                tools=[
+                    sdk.ToolContribution(
+                        id="state",
+                        exposed_name="State",
+                        description="Store a value.",
+                        permission_mode="auto",
+                        effect="state_changing",
+                        handler=handler,
+                    )
+                ]
+            ),
+            owner_id=owner,
+        ).tools[0]
+        arguments = {"value": "verify"}
+        yield tool, owner, arguments, arguments
         return
     package = Path(__file__).parents[2] / "examples" / "plugins" / "worker-tool"
     raw = json.loads((package / ".ouro-plugin" / "plugin.json").read_text(encoding="utf-8"))
