@@ -23,6 +23,10 @@
 注册时验证 schema；执行前使用同一 schema 验证参数。未知工具或非法参数返回 error `ToolResult`，
 不进入审批或实际 handler。
 
+每个预检和执行边界先刷新当前 Session controls。当前环境没有注册 ToolPolicy 时，不构造策略调用或执行
+策略专用的参数校验；宿主预检仍负责参数、工具契约、权限覆盖与审批。有策略时，在调用策略前验证参数，
+策略只能收紧权限；等待恢复与实际执行边界重新检查当前控制状态和权限，不跨边界缓存判定。
+
 内部 Tool 的执行回调固定为 `handler(invocation, context)`，恢复回调固定为
 `resume_handler(invocation, resolution, request, context)`，各参数按位置传入。取消信号通过 `context.signal`
 访问。构造 Tool 时验证签名能接受对应参数；执行和恢复直接调用，不探测参数名，也不在失败后换一种签名重试。

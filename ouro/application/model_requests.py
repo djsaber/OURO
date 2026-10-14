@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from time import monotonic
 from typing import Protocol
 
 from ouro.core.adapter import RuntimeAdapter
@@ -177,7 +178,7 @@ class RunModelRequests:
                 session, run, sequence, ModelRequestFailed(f"context preparation failed: {exc}")
             )
 
-        started_at = utc_now()
+        started = (utc_now(), monotonic())
         run = run.model_copy(
             update={"model": adapter.model.model_id, "model_endpoint_id": adapter.model.endpoint_id}
         )
@@ -253,7 +254,7 @@ class RunModelRequests:
             signal=request.abort_signal,
             on_event=observe,
             on_stream_start=self.ports.notify_provider_stream_start,
-            started_at=started_at,
+            started=started,
         )
         if request.tools is not None and any(
             call.name not in selected for call in output.tool_calls

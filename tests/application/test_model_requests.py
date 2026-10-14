@@ -1,13 +1,16 @@
 import asyncio
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from functools import partial
 
 import pytest
 
+import ouro.application.model_requests as model_requests_module
 from ouro.application.model_requests import ModelRequestPorts, RunModelRequests
 from ouro.application.runtime import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.cancellation import AbortSignal
-from ouro.core.model_execution import ModelExecutionResult
+from ouro.core.model_execution import ModelExecutionResult, execute_model_request
 from ouro.core.model_requests import ModelRequestBlocked, RunModelRequest
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, Usage
 from ouro.core.run_budget import RunBudgetPolicy
@@ -15,6 +18,66 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
+
+
+@pytest.mark.parametrize("store_type", [LocalSessionStore, SQLiteSessionStore])
+@pytest.mark.asyncio
+async def test_model_timing_includes_host_bookkeeping_despite_clock_rollback(
+    tmp_path, store_type, monkeypatch
+):
+    store = store_type(
+        tmp_path / "sessions.sqlite3" if store_type is SQLiteSessionStore else tmp_path
+    )
+    store.initialize()
+    started = datetime(2026, 1, 1, tzinfo=UTC)
+    wall_time = started
+    elapsed = 100.0
+    provider = FauxProvider(
+        [
+            ProviderStreamEvent(type="reasoning_delta", reasoning_content="plan"),
+            ProviderStreamEvent(type="text_delta", text="answer"),
+            ProviderStreamEvent(type="done", usage=Usage(input_tokens=5, output_tokens=2)),
+        ]
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(provider, ModelMetadata(model_id="test", provider_id="test")),
+        tools=ToolRegistry(),
+    )
+    emit = runtime.event_recorder.emit
+
+    async def observe(*args, **kwargs):
+        nonlocal wall_time, elapsed
+        if kwargs["event_type"] in {
+            "model_request_started",
+            "model_reasoning_delta",
+            "model_text_delta",
+        }:
+            wall_time -= timedelta(hours=1)
+            elapsed += 1.0
+        return await emit(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.event_recorder, "emit", observe)
+    monkeypatch.setattr(model_requests_module, "utc_now", lambda: wall_time)
+    monkeypatch.setattr(model_requests_module, "monotonic", lambda: elapsed)
+    monkeypatch.setattr(
+        model_requests_module,
+        "execute_model_request",
+        partial(execute_model_request, clock=lambda: wall_time, monotonic_clock=lambda: elapsed),
+    )
+    try:
+        result = await runtime.run("answer")
+        assert result.run.status == "completed"
+        assert result.final_text == "answer"
+        snapshot = store.load_session(result.session.session_id)
+        response = snapshot.messages[-1].model_response
+        assert response is not None
+        assert response.started_at == started
+        assert response.reasoning_ended_at == started + timedelta(seconds=2)
+        assert response.ended_at == started + timedelta(seconds=3)
+        assert result.run.usage["input_tokens"] == 5
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.parametrize("store_type", [LocalSessionStore, SQLiteSessionStore])

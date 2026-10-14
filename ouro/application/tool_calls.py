@@ -1690,7 +1690,8 @@ class ToolCallCoordinator:
         harness: HarnessCallSnapshot | None = None,
     ) -> tuple[ToolInvocation, ToolPolicyMode | None, str | None, int]:
         # Current controls may activate a previously hidden policy at this boundary.
-        if harness is None and self.tool_policies.snapshot():
+        has_policies = bool(self.tool_policies.snapshot())
+        if harness is None and has_policies:
             harness = await run_blocking(
                 capture_harness,
                 self.runs.store,
@@ -1709,6 +1710,8 @@ class ToolCallCoordinator:
             control_error = self.refresh_controls(controls)
             if control_error:
                 return invocation, "deny", control_error, sequence
+        if not has_policies:
+            return invocation, None, None, sequence
         try:
             definition = self.registry.get(invocation.tool_name).definition
         except KeyError:

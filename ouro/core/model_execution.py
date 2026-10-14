@@ -4,7 +4,8 @@ import json
 from collections.abc import Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
+from time import monotonic
 
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import utc_now
@@ -132,8 +133,9 @@ async def execute_model_request(
     signal: AbortSignal,
     on_event: Callable[[ModelExecutionEvent], Awaitable[None]],
     on_stream_start: Callable[[], None] | None = None,
-    started_at: datetime | None = None,
+    started: tuple[datetime, float] | None = None,
     clock: Callable[[], datetime] = utc_now,
+    monotonic_clock: Callable[[], float] = monotonic,
 ) -> ModelExecutionResult:
     """Own a provider stream through terminal output and resource release.
 
@@ -141,8 +143,16 @@ async def execute_model_request(
     assembles and validates model output; it never advances or finishes a Run.
     Task cancellation propagates after closing the stream. An AbortSignal returns
     partial output for the host to settle against its durable cancellation fact.
+
+    ``started`` pairs a UTC anchor with a reading from ``monotonic_clock``. The
+    host may capture it before request bookkeeping so that latency is included.
+    Stage timestamps share this anchor and measure only monotonic elapsed time.
     """
-    started_at = started_at or clock()
+    started_at, started_monotonic = started or (clock(), monotonic_clock())
+
+    def request_time() -> datetime:
+        return started_at + timedelta(seconds=monotonic_clock() - started_monotonic)
+
     response = _Response()
     try:
         async with aclosing(
@@ -154,7 +164,7 @@ async def execute_model_request(
             )
         ) as events:
             async for event in events:
-                response.consume(event, clock)
+                response.consume(event, request_time)
                 await on_event(
                     ModelExecutionEvent(
                         event=event,
@@ -170,7 +180,7 @@ async def execute_model_request(
         response.error = str(exc) or exc.__class__.__name__
         response.error_code = None
 
-    ended_at = response.ended_at or clock()
+    ended_at = response.ended_at or request_time()
     return ModelExecutionResult(
         text="".join(response.text),
         reasoning="".join(response.reasoning),

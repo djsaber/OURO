@@ -10,6 +10,7 @@ from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import utc_now
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.plugins.api import adapt_sdk_contributions
 from ouro.providers import FauxProvider
@@ -219,6 +220,96 @@ def test_completed_tool_result_timing_uses_monotonic_elapsed(monkeypatch) -> Non
 
     assert completed.started_at == started_at
     assert completed.ended_at == started_at + timedelta(seconds=4.25)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "permission", "expected_error"),
+    [
+        ({"value": 1}, "auto", None),
+        ({"value": "invalid"}, "auto", "ToolArgumentValidationError"),
+        ({"value": 1}, "deny", "ToolPermissionDenied"),
+        ({"value": 1}, "approval", None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_empty_policy_registry_skips_policy_validation_but_keeps_host_preflight(
+    tmp_path, monkeypatch, arguments, permission, expected_error
+):
+    registry = ToolRegistry()
+    executed = []
+
+    def execute(invocation, context):
+        executed.append(invocation)
+        return _result(invocation, "done")
+
+    registry.register(
+        Tool(
+            definition=ToolDefinition(
+                name="Example",
+                description="Example tool.",
+                permission_mode=permission,
+                parameters_schema={
+                    "type": "object",
+                    "properties": {"value": {"type": "integer"}},
+                    "required": ["value"],
+                },
+            ),
+            handler=execute,
+        )
+    )
+    runtime = _runtime(
+        tmp_path,
+        registry=registry,
+        first_calls=[ToolCallRequest(id="example", name="Example", arguments=arguments)],
+    )
+    policy_validations = []
+    validate = tool_calls_module.tool_argument_error
+
+    def policy_argument_error(definition, arguments):
+        policy_validations.append(definition.name)
+        return validate(definition, arguments)
+
+    monkeypatch.setattr(tool_calls_module, "tool_argument_error", policy_argument_error)
+    try:
+        result = await runtime.run("run example")
+        assert policy_validations == []
+        assert len(executed) == int(permission == "auto" and expected_error is None)
+        if permission == "approval":
+            assert result.run.status == "waiting_approval"
+        else:
+            assert result.run.status == "completed"
+            assert result.tool_results[0].structured.get("error_type") == expected_error
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_empty_policy_registry_preserves_control_refresh_failures(tmp_path):
+    runtime = _runtime(tmp_path, registry=ToolRegistry(), first_calls=[])
+    session = SessionRecord()
+    runtime.store.create_session(session)
+    run = RunRecord(session_id=session.session_id, status="running")
+    coordinator = runtime._tool_calls_for_run(run.run_id)
+    refreshed = []
+
+    def refresh(controls):
+        refreshed.append(controls)
+        return "Required Session controls are unavailable"
+
+    coordinator.refresh_controls = refresh
+    invocation = ToolInvocation(
+        session_id=session.session_id, run_id=run.run_id, tool_name="Example"
+    )
+    try:
+        _, mode, reason, sequence = await coordinator._evaluate_tool_policies(
+            [], 0, session=session, run=run, invocation=invocation, phase="execution_boundary"
+        )
+        assert refreshed == [session.controls]
+        assert mode == "deny"
+        assert reason == "Required Session controls are unavailable"
+        assert sequence == 0
+    finally:
+        await runtime.close()
 
 
 def test_runtime_publishes_permission_updates_to_existing_and_future_coordinators(

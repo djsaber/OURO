@@ -213,6 +213,12 @@ Session 继续的整体前提。持久 ToolInvocation、控制 activation 和 De
 `execute_model_request` 属于 Core，负责响应流的所有权、增量聚合、完成原因判断、工具参数解析及响应时间记录。
 它返回包含部分输出的 `ModelExecutionResult`；不持久化 Session/Run，不选择下一步算法。
 
+模型请求开始时成对采样 UTC 时间与单调时钟；Run 内请求的起点包含请求计数提交及开始事件发布的耗时。
+思考结束与请求结束时间均由同一 UTC 起点加单调时钟经过时间生成，不受请求期间系统校时影响。
+阶段时间只在首次从思考转入正文或工具调用、以及请求结束时采样；收到 `done`/`error` 时记录请求结束，
+未收到终止事件的异常中断、流耗尽与 AbortSignal 在关闭流后计时。未出现正文或工具调用的思考以请求结束为结束点。
+`ModelResponseRecord` 保持开始、思考结束、请求结束的顺序校验；单调时钟读数不进入持久化格式。
+
 工具等待由 `ToolCallCoordinator` 通过 `RunLifecycle.save_batch_state` 原子提交。返回值使用提交后的记录，
 包含已消费的 harness change 和绑定的交互身份；Driver 上下文直接消费已提交的等待结果。
 上述请求类型是宿主内部契约。Core 不依赖 SessionStore、CLI、插件 Manifest 或 Provider factory。

@@ -34,6 +34,111 @@ async def _execute(provider, *, observe=None, signal=None, **kwargs):
     )
 
 
+@pytest.mark.parametrize("clock_shift", [-10, 10])
+@pytest.mark.parametrize("output_kind", ["text", "tool"])
+@pytest.mark.asyncio
+async def test_wall_clock_changes_do_not_invalidate_model_response(clock_shift, output_kind):
+    started = datetime(2026, 1, 1, tzinfo=UTC)
+    wall_time = started
+    elapsed = 100.0
+
+    async def observe(progress):
+        nonlocal wall_time, elapsed
+        wall_time = started + timedelta(
+            seconds=clock_shift if progress.event.type == "reasoning_delta" else 1
+        )
+        elapsed += 1.25
+
+    events = [
+        ProviderStreamEvent(type="reasoning_delta", reasoning_content="plan"),
+        ProviderStreamEvent(type="text_delta", text="answer")
+        if output_kind == "text"
+        else ProviderStreamEvent.from_tool_call(
+            {"id": "call", "name": "Read", "arguments": {"path": "notes.txt"}}
+        ),
+        ProviderStreamEvent(type="done"),
+    ]
+    output = await _execute(
+        FauxProvider(events),
+        observe=observe,
+        clock=lambda: wall_time,
+        monotonic_clock=lambda: elapsed,
+    )
+
+    assert output.error is None
+    assert output.reasoning == "plan"
+    assert output.model_response.started_at == started
+    assert output.model_response.reasoning_ended_at == started + timedelta(seconds=1.25)
+    assert output.model_response.ended_at == started + timedelta(seconds=2.5)
+    if output_kind == "text":
+        assert output.text == "answer"
+    else:
+        assert output.tool_calls[0].name == "Read"
+
+
+@pytest.mark.parametrize("reasoning", [False, True])
+@pytest.mark.parametrize("ending", ["done", "error", "exhausted", "abort", "exception"])
+@pytest.mark.asyncio
+async def test_request_end_uses_elapsed_time_after_wall_clock_rollback(reasoning, ending):
+    started = datetime(2026, 1, 1, tzinfo=UTC)
+    wall_time = started
+    elapsed = 100.0
+    signal = AbortSignal()
+    closed = asyncio.Event()
+
+    class Provider(FauxProvider):
+        async def stream(self, **kwargs):
+            try:
+                yield (
+                    ProviderStreamEvent(type="reasoning_delta", reasoning_content="plan")
+                    if reasoning
+                    else ProviderStreamEvent(type="text_delta", text="answer")
+                )
+                if ending == "done":
+                    yield ProviderStreamEvent(type="done")
+                elif ending == "error":
+                    yield ProviderStreamEvent(type="error", error="provider failed")
+                elif ending == "exception":
+                    raise RuntimeError("transport failed")
+            finally:
+                closed.set()
+
+    async def observe(progress):
+        nonlocal wall_time, elapsed
+        wall_time = started - timedelta(hours=1)
+        elapsed = 102.5
+        if ending == "abort":
+            signal.abort()
+
+    output = await _execute(
+        Provider(),
+        observe=observe,
+        signal=signal,
+        clock=lambda: wall_time,
+        monotonic_clock=lambda: elapsed,
+    )
+
+    assert closed.is_set()
+    assert output.aborted == (ending == "abort")
+    assert output.model_response.started_at == started
+    assert output.model_response.ended_at == started + timedelta(seconds=2.5)
+    assert output.model_response.reasoning_ended_at == (
+        output.model_response.ended_at if reasoning else None
+    )
+    assert (
+        output.error
+        == {
+            "done": "model returned reasoning without a final answer or tool call"
+            if reasoning
+            else None,
+            "error": "provider failed",
+            "exhausted": "provider stream ended without a completion event",
+            "abort": None,
+            "exception": "transport failed",
+        }[ending]
+    )
+
+
 @pytest.mark.asyncio
 async def test_interleaved_tool_fragments_preserve_source_order_and_unicode() -> None:
     events = [
@@ -67,8 +172,13 @@ async def test_interleaved_tool_fragments_preserve_source_order_and_unicode() ->
         observed.append(progress)
 
     started = datetime(2026, 1, 1, tzinfo=UTC)
-    ticks = iter([started, started + timedelta(seconds=1), started + timedelta(seconds=2)])
-    output = await _execute(FauxProvider(events), observe=observe, clock=lambda: next(ticks))
+    ticks = iter([100.0, 101.0, 102.0])
+    output = await _execute(
+        FauxProvider(events),
+        observe=observe,
+        clock=lambda: started,
+        monotonic_clock=lambda: next(ticks),
+    )
 
     assert output.error is None
     assert not output.aborted
