@@ -549,6 +549,20 @@ async def test_resume_before_first_execution_consumes_original_creation(
     )
 
 
+async def test_cancel_revokes_a_delayed_resume_without_consuming_its_notification(goal_app):
+    g = goal_app
+    await g.command("Retain the requested objective")
+    await g.submit("pause")
+    resumed = await g.submit("resume")
+    await g.command("cancel")
+    pending = g.pending()
+    assert [item.semantic_tag for item in pending] == ["goal-cancelled"]
+    assert [result async for result in consume_plugin_command(g.runtime, resumed)] == []
+    assert g.provider.requests == []
+    assert g.pending() == pending
+    assert g.runtime.store.load_session_record(g.session.session_id).continuation_request is None
+
+
 async def test_pause_during_tool_execution_preserves_completed_results(goal_app, monkeypatch):
     g = goal_app
     started = asyncio.Event()

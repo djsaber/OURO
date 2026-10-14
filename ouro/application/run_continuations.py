@@ -140,6 +140,15 @@ class RunContinuationService:
         messages = await run_blocking(self.store.load_run_messages, session_id, run_id)
         # Only consumed inputs determine origin; in-run policy feedback is not a new input.
         inputs = [message for message in messages if "session_input_mode" in message.metadata]
+        # Driver calls have canonical results without an assistant tool-call message.
+        tool_call_ids = {
+            (message.turn_id, call.id) for message in messages for call in message.tool_calls
+        }
+        tool_call_ids.update(
+            (message.turn_id, message.tool_result.tool_call_id)
+            for message in messages
+            if message.tool_result
+        )
         outcome = RunOutcome(
             harness=draft,
             session_id=run.session_id,
@@ -149,7 +158,7 @@ class RunContinuationService:
             final_text=final_text or _last_assistant_text(messages, run.run_id),
             error=run.error,
             usage=dict(run.usage),
-            tool_call_count=sum(len(message.tool_calls) for message in messages),
+            tool_call_count=len(tool_call_ids),
             automatic_continuation=(
                 all(
                     message.metadata.get("continuation_decision_id") is not None

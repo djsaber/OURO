@@ -12594,6 +12594,11 @@ async def test_plan_command_without_dialogue_keeps_welcome_and_updates_status_li
 
         await pilot.press("slash", "p", "l", "a", "n", "space", "o", "f", "f", "enter")
         await _wait_for_worker_group(app, pilot, group="plugin-command")
+        await _wait_until(
+            lambda: "Plan" not in indicator.render().plain,
+            pilot,
+            description="released plan-mode status",
+        )
 
         assert app._projection is None
         assert conversation.showing_welcome is True
@@ -12655,6 +12660,11 @@ async def test_loaded_session_projects_active_harness_into_status_line(tmp_path:
 
         await pilot.press("slash", *"plan off", "enter")
         await _wait_for_worker_group(app, pilot, group="plugin-command")
+        await _wait_until(
+            lambda: "Plan" not in indicator.render().plain,
+            pilot,
+            description="released harness status",
+        )
 
         assert "Plan" not in indicator.render().plain
         notices = tuple(

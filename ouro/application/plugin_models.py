@@ -7,6 +7,7 @@ from pydantic import Field
 from ouro.application.supervisor_models import HostInputReceipt
 from ouro.core.base import OuroModel
 from ouro.core.session_controls import AttributedSessionInput, AttributedSessionInputBatch
+from ouro.core.state import SessionContinuationRequest
 from ouro.plugins.credentials import PluginCredentialBinding
 from ouro.plugins.manifest import PluginRuntimeKind, PluginStatus
 from ouro.plugins.models import PluginClass, PluginDiagnostic
@@ -123,6 +124,7 @@ class PluginCommandExecutionView(OuroModel):
     output: str = ""
     run_action: Literal["stop", "continue"] | None = None
     stop_requested_run_id: str | None = None
+    continuation_request: SessionContinuationRequest | None = None
     data: dict[str, object] = Field(default_factory=dict)
     command_output: str | None = None
     command_data: dict[str, object] | None = None

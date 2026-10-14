@@ -87,13 +87,15 @@ class RunExecutionOwnership:
         run_id: str,
         *,
         expected_status: RunStatus,
+        source_run_id: str | None = None,
         timeout: float = 5.0,
     ) -> SessionLock | None:
         """Acquire a parked Run after its announcing owner releases the lock.
 
-        The durable interaction can be visible before that owner returns, in any
-        Host. Wait only while this same Run remains parked, with a bounded delay;
-        the caller must revalidate the exact interaction under the acquired lock.
+        The durable boundary can be visible before that owner returns, in any
+        Host. The next execution may reuse the parked Run or start a new one.
+        Wait only while the source remains parked, with a bounded delay; the
+        caller must revalidate the exact boundary under the acquired lock.
         """
 
         deadline = asyncio.get_running_loop().time() + timeout
@@ -101,7 +103,7 @@ class RunExecutionOwnership:
             lock = await self.acquire(session_id, run_id)
             if lock is not None:
                 return lock
-            run = await run_blocking(self.store.load_run, session_id, run_id)
+            run = await run_blocking(self.store.load_run, session_id, source_run_id or run_id)
             remaining = deadline - asyncio.get_running_loop().time()
             if run.status != expected_status or remaining <= 0:
                 return None

@@ -81,10 +81,13 @@ async def test_restart_after_continue_recovers_only_the_current_attempt(store, n
         await runtime.close()
 
 
-async def test_continue_waits_for_stopped_execution_to_release_ownership(store, monkeypatch):
+@pytest.mark.parametrize("status", ["aborted", "completed"])
+async def test_continue_waits_for_stopped_execution_to_release_ownership(
+    store, monkeypatch, status
+):
     session = SessionRecord()
     store.create_session(session)
-    run = RunRecord(session_id=session.session_id, status="aborted", ended_at=utc_now())
+    run = RunRecord(session_id=session.session_id, status=status, ended_at=utc_now())
     store.save_run(run)
     store.append_message(
         MessageRecord.text(
@@ -102,7 +105,7 @@ async def test_continue_waits_for_stopped_execution_to_release_ownership(store, 
         return result
 
     monkeypatch.setattr(runtime.run_ownership, "acquire", observe_acquire)
-    task = asyncio.create_task(runtime.continue_run(session_id=session.session_id))
+    task = asyncio.create_task(runtime.continue_session(session_id=session.session_id))
     try:
         await asyncio.wait_for(attempted.wait(), 5)
         assert not task.done()
@@ -111,7 +114,7 @@ async def test_continue_waits_for_stopped_execution_to_release_ownership(store, 
         try:
             result = await asyncio.wait_for(task, 5)
             assert result.run.status == "completed"
-            assert result.run.run_id == run.run_id
+            assert (result.run.run_id == run.run_id) == (status == "aborted")
         finally:
             await runtime.close()
 
@@ -167,6 +170,27 @@ async def test_continue_keeps_run_input_and_partial_history(store, status):
         assert not any(event.event_type == "user_message_added" for event in result.events)
         with pytest.raises(ValueError, match="completed"):
             await runtime.continue_run(session_id=session.session_id)
+    finally:
+        await runtime.close()
+
+
+async def test_session_continuation_recovers_an_interrupted_execution(store):
+    runtime = runtime_for(store)
+    session = runtime.create_session()
+    run = RunRecord(session_id=session.session_id, status="running")
+    store.save_run(run)
+    store.save_session(
+        session.model_copy(update={"active_run_id": run.run_id, "status": "running"})
+    )
+    prompt = MessageRecord.text(
+        session_id=session.session_id, run_id=run.run_id, role="user", text="retained work"
+    )
+    store.append_message(prompt)
+    try:
+        result = await runtime.continue_session(session_id=session.session_id)
+        assert result.run.status == "completed"
+        assert result.run.run_id == run.run_id
+        assert store.load_runtime_session(session.session_id).messages[0] == prompt
     finally:
         await runtime.close()
 
@@ -268,12 +292,18 @@ async def test_continue_paused_agent_after_compaction_uses_original_run(store):
         await runtime.close()
 
 
-async def test_continue_settles_interrupted_terminal_checkpoint_before_reopening(store):
+@pytest.mark.parametrize("completed", [False, True])
+async def test_continue_settles_interrupted_terminal_checkpoint_before_reopening(store, completed):
     runtime = runtime_for(
         store,
         FauxProvider(
             event_batches=[
-                [],
+                [
+                    ProviderStreamEvent(type="text_delta", text="first"),
+                    ProviderStreamEvent(type="done"),
+                ]
+                if completed
+                else [],
                 [
                     ProviderStreamEvent(type="text_delta", text="done"),
                     ProviderStreamEvent(type="done"),
@@ -285,9 +315,19 @@ async def test_continue_settles_interrupted_terminal_checkpoint_before_reopening
         failed = await runtime.run("original task")
         checkpoint = RunContinuationCheckpoint()
         store.save_run(failed.run.model_copy(update={"continuation": checkpoint}))
-        resumed = await runtime.continue_run(session_id=failed.session.session_id)
-        assert resumed.run.run_id == failed.run.run_id
+        resumed = (
+            await runtime.continue_session(session_id=failed.session.session_id)
+            if completed
+            else await runtime.continue_run(session_id=failed.session.session_id)
+        )
+        assert (resumed.run.run_id == failed.run.run_id) is not completed
         assert resumed.run.status == "completed"
+        if completed:
+            assert (
+                store.load_run(failed.session.session_id, failed.run.run_id).continuation.state
+                == "resolved"
+            )
+            return
         resolved = next(
             event for event in resumed.events if event.event_type == "run_continuation_resolved"
         )

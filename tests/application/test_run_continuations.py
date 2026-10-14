@@ -26,7 +26,7 @@ from ouro.core.continuations import (
     RunContinuationRegistry,
 )
 from ouro.core.errors import SessionBusyError
-from ouro.core.messages import MessageRecord, TextContent
+from ouro.core.messages import MessageRecord, TextContent, ToolResultReference
 from ouro.core.observers import ObserverRegistration, ObserverRegistry, RunFinishedObservation
 from ouro.core.prompt_policies import (
     PromptPolicyCall,
@@ -50,7 +50,7 @@ from ouro.core.state import (
     RunRecord,
     SessionRecord,
 )
-from ouro.core.tools import ToolCallRequest
+from ouro.core.tools import ToolCallProducer, ToolCallRequest
 from ouro.local_application import LocalApplication
 from ouro.plugins.registry import (
     PluginCommand,
@@ -115,14 +115,16 @@ async def test_continuation_terminal_query_runs_outside_the_event_loop(
         (["automatic"], False, True, 1),
         (["automatic"], True, True, 1),
         (["automatic"], False, True, 0),
+        (["automatic"], False, True, 2),
         (["user"], False, False, 1),
         (["command"], False, False, 1),
         (["automatic", "user"], False, False, 1),
         ([], False, None, 1),
     ],
 )
+@pytest.mark.parametrize("producer", ["model", "driver"])
 async def test_continuation_execution_facts_use_consumed_inputs_and_actual_calls(
-    tmp_path, backend, sources, feedback, automatic, call_count
+    tmp_path, backend, sources, feedback, automatic, call_count, producer
 ):
     store = (
         LocalSessionStore(tmp_path / "files")
@@ -165,16 +167,34 @@ async def test_continuation_execution_facts_use_consumed_inputs_and_actual_calls
                 metadata={"session_input_source": "turn_policy"},
             )
         )
-    messages.append(
+    messages.extend(
         MessageRecord(
             session_id=session.session_id,
             run_id=run.run_id,
+            turn_id=f"turn-{index}",
             role="assistant",
-            tool_calls=[
-                ToolCallRequest(id=f"read-{index}", name="Read", arguments={})
-                for index in range(call_count)
-            ],
+            tool_calls=[ToolCallRequest(id="read", name="Read", arguments={})]
+            if producer == "model"
+            else [],
         )
+        for index in range(call_count)
+    )
+    messages.extend(
+        MessageRecord(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            turn_id=f"turn-{index}",
+            role="tool_result",
+            tool_result=ToolResultReference(
+                tool_call_id="read",
+                tool_name="Read",
+                producer=ToolCallProducer(
+                    kind=producer,
+                    driver_id="dev.example/run_drivers/test" if producer == "driver" else None,
+                ),
+            ),
+        )
+        for index in range(call_count)
     )
     store.append_messages(messages)
     # Calls from other executions must not affect this outcome.

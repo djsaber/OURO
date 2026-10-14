@@ -162,6 +162,21 @@ class RunContinuationCheckpoint(OuroModel):
     resolved_at: datetime | None = None
 
 
+class SessionContinuationRequest(OuroModel):
+    """One accepted request to continue work at a specific Session boundary."""
+
+    request_id: str
+    history_epoch: int = Field(ge=0)
+    control_revision: int = Field(ge=0)
+
+    def is_current(self, session: SessionRecord) -> bool:
+        return (
+            session.continuation_request == self
+            and session.history_epoch == self.history_epoch
+            and session.controls.revision == self.control_revision
+        )
+
+
 class SessionRecord(VersionedOuroModel):
     schema_version: Literal[2] = 2
     session_id: str = Field(default_factory=lambda: new_id("ses"))
@@ -194,6 +209,7 @@ class SessionRecord(VersionedOuroModel):
     active_compaction_id: str | None = None
     status: SessionStatus = "idle"
     active_run_id: str | None = None
+    continuation_request: SessionContinuationRequest | None = None
     last_message_id: str | None = None
     last_run_id: str | None = None
     message_count: int = 0

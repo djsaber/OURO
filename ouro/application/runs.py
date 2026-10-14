@@ -37,6 +37,7 @@ from ouro.core.state import (
     RunPhase,
     RunRecord,
     RunStatus,
+    SessionContinuationRequest,
     SessionRecord,
 )
 from ouro.core.tool_batches import ToolCallBatchRecord
@@ -84,6 +85,17 @@ def reserve_run(
     return transition.run
 
 
+class SessionContinuationSuperseded(SessionCommitConflict):
+    """The accepted request was consumed or revoked before execution could start."""
+
+
+def require_current_continuation(
+    session: SessionRecord, request: SessionContinuationRequest | None
+) -> None:
+    if request is not None and not request.is_current(session):
+        raise SessionContinuationSuperseded("Session continuation was consumed or superseded")
+
+
 class RunLifecycle:
     """Apply and persist run/session state transitions at durable boundaries."""
 
@@ -114,11 +126,13 @@ class RunLifecycle:
         resume: bool = False,
         input_messages: tuple[MessageRecord, ...] = (),
         consumed_inputs: tuple[str, ...] = (),
+        continuation_request: SessionContinuationRequest | None = None,
     ) -> tuple[SessionRecord, RunRecord]:
         """Persist the shared session/run transition into an active run."""
 
         with self.store.session_mutation(session.session_id):
             latest_session = self.store.load_session_record(session.session_id)
+            require_current_continuation(latest_session, continuation_request)
             existing = maybe_active_run(snapshot.runs, history_epoch=latest_session.history_epoch)
             if existing is not None and existing.run_id != run.run_id:
                 raise SessionBusyError(f"session already has an active run: {existing.run_id}")
@@ -141,6 +155,8 @@ class RunLifecycle:
                 if consumed_inputs
                 else transition.session
             )
+            if run.kind == "agent":
+                after = after.model_copy(update={"continuation_request": None})
             committed = self.store.commit_session(
                 SessionCommit(
                     before=latest_session,
@@ -156,6 +172,20 @@ class RunLifecycle:
             active_session = committed.session
         self.store.refresh_catalog(active_session.session_id)
         return active_session, active_run
+
+    def settle_continuation_request(
+        self, session_id: str, request: SessionContinuationRequest
+    ) -> None:
+        """Consume an intent that needs no new execution (already active or empty)."""
+        with self.store.session_mutation(session_id):
+            session = self.store.load_session_record(session_id)
+            if request.is_current(session):
+                self.store.commit_session(
+                    SessionCommit(
+                        before=session,
+                        after=session.model_copy(update={"continuation_request": None}),
+                    )
+                )
 
     def append_input_message(
         self,

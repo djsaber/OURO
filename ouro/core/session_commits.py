@@ -168,6 +168,10 @@ def prepare_session_commit(
     session = fill_session_title(session, messages)
     session.harness_version = harness.version_id
     session.controls = harness.state.controls.model_copy(deep=True)
+    if session.continuation_request is not None and not session.continuation_request.is_current(
+        session
+    ):
+        session.continuation_request = None
     session.updated_at = request.after.updated_at if request.after is not None else utc_now()
     events = tuple(
         event.model_copy(

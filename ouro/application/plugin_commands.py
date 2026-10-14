@@ -23,7 +23,7 @@ from ouro.core.run_drivers import RunDriverBinding
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_controls import AttributedSessionInputBatch
 from ouro.core.session_titles import fallback_session_title
-from ouro.core.state import SessionRecord
+from ouro.core.state import SessionContinuationRequest, SessionRecord
 from ouro.plugins.registry import PluginCommandRegistry
 from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sessions import SessionStore
@@ -143,7 +143,10 @@ async def consume_plugin_command(
     execution = submission.execution
     if execution.run_action == "continue":
         assert submission.session_id is not None
-        result = await runtime.continue_session(session_id=submission.session_id)
+        assert execution.continuation_request is not None
+        result = await runtime.continue_session(
+            session_id=submission.session_id, request=execution.continuation_request
+        )
         if result is not None:
             yield result
         return
@@ -314,6 +317,23 @@ async def execute_plugin_command(
         else [],
     )
     if commit_request is not None:
+        assert before is not None and draft is not None
+        if result.run_action is not None:
+            continuation_request = (
+                SessionContinuationRequest(
+                    request_id=commit_request.operation_id,
+                    history_epoch=before.history_epoch,
+                    control_revision=draft.state.controls.revision,
+                )
+                if result.run_action == "continue"
+                else None
+            )
+            commit_request = commit_request.model_copy(
+                update={
+                    "after": after.model_copy(update={"continuation_request": continuation_request})
+                }
+            )
+            view = view.model_copy(update={"continuation_request": continuation_request})
         commit_request = commit_request.model_copy(
             update={"output": {"plugin_command": view.model_dump(mode="json")}}
         )

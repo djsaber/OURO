@@ -295,6 +295,135 @@ async def test_run_action_requires_execution_authority_and_cannot_add_inputs(pro
         )
 
 
+@pytest.mark.parametrize("superseded", [False, True])
+async def test_continuation_command_is_consumed_once_and_stop_revokes_it(system, superseded):
+    initial = await system.runtime.run("retained input")
+    service = system.plugins(
+        handler=lambda call: PluginCommandResult(
+            command_id=call.command_id, run_action=call.argument
+        )
+    )
+    submission = await submit_plugin_command(
+        service, system.runtime, "example", "continue", session_id=initial.session.session_id
+    )
+    if superseded:
+        await submit_plugin_command(
+            service, system.runtime, "example", "stop", session_id=initial.session.session_id
+        )
+    submission = replace(
+        submission,
+        execution=type(submission.execution).model_validate_json(
+            submission.execution.model_dump_json()
+        ),
+    )
+    for _ in range(2):
+        results = [result async for result in consume_plugin_command(system.runtime, submission)]
+        assert not superseded or results == []
+    assert len(system.store.load_runs(initial.session.session_id)) == (1 if superseded else 2)
+
+
+@pytest.mark.parametrize("queued", [False, True])
+async def test_stop_revokes_continuation_at_the_execution_commit(system, monkeypatch, queued):
+    initial = await system.runtime.run("retained input")
+    session_id = initial.session.session_id
+    if queued:
+        await submit_plugin_command(
+            system.plugins("single"), system.runtime, "example", "", session_id=session_id
+        )
+    service = system.plugins(
+        handler=lambda call: PluginCommandResult(
+            command_id=call.command_id, run_action=call.argument
+        )
+    )
+    submission = await submit_plugin_command(
+        service, system.runtime, "example", "continue", session_id=session_id
+    )
+    entered, release = threading.Event(), threading.Event()
+    start = system.runtime.run_lifecycle.start
+
+    def delayed_start(**kwargs):
+        # The queue path already holds the mutation lock here; delay before that instead.
+        if not queued:
+            entered.set()
+            assert release.wait(5)
+        return start(**kwargs)
+
+    start_queued = system.runtime._start_queued_run
+
+    def delayed_queued_start(**kwargs):
+        entered.set()
+        assert release.wait(5)
+        return start_queued(**kwargs)
+
+    monkeypatch.setattr(system.runtime.run_lifecycle, "start", delayed_start)
+    monkeypatch.setattr(system.runtime, "_start_queued_run", delayed_queued_start)
+
+    async def consume():
+        return [result async for result in consume_plugin_command(system.runtime, submission)]
+
+    pending = asyncio.create_task(consume())
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        await submit_plugin_command(
+            service, system.runtime, "example", "stop", session_id=session_id
+        )
+    finally:
+        release.set()
+    assert await pending == []
+    assert len(system.store.load_runs(session_id)) == 1
+    session = system.store.load_session_record(session_id)
+    assert session.continuation_request is None
+    assert len(system.runtime.queued_inputs.eligible_session(session)) == int(queued)
+
+
+async def test_conflicting_stop_preserves_the_accepted_continuation(system):
+    initial = await system.runtime.run("retained input")
+    session_id = initial.session.session_id
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def command(call):
+        if call.argument == "stop":
+            entered.set()
+            await release.wait()
+        return PluginCommandResult(command_id=call.command_id, run_action=call.argument)
+
+    service = system.plugins(handler=command)
+    stopping = asyncio.create_task(
+        submit_plugin_command(service, system.runtime, "example", "stop", session_id=session_id)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        submission = await submit_plugin_command(
+            service, system.runtime, "example", "continue", session_id=session_id
+        )
+    finally:
+        release.set()
+        with pytest.raises(SessionCommitConflict):
+            await stopping
+    assert (
+        system.store.load_session_record(session_id).continuation_request
+        == submission.execution.continuation_request
+    )
+    results = [result async for result in consume_plugin_command(system.runtime, submission)]
+    assert results[-1].run.status == "completed"
+    assert len(system.store.load_runs(session_id)) == 2
+
+
+async def test_withdrawn_history_revokes_an_unconsumed_continuation(system):
+    initial = await system.runtime.run("retained input")
+    session_id = initial.session.session_id
+    service = system.plugins(
+        handler=lambda call: PluginCommandResult(command_id=call.command_id, run_action="continue")
+    )
+    submission = await submit_plugin_command(
+        service, system.runtime, "example", "", session_id=session_id
+    )
+    await system.runtime.undo(session_id)
+    assert [result async for result in consume_plugin_command(system.runtime, submission)] == []
+    assert system.store.load_session_record(session_id).continuation_request is None
+    assert len(system.store.load_runs(session_id)) == 1
+
+
 @pytest.mark.parametrize("kind", ["single", "multiple", "batch"])
 @pytest.mark.parametrize("existing", [False, True])
 async def test_command_inputs_keep_fifo_batch_boundaries_and_attribution(system, kind, existing):
