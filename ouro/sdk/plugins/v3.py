@@ -488,6 +488,9 @@ class RunOutcome:
     final_text: str = ""
     error: str | None = None
     usage: Mapping[str, int | float] = field(default_factory=dict)
+    # Native execution facts; None means this observation did not supply the fact.
+    tool_call_count: int | None = None
+    automatic_continuation: bool | None = None
 
 
 @dataclass(frozen=True)

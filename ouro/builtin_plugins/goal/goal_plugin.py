@@ -8,15 +8,16 @@ from uuid import uuid4
 from ouro.sdk.plugins.v3 import (
     CommandContribution,
     CommandOutput,
+    ContextCall,
+    ContextContribution,
+    ContextFragment,
+    ContextOutput,
     ContinuationDecision,
     ContinuationPolicyContribution,
     ContributionSet,
     JsonValue,
     PluginContext,
     PluginSessionControl,
-    PromptPolicyCall,
-    PromptPolicyContribution,
-    PromptPolicyDecision,
     RunOutcome,
     SessionControlClaim,
     SessionControllerCall,
@@ -26,14 +27,23 @@ from ouro.sdk.plugins.v3 import (
     ToolCall,
     ToolContribution,
     ToolOutput,
+    ToolPolicyCall,
+    ToolPolicyContribution,
+    ToolPolicyDecision,
 )
 
-from .commands import GoalCommandService, format_goal_status
+from .commands import GoalCommandService
 from .prompts import (
     CREATE_GOAL_DESCRIPTION,
     GET_GOAL_DESCRIPTION,
+    NO_TOOL_CALLS_REPORT,
     UPDATE_GOAL_DESCRIPTION,
+    USAGE_UNAVAILABLE_REPORT,
+    budget_stop_report,
     continuation_prompt,
+    format_goal_status,
+    goal_context,
+    runtime_stop_report,
 )
 from .state import (
     GoalRecord,
@@ -48,7 +58,7 @@ _TERMINAL_RUN_STATUSES = {"completed", "aborted", "failed", "paused", "recoverab
 
 class GoalPlugin:
     def __init__(self, context: PluginContext) -> None:
-        required = {"sessions.write", "background.run", "sessions.prompt.inspect"}
+        required = {"sessions.write", "background.run"}
         missing = required - context.permissions
         if missing:
             raise RuntimeError(
@@ -97,8 +107,8 @@ class GoalPlugin:
                         "required": ["objective"],
                         "additionalProperties": False,
                     },
-                    permission_mode="approval",
-                    permission_control="host",
+                    permission_mode="auto",
+                    permission_control="tool",
                     effect="state_changing",
                     batch_behavior="exclusive",
                 ),
@@ -131,9 +141,9 @@ class GoalPlugin:
                     id="goal",
                     description="Create and control the latest goal for this conversation.",
                     usage=(
-                        "[--token-budget N] <objective> | status | pause | "
-                        "resume [--token-budget N] | cancel | "
-                        "replace [--token-budget N] <objective>"
+                        "[--token-budget N | --no-token-budget] <objective> | status | pause | "
+                        "resume [--token-budget N | --no-token-budget] | cancel | clear | "
+                        "replace [--token-budget N | --no-token-budget] <objective>"
                     ),
                     handler=self.goal_command,
                 )
@@ -161,10 +171,19 @@ class GoalPlugin:
                     active_when="mode",
                 )
             ],
-            prompt_policies=[
-                PromptPolicyContribution(
-                    id="goal-input-gate",
-                    handler=self.goal_input_gate,
+            context_providers=[
+                ContextContribution(
+                    id="goal-context",
+                    handler=self.goal_context,
+                    priority=10,
+                    timeout_seconds=5,
+                    failure_mode="block",
+                )
+            ],
+            tool_policies=[
+                ToolPolicyContribution(
+                    id="goal-stopped-tools",
+                    handler=self.goal_tool_gate,
                     priority=10,
                     timeout_seconds=5,
                     active_when="mode",
@@ -188,9 +207,10 @@ class GoalPlugin:
         goal = repository.load().goal
         if goal is None:
             return _tool_error("goal_not_found", "No goal exists.")
+        tokens_used = repository.tokens_used(goal)
         return ToolOutput(
-            content=format_goal_status(goal, tokens_used=repository.tokens_used(goal)),
-            structured={"goal": goal.to_public(tokens_used=repository.tokens_used(goal))},
+            content=format_goal_status(goal, tokens_used=tokens_used),
+            structured={"goal": goal.to_public(tokens_used=tokens_used)},
         )
 
     def create_goal(self, call: ToolCall) -> ToolOutput:
@@ -208,15 +228,7 @@ class GoalPlugin:
                 f"The current goal is {current.status}; it must be updated by the user first.",
             )
         return ToolOutput(
-            content="The goal will be created.",
-            structured={
-                "goal": {
-                    "objective": objective,
-                    "status": "active",
-                    "token_budget": token_budget,
-                    "tokens_used": 0,
-                }
-            },
+            content="",
             session_control_transitions=(
                 SessionControlTransition(
                     action="acquire",
@@ -271,8 +283,7 @@ class GoalPlugin:
                 reason="goal_blocked",
             )
         return ToolOutput(
-            content=f"The current goal will be marked {status}.",
-            structured={"status": status, "report": report},
+            content="",
             session_control_transitions=(transition,),
         )
 
@@ -338,8 +349,10 @@ class GoalPlugin:
             else:
                 raise RuntimeError(f"unsupported Goal transition: {operation}")
         repository.save(SessionGoalState(goal=goal))
+        tokens_used = repository.tokens_used(goal)
         return SessionControllerOutput(
-            output=f"Goal is now {goal.status}.",
+            output=format_goal_status(goal, tokens_used=tokens_used),
+            data={"goal": goal.to_public(tokens_used=tokens_used)},
             usage_scope=goal.goal_id if goal.status == "active" else None,
         )
 
@@ -364,25 +377,43 @@ class GoalPlugin:
                 updated_at=utc_now(),
             )
             repository.save(SessionGoalState(goal=completed))
+            tokens_used = repository.tokens_used(completed)
             return SessionControllerOutput(
-                output="Goal completed.",
+                output=format_goal_status(completed, tokens_used=tokens_used),
+                data={"goal": completed.to_public(tokens_used=tokens_used)},
             )
         repository.delete()
         return SessionControllerOutput(
-            output="Goal cancelled because its control was released.",
+            output="The goal is cancelled. There is no current goal.",
             data={"goal": None, "cancelled": True},
         )
 
-    def goal_input_gate(self, call: PromptPolicyCall) -> PromptPolicyDecision:
+    def goal_context(self, call: ContextCall) -> ContextOutput:
+        goal = GoalStateRepository(call.session_state).load().goal
+        if goal is None:
+            return ContextOutput()
+        return ContextOutput(
+            fragments=(
+                ContextFragment(
+                    text=goal_context(goal),
+                    role="user",
+                    scaffold=True,
+                    semantic_tag="goal-context",
+                ),
+            ),
+        )
+
+    def goal_tool_gate(self, call: ToolPolicyCall) -> ToolPolicyDecision:
         repository = GoalStateRepository(call.session_state)
         goal = repository.load().goal
-        if goal is None or goal.status in {"active", "complete"}:
-            return PromptPolicyDecision()
-        return PromptPolicyDecision(
+        if goal is None or goal.status in {"active", "complete"} or call.effect == "read_only":
+            return ToolPolicyDecision()
+        return ToolPolicyDecision(
             action="deny",
             reason=(
-                f"The current goal is {goal.status}. Use /goal resume, /goal replace, "
-                "or /goal cancel before sending ordinary input."
+                f"The goal is {goal.status}. Discussion and read-only tools are available. "
+                "Use /goal resume or /goal replace before making changes, "
+                "or /goal cancel to leave goal mode."
             ),
         )
 
@@ -408,7 +439,7 @@ class GoalPlugin:
                 control,
                 operation="runtime_paused",
                 reason=f"run_{outcome.status}",
-                report=outcome.error or f"Work ended with status {outcome.status}.",
+                report=runtime_stop_report(outcome.status),
             )
         tokens_used = repository.tokens_used(goal)
         if goal.token_budget is not None and (
@@ -420,7 +451,7 @@ class GoalPlugin:
                 control,
                 operation="runtime_paused",
                 reason="usage_unavailable",
-                report="Token usage was unavailable, so budgeted work was paused.",
+                report=USAGE_UNAVAILABLE_REPORT,
             )
         if (
             goal.token_budget is not None
@@ -431,9 +462,14 @@ class GoalPlugin:
                 control,
                 operation="budget_exhausted",
                 reason="goal_budget_exhausted",
-                report=(
-                    f"Token budget exhausted: used {tokens_used} of {goal.token_budget} tokens."
-                ),
+                report=budget_stop_report(tokens_used, goal.token_budget),
+            )
+        if outcome.automatic_continuation and outcome.tool_call_count == 0:
+            return self._runtime_stop_decision(
+                control,
+                operation="runtime_paused",
+                reason="goal_no_tool_calls",
+                report=NO_TOOL_CALLS_REPORT,
             )
         return ContinuationDecision(
             action="continue",

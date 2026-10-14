@@ -26,6 +26,7 @@ from ouro.core.continuations import (
     RunContinuationRegistry,
 )
 from ouro.core.errors import SessionBusyError
+from ouro.core.messages import MessageRecord, TextContent
 from ouro.core.observers import ObserverRegistration, ObserverRegistry, RunFinishedObservation
 from ouro.core.prompt_policies import (
     PromptPolicyCall,
@@ -49,6 +50,7 @@ from ouro.core.state import (
     RunRecord,
     SessionRecord,
 )
+from ouro.core.tools import ToolCallRequest
 from ouro.local_application import LocalApplication
 from ouro.plugins.registry import (
     PluginCommand,
@@ -104,6 +106,103 @@ async def test_continuation_terminal_query_runs_outside_the_event_loop(
     assert settlement.settled is False
     assert reader_threads
     assert event_loop_thread not in reader_threads
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize(
+    ("sources", "feedback", "automatic", "call_count"),
+    [
+        (["automatic"], False, True, 1),
+        (["automatic"], True, True, 1),
+        (["automatic"], False, True, 0),
+        (["user"], False, False, 1),
+        (["command"], False, False, 1),
+        (["automatic", "user"], False, False, 1),
+        ([], False, None, 1),
+    ],
+)
+async def test_continuation_execution_facts_use_consumed_inputs_and_actual_calls(
+    tmp_path, backend, sources, feedback, automatic, call_count
+):
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.sqlite3")
+    )
+    store.initialize()
+    session = SessionRecord()
+    store.create_session(session)
+    run = RunRecord(
+        session_id=session.session_id,
+        status="completed",
+        continuation=RunContinuationCheckpoint(
+            controllers=[_controller("dev.example.facts", "goal", "generation")]
+        ),
+    )
+    store.save_run(run)
+    messages = []
+    for source in sources:
+        messages.append(
+            MessageRecord(
+                session_id=session.session_id,
+                run_id=run.run_id,
+                role="user",
+                content=[TextContent(text="Continue" if source == "automatic" else "User input")],
+                metadata={
+                    "session_input_source": "user" if source == "user" else "plugin",
+                    "session_input_mode": "follow_up",
+                    "continuation_decision_id": "decision" if source == "automatic" else None,
+                },
+            )
+        )
+    if feedback:
+        messages.append(
+            MessageRecord(
+                session_id=session.session_id,
+                run_id=run.run_id,
+                role="system",
+                content=[TextContent(text="Review the result")],
+                metadata={"session_input_source": "turn_policy"},
+            )
+        )
+    messages.append(
+        MessageRecord(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            role="assistant",
+            tool_calls=[
+                ToolCallRequest(id=f"read-{index}", name="Read", arguments={})
+                for index in range(call_count)
+            ],
+        )
+    )
+    store.append_messages(messages)
+    # Calls from other executions must not affect this outcome.
+    store.append_message(
+        MessageRecord(
+            session_id=session.session_id,
+            run_id="other-run",
+            role="assistant",
+            tool_calls=[ToolCallRequest(id="other", name="Read", arguments={})],
+        )
+    )
+    outcomes = []
+
+    def record(outcome):
+        outcomes.append(outcome)
+        return ContinuationDecision(action="continue", prompt="Continue the requested analysis.")
+
+    policy = replace(_policy("dev.example.facts", "generation", "unused"), handler=record)
+    registry = RunContinuationRegistry()
+    registry.replace_owner("facts", (policy,))
+    service = RunContinuationService(store=store, registry=registry, queue=QueuedInputQueue(store))
+    settlement = await service.settle(session_id=session.session_id, run_id=run.run_id)
+    assert len(outcomes) == 1
+    assert outcomes[0].tool_call_count == call_count
+    assert outcomes[0].automatic_continuation is automatic
+    # The framework reports facts; each plugin owns its decision even with zero tool calls.
+    assert settlement.queued is True
+    assert settlement.run.continuation.action == "continue"
 
 
 class CountingProvider:

@@ -107,15 +107,19 @@ uv run ouro plugin configure dev.ouro.configuration_playground --home ./.ouro-de
 默认启用。可直接使用：
 
 ```text
-/goal [--token-budget N] <request>
+/goal [--token-budget N | --no-token-budget] <request>
 /goal status
 /goal pause
-/goal resume [--token-budget N]
-/goal replace [--token-budget N] <request>
+/goal resume [--token-budget N | --no-token-budget]
+/goal replace [--token-budget N | --no-token-budget] <request>
 /goal cancel
+/goal clear
 ```
 
-省略 `--token-budget` 即不设预算。一次 Run 的自然结束不会完成 Goal；模型必须通过 `UpdateGoal` 明确报告
+创建命令直接保存并激活目标，模型也可通过 `CreateGoal` 响应明确的自然语言创建请求。
+创建时省略预算表示不设置；恢复和修改时省略表示保留，`--no-token-budget` 显式清除预算。
+`clear` 是 `cancel` 的别名。停止期间仍可补充信息、讨论状态并使用只读工具，普通输入不会恢复目标。
+一次 Run 的自然结束不会完成 Goal；模型必须通过 `UpdateGoal` 明确报告
 `complete` 或 `blocked`。用户保留
 pause、resume、replace、cancel 与预算权限。Goal 与 Plan 竞争同一个 primary behavior claim：退出 Plan 使用
 `/plan off`；Goal 完成或 `/goal cancel` 后才释放该控制权，`/goal pause` 仍保留占用。完整设计与验收边界见

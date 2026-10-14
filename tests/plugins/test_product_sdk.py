@@ -132,7 +132,7 @@ async def test_user_goal_uses_native_continuation_controls_and_usage(tmp_path):
         status = await application.plugins.execute_command(
             f"{plugin_id}:goal", "status", session_id=session.session_id
         )
-        assert provider.calls == 4
+        assert provider.calls == 3
         assert status.data["goal"]["status"] == "complete"
         assert status.data["goal"]["tokens_used"] == 10
         assert not store.load_session_record(session.session_id).controls.activations

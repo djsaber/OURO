@@ -65,16 +65,9 @@ class _EndToEndGoalProvider:
             assert messages[-1].role == "user"
             assert messages[-1].text_content == "Ship end to end"
             assert "<goal-create>" in messages[-2].text_content
-            yield ProviderStreamEvent.from_tool_call(
-                ToolCallRequest(
-                    id="create_goal",
-                    name="CreateGoal",
-                    arguments={"objective": "Ship end to end", "token_budget": 100},
-                )
-            )
-        elif call == 1:
+            assert "Status: active" in messages[0].text_content
             yield ProviderStreamEvent(type="text_delta", text="Made verified progress.")
-        elif call == 2:
+        elif call == 1:
             assert "<goal-continue>" in messages[-1].text_content
             yield ProviderStreamEvent.from_tool_call(
                 ToolCallRequest(
@@ -83,7 +76,7 @@ class _EndToEndGoalProvider:
                     arguments={"status": "complete", "report": "Delivered and checked."},
                 )
             )
-        elif call == 3:
+        elif call == 2:
             yield ProviderStreamEvent(type="text_delta", text="Goal complete.")
         else:
             raise AssertionError("Goal continued after completion")
@@ -120,14 +113,6 @@ class _AbortableGoalProvider:
         call = self.calls
         self.calls += 1
         if call == 0:
-            yield ProviderStreamEvent.from_tool_call(
-                ToolCallRequest(
-                    id="create_goal",
-                    name="CreateGoal",
-                    arguments={"objective": "Recover after interruption"},
-                )
-            )
-        elif call == 1:
             yield ProviderStreamEvent.from_tool_call(
                 ToolCallRequest(
                     id="hold_goal",
@@ -169,7 +154,7 @@ def _plugin(tmp_path: Path) -> GoalPlugin:
         tasks=None,  # type: ignore[arg-type]
         logger=None,  # type: ignore[arg-type]
         diagnostics=None,  # type: ignore[arg-type]
-        permissions=frozenset({"sessions.write", "background.run", "sessions.prompt.inspect"}),
+        permissions=frozenset({"sessions.write", "background.run"}),
     )
     plugin = GOAL_PLUGIN.factory(context)
     assert isinstance(plugin, GoalPlugin)
@@ -267,7 +252,15 @@ class _GoalHarness:
             ),
         )
 
-    async def continue_run(self, run, *, status="completed", usage=None):
+    async def continue_run(
+        self,
+        run,
+        *,
+        status="completed",
+        usage=None,
+        automatic_continuation=None,
+        tool_call_count=None,
+    ):
         return await self.call(
             self.plugin.goal_continuation,
             sdk.RunOutcome(
@@ -276,6 +269,8 @@ class _GoalHarness:
                 origin="user",
                 status=status,
                 usage={"input_tokens": 3, "output_tokens": 2} if usage is None else usage,
+                automatic_continuation=automatic_continuation,
+                tool_call_count=tool_call_count,
             ),
             run=run,
         )
@@ -330,13 +325,15 @@ def test_manifest_and_tool_contract_are_minimal_and_generic() -> None:
         "create-goal",
         "update-goal",
     }
-    assert [item.id for item in manifest.contributes.context_providers] == []
-    assert [item.id for item in manifest.contributes.prompt_policies] == ["goal-input-gate"]
+    assert [item.id for item in manifest.contributes.context_providers] == ["goal-context"]
+    assert [item.id for item in manifest.contributes.tool_policies] == ["goal-stopped-tools"]
+    assert not manifest.contributes.prompt_policies
     assert {item.active_when for item in manifest.contributes.tools} == {None}
+    assert {item.permission_control for item in manifest.contributes.tools} == {"tool"}
+    assert {item.permission_mode for item in manifest.contributes.tools} == {"auto"}
     assert {item.id for item in manifest.permissions} == {
         "sessions.write",
         "background.run",
-        "sessions.prompt.inspect",
     }
     descriptions = "\n".join(item.description for item in manifest.contributes.tools)
     forbidden = {
@@ -373,19 +370,45 @@ async def test_tool_schemas_use_objective_and_implicit_update_identity(tmp_path)
         "report",
     }
     assert {item.active_when for item in tools.values()} == {None}
+    assert {item.permission_control for item in tools.values()} == {"tool"}
+    assert {item.permission_mode for item in tools.values()} == {"auto"}
 
 
 async def test_create_command_returns_one_atomic_user_message_pair(goal_session) -> None:
     result = await goal_session.command("--token-budget 1200 Preserve this objective exactly")
 
+    goal = goal_session.goal()
+    assert goal is not None
+    assert goal.status == "active"
+    assert goal.objective == "Preserve this objective exactly"
+    assert goal.token_budget == 1200
     assert result.session_inputs == ()
     assert len(result.session_input_batches) == 1
     batch = result.session_input_batches[0]
-    assert batch.coalesce_key is None
+    assert batch.coalesce_key == "goal-lifecycle"
     assert [item.role for item in batch.inputs] == ["user", "user"]
     assert [item.semantic_tag for item in batch.inputs] == ["goal-create", None]
     assert batch.inputs[1].prompt == "Preserve this objective exactly"
     assert "1200" in batch.inputs[0].prompt
+
+
+async def test_resume_preserves_budget_until_explicitly_removed(goal_session) -> None:
+    g = goal_session
+    await g.tool("CreateGoal", {"objective": "Ship", "token_budget": 30})
+    await g.command("pause")
+    await g.command("resume")
+    assert g.goal().token_budget == 30
+    await g.command("replace Updated objective")
+    assert g.goal().token_budget == 30
+    await g.command("pause")
+    await g.command("resume --no-token-budget")
+    assert g.goal().token_budget is None
+
+
+async def test_clear_removes_goal_without_creating_a_new_objective(goal_session) -> None:
+    await goal_session.tool("CreateGoal", {"objective": "Ship"})
+    await goal_session.command("clear")
+    assert goal_session.goal() is None
 
 
 @pytest.mark.asyncio
@@ -424,7 +447,7 @@ async def test_goal_runs_end_to_end_and_retains_final_usage(tmp_path) -> None:
         )
         await runtime.run(pending[0].prompt, session_id=session.session_id, _queued_inputs=pending)
 
-        assert provider.calls == 4
+        assert provider.calls == 3
         record = next(
             item
             for item in store.load_session_extension_states(session.session_id)
@@ -436,8 +459,8 @@ async def test_goal_runs_end_to_end_and_retains_final_usage(tmp_path) -> None:
         assert runtime.usage.session_scope_tokens(session.session_id) == {
             PLUGIN_ID: {goal.goal_id: 10}
         }
-        # Creation precedes activation; the acknowledgement follows release.
-        assert runtime.usage.summarize().totals.total_tokens == 20
+        # The first work request is scoped; the acknowledgement follows release.
+        assert runtime.usage.summarize().totals.total_tokens == 15
         status = await application.plugins.execute_command(
             f"{PLUGIN_ID}:goal", "status", session_id=session.session_id
         )
@@ -508,19 +531,12 @@ async def test_cold_abort_restores_goal_snapshot_and_pauses_goal(tmp_path) -> No
             "Recover after interruption",
             session_id=session.session_id,
         )
-        assert command.output == "Requesting goal creation."
+        assert "Goal: active" in command.output
         pending = runtime.queued_inputs.eligible_session(
             store.load_session_record(session.session_id)
         )
-        pending_create = await runtime.run(
+        pending_hold = await runtime.run(
             pending[0].prompt, session_id=session.session_id, _queued_inputs=pending
-        )
-        assert pending_create.run.status == "waiting_approval"
-
-        pending_hold = await runtime.approve_tool(
-            session_id=session.session_id,
-            run_id=pending_create.run.run_id,
-            approved=True,
         )
         assert pending_hold.run.status == "waiting_approval"
 
@@ -546,14 +562,14 @@ async def test_cold_abort_restores_goal_snapshot_and_pauses_goal(tmp_path) -> No
         assert goal is not None
         assert goal.status == "paused"
         assert goal.report is not None
-        assert "aborted" in goal.report
+        assert "interrupted" in goal.report
         assert len(controls) == 1
         assert controls[0].phase == "active"
         assert controls[0].activation_id != previous_activation_id
         assert settled is not None
         assert settled.action == "pause"
         assert settled.reason == "run_aborted"
-        assert provider.calls == 2
+        assert provider.calls == 1
     finally:
         await application.close()
 
@@ -568,9 +584,16 @@ async def test_cold_abort_restores_goal_snapshot_and_pauses_goal(tmp_path) -> No
         ("resume", "resume", None, None),
         ("replace --token-budget=40 Updated", "replace", 40, "Updated"),
         ("replace Updated", "replace", None, "Updated"),
+        ("--token-budgeting analysis", "create", None, "--token-budgeting analysis"),
+        (
+            "--token-budget 10 --token-budgeting analysis",
+            "create",
+            10,
+            "--token-budgeting analysis",
+        ),
     ],
 )
-def test_goal_command_parser_treats_missing_budget_as_unlimited(
+def test_goal_command_parser_preserves_optional_budget(
     argument: str,
     action: str,
     budget: int | None,
@@ -604,7 +627,7 @@ async def test_lifecycle_uses_native_controls_and_keeps_one_business_identity(go
         assert goal.created_at == first.created_at
         assert g.usage.session_scope_tokens(g.session.session_id) == {PLUGIN_ID: {goal.goal_id: 12}}
     assert g.goal().objective == "Updated objective"
-    assert g.goal().token_budget is None
+    assert g.goal().token_budget == 40
     stale = await g.tool("UpdateGoal", {"status": "complete", "report": "old work"}, run=run)
     assert stale.structured["error_type"] == "stale_goal_update"
     assert g.goal().status == "active"
@@ -615,6 +638,84 @@ async def test_lifecycle_uses_native_controls_and_keeps_one_business_identity(go
     assert g.goal().goal_id != first.goal_id
     result = await g.tool("GetGoal", {})
     assert result.structured["goal"]["tokens_used"] == 0
+
+
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "--token-budget 0 Ship",
+        "--token-budget -1 Ship",
+        "--token-budget many Ship",
+        "--token-budget",
+        "--no-token-budget=10 Ship",
+        "--token-budget 10 --no-token-budget Ship",
+        "resume --no-token-budget --token-budget 10",
+        "replace --token-budget 10 --token-budget 20 Ship",
+        "replace --no-token-budget",
+        "clear Ship",
+        "status extra",
+    ],
+)
+def test_invalid_goal_commands_are_rejected(argument):
+    assert parse_goal_command(argument).error is not None
+
+
+@pytest.mark.parametrize("action", ["resume", "replace Revised objective"])
+async def test_inherited_budget_cannot_restart_exhausted_goal(goal_session, action):
+    g = goal_session
+    await g.command("--token-budget 10 Ship")
+    run = g.request()
+    g.record_usage(run, 10)
+    await g.continue_run(run)
+    assert (await g.command(action)).data["error"] == "invalid_token_budget"
+    assert g.goal().status == "budget_exhausted"
+    assert g.goal().objective == "Ship"
+    explicit = (
+        "resume --token-budget 11"
+        if action == "resume"
+        else ("replace --token-budget 11 Revised objective")
+    )
+    assert not (await g.command(explicit)).data.get("error")
+    assert g.goal().token_budget == 11
+    assert g.goal().status == "active"
+
+
+@pytest.mark.parametrize(
+    ("automatic", "tools", "status", "reason"),
+    [
+        (True, 0, "completed", "goal_no_tool_calls"),
+        (True, 1, "completed", "goal_active"),
+        (False, 0, "completed", "goal_active"),
+        (None, 0, "completed", "goal_active"),
+        (True, None, "completed", "goal_active"),
+        (True, 0, "failed", "run_failed"),
+        (True, 0, "waiting_user", None),
+        (True, 0, "waiting_approval", None),
+        (True, 0, "waiting_child", None),
+    ],
+)
+async def test_empty_work_guard_requires_known_automatic_terminal_execution(
+    goal_session, automatic, tools, status, reason
+):
+    g = goal_session
+    await g.command("Ship")
+    decision = await g.continue_run(
+        g.request(), status=status, automatic_continuation=automatic, tool_call_count=tools
+    )
+    assert decision.reason == reason
+    assert g.goal().status == (
+        "paused" if reason in {"goal_no_tool_calls", "run_failed"} else "active"
+    )
+
+
+async def test_budget_stop_precedes_empty_work_guard(goal_session):
+    g = goal_session
+    await g.command("--token-budget 10 Ship")
+    run = g.request()
+    g.record_usage(run, 10)
+    decision = await g.continue_run(run, automatic_continuation=True, tool_call_count=0)
+    assert decision.reason == "goal_budget_exhausted"
+    assert g.goal().status == "budget_exhausted"
 
 
 async def test_create_result_does_not_bind_the_request_that_created_it(goal_session):
@@ -655,7 +756,7 @@ async def test_budget_uses_native_totals_and_does_not_write_on_ordinary_continua
     for _ in range(2):
         decision = await g.continue_run(run)
         assert decision.action == "continue"
-        assert "tokens used: 7" in decision.prompt
+        assert "Tokens used: 7" in decision.prompt
     assert g.store.load_harness(g.session.session_id) == before
     next_run = g.request()
     g.record_usage(next_run, 5)
@@ -665,7 +766,10 @@ async def test_budget_uses_native_totals_and_does_not_write_on_ordinary_continua
     assert g.usage.session_scope_tokens(g.session.session_id)[PLUGIN_ID][g.goal().goal_id] == 12
     invalid = await g.command("resume --token-budget 12")
     assert invalid.data["error"] == "invalid_token_budget"
-    await g.command("resume")
+    invalid = await g.command("resume")
+    assert invalid.data["error"] == "invalid_token_budget"
+    assert g.goal().status == "budget_exhausted"
+    await g.command("resume --no-token-budget")
     assert g.goal().status == "active"
     assert g.goal().token_budget is None
 
@@ -683,10 +787,10 @@ async def test_unavailable_usage_pauses_budgeted_goal_without_inventing_zero(goa
     if missing == "ledger":
         result = await g.tool("GetGoal", {})
         assert result.structured["goal"]["tokens_used"] is None
-        assert "unknown" in result.content
+        assert "unavailable" in result.content
 
 
-async def test_blocked_goal_retains_claim_but_stops_usage_scope_and_gates_prompts(goal_session):
+async def test_blocked_goal_retains_claim_but_stops_usage_scope_and_gates_changes(goal_session):
     g = goal_session
     await g.tool("CreateGoal", {"objective": "Ship"})
     run = g.request()
@@ -701,9 +805,15 @@ async def test_blocked_goal_retains_claim_but_stops_usage_scope_and_gates_prompt
     assert g.usage.session_scope_tokens(g.session.session_id)[PLUGIN_ID][g.goal().goal_id] == 8
     snapshot = capture_harness(g.store, g.session.session_id, usage_service=g.usage)
     decision, change = await invoke_plugin_callback(
-        g.plugin.goal_input_gate,
-        sdk.PromptPolicyCall(
-            session_id=g.session.session_id, prospective_run_id="next", prompt="go"
+        g.plugin.goal_tool_gate,
+        sdk.ToolPolicyCall(
+            session_id=g.session.session_id,
+            run_id="next",
+            tool_call_id="edit",
+            tool_name="Edit",
+            canonical_tool_id="ouro.host/tools/Edit",
+            owner_id="ouro.host",
+            effect="state_changing",
         ),
         snapshot=snapshot,
         owner_id=PLUGIN_ID,

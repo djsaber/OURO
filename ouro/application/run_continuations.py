@@ -137,19 +137,27 @@ class RunContinuationService:
             run=run,
             usage_service=self.usage_service,
         )
-        recovered_final_text = final_text
-        if not recovered_final_text:
-            messages = await run_blocking(self.store.load_run_messages, session_id, run_id)
-            recovered_final_text = _last_assistant_text(messages, run.run_id)
+        messages = await run_blocking(self.store.load_run_messages, session_id, run_id)
+        # Only consumed inputs determine origin; in-run policy feedback is not a new input.
+        inputs = [message for message in messages if "session_input_mode" in message.metadata]
         outcome = RunOutcome(
             harness=draft,
             session_id=run.session_id,
             run_id=run.run_id,
             status=run.status,
             origin=run.origin,
-            final_text=recovered_final_text,
+            final_text=final_text or _last_assistant_text(messages, run.run_id),
             error=run.error,
             usage=dict(run.usage),
+            tool_call_count=sum(len(message.tool_calls) for message in messages),
+            automatic_continuation=(
+                all(
+                    message.metadata.get("continuation_decision_id") is not None
+                    for message in inputs
+                )
+                if inputs
+                else None
+            ),
         )
         controller_ids = {
             (

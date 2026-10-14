@@ -738,6 +738,12 @@ Turn Policy 在模型给出无工具的候选完成、Run 尚未完成时执行�
 
 Continuation 接收只读 `RunOutcome`，返回 `ignore | continue | complete | pause | fail`。
 
+执行事实 `tool_call_count` 和 `automatic_continuation` 由 Application 从该 Run 的原生消息投影。
+前者统计已提交的工具调用，后者表示消费的输入均来自自动继续；混入普通输入时为 false。
+同一 Run 内的策略反馈不算新输入；缺少输入来源事实时为 null。
+未提供这些事实的观察返回 null，不能当作零次调用或自动执行。续跑策略不得通过回复文本猜测执行事实。
+这些字段只描述执行事实；零次工具调用本身不触发框架暂停，继续或停止的业务判断由插件策略返回。
+
 - `continue` 必须包含 prompt 和 `follow_up|steer`；
 - policy 对所有 terminal RunOutcome 执行；非 `completed` Run 只允许 `pause | fail`，不能 `continue`；
 - 非 continue 决策可以携带一个 release `session_control_transitions` local intent；Application 只允许它释放同 plugin、

@@ -887,6 +887,8 @@ class WorkerPluginInstance:
                         "final_text": call.final_text,
                         "error": call.error,
                         "usage": dict(call.usage),
+                        "tool_call_count": call.tool_call_count,
+                        "automatic_continuation": call.automatic_continuation,
                     },
                 },
                 decode=_decode_worker_continuation,

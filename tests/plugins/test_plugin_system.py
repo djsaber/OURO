@@ -2446,6 +2446,8 @@ for line in sys.stdin:
                 'role': 'user',
                 'semantic_tag': 'goal-continue',
                 'coalesce_key': 'goal-control',
+                'reason': str(request['params']['call']['tool_call_count']) + ':'
+                          + str(request['params']['call']['automatic_continuation']),
             }
         else:
             result = {
@@ -2522,6 +2524,8 @@ for line in sys.stdin:
             run_id="run_worker",
             status="completed",
             origin="user",
+            tool_call_count=2,
+            automatic_continuation=True,
         )
     )
     assert decision.action == "continue"
@@ -2529,6 +2533,7 @@ for line in sys.stdin:
     assert decision.role == "user"
     assert decision.semantic_tag == "goal-continue"
     assert decision.coalesce_key == "goal-control"
+    assert decision.reason == "2:True"
     terminal_decision = await policy.handler(
         RunOutcome(
             session_id="ses_worker",

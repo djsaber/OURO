@@ -68,6 +68,8 @@ class RunOutcome(OuroModel):
     final_text: str = ""
     error: str | None = None
     usage: dict[str, int | float] = Field(default_factory=dict)
+    tool_call_count: int | None = Field(default=None, ge=0)
+    automatic_continuation: bool | None = None
 
 
 class RunContinuationControllerRef(OuroModel):

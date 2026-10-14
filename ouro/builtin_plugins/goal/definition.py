@@ -40,8 +40,8 @@ GOAL_PLUGIN = BuiltinPluginDefinition(
                         "id": "create-goal",
                         "exposed_name": "CreateGoal",
                         "description": CREATE_GOAL_DESCRIPTION,
-                        "permission_mode": "approval",
-                        "permission_control": "host",
+                        "permission_mode": "auto",
+                        "permission_control": "tool",
                         "effect": "state_changing",
                         "batch_behavior": "exclusive",
                     },
@@ -62,9 +62,9 @@ GOAL_PLUGIN = BuiltinPluginDefinition(
                             "Create and control the latest Goal for this conversation."
                         ),
                         "usage": (
-                            "[--token-budget N] <objective> | status | pause | "
-                            "resume [--token-budget N] | cancel | "
-                            "replace [--token-budget N] <objective>"
+                            "[--token-budget N | --no-token-budget] <objective> | status | pause | "
+                            "resume [--token-budget N | --no-token-budget] | cancel | clear | "
+                            "replace [--token-budget N | --no-token-budget] <objective>"
                         ),
                         "argument_options": [
                             {
@@ -77,17 +77,23 @@ GOAL_PLUGIN = BuiltinPluginDefinition(
                             },
                             {
                                 "value": "resume",
-                                "description": "Resume a paused or blocked Goal.",
-                                "usage": "[--token-budget N]",
+                                "description": "Resume a stopped Goal, preserving its budget.",
+                                "usage": "[--token-budget N | --no-token-budget]",
                             },
                             {
                                 "value": "cancel",
                                 "description": "Cancel and remove the current Goal.",
                             },
                             {
+                                "value": "clear",
+                                "description": "Cancel and remove the current Goal.",
+                            },
+                            {
                                 "value": "replace",
-                                "description": "Replace the current Goal with a new objective.",
-                                "usage": "[--token-budget N] <objective>",
+                                "description": (
+                                    "Edit the current objective, preserving usage and budget."
+                                ),
+                                "usage": "[--token-budget N | --no-token-budget] <objective>",
                             },
                         ],
                         "requires_session": True,
@@ -114,9 +120,17 @@ GOAL_PLUGIN = BuiltinPluginDefinition(
                         "active_when": "mode",
                     }
                 ],
-                "prompt_policies": [
+                "context_providers": [
                     {
-                        "id": "goal-input-gate",
+                        "id": "goal-context",
+                        "priority": 10,
+                        "timeout_seconds": 5,
+                        "failure_mode": "block",
+                    }
+                ],
+                "tool_policies": [
+                    {
+                        "id": "goal-stopped-tools",
                         "priority": 10,
                         "timeout_seconds": 5,
                         "active_when": "mode",
@@ -133,10 +147,6 @@ GOAL_PLUGIN = BuiltinPluginDefinition(
                 {
                     "id": "background.run",
                     "reason": "Continue an active Goal after each bounded Run settles.",
-                },
-                {
-                    "id": "sessions.prompt.inspect",
-                    "reason": "Prevent ordinary prompts from implicitly resuming a stopped Goal.",
                 },
             ],
             "dependencies": {"plugins": []},

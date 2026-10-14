@@ -1,131 +1,91 @@
 # Goal Built-in Plugin
 
-## Overview
+`dev.ouro.goal` maintains one user-requested objective for a primary conversation. The system
+continues at safe execution boundaries; the model checks evidence and explicitly reports completion
+or a genuine blocker. Users own pause, resume, objective changes, cancellation, and budgets.
 
-`dev.ouro.goal` maintains one user-owned Goal for a primary conversation and drives that Goal
-through bounded Runs. The user owns objective, lifecycle, and budget decisions; the model can read,
-create, complete, or report a genuine blocker only through the declared Goal tools.
+## Commands
 
-## Plugin Metadata
+```text
+/goal
+/goal status
+/goal [--token-budget N | --no-token-budget] <objective>
+/goal pause
+/goal resume [--token-budget N | --no-token-budget]
+/goal replace [--token-budget N | --no-token-budget] <objective>
+/goal cancel
+/goal clear
+```
 
-| Field | Value |
+Creation commits Goal state, control ownership, and an initial message batch before the model starts.
+It does not require a CreateGoal call. An unfinished Goal or another mode's ownership rejects creation.
+Bare /goal reads status; clear aliases cancel. Replace preserves identity, creation time, and usage.
+
+Creation without a budget is unbudgeted. Resume and replace preserve the existing budget by default.
+--token-budget N sets a positive cumulative total greater than usage; --no-token-budget removes the
+limit. Resuming an exhausted budget requires increasing or removing it.
+
+## Model Interface
+
+All three tools remain visible in every state. Their permissions are plugin-controlled and
+automatic; Host permission overrides do not apply. State validation, control arbitration and tool
+policies still apply.
+
+| Tool | Contract |
 |---|---|
-| Plugin ID | `dev.ouro.goal` |
-| Namespace | `goal` |
-| Version | `2.0.0` |
-| Runtime | In-process Python (`python-inprocess`) |
-| Default state | Enabled |
-| Dependencies | None |
-| Declared permissions | `sessions.write`, `background.run`, `sessions.prompt.inspect` |
+| GetGoal | Read objective, status, budget, actual usage, timestamps, and report |
+| CreateGoal | Create from an explicit natural-language request using the same transition as the command |
+| UpdateGoal | Set complete or blocked with evidence and a matching current request binding |
 
-The plugin is shipped with OURO and participates in the standard built-in enable/disable lifecycle.
-It does not use the user-plugin installation lifecycle.
+Ordinary tasks do not authorize creation. Completion requires a checked result and no required work
+remaining. Blocking requires the same obstacle across three consecutive Goal work turns and no path
+forward without user input or external change. Retries within one turn do not count as separate turns.
+Resume starts a fresh blocker assessment.
 
-## Contributions
+## Context and Controls
 
-| Type | ID / Public Name | Contract |
-|---|---|---|
-| Tool | `get-goal` / `GetGoal` | Auto-approved, read-only access to the latest Goal |
-| Tool | `create-goal` / `CreateGoal` | Host-approved, state-changing, exclusive-batch Goal creation |
-| Tool | `update-goal` / `UpdateGoal` | Auto-approved, state-changing, exclusive-batch transition to `complete` or `blocked` |
-| Command | `/goal` | Creates, inspects, pauses, resumes, replaces, or cancels the Goal |
-| Session Controller | `mode` | Owns one Goal lifecycle and exclusively claims `ouro.session.primary_behavior` |
-| Continuation Policy | `goal-continuation` | Reads native usage and decides whether bounded work continues or stops |
-| Prompt Policy | `goal-input-gate` | Prevents ordinary prompts from implicitly resuming a stopped Goal |
+Temporary goal-context reads current state for each request, including after compaction. It contains
+the objective, status, total budget, relevant report, and action rules. Changing usage and timestamps
+stay out of the request prefix. Pending creation and lifecycle batches coalesce to the latest user
+action. Raw objective text remains a non-scaffold user message in the initial atomic batch.
 
-The three tools are exposed together in every Goal state. Stable tool visibility preserves the
-model-facing tool prefix across a conversation. Exact descriptions and schemas are defined in
-[`definition.py`](definition.py), [`goal_plugin.py`](goal_plugin.py), and
-[`prompts.py`](prompts.py).
+Paused, blocked, and budget-exhausted conversations accept additional information and discussion
+without resuming. Only declared read-only tools are allowed while stopped. Resume or replace permits
+execution; cancel or clear leaves Goal mode. Discussion has normal conversation usage but no Goal scope.
 
-## Behavior
+## Execution and Accounting
 
-### Goal Model
+Goal uses schema 4 owner-bound Harness state for identity, objective, status, budget, timestamps and
+report. Native views supply request bindings and usage. Completed records remain readable;
+cancellation deletes the record; a new Goal gets a new identity.
 
-The Session owns a capacity-one Goal slot. Its schema 4 business value contains a stable goal_id,
-objective, status, optional total token budget, report, and timestamps. Execution bindings and actual
-usage come from framework-owned read-only views. Supported statuses are:
+Budgets are checked after complete bounded execution, allowing a final overshoot. Explicit complete
+or blocked results precede budget settlement. Missing budgeted usage or abnormal execution pauses
+work. An automatic continuation without tool calls also pauses to avoid empty repetition; this does
+not claim the task is blocked or complete. Reports explain stop reasons without another model request.
 
-- `active`;
-- `paused`;
-- `blocked`;
-- `budget_exhausted`;
-- `complete`.
+Requests keep the scope captured at their start. Late usage belongs to the original Goal; creation
+does not reassign earlier requests. Undo, resume and repeated settlement do not refund or double-count
+usage. Old requests cannot complete a newly activated objective.
 
-A completed Goal remains available to status queries. Creating another Goal replaces the completed
-record. Cancelling removes the current record entirely.
+## Integration
 
-### User Commands
+- Default-enabled in-process plugin, namespace goal, version 2.0.0.
+- Controller mode exclusively claims ouro.session.primary_behavior, shared with Plan.
+- Context goal-context; tool policy goal-stopped-tools; continuation goal-continuation.
+- Permissions: sessions.write and background.run.
+- State uses branch_policy=reset; only schema 4 is supported.
+- No private store, polling loop, history service, or permission escalation.
 
-| Invocation | Behavior |
-|---|---|
-| `/goal [--token-budget N] <objective>` | Delivers one creation instruction and the exact objective as an atomic pair of user messages; the model must call `CreateGoal` |
-| `/goal status` | Reads the latest Goal without changing it |
-| `/goal pause` | Pauses an active Goal |
-| `/goal resume [--token-budget N]` | Resumes `paused`, `blocked`, or `budget_exhausted` work |
-| `/goal replace [--token-budget N] <objective>` | Replaces an unfinished objective while preserving creation time and cumulative usage |
-| `/goal cancel` | Releases the controller and removes the Goal |
-
-Omitting `--token-budget` during creation means unlimited work. Omitting it during resume or
-replace clears an existing budget. An explicit replacement budget must be greater than the tokens
-already used.
-
-Lifecycle commands return the accepted action and controller settlement; query status or GetGoal
-for the current business state and native usage.
-
-### Model Tools
-
-`GetGoal` returns the latest public Goal state. `CreateGoal` creates an active Goal only when no
-unfinished Goal occupies the slot. `UpdateGoal` can set only `complete` or `blocked` and requires
-the current execution binding; it cannot change identity, activation, usage, or budget.
-
-### Execution and Budget Settlement
-
-Each model request captures native controller bindings. Goal reads that request's activation and
-usage scope to authorize updates. Pause, resume, and replace rotate the native activation; only
-creation allocates a new goal_id. Goal uses no Context writer or private Run binding.
-
-The native usage ledger attributes each response to the goal_id bound when its request started.
-Requests before activation or after release have no Goal scope. Reads, retries, and undo do not
-recount or refund usage. Paused controllers retain their claim without a usage scope. At the end of
-bounded execution, a valid complete or blocked transition takes precedence over the budget check.
-Otherwise:
-
-- reaching the cumulative budget sets `budget_exhausted`;
-- unavailable usage for a budgeted execution pauses work instead of guessing;
-- a non-terminal active Goal receives an attributed continuation input;
-- failed, aborted, paused, or recoverable Runs stop automatic continuation with an explicit report.
-
-## State and Boundaries
-
-- Goal state is canonical Session extension state in the `dev.ouro.goal` namespace.
-- State uses a versioned envelope, atomic updates, and `branch_policy="reset"`.
-- The plugin's private data directory does not store canonical Goal state.
-- Goal mode is supported only for primary conversations and competes for the same exclusive primary
-  behavior claim as other Session modes.
-- User commands own pause, resume, replace, cancel, and budget changes; the model cannot infer or
-  perform those user-owned transitions.
-- Provenance-bearing Goal scaffolds use user-message roles and explicit semantic tags.
-
-## Source Layout
-
-- [`definition.py`](definition.py): built-in definition, permissions, and manifest.
-- [`goal_plugin.py`](goal_plugin.py): contributions, controller lifecycle, tools, policies, and
-  settlement.
-- [`commands.py`](commands.py): `/goal` parsing and user-owned lifecycle commands.
-- [`state.py`](state.py): versioned business state and native control/usage projections.
-- [`prompts.py`](prompts.py): model-facing tool and continuation instructions.
-
-The implementation and manifest are the source of truth for tool schemas, transition validation,
-permissions, and continuation decisions.
-
-Only schema 4 is supported. Unsupported state fails explicitly; historical data is not converted.
+commands.py handles commands; goal_plugin.py composes tools, transitions and policies; state.py owns
+business state and native projections; prompts.py owns model-facing language; definition.py declares
+the manifest. See [the full specification](../../../docs/specs/goal-plugin.md).
 
 ## Verification
 
 ```bash
-uv run pytest tests/plugins/test_builtin_goal.py -q
+uv run pytest tests/plugins/test_builtin_goal.py tests/plugins/test_goal_interactions.py -q
 ```
 
-Application and Runtime tests additionally cover Session claims, continuation arbitration, usage
-settlement, recovery, and bounded-Run behavior.
+Targeted Application and SDK tests cover command atomicity, continuation facts, coalescing,
+request-local context, and recovery.

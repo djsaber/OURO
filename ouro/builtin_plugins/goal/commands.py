@@ -15,10 +15,11 @@ from ouro.sdk.plugins.v3 import (
     SessionInputBatch,
 )
 
-from .prompts import creation_instruction, lifecycle_prompt
+from .prompts import creation_instruction, format_goal_status, lifecycle_prompt
 from .state import GoalRecord, GoalStateRepository
 
 _BUDGET_PREFIX = re.compile(r"--token-budget(?:\s+|=)(\S+)(?:\s+|$)")
+_BUDGET_OPTION = re.compile(r"--(?:no-)?token-budget(?=\s|=|$)")
 _LIFECYCLE_COALESCE_KEY = "goal-lifecycle"
 
 
@@ -27,6 +28,7 @@ class ParsedGoalCommand:
     action: str
     objective: str | None = None
     token_budget: int | None = None
+    clear_budget: bool = False
     error: str | None = None
 
 
@@ -75,7 +77,7 @@ class GoalCommandService:
                     tokens_used=tokens_used,
                 )
             return _lifecycle_output(
-                current,
+                replace(current, status="paused", report=None),
                 action="paused",
                 output="Pausing the current goal.",
                 transition=_replace_transition(control, operation="pause"),
@@ -88,7 +90,7 @@ class GoalCommandService:
                     current,
                     tokens_used=tokens_used,
                 )
-            token_budget = parsed.token_budget
+            token_budget = _effective_budget(parsed, current)
             budget_error = _validate_changed_budget(token_budget, tokens_used)
             if budget_error is not None:
                 return _command_error(
@@ -114,7 +116,7 @@ class GoalCommandService:
                     tokens_used=tokens_used,
                 )
             assert parsed.objective is not None
-            token_budget = parsed.token_budget
+            token_budget = _effective_budget(parsed, current)
             budget_error = _validate_changed_budget(token_budget, tokens_used)
             if budget_error is not None:
                 return _command_error(
@@ -163,13 +165,13 @@ class GoalCommandService:
 
 def _creation_output(objective: str, token_budget: int | None) -> CommandOutput:
     return CommandOutput(
-        output="Requesting goal creation.",
+        output="Creating the requested goal.",
         data={"objective": objective, "token_budget": token_budget},
         session_input_batches=(
             SessionInputBatch(
                 inputs=(
                     SessionInput(
-                        prompt=creation_instruction(token_budget),
+                        prompt=creation_instruction(objective, token_budget),
                         mode="follow_up",
                         title=f"Create Goal: {objective[:48]}",
                         role="user",
@@ -183,6 +185,19 @@ def _creation_output(objective: str, token_budget: int | None) -> CommandOutput:
                         scaffold=False,
                     ),
                 ),
+                coalesce_key=_LIFECYCLE_COALESCE_KEY,
+            ),
+        ),
+        session_control_transitions=(
+            SessionControlTransition(
+                action="acquire",
+                controller_id="mode",
+                payload={
+                    "operation": "create",
+                    "objective": objective,
+                    "token_budget": token_budget,
+                },
+                reason="user_created_goal",
             ),
         ),
     )
@@ -241,53 +256,77 @@ def parse_goal_command(argument: str) -> ParsedGoalCommand:
     text = argument.strip()
     if not text or text.casefold() == "status":
         return ParsedGoalCommand(action="status")
-    head, _, tail = text.partition(" ")
+    parts = text.split(maxsplit=1)
+    head, tail = parts[0], parts[1] if len(parts) == 2 else ""
     command = head.casefold()
-    if command in {"pause", "cancel"}:
+    if command in {"status", "pause", "cancel", "clear"}:
         if tail.strip():
             return ParsedGoalCommand(
                 action=command,
                 error=f"/goal {command} does not accept additional arguments.",
             )
-        return ParsedGoalCommand(action=command)
+        return ParsedGoalCommand(action="cancel" if command == "clear" else command)
     if command == "resume":
-        budget, remainder, error = _parse_budget_prefix(tail.strip())
+        budget, clear_budget, remainder, error = _parse_budget_prefix(tail.strip())
         if error is not None:
             return ParsedGoalCommand(action="resume", error=error)
         if remainder:
             return ParsedGoalCommand(
                 action="resume",
-                error="Usage: /goal resume [--token-budget N]",
+                error="Usage: /goal resume [--token-budget N | --no-token-budget]",
             )
-        return ParsedGoalCommand(action="resume", token_budget=budget)
+        return ParsedGoalCommand(action="resume", token_budget=budget, clear_budget=clear_budget)
     if command == "replace":
-        budget, objective, error = _parse_budget_prefix(tail.strip())
+        budget, clear_budget, objective, error = _parse_budget_prefix(tail.strip())
         if error is not None:
             return ParsedGoalCommand(action="replace", error=error)
         if not objective:
             return ParsedGoalCommand(
                 action="replace",
-                error="Usage: /goal replace [--token-budget N] <objective>",
+                error="Usage: /goal replace [--token-budget N | --no-token-budget] <objective>",
             )
-        return ParsedGoalCommand(action="replace", objective=objective, token_budget=budget)
-    budget, objective, error = _parse_budget_prefix(text)
+        return ParsedGoalCommand(
+            action="replace", objective=objective, token_budget=budget, clear_budget=clear_budget
+        )
+    budget, clear_budget, objective, error = _parse_budget_prefix(text)
     if error is not None:
         return ParsedGoalCommand(action="create", error=error)
     if not objective:
         return ParsedGoalCommand(action="create", error="Goal objective cannot be empty.")
-    return ParsedGoalCommand(action="create", objective=objective, token_budget=budget)
+    return ParsedGoalCommand(
+        action="create", objective=objective, token_budget=budget, clear_budget=clear_budget
+    )
 
 
-def _parse_budget_prefix(text: str) -> tuple[int | None, str, str | None]:
-    if not text.startswith("--token-budget"):
-        return None, text, None
-    match = _BUDGET_PREFIX.match(text)
-    if match is None:
-        return None, "", "Token budget syntax is --token-budget N."
-    raw_budget = match.group(1)
-    if not raw_budget.isdecimal() or int(raw_budget) <= 0:
-        return None, "", "Token budget must be a positive integer."
-    return int(raw_budget), text[match.end() :].strip(), None
+def _parse_budget_prefix(text: str) -> tuple[int | None, bool, str, str | None]:
+    budget = None
+    clear_budget = False
+    option = _BUDGET_OPTION.match(text)
+    if option is None:
+        return None, False, text, None
+    if option.group() == "--no-token-budget":
+        if text[option.end() :].startswith("="):
+            return None, False, "", "The --no-token-budget option does not accept a value."
+        clear_budget = True
+        remainder = text[option.end() :].strip()
+    else:
+        match = _BUDGET_PREFIX.match(text)
+        if match is None:
+            return None, False, "", "Token budget syntax is --token-budget N."
+        raw_budget = match.group(1)
+        if not raw_budget.isdecimal() or int(raw_budget) <= 0:
+            return None, False, "", "Token budget must be a positive integer."
+        budget = int(raw_budget)
+        remainder = text[match.end() :].strip()
+    if _BUDGET_OPTION.match(remainder):
+        return None, False, "", "Specify only one token budget option."
+    return budget, clear_budget, remainder, None
+
+
+def _effective_budget(parsed: ParsedGoalCommand, current: GoalRecord) -> int | None:
+    if parsed.clear_budget:
+        return None
+    return parsed.token_budget if parsed.token_budget is not None else current.token_budget
 
 
 def _validate_changed_budget(token_budget: int | None, tokens_used: int | None) -> str | None:
@@ -298,28 +337,6 @@ def _validate_changed_budget(token_budget: int | None, tokens_used: int | None) 
     if token_budget <= tokens_used:
         return f"The total token budget must be greater than tokens used ({tokens_used})."
     return None
-
-
-def format_goal_status(goal: GoalRecord, *, tokens_used: int | None) -> str:
-    budget = "unlimited" if goal.token_budget is None else str(goal.token_budget)
-    remaining = (
-        "unlimited"
-        if goal.token_budget is None
-        else (
-            str(max(goal.token_budget - tokens_used, 0)) if tokens_used is not None else "unknown"
-        )
-    )
-    used = str(tokens_used) if tokens_used is not None else "unknown"
-    lines = [
-        f"Goal: {goal.status}",
-        f"Objective: {goal.objective}",
-        f"Usage: {used} tokens; budget: {budget}; remaining: {remaining}.",
-        f"Created: {goal.created_at}",
-        f"Updated: {goal.updated_at}",
-    ]
-    if goal.report is not None:
-        lines.append(f"Report: {goal.report}")
-    return "\n".join(lines)
 
 
 def _command_error(

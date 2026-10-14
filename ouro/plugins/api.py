@@ -940,6 +940,8 @@ def _adapt_continuation_policy(
             final_text=outcome.final_text,
             error=outcome.error,
             usage=MappingProxyType(dict(outcome.usage)),
+            tool_call_count=outcome.tool_call_count,
+            automatic_continuation=outcome.automatic_continuation,
         )
         raw, change = await invoke_plugin_callback(
             contribution.handler,
