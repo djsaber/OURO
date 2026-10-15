@@ -21,6 +21,65 @@ from ouro.tui.widgets import Composer, ConversationView, StatusLine
 from tests.tui.helpers import run_ready_app, two_route_application
 
 
+@pytest.mark.parametrize("target", ("message", "blank", "composer"))
+async def test_stream_refresh_preserves_pointer_focus_and_terminal_blur(tmp_path, target):
+    application = two_route_application(tmp_path)
+    session = application.runtime.create_session()
+    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
+    async with run_ready_app(app, size=(100, 30)) as pilot:
+        conversation = app.query_one(ConversationView)
+        composer = app.query_one(Composer)
+        composer.load_text("unsent draft")
+        await conversation.add_user("Existing conversation")
+        await app._apply_runtime_events(
+            [
+                EventRecord(
+                    session_id=session.session_id,
+                    run_id="focus",
+                    sequence=1,
+                    event_type="run_started",
+                    payload={"trigger": "user"},
+                )
+            ]
+        )
+        await pilot.pause()
+        if target == "message":
+            await pilot.click(
+                conversation.query_one(conversation_history.ConversationHistory), offset=(3, 0)
+            )
+        elif target == "blank":
+            await pilot.click(conversation, offset=(3, conversation.size.height - 1))
+        expected = composer if target == "composer" else conversation
+        assert app.focused is expected
+
+        async def stream(sequence):
+            await app._apply_runtime_events(
+                [
+                    EventRecord(
+                        session_id=session.session_id,
+                        run_id="focus",
+                        sequence=sequence,
+                        event_type="model_text_delta",
+                        payload={"text": "More text. "},
+                    )
+                ]
+            )
+            await pilot.pause()
+
+        await stream(2)
+        assert app.focused is expected
+        app.post_message(events.AppBlur())
+        await pilot.pause()
+        assert not app.app_focus and app.focused is None
+        await stream(3)
+        assert not app.app_focus and app.focused is None
+        assert not composer.has_focus
+        app.post_message(events.AppFocus())
+        await pilot.pause()
+        assert app.focused is expected
+        assert composer.text == "unsent draft"
+
+
 @pytest.mark.parametrize("operation", ["_block_starts", "_render_entry_requests"])
 async def test_session_dispatches_input_while_stream_rendering_is_pending(
     tmp_path, monkeypatch, operation

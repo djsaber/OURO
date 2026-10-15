@@ -27,6 +27,7 @@ from textual.message import Message
 from textual.messages import Prune
 from textual.screen import Screen
 from textual.timer import Timer
+from textual.widget import Widget
 from textual.widgets import TextArea
 from textual.worker import Worker
 
@@ -1700,7 +1701,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._replace_agent_tree(projection.session_id)
             composer = self.query_one(Composer)
             composer.disabled = False
-            composer.focus()
+            if self.app_focus:
+                composer.focus()
 
         diagnostics: list[str] = []
         latest_update = None
@@ -2117,6 +2119,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     @work(exclusive=True, group="attachment-reference")
     async def _reference_files(self, paths: tuple[Path, ...]) -> None:
         composer = self.query_one(Composer)
+        if self.app_focus:
+            composer.focus()
         revision = self._controller.selection_revision
         original_session = self._controller.session_id
         insert_into_original = composer.prepare_attachment_insertion()
@@ -2153,7 +2157,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         finally:
             composer.import_pending = False
             if self._surface_available():
-                self._sync_interaction_focus(self._interaction)
+                self._sync_input_state(self._interaction)
 
     def _close_attachment_menu(self) -> None:
         self._attachment_picker = None
@@ -2166,6 +2170,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     @work(exclusive=True, group="attachment-import")
     async def _attach_files(self, paste: str | tuple[Path, ...]) -> None:
         composer = self.query_one(Composer)
+        if self.app_focus:
+            composer.focus()
         revision = self._controller.selection_revision
         original_session = self._controller.session_id
         original = composer.input_content
@@ -2242,7 +2248,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             finally:
                 composer.import_pending = False
                 if self._surface_available():
-                    self._sync_interaction_focus(self._interaction)
+                    self._sync_input_state(self._interaction)
 
     @work(exclusive=True, group="provider-onboarding")
     async def _prompt_provider_setup(self) -> None:
@@ -2363,7 +2369,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if revision == self._controller.selection_revision:
                 self._waiting_for_session_event = False
                 if not self._host_closing and self.query(Composer):
-                    self._sync_interaction_focus(self._interaction)
+                    self._sync_input_state(self._interaction)
 
     def _restore_unsent_input(
         self, content: InputContent, revision: int, origin_session_id: str | None
@@ -2909,7 +2915,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self.query_one(AskUserPanel).resume()
         finally:
             if revision == self._controller.selection_revision:
-                self._sync_interaction_focus(self._interaction)
+                self._sync_input_state(self._interaction, focus=True)
 
     def on_interaction_bar_decision(self, message: InteractionBar.Decision) -> None:
         if self._visible_read_only:
@@ -2926,7 +2932,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         _message: AskUserPanel.FreeformRequested,
     ) -> None:
         self._sync_composer_placeholder()
-        self._sync_interaction_focus(self._interaction)
+        self._sync_input_state(self._interaction, focus=True)
 
     def on_plan_confirmation_panel_completed(
         self,
@@ -2941,7 +2947,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         _message: PlanConfirmationPanel.FeedbackRequested,
     ) -> None:
         self._sync_composer_placeholder()
-        self._sync_interaction_focus(self._interaction)
+        self._sync_input_state(self._interaction, focus=True)
 
     def _sync_activity(self, activity: RuntimeActivitySnapshot) -> None:
         status_line = self.query_one(StatusLine)
@@ -2972,7 +2978,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self._interaction = None
                 self._sync_interaction(None)
             else:
-                self._sync_interaction_focus(None)
+                self._sync_input_state(None)
             return None
         projection = self._projection
         primary = projection.pending_interaction if projection else None
@@ -2995,7 +3001,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self.query_one(InteractionBar).update_pending_count(
                     self._pending_approval_count(interaction)
                 )
-            self._sync_interaction_focus(interaction)
+            self._sync_input_state(interaction)
         return interaction
 
     def _pending_approval_count(self, interaction: PendingInteraction) -> int:
@@ -3024,7 +3030,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                         project_question_form(interaction.tool_name, interaction.request)
                     )
                 self._sync_composer_placeholder()
-                self._sync_interaction_focus(interaction)
+                self._sync_input_state(interaction, focus=True)
                 return
             ask_user.hide_panel()
             plan_panel.hide_panel()
@@ -3037,10 +3043,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 ),
             )
             self._sync_composer_placeholder()
-            self._sync_interaction_focus(interaction)
+            self._sync_input_state(interaction, focus=True)
 
-    def _sync_interaction_focus(self, interaction: PendingInteraction | None) -> None:
-        """Give the active interaction exclusive ownership of keyboard input."""
+    def _sync_input_state(
+        self, interaction: PendingInteraction | None, *, focus: bool = False
+    ) -> None:
+        """Update input availability; transfer focus only for an explicit transition."""
 
         if self._host_closing or not self.query(Composer):
             return
@@ -3058,23 +3066,23 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._visible_read_only:
             composer.disabled = True
             return
+        target: Widget = composer
+        disabled = False
         if interaction is not None and interaction.kind == "approval":
-            composer.disabled = True
-            self.query_one(InteractionBar).focus()
-            return
-        if interaction is not None and interaction.kind == "question":
+            disabled = True
+            target = self.query_one(InteractionBar)
+        elif interaction is not None and interaction.kind == "question":
             plan_panel = self.query_one(PlanConfirmationPanel)
             ask_user = self.query_one(AskUserPanel)
             if plan_panel.display:
-                composer.disabled = not plan_panel.awaiting_feedback
-                (composer if plan_panel.awaiting_feedback else plan_panel).focus()
-                return
-            if ask_user.display:
-                composer.disabled = not ask_user.awaiting_freeform
-                (composer if ask_user.awaiting_freeform else ask_user).focus()
-                return
-        composer.disabled = False
-        composer.focus()
+                disabled = not plan_panel.awaiting_feedback
+                target = composer if plan_panel.awaiting_feedback else plan_panel
+            elif ask_user.display:
+                disabled = not ask_user.awaiting_freeform
+                target = composer if ask_user.awaiting_freeform else ask_user
+        composer.disabled = disabled
+        if focus and self.app_focus:
+            target.focus()
 
     def _sync_composer_placeholder(self) -> None:
         """Project run and interaction state onto the composer hint."""
@@ -3604,7 +3612,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         finally:
             if creating_projection and revision == self._controller.selection_revision:
                 self._waiting_for_session_event = False
-                self._sync_interaction_focus(self._interaction)
+                self._sync_input_state(self._interaction, focus=True)
 
     @work(exclusive=True, group="session-summary")
     async def _show_session_summaries(self) -> None:
@@ -3644,7 +3652,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.query_one(StatusLine).set_activity("failed")
             self.notify(str(exc), severity="error", markup=False)
         finally:
-            self._sync_interaction_focus(self._interaction)
+            self._sync_input_state(self._interaction, focus=True)
 
     async def _new_session(self) -> None:
         try:
@@ -4244,7 +4252,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     await self._refresh_approval_indicator()
                     await self._refresh_reasoning_indicator()
                     self._sync_composer_placeholder()
-                    self._sync_interaction_focus(self._interaction)
+                    self._sync_input_state(self._interaction, focus=True)
         self._replace_observation(subscription)
 
     async def _open_child_session(self, agent: AgentTreeNode) -> None:
@@ -4369,7 +4377,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._activity_override = None
             if revision == self._controller.selection_revision:
                 self._restore_projection_activity(self._projection)
-                self._sync_interaction_focus(self._interaction)
+                self._sync_input_state(self._interaction, focus=True)
 
     @work(exclusive=True, group="session-fork")
     async def _fork_session(

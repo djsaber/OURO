@@ -558,7 +558,7 @@ async def test_attachment_preparation_keeps_focus_and_blocks_edits(
         )
         await asyncio.wait_for(entered.wait(), timeout=5)
         try:
-            app._sync_interaction_focus(None)
+            app._sync_input_state(None)
             await pilot.pause()
             assert composer.import_pending
             assert not composer.disabled and composer.has_focus
@@ -581,6 +581,46 @@ async def test_attachment_preparation_keeps_focus_and_blocks_edits(
         assert composer.input_content.text == "draft"
         assert composer.input_content.attachments[0].name == path.name
         assert frames and all(frame == (False, True, border) for frame in frames)
+
+
+@pytest.mark.parametrize("operation", ("upload", "reference"))
+async def test_preparation_completion_preserves_focus_moved_to_conversation(
+    tmp_path, monkeypatch, operation
+):
+    application = application_at(tmp_path / "home")
+    session = application.runtime.create_session()
+    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
+    path = tmp_path / "material.txt"
+    path.write_text("material", encoding="utf-8")
+    async with run_ready_app(app) as pilot:
+        entered, release = asyncio.Event(), asyncio.Event()
+        method = "import_attachment" if operation == "upload" else "reference_files"
+        prepare = getattr(app._controller, method)
+
+        async def delayed_prepare(*args):
+            entered.set()
+            await release.wait()
+            return await prepare(*args)
+
+        monkeypatch.setattr(app._controller, method, delayed_prepare)
+        composer = app.query_one(Composer)
+        conversation = app.query_one(ConversationView)
+        await conversation.add_user("Read while preparing")
+        await pilot.pause()
+        worker = (
+            app._attach_files((path,)) if operation == "upload" else app._reference_files((path,))
+        )
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        try:
+            await pilot.click(conversation, offset=(2, conversation.size.height - 1))
+            assert app.focused is conversation
+        finally:
+            release.set()
+            await worker.wait()
+        await pilot.pause()
+        assert app.focused is conversation
+        assert not composer.has_focus and not composer.import_pending
+        assert composer.input_content.attachments[0].name == path.name
 
 
 async def test_late_import_preserves_original_position_and_new_session_is_editable(
