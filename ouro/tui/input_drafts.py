@@ -28,12 +28,23 @@ class TuiSessionDraft(InputContent):
         return value
 
 
+class TuiPendingInput(InputContent):
+    """A submission retained until its durable acceptance can be established."""
+
+    input_id: str = Field(min_length=1)
+    session_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+    origin_session_id: str | None = None
+
+
 class TuiInputDrafts(VersionedOuroModel):
     """Welcome draft plus an MRU window of Session-owned drafts."""
 
     schema_version: int = 4
     welcome: InputContent = Field(default_factory=InputContent)
     sessions: tuple[TuiSessionDraft, ...] = ()
+    welcome_resource_id: str | None = Field(default=None, pattern=r"^ses_[0-9a-f]{32}$")
+    welcome_workspace: str | None = None
+    pending: tuple[TuiPendingInput, ...] = ()
 
     @field_validator("sessions")
     @classmethod
@@ -87,7 +98,7 @@ class TuiInputDrafts(VersionedOuroModel):
             content = InputContent(text=text, attachments=attachments, skills=skills)
             if content == self.welcome:
                 return self
-            return TuiInputDrafts(welcome=content, sessions=self.sessions)
+            return self.model_copy(update={"welcome": content})
 
         if not session_id.strip():
             raise ValueError("session_id must not be empty")
@@ -113,7 +124,7 @@ class TuiInputDrafts(VersionedOuroModel):
             if text or attachments or skills
             else remaining
         )
-        return TuiInputDrafts(welcome=self.welcome, sessions=sessions)
+        return self.model_copy(update={"sessions": sessions})
 
     def forget_sessions(self, session_ids: Iterable[str]) -> TuiInputDrafts:
         forgotten = frozenset(session_ids)
@@ -122,7 +133,17 @@ class TuiInputDrafts(VersionedOuroModel):
         sessions = tuple(draft for draft in self.sessions if draft.session_id not in forgotten)
         if sessions == self.sessions:
             return self
-        return TuiInputDrafts(welcome=self.welcome, sessions=sessions)
+        return self.model_copy(update={"sessions": sessions})
+
+    def begin_submission(self, item: TuiPendingInput) -> TuiInputDrafts:
+        return self.remember(item.origin_session_id, "").model_copy(
+            update={"pending": (*self.pending, item)}
+        )
+
+    def finish_submission(self, input_id: str) -> TuiInputDrafts:
+        return self.model_copy(
+            update={"pending": tuple(item for item in self.pending if item.input_id != input_id)}
+        )
 
 
 class TuiInputDraftStore:
@@ -154,5 +175,6 @@ __all__ = [
     "MAX_SESSION_DRAFTS",
     "TuiInputDrafts",
     "TuiInputDraftStore",
+    "TuiPendingInput",
     "TuiSessionDraft",
 ]

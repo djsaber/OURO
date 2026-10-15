@@ -524,6 +524,10 @@ class TuiController:
         self._event_sink_registration: RuntimeEventSinkRegistration | None = None
 
     @property
+    def started(self) -> bool:
+        return self._started
+
+    @property
     def session_id(self) -> str | None:
         return self._session_id
 
@@ -639,35 +643,44 @@ class TuiController:
         if application is not None and self._close_application:
             await application.close()
 
-    async def attachment_session(self) -> SessionRecord:
-        """Bind a welcome draft to an idle Session without starting model work."""
+    async def attachment_target(
+        self, session_id: str | None, prepared_session_id: str
+    ) -> SessionRecord | str:
+        """Capture an existing Session epoch or reserve a new input's file namespace."""
         runtime = self._runtime()
-        revision = self._selection_revision
-        if self._session_id is not None:
-            return await asyncio.to_thread(runtime.store.load_session_record, self._session_id)
-        session = await asyncio.to_thread(
-            runtime.create_session,
-            initial_model=self._initial_model,
-            reasoning_request=self._reasoning_request,
-            approval_mode=self._approval_mode,
-            interaction_mode=self._interaction_mode,
-            workspace=self._draft_workspace,
-        )
-        if revision == self._selection_revision:
-            self._session_id = session.session_id
-            self._initial_model = None
-        return session
+        if session_id is not None:
+            return await asyncio.to_thread(runtime.store.load_session_record, session_id)
+        await self.prepare_input_resources(prepared_session_id)
+        return prepared_session_id
 
-    async def import_attachment(self, session: SessionRecord, path: Path) -> InputAttachment:
+    async def prepare_input_resources(self, identity: str) -> None:
+        resources = self._runtime().resources
+        if resources is not None:
+            await asyncio.to_thread(resources.reserve, identity)
+
+    async def release_input_resources(self, identity: str, retain: tuple[str, ...]) -> None:
+        resources = self._runtime().resources
+        if resources is not None:
+            await asyncio.to_thread(resources.release_prepared, identity, retain=retain)
+
+    async def input_accepted(self, session_id: str, input_id: str) -> bool:
+        return await asyncio.to_thread(
+            self._runtime().sessions.input_accepted, session_id, input_id
+        )
+
+    async def import_attachment(self, session: SessionRecord | str, path: Path) -> InputAttachment:
         resources = self._runtime().resources
         if resources is None:
             raise ConfigError("Resource storage is unavailable")
-        result = await asyncio.to_thread(
-            resources.import_resource,
-            session.session_id,
-            path,
-            history_epoch=session.history_epoch,
-        )
+        if isinstance(session, str):
+            result = await asyncio.to_thread(resources.import_prepared_resource, session, path)
+        else:
+            result = await asyncio.to_thread(
+                resources.import_resource,
+                session.session_id,
+                path,
+                history_epoch=session.history_epoch,
+            )
         return InputAttachment(resource_id=result.resource.resource_id, name=path.name)
 
     async def reference_files(self, paths: tuple[Path, ...]) -> tuple[InputFile, ...]:
@@ -699,7 +712,9 @@ class TuiController:
 
         return await asyncio.to_thread(capture)
 
-    async def validate_attachment_session(self, session: SessionRecord) -> None:
+    async def validate_attachment_session(self, session: SessionRecord | str) -> None:
+        if isinstance(session, str):
+            return
         latest = await asyncio.to_thread(
             self._runtime().store.load_session_record, session.session_id
         )
@@ -729,6 +744,8 @@ class TuiController:
         resource_refs: tuple[str, ...] = (),
         attachments: tuple[InputFile, ...] = (),
         on_input_accepted: Callable[[], None] | None = None,
+        new_session_id: str | None = None,
+        input_id: str | None = None,
     ) -> RunResult:
         runtime = self._runtime()
         revision = self._selection_revision
@@ -766,6 +783,8 @@ class TuiController:
                 prompt,
                 skill_invocations=skill_invocations,
                 session_id=self._session_id,
+                new_session_id=new_session_id if is_new_session else None,
+                input_id=input_id,
                 resource_refs=resource_refs,
                 attachments=attachments,
                 queue_mode=queue_mode,

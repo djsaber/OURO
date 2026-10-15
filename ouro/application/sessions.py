@@ -7,6 +7,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, Protocol
 
 from ouro.application.dto import Diagnostic
+from ouro.application.queued_inputs import input_operation_id
 from ouro.application.runs import abort_run_state, find_run
 from ouro.application.session_editing import undo_user_input
 from ouro.application.session_history import (
@@ -136,6 +137,14 @@ class SessionService:
             active_compaction=self._store.load_active_compaction(session_id),
             diagnostics=diagnostics,
         )
+
+    def input_accepted(self, session_id: str, input_id: str) -> bool:
+        """Resolve an interrupted Host submission without replaying input or history."""
+        try:
+            self._store.load_session_record(session_id)
+        except FileNotFoundError:
+            return False
+        return self._store.load_commit(session_id, input_operation_id(input_id)) is not None
 
     def run_result(self, session_id: str, run_id: str) -> RunResult:
         """Read one durable Run without exposing SessionStore to Hosts."""

@@ -4,21 +4,28 @@ import hashlib
 import mimetypes
 import os
 import re
+import shutil
 import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from ouro.core.base import new_id
 from ouro.core.errors import (
     PersistenceError,
     ResourceIntegrityError,
     UnsafeResourcePathError,
     UnsupportedMediaTypeError,
 )
-from ouro.core.resources import ResourceRecord, ResourceSource
+from ouro.core.resources import ResourceRecord, ResourceSource, SessionResourceReference
 from ouro.local_io import replace_path_with_retry
 from ouro.local_locks import FileMutationLock
 from ouro.resources.files import checked_file, session_resource_directory, write_resource_contents
+from ouro.resources.prepared import (
+    load_prepared_resources,
+    prepared_manifest,
+    save_prepared_resources,
+)
 
 _CHUNK_SIZE = 1024 * 1024
 
@@ -31,6 +38,24 @@ class LocalResourceStore:
 
     def initialize(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
+
+    def reserve(self, identity: str | None = None) -> str:
+        identity = identity or new_id("ses")
+        if not prepared_manifest(self.root, identity).exists():
+            save_prepared_resources(self.root, identity, [])
+        return identity
+
+    def load_prepared(self, identity: str) -> list[SessionResourceReference] | None:
+        return load_prepared_resources(self.root, identity)
+
+    def save_prepared(self, identity: str, records: list[SessionResourceReference]) -> None:
+        save_prepared_resources(self.root, identity, records)
+
+    def discard_prepared(self, identity: str) -> None:
+        path = prepared_manifest(self.root, identity)
+        if path.exists():
+            # The service holds the Session mutation lock and has checked non-adoption.
+            shutil.rmtree(path.parent.parent)
 
     @staticmethod
     def infer_media_type(path: Path) -> str:

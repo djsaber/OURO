@@ -4,13 +4,21 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Protocol
 
-from ouro.core.resources import ResourceRecord, ResourceSource
+from ouro.core.resources import ResourceRecord, ResourceSource, SessionResourceReference
 
 
 class ResourceStore(Protocol):
-    """Named immutable files; canonical metadata belongs to the Session repository."""
+    """Named immutable files; prepared manifests precede canonical Session ownership."""
 
     def infer_media_type(self, path: Path) -> str: ...
+
+    def reserve(self, identity: str | None = None) -> str: ...
+
+    def load_prepared(self, identity: str) -> list[SessionResourceReference] | None: ...
+
+    def save_prepared(self, identity: str, records: list[SessionResourceReference]) -> None: ...
+
+    def discard_prepared(self, identity: str) -> None: ...
 
     def import_file(
         self,

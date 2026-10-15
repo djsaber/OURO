@@ -33,11 +33,13 @@ from ouro.application.models import (
 from ouro.application.prompt_context import PromptContextResolver
 from ouro.application.provider_auth import ProviderAuthService
 from ouro.application.queued_inputs import (
+    QUEUED_INPUTS_KEY,
     QueuedInput,
     QueuedInputMode,
     QueuedInputQueue,
     QueuedInputSource,
     QueuedUserInputView,
+    input_operation_id,
 )
 from ouro.application.recovery import RunRecoveryService
 from ouro.application.run_continuations import (
@@ -98,7 +100,7 @@ from ouro.core.errors import (
     SessionBusyError,
 )
 from ouro.core.events import EventRecord
-from ouro.core.harness import HarnessState
+from ouro.core.harness import HarnessState, HarnessVersion
 from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.inner_loop import (
     InnerAgentLoop,
@@ -136,7 +138,7 @@ from ouro.core.redaction import SensitiveValueRedactor, redact_text
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason
 from ouro.core.run_drivers import DEFAULT_DRIVER_ID, DriverInputDelivery, RunDriverBinding
-from ouro.core.session_commits import SessionCommitConflict
+from ouro.core.session_commits import SessionCommit, SessionCommitConflict, prepare_session_commit
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     AttributedSessionInput,
@@ -1275,6 +1277,8 @@ class RuntimeService:
         skill_invocations: tuple[SkillInvocationRequest, ...] = (),
         skill_invocation: SkillInvocationRequest | None = None,
         session_id: str | None = None,
+        new_session_id: str | None = None,
+        input_id: str | None = None,
         title: str | None = None,
         initial_model: str | None = None,
         initial_reasoning_request: ReasoningRequest | None = None,
@@ -1297,6 +1301,10 @@ class RuntimeService:
         on_session_created: Callable[[SessionRecord], None] | None = None,
         on_input_accepted: Callable[[], None] | None = None,
     ) -> RunResult:
+        if new_session_id is not None and (
+            session_id is not None or _input_attribution is not None
+        ):
+            raise ValueError("new_session_id requires a new direct-user Session")
         if approval_mode is not None and approval_mode not in SESSION_APPROVAL_MODES:
             raise ValueError(f"invalid session approval mode: {approval_mode}")
         if interaction_mode is not None and interaction_mode not in SESSION_INTERACTION_MODES:
@@ -1354,10 +1362,10 @@ class RuntimeService:
         input_resource_refs = tuple(dict.fromkeys(resource_refs or content.resource_refs))
         if attachments and input_resource_refs != content.resource_refs:
             raise ResourceAttachmentError("Attachment identities must match resource references")
-        if input_resource_refs and session_id is None:
+        if input_resource_refs and session_id is None and new_session_id is None:
             raise ResourceAttachmentError(
-                "resource attachments require an existing session; import the resource "
-                "and pass its session with session_id"
+                "resource attachments require an existing Session or a reserved namespace; "
+                "pass session_id or new_session_id"
             )
         await self._synchronize_extensions()
         preapproved_new_run: RunRecord | None = None
@@ -1383,6 +1391,7 @@ class RuntimeService:
                 selected_reasoning = initial_reasoning_request or ReasoningRequest()
                 self._model_reasoning_state(selected_model, selected_reasoning)
                 candidate_session = SessionRecord(
+                    session_id=new_session_id or new_id("ses"),
                     workspace=(
                         str(Path(workspace).expanduser().resolve())
                         if workspace is not None
@@ -1418,6 +1427,21 @@ class RuntimeService:
                         )
                         for invocation in skill_invocations
                     )
+                    candidate_input = QueuedInput(
+                        queue_id=input_id or new_id("queued"),
+                        prompt=prompt,
+                        driver=input_driver,
+                        attachments=attachments,
+                        resource_refs=input_resource_refs,
+                        title=title,
+                        mode=queue_mode,
+                        queued_at=utc_now(),
+                        source="user",
+                        role="user",
+                        scaffold=False,
+                        semantic_tag=None,
+                        skill_activations=resolved_skill_activations,
+                    )
                     await self._evaluate_prompt_policies(
                         session=candidate_session,
                         run=preapproved_new_run,
@@ -1429,34 +1453,30 @@ class RuntimeService:
                             state=HarnessState(),
                             usage_tokens={} if self.usage is not None else None,
                         ),
-                        inputs=[
-                            QueuedInput(
-                                queue_id=new_id("queued"),
-                                prompt=prompt,
-                                driver=input_driver,
-                                attachments=attachments,
-                                resource_refs=input_resource_refs,
-                                title=title,
-                                mode="follow_up",
-                                queued_at=utc_now(),
-                                source="user",
-                                role="user",
-                                scaffold=False,
-                                semantic_tag=None,
-                                skill_activations=resolved_skill_activations,
+                        inputs=[candidate_input],
+                    )
+                    extension_snapshot = self._extension_snapshot_for_run(
+                        preapproved_new_run.run_id
+                    )
+                    first_input = candidate_input.model_copy(
+                        update={
+                            "prompt_policy_checked": True,
+                            "prospective_run_id": preapproved_new_run.run_id,
+                            "extension_catalog_id": extension_snapshot.catalog_id
+                            if extension_snapshot
+                            else None,
+                            "extension_generations": tuple(
+                                generation.model_dump(mode="json", exclude_none=True)
+                                for generation in extension_snapshot.generations
                             )
-                        ],
+                            if extension_snapshot
+                            else (),
+                        }
                     )
                     session = await run_blocking(
-                        self.create_session,
-                        title=title,
-                        _session_id=candidate_session.session_id,
-                        initial_model=selected_model.key,
-                        reasoning_request=candidate_session.reasoning_request,
-                        approval_mode=candidate_session.approval_mode,
-                        interaction_mode=candidate_session.interaction_mode,
-                        workspace=candidate_session.workspace,
+                        self._accept_initial_input, candidate_session, first_input
                     )
+                    _queued_inputs = [first_input]
                 except BaseException:
                     self._release_run_resources(preapproved_new_run.run_id)
                     raise
@@ -1473,6 +1493,9 @@ class RuntimeService:
             snapshot = RuntimeSessionSnapshot(session=session)
             if on_session_created is not None:
                 on_session_created(session)
+            if _input_attribution is None and on_input_accepted is not None:
+                on_input_accepted()
+                on_input_accepted = None
         else:
             session_locked = await run_blocking(
                 self.run_ownership.is_locked,
@@ -1541,6 +1564,7 @@ class RuntimeService:
                     attribution=_input_attribution,
                     driver=input_driver,
                     on_input_accepted=on_input_accepted,
+                    input_id=input_id,
                 )
                 return RunResult(session=queued_session, run=active_run, events=queued_events)
         if isinstance(_input_attribution, DelegatedTaskInput) and (
@@ -1637,6 +1661,7 @@ class RuntimeService:
                     attribution=_input_attribution,
                     driver=input_driver,
                     on_input_accepted=on_input_accepted,
+                    input_id=input_id,
                 )
                 return RunResult(session=queued_session, run=active_run, events=queued_events)
             raise SessionBusyError(f"session is already locked: {session.session_id}")
@@ -1681,6 +1706,7 @@ class RuntimeService:
                     attribution=_input_attribution,
                     driver=input_driver,
                     on_input_accepted=on_input_accepted,
+                    input_id=input_id,
                 )
                 return RunResult(
                     session=queued_session,
@@ -1718,7 +1744,7 @@ class RuntimeService:
                 )
             pending_inputs = _queued_inputs or [
                 QueuedInput(
-                    queue_id=new_id("queued"),
+                    queue_id=input_id or new_id("queued"),
                     prompt=prompt,
                     driver=input_driver,
                     skill_activations=resolved_skill_activations,
@@ -2658,6 +2684,7 @@ class RuntimeService:
         attribution: (AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None) = None,
         on_input_accepted: Callable[[], None] | None = None,
         driver: RunDriverBinding | None = None,
+        input_id: str | None = None,
     ) -> tuple[SessionRecord, QueuedInput, list[EventRecord]]:
         if (
             isinstance(attribution, HostSessionInput)
@@ -2673,7 +2700,7 @@ class RuntimeService:
         queue_id = (
             attribution.queue_id
             if isinstance(attribution, HostSessionInput) and attribution.queue_id is not None
-            else new_id("queued")
+            else input_id or new_id("queued")
         )
         prompt_policy_checked = source == "user"
         prospective_run_id: str | None = None
@@ -3155,8 +3182,60 @@ class RuntimeService:
             sequence=sequence,
             is_queued=is_queued,
         )
-        self.run_lifecycle.append_messages(session=session, run=run, messages=messages)
+        self.run_lifecycle.append_messages(
+            session=session,
+            run=run,
+            messages=messages,
+            operation_id=input_operation_id(item.queue_id),
+        )
         return messages
+
+    def _accept_initial_input(self, session: SessionRecord, item: QueuedInput) -> SessionRecord:
+        """Publish the first durable input and adopt its existing files in one boundary."""
+        with self.store.session_mutation(session.session_id):
+            references = (
+                self.resources.prepared_references(session.session_id)
+                if self.resources is not None
+                else None
+            )
+            available = {record.resource_id for record in references or ()}
+            if not set(item.resource_refs) <= available:
+                raise ResourceAttachmentError("Input contains a foreign prepared resource")
+            accepted = session.model_copy(
+                update={
+                    "metadata": {
+                        **session.metadata,
+                        QUEUED_INPUTS_KEY: [item.model_dump(mode="json")],
+                    }
+                }
+            )
+            harness = HarnessVersion(
+                session_id=session.session_id,
+                version_id=session.harness_version,
+                state=HarnessState(controls=session.controls),
+            )
+            decision = prepare_session_commit(
+                SessionCommit(
+                    operation_id=input_operation_id(item.queue_id),
+                    before=session,
+                    after=accepted,
+                    output={"queue_id": item.queue_id},
+                ),
+                session,
+                harness,
+                event_sequence=0,
+            )
+            session = decision.result.session
+            self.store.create_session_snapshot(
+                session,
+                [],
+                harness_versions=[harness],
+                commits=[decision.result],
+                resource_references=references,
+                prepared_resources=references is not None,
+            )
+        self.store.refresh_catalog(session.session_id)
+        return session
 
     def _persist_session_policy_updates(
         self,

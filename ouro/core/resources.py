@@ -33,7 +33,7 @@ class ResourceSource(OuroModel):
 
 
 class ResourceRecord(VersionedOuroModel):
-    """Metadata for one named file owned by a Session."""
+    """Metadata for one named file in a prepared or accepted Session namespace."""
 
     schema_version: int = 2
     resource_id: str = Field(default_factory=lambda: new_id("res"))

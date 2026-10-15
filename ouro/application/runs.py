@@ -8,7 +8,7 @@ from ouro.application.harness import capture_harness
 from ouro.application.queued_inputs import QueuedInputQueue
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.application.usage import UsageService
-from ouro.core.base import utc_now
+from ouro.core.base import new_id, utc_now
 from ouro.core.billing import UsagePurpose
 from ouro.core.callbacks import run_blocking
 from ouro.core.errors import PersistenceError, SessionBusyError
@@ -1058,6 +1058,7 @@ class RunLifecycle:
         allow_interrupted: bool = False,
         state_changes: dict[str, HarnessStateChange] | None = None,
         consumed_inputs: tuple[str, ...] = (),
+        operation_id: str | None = None,
     ) -> None:
         """Persist one ordered message batch and advance the Session projection once."""
 
@@ -1124,7 +1125,12 @@ class RunLifecycle:
             )
             if consumed_inputs:
                 after = QueuedInputQueue(self.store).without_inputs(after, consumed_inputs)
-            request = SessionCommit(before=current, after=after, steps=tuple(steps))
+            request = SessionCommit(
+                operation_id=operation_id or new_id("op"),
+                before=current,
+                after=after,
+                steps=tuple(steps),
+            )
             if control_message is not None:
                 assert draft is not None and control_message.tool_result is not None
                 active_ids = {item.activation_id for item in draft.state.controls.activations}

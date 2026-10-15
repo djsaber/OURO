@@ -17,6 +17,7 @@ from ouro.application.resource_models import (
 from ouro.core.base import new_id, utc_now
 from ouro.core.content import MediaModality
 from ouro.core.errors import (
+    PersistenceError,
     ResourceAttachmentError,
     ResourceInUseError,
     ResourceNotFoundError,
@@ -41,7 +42,7 @@ DEFAULT_MAX_MODEL_ATTACHMENTS = 16
 
 
 class ResourceService:
-    """Session ownership and lifecycle of named input files."""
+    """Preparation, Session ownership, and lifecycle of named input files."""
 
     def __init__(
         self,
@@ -68,6 +69,64 @@ class ResourceService:
         self._max_model_text_bytes = max_model_text_bytes
         self._max_model_media_bytes = max_model_media_bytes
         self._max_model_attachments = max_model_attachments
+
+    def reserve(self, identity: str | None = None) -> str:
+        """Reserve a stable file namespace without creating a Session."""
+        identity = identity or new_id("ses")
+        with self._sessions.session_mutation(identity):
+            if self._session_exists(identity):
+                raise SessionCommitConflict("Resource namespace already belongs to a Session")
+            return self._store.reserve(identity)
+
+    def prepared_references(self, identity: str) -> list[SessionResourceReference] | None:
+        """Return the reserved manifest, or None when no resources were prepared."""
+        return self._store.load_prepared(identity)
+
+    def import_prepared_resource(self, identity: str, path: Path) -> ResourceMutationResult:
+        with self._sessions.session_mutation(identity):
+            if self._session_exists(identity):
+                raise SessionCommitConflict("Prepared resources already belong to a Session")
+            records = self._store.load_prepared(identity)
+            if records is None:
+                raise PersistenceError("Resource namespace is not reserved")
+            record = self._store.import_file(
+                identity,
+                path,
+                source=ResourceSource(name=path.name),
+                media_type=self._store.infer_media_type(path),
+                max_bytes=self._max_resource_bytes,
+            )
+            try:
+                self._store.save_prepared(
+                    identity, [*records, SessionResourceReference(**record.model_dump())]
+                )
+            except Exception:
+                self._store.delete_resources(identity, (record,))
+                raise
+        return ResourceMutationResult(resource=ResourceView.from_record(record), created=True)
+
+    def release_prepared(self, identity: str, *, retain: tuple[str, ...] = ()) -> None:
+        """Release abandoned preparation; accepted Sessions always retain their resources."""
+        with self._sessions.session_mutation(identity):
+            if self._session_exists(identity):
+                return
+            if not retain:
+                self._store.discard_prepared(identity)
+                return
+            records = self._store.load_prepared(identity)
+            if records is None:
+                return
+            retained = [item for item in records if item.resource_id in retain]
+            removed = [item for item in records if item.resource_id not in retain]
+            self._store.save_prepared(identity, retained)
+            self._store.delete_resources(identity, removed)
+
+    def _session_exists(self, identity: str) -> bool:
+        try:
+            self._sessions.load_session_record(identity)
+        except FileNotFoundError:
+            return False
+        return True
 
     def import_resource(
         self,

@@ -256,7 +256,7 @@ class QueuedInputQueue:
                     None,
                     session,
                 )
-            if self.store.load_commit(session_id, _input_operation_id(queue_id)) is not None:
+            if self.store.load_commit(session_id, input_operation_id(queue_id)) is not None:
                 raise ValueError(
                     "Host input was already accepted and has been withdrawn or cancelled"
                 )
@@ -373,7 +373,7 @@ class QueuedInputQueue:
             session = latest.model_copy(update={"metadata": metadata, "updated_at": utc_now()})
             self.store.commit_session(
                 SessionCommit(
-                    operation_id=_input_operation_id(item.queue_id),
+                    operation_id=input_operation_id(item.queue_id),
                     before=latest,
                     after=session,
                     output={"queue_id": item.queue_id},
@@ -702,6 +702,6 @@ class QueuedInputQueue:
             return None
 
 
-def _input_operation_id(queue_id: str) -> str:
+def input_operation_id(queue_id: str) -> str:
     """Acceptance survives consumption and history withdrawal in the native receipt journal."""
     return "input_" + hashlib.sha256(queue_id.encode("utf-8")).hexdigest()

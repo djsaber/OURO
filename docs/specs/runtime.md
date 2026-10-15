@@ -29,6 +29,11 @@ Session 是长期会话容器。关键字段包括：
 
 同一 Session 同时最多存在一个 active Run。
 
+首次直接用户输入通过校验与 Prompt Policy 后，Session、持久输入及原生 Session commit 回执在同一发布边界成立，
+随后通过正常队列消费边界启动 Run。Host 可用 `new_session_id` 指定新会话身份；该身份已有准备资源时原位接续其归属，文件身份和路径不变。
+没有准备资源的输入无需预留文件空间。`input_id` 标识一次 Host 提交，`SessionService.input_accepted` 统一通过原生提交回执查询接受事实，
+无需重放历史。回执只描述输入是否已接受；草稿保存、恢复及资源保留策略由 Host 决定。
+
 Session 可保存一个尚未消费的 `continuation_request`，记录命令提交身份、历史代次和控制修订。
 它是执行意图，不是模型输入或 Harness 业务状态。对话执行启动与凭据消费共同提交；停止命令、控制修订变化和
 历史撤销使旧凭据失效。重放提交结果不能重复执行，维护 Run 不消费对话续跑凭据。

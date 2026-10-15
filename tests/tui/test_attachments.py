@@ -231,12 +231,11 @@ async def test_welcome_upload_stays_in_draft_until_message_is_sent(tmp_path, sou
         assert app._projection is None
         assert composer.input_content.attachments[0].name == path.name
         session_id = app._controller.session_id
+        assert session_id is None
+        assert application.runtime.store.list_sessions() == []
         if source == "picker":
             assert session_id is None
             assert composer.input_content.attachments[0].kind == "reference"
-        else:
-            snapshot = application.runtime.store.load_runtime_session(session_id)
-            assert not snapshot.runs and not snapshot.messages
         await pilot.press("enter")
         if workers := [w for w in app.workers if w.group == "run"]:
             await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=10)

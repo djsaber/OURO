@@ -42,7 +42,8 @@ from ouro.application.supervisor import RuntimeSubscription
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.attachment_input import editable_input_content
-from ouro.core.errors import OuroError, PersistenceError, UnsupportedDataVersionError
+from ouro.core.base import new_id
+from ouro.core.errors import ConfigError, OuroError, PersistenceError, UnsupportedDataVersionError
 from ouro.core.events import EventRecord
 from ouro.core.input_content import InputContent, InputFile, InputSkillReference
 from ouro.core.interactions import SessionInteractionMode
@@ -86,7 +87,8 @@ from ouro.tui.conversation_history import (
     ToolNavigationRequested,
     UserMessageCopyRequested,
 )
-from ouro.tui.input_drafts import TuiInputDrafts, TuiInputDraftStore
+from ouro.tui.draft_recovery import recover_input_drafts, release_unused_draft_resources
+from ouro.tui.input_drafts import TuiInputDrafts, TuiInputDraftStore, TuiPendingInput
 from ouro.tui.menu_labels import MODEL_THINKING_LABEL, THINKING_LABELS, TOOL_APPROVAL_LABEL
 from ouro.tui.menu_sorting import sorted_models
 from ouro.tui.menu_styles import MENU_CSS
@@ -962,6 +964,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._input_surface: WelcomePanel | None = None
         self._input_draft_revision = 0
         self._input_draft_save_task: asyncio.Task[None] | None = None
+        self._input_draft_save_requested = asyncio.Event()
+        self._input_draft_saved_revision = 0
         self._input_draft_error_notified = False
         self._preferences_save_lock = asyncio.Lock()
         self._pending_tui_theme_id: str | None = None
@@ -1098,6 +1102,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
         if self._input_draft_save_task is not None:
             await self._input_draft_save_task
+        if not self._controller.started:
+            await self._controller.close()
+            return
+        try:
+            drafts = await release_unused_draft_resources(
+                self._controller,
+                self._input_drafts,
+                remember=self._preferences.input_draft_memory_enabled,
+            )
+            self._set_input_drafts(drafts)
+            await self._flush_input_drafts()
+        except (OuroError, OSError) as exc:
+            _LOG.warning("Could not release unused draft resources: %s", exc)
         await self._controller.close()
 
     def _surface_available(self) -> bool:
@@ -1147,6 +1164,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         if not self._surface_available():
             return
+        try:
+            drafts, recovered_session = await recover_input_drafts(
+                self._controller, self._input_drafts
+            )
+            drafts = await release_unused_draft_resources(
+                self._controller, drafts, remember=self._preferences.input_draft_memory_enabled
+            )
+            self._set_input_drafts(drafts)
+            if self._resume_session_id is None:
+                self._resume_session_id = recovered_session
+        except (OuroError, OSError) as exc:
+            self.notify(str(exc), severity="warning", markup=False)
         self._apply_bootstrap(bootstrap)
         self._apply_system_status(bootstrap)
         self.set_interval(2.0, self._sync_task_status)
@@ -1491,6 +1520,20 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _show_welcome(self, *, refresh_status: bool = True) -> None:
         if not self._surface_available():
             return
+        workspace = self._input_drafts.welcome_workspace
+        if (
+            self._controller.session_id is None
+            and not self._input_drafts.welcome.is_empty
+            and workspace is not None
+            and workspace != self._controller.draft_workspace
+        ):
+            try:
+                self._active_workspace = await self._controller.set_workspace(workspace)
+                self._system_status = replace(self._system_status, workspace=self._active_workspace)
+                self.query_one(BrandHeader).set_context(workspace=self._active_workspace)
+                self.query_one(ConversationView).set_system_status(self._system_status)
+            except (OuroError, ValueError) as exc:
+                self.notify(str(exc), severity="warning", markup=False)
         await self.query_one(ConversationView).show_welcome()
         if not self._surface_available():
             return
@@ -2067,11 +2110,27 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _reference_files(self, paths: tuple[Path, ...]) -> None:
         composer = self.query_one(Composer)
         revision = self._controller.selection_revision
+        original_session = self._controller.session_id
+        insert_into_original = composer.prepare_attachment_insertion()
+        if original_session is None:
+            self._set_input_drafts(
+                self._input_drafts.model_copy(
+                    update={"welcome_workspace": self._controller.draft_workspace}
+                )
+            )
         composer.import_pending = True
         composer.disabled = True
         try:
             items = await self._controller.reference_files(paths)
             if revision != self._controller.selection_revision:
+                content = insert_into_original(items)
+                self._remember_input_draft(
+                    original_session,
+                    content.text,
+                    attachments=content.attachments,
+                    skills=content.skills,
+                )
+                await self._flush_input_drafts()
                 return
             composer.insert_attachments(items)
             content = composer.input_content
@@ -2081,7 +2140,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 attachments=content.attachments,
                 skills=content.skills,
             )
-        except (OSError, ValueError) as exc:
+            await self._flush_input_drafts()
+        except (OuroError, OSError, ValueError) as exc:
             self.notify(str(exc), severity="error", markup=False)
         finally:
             composer.import_pending = False
@@ -2120,7 +2180,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if len(original.attachments) + len(paths) > 16:
                 self.notify("A message can contain at most 16 attachments", severity="warning")
                 return
-            session = await self._controller.attachment_session()
+            identity = self._input_drafts.welcome_resource_id or new_id("ses")
+            if original_session is None:
+                self._set_input_drafts(
+                    self._input_drafts.model_copy(
+                        update={
+                            "welcome_resource_id": identity,
+                            "welcome_workspace": self._controller.draft_workspace,
+                        }
+                    )
+                )
+                await self._flush_input_drafts()
+            session = await self._controller.attachment_target(original_session, identity)
             imported: list[InputFile] = []
             for path in paths:
                 try:
@@ -2132,30 +2203,24 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 # The import belongs to its captured Session, never to a later navigation.
                 restored = insert_into_original(tuple(imported)) if imported else original
                 self._remember_input_draft(
-                    session.session_id,
+                    original_session,
                     restored.text,
                     attachments=restored.attachments,
                     skills=restored.skills,
                 )
+                await self._flush_input_drafts()
                 return
-            if original_session is None:
-                self._remember_input_draft(None, "")
-                self._remember_input_draft(
-                    session.session_id,
-                    original.text,
-                    attachments=original.attachments,
-                    skills=original.skills,
-                )
             composer.load_input(original)
             composer.selection = selection
             composer.insert_attachments(tuple(imported))
             content = composer.input_content
             self._remember_input_draft(
-                session.session_id,
+                original_session,
                 content.text,
                 attachments=content.attachments,
                 skills=content.skills,
             )
+            await self._flush_input_drafts()
         except Exception as exc:  # noqa: BLE001 - keep the unsent draft on import failures.
             self.notify(str(exc), severity="error", markup=False)
         finally:
@@ -2192,50 +2257,89 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if attachments is not None
             else self._input_drafts.content_for(self._controller.session_id).attachments
         )
-        self._remember_input_draft(self._controller.session_id, "")
-        self._run_prompt(prompt, queue_mode, skills=skills, attachments=attachments)
+        origin = self._controller.session_id
+        identity = origin or self._input_drafts.welcome_resource_id or new_id("ses")
+        pending = TuiPendingInput(
+            input_id=new_id("queued"),
+            session_id=identity,
+            origin_session_id=origin,
+            text=prompt,
+            attachments=attachments,
+            skills=skills,
+        )
+        drafts = self._input_drafts.begin_submission(pending)
+        if origin is None:
+            drafts = drafts.model_copy(
+                update={
+                    "welcome_resource_id": identity,
+                    "welcome_workspace": self._controller.draft_workspace,
+                }
+            )
+        self._set_input_drafts(drafts)
+        self._run_prompt(
+            pending,
+            queue_mode,
+            revision=self._controller.selection_revision,
+        )
 
     @work(group="run")
     async def _run_prompt(
         self,
-        prompt: str,
+        pending: TuiPendingInput,
         queue_mode: QueuedInputMode,
         *,
-        skills: tuple[InputSkillReference, ...] = (),
-        attachments: tuple[InputFile, ...] = (),
+        revision: int,
     ) -> None:
-        revision = self._controller.selection_revision
-        origin_session_id = self._controller.session_id
+        origin_session_id = pending.origin_session_id
         accepted = False
 
         def input_accepted() -> None:
             nonlocal accepted
             accepted = True
+            drafts = self._input_drafts.finish_submission(pending.input_id)
+            if origin_session_id is None:
+                drafts = drafts.model_copy(update={"welcome_resource_id": None})
+            self._set_input_drafts(drafts)
 
         try:
+            await self._flush_input_drafts()
+            if revision != self._controller.selection_revision:
+                raise ConfigError("Input target changed before submission; the draft was retained")
             result = await self._controller.submit(
-                prompt,
+                pending.text,
                 queue_mode=queue_mode,
                 skill_invocations=tuple(
                     SkillInvocationRequest(
                         name=item.name,
-                        arguments=prompt,
+                        arguments=pending.text,
                         text_offset=item.text_offset,
                         order=item.order,
                     )
-                    for item in skills
+                    for item in pending.skills
                 ),
-                resource_refs=InputContent(text=prompt, attachments=attachments).resource_refs,
-                attachments=attachments,
+                resource_refs=pending.resource_refs,
+                attachments=pending.attachments,
                 on_input_accepted=input_accepted,
+                new_session_id=pending.session_id if origin_session_id is None else None,
+                input_id=pending.input_id,
             )
             await self._apply_run_result(result)
             await self._sync_queued_inputs(result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - providers and tools fail across this boundary.
             same_selection = revision == self._controller.selection_revision
             if not accepted:
-                content = InputContent(text=prompt, attachments=attachments, skills=skills)
-                self._restore_unsent_input(content, revision, origin_session_id)
+                try:
+                    if await self._controller.input_accepted(pending.session_id, pending.input_id):
+                        input_accepted()
+                except OuroError as acceptance_error:
+                    # Keep the pending input until recovery can establish its durable outcome.
+                    self.notify(str(acceptance_error), severity="error", markup=False)
+                    return
+            if not accepted:
+                self._set_input_drafts(self._input_drafts.finish_submission(pending.input_id))
+                self._restore_unsent_input(pending, revision, origin_session_id)
+                if self._controller.session_id is None:
+                    self._set_welcome_mode(True)
             if same_selection:
                 self.query_one(StatusLine).set_activity("failed")
             self.notify(str(exc), severity="error", markup=False)
@@ -2926,9 +3030,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         composer = self.query_one(Composer)
         composer.attachments_enabled = not self._visible_read_only and interaction is None
+        preparing_first_input = self._controller.session_id is None and any(
+            item.origin_session_id is None for item in self._input_drafts.pending
+        )
+        composer.attachments_enabled = composer.attachments_enabled and not preparing_first_input
         if not composer.attachments_enabled:
             self._close_attachment_menu()
-        if composer.import_pending:
+        if composer.import_pending or preparing_first_input:
             composer.disabled = True
             return
         if self._visible_read_only:
@@ -3014,9 +3122,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         attachments: tuple[InputFile, ...] = (),
         skills: tuple[InputSkillReference, ...] = (),
     ) -> None:
-        self._set_input_drafts(
-            self._input_drafts.remember(session_id, text, attachments=attachments, skills=skills)
+        drafts = self._input_drafts.remember(
+            session_id, text, attachments=attachments, skills=skills
         )
+        if session_id is None and self._controller.session_id is None:
+            drafts = drafts.model_copy(
+                update={"welcome_workspace": self._controller.draft_workspace}
+            )
+        self._set_input_drafts(drafts)
 
     def _forget_input_drafts(self, session_ids: Sequence[str]) -> None:
         if not self._preferences.input_draft_memory_enabled:
@@ -3049,9 +3162,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             while True:
                 revision = self._input_draft_revision
-                await asyncio.sleep(_INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS)
-                if revision != self._input_draft_revision:
-                    continue
+                try:
+                    await asyncio.wait_for(
+                        self._input_draft_save_requested.wait(), _INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS
+                    )
+                except TimeoutError:
+                    if revision != self._input_draft_revision:
+                        continue
+                self._input_draft_save_requested.clear()
+                revision = self._input_draft_revision
                 drafts = (
                     self._input_drafts
                     if self._preferences.input_draft_memory_enabled
@@ -3059,6 +3178,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 )
                 try:
                     await asyncio.to_thread(self._input_draft_store.save, drafts)
+                    self._input_draft_saved_revision = revision
                 except OuroError as exc:
                     _LOG.warning("Could not persist TUI input drafts: %s", exc)
                     if not self._input_draft_error_notified and not self._host_closing:
@@ -3071,6 +3191,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     return
         finally:
             self._input_draft_save_task = None
+
+    async def _flush_input_drafts(self) -> None:
+        if not self._preferences.input_draft_memory_enabled or self._input_drafts_error is not None:
+            return
+        if self._input_draft_saved_revision == self._input_draft_revision:
+            return
+        self._input_draft_save_requested.set()
+        if self._input_draft_save_task is None:
+            self._input_draft_save_task = asyncio.create_task(self._persist_input_drafts())
+        # Closing the Host cancels workers, but its pending disk save must finish.
+        await asyncio.shield(self._input_draft_save_task)
+        if self._input_draft_saved_revision < self._input_draft_revision:
+            raise ConfigError("Could not save the input draft; retry before sending")
 
     async def _dispatch_command(self, value: str) -> None:
         command, argument = resolve_command(value)
@@ -3243,6 +3376,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._system_status = replace(self._system_status, workspace=workspace)
         self.query_one(BrandHeader).set_context(workspace=workspace)
         self.query_one(ConversationView).set_system_status(self._system_status)
+        self._set_input_drafts(
+            self._input_drafts.model_copy(update={"welcome_workspace": workspace})
+        )
         await self._remember_workspace(workspace)
 
     def _queued_input_arguments(self) -> tuple[TuiCommandArgument, ...]:
@@ -5293,7 +5429,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self.notify(str(exc), severity="warning", markup=False)
                 return False
             self._preferences = preferences
-        drafts = TuiInputDrafts()
+        drafts = TuiInputDrafts(
+            welcome_resource_id=self._input_drafts.welcome_resource_id,
+            welcome_workspace=self._input_drafts.welcome_workspace,
+            pending=self._input_drafts.pending,
+        )
         if not self._visible_read_only and self.query(Composer):
             drafts = drafts.remember(
                 self._controller.session_id,

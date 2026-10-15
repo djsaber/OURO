@@ -4,7 +4,7 @@
 
 ## 目标与范围
 
-ResourceService 为本地附件提供会话范围的稳定身份、不可变文件和所有权校验；RuntimeSupervisor 为多个
+ResourceService 为本地附件提供准备空间、会话范围的稳定身份、不可变文件和所有权校验；RuntimeSupervisor 为多个
 Session 的 Run 提供进程内调度、订阅和 Host 生命周期。二者都是 application 边界，不改变 core 的依赖
 方向，也不引入远程对象存储、分布式队列或后台 daemon。
 
@@ -12,11 +12,19 @@ Session 的 Run 提供进程内调度、订阅和 Host 生命周期。二者都�
 
 - 内部资源身份是会话范围的稳定 ID，与完整性 SHA-256 摘要解耦；模型使用真实路径。
 - `SessionResourceReference` 保存完整 `ResourceRecord` 元信息：ID、原名称、安全文件名、类型、大小、摘要、时间及复制来源。
-- 上传文件位于 `OURO_HOME/sessions/<session_id>/resources/files/`，不自动写入会话工作目录。
+- 上传文件位于 `OURO_HOME/sessions/<reserved_or_session_id>/resources/files/`，不自动写入会话工作目录。
 - 文件后端的 `resources/index.json`、SQLite 的资源记录分别是所属会话的元信息权威；无全局资源目录或重复元信息库。
 - ResourceRecord schema 为 2；不支持的布局和记录版本明确拒绝，不自动迁移或清空用户数据。
 
 ## 导入、读取与删除
+
+`ResourceService.reserve` 预留稳定文件空间，`import_prepared_resource` 导入尚未归属正式会话的文件。
+准备清单 `resources/prepared.json` 保存该空间的资源元信息；预留身份可以成为正式会话身份，但准备阶段没有 Session 记录、Run 或会话目录索引项。
+Host 保存预留身份并决定保留哪些资源。`release_prepared` 只处理未成立会话的空间，不删除已被 Session 接续的资源；框架不管理 Host 草稿或其保留周期。
+
+首次输入接受时，文件后端最后发布 `session.json`，SQLite 在同一事务内发布 Session 与资源关系；首份持久输入、原生提交回执与 Session 同时成立。
+接续只检查准备清单归属、文件可用性和大小，不复制或移动文件、不为归属转换额外校验完整摘要；正常模型输入准备仍验证完整性。
+成立后，Session 存储是资源元信息的权威，准备清单不再参与读取与执行。发布前失败保留准备资源，供 Host 恢复或重试。
 
 导入拒绝符号链接、特殊文件及无效媒体类型，在会话 mutation 内分配可读名称，使用会话私有 staging
 流式复制、限制大小并计算摘要，校验后原子发布文件，再提交元信息。名称按跨平台安全规则处理，

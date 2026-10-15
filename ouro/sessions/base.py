@@ -110,6 +110,8 @@ class SessionRepository(Protocol):
         compactions: list[CompactionRecord] | None = None,
         commits: list[SessionCommitResult] | None = None,
         resource_contents: Iterable[tuple[ResourceRecord, bytes]] = (),
+        *,
+        prepared_resources: bool = False,
     ) -> None: ...
 
     def save_session(self, session: SessionRecord) -> None: ...

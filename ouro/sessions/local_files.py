@@ -50,6 +50,7 @@ from ouro.local_io import (
 )
 from ouro.local_locks import is_lock_held
 from ouro.resources.files import verify_resource_files, write_resource_contents
+from ouro.resources.prepared import validate_prepared_resources
 from ouro.sessions.base import (
     RuntimeSessionSnapshot,
     SessionObservationState,
@@ -296,6 +297,8 @@ class LocalSessionStore:
         compactions: list[CompactionRecord] | None = None,
         commits: list[SessionCommitResult] | None = None,
         resource_contents: Iterable[tuple[ResourceRecord, bytes]] = (),
+        *,
+        prepared_resources: bool = False,
     ) -> None:
         with self.session_mutation(session.session_id):
             self._create_session_snapshot(
@@ -306,6 +309,7 @@ class LocalSessionStore:
                 compactions,
                 commits,
                 resource_contents,
+                prepared_resources=prepared_resources,
             )
 
     def _create_session_snapshot(
@@ -317,17 +321,30 @@ class LocalSessionStore:
         compactions: list[CompactionRecord] | None,
         commits: list[SessionCommitResult] | None,
         resource_contents: Iterable[tuple[ResourceRecord, bytes]],
+        *,
+        prepared_resources: bool = False,
     ) -> None:
         session_dir = self._session_dir(session.session_id)
-        if session_dir.exists():
+        if (session_dir / "session.json").exists() or (
+            session_dir.exists() and not prepared_resources
+        ):
             raise PersistenceError(f"session already exists: {session.session_id}")
 
-        staging_dir = self.sessions_dir / f".{new_id('stage')}"
+        if prepared_resources:
+            validate_prepared_resources(self.root, session.session_id, resource_references or [])
+        staging_dir = (
+            session_dir if prepared_resources else self.sessions_dir / f".{new_id('stage')}"
+        )
         try:
-            (staging_dir / "runs").mkdir(parents=True)
-            (staging_dir / "event-index" / "runs").mkdir(parents=True)
-            (staging_dir / "resources").mkdir(parents=True)
-            (staging_dir / "harness").mkdir(parents=True)
+            if prepared_resources:
+                # No Session owns this metadata until session.json is published. A retry
+                # replaces the whole metadata snapshot, including unaccepted receipts.
+                for name in ("runs", "event-index", "harness", "operations"):
+                    path = staging_dir / name
+                    if path.exists():
+                        shutil.rmtree(path)
+            for directory in ("runs", "event-index/runs", "resources", "harness"):
+                (staging_dir / directory).mkdir(parents=True, exist_ok=prepared_resources)
             versions = (
                 harness_versions
                 if harness_versions is not None
@@ -361,9 +378,8 @@ class LocalSessionStore:
                     "last_message_id": messages[-1].message_id if messages else None,
                 }
             )
-            self._commits.save_session_record(staging_dir, session)
             for name in ("messages.jsonl", "events.jsonl", "compactions.jsonl"):
-                (staging_dir / name).touch()
+                (staging_dir / name).write_bytes(b"")
             for message in messages:
                 if message.session_id != session.session_id:
                     raise PersistenceError(
@@ -391,13 +407,20 @@ class LocalSessionStore:
                 ),
             )
             write_resource_contents(staging_dir / "resources" / "files", resource_contents)
-            verify_resource_files(staging_dir / "resources" / "files", resource_references or ())
-            replace_path_with_retry(staging_dir, session_dir)
+            if not prepared_resources:
+                verify_resource_files(
+                    staging_dir / "resources" / "files", resource_references or ()
+                )
+            # session.json is the publication boundary for an in-place resource reservation.
+            self._commits.save_session_record(staging_dir, session)
+            if not prepared_resources:
+                replace_path_with_retry(staging_dir, session_dir)
             self._event_sequence_cache[session.session_id] = (0, 0)
             self._event_sequence_index_cache[session.session_id] = None
         except (OSError, PersistenceError) as exc:
-            with suppress(OSError):
-                shutil.rmtree(staging_dir)
+            if not prepared_resources:
+                with suppress(OSError):
+                    shutil.rmtree(staging_dir)
             if isinstance(exc, PersistenceError):
                 raise
             raise PersistenceError(f"could not create session {session.session_id}: {exc}") from exc

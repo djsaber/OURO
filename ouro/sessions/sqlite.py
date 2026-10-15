@@ -43,6 +43,7 @@ from ouro.resources.files import (
     verify_resource_files,
     write_resource_contents,
 )
+from ouro.resources.prepared import validate_prepared_resources
 from ouro.sessions.base import (
     RuntimeSessionSnapshot,
     SessionObservationState,
@@ -431,8 +432,14 @@ class SQLiteSessionStore:
         compactions: list[CompactionRecord] | None = None,
         commits: list[SessionCommitResult] | None = None,
         resource_contents: Iterable[tuple[ResourceRecord, bytes]] = (),
+        *,
+        prepared_resources: bool = False,
     ) -> None:
         with self.session_mutation(session.session_id):
+            if prepared_resources:
+                validate_prepared_resources(
+                    self.database.parent, session.session_id, resource_references or []
+                )
             connection = self._transaction_connection()
             try:
                 connection.execute(
@@ -507,10 +514,11 @@ class SQLiteSessionStore:
                     session_resource_directory(self.database.parent, session.session_id),
                     resource_contents,
                 )
-                verify_resource_files(
-                    session_resource_directory(self.database.parent, session.session_id),
-                    resource_references or (),
-                )
+                if not prepared_resources:
+                    verify_resource_files(
+                        session_resource_directory(self.database.parent, session.session_id),
+                        resource_references or (),
+                    )
                 for reference in resource_references or ():
                     self._insert_resource_reference(connection, session.session_id, reference)
             except sqlite3.IntegrityError as exc:
