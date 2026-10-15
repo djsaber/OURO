@@ -20,6 +20,7 @@ from ouro.tui.provider_auth_screens import (
 )
 from ouro.tui.provider_screens import ProviderConfigurationScreen, profile_for_provider
 from ouro.tui.screens import ConfirmationScreen
+from ouro.tui.theme import DEFAULT_TUI_THEME
 from tests.application.test_provider_auth import auth_home as auth_home
 from tests.application.test_runtime_authentication import managed_runtime as managed_runtime
 from tests.auth.test_driver_contracts import NOW, BrowserFixtureDriver, DeviceFixtureDriver
@@ -64,7 +65,8 @@ class AuthApp(App):
         super().__init__()
         self.initial = screen
 
-    def on_mount(self):
+    async def on_mount(self):
+        await self.initial.prepare()
         self.push_screen(self.initial)
 
 
@@ -334,16 +336,23 @@ async def test_cancel_during_admitted_save_reports_the_committed_success(auth_ho
     login = ProviderLoginScreen(
         service, provider_id, "external-browser", provider_name=_provider_names(config)[provider_id]
     )
-    async with AuthApp(login).run_test():
+    async with AuthApp(login).run_test() as pilot:
         await eventually(lambda: login._login is not None)
         driver.release.set()
         assert await asyncio.to_thread(entered.wait, 5)
-        cancelled = asyncio.create_task(login.action_cancel())
         try:
+            await pilot.press("escape")
             await eventually(lambda: login._login_task.cancelling())
+            assert login.result is None
+            assert (
+                login.query_one(OptionList)
+                .get_option("cancel")
+                .prompt.plain.startswith(DEFAULT_TUI_THEME.spinner_frames)
+            )
+            await pilot.press("down")
         finally:
             release.set()
-        await cancelled
+        await eventually(lambda: login.result is not None)
         assert login.result.state == "succeeded"
         assert choices(login)["result"].label == "Sign-in succeeded"
         assert (await service.status(provider_id)).state == "ready"
@@ -489,6 +498,7 @@ async def test_corrupt_credentials_do_not_prevent_full_tui_management(tmp_path, 
         screen = ProviderAuthenticationScreen(
             app._controller.provider_auth(), provider_id, provider_names=_provider_names(configs)
         )
+        await screen.prepare()
         await app.push_screen(screen)
         await eventually(lambda: "status" in choices(screen))
         assert choices(screen)["status"].trailing == "unavailable"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 
@@ -7,7 +8,7 @@ import pytest
 from rich.console import Console
 from rich.text import Text
 from textual import events
-from textual.widgets import OptionList
+from textual.widgets import OptionList, Static
 
 from ouro.application.plugin_configuration_models import (
     InlinePluginCredential,
@@ -163,6 +164,50 @@ def test_configuration_rows_hide_absent_values_and_keep_explicit_empty_values(tm
     choices = {choice.value: choice for choice in screen._configuration_choices()}
     assert choices[field_ids["name"]].trailing_badge == "required"
     assert choices["credential:key"].trailing_badge == "required"
+
+
+@pytest.mark.parametrize("action", ("type", "source", "close"))
+async def test_plugin_credential_validation_preserves_pending_edits(tmp_path, action):
+    screen, _ = _screen(tmp_path)
+    preview = screen._preview
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_preview(candidate):
+        entered.set()
+        await release.wait()
+        return await preview(candidate)
+
+    screen._preview = slow_preview
+    app = ChoiceApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await app.push_screen(screen)
+        options = screen.query_one(OptionList)
+        options.highlighted = options.get_option_index("credential:key")
+        await pilot.press("enter", *"saved", "enter")
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        try:
+            assert screen.query_one("#choice-hint", Static).content.startswith(
+                DEFAULT_TUI_THEME.spinner_frames
+            )
+            if action == "close":
+                await pilot.press("escape", "escape")
+            else:
+                if action == "source":
+                    await pilot.press("tab", *"saved")
+                else:
+                    await pilot.press(*" later")
+                assert "saved" not in options.get_option("credential:key").prompt.plain
+        finally:
+            release.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        if action == "close":
+            assert app.screen is not screen
+        else:
+            assert screen._editing_value == "credential:key"
+            assert screen._credential_source == ("env" if action == "source" else "inline")
+            assert screen._edit_text == ("saved" if action == "source" else "saved later")
+            assert "saved" not in options.get_option("credential:key").prompt.plain
 
 
 @pytest.mark.parametrize("source", ("env", "inline"))

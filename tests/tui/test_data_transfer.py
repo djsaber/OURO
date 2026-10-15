@@ -590,20 +590,30 @@ async def test_archive_detection_keeps_navigation_responsive_and_discards_replac
 
 
 @pytest.mark.asyncio
-async def test_selection_loading_can_be_cancelled_without_reopening_picker(tmp_path, monkeypatch):
+@pytest.mark.parametrize("picker", ("selection", "path"))
+async def test_selection_loading_can_be_cancelled_without_reopening_picker(
+    tmp_path, monkeypatch, picker
+):
     monkeypatch.chdir(tmp_path)
     home = tmp_path / "home"
     build_local_session_services(home).sessions.create(session_id="ses_one")
     app = OuroTuiApp(home=home)
     entered, release = asyncio.Event(), asyncio.Event()
-    load_items = app._controller.data_transfer_items
+    load_items = (
+        app._controller.data_transfer_items
+        if picker == "selection"
+        else ArchivePathScreen._path_choices
+    )
 
     async def delayed(request):
         entered.set()
         await release.wait()
         return await load_items(request)
 
-    monkeypatch.setattr(app._controller, "data_transfer_items", delayed)
+    if picker == "selection":
+        monkeypatch.setattr(app._controller, "data_transfer_items", delayed)
+    else:
+        monkeypatch.setattr(ArchivePathScreen, "_path_choices", delayed)
     async with app.run_test(size=(100, 35)) as pilot:
         async with asyncio.timeout(10):
             while app._controller._application is None:
@@ -611,11 +621,13 @@ async def test_selection_loading_can_be_cancelled_without_reopening_picker(tmp_p
         await app.workers.wait_for_complete()
         await _open_data_menu(app, pilot, "export", "sessions")
         form = app.screen
-        await _choose_menu_row(app, pilot, "selection")
-        await _choose_menu_row(app, pilot, "selected")
+        await _choose_menu_row(app, pilot, picker)
+        if picker == "selection":
+            await _choose_menu_row(app, pilot, "selected")
         await asyncio.wait_for(entered.wait(), timeout=5)
         assert app.screen is form
-        assert next(row for row in form._choices if row.value == "selection").loading
+        if picker == "selection":
+            assert next(row for row in form._choices if row.value == "selection").loading
         await pilot.press("escape")
         menu = app.screen
         assert menu is not form

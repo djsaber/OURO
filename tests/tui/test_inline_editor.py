@@ -1,14 +1,60 @@
+import asyncio
 from dataclasses import replace
 
 import pytest
 from rich.text import Text
 from textual import events
 from textual.app import App
-from textual.widgets import Input, OptionList
+from textual.widgets import Input, OptionList, Static
 
 from ouro.tui.inline_editor import MultilineEditableChoiceScreen, multiline_edit_prompt
 from ouro.tui.keyboard import normalize_windows_modified_enter
 from ouro.tui.screens import Choice, EditableChoiceScreen
+from ouro.tui.theme import DEFAULT_TUI_THEME
+
+
+@pytest.mark.parametrize("action", ("type", "cancel", "close"))
+async def test_pending_inline_save_preserves_new_edits_and_respects_close(action):
+    entered, release = asyncio.Event(), asyncio.Event()
+    choices = (Choice("name", "Name", edit_value=""),)
+
+    async def save(field, value):
+        entered.set()
+        await release.wait()
+        return (replace(choices[0], edit_value=value),)
+
+    form = EditableChoiceScreen(
+        title="SETTINGS", placeholder="Filter…", choices=choices, on_save=save
+    )
+    app = App()
+    async with app.run_test() as pilot:
+        await app.push_screen(form)
+        await pilot.press("enter", *"saved", "enter")
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        try:
+            assert form.query_one("#choice-hint", Static).content.startswith(
+                DEFAULT_TUI_THEME.spinner_frames
+            )
+            await pilot.press(*" later" if action == "type" else ("escape",))
+            if action == "close":
+                await pilot.press("escape")
+                assert app.screen is not form
+        finally:
+            release.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        if action == "close":
+            assert app.screen is not form
+        else:
+            assert form._choices[0].edit_value == "saved"
+            if action == "type":
+                assert form._edit_text == "saved later"
+                assert form._editing_value == "name"
+                await pilot.press("escape")
+            else:
+                assert form._editing_value is None
+            await pilot.press("enter")
+            assert form._edit_text == "saved"
 
 
 async def test_empty_single_line_editor_bounds_placeholder_through_typing_and_resize():

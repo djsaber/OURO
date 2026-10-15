@@ -33,12 +33,15 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         menu: ChoiceScreen | None = None,
         switch: bool = False,
     ) -> None:
+        revision = menu.page_revision if menu is not None else None
         try:
             plugins = await self._controller.plugins()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         if not plugins:
+            return
+        if menu is not None and (not menu.is_attached or menu.page_revision != revision):
             return
         choices = _plugin_choices(plugins, theme=theme_for(self))
         plugin_menu: ChoiceScreen
@@ -153,16 +156,15 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 retain_focus_position_on_select=action == "toggle",
             )
             return
-        await self.push_screen_wait(
-            ChoiceScreen(
-                title=title,
-                placeholder="Filter plugins…",
-                choices=choices,
-                on_select=select_plugin,
-                on_refresh=refresh_candidates,
-                retain_focus_position_on_select=action == "toggle",
-            )
+        menu = ChoiceScreen(
+            title=title,
+            placeholder="Filter plugins…",
+            choices=choices,
+            on_select=select_plugin,
+            on_refresh=refresh_candidates,
+            retain_focus_position_on_select=action == "toggle",
         )
+        await self.push_screen_wait(menu)
 
     async def _manage_plugin(
         self,
@@ -224,16 +226,14 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 on_refresh=refresh_plugin_actions,
             )
             return
-        selected = await self.push_screen_wait(
-            ChoiceScreen(
-                title=theme_for(self).inline_separator.join(("PLUGIN", plugin.name)),
-                description=plugin.description,
-                placeholder="Choose an action…",
-                choices=choices,
-            )
+        menu = ChoiceScreen(
+            title=theme_for(self).inline_separator.join(("PLUGIN", plugin.name)),
+            description=plugin.description,
+            placeholder="Choose an action…",
+            choices=choices,
+            on_select=select_action,
         )
-        if selected is not None:
-            await select_action(selected)
+        await self.push_screen_wait(menu)
 
     async def _install_plugin(self, *, menu: ChoiceScreen | None = None) -> None:
         draft = await (
@@ -420,7 +420,10 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         menu: ChoiceScreen | None,
         return_to_catalog: bool,
     ) -> None:
+        revision = menu.page_revision if menu is not None else None
         plugin = await self._controller.plugin(plugin_id)
+        if menu is not None and (not menu.is_attached or menu.page_revision != revision):
+            return
         selected = await (
             menu.open_child(
                 ConfirmationScreen(
@@ -454,15 +457,18 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         await self._refresh_plugin_system_status()
         await self._refresh_session_controls()
         if menu is not None:
-            if return_to_catalog:
-                menu.pop_page(
-                    choices=_plugin_choices(
-                        await self._controller.plugins(), theme=theme_for(self)
-                    ),
-                    initial_value=plugin_id,
-                )
-            else:
-                menu.pop_page()
+            choices = (
+                _plugin_choices(await self._controller.plugins(), theme=theme_for(self))
+                if return_to_catalog
+                else None
+            )
+            if not menu.is_attached or menu.page_revision != revision:
+                return
+            if not menu.pop_page(
+                choices=choices,
+                initial_value=plugin_id if return_to_catalog else None,
+            ):
+                menu.dismiss(None)
 
     async def _refresh_plugin_system_status(self) -> None:
         plugins = await self._controller.plugins()

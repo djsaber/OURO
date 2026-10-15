@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from functools import partial
 from typing import Literal, TypeVar, cast
@@ -403,6 +404,9 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._page_revision = 0
         self._spinner_frame = 0
         self._spinner_timer: Timer | None = None
+        self._loading_requests: dict[object, tuple[int, str | None]] = {}
+        self._loading_values: set[str | None] = set()
+        self._hint: str | None = None
         self._accent_preview: Color | None = None
         self._highlight_callback_pending = False
 
@@ -473,7 +477,20 @@ class ChoiceScreen(ModalScreen[str | None]):
     def _show_hint(self, hint: str | None = None) -> None:
         """Render the current interaction contract in the shared menu footer."""
 
-        self.query_one("#choice-hint", Static).update(self._resolved_hint(hint))
+        self._hint = hint
+        self._render_hint()
+
+    def _render_hint(self) -> None:
+        hint = self._resolved_hint(self._hint)
+        if self._loading_values:
+            visible = {
+                str(option.id)
+                for option in self.query_one("#choice-list", OptionList).options
+                if option.id is not None and not self._choice_is_editing(str(option.id))
+            }
+            if not self._loading_values.intersection(visible):
+                hint = f"{theme_for(self).spinner_frames[self._spinner_frame]} {hint}"
+        self.query_one("#choice-hint", Static).update(hint)
 
     def _resolved_hint(self, hint: str | None = None) -> str:
         """Resolve page customization before the screen's navigation-aware default."""
@@ -558,8 +575,11 @@ class ChoiceScreen(ModalScreen[str | None]):
     ) -> None:
         """Replace one menu level without stacking another modal screen."""
 
+        if not self._accepts_choice_updates():
+            return
         self.clear_accent_preview()
         self._page_revision += 1
+        self._loading_values.clear()
         self._title = title
         self._placeholder = placeholder
         self._choices = choices
@@ -610,7 +630,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         visible destination is intentionally idempotent.
         """
 
-        if self._navigation_id == navigation_id:
+        if not self._accepts_choice_updates() or self._navigation_id == navigation_id:
             return
         root = self._page_stack[0] if self._page_stack else self._page()
         returning_to_root = root.retain_for_switching and navigation_id == root.navigation_id
@@ -656,6 +676,8 @@ class ChoiceScreen(ModalScreen[str | None]):
     ) -> None:
         """Navigate to a grouped submenu while retaining the current page for Esc."""
 
+        if not self._accepts_choice_updates():
+            return
         self._page_stack.append(self._page())
         self.replace_page(
             title=title,
@@ -712,8 +734,12 @@ class ChoiceScreen(ModalScreen[str | None]):
         if not self._page_stack:
             return False
         page = self._page_stack[-1]
-        choices = await page.on_refresh() if page.on_refresh is not None else None
-        return self.pop_page(choices=choices)
+        revision = self._page_revision
+        with self.loading_choice():
+            choices = await page.on_refresh() if page.on_refresh is not None else None
+        if self._accepts_choice_updates() and revision == self._page_revision:
+            self.pop_page(choices=choices)
+        return True
 
     def update_parent_choices(
         self,
@@ -793,20 +819,40 @@ class ChoiceScreen(ModalScreen[str | None]):
         if not self._accepts_choice_updates() or self._on_refresh is None:
             return False
         page_revision = self._page_revision
-        selected = self._selected_value()
         choices = await self._on_refresh()
-        if choices is None:
+        if choices is None or not self._accepts_choice_updates():
             return False
         return self.update_choices(
             choices,
             expected_revision=page_revision,
-            preferred_value=selected,
+            preferred_value=self._selected_value(),
         )
 
     def _accepts_choice_updates(self) -> bool:
         """Return whether this menu still owns a live render surface."""
 
         return self.is_mounted and self.is_attached and self.is_running and self.display
+
+    async def prepare(self) -> None:
+        """Resolve an empty menu's initial projection before mounting it."""
+
+        if not self._choices and self._on_refresh is not None:
+            self._choices = await self._on_refresh() or ()
+
+    async def _prepare_child(self, screen: ModalScreen[ScreenResult]) -> bool:
+        if not self._accepts_choice_updates() or self.app.screen is not self:
+            return False
+        revision = self._page_revision
+        if isinstance(screen, ChoiceScreen):
+            with self.loading_choice(self._selected_value()):
+                await screen.prepare()
+        if (
+            not self._accepts_choice_updates()
+            or self.app.screen is not self
+            or revision != self._page_revision
+        ):
+            return False
+        return True
 
     async def open_child(self, screen: ModalScreen[ScreenResult]) -> ScreenResult | None:
         """Replace this menu visually with a child and restore it on return.
@@ -818,24 +864,37 @@ class ChoiceScreen(ModalScreen[str | None]):
         """
 
         async def wait_for_child() -> ScreenResult | None:
-            self._hide_for_child()
-            return await self.app.push_screen_wait(screen)
+            if await self._prepare_child(screen):
+                # Publish both visibility changes before yielding to queued callbacks.
+                self._hide_for_child()
+                return await asyncio.shield(self.app.push_screen(screen, wait_for_dismiss=True))
+            return None
 
         worker: Worker[ScreenResult | None] = self.app.run_worker(
-            wait_for_child, group="choice-child"
+            wait_for_child,
+            group=f"choice-child-{id(self)}",
+            exclusive=True,
         )
         try:
             return await worker.wait()
         except WorkerCancelled as exc:
-            # Shutdown is cancellation, not a user's empty selection. Callers
-            # must not resume editing a parent whose widgets were unmounted.
+            # Shutdown or a superseding request is not a user's empty selection.
+            # Callers must not resume editing a parent that no longer owns the request.
             raise asyncio.CancelledError from exc
 
     def show_child(self, screen: ModalScreen[ScreenResult]) -> None:
         """Show a child whose result is intentionally ignored."""
 
-        self._hide_for_child()
-        self.app.push_screen(screen)
+        async def push_child() -> None:
+            if await self._prepare_child(screen):
+                self._hide_for_child()
+                await self.app.push_screen(screen)
+
+        _worker: Worker[None] = self.app.run_worker(
+            push_child,
+            group=f"choice-child-{id(self)}",
+            exclusive=True,
+        )
 
     def _hide_for_child(self) -> None:
         self.query_one("#choice-panel", Vertical).display = False
@@ -898,7 +957,9 @@ class ChoiceScreen(ModalScreen[str | None]):
         theme = theme_for(self)
         normalized_needle = needle.casefold().strip()
         choices = tuple(
-            choice for choice in self._choices if self._matches_filter(choice, normalized_needle)
+            self._loading_choice(choice)
+            for choice in self._choices
+            if self._matches_filter(choice, normalized_needle)
         )
         options = self.query_one("#choice-list", OptionList)
         if previous_choices is not None:
@@ -996,7 +1057,9 @@ class ChoiceScreen(ModalScreen[str | None]):
         if force and self._spinner_timer is not None:
             self._spinner_timer.stop()
             self._spinner_timer = None
-        if any(choice.loading for choice in self._choices) and len(theme.spinner_frames) > 1:
+        if (self._loading_values or any(choice.loading for choice in self._choices)) and len(
+            theme.spinner_frames
+        ) > 1:
             if self._spinner_timer is None:
                 self._spinner_timer = self.set_interval(
                     theme.spinner_interval_seconds,
@@ -1007,20 +1070,63 @@ class ChoiceScreen(ModalScreen[str | None]):
                 self._spinner_timer.stop()
                 self._spinner_timer = None
             self._spinner_frame = 0
+        self._render_hint()
+
+    @contextmanager
+    def loading_choice(self, value: str | None = None) -> Iterator[None]:
+        """Project waiting work without changing the page's authoritative choices."""
+
+        request = object()
+        self._loading_requests[request] = (self._page_revision, value)
+        # Immediate callbacks finish before this message; only work that yields
+        # can publish an activity frame. No artificial delay extends the operation.
+        self.call_later(self._refresh_loading)
+        try:
+            yield
+        finally:
+            del self._loading_requests[request]
+            self._refresh_loading()
+
+    def _refresh_loading(self) -> None:
+        if not self._accepts_choice_updates():
+            return
+        values = {
+            value
+            for revision, value in self._loading_requests.values()
+            if revision == self._page_revision
+        }
+        previous = self._loading_values
+        if values == previous:
+            return
+        self._loading_values = values
+        self._render_loading_rows(previous | values)
+        self._sync_loading_timer()
+
+    def _choice_is_editing(self, value: str) -> bool:
+        return False
+
+    def _loading_choice(self, choice: Choice) -> Choice:
+        return replace(choice, loading=True) if choice.value in self._loading_values else choice
 
     def _advance_loading_animation(self) -> None:
         theme = theme_for(self)
         self._spinner_frame = (self._spinner_frame + 1) % len(theme.spinner_frames)
-        loading = {choice.value: choice for choice in self._choices if choice.loading}
-        if not loading:
-            self._sync_loading_timer()
-            return
+        self._render_loading_rows(self._loading_values)
+        self._render_hint()
+
+    def _render_loading_rows(self, values: set[str | None]) -> None:
+        theme = theme_for(self)
+        loading = {
+            choice.value: self._loading_choice(choice)
+            for choice in self._choices
+            if choice.loading or choice.value in values
+        }
         options = self.query_one("#choice-list", OptionList)
         accent = theme.accent
         for index in range(options.option_count):
             option = options.get_option_at_index(index)
             choice = loading.get(str(option.id)) if option.id is not None else None
-            if choice is None:
+            if choice is None or self._choice_is_editing(choice.value):
                 continue
             prompt = _choice_option(
                 choice,
@@ -1043,14 +1149,24 @@ class ChoiceScreen(ModalScreen[str | None]):
         if event.option.id is None:
             return
         event.stop()
+        selected = str(event.option.id)
+        if (self._page_revision, selected) in self._loading_requests.values():
+            return
         # Navigation may dismiss this Screen before its destination finishes
         # loading. Keep that work application-owned and the message pump free
         # for close/prune while a selection waits for a child dialog.
         _worker: Worker[None] = self.app.run_worker(
-            partial(self._select_choice, str(event.option.id)),
+            partial(self._run_choice, selected),
             group=f"choice-selection-{id(self)}",
             exclusive=True,
         )
+
+    async def _run_choice(self, selected: str) -> None:
+        with self.loading_choice(selected):
+            try:
+                await self._select_choice(selected)
+            except WorkerCancelled as exc:
+                raise asyncio.CancelledError from exc
 
     async def _select_choice(self, selected: str) -> None:
         if not self._accepts_choice_updates():
@@ -1059,7 +1175,6 @@ class ChoiceScreen(ModalScreen[str | None]):
             self.dismiss(selected)
             return
         page_revision = self._page_revision
-        focus_position = self._highlight_position()
         choices = await self._on_select(selected)
         if (
             choices is None
@@ -1082,8 +1197,12 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._choices = choices
         self._refresh_options(
             needle=self.query_one("#choice-filter", Input).value,
-            preferred_value=(None if self._retain_focus_position_on_select else selected),
-            preferred_position=(focus_position if self._retain_focus_position_on_select else None),
+            preferred_value=(
+                None if self._retain_focus_position_on_select else self._selected_value()
+            ),
+            preferred_position=(
+                self._highlight_position() if self._retain_focus_position_on_select else None
+            ),
             previous_choices=previous_choices,
         )
 
@@ -1116,9 +1235,17 @@ class ChoiceScreen(ModalScreen[str | None]):
     async def action_cancel(self) -> None:
         if self._on_cancel is not None and self._on_cancel():
             return
-        if await self.pop_page_refreshed():
+        if self.pop_page():
+            if self._on_refresh is not None:
+                _worker: Worker[None] = self.run_worker(
+                    self._refresh_returned_page, group="choice-return", exclusive=True
+                )
             return
         self.dismiss(None)
+
+    async def _refresh_returned_page(self) -> None:
+        with self.loading_choice():
+            await self.refresh_choices()
 
     def action_previous_choice(self) -> None:
         self._move_choice(-1)
@@ -1232,7 +1359,14 @@ class ChoiceScreen(ModalScreen[str | None]):
 
     async def action_switch_domain(self) -> None:
         if self._on_tab is not None:
-            await self._on_tab()
+            _worker: Worker[None] = self.run_worker(
+                self._switch_domain, group="choice-domain", exclusive=True
+            )
+
+    async def _switch_domain(self) -> None:
+        with self.loading_choice():
+            if self._on_tab is not None:
+                await self._on_tab()
 
     @staticmethod
     def _options(
@@ -1381,6 +1515,9 @@ class EditableChoiceScreen(ChoiceScreen):
         self._stop_edit_cursor()
         super().on_unmount()
 
+    def _choice_is_editing(self, value: str) -> bool:
+        return self._editing_value == value
+
     def on_resize(self, event: events.Resize) -> None:
         super().on_resize(event)
         if self._editing_value is not None:
@@ -1406,9 +1543,29 @@ class EditableChoiceScreen(ChoiceScreen):
         if self._edit_text == self._edit_original_text:
             self._finish_edit(self._choices, selected=selected)
             return
-        choices = await self._on_save(selected, self._edit_text)
-        if choices is not None:
+        await self._save_edit(self._on_save(selected, self._edit_text), selected=selected)
+
+    def _edit_snapshot(self) -> tuple[str | None, ...]:
+        return (self._editing_value, self._edit_text)
+
+    async def _save_edit(
+        self, save: Awaitable[tuple[Choice, ...] | None], *, selected: str
+    ) -> None:
+        revision, edit = self._page_revision, self._edit_snapshot()
+        choices = await save
+        if choices is None or not self._accepts_choice_updates() or revision != self._page_revision:
+            return
+        if self._edit_snapshot() == edit:
             self._finish_edit(choices, selected=selected)
+            return
+        self.update_choices(choices, preferred_value=self._selected_value())
+        if self._editing_value is not None:
+            saved = next((choice for choice in choices if choice.value == selected), None)
+            if saved is not None and self._editing_value == selected:
+                self._edit_original_text = (
+                    saved.edit_value if saved.edit_value is not None else saved.label
+                )
+            self._render_editor()
 
     def on_key(self, event: events.Key) -> None:
         if self._editing_value is None or not event.is_printable or event.character is None:
@@ -1548,6 +1705,8 @@ class EditableChoiceScreen(ChoiceScreen):
     def _replace_choices(self, choices: tuple[Choice, ...], *, selected: str) -> None:
         """Replace the live menu projection while preserving filter and focus."""
 
+        if not self._accepts_choice_updates():
+            return
         self._choices = choices
         self._refresh_options(
             needle=self.query_one("#choice-filter", Input).value,
@@ -1790,8 +1949,18 @@ class MultiChoiceScreen(ChoiceScreen):
                 return
             if highlighted != "__multi_confirm__":
                 return
-            choices = await self._on_confirm(self._confirmation_values)
-            self._leave_confirmation(self._catalog_choices if choices is None else choices)
+            values = self._confirmation_values
+            revision = self._page_revision
+            choices = await self._on_confirm(values)
+            if not self._accepts_choice_updates() or revision != self._page_revision:
+                return
+            if self._confirmation_values is values:
+                self._leave_confirmation(self._catalog_choices if choices is None else choices)
+            elif not self._confirmation_values and choices is not None:
+                self._selected.intersection_update(choice.value for choice in choices)
+                self.update_choices(
+                    self._project_markers(choices), preferred_value=self._selected_value()
+                )
             return
         selected = tuple(
             choice.value for choice in self._choices if choice.value in self._selected

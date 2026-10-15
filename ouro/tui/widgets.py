@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from bisect import bisect_left, bisect_right
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from math import ceil
 from time import monotonic
@@ -280,6 +281,8 @@ class ActivityIndicator(Static):
         super().__init__(id="activity-indicator")
         self._frame = 0
         self._activity = "idle"
+        self._pending_operations = 0
+        self._show_pending = False
         self._approval_mode: TuiApprovalPreset = "inherit"
         self._model = "starting"
         self._model_attempt: int | None = None
@@ -324,6 +327,26 @@ class ActivityIndicator(Static):
         if model == self._model:
             return
         self._model = model
+        self._render_indicator()
+
+    @contextmanager
+    def pending_operation(self) -> Iterator[None]:
+        """Show menu work without replacing the session's runtime activity."""
+
+        self._pending_operations += 1
+        self.call_later(self._refresh_pending)
+        try:
+            yield
+        finally:
+            self._pending_operations -= 1
+            self._refresh_pending()
+
+    def _refresh_pending(self) -> None:
+        pending = self._pending_operations > 0
+        if not self.is_attached or self._show_pending == pending:
+            return
+        self._show_pending = pending
+        self._sync_spinner_timer()
         self._render_indicator()
 
     def set_approval_mode(self, mode: TuiApprovalPreset) -> None:
@@ -375,7 +398,7 @@ class ActivityIndicator(Static):
             self._timer = None
         theme = theme_for(self)
         animated = len(theme.spinner_frames) > 1
-        busy = self._activity in _BUSY_ACTIVITIES
+        busy = self._activity in _BUSY_ACTIVITIES or self._show_pending
         if animated and self._timer is None:
             self._timer = self.set_interval(
                 theme.spinner_interval_seconds,
@@ -391,11 +414,13 @@ class ActivityIndicator(Static):
     def _render_indicator(self) -> None:
         theme = theme_for(self)
         accent = theme.accent
-        busy = self._activity in _BUSY_ACTIVITIES
+        busy = self._activity in _BUSY_ACTIVITIES or self._show_pending
         ready = self._activity in {"idle", "completed"}
         mark = theme.spinner_frames[self._frame] if busy else theme.brand_mark
         label = _ACTIVITY_LABELS.get(self._activity, self._activity.replace("_", " ").title())
-        if self._subagent is not None and ready:
+        if self._show_pending and ready:
+            label = "Working"
+        elif self._subagent is not None and ready:
             label = _subagent_task_status(self._subagent).title()
         if (
             self._activity == "waiting_model"
@@ -2620,6 +2645,9 @@ class CommandPopup(VerticalScroll):
         self._heading = ""
         self._selection_count: int | None = None
         self._hint = ""
+        self._loading = False
+        self._spinner_frame = 0
+        self._spinner_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield self._heading_widget
@@ -2660,6 +2688,7 @@ class CommandPopup(VerticalScroll):
         return argument_suggestion(command, query, selected)
 
     def show_commands(self, commands: tuple[TuiCommand, ...]) -> None:
+        self.set_loading(False)
         if not commands:
             self.hide()
             return
@@ -2692,6 +2721,7 @@ class CommandPopup(VerticalScroll):
     ) -> None:
         """Show matches without implicitly accepting suggestions over typed input."""
 
+        self.set_loading(False)
         with self.app.batch_update():
             selected_value = (
                 self.selected_argument.value if self.selected_argument is not None else None
@@ -2716,6 +2746,7 @@ class CommandPopup(VerticalScroll):
                 self._refresh_rows()
 
     def hide(self) -> None:
+        self.set_loading(False)
         if (
             not self.display
             and not self._commands
@@ -2749,7 +2780,39 @@ class CommandPopup(VerticalScroll):
         self._scroll_selected_into_view()
 
     def refresh_theme(self) -> None:
+        if self._loading:
+            self.set_loading(False)
+            self.set_loading(True)
         self._refresh_rows()
+
+    def set_loading(self, loading: bool) -> None:
+        """Animate the existing row marker while retaining the complete popup."""
+
+        if self._loading == loading:
+            return
+        self._loading = loading
+        if self._spinner_timer is not None:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
+        self._spinner_frame = 0
+        theme = theme_for(self)
+        if loading and len(theme.spinner_frames) > 1:
+            self._spinner_timer = self.set_interval(
+                theme.spinner_interval_seconds, self._advance_loading_animation
+            )
+        self._refresh_loading_row()
+
+    def _refresh_loading_row(self) -> None:
+        self._content.refresh(Region(0, self._selected or 0, self._content.size.width, 1))
+
+    def _advance_loading_animation(self) -> None:
+        self._spinner_frame = (self._spinner_frame + 1) % len(theme_for(self).spinner_frames)
+        self._refresh_loading_row()
+
+    def on_unmount(self) -> None:
+        if self._spinner_timer is not None:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
 
     def on_resize(self, event: events.Resize) -> None:
         self._refresh_rows()
@@ -2781,15 +2844,16 @@ class CommandPopup(VerticalScroll):
 
     def _render_row(self, index: int, width: int) -> Text:
         theme = theme_for(self)
+        marker = f"{theme.spinner_frames[self._spinner_frame]} " if self._loading else "› "
         if self._hint and index == self._content.row_count - 1:
             return Text(self._hint, style=theme.text_faint)
         if self._argument_command is not None and not self._arguments:
             return Text.assemble(
-                ("› ", theme.accent), (self._argument_command.title, theme.text_primary)
+                (marker, theme.accent), (self._argument_command.title, theme.text_primary)
             )
         selected = index == self._selected
         row = Text(style=f"on {theme.highlight}" if selected else "")
-        row.append("› " if selected else "  ", style=theme.accent if selected else "")
+        row.append(marker if selected else "  ", style=theme.accent if selected else "")
         if self._argument_command is None:
             if not self._commands:
                 return Text()

@@ -47,15 +47,6 @@ class ProviderAuthenticationScreen(ChoiceScreen):
             on_refresh=self._authentication_choices,
         )
 
-    def on_screen_resume(self) -> None:
-        super().on_screen_resume()
-        _worker: Worker[None] = self.run_worker(
-            self._refresh_authentication, exclusive=True, group="auth-status"
-        )
-
-    async def _refresh_authentication(self) -> None:
-        self.update_choices(await self._authentication_choices())
-
     async def _authentication_choices(self) -> tuple[Choice, ...]:
         try:
             status = await self._service.status(self._provider_id)
@@ -98,7 +89,7 @@ class ProviderAuthenticationScreen(ChoiceScreen):
     async def _select_authentication(self, selected: str) -> tuple[Choice, ...] | None:
         try:
             if selected.startswith("login:"):
-                self.show_child(
+                await self.open_child(
                     ProviderLoginScreen(
                         self._service,
                         self._provider_id,
@@ -107,13 +98,11 @@ class ProviderAuthenticationScreen(ChoiceScreen):
                         theme=theme_for(self),
                     )
                 )
-                return None
-            if selected == "credentials":
-                self.show_child(
+            elif selected == "credentials":
+                await self.open_child(
                     ProviderCredentialsScreen(self._service, provider_names=self._provider_names)
                 )
-                return None
-            if selected == "logout":
+            elif selected == "logout":
                 status = await self._service.status(self._provider_id)
                 confirmed = await self.open_child(
                     ConfirmationScreen(
@@ -283,9 +272,15 @@ class ProviderLoginScreen(ChoiceScreen):
 
     async def action_cancel(self) -> None:
         if self._login_task is not None and not self._login_task.done():
-            await self._cancel_login()
+            _worker: Worker[None] = self.run_worker(
+                self._cancel_with_feedback, group="cancel-login", exclusive=True
+            )
         else:
             self.dismiss(None)
+
+    async def _cancel_with_feedback(self) -> None:
+        with self.loading_choice("cancel"):
+            await self._cancel_login()
 
     @on(events.Unmount)
     async def _finish_login(self) -> None:
@@ -305,15 +300,6 @@ class ProviderCredentialsScreen(ChoiceScreen):
             on_select=self._forget_credential,
             on_refresh=self._credential_choices,
         )
-
-    def on_screen_resume(self) -> None:
-        super().on_screen_resume()
-        _worker: Worker[None] = self.run_worker(
-            self._refresh_credentials, exclusive=True, group="auth-credentials"
-        )
-
-    async def _refresh_credentials(self) -> None:
-        self.update_choices(await self._credential_choices())
 
     async def _credential_choices(self) -> tuple[Choice, ...]:
         try:

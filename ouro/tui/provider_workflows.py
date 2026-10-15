@@ -300,6 +300,7 @@ class ProviderConfigurationWorkflows(App[int]):
         if menu is not None:
             await menu.open_child(screen)
         else:
+            await screen.prepare()
             await self.push_screen_wait(screen)
 
     async def _edit_provider(

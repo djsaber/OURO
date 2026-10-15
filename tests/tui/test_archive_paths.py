@@ -76,6 +76,7 @@ async def test_invalid_path_warns_and_preserves_editor_until_corrected(
     monkeypatch.setattr(app, "notify", lambda message, **kwargs: notices.append(str(message)))
     async with app.run_test(size=(100, 30)) as pilot:
         screen = ArchivePathScreen(directory=tmp_path, filename="original.zip")
+        await screen.prepare()
         app.push_screen(screen)
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -100,6 +101,7 @@ async def test_folder_access_error_warns_and_allows_cancel(tmp_path, monkeypatch
     monkeypatch.setattr(app, "notify", lambda message, **kwargs: notices.append(str(message)))
     async with app.run_test(size=(100, 30)) as pilot:
         screen = ArchivePathScreen(directory=tmp_path, filename=None)
+        await screen.prepare()
         app.push_screen(screen)
         await app.workers.wait_for_complete()
         await pilot.pause()

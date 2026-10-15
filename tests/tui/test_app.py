@@ -12037,6 +12037,102 @@ async def test_model_command_selects_from_inline_argument_menu(tmp_path: Path) -
         assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
 
 
+@pytest.mark.parametrize("close", (False, True))
+@pytest.mark.parametrize("new_session", (False, True))
+async def test_model_catalog_wait_keeps_composer_responsive(
+    tmp_path, monkeypatch, close, new_session
+):
+    app = OuroTuiApp(application=_application(tmp_path))
+    entered, release = asyncio.Event(), asyncio.Event()
+    async with run_ready_app(app) as pilot:
+        models = app._models
+
+        async def slow_models():
+            entered.set()
+            await release.wait()
+            return models
+
+        monkeypatch.setattr(app._controller, "models", slow_models)
+        composer = app.query_one(Composer)
+        popup = app.query_one(CommandPopup)
+        await pilot.press("slash", *"model")
+        composer.load_command("/model ", draft="")
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        try:
+            if new_session:
+                await app._new_session()
+                composer.load_command("/model ", draft="")
+            await asyncio.wait_for(pilot.press(*"faux"), timeout=2)
+            assert composer.text == "/model faux"
+            assert popup._loading
+            await pilot.press("down", "enter")
+            assert composer.text == "/model faux"
+            if close:
+                await asyncio.wait_for(pilot.press("escape"), timeout=2)
+                assert not popup.display
+        finally:
+            release.set()
+        await app.workers.wait_for_complete(
+            [worker for worker in app.workers if worker.group == "model-menu"]
+        )
+        await pilot.pause()
+        assert not popup._loading and popup._spinner_timer is None
+        if close:
+            assert not popup.display
+        else:
+            assert composer.text == "/model faux"
+            assert popup.argument_command.name == "/model"
+            assert popup.selected_argument.value == "faux/faux"
+
+
+@pytest.mark.parametrize("submit", (False, True))
+async def test_model_selection_wait_does_not_block_new_input(tmp_path, monkeypatch, submit):
+    app = OuroTuiApp(application=_application(tmp_path))
+    entered, release = asyncio.Event(), asyncio.Event()
+    submitted = asyncio.Event()
+    async with run_ready_app(app) as pilot:
+        select_model = app._controller.select_model
+        submit_prompt = app._controller.submit
+
+        async def record_submit(*args, **kwargs):
+            submitted.set()
+            return await submit_prompt(*args, **kwargs)
+
+        async def slow_select(value):
+            entered.set()
+            await release.wait()
+            return await select_model(value)
+
+        monkeypatch.setattr(app._controller, "select_model", slow_select)
+        monkeypatch.setattr(app._controller, "submit", record_submit)
+        await pilot.press("slash", *"model", "enter")
+        pending = asyncio.create_task(pilot.press("enter"))
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        try:
+            await asyncio.wait_for(pending, timeout=2)
+            await pilot.press(*"Next prompt")
+            assert app.query_one(Composer).text == "Next prompt"
+            assert "Working" in app.query_one(ActivityIndicator).render().plain
+            if submit:
+                await asyncio.wait_for(pilot.press("enter", *"Follow-up"), timeout=2)
+                assert not submitted.is_set()
+                assert app.query_one(Composer).text == "Follow-up"
+        finally:
+            release.set()
+        await app.workers.wait_for_complete(
+            [
+                worker
+                for worker in app.workers
+                if worker.group in {"composer-command", "composer-input"}
+            ]
+        )
+        if submit:
+            await asyncio.wait_for(submitted.wait(), timeout=2)
+        await pilot.pause()
+        assert app.query_one(Composer).text == ("Follow-up" if submit else "Next prompt")
+        assert "Working" not in app.query_one(ActivityIndicator).render().plain
+
+
 @pytest.mark.asyncio
 async def test_model_command_refreshes_endpoints_configured_after_tui_start(
     tmp_path: Path,

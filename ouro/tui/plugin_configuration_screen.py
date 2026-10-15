@@ -72,9 +72,7 @@ class PluginConfigurationScreen(CredentialEditableChoiceScreen):
                 and self._edit_text == ""
                 and self._draft.values.get(field.key) is None
             ):
-                choices = await self._save_field(selected, "")
-                if choices is not None:
-                    self._finish_edit(choices, selected=selected)
+                await self._save_edit(self._save_field(selected, ""), selected=selected)
                 return
             await super()._select_choice(selected)
             return

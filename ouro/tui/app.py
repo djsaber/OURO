@@ -146,6 +146,7 @@ from ouro.tui.widgets import (
     COMPOSER_MIN_HEIGHT,
     INTERACTION_PANEL_MAX_HEIGHT,
     INTERACTION_PANEL_MIN_HEIGHT,
+    ActivityIndicator,
     AskUserPanel,
     BrandHeader,
     CommandPopup,
@@ -933,6 +934,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._session_history_states: OrderedDict[str, ConversationHistoryState] = OrderedDict()
         self._interaction: PendingInteraction | None = None
         self._models: tuple[AvailableModel, ...] = ()
+        self._model_menu_loading = False
+        self._composer_submission_lock = asyncio.Lock()
         self._sessions: tuple[SessionCatalogEntry, ...] = ()
         self._active_model = "starting"
         self._active_title = DEFAULT_SESSION_TITLE
@@ -1845,7 +1848,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             presentation = replace(presentation, model=model)
         await self.query_one(ConversationView).add_run_summary(presentation)
 
-    async def on_composer_submitted(self, message: Composer.Submitted) -> None:
+    def on_composer_submitted(self, message: Composer.Submitted) -> None:
         self._close_attachment_menu()
         if self._visible_read_only:
             self.notify("Subagent sessions are read-only", severity="warning")
@@ -1863,8 +1866,23 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if panel.display and panel.awaiting_freeform:
                 panel.accept_freeform(message.text)
             return
+        self._execute_composer_input(message)
+
+    @work(group="composer-input")
+    async def _execute_composer_input(self, message: Composer.Submitted) -> None:
         revision = self._controller.selection_revision
         origin_session_id = self._controller.session_id
+        with self.query_one(ActivityIndicator).pending_operation():
+            async with self._composer_submission_lock:
+                await self._prepare_composer_input(message, revision, origin_session_id)
+
+    async def _prepare_composer_input(
+        self, message: Composer.Submitted, revision: int, origin_session_id: str | None
+    ) -> None:
+        if revision != self._controller.selection_revision:
+            self._restore_unsent_input(message.content, revision, origin_session_id)
+            self.notify("Session changed while preparing input; the original draft was restored")
+            return
         try:
             models = await self._controller.models()
         except Exception as exc:  # noqa: BLE001 - keep the unsent draft on catalog failures.
@@ -1912,7 +1930,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         composer = self.query_one(Composer)
         query = composer.text
         picker.loading = True
-        self._show_attachment_menu()
+        self.query_one(CommandPopup).set_loading(True)
         try:
             entries = await asyncio.to_thread(picker.read_directory, directory)
         except OSError as exc:
@@ -1975,12 +1993,16 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self._attachment_picker = AttachmentPicker(
                     directory, limit=max(0, 16 - len(composer.draft_content.attachments))
                 )
+                self._attachment_picker.loading = True
                 self._load_attachment_directory(directory)
             picker = self._attachment_picker
-            if picker.loading and picker.loaded:
+            # Keep the last complete menu, including the reference commands, until
+            # the directory snapshot is ready. Scheduling a worker must not publish
+            # an unread directory or a temporary empty list.
+            if picker.loading:
                 return
-            arguments = () if picker.loading else picker.arguments(query, self._tui_theme)
-            title = "Loading files…" if picker.loading else "No matching files"
+            arguments = picker.arguments(query, self._tui_theme)
+            title = "No matching files"
             heading = str(picker.directory)
             selection_count = len(picker.selected)
         popup.show_arguments(
@@ -2011,6 +2033,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._show_attachment_menu()
 
     def _choose_attachment(self) -> None:
+        picker = self._attachment_picker
+        if picker is not None and picker.loading:
+            return
         popup = self.query_one(CommandPopup)
         composer = self.query_one(Composer)
         if popup.selected_command is not None:
@@ -2024,9 +2049,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self._close_attachment_menu()
                 composer.insert_skills(tuple(InputSkillReference(name=name) for name in names))
             return
-        picker = self._attachment_picker
         argument = self.query_one(CommandPopup).selected_argument
-        if picker is None or picker.loading:
+        if picker is None:
             return
         value = argument.value if argument is not None else ""
         directory = picker.directory_for(value)
@@ -2409,7 +2433,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         self.query_one(QueuedInputPanel).set_inputs(inputs)
 
-    async def on_text_area_changed(self, message: TextArea.Changed) -> None:
+    def on_text_area_changed(self, message: TextArea.Changed) -> None:
         if not self._surface_available():
             return
         if message.text_area is not self.query_one(Composer):
@@ -2457,22 +2481,57 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             static_command is not None
             and static_command.name == "/model"
             and (
-                not argument.strip()
+                self._model_menu_loading
+                or not argument.strip()
                 or popup.argument_command is None
                 or popup.argument_command.name != "/model"
             )
         ):
-            try:
-                await self._refresh_models()
-            except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
-                popup.hide()
-                self._sync_command_suggestion(composer, popup)
-                self.notify(
-                    f"Could not refresh models: {exc}",
-                    severity="error",
-                    markup=False,
-                )
-                return
+            if not popup.display:
+                self._show_command_arguments(command_value)
+            popup.set_loading(True)
+            if not self._model_menu_loading:
+                self._model_menu_loading = True
+                self._load_model_menu()
+            return
+        self._show_command_arguments(command_value)
+
+    @work(exclusive=True, group="model-menu")
+    async def _load_model_menu(self) -> None:
+        error: Exception | None = None
+        try:
+            await self._refresh_models()
+        except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
+            error = exc
+        finally:
+            self._model_menu_loading = False
+        if not self._surface_available():
+            return
+        composer = self.query_one(Composer)
+        context = composer.command_context()
+        if context is None or composer.attachment_menu_open:
+            return
+        command_value, _draft = context
+        command, _argument = resolve_command(command_value, TUI_COMMANDS)
+        if (
+            command is None
+            or command.name != "/model"
+            or " " not in command_value
+            or composer.text == self._dismissed_command_text
+        ):
+            return
+        if error is not None:
+            popup = self.query_one(CommandPopup)
+            popup.hide()
+            self._sync_command_suggestion(composer, popup)
+            self.notify(f"Could not refresh models: {error}", severity="error", markup=False)
+            return
+        self._show_command_arguments(command_value)
+
+    def _show_command_arguments(self, command_value: str) -> None:
+        composer = self.query_one(Composer)
+        popup = self.query_one(CommandPopup)
+        _name, _separator, argument = command_value.partition(" ")
         command_catalog = self._command_catalog()
         command, _normalized_argument = resolve_command(command_value, command_catalog)
         if command is None or not command.takes_arguments:
@@ -2578,7 +2637,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             command_catalog=command_catalog,
         )
 
-    async def on_composer_command_submitted(self, message: Composer.CommandSubmitted) -> None:
+    def on_composer_command_submitted(self, message: Composer.CommandSubmitted) -> None:
         if self._visible_read_only:
             self.notify("Subagent sessions are read-only", severity="warning")
             return
@@ -2613,6 +2672,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             ask_user.accept_freeform(message.text)
             return
         value = message.command_text
+        if self._model_menu_loading and self._active_builtin_argument_command() == "/model":
+            return
         selected = popup.selected_command
         if selected is not None and selected.takes_arguments:
             self._edit_command(f"{selected.name} ", draft=message.draft)
@@ -2642,11 +2703,20 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
         popup.hide()
         self._dismissed_command_text = None
-        await self._dispatch_command(value)
-        if self.is_running:
-            composer.focus()
+        self._execute_composer_command(value)
+
+    @work(group="composer-command")
+    async def _execute_composer_command(self, value: str) -> None:
+        with self.query_one(ActivityIndicator).pending_operation():
+            # Preserve submission order while leaving the message pump available.
+            async with self._composer_submission_lock:
+                await self._dispatch_command(value)
 
     def on_composer_command_navigated(self, message: Composer.CommandNavigated) -> None:
+        if self._attachment_picker is not None and self._attachment_picker.loading:
+            return
+        if self._model_menu_loading and self._active_builtin_argument_command() == "/model":
+            return
         popup = self.query_one(CommandPopup)
         popup.navigate(message.offset)
         composer = self.query_one(Composer)
@@ -3223,6 +3293,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         content = InputContent(
             text=cancelled.prompt, attachments=attachments, skills=cancelled.skills
         )
+        try:
+            await self._sync_queued_inputs()
+        except Exception as exc:  # noqa: BLE001 - cancellation already committed.
+            self.notify(f"Could not refresh queued inputs: {exc}", severity="warning", markup=False)
         current = (
             self.query_one(Composer).draft_content
             if revision == self._controller.selection_revision
@@ -3236,10 +3310,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._edit_draft(restored)
         if not current.is_empty:
             self.notify("Restored queued input after the current draft")
-        try:
-            await self._sync_queued_inputs()
-        except Exception as exc:  # noqa: BLE001 - cancellation and restoration already succeeded.
-            self.notify(f"Could not refresh queued inputs: {exc}", severity="warning", markup=False)
 
     def _navigate_options(
         self,
@@ -3689,7 +3759,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         switch: bool = False,
         operation: Literal["open", "rename", "archive", "delete"] = "open",
     ) -> None:
+        revision = menu.page_revision if menu is not None else None
         if not await self._refresh_sessions(include_subagents=True):
+            return
+        if menu is not None and (not menu.is_attached or menu.page_revision != revision):
             return
         domain = "archived" if operation == "delete" else self._session_domain
         session_menu: ChoiceScreen
@@ -3736,7 +3809,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         async def switch_domain() -> None:
             nonlocal domain
+            revision = session_menu.page_revision
             if not await self._refresh_sessions(include_subagents=True):
+                return
+            if not session_menu.is_attached or session_menu.page_revision != revision:
                 return
             domain = _next_cycle_value(tuple(_SESSION_DOMAIN_LABELS), domain)
             self._session_domain = domain
@@ -4325,7 +4401,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     @work(exclusive=True, group="navigation")
     async def _choose_approval_mode(self) -> None:
         try:
-            current = await self._controller.session_approval_preset()
+            with self.query_one(ActivityIndicator).pending_operation():
+                current = await self._controller.session_approval_preset()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
             self.notify(str(exc), severity="error", markup=False)
             return
@@ -4338,7 +4415,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
         )
         if selected is not None:
-            await self._set_approval_mode(selected)
+            with self.query_one(ActivityIndicator).pending_operation():
+                await self._set_approval_mode(selected)
 
     async def _set_approval_mode(self, value: str) -> None:
         if value not in TUI_APPROVAL_PRESETS:
@@ -4384,7 +4462,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     async def _edit_reasoning(self) -> None:
         try:
-            state = await self._controller.session_reasoning()
+            with self.query_one(ActivityIndicator).pending_operation():
+                state = await self._controller.session_reasoning()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
             self.notify(str(exc), severity="error", markup=False)
             return
@@ -4405,7 +4484,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
         )
         if selected is not None:
-            await self._set_reasoning(selected)
+            with self.query_one(ActivityIndicator).pending_operation():
+                await self._set_reasoning(selected)
 
     async def _set_reasoning(self, value: str) -> None:
         request = REASONING_REQUESTS.get(value)
@@ -4444,6 +4524,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         async def navigate() -> None:
             active_menu = self._active_navigation_menu()
+            with (
+                active_menu.loading_choice()
+                if active_menu is not None
+                else self.query_one(ActivityIndicator).pending_operation()
+            ):
+                await navigate_from(active_menu)
+
+        async def navigate_from(active_menu: ChoiceScreen | None) -> None:
             if destination == _MENU_ACTIONS:
                 await self._choose_action(
                     menu=active_menu,
@@ -4490,10 +4578,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             action_id = selected.removeprefix(_RECENT_ACTION_PREFIX)
             await self._remember_action(action_id)
             if action_id.startswith(_SYSTEM_SETTING_ACTION_PREFIX):
-                self._run_system_setting(
+                await self._run_system_setting(
                     action_id.removeprefix(_SYSTEM_SETTING_ACTION_PREFIX),
                     menu=action_screen,
-                )
+                ).wait()
                 return None
             if action_id == _SESSION_GROUPING_ACTION:
                 await self._choose_session_grouping(menu=action_screen)

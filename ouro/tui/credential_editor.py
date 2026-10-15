@@ -79,13 +79,17 @@ class CredentialEditableChoiceScreen(EditableChoiceScreen):
 
     async def _select_choice(self, selected: str) -> None:
         if self._editing_value == selected and self._credential_source is not None:
-            choices = await self._save_credential(
-                selected, CredentialEdit(self._credential_source, self._edit_text)
+            await self._save_edit(
+                self._save_credential(
+                    selected, CredentialEdit(self._credential_source, self._edit_text)
+                ),
+                selected=selected,
             )
-            if choices is not None:
-                self._finish_edit(choices, selected=selected)
             return
         await super()._select_choice(selected)
+
+    def _edit_snapshot(self) -> tuple[str | None, ...]:
+        return (*super()._edit_snapshot(), self._credential_source)
 
     def _finish_edit(self, choices: tuple[Choice, ...], *, selected: str) -> None:
         self._credential_source = None

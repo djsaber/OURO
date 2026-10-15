@@ -145,7 +145,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         elif action_id == "prompts.manage":
             await self._configure_prompts(menu=menu)
         elif action_id == "tools.permissions":
-            self._choose_tools(menu=menu)
+            await self._choose_tools(menu=menu)
         elif action_id == "tools.execution":
             await self._configure_tool_execution(menu=menu)
         elif action_id == "agents.list":
@@ -178,11 +178,11 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 menu=menu,
             )
         elif action_id == "mcp.list":
-            self._choose_mcp(menu=menu)
+            await self._choose_mcp(menu=menu)
         elif action_id == "mcp.add":
             await self._edit_mcp(None, menu=menu)
         elif action_id == "skills.list":
-            self._choose_skills(menu=menu)
+            await self._choose_skills(menu=menu)
         elif action_id == "skills.install":
             await self._install_skill(menu=menu)
         elif action_id == "skills.sources":
@@ -190,9 +190,9 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         elif action_id.startswith("skills."):
             await self._choose_skill_action(action_id.removeprefix("skills."), menu=menu)
         elif action_id == "queued_inputs.delivery":
-            self._configure_queued_inputs(menu=menu)
+            await self._configure_queued_inputs(menu=menu)
         elif action_id == "compaction.policy":
-            self._configure_compaction(menu=menu)
+            await self._configure_compaction(menu=menu)
         else:
             available = "|".join(action.action_id for action in SYSTEM_SETTING_ACTIONS)
             await self.query_one(ConversationView).add_notice(
@@ -200,7 +200,6 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 error=True,
             )
 
-    @work(exclusive=True, group="configuration")
     async def _configure_queued_inputs(self, *, menu: ChoiceScreen | None = None) -> None:
         try:
             config = await self._controller.queued_input_configuration()
@@ -251,7 +250,6 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             )
         )
 
-    @work(exclusive=True, group="configuration")
     async def _configure_compaction(self, *, menu: ChoiceScreen | None = None) -> None:
         try:
             config = await self._controller.compaction_configuration()
@@ -292,7 +290,6 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         )
         self.notify(f"Context compaction saved: {label} (restart to apply)")
 
-    @work(exclusive=True, group="configuration")
     async def _choose_tools(self, *, menu: ChoiceScreen | None = None) -> None:
         try:
             tools = await self._controller.tool_configurations()
@@ -680,7 +677,6 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             return None
         return saved
 
-    @work(exclusive=True, group="configuration")
     async def _choose_mcp(self, *, menu: ChoiceScreen | None = None) -> None:
         async def refresh_servers() -> tuple[Choice, ...] | None:
             try:
@@ -1030,7 +1026,6 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             )
         )
 
-    @work(exclusive=True, group="configuration")
     async def _choose_skills(
         self,
         selector: str | None = None,

@@ -94,16 +94,31 @@ async def test_directory_navigation_keeps_visible_listing_until_read_completes(
     async with run_ready_app(app) as pilot:
         app._active_workspace = str(tmp_path)
         composer = app.query_one(Composer)
-        await pilot.press("@", *"file", "enter")
-        await app.workers.wait_for_complete(
-            [w for w in app.workers if w.group == "attachment-directory"]
-        )
-        await pilot.pause()
+        await pilot.press("@", *"file")
         popup = app.query_one(CommandPopup)
-        picker = app._attachment_picker
-        read_directory = picker.read_directory
+        read_directory = AttachmentPicker.read_directory
         loop = asyncio.get_running_loop()
-        for destination in (child, tmp_path):
+        display = app._display
+
+        def without_spinner(value):
+            return value.translate(dict.fromkeys(map(ord, app.tui_theme.spinner_frames), "›"))
+
+        def snapshot():
+            region = popup.region
+            return region, tuple(
+                without_spinner(strip.crop(region.x, region.right).text)
+                for strip in app.screen._compositor.render_strips()[region.y : region.bottom]
+            )
+
+        frames = []
+
+        def capture(screen, renderable):
+            if screen is app.screen and renderable is not None and not app._batch_count:
+                frames.append(snapshot())
+            display(screen, renderable)
+
+        monkeypatch.setattr(app, "_display", capture)
+        for index, destination in enumerate((tmp_path, child, tmp_path)):
             entered, release = asyncio.Event(), Event()
 
             def delayed_read(directory, started=entered, finished=release):
@@ -111,26 +126,47 @@ async def test_directory_navigation_keeps_visible_listing_until_read_completes(
                 assert finished.wait(timeout=10)
                 return read_directory(directory)
 
-            monkeypatch.setattr(picker, "read_directory", delayed_read)
-            before = (popup._arguments, popup._heading, popup.region, composer.text)
-            visible = command_popup_text(popup)
-            worker = app._load_attachment_directory(destination)
+            monkeypatch.setattr(AttachmentPicker, "read_directory", staticmethod(delayed_read))
+            before = snapshot()
+            visible = without_spinner(command_popup_text(popup).plain)
+            frames.clear()
             try:
+                if index == 0:
+                    await pilot.press("enter")
+                else:
+                    app._load_attachment_directory(destination)
                 await asyncio.wait_for(entered.wait(), timeout=5)
                 await pilot.pause()
-                assert (popup._arguments, popup._heading, popup.region, composer.text) == before
-                assert command_popup_text(popup) == visible
-                if destination == child:
-                    composer.set_attachment_query("nested-3")
+                assert snapshot() == before
+                assert without_spinner(command_popup_text(popup).plain) == visible
+                assert any(
+                    frame in command_popup_text(popup).plain
+                    for frame in app.tui_theme.spinner_frames
+                )
+                first_frame = command_popup_text(popup).plain
+                await pilot.pause(app.tui_theme.spinner_interval_seconds * 1.2)
+                assert command_popup_text(popup).plain != first_frame
+                if index < 2:
+                    query = "file-3" if index == 0 else "nested-3"
+                    composer.set_attachment_query(query)
+                    await pilot.press("down", "enter", "space")
                     await pilot.pause()
-                    assert command_popup_text(popup) == visible
+                    assert composer.text == f"@file {query}"
+                    assert without_spinner(command_popup_text(popup).plain) == visible
+                assert all(frame == before for frame in frames)
             finally:
                 release.set()
-                await worker.wait()
+                await app.workers.wait_for_complete(
+                    [w for w in app.workers if w.group == "attachment-directory"]
+                )
             await pilot.pause()
+            picker = app._attachment_picker
             assert picker.directory == destination and popup._heading == str(destination)
-            assert composer.text == ("@file nested-3" if destination == child else "@file ")
+            assert composer.text == ("@file file-3", "@file nested-3", "@file ")[index]
             assert popup.region.bottom == composer.region.y
+            assert popup._spinner_timer is None
+            after = snapshot()
+            assert frames and all(frame in (before, after) for frame in frames)
 
 
 async def test_unreadable_directory_retains_listing_filter_and_selection(tmp_path, monkeypatch):
@@ -458,10 +494,8 @@ async def test_submit_preflight_restores_original_session_after_navigation(tmp_p
         )
         with monkeypatch.context() as patch:
             patch.setattr(app._controller, "models", delayed_models)
-            pending = asyncio.create_task(
-                app.on_composer_submitted(
-                    Composer.Submitted(content.text, "follow_up", content.attachments)
-                )
+            app.on_composer_submitted(
+                Composer.Submitted(content.text, "follow_up", content.attachments)
             )
             await asyncio.wait_for(entered.wait(), timeout=2)
         try:
@@ -469,7 +503,9 @@ async def test_submit_preflight_restores_original_session_after_navigation(tmp_p
             app.query_one(Composer).load_text("second draft")
         finally:
             release.set()
-        await pending
+        await app.workers.wait_for_complete(
+            [worker for worker in app.workers if worker.group == "composer-input"]
+        )
         assert app.query_one(Composer).input_content == InputContent(text="second draft")
         assert app._input_drafts.content_for(first.session_id) == content
         assert not application.runtime.store.load_runtime_session(second.session_id).messages

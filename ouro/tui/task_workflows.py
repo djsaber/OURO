@@ -22,6 +22,7 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
     async def _choose_tasks(
         self, *, menu: ChoiceScreen | None = None, switch: bool = False
     ) -> None:
+        revision = menu.page_revision if menu is not None else None
         task_menu: ChoiceScreen
         offset = 0
 
@@ -67,6 +68,8 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
             self.notify(str(exc), severity="error", markup=False)
             return
         if menu is not None:
+            if not menu.is_attached or menu.page_revision != revision:
+                return
             task_menu = menu
             navigate = menu.switch_page if switch else menu.push_page
             navigate(
