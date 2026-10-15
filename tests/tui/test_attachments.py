@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import re
+from contextlib import contextmanager
 from threading import Event
 
 import pytest
+from textual import events
+from textual._xterm_parser import XTermParser
 from textual.app import App
+from textual.worker import WorkerCancelled
 
 from ouro.core.attachment_input import separate_attachments
+from ouro.core.errors import PersistenceError
 from ouro.core.input_content import InputAttachment, InputContent
 from ouro.core.messages import MessageRecord
+from ouro.tui import attachment_paths
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.attachment_paths import pasted_files
 from ouro.tui.attachment_picker import AttachmentPicker
+from ouro.tui.input_drafts import TuiInputDraftStore
 from ouro.tui.theme import DEFAULT_TUI_THEME
 from ouro.tui.widgets import (
     CommandPopup,
@@ -510,6 +518,71 @@ async def test_submit_preflight_restores_original_session_after_navigation(tmp_p
         assert not application.runtime.store.load_runtime_session(second.session_id).messages
 
 
+@pytest.mark.parametrize("existing", (False, True))
+@pytest.mark.parametrize("operation", ("upload", "reference"))
+async def test_attachment_preparation_keeps_focus_and_blocks_edits(
+    tmp_path, monkeypatch, existing, operation
+):
+    application = application_at(tmp_path / "home")
+    origin = application.runtime.create_session().session_id if existing else None
+    app = OuroTuiApp(application=application, resume_session_id=origin)
+    path = tmp_path / "material.txt"
+    path.write_text("material", encoding="utf-8")
+    async with run_ready_app(app) as pilot:
+        entered, release = asyncio.Event(), asyncio.Event()
+        method = "import_attachment" if operation == "upload" else "reference_files"
+        prepare = getattr(app._controller, method)
+
+        async def delayed_prepare(*args):
+            entered.set()
+            await release.wait()
+            return await prepare(*args)
+
+        monkeypatch.setattr(app._controller, method, delayed_prepare)
+        composer = app.query_one(Composer)
+        await pilot.press(*"draft")
+        await pilot.pause()
+        border = composer.styles.border_left
+        selection = composer.selection
+        frames = []
+        display = app._display
+
+        def capture(screen, renderable):
+            if screen is app.screen and renderable is not None and not app._batch_count:
+                frames.append((composer.disabled, composer.has_focus, composer.styles.border_left))
+            display(screen, renderable)
+
+        monkeypatch.setattr(app, "_display", capture)
+        pending = (
+            app._attach_files((path,)) if operation == "upload" else app._reference_files((path,))
+        )
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        try:
+            app._sync_interaction_focus(None)
+            await pilot.pause()
+            assert composer.import_pending
+            assert not composer.disabled and composer.has_focus
+            assert composer.styles.border_left == border
+            await pilot.click(composer, offset=(1, 0))
+            assert composer.selection == selection
+            for key in ("x", "backspace", "ctrl+z", "shift+enter", "up", "enter"):
+                await pilot.press(key)
+                assert composer.input_content == InputContent(text="draft")
+            composer.post_message(events.Paste("another paste"))
+            await pilot.pause()
+            assert composer.input_content == InputContent(text="draft")
+            assert app._controller.session_id == origin
+        finally:
+            release.set()
+            await pending.wait()
+        await pilot.pause()
+        assert composer.has_focus and not composer.disabled and not composer.import_pending
+        assert composer.styles.border_left == border
+        assert composer.input_content.text == "draft"
+        assert composer.input_content.attachments[0].name == path.name
+        assert frames and all(frame == (False, True, border) for frame in frames)
+
+
 async def test_late_import_preserves_original_position_and_new_session_is_editable(
     tmp_path, monkeypatch
 ):
@@ -581,6 +654,246 @@ async def test_import_keeps_original_in_ouro_data_without_writing_workspace(tmp_
         )
         assert saved == data / "sessions" / session.session_id / "resources" / "files" / source.name
         assert saved.read_bytes() == b"immutable upload"
+
+
+@pytest.mark.parametrize("existing", (False, True))
+async def test_terminal_file_paste_uploads_and_submits_on_both_pages(tmp_path, existing):
+    root = tmp_path / "home"
+    application = application_at(root)
+    runtime = application.runtime
+    origin = runtime.create_session().session_id if existing else None
+    app = OuroTuiApp(application=application, resume_session_id=origin)
+    path = tmp_path / "测试 文件.txt"
+    path.write_text("file material", encoding="utf-8")
+    parser = XTermParser()
+    async with run_ready_app(app) as pilot:
+        composer = app.query_one(Composer)
+        composer.load_text("before after")
+        composer.move_cursor((0, 7))
+        for event in parser.feed("\x1b[O"):
+            app.post_message(event)
+        await pilot.pause()
+        assert not app.app_focus and app.focused is None
+        # Windows Terminal sends the copied file's unquoted path as a paste.
+        for event in parser.feed(f"\x1b[200~{path}\x1b[201~"):
+            app.post_message(event)
+        await pilot.pause()
+        if workers := [w for w in app.workers if w.group == "attachment-import"]:
+            await app.workers.wait_for_complete(workers)
+        content = composer.input_content
+        assert content.text == "before after"
+        assert len(content.attachments) == 1
+        attachment = content.attachments[0]
+        assert attachment.kind == "upload" and attachment.name == path.name
+        assert attachment.text_offset == 7
+        assert app.app_focus and app.focused is composer
+        assert app._controller.session_id == origin
+        assert len(runtime.store.list_sessions()) == int(existing)
+        assert TuiInputDraftStore(root).load().content_for(origin) == content
+        identity = origin or app._input_drafts.welcome_resource_id
+        uploaded = runtime.resources.directory_for(identity) / attachment.name
+        path.unlink()
+        await pilot.press("enter")
+        if workers := [w for w in app.workers if w.group == "run"]:
+            await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=10)
+        await pilot.pause()
+        assert app._controller.session_id == identity
+        snapshot = runtime.store.load_runtime_session(identity)
+        body = next(message for message in snapshot.messages if not message.scaffold)
+        assert body.text_content == content.text
+        assert body.input_attachments == content.attachments
+        assert uploaded.read_text(encoding="utf-8") == "file material"
+        assert composer.input_content.is_empty
+
+
+@pytest.mark.parametrize("existing", (False, True))
+@pytest.mark.parametrize("source", ("terminal", "terminal-after-blur", "clipboard"))
+async def test_long_text_paste_uploads_and_restores_on_both_pages(tmp_path, existing, source):
+    root = tmp_path / "home"
+    application = application_at(root)
+    origin = application.runtime.create_session().session_id if existing else None
+    app = OuroTuiApp(application=application, resume_session_id=origin)
+    text = "  中文😀\r\n\t" * 600 + " trailing \n"
+    async with run_ready_app(app) as pilot:
+        composer = app.query_one(Composer)
+        composer.load_text("before after")
+        composer.move_cursor((0, 7))
+        if source == "terminal-after-blur":
+            app.post_message(events.AppBlur())
+            await pilot.pause()
+            assert not app.app_focus and app.focused is None
+        if source.startswith("terminal"):
+            app.post_message(events.Paste(text))
+        else:
+            composer._clipboard_reader = lambda: text
+            await composer._paste_system_clipboard().wait()
+        await pilot.pause()
+        if workers := [w for w in app.workers if w.group == "attachment-import"]:
+            await app.workers.wait_for_complete(workers)
+        content = composer.input_content
+        assert content.text == "before after"
+        assert len(content.attachments) == 1
+        assert app.app_focus and app.focused is composer
+        attachment = content.attachments[0]
+        assert attachment.kind == "upload" and attachment.text_offset == 7
+        assert re.fullmatch(r"pasted-text_[0-9a-f]{32}\.txt", attachment.name)
+        identity = origin or app._input_drafts.welcome_resource_id
+        file = application.runtime.resources.directory_for(identity) / attachment.name
+        assert file.read_bytes() == text.encode("utf-8")
+        assert app._controller.session_id == origin
+        assert len(application.runtime.store.list_sessions()) == int(existing)
+        assert TuiInputDraftStore(root).load().content_for(origin) == content
+        composer.undo()
+        assert composer.input_content == InputContent(text="before after")
+        composer.redo()
+        assert composer.input_content == content
+        await pilot.pause()
+    restarted = OuroTuiApp(application=application_at(root), resume_session_id=origin)
+    async with run_ready_app(restarted):
+        assert restarted.query_one(Composer).input_content == content
+        assert file.read_bytes() == text.encode("utf-8")
+
+
+async def test_only_the_current_paste_length_triggers_text_attachment(tmp_path):
+    app = OuroTuiApp(application=application_at(tmp_path))
+    async with run_ready_app(app) as pilot:
+        composer = app.query_one(Composer)
+        composer.load_text("x" * 3999)
+        composer.move_cursor(composer.document.end)
+        await pilot.press("y", "z")
+        assert composer.input_content == InputContent(text="x" * 3999 + "yz")
+        text = "文" * 4000
+        for _ in range(2):
+            app.post_message(events.Paste(text))
+            await pilot.pause()
+        assert composer.input_content == InputContent(text="x" * 3999 + "yz" + text * 2)
+        assert app._input_drafts.welcome_resource_id is None
+
+
+async def test_each_long_paste_uses_an_independent_named_attachment(tmp_path):
+    app = OuroTuiApp(application=application_at(tmp_path))
+    async with run_ready_app(app) as pilot:
+        text = "x" * 4001
+        for _ in range(2):
+            app.post_message(events.Paste(text))
+            await pilot.pause()
+            if workers := [w for w in app.workers if w.group == "attachment-import"]:
+                await app.workers.wait_for_complete(workers)
+        items = app.query_one(Composer).input_content.attachments
+        assert len(items) == 2
+        assert items[0].name != items[1].name
+        assert items[0].resource_id != items[1].resource_id
+
+
+async def test_long_paste_import_failure_preserves_draft_and_releases_source(tmp_path, monkeypatch):
+    application = application_at(tmp_path)
+    app = OuroTuiApp(application=application)
+    sources = []
+
+    def fail(_identity, path):
+        sources.append(path)
+        assert path.read_bytes() == b"x" * 4001
+        raise PersistenceError("upload failed")
+
+    monkeypatch.setattr(application.runtime.resources, "import_prepared_resource", fail)
+    async with run_ready_app(app) as pilot:
+        composer = app.query_one(Composer)
+        composer.load_text("keep this")
+        app.post_message(events.Paste("x" * 4001))
+        await pilot.pause()
+        if workers := [w for w in app.workers if w.group == "attachment-import"]:
+            await app.workers.wait_for_complete(workers)
+        assert composer.input_content == InputContent(text="keep this")
+        assert not composer.import_pending
+        assert application.runtime.store.list_sessions() == []
+        assert len(sources) == 1 and not sources[0].exists()
+
+
+@pytest.mark.parametrize("existing", (False, True))
+async def test_cancelled_long_paste_keeps_source_until_import_finishes(
+    tmp_path, monkeypatch, existing
+):
+    application = application_at(tmp_path)
+    origin = application.runtime.create_session().session_id if existing else None
+    app = OuroTuiApp(application=application, resume_session_id=origin)
+    resources = application.runtime.resources
+    operation = "import_resource" if existing else "import_prepared_resource"
+    import_file = getattr(resources, operation)
+    sources, imported = [], []
+    reached, release = asyncio.Event(), Event()
+    loop = asyncio.get_running_loop()
+
+    def delayed(identity, path, **kwargs):
+        sources.append(path)
+        loop.call_soon_threadsafe(reached.set)
+        assert release.wait(10)
+        result = import_file(identity, path, **kwargs)
+        imported.append(result)
+        return result
+
+    monkeypatch.setattr(resources, operation, delayed)
+    async with run_ready_app(app) as pilot:
+        composer = app.query_one(Composer)
+        composer.load_text("keep this")
+        worker = app._attach_files("x" * 4001)
+        try:
+            await asyncio.wait_for(reached.wait(), timeout=5)
+            worker.cancel()
+            await pilot.pause()
+            assert composer.import_pending
+            assert sources[0].read_bytes() == b"x" * 4001
+        finally:
+            release.set()
+        with pytest.raises(WorkerCancelled):
+            await worker.wait()
+        assert len(imported) == 1
+        assert not sources[0].exists()
+        assert not composer.import_pending
+        assert composer.input_content == InputContent(text="keep this")
+
+
+@pytest.mark.parametrize("outcome", ("cancel", "failure"))
+async def test_long_paste_cleanup_always_releases_input(tmp_path, monkeypatch, outcome):
+    app = OuroTuiApp(application=application_at(tmp_path))
+    reached, release = asyncio.Event(), Event()
+    loop = asyncio.get_running_loop()
+    source_file = attachment_paths.pasted_text_file
+    sources, errors = [], []
+
+    @contextmanager
+    def delayed_cleanup(text):
+        with source_file(text) as path:
+            sources.append(path)
+            yield path
+            loop.call_soon_threadsafe(reached.set)
+            assert release.wait(10)
+            if outcome == "failure":
+                raise OSError("Temporary source cleanup failed")
+
+    monkeypatch.setattr("ouro.tui.app.pasted_text_file", delayed_cleanup)
+    async with run_ready_app(app) as pilot:
+        monkeypatch.setattr(app, "notify", lambda message, **_kwargs: errors.append(message))
+        composer = app.query_one(Composer)
+        worker = app._attach_files("x" * 4001)
+        try:
+            await asyncio.wait_for(reached.wait(), timeout=5)
+            if outcome == "cancel":
+                worker.cancel()
+            await pilot.pause()
+            assert composer.import_pending
+        finally:
+            release.set()
+        if outcome == "cancel":
+            with pytest.raises(WorkerCancelled):
+                await worker.wait()
+        else:
+            await worker.wait()
+            assert errors == ["Temporary source cleanup failed"]
+        assert not sources[0].exists()
+        assert not composer.import_pending and composer.has_focus
+        assert len(composer.input_content.attachments) == 1
+        await pilot.press("x")
+        assert composer.input_content.text == "x"
 
 
 async def test_inline_picker_cancel_preserves_draft_cursor_and_narrow_layout(tmp_path):

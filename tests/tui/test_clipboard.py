@@ -6,15 +6,16 @@ import pyperclip
 import pytest
 from rich.text import Text
 from textual import events
+from textual._xterm_parser import XTermParser
 from textual.app import App, ComposeResult
 from textual.geometry import Offset
 from textual.screen import Screen
 from textual.selection import Selection
-from textual.widgets import Static
+from textual.widgets import Input, Static
 
 from ouro.application.agent_models import AgentTreeNode
 from ouro.application.supervisor_models import RuntimeToolCallActivity
-from ouro.tui.app import _OuroHostScreen
+from ouro.tui.app import OuroTuiApp, _OuroHostScreen
 from ouro.tui.clipboard import (
     ClipboardReadError,
     ClipboardWriteError,
@@ -26,8 +27,10 @@ from ouro.tui.conversation_history import (
     ConversationHistory,
     TranscriptEntry,
 )
+from ouro.tui.screens import ChoiceScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
 from ouro.tui.widgets import Composer, ConversationView
+from tests.tui.helpers import run_ready_app, two_route_application
 
 
 def _unused_tool_renderer(
@@ -84,6 +87,52 @@ class ConversationSelectionApp(PageSelectionApp):
 
     def compose(self) -> ComposeResult:
         yield ConversationView()
+
+
+@pytest.mark.parametrize("overlay", (False, True))
+@pytest.mark.parametrize("focus_before_paste", (False, True))
+@pytest.mark.parametrize("existing", (False, True))
+async def test_terminal_paste_returns_to_original_editor_after_blur(
+    tmp_path, overlay, focus_before_paste, existing
+):
+    application = two_route_application(tmp_path)
+    origin = application.runtime.create_session().session_id if existing else None
+    app = OuroTuiApp(application=application, resume_session_id=origin)
+    parser = XTermParser()
+
+    def feed(data):
+        for offset in range(0, len(data), 1024):
+            for event in parser.feed(data[offset : offset + 1024]):
+                app.post_message(event)
+
+    async with run_ready_app(app) as pilot:
+        composer = app.query_one(Composer)
+        composer.load_text("draft")
+        composer.move_cursor((0, 5))
+        if overlay:
+            await app.push_screen(ChoiceScreen(title="Search", placeholder="Filter", choices=()))
+        await pilot.pause()
+        target = app.screen.query_one(Input) if overlay else composer
+        assert app.focused is target
+        feed("\x1b[O")
+        await pilot.pause()
+        assert not app.app_focus and app.focused is None
+        if focus_before_paste:
+            feed("\x1b[I")
+        text = "filter" * 1000 if overlay else " short paste"
+        feed(f"\x1b[200~{text}\x1b[201~")
+        await pilot.pause()
+        if overlay:
+            assert target.value == text
+            assert composer.text == "draft"
+        else:
+            assert composer.text == "draft" + text
+        assert app.app_focus and app.focused is target
+        assert not composer.input_content.attachments
+        if not focus_before_paste:
+            feed("\x1b[I")
+            await pilot.pause()
+            assert app.focused is target
 
 
 @pytest.mark.asyncio

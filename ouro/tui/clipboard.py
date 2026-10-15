@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import sys
+
 import pyperclip
+
+from ouro.tui.windows_clipboard import read_file_paths
 
 
 class ClipboardReadError(RuntimeError):
-    """The host system clipboard could not provide plain text."""
+    """The host system clipboard could not provide pasteable text or file paths."""
 
 
 class ClipboardWriteError(RuntimeError):
@@ -12,9 +16,11 @@ class ClipboardWriteError(RuntimeError):
 
 
 def read_system_clipboard() -> str:
-    """Read plain text from the host clipboard through one platform boundary."""
+    """Normalize clipboard text or native file paths into the terminal paste format."""
     try:
         text = pyperclip.paste()
+        if text == "" and sys.platform == "win32":
+            return "\n".join(f'"{path}"' for path in read_file_paths())
     except (OSError, pyperclip.PyperclipException) as exc:
         raise ClipboardReadError("System clipboard is unavailable") from exc
     if not isinstance(text, str):

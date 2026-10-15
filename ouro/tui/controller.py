@@ -100,6 +100,7 @@ from ouro.core.approvals import (
 from ouro.core.attachment_input import is_editable_user_input
 from ouro.core.base import Metadata
 from ouro.core.billing import UsageFilter
+from ouro.core.callbacks import run_blocking
 from ouro.core.compaction import CompactionCommandResult, CompactionRecord
 from ouro.core.context import ContextMetrics
 from ouro.core.errors import ConfigError, PersistenceError, SessionNotFoundError
@@ -673,9 +674,9 @@ class TuiController:
         if resources is None:
             raise ConfigError("Resource storage is unavailable")
         if isinstance(session, str):
-            result = await asyncio.to_thread(resources.import_prepared_resource, session, path)
+            result = await run_blocking(resources.import_prepared_resource, session, path)
         else:
-            result = await asyncio.to_thread(
+            result = await run_blocking(
                 resources.import_resource,
                 session.session_id,
                 path,

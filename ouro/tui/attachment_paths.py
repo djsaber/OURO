@@ -1,11 +1,27 @@
-"""Conservative terminal path-paste recognition; never interpret shell commands."""
+"""Prepare file sources from terminal pastes without interpreting shell commands."""
 
 from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import unquote, urlsplit
+
+from ouro.core.base import new_id
+
+PASTED_TEXT_ATTACHMENT_THRESHOLD = 4000
+
+
+@contextmanager
+def pasted_text_file(text: str) -> Iterator[Path]:
+    """Keep one UTF-8 source alive for the ordinary attachment import operation."""
+    with TemporaryDirectory(prefix="ouro-paste-") as directory:
+        path = Path(directory) / f"{new_id('pasted-text')}.txt"
+        path.write_text(text, encoding="utf-8", newline="")
+        yield path
 
 
 def pasted_files(value: str) -> tuple[Path, ...]:

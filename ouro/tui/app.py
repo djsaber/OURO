@@ -7,6 +7,7 @@ import sys
 from calendar import month_name
 from collections import Counter, OrderedDict
 from collections.abc import Callable, Sequence
+from contextlib import ExitStack
 from dataclasses import replace
 from datetime import date, datetime
 from functools import partial
@@ -43,6 +44,7 @@ from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.attachment_input import editable_input_content
 from ouro.core.base import new_id
+from ouro.core.callbacks import run_blocking
 from ouro.core.errors import ConfigError, OuroError, PersistenceError, UnsupportedDataVersionError
 from ouro.core.events import EventRecord
 from ouro.core.input_content import InputContent, InputFile, InputSkillReference
@@ -54,7 +56,11 @@ from ouro.core.state import DEFAULT_SESSION_TITLE
 from ouro.deployment import SessionBackend, TaskBackend
 from ouro.local_application import LocalApplication
 from ouro.tui.attachment_editor import file_count_label
-from ouro.tui.attachment_paths import pasted_files
+from ouro.tui.attachment_paths import (
+    PASTED_TEXT_ATTACHMENT_THRESHOLD,
+    pasted_files,
+    pasted_text_file,
+)
 from ouro.tui.attachment_picker import AttachmentPicker
 from ouro.tui.clipboard import ClipboardWriteError, write_system_clipboard
 from ouro.tui.commands import (
@@ -1030,7 +1036,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._input_surface.set_viewport_size(size)
 
     async def on_event(self, event: events.Event) -> None:
-        # A terminal drop is a Paste even when AppBlur has cleared widget focus.
+        # Paste can arrive before FocusIn after a terminal confirmation dialog.
+        # Restore the pre-blur target just as Textual does for keys and mouse input.
+        if isinstance(event, events.Paste) and not event.is_forwarded:
+            self.app_focus = True
         # Recognize files before Textual routes the event to the focused widget.
         if (
             isinstance(event, events.Paste)
@@ -1060,7 +1069,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     ):
                         self.notify("Input changed while checking files; drop the files again")
                         return
-                    self.app_focus = True
                     self._close_attachment_menu()
                     composer.import_pending = True
                     self._attach_files(paths)
@@ -2119,7 +2127,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 )
             )
         composer.import_pending = True
-        composer.disabled = True
         try:
             items = await self._controller.reference_files(paths)
             if revision != self._controller.selection_revision:
@@ -2165,11 +2172,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         selection = composer.selection
         insert_into_original = composer.prepare_attachment_insertion()
         composer.import_pending = True
-        composer.disabled = True
+        temporary: ExitStack | None = None
         try:
             if isinstance(paste, str):
                 paths = await asyncio.to_thread(pasted_files, paste)
-                if not paths:
+                if not paths and len(paste) > PASTED_TEXT_ATTACHMENT_THRESHOLD:
+                    temporary = ExitStack()
+                    paths = (await run_blocking(temporary.enter_context, pasted_text_file(paste)),)
+                elif not paths:
                     if revision == self._controller.selection_revision:
                         composer.insert_plain_paste(paste)
                     return
@@ -2224,9 +2234,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception as exc:  # noqa: BLE001 - keep the unsent draft on import failures.
             self.notify(str(exc), severity="error", markup=False)
         finally:
-            composer.import_pending = False
-            if self._surface_available():
-                self._sync_interaction_focus(self._interaction)
+            try:
+                if temporary is not None:
+                    await run_blocking(temporary.close)
+            except OSError as exc:
+                self.notify(str(exc), severity="error", markup=False)
+            finally:
+                composer.import_pending = False
+                if self._surface_available():
+                    self._sync_interaction_focus(self._interaction)
 
     @work(exclusive=True, group="provider-onboarding")
     async def _prompt_provider_setup(self) -> None:
@@ -3036,7 +3052,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         composer.attachments_enabled = composer.attachments_enabled and not preparing_first_input
         if not composer.attachments_enabled:
             self._close_attachment_menu()
-        if composer.import_pending or preparing_first_input:
+        if preparing_first_input:
             composer.disabled = True
             return
         if self._visible_read_only:

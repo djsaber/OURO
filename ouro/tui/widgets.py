@@ -45,6 +45,7 @@ from ouro.sdk.plugins.interactions import (
     PlanConfirmationRequest,
 )
 from ouro.tui.attachment_editor import AttachmentTextArea, file_count_label
+from ouro.tui.attachment_paths import PASTED_TEXT_ATTACHMENT_THRESHOLD
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import TuiCommand, TuiCommandArgument, argument_suggestion
 from ouro.tui.controller import TuiApprovalPreset, TuiSystemStatus
@@ -3331,6 +3332,10 @@ class Composer(AttachmentTextArea):
         self.move_cursor((self.document.line_count - 1, len(self.document.lines[-1])))
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
+        if self.import_pending:
+            event.prevent_default()
+            event.stop()
+            return
         if event.button != 3:
             return
         event.prevent_default()
@@ -3383,10 +3388,10 @@ class Composer(AttachmentTextArea):
         if self.attachment_menu_open:
             self.insert_plain_paste(text)
             return
-        if (
-            self.attachments_enabled
-            and text.lstrip().startswith(("/", '"', "'", "file:"))
-            or (self.attachments_enabled and len(text) > 2 and text[1:3] in (":\\", ":/"))
+        if self.attachments_enabled and (
+            len(text) > PASTED_TEXT_ATTACHMENT_THRESHOLD
+            or text.lstrip().startswith(("/", '"', "'", "file:"))
+            or (len(text) > 2 and text[1:3] in (":\\", ":/"))
         ):
             self.import_pending = True
             self.post_message(self.AttachmentRequested(text))
@@ -3433,6 +3438,12 @@ class Composer(AttachmentTextArea):
             self.post_message(self.AttachmentRequested())
             return
         await super()._on_key(event)
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        # Preparation pauses editing without disabling or blurring the input widget.
+        if self.import_pending:
+            return False
+        return super().check_action(action, parameters)
 
     def action_submit(self) -> None:
         self._submit("follow_up")
