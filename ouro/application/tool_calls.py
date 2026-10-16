@@ -309,7 +309,9 @@ class ToolCallCoordinator:
                         is_error=True,
                         content=(
                             "Tool batch rejected: exclusive tools must be called alone. "
-                            f"Exclusive tools in this batch: {', '.join(exclusive_tools)}"
+                            f"Exclusive tools in this batch: {', '.join(exclusive_tools)}. "
+                            "No tools were executed. "
+                            "Submit each exclusive tool in a separate batch."
                         ),
                         structured={
                             "error_type": "ExclusiveToolBatchViolation",

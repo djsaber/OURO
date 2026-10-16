@@ -459,7 +459,8 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(
 
 
 @pytest.mark.asyncio
-async def test_exclusive_tool_rejects_mixed_batch_before_any_handler_runs(tmp_path) -> None:
+@pytest.mark.parametrize("mode", ["sequential", "parallel"])
+async def test_exclusive_tool_rejects_mixed_batch_before_any_handler_runs(tmp_path, mode) -> None:
     registry = ToolRegistry()
     executed: list[str] = []
 
@@ -486,7 +487,7 @@ async def test_exclusive_tool_rejects_mixed_batch_before_any_handler_runs(tmp_pa
     runtime = _runtime(
         tmp_path,
         registry=registry,
-        mode="parallel",
+        mode=mode,
         first_calls=[
             ToolCallRequest(id="call_enter", name="EnterWorkflow", source_index=0),
             ToolCallRequest(id="call_write", name="Write", source_index=1),
@@ -502,6 +503,8 @@ async def test_exclusive_tool_rejects_mixed_batch_before_any_handler_runs(tmp_pa
         "ExclusiveToolBatchViolation",
         "ExclusiveToolBatchViolation",
     ]
+    assert all("No tools were executed." in item.text_content for item in result.tool_results)
+    assert all("separate batch" in item.text_content for item in result.tool_results)
     assert any(event.event_type == "tool_batch_rejected" for event in snapshot.events)
 
 

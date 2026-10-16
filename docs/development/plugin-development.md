@@ -310,7 +310,9 @@ def handler(call):
 ```
 
 `replace` / `delete` 只提出变化，工具声明 `effect="state_changing"`。框架在结果被接受时与工具消息共同提交。
-同一 owner 的并行变化不能相互覆盖；只能单独调用的状态工具声明 `batch_behavior="exclusive"`。
+同一次结果提交中的同一 owner 状态变化不能相互覆盖。需要独立批次提交状态的工具声明 `batch_behavior="exclusive"`，
+混合批次在执行前整批拒绝；Host 的顺序执行设置仅控制合法批次的执行顺序，不建立状态提交边界。
+Host 统一将 exclusive 约束呈现到模型可见的工具描述，插件只维护结构化声明。
 只读工具、Context、Observer、Prompt/Tool/Turn Policy、Compaction 只能 read。无目标 Session 时视图为 None。
 视图在回调返回、异常或取消后关闭，不保存到插件实例或后台任务；不要自己加持久化锁或写 Session 文件。
 

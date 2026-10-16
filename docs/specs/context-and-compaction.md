@@ -12,6 +12,13 @@ Skills 指令、恢复投影、摘要压缩和模型 token 预算。
 `ContextView` 包含：system prompt、messages、tools、token estimate、budget、overflow 状态和 metadata。
 `ContextBuilder` 是纯构建器，不执行 Provider、文件或 SessionStore I/O。
 
+`ContextBuilder` 接收注册工具定义，根据 `batch_behavior="exclusive"` 为请求副本的 description 追加统一的
+单独调用约束，说明混合调用会在执行前整批拒绝。其他工具的描述保持原样；`execution_mode` 是宿主调度设置，
+不生成额外模型指令。投影不修改注册定义、参数 schema 或执行契约哈希。
+`ContextView.tool_definitions` 保存已呈现的工具定义，token 估算、Provider 请求和请求快照使用同一份内容。
+OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages 均由公共上下文路径取得描述，codec 只转换协议格式，
+不生成调用规则。工具目录中的结构化契约保持原样。
+
 基础系统提示词保持原始内容；有 Skills 指令时使用稳定空行拼接。Context Provider 返回
 `target="system_prompt"` 的 ephemeral fragment 时，只有 fragment 显式提供 `semantic_tag`，Core 才使用统一
 semantic envelope renderer 包裹原始正文；未提供标签时直接拼接正文。投影按稳定顺序位于基础提示词和 Skills
@@ -31,6 +38,9 @@ Context Provider 注入、压缩/恢复后的 messages、tools、metrics、路�
 
 查询不执行 Context Provider、Observer 或自动压缩，也不写入 canonical history。手动压缩只激活新的
 `CompactionRecord`，不得改写最近请求快照；新摘要会在下一次模型请求准备后自然进入新的快照。
+
+工具描述按请求准备时的完整文本保存。快照读取直接使用该文本，不根据当前契约呈现逻辑追加或更新说明；
+没有附加说明的已保存描述也原样保留。重复读取和协议编码不得重复追加约束。
 
 `ContextSnapshotRecord` 只保存实际 Provider 请求的单一当前投影。语义包络完全由 source message/fragment 上是否
 存在 `semantic_tag` 决定；Store 不猜测旧投影方式。

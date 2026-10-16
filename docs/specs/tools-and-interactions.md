@@ -128,6 +128,16 @@ Use this for images already available on disk.”。JSON Schema 由严格参数�
 - 每个调用的 request、invocation、approval、result 和 result message；
 - planned、interaction、execution、commit、terminal 或 recoverable phase。
 
+`batch_behavior` 声明批次组合约束，与执行顺序独立：
+
+- `compatible`：允许与其他调用组成批次，执行方式由 `execution_mode` 决定。
+- `exclusive`：所在批次必须只有这一个调用。无论顺序还是并行执行，混合批次都在任何 handler 执行前整批拒绝，
+  每个调用收到 `ExclusiveToolBatchViolation`，说明没有工具执行，并要求将 exclusive 调用分别提交。
+
+该规则同时适用于模型与 Driver 批次，只约束当前批次，不提供跨 Run、Session 或外部进程的资源互斥。
+Host 在构建模型上下文时，将 exclusive 约束统一追加到工具描述的请求副本；注册定义与执行契约保持原样。
+说明随工具定义发送，运行时仍按结构化契约独立校验。请求呈现、预算与快照见[上下文规格](context-and-compaction.md)。
+
 批次必须先持久化 assistant tool-call message，再执行外部工具。结果无论顺序或并行执行，都按 Provider
 原始 `source_index` 顺序提交并回灌模型。同一完成批次先统一验证全部资源引用，再把缺失的结果消息作为一个
 有序 `append_messages` 批次提交；任何结果验证失败不得留下部分消息。提交成功后才投递 tool-finished Observer 并
@@ -135,8 +145,9 @@ Use this for images already available on disk.”。JSON Schema 由严格参数�
 
 ## 顺序与并行
 
-- `sequential`：逐个执行，适合有显式顺序或共享副作用的调用。
+- `sequential`：合法批次中的调用逐个执行，不放宽 exclusive 约束，也不在调用之间自动提交工具结果或重新决策。
 - `parallel`：受 `max_concurrency` 限制并发执行。
+- 工具的 `execution_mode="sequential"` 可将所在合法批次设为顺序执行；`inherit` 使用宿主配置。
 - AskUser 和审批会在实际执行前完成 preflight；未解决交互时不启动批次副作用。
 - SpawnAgent(sync) 可进入 durable `waiting_child`，不会在 handler 内占用 worker 轮询；async 调用仍可与其他兼容
   工具共同执行。
@@ -193,8 +204,9 @@ Observer 失败隔离为 `plugin_observer_failed`，不改变工具的实际结�
 ## 状态效果与历史代次
 
 工具通过调用范围内的 owner 视图提出状态替换/删除。Host 验证输出和控制转换后，将状态效果与对应结果
-消息置于同一 `SessionCommit`；结果消息锚点指向该效果之前的版本。同一 owner 的并行冲突明确拒绝，
-需要串行执行的工具复用现有 exclusive 批次规则，不引入另一套调度器。
+消息置于同一 `SessionCommit`；结果消息锚点指向该效果之前的版本。同一次结果提交中，对同一 owner 的多份状态提案明确拒绝。
+需要独立批次提交状态的工具声明 `batch_behavior="exclusive"`；仅要求 handler 不重叠的工具可声明
+`execution_mode="sequential"`。顺序执行不会刷新同一执行阶段的 Harness 快照，不能替代状态提交边界。
 
 超时、取消或调用结束会关闭状态视图。撤销后的旧结果仍可保留执行审计，但不得改变当前 Harness、追加
 当前消息或恢复旧 interaction。新执行重新检查许可；文件写入等已发生外部效果不参与会话撤销。

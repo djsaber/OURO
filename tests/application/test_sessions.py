@@ -22,15 +22,15 @@ from ouro.core.compaction import (
     compaction_source_digest,
     validate_compaction_lineage,
 )
-from ouro.core.context import ContextBuilder, estimate_message_tokens
-from ouro.core.context_snapshots import ContextSnapshotRecord
+from ouro.core.context import ContextBuilder, ContextView, estimate_message_tokens
+from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
 from ouro.core.errors import PersistenceError, SessionBranchError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.core.tools import ToolCallRequest
+from ouro.core.tools import ToolCallRequest, ToolDefinition
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
 from tests.harness_state import replace_harness_state
@@ -241,6 +241,45 @@ def test_session_run_history_reads_run_facts_without_event_replay(tmp_path, monk
     monkeypatch.setattr(store, "load_events_page", unexpected_events)
 
     assert sessions.run_history(session.session_id) == runs
+
+
+@pytest.mark.parametrize("backend", ["file", "sqlite"])
+@pytest.mark.parametrize(
+    "description", ["Original description.", "Original description.\n\nPreviously rendered rule."]
+)
+def test_session_context_preserves_stored_tool_descriptions(tmp_path, backend, description) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "sessions")
+        if backend == "file"
+        else SQLiteSessionStore(tmp_path / "sessions.db")
+    )
+    store.initialize()
+    sessions = SessionService(store)
+    session = sessions.create(title="Stored tool contract").session
+    view = ContextView(
+        tool_definitions=[
+            ToolDefinition(name="Boundary", description=description, batch_behavior="exclusive")
+        ]
+    )
+    store.save_latest_context(
+        ContextSnapshotRecord(
+            session_id=session.session_id,
+            run_id="run_1",
+            turn_id="turn_1",
+            model_round=1,
+            provider_id="test",
+            model_id="test-model",
+            tool_definitions=view.tool_definitions,
+            metrics=view.metrics,
+            context_digest=context_view_digest(view),
+        )
+    )
+
+    restored = sessions.context(session.session_id)
+
+    assert restored is not None
+    assert restored.provider_context.tools == view.provider_context().tools
+    assert restored.provider_context.tools[0]["description"] == description
 
 
 def test_session_context_rejects_content_that_does_not_match_digest(tmp_path) -> None:

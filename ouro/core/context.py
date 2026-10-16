@@ -104,6 +104,8 @@ class ProviderContext(OuroModel):
 
 
 class ContextView(OuroModel):
+    """Materialized request view, including Host constraints in tool descriptions."""
+
     context_id: str | None = None
     model_messages: list[ModelMessage] = Field(default_factory=list)
     system_prompt: str = ""
@@ -146,6 +148,8 @@ class ContextBuilder:
         context_window_tokens: int | None = None,
         reserved_output_tokens: int = 0,
     ) -> ContextView:
+        """Prepare a request from registered tool definitions and canonical context."""
+
         if input_token_budget is not None and input_token_budget < 1:
             raise ValueError("input_token_budget must be at least 1")
         if context_window_tokens is not None and context_window_tokens < 1:
@@ -195,8 +199,11 @@ class ContextBuilder:
             ModelMessage.from_record(message) if isinstance(message, MessageRecord) else message
             for message in messages
         ]
+        model_tools = [_project_tool_definition(tool) for tool in tools]
         fixed_tokens = self.token_estimator(composed_prompt)
-        fixed_tokens += sum(_estimate_tool_tokens(tool, self.token_estimator) for tool in tools)
+        fixed_tokens += sum(
+            _estimate_tool_tokens(tool, self.token_estimator) for tool in model_tools
+        )
         fixed_tokens += sum(
             estimate_message_tokens(message, self.token_estimator) for message in context_messages
         )
@@ -212,7 +219,7 @@ class ContextBuilder:
         return ContextView(
             model_messages=[*context_messages, *model_messages],
             system_prompt=composed_prompt,
-            tool_definitions=tools,
+            tool_definitions=model_tools,
             metrics=ContextMetrics(
                 estimated_fixed_tokens=fixed_tokens,
                 estimated_input_tokens=estimated_tokens,
@@ -230,6 +237,18 @@ class ContextBuilder:
                 "system_prompt_fragment_count": len(prompt_fragments),
             },
         )
+
+
+def _project_tool_definition(tool: ToolDefinition) -> ToolDefinition:
+    if tool.batch_behavior != "exclusive":
+        return tool
+    constraint = (
+        "Host calling constraint: This must be the only tool call in your response. "
+        "If combined with any other tool call, the entire batch will be rejected "
+        "before any tool executes."
+    )
+    description = f"{tool.description}\n\n{constraint}" if tool.description else constraint
+    return tool.model_copy(update={"description": description})
 
 
 def _compose_skill_instructions(base: str, additional: str) -> str:

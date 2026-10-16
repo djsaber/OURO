@@ -12,7 +12,39 @@ from ouro.core.messages import (
     TextContent,
     ToolResultReference,
 )
-from ouro.core.tools import ToolCallRequest
+from ouro.core.tools import ToolCallRequest, ToolDefinition, tool_definition_contract_hash
+
+
+@pytest.mark.parametrize("description", ["Original tool description.", ""])
+def test_context_projects_batch_contract_without_changing_registered_tools(description) -> None:
+    exclusive = ToolDefinition(name="Boundary", description=description, batch_behavior="exclusive")
+    sequential = ToolDefinition(
+        name="Sequential", description="Ordinary tool.", execution_mode="sequential"
+    )
+    definitions = [exclusive, sequential]
+    original = [tool.model_dump() for tool in definitions]
+    contract_hash = tool_definition_contract_hash(exclusive)
+    original_cost = sum(len(tool.model_dump_json(exclude_none=True)) for tool in definitions)
+    builder = ContextBuilder(token_estimator=len)
+
+    context = builder.build(messages=[], tools=definitions, input_token_budget=original_cost)
+    projected = context.provider_context().tools
+    constraint = (
+        "Host calling constraint: This must be the only tool call in your response. "
+        "If combined with any other tool call, the entire batch will be rejected "
+        "before any tool executes."
+    )
+
+    assert projected[0]["description"] == "\n\n".join(filter(None, [description, constraint]))
+    assert projected[1] == original[1]
+    assert [tool.model_dump() for tool in definitions] == original
+    assert tool_definition_contract_hash(exclusive) == contract_hash
+    assert context.metrics.estimated_fixed_tokens == sum(
+        len(tool.model_dump_json(exclude_none=True)) for tool in context.tool_definitions
+    )
+    assert context.metrics.over_budget is True
+    assert context.provider_context().tools == projected
+    assert builder.build(messages=[], tools=definitions).provider_context().tools == projected
 
 
 @pytest.mark.parametrize(

@@ -809,9 +809,13 @@ tool list 和执行 registry 中按轮次隐藏。插件回调可以读取业务
 `batch_behavior = compatible | exclusive` 和 resumable 能力。builtin 与插件在定义处声明；MCP 依次采用用户 override、
 协议只读注解或 `unknown`，不做名称/描述启发式推断。归一化结果进入所有 contribution/execution contract hash。
 
-含 exclusive 工具的批次若还有兄弟调用，必须在任何 handler 执行前整批拒绝。工具返回 `ToolInputRequest` 后，只有
-声明 resumable 且具有 resume handler 的工具能消费回答继续执行；当前实现必须匹配该调用的 execution contract，
-并重新通过权限和控制检查。回答与 running 意图先持久化，再调用 handler；允许再次请求输入。非 resumable 工具的
+`batch_behavior` 控制批次是否允许组合；Host 的 `execution_mode` 控制合法批次的执行顺序。含 exclusive 工具的批次
+若还有兄弟调用，无论顺序还是并行都必须在任何 handler 执行前整批拒绝。Host 从结构化契约统一生成模型可见的调用说明，
+插件无需在 description 中重复维护此规则；呈现不修改插件注册定义和执行契约。详见[工具规格](tools-and-interactions.md)。
+
+工具返回 `ToolInputRequest` 后，只有声明 resumable 且具有 resume handler 的工具能消费回答继续执行；
+当前实现必须匹配该调用的 execution contract，并重新通过权限和控制检查。
+回答与 running 意图先持久化，再调用 handler；允许再次请求输入。非 resumable 工具的
 回答直接成为原调用结果，不需要执行插件。无法承接的调用保存回答并形成局部错误结果。
 
 恢复输入必须使用 `AnswerResolution | UnattendedResolution` 判别联合，不能把 resolver provenance 混入工具拥有的
