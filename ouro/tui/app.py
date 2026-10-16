@@ -427,11 +427,9 @@ _OURO_TUI_CSS = """
         height: auto;
         min-height: 100%;
         background: transparent;
-        /* Conversation rows are full-width, auto-height chronological blocks,
-           exactly the contract of Textual's incremental stream layout. It
-           reuses placements before the visible window instead of measuring the
-           complete transcript whenever adjacent composer chrome changes. */
-        layout: stream;
+        /* One growing history buffer and the live rows form a bounded widget
+           tree. Position these siblings from their current content heights. */
+        layout: vertical;
     }
 
     #conversation-history {

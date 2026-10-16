@@ -5165,12 +5165,23 @@ async def test_completed_tool_batch_archives_in_source_order(tmp_path: Path) -> 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
-        await conversation.sync_tools((first, second))
-        await conversation.sync_tools((first.model_copy(update={"status": "completed"}), second))
-
+        await conversation.add_user("Run both tools")
+        await conversation.append_assistant("Preparing both tools.")
+        await pilot.pause()
         history = conversation.query_one(ConversationHistory)
-        assert not [entry for entry in history.entries if entry.kind == "tool"]
-        assert len(conversation.query(".tool-row")) == 2
+
+        for first_status in ("running", "completed"):
+            await conversation.sync_tools(
+                (first.model_copy(update={"status": first_status}), second)
+            )
+            await pilot.pause()
+
+            assert not [entry for entry in history.entries if entry.kind == "tool"]
+            assert len(conversation.query(".tool-row")) == 2
+            assert history.region.height == len(history.lines)
+            rendered = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
+            assert rendered.index("Preparing both tools.") < rendered.index("First")
+            assert rendered.index("First") < rendered.index("Second")
 
         await conversation.sync_tools(
             (
@@ -5178,6 +5189,7 @@ async def test_completed_tool_batch_archives_in_source_order(tmp_path: Path) -> 
                 second.model_copy(update={"status": "completed"}),
             )
         )
+        await pilot.pause()
         tool_ids = [
             entry.tool.tool_call_id
             for entry in history.entries
@@ -5185,6 +5197,10 @@ async def test_completed_tool_batch_archives_in_source_order(tmp_path: Path) -> 
         ]
         assert tool_ids == ["call_first", "call_second"]
         assert not conversation.query(".tool-row")
+        assert history.region.height == len(history.lines)
+        rendered = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
+        assert rendered.index("Preparing both tools.") < rendered.index("First")
+        assert rendered.index("First") < rendered.index("Second")
 
 
 @pytest.mark.asyncio
