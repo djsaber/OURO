@@ -109,7 +109,7 @@ class AttachmentTextArea(TuiTextArea):
         cursor = rendered = 0
         for item in content.elements:
             text = content.text[cursor : item.text_offset]
-            label = item.label + " "
+            label = _element_text(item)
             parts.extend((text, label))
             rendered += len(text)
             spans.append(AttachmentSpan(rendered, rendered + len(label), item))
@@ -183,8 +183,9 @@ class AttachmentTextArea(TuiTextArea):
                 spans.append(AttachmentSpan(span.start + delta, span.end + delta, span.attachment))
         offset = start
         for item in inserted:
-            spans.append(AttachmentSpan(offset, offset + len(item.label) + 1, item))
-            offset += len(item.label) + 1
+            length = len(_element_text(item))
+            spans.append(AttachmentSpan(offset, offset + length, item))
+            offset += length
         result = AttachmentEdit(
             edit.text,
             self.plain_document.get_location_from_index(start),
@@ -210,10 +211,15 @@ class AttachmentTextArea(TuiTextArea):
         if not attachments or self.read_only:
             return
         self.history.checkpoint()
-        edit = Edit("".join(item.label + " " for item in attachments), *self.selection, False)
+        edit = Edit("".join(_element_text(item) for item in attachments), *self.selection, False)
         result = self.edit(self._attachment_edit(edit, attachments))
         self.history.checkpoint()
         self.move_cursor(result.end_location)
+
+
+def _element_text(item: InputFile | InputSkillReference) -> str:
+    """Keep the editor projection and its atomic span length in sync."""
+    return f"@{item.name} "
 
 
 def file_count_label(items: tuple[InputFile, ...], resource_refs: tuple[str, ...] = ()) -> str:

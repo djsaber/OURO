@@ -22,7 +22,7 @@ async def test_attachment_is_one_edit_unit_and_undo_restores_identity() -> None:
         original = editor.input_content
         assert original.text == "before after"
         assert original.attachments[0].text_offset == 7
-        assert editor.text == "before 测试图片.jpg after"
+        assert editor.text == "before @测试图片.jpg after"
         await pilot.press("backspace")
         assert editor.input_content == InputContent(text="before after")
         editor.undo()
@@ -61,7 +61,7 @@ async def test_cursor_skips_filename_and_plain_text_does_not_gain_identity() -> 
         )
         editor.move_cursor((0, 0))
         await pilot.press("right")
-        assert editor.cursor_location == (0, 6)
+        assert editor.cursor_location == (0, 7)
         await pilot.press("left")
         assert editor.cursor_location == (0, 0)
         await pilot.press("delete")
