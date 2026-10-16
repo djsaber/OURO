@@ -4,6 +4,7 @@
 
 | 日期 | 记录 |
 |---|---|
+| 2026-10-16 | [附件输入验收](2026-10-16-attachment-validation.md) |
 | 2026-10-14 | [插件配置实施与验收](2026-10-14-plugin-configuration.md) |
 | 2026-10-12 | [插件系统审查、修正与回归验收](2026-10-12-plugin-system-review.md) |
 | 2026-10-12 | [框架与插件系统重构验收](2026-10-12-plugin-platform-refactoring.md) |

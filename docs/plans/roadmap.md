@@ -29,7 +29,7 @@ Marketplace、签名/publisher trust root、worker OS sandbox、每插件依赖�
 ### 多附件输入与资源输出
 
 当前契约见[附件规格](../specs/attachments.md)，职责与设计依据见[文件输入架构](../architecture/file-input.md)。
-[附件输入验收](attachment-validation.md)覆盖 Windows Terminal / POSIX 终端真实拖入、视觉端点限制和跨平台会话传输。
+[附件输入验收记录](archive/2026-10-16-attachment-validation.md)覆盖 Windows Terminal / POSIX 终端真实拖入、视觉端点限制和跨平台会话传输。
 
 ### TUI 产品化增强
 

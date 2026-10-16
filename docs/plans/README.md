@@ -6,7 +6,6 @@
 
 | 规划 | 范围与进入条件 |
 |---|---|
-| [附件输入验收](attachment-validation.md) | 真实终端、视觉端点及跨平台会话传输的验收 |
 | [桌面 Host](desktop-host.md) | 复用 Application / Supervisor 的本地桌面产品面 |
 | [高级智能体能力](advanced-agents.md) | 长期记忆与通用 Workflow；需独立业务需求和持久化边界 |
 | [性能治理](performance.md) | 真实终端、长历史和条件性计算 / I/O 优化；先取得可重复证据 |
