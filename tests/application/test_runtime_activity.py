@@ -283,7 +283,7 @@ def test_runtime_activity_promotes_bounded_streaming_tool_state_into_the_final_c
     prepared = activity.tool_calls[0]
     assert prepared.tool_call_id == "call_stream"
     assert prepared.status == "planned"
-    assert prepared.argument_stream_tail == streamed.argument_stream_tail
+    assert prepared.argument_stream_tail is None
     assert prepared.started_at is None
 
     activity = reduce_runtime_activity(

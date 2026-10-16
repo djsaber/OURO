@@ -88,9 +88,11 @@ class RuntimeStatusSnapshot(ApplicationDTO):
 class RuntimeToolCallActivity(ApplicationDTO):
     """Host-neutral projection of a tool call's current runtime activity.
 
-    Before ``requested_at`` is set, ``tool_call_id`` is a stream-scoped
+    While ``status`` is ``streaming``, ``tool_call_id`` is a stream-scoped
     projection identity and ``tool_name`` contains the received name fragments.
-    A non-None ``argument_stream_tail`` means argument streaming has begun.
+    ``status`` owns the lifecycle; ``argument_stream_tail`` is bounded preview
+    content retained only while the call is ``streaming``. Canonical calls use
+    ``arguments`` instead.
     """
 
     tool_call_id: str
@@ -102,8 +104,8 @@ class RuntimeToolCallActivity(ApplicationDTO):
         default=None,
         max_length=RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS,
         description=(
-            "Bounded verbatim suffix observed while serialized arguments streamed; "
-            "None before argument streaming and cleared on execution or terminal state"
+            "Bounded verbatim suffix of streaming arguments; "
+            "None before argument streaming and outside the streaming state"
         ),
     )
     result_data: dict[str, JsonValue] = Field(default_factory=dict)

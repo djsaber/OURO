@@ -817,10 +817,7 @@ class ToolActivityRow(RangeSelectionOnly, Static):
 
     @property
     def _is_active(self) -> bool:
-        return (
-            self._tool.argument_stream_tail is not None
-            or self._tool.status in _ACTIVE_TOOL_STATUSES
-        )
+        return self._tool.status in _ACTIVE_TOOL_STATUSES
 
     def _tick(self) -> None:
         self._frame = (self._frame + 1) % len(theme_for(self).spinner_frames)
@@ -874,7 +871,7 @@ def _tool_activity_text(
 ) -> Text:
     """Render one tool state without coupling it to a mounted widget."""
 
-    if tool.status == "streaming" or tool.argument_stream_tail is not None:
+    if tool.status == "streaming":
         text = Text(no_wrap=True, overflow="ellipsis")
         text.append(
             f"{theme.spinner_frames[frame % len(theme.spinner_frames)]} ",

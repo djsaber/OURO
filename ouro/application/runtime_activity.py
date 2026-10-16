@@ -274,8 +274,8 @@ def reduce_runtime_activity(
             run_phase="tool_preflight",
             batch_phase="planned",
             batch_id=_string_or_none(payload.get("batch_id")),
-            # Preserve stream activity through preflight so the canonical
-            # request promotes it instead of exposing a duplicate call.
+            # Preserve stream identities until each canonical request promotes
+            # its matching entry instead of exposing a duplicate call.
             tool_calls=tuple(item for item in current.tool_calls if item.status == "streaming"),
         )
     elif event_type == "tool_call_requested":
@@ -573,13 +573,12 @@ def _upsert_tool_call(
                 "tool_call_id": tool_call_id,
                 "tool_name": tool_name if tool_name != "unknown" else item.tool_name,
                 "status": status,
+                "argument_stream_tail": None,
             }
             if arguments is not None:
                 changes["arguments"] = arguments
             if result_data is not None:
                 changes["result_data"] = result_data
-            if transition in {"started", "ended"}:
-                changes["argument_stream_tail"] = None
             changes[f"{transition}_at"] = occurred_at
             updated.append(item.model_copy(update=changes))
             matched = True
@@ -610,12 +609,7 @@ def _update_tool_call_status(
     if tool_call_id is None:
         return calls
     return tuple(
-        item.model_copy(
-            update={
-                "status": status,
-                **({"argument_stream_tail": None} if status in _TERMINAL_TOOL_STATUSES else {}),
-            }
-        )
+        item.model_copy(update={"status": status, "argument_stream_tail": None})
         if item.tool_call_id == tool_call_id
         else item
         for item in calls
@@ -634,8 +628,8 @@ def _mark_unsettled_tool_calls(
         else item.model_copy(
             update={
                 "status": status,
+                "argument_stream_tail": None,
                 **({"ended_at": ended_at} if ended_at is not None else {}),
-                **({"argument_stream_tail": None} if status in _TERMINAL_TOOL_STATUSES else {}),
             }
         )
         for item in calls
@@ -734,9 +728,6 @@ def _tool_calls_from_payload(
                 status=status,
                 source_index=source_index,
                 arguments=arguments or (previous.arguments if previous is not None else {}),
-                argument_stream_tail=(
-                    previous.argument_stream_tail if previous is not None else None
-                ),
                 result_data=previous.result_data if previous is not None else {},
                 requested_at=previous.requested_at if previous is not None else None,
                 started_at=previous.started_at if previous is not None else None,
@@ -769,11 +760,6 @@ def _overlay_tool_calls(
                 status=call.status,
                 source_index=call.request.source_index,
                 arguments=cast("dict[str, JsonValue]", dict(call.request.arguments)),
-                argument_stream_tail=(
-                    previous.argument_stream_tail
-                    if previous is not None and previous.started_at is None
-                    else None
-                ),
                 result_data=(
                     cast("dict[str, JsonValue]", dict(result.structured))
                     if result is not None

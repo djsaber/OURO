@@ -352,6 +352,10 @@ terminal continuation、Agent settlement、Observer/catalog lease 清理由明�
 及 compaction 事件补足响应中的瞬时阶段。投影必须能从 SessionSnapshot 重建；`Session.status` 继续保持粗粒度，
 不得扩张为 UI 状态枚举。活动订阅是可选能力，已有 durable event 订阅语义不因 UI 投影而改变。
 
+`RuntimeToolCallActivity.status` 表达调用的生命周期阶段，Host 据此派生活动展示。`argument_stream_tail` 只保存 `streaming`
+阶段的有界参数预览；正式调用接管或流式调用取消、失败时清除，预检、审批、执行和终态使用 `arguments`。
+批次事件与 durable 快照投影不继承流式参数预览，Host 不以预览文本是否存在判断调用是否仍在运行。
+
 工具批次在 `tool_batch_planned` 前持久化 planned calls 和 `tool_preflight`，结果写入 canonical messages 前产生
 `tool_batch_results_committing`。`tool_batch_started` 携带预检后的逐调用状态，交互恢复与调用完成事件也携带
 精确 ToolCall status；Host 不得仅凭 `is_error` 推断 aborted/failed。因而 Host 不需要从相邻事件间隙猜测
