@@ -304,7 +304,7 @@ async def test_plan_command_creates_and_binds_a_session(tmp_path) -> None:
         "off",
         session_id=session_id,
     )
-    assert "deactivated" in deactivated.execution.output.lower()
+    assert "Plan mode ended" in deactivated.execution.output
     assert store.load_session_record(session_id).controls.activations == []
     await application.close()
 
@@ -445,7 +445,7 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
         for message in completed_snapshot.messages
         if message.tool_result is not None and message.tool_result.tool_call_id == "call_exit"
     )
-    assert "Exited plan mode" in exit_result.text_content
+    assert "The user accepted the plan. Plan mode has ended" in exit_result.text_content
     assert "Selected option: Direct implementation" in exit_result.text_content
     assert (
         len(
@@ -487,7 +487,7 @@ async def test_plan_mode_exit_uses_unattended_resolution_in_afk_mode(tmp_path) -
     assert completed.run.status == "completed"
     assert completed.session.interaction_mode == "unattended"
     assert all(
-        any("AFK mode is active" in message.text_content for message in request)
+        any("Unattended mode is active" in message.text_content for message in request)
         for request in provider.requests
     )
     exit_result = next(
@@ -498,7 +498,7 @@ async def test_plan_mode_exit_uses_unattended_resolution_in_afk_mode(tmp_path) -
     assert exit_result.structured["resolved_by"] == "host_policy"
     assert exit_result.structured["resolver_id"] == "ouro.afk"
     assert exit_result.structured["selected_option"] == "Direct implementation"
-    assert "User approval was not requested" in exit_result.content
+    assert "The user was not asked to approve" in exit_result.content
     event_snapshot = store.load_session(completed.session.session_id)
     resolved_event = next(
         event for event in event_snapshot.events if event.event_type == "ask_user_resolved"
@@ -742,7 +742,7 @@ async def test_plan_off_releases_controller_without_creating_run_or_deleting_art
     assert completed.messages == []
     assert completed.runs == []
     assert plan_path.read_text(encoding="utf-8") == "# Draft plan\n"
-    assert "Plan mode deactivated" in deactivated.output
+    assert "Plan mode ended" in deactivated.output
     assert replayed.data["session_controls"][0]["changed"] is False
     assert not store.load_session_record(session.session_id).controls.activations
 
@@ -786,7 +786,7 @@ async def test_runtime_lists_and_releases_plan_through_controller(
         activation_id=activation_id,
     )
 
-    assert "Plan mode deactivated" in released.output
+    assert "Plan mode ended" in released.output
     assert store.load_session_record(session.session_id).controls.activations == []
     await application.close()
 
@@ -860,7 +860,7 @@ async def test_plan_mode_denies_other_state_changing_tools_without_running_them(
     )
     assert denied.is_error is True
     assert denied.structured["error_type"] == "ToolPermissionDenied"
-    assert "Only OURO's builtin Write or Edit" in denied.content
+    assert "Write/Edit to update the designated plan file" in denied.content
     await application.close()
 
 
@@ -926,10 +926,10 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     assert exit_plan.definition.interaction_controller_id == (
         "dev.ouro.plan/session_controllers/mode"
     )
-    assert enter.definition.description.startswith("Use this tool before")
-    assert "Do not call it" in enter.definition.description
-    assert exit_plan.definition.description.startswith("Use this tool only after")
-    assert "use AskUser" in exit_plan.definition.description
+    assert enter.definition.description.startswith("Enter plan mode")
+    assert "Skip small, well-specified edits" in enter.definition.description
+    assert exit_plan.definition.description.startswith("Submit the completed plan file")
+    assert "Use AskUser" in exit_plan.definition.description
     exit_properties = exit_plan.definition.parameters_schema["properties"]
     assert "description" in exit_properties["options"]
     option_properties = exit_properties["options"]["items"]["properties"]

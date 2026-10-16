@@ -243,9 +243,8 @@ def _project_tool_definition(tool: ToolDefinition) -> ToolDefinition:
     if tool.batch_behavior != "exclusive":
         return tool
     constraint = (
-        "Host calling constraint: This must be the only tool call in your response. "
-        "If combined with any other tool call, the entire batch will be rejected "
-        "before any tool executes."
+        "This must be the only tool call in your response. If you include other tool calls, "
+        "none of them will execute."
     )
     description = f"{tool.description}\n\n{constraint}" if tool.description else constraint
     return tool.model_copy(update={"description": description})
@@ -358,8 +357,9 @@ def project_recovery_messages(messages: list[MessageRecord]) -> list[MessageReco
             turn_id=message.turn_id,
             role="system",
             text=(
-                "A previous assistant model attempt was interrupted before completion. "
-                "Treat the following text as partial work, not as a completed answer:\n\n"
+                "The previous assistant response was interrupted. The text below is "
+                "unfinished and does not confirm that any planned action succeeded. "
+                "Check the latest tool results and continue from existing progress:\n\n"
                 f"{message.text_content}"
             ),
             sequence=message.sequence,

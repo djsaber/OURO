@@ -308,10 +308,9 @@ class ToolCallCoordinator:
                         tool_name=request.name,
                         is_error=True,
                         content=(
-                            "Tool batch rejected: exclusive tools must be called alone. "
-                            f"Exclusive tools in this batch: {', '.join(exclusive_tools)}. "
-                            "No tools were executed. "
-                            "Submit each exclusive tool in a separate batch."
+                            "No tools were executed. These tools must each be the only "
+                            f"tool call in a response: {', '.join(exclusive_tools)}. "
+                            "Call each separately, then continue with the remaining tools."
                         ),
                         structured={
                             "error_type": "ExclusiveToolBatchViolation",
@@ -1380,8 +1379,8 @@ class ToolCallCoordinator:
                 outcome.invocation,
                 error_type="UserInputUnavailable",
                 error_message=(
-                    "AFK mode does not wait for user input and this tool does not "
-                    "support unattended recovery. Continue using available context."
+                    "The user is unavailable, and this tool cannot continue without their "
+                    "input. Continue using available context rather than asking again."
                 ),
                 structured={
                     "resolved_by": resolution.resolved_by,
@@ -1402,7 +1401,8 @@ class ToolCallCoordinator:
             resumed.invocation,
             error_type="UnattendedInteractionLoop",
             error_message=(
-                "a tool cannot request more user input after receiving an unattended resolution"
+                "The tool requested user input again while the user is unavailable. "
+                "Continue using available context rather than retrying the question."
             ),
             structured={
                 "resolved_by": resolution.resolved_by,

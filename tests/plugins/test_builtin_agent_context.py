@@ -85,9 +85,10 @@ def test_system_information_is_tagged_prompt_tail_with_day_precision() -> None:
         "Current date: 2026-07-31\n"
         "Time zone: CST (UTC+08:00)\n"
         "Workspace: /work & project\n"
-        "Shell: /bin/test & tools\n"
+        "Environment default shell: /bin/test & tools\n"
         "Path style: POSIX\n"
-        "Preferred encoding: UTF-8"
+        "System preferred encoding: UTF-8\n"
+        "Command tools may use a different shell or encoding; follow their descriptions."
     )
     assert "23:59" not in fragment.text
 

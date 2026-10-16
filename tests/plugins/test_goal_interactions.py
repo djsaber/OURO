@@ -242,7 +242,7 @@ async def test_direct_creation_and_pending_lifecycle_coalescing(
     pending = g.pending()
     assert len(pending) == (2 if tag == "goal-create" else 1)
     assert pending[0].semantic_tag == tag
-    assert "Current goal state for this request" not in pending[0].prompt
+    assert "This status supersedes earlier goal notifications." not in pending[0].prompt
     assert "Call CreateGoal once" not in pending[0].prompt
     if tag in {"goal-updated", "goal-cancelled"}:
         assert "Original objective" not in pending[0].prompt
@@ -387,7 +387,7 @@ async def test_stopped_goal_allows_normal_tools_without_resuming(goal_app, statu
     assert goal["status"] == status
     assert (
         sum(
-            "Current goal state for this request" in message.text_content
+            "This status supersedes earlier goal notifications." in message.text_content
             for message in g.provider.requests[0]
         )
         == 1

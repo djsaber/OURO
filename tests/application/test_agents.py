@@ -1556,7 +1556,7 @@ async def test_send_control_result_is_markdown_without_internal_ids(tmp_path) ->
 
     assert "## Message Sent to Subagent" in result.content
     assert f"**Delegation ID**: `{handle.delegation_id}`" in result.content
-    assert "proactively push a notification" in result.content
+    assert "result will be delivered automatically" in result.content
     assert handle.child_session_id not in result.content
     relation = store.load_delegation("ses_root", handle.delegation_id)
     assert relation.current_child_run_id is not None
@@ -3369,7 +3369,7 @@ async def test_async_result_delivery_is_exact_once(tmp_path) -> None:
     async_content = spawn_results[0].text_content
     assert "## Subagent Dispatched (Async)" in async_content
     assert f"**Delegation ID**: `{relation.delegation_id}`" in async_content
-    assert "proactively push a notification" in async_content
+    assert "result will be delivered automatically" in async_content
     assert relation.child_session_id not in async_content
     assert relation.current_child_run_id not in async_content
     assert not any(

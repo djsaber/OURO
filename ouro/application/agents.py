@@ -2206,7 +2206,7 @@ class AgentService:
                             tool_call_id=call.request.id,
                             tool_name=call.request.name,
                             is_error=True,
-                            content="Parent Run terminated while waiting for subagents.",
+                            content="The parent task stopped while waiting for subagents.",
                             structured={"interrupted": True},
                             ended_at=utc_now(),
                         ),
@@ -2418,8 +2418,8 @@ def _async_spawn_content(handle: AgentHandleView) -> str:
         f"- **Agent**: {handle.agent_name} (`{handle.agent_id}`)\n"
         f"- **Delegation ID**: `{handle.delegation_id}`\n"
         f"- **Status**: {handle.status}\n\n"
-        "The subagent is now running in the background. It will proactively push "
-        "a notification with its result when it completes; do not poll for its status."
+        "The task was accepted and may wait for capacity before starting. "
+        "Its result will be delivered automatically; continue independent work without polling."
     )
 
 
@@ -2456,8 +2456,8 @@ def _send_agent_message_content(handle: AgentHandleView) -> str:
         f"- **Agent**: {handle.agent_name} (`{handle.agent_id}`)\n"
         f"- **Delegation ID**: `{handle.delegation_id}`\n"
         f"- **Status**: {handle.status}\n\n"
-        "Your message has been delivered to the subagent. It will proactively push "
-        "a notification with its result when it completes; do not poll for its status."
+        "Your message was accepted. The subagent's result will be delivered automatically; "
+        "continue independent work without polling."
     )
 
 

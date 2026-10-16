@@ -12768,7 +12768,7 @@ async def test_loaded_session_projects_active_harness_into_status_line(tmp_path:
             for entry in app.query_one(ConversationHistory).entries
             if entry.kind == "notice"
         )
-        assert not any("Plan mode deactivated" in notice for notice in notices)
+        assert not any("Plan mode ended" in notice for notice in notices)
 
 
 @pytest.mark.asyncio

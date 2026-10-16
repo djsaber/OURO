@@ -45,59 +45,41 @@ _PLAN_WRITERS = {
 }
 
 ENTER_PLAN_MODE_DESCRIPTION = (
-    "Use this tool before a non-trivial implementation when you need read-only investigation "
-    "and an explicit plan before making changes. Call it for ambiguous scope, architectural "
-    "decisions, or multi-file work whose approach should be reviewed. Do not call it for small, "
-    "well-specified edits, purely informational requests, or when plan mode is already active."
+    "Enter plan mode to investigate and prepare a plan for user review before implementation. "
+    "Use when scope or design needs agreement. While active, only read-only tools and "
+    "Write/Edit of the designated plan file are allowed. Skip small, well-specified edits, "
+    "informational requests, and work already in plan mode."
 )
 
 EXIT_PLAN_MODE_DESCRIPTION = (
-    "Use this tool only after the plan file contains a complete, actionable implementation plan "
-    "and you are ready for user review. Do not call it before writing the plan or use it to ask "
-    "for missing requirements; use AskUser for those. This submits the plan for acceptance, "
-    "revision, or rejection. Optional options represent implementation alternatives, never "
-    "approval actions."
+    "Submit the completed plan file for user review. The user may accept, request revisions, "
+    "or reject it; start implementation only after a successful exit. Use AskUser for missing "
+    "requirements before submission. Optional options are implementation alternatives, "
+    "not approval actions."
 )
 
-_SCAFFOLD = """Plan mode is active. Read-only tools are available without additional plan
-mode restrictions. To create or change the plan, you MUST use OURO's builtin
-Write or Edit tool and target the exact plan file shown below. Those Write/Edit
-calls are denied for every other path. Every other state-changing or
-unknown-effect tool is denied regardless of target. Do not use shell, MCP,
-plugin, or other tools to make changes, even if they could write the plan file.
-This supersedes any other instructions you have received. Call ExitPlanMode
-before performing implementation work or making any other change.
+_SCAFFOLD = """Plan mode is active. Investigate with read-only tools. Use Write or Edit only
+for the exact plan file below; no other file may be changed. Shell commands and other tools
+that can make changes, or whose effects are unspecified, are unavailable in this mode.
+Tool approval does not override these restrictions.
 
-Workflow:
+1. Read the relevant files and clarify missing requirements with AskUser when needed.
+2. Develop a concrete recommendation, check key assumptions, and identify trade-offs.
+3. Write an actionable implementation plan and verification steps to the plan file.
+4. Call ExitPlanMode for review. Begin implementation only after it confirms plan mode has ended.
 
-1. Understand — explore the relevant context using read-only tools.
-2. Design — converge on one concrete recommendation and its trade-offs.
-3. Verify — re-check the key facts and affected files.
-4. Write Plan — use only OURO's builtin Write or Edit tool to record the plan in
-   the designated plan file; no other file may be modified.
-5. Exit — call ExitPlanMode for user approval.
-
-When the plan contains genuinely different implementation approaches, provide
-at most three approaches as options to ExitPlanMode. Options are implementation
-approaches, not approval actions. Never create options for approving, revising,
-or rejecting the plan; the Host provides those actions separately. Use AskUser
-only for missing requirements or preferences. Never ask for plan approval
-through text or AskUser, and do not refer to \"the plan\" in an AskUser question.
+If the plan offers distinct implementation alternatives, pass up to three as ExitPlanMode options.
+Acceptance, revision, and rejection are already provided by the review dialog; do not make them
+options or ask for plan approval through ordinary text or AskUser. Questions about requirements
+must be self-contained rather than assuming the user has read the plan file.
 
 Plan file: {plan_path}"""
 
-_ENTERED = """Plan mode is now active. Your workflow:
+_ENTERED = """Plan mode is active. Investigate with read-only tools, then write the implementation
+plan using Write or Edit at the exact path below. Do not change other files or run shell commands.
+Call ExitPlanMode when ready for review. Wait for a successful exit before implementation.
 
-Plan file: {plan_path}
-
-1. Use any read-only tools to investigate the codebase.
-2. Design a concrete, step-by-step plan.
-3. Write the plan with OURO's builtin Write or Edit tool, targeting exactly the
-   plan file above.
-4. When the plan is ready, call ExitPlanMode for user approval.
-
-All other state-changing or unknown-effect tool calls are denied while plan
-mode is active. Approval cannot override this restriction."""
+Plan file: {plan_path}"""
 
 
 class PlanPlugin:
@@ -296,7 +278,7 @@ class PlanPlugin:
         repository = PlanStateRepository(call.session_state)
         state = repository.load()
         return SessionControllerOutput(
-            output="Plan mode deactivated. All tools are now available for the next round.",
+            output="Plan mode ended. Other tool permissions still apply.",
             data={
                 "phase": "inactive",
                 "plan_path": state.plan_path,
@@ -345,9 +327,9 @@ class PlanPlugin:
         return ToolPolicyDecision(
             action="deny",
             reason=(
-                "Plan mode denied this state-changing or unknown-effect tool call. "
-                "Only OURO's builtin Write or Edit may modify the current plan file; "
-                "read-only tools remain available."
+                "This tool is unavailable in plan mode because it can make changes or its "
+                "effects are unspecified. Use read-only tools to investigate, or Write/Edit "
+                "to update the designated plan file."
             ),
         )
 
@@ -401,14 +383,15 @@ class PlanPlugin:
                 else "not_applicable"
             )
             selected = (
-                f"\nSelected option by AFK policy: {selected_option}\n"
+                f"\nOnly proposed option: {selected_option}\n"
                 if selected_option is not None
                 else ""
             )
             output = ToolOutput(
                 content=(
-                    "Exited plan mode under AFK policy. User approval was not "
-                    "requested; execution is delegated to the agent.\n"
+                    "Plan mode ended automatically because unattended mode is active. "
+                    "The user was not asked to approve. Choose an approach from the available "
+                    "evidence and proceed within the authorized scope.\n"
                     f"Plan saved to: {state.plan_path}\n{selected}\n{plan}"
                 ),
                 structured={
@@ -456,8 +439,8 @@ class PlanPlugin:
             )
             output = ToolOutput(
                 content=(
-                    "Exited plan mode. Plan mode deactivated. All tools are now "
-                    f"available.\nPlan saved to: {state.plan_path}\n{selected}\n{plan}"
+                    "The user accepted the plan. Plan mode has ended; proceed with "
+                    f"implementation.\nPlan saved to: {state.plan_path}\n{selected}\n{plan}"
                 ),
                 structured={
                     "phase": "inactive",
@@ -480,7 +463,10 @@ class PlanPlugin:
         if action == "revise":
             suffix = f" Feedback: {feedback}" if feedback else ""
             output = ToolOutput(
-                content=f"Plan revision requested by user.{suffix}",
+                content=(
+                    f"The user requested changes to the plan. Plan mode remains active.{suffix} "
+                    "Revise the plan file and call ExitPlanMode again when ready."
+                ),
                 structured={"phase": "active", "action": "revise", "feedback": feedback},
                 is_error=True,
             )

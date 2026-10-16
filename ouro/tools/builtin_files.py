@@ -84,7 +84,8 @@ class _EditArguments(BuiltinArguments):
     old: str = Field(
         min_length=1,
         description=(
-            "Literal text to match, not regex. Include context to distinguish repeated occurrences."
+            "Exact text copied from the file, without Read's line-number prefixes. "
+            "Include enough surrounding text to identify the intended occurrence; not regex."
         ),
     )
     new: str = Field(
@@ -131,10 +132,11 @@ def builtin_file_tools() -> list[Tool]:
             definition=ToolDefinition(
                 name="Edit",
                 description=(
-                    "Replace exact literal text in an existing UTF-8 file. Read the relevant "
-                    "section first to identify the target; use Write for new files or full "
-                    "rewrites. If old is absent, returns an error without changes. Matching "
-                    "normalizes line endings to LF; CRLF files retain CRLF."
+                    "Replace exact text in an existing UTF-8 file. Call with path, old, and new; "
+                    "replace_all is optional. Read the relevant section first. Whitespace must "
+                    "match except line endings, which are normalized to LF; CRLF files retain "
+                    "CRLF. Replaces the first occurrence unless replace_all is true. If old is "
+                    "absent, the file is unchanged. Use Write for new files or full rewrites."
                 ),
                 parameters_schema=_EditArguments.model_json_schema(),
                 permission_mode="approval",
@@ -211,7 +213,11 @@ def _edit(invocation: ToolInvocation, context: ToolExecutionContext) -> ToolResu
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,
             is_error=True,
-            content="Old text was not found.",
+            content=(
+                f"No changes to {path}: old was not found. Read the current file, then copy "
+                "the exact target text into old without line-number prefixes. Check spaces "
+                "and indentation; line endings are normalized automatically."
+            ),
             structured={"path": str(path), "changed": False, "replacements": 0},
             ended_at=utc_now(),
         )
@@ -226,7 +232,11 @@ def _edit(invocation: ToolInvocation, context: ToolExecutionContext) -> ToolResu
     return ToolResult(
         tool_call_id=invocation.tool_call_id,
         tool_name=invocation.tool_name,
-        content=f"Edited {path}; replaced {replacements} occurrence(s)",
+        content=(
+            f"Edited {path}; replaced {replacements} occurrence(s)"
+            if updated != text
+            else f"No changes to {path}: old and new are identical after normalizing line endings."
+        ),
         structured={
             "path": str(path),
             "changed": updated != text,

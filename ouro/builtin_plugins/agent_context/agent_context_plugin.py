@@ -130,11 +130,13 @@ class AgentContextPlugin:
             ("Current date", current.date().isoformat()),
             ("Time zone", timezone),
             ("Workspace", working_directory),
-            ("Shell", self._facts.shell),
+            ("Environment default shell", self._facts.shell),
             ("Path style", self._facts.path_style),
-            ("Preferred encoding", self._facts.preferred_encoding),
+            ("System preferred encoding", self._facts.preferred_encoding),
         )
-        return "\n".join(f"{label}: {value}" for label, value in values)
+        return "\n".join(f"{label}: {value}" for label, value in values) + (
+            "\nCommand tools may use a different shell or encoding; follow their descriptions."
+        )
 
 
 def _timezone_description(current: datetime) -> str:

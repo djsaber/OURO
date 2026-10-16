@@ -90,7 +90,7 @@ class GoalPlugin:
                             "objective": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "The exact requested objective.",
+                                "description": "The user's requested outcome and scope.",
                             },
                             "token_budget": {
                                 "type": "integer",
@@ -117,11 +117,22 @@ class GoalPlugin:
                     parameters_schema={
                         "type": "object",
                         "properties": {
-                            "status": {"type": "string", "enum": ["active", "complete", "blocked"]},
+                            "status": {
+                                "type": "string",
+                                "enum": ["active", "complete", "blocked"],
+                                "description": (
+                                    "active: resume; complete: verified success; blocked: unable "
+                                    "to progress after the repeated obstacle described above."
+                                ),
+                            },
                             "report": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "Result evidence, the blocker, or why to resume.",
+                                "description": (
+                                    "For complete, give the result and verification; for blocked, "
+                                    "progress, attempts, and what is needed; "
+                                    "for active, why to resume."
+                                ),
                             },
                         },
                         "required": ["status", "report"],
@@ -251,7 +262,8 @@ class GoalPlugin:
         ):
             return _tool_error(
                 "stale_goal_update",
-                "This work started before the current goal was created or updated.",
+                "This work started before the current goal was created or updated, so the "
+                "update was not applied. Use GetGoal to inspect its current objective and status.",
             )
         if status == "active":
             if goal.status not in {"paused", "blocked"}:

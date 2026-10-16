@@ -165,7 +165,10 @@ def _spawn_control_tool(
                 "items": {"type": "string", "minLength": 1},
                 "maxItems": 16,
                 "uniqueItems": True,
-                "description": "IDs of resources in this conversation needed for the task.",
+                "description": (
+                    "IDs of attached resources needed for the task, copied from available "
+                    "results; not filesystem paths. Omit when none are needed."
+                ),
             },
         },
         "required": ["agent_id", "task", "description"],
@@ -179,7 +182,8 @@ def _spawn_control_tool(
                 "Delegate a bounded task when separate context, specialized capabilities, "
                 "or parallel work helps. Avoid trivial tasks, tightly coupled steps, or work "
                 "you can finish faster yourself. Available agents are listed under agent_id. "
-                "Subagents cannot spawn further subagents; work may queue when capacity is full."
+                "Subagents share workspace files; avoid overlapping edits. They cannot spawn "
+                "further subagents, and work may queue when capacity is full."
             ),
             parameters_schema=spawn_schema,
             effect="state_changing",

@@ -10,21 +10,17 @@ from ouro.tools.base import Tool, ToolDefinition, ToolExecutionContext, ToolInvo
 from ouro.tools.builtin_common import BuiltinArguments, _tool_result
 
 TODOLIST_DESCRIPTION = """\
-Track multi-step work in a todo list for this conversation. Skip trivial tasks and purely
-informational replies. In plan mode, use the plan file instead.
-Submit the complete current list on every call; [] represents an empty list. The tool validates
-and displays the supplied items without storing state. Refer to conversation history for prior
-lists. Capture new multi-step requirements as todos.
-Update only after meaningful changes. Mark one item in_progress before starting it, keep exactly
-one active while working, and mark it done immediately after completion. Do not mark
-incomplete, unverified, failing, or blocked work done. Keep blocked work in_progress or add a
-pending item for the blocker; tell the user if no further progress is possible."""
+Display progress on multi-step work. Skip simple tasks and informational replies; in plan mode,
+use the plan file instead. Submit the complete current list each time; [] displays an empty list.
+Previous lists remain in conversation history and are not merged automatically.
+Update after meaningful progress or changed requirements. Keep one item in_progress while working
+and mark it done only when completed and verified. Keep blocked work unfinished, record the
+blocker, and tell the user when further progress requires their input."""
 
 
 _TODOLIST_GUIDANCE = (
-    "Ensure that you continue to use the todo list to track progress. Mark tasks done "
-    "immediately after finishing them, and keep exactly one task in_progress when work is "
-    "underway."
+    "Update this list as work progresses. Keep one item in_progress while working; "
+    "mark done only after completion and verification."
 )
 
 

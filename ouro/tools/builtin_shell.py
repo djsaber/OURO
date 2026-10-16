@@ -137,7 +137,8 @@ class _ShellArguments(BuiltinArguments):
         min_length=1,
         description=(
             "Existing working directory, absolute or workspace-relative. "
-            "Defaults to the workspace; applies only to this call."
+            "Defaults to the workspace, or the current directory if none is set; "
+            "applies only to this call."
         ),
     )
     timeout_seconds: float = Field(

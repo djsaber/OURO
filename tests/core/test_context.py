@@ -30,9 +30,8 @@ def test_context_projects_batch_contract_without_changing_registered_tools(descr
     context = builder.build(messages=[], tools=definitions, input_token_budget=original_cost)
     projected = context.provider_context().tools
     constraint = (
-        "Host calling constraint: This must be the only tool call in your response. "
-        "If combined with any other tool call, the entire batch will be rejected "
-        "before any tool executes."
+        "This must be the only tool call in your response. If you include other tool calls, "
+        "none of them will execute."
     )
 
     assert projected[0]["description"] == "\n\n".join(filter(None, [description, constraint]))

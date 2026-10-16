@@ -17,9 +17,10 @@ ASK_USER_TOOL_NAME = "AskUser"
 ASK_USER_REQUEST_TYPE = "ask_user"
 
 _ASK_USER_DESCRIPTION = """\
-Ask for information needed to continue only when you cannot infer or discover it and the
-answer will materially change the work. Avoid trivial choices you can resolve yourself.
-Wait for the user's answers before continuing dependent work.
+Ask the user 1-3 questions when missing information or preferences materially affect the work
+and cannot be inferred or discovered. Provide 2-4 options per question; free-form answers are
+always available. Avoid trivial choices you can resolve yourself. Wait for the answers before
+continuing dependent work.
 """
 
 

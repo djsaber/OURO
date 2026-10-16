@@ -194,8 +194,8 @@ class FileInputProjector:
                     TextContent(
                         text=(
                             f"\n\nObserved at: {utc_now().isoformat()}\n"
-                            "Original-file contents at input consumption; "
-                            "later tool reads may see changes.\n"
+                            "File contents were read at this time; "
+                            "read the file again if you need its current contents.\n"
                         )
                     )
                 )
@@ -413,7 +413,7 @@ class FileInputProjector:
         encoding = text_encoding(prefix)
         if encoding is None:
             return self._reference(
-                source, "Opaque binary or unsupported text encoding; contents not supplied"
+                source, "Binary file or unsupported text encoding; contents not supplied"
             )
         if text_budget < 1024 and source.size > text_budget:
             return self._reference(

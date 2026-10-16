@@ -61,7 +61,8 @@ def media_format_omission(content_type: MediaModality, media_type: str) -> str |
     }
     if media_type not in formats[content_type]:
         return (
-            f"The {content_type} format {media_type!r} cannot be sent. Provide a supported format."
+            f"The {content_type} format {media_type!r} cannot be sent. "
+            f"Supported formats: {', '.join(formats[content_type])}."
         )
     return None
 

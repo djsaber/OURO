@@ -504,7 +504,7 @@ async def test_exclusive_tool_rejects_mixed_batch_before_any_handler_runs(tmp_pa
         "ExclusiveToolBatchViolation",
     ]
     assert all("No tools were executed." in item.text_content for item in result.tool_results)
-    assert all("separate batch" in item.text_content for item in result.tool_results)
+    assert all("Call each separately" in item.text_content for item in result.tool_results)
     assert any(event.event_type == "tool_batch_rejected" for event in snapshot.events)
 
 

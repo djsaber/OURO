@@ -5,44 +5,38 @@ from __future__ import annotations
 from .state import GoalRecord
 
 GET_GOAL_DESCRIPTION = (
-    "Get the latest goal for this conversation: objective, status, total token budget, "
-    "actual usage, remaining budget, timestamps, and report. Unavailable usage is not zero."
+    "Get this conversation's current goal, status, report, timestamps, and token usage. "
+    "The budget covers total input and output tokens. Unavailable usage is not zero."
 )
 
 CREATE_GOAL_DESCRIPTION = (
-    "Create a goal only when the user or system/developer instructions explicitly request one, "
-    "including a natural-language request. Ordinary tasks and requests to draft a goal do not "
-    "authorize creation. Preserve the requested objective without expanding or narrowing it. "
-    "Set token_budget only to an explicitly requested positive total. An unfinished goal "
-    "prevents creation. If the user has already created the goal, begin work without calling "
-    "this tool again. After success, follow the current goal instructions."
+    "Create a goal for ongoing work only when the user or system/developer instructions "
+    "explicitly request one. Ordinary tasks or requests to draft a goal do not authorize "
+    "creation. Preserve the requested scope; set token_budget only if explicitly requested. "
+    "Fails if an unfinished goal exists. If the requested goal is already active, continue "
+    "working without recreating it."
 )
 
-UPDATE_GOAL_DESCRIPTION = """Resume the current goal or report that it is complete or blocked.
+UPDATE_GOAL_DESCRIPTION = """Resume the current goal or mark it complete or blocked.
+Always include report.
 
-Call with status="active" to resume a paused or blocked goal when the current request and
-available evidence justify continuing. Explain why in report, then continue from existing progress.
-Receiving a message or continuing the conversation does not itself resume the goal.
-Preserve the objective and budget. An exhausted or unverifiable budget requires the user's action.
+- active: Resume a paused or blocked goal when the current request and evidence justify it.
+  Explain why, wait for success, then continue from existing progress. A new message alone does
+  not resume the goal. An exhausted budget or unavailable budget usage requires user action.
+- complete: The objective is achieved, verified, and no required work remains. Report the
+  delivered result and verification evidence.
+- blocked: The same obstacle has prevented meaningful progress in at least three consecutive
+  goal turns, and progress requires user input or an external change. Report progress, attempts,
+  the obstacle, and what is needed to continue.
 
-Call with status="complete" when the objective has been achieved, verified against concrete
-evidence, and no required work remains. Include the delivered result and verification in report.
-
-Call with status="blocked" only after the same obstacle has prevented meaningful progress in
-at least three consecutive goal turns and further progress requires user input or an external
-change. A goal turn is work and its result check initiated by a user request to start or resume
-the goal, or by an automatic request to continue. Tool retries within one turn are not
-separate turns.
-Report progress, attempted approaches, the obstacle, and what would allow work to continue.
-
-After a blocked goal is resumed, start a fresh assessment; earlier turns do not count.
-Do not repeat ineffective actions merely to reach three turns. Difficulty, uncertainty, an
-intermediate response, or a nearly exhausted budget does not establish completion or blocking.
-When a stopping condition is satisfied, call this tool rather than only describing that state.
-After successfully setting complete or blocked, report the outcome and stop goal work.
-
-This tool cannot pause, change the objective or budget, or declare a budget limit.
-Usage and timestamps are recorded automatically; do not guess them."""
+A goal turn is one work cycle started by a user request to start or resume the goal or an
+automatic request to continue. Tool retries within it do not count as separate turns. After
+resumption, count from zero. Do not repeat ineffective actions just to reach three turns.
+Difficulty, uncertainty, an intermediate answer, or a low budget alone does not justify stopping.
+When complete or blocked applies, call this tool. After a successful update, report the returned
+status and stop goal work.
+This tool cannot pause, change the objective or budget, or declare a budget limit. Usage and
+timestamps are recorded automatically."""
 
 _ACTIVE_INSTRUCTIONS = """Work toward this objective using the conversation and available evidence.
 Preserve the user's scope and constraints. Continue from existing progress.
@@ -94,9 +88,8 @@ def creation_instruction(objective: str, token_budget: int | None) -> str:
 
 def goal_context(goal: GoalRecord) -> str:
     """Project stable business facts without changing counters in the request prefix."""
-    return (
-        "Current goal state for this request. Stored goal notifications describe past events.\n\n"
-        + _goal_snapshot(goal)
+    return "Current goal. This status supersedes earlier goal notifications.\n\n" + _goal_snapshot(
+        goal
     )
 
 

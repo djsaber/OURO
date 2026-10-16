@@ -42,11 +42,14 @@ class _ImageOutput(BytesIO):
 
 
 class _ViewImageArguments(BuiltinArguments):
-    path: str = Field(min_length=1, description="Local filesystem path to an image file.")
+    path: str = Field(
+        min_length=1, description="Existing image file, absolute or workspace-relative; not a URL."
+    )
     detail: Literal["high", "original"] = Field(
         default="high",
         description=(
-            "Image detail level. Defaults to `high`; use `original` to preserve exact resolution."
+            "'high' fits the image within 2048 x 2048 pixels without enlarging it. "
+            "'original' preserves resolution; use for small text or fine detail."
         ),
     )
 
@@ -56,8 +59,9 @@ def builtin_view_image_tool() -> Tool:
         definition=ToolDefinition(
             name="ViewImage",
             description=(
-                "View a local image file from the filesystem when visual inspection is needed. "
-                "Use this for images already available on disk."
+                "Inspect an image already saved on disk; does not capture screenshots or open "
+                "URLs. Supports PNG, JPEG, WebP, GIF, BMP, and TIFF, up to 32 MiB and 40 million "
+                "pixels. Only the first frame or page is shown. The source file is unchanged."
             ),
             parameters_schema=_ViewImageArguments.model_json_schema(),
             permission_mode="auto",

@@ -91,9 +91,8 @@ async def test_protocols_send_and_persist_the_same_host_tool_contract(tmp_path, 
     schema_key = "input_schema" if protocol == "messages" else "parameters"
     description = (
         "Original description.\n\n"
-        "Host calling constraint: This must be the only tool call in your response. "
-        "If combined with any other tool call, the entire batch will be rejected "
-        "before any tool executes."
+        "This must be the only tool call in your response. If you include other tool calls, "
+        "none of them will execute."
     )
     assert [tool["name"] for tool in wire_tools] == [tool["name"] for tool in originals]
     assert all(tool["description"] == description for tool in wire_tools)

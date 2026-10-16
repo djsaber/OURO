@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from heapq import nsmallest
 from typing import Any
 
 from jsonschema import ValidationError  # type: ignore[import-untyped]
@@ -32,12 +33,21 @@ def tool_argument_error(
 
     validator_type = validator_for(definition.parameters_schema)
     validator = validator_type(definition.parameters_schema)
-    error = min(validator.iter_errors(arguments), key=_validation_error_key, default=None)
-    if error is None:
+    errors = nsmallest(3, validator.iter_errors(arguments), key=_validation_error_key)
+    if not errors:
         return None
-    location = ".".join(str(part) for part in error.absolute_path)
-    subject = f"arguments.{location}" if location else "arguments"
-    return f"{subject}: {error.message}"
+    messages = []
+    for error in errors:
+        location = ".".join(str(part) for part in error.absolute_path)
+        subject = f"arguments.{location}" if location else "arguments"
+        messages.append(f"{subject}: {error.message}")
+    properties = definition.parameters_schema.get("properties", {})
+    if properties and any(
+        not error.absolute_path and error.validator in {"required", "additionalProperties"}
+        for error in errors
+    ):
+        messages.append(f"Declared parameter names: {', '.join(properties)}")
+    return "; ".join(messages)
 
 
 def _check_schema(schema: dict[str, Any], *, tool_name: str, schema_name: str) -> None:

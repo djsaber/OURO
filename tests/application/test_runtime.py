@@ -1313,7 +1313,7 @@ async def test_next_run_projects_interrupted_assistant_as_recovery_context(tmp_p
         "system",
         "user",
     ]
-    assert "partial work" in provider.messages[1].text_content
+    assert "unfinished" in provider.messages[1].text_content
     assert not hasattr(provider.messages[1], "metadata")
 
 

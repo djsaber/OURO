@@ -60,8 +60,8 @@ def project_tool_result_messages(
                         content=[
                             TextContent(
                                 text=(
-                                    f"Tool {json.dumps(reference.tool_name)} executed by Driver "
-                                    f"{json.dumps(reference.producer.driver_id)} "
+                                    "Automatically executed tool "
+                                    f"{json.dumps(reference.tool_name)} "
                                     f"(call {json.dumps(reference.tool_call_id)}, "
                                     f"error={reference.is_error}):\n"
                                 )
