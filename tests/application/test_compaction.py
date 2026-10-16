@@ -22,6 +22,7 @@ from ouro.core.compaction import (
 )
 from ouro.core.context import estimate_text_tokens
 from ouro.core.errors import CompactionError
+from ouro.core.message_semantics import render_semantic_envelope
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import (
     ModelMetadata,
@@ -417,7 +418,12 @@ def test_summary_chunk_selection_serializes_each_message_once_and_preserves_budg
         candidate = [*expected, *frame]
         if (
             prompt_tokens
-            + estimate_text_tokens(compaction_module._summary_payload(previous_summary, candidate))
+            + estimate_text_tokens(
+                render_semantic_envelope(
+                    compaction_module._summary_payload(previous_summary, candidate),
+                    "conversation-to-summarize",
+                )
+            )
             + 8
             > capacity
         ):

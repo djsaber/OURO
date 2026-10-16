@@ -255,6 +255,8 @@ Agent 中断使用 Supervisor 或精确 Run 的通用取消入口，插件中断
 任务新建会话使用 `namespace=task`，普通用户会话使用 `default`；子会话和分支继承会话域。域是持久化的
 通用分类，不替代 Run 身份、父子关系或权限边界。计划运行使用 `origin=host`、`trigger=scheduled`，
 `initiator_id` 关联 `ouro.tasks/<task_id>`，便于追踪来源。
+任务输入由调度入口显式声明 `role=user, scaffold=true, semantic_tag=scheduled-task`，正文保留任务配置中的
+原始指令；模型可见的语义标签标识其定时任务来源，不改变消息角色或授权范围。
 
 Host 创建新用户会话时通过显式创建回调绑定身份，不从并发事件推测会话归属。打开任务会话遵循公共
 snapshot/live 衔接：读取历史与事件水位，订阅后续事件，并用规范 Run 校准活动状态，包括尚无运行事件的

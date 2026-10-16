@@ -747,6 +747,7 @@ class AgentService:
 
         delegated_input = DelegatedTaskInput(
             prompt=request.task,
+            semantic_tag="subagent-task",
             mode="follow_up",
             title=request.nickname or relation.definition.name,
             delegation_id=relation.delegation_id,

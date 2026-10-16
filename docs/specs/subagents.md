@@ -452,8 +452,9 @@ RuntimeService -> AgentService -> RuntimeSupervisor -> RuntimeService 的实现�
 - CLI、Desktop 和未来 API 复用同一 supervised composition，不各自创建 Agent 调度路径。
 
 RuntimeSupervisor.submit/job 必须区分 `DelegatedTaskInput` 与普通 `HostSessionInput`。child 初始任务携带稳定
-`delegation_id` provenance，并由该提供方显式声明 `role=user, scaffold=true` 进入 child canonical history；不得调用裸
-`runtime.run(prompt)` 丢失委派身份。普通 Host/插件输入保留各自 provenance 和提供方声明的 role/scaffold，不能借
+`delegation_id` provenance，并由该提供方显式声明 `role=user, scaffold=true, semantic_tag=subagent-task`
+进入 child canonical history；不得调用裸 `runtime.run(prompt)` 丢失委派身份。
+普通 Host/插件输入保留各自 provenance 和提供方声明的 role/scaffold，不能借
 委派入口取得 delegation 身份或直接用户授权。
 
 已启动 Run 的模型循环初始化，包括工具契约绑定，必须纳入普通 Runtime 的失败结算边界。初始化失败通过

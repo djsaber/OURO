@@ -62,7 +62,11 @@ from ouro.core.errors import (
 from ouro.core.events import EventRecord
 from ouro.core.message_frames import project_tool_exchanges
 from ouro.core.message_roles import MessageRole
-from ouro.core.message_semantics import SemanticTag
+from ouro.core.message_semantics import (
+    SemanticTag,
+    escape_semantic_envelope_delimiters,
+    render_semantic_envelope,
+)
 from ouro.core.messages import MessageRecord, ModelMessage, model_visible_message
 from ouro.core.observers import ContextPreparedObservation, FrozenJson, freeze_json
 from ouro.core.provider import (
@@ -79,6 +83,7 @@ from ouro.prompts import AFK_CONTEXT_PROMPT, SUMMARIZATION_PROMPT, render_summar
 from ouro.sessions import SessionStore
 
 _SUMMARY_PATTERN = re.compile(r"<summary>\s*(.*?)\s*</summary>", re.DOTALL)
+_SUMMARY_INPUT_TAG = "conversation-to-summarize"
 
 
 class ModelMessageProjector(Protocol):
@@ -435,7 +440,9 @@ class LLMSummaryCompactionStrategy:
         capacity = adapter.model.context_window - summary_output_tokens
         rendered_prompt = render_summarization_prompt(self.prompt, summary_output_tokens)
         fixed_tokens = estimate_text_tokens(rendered_prompt) + 8
-        empty_payload = _summary_payload(previous_summary, [])
+        empty_payload = render_semantic_envelope(
+            _summary_payload(previous_summary, []), _SUMMARY_INPUT_TAG
+        )
         ascii_characters, non_ascii_characters = text_character_counts(empty_payload)
         if (
             fixed_tokens
@@ -453,7 +460,9 @@ class LLMSummaryCompactionStrategy:
         consumed_frames = 0
         has_serialized_messages = False
         for frame in frames:
-            serialized_frame = _serialize_messages(frame)
+            serialized_frame = escape_semantic_envelope_delimiters(
+                _serialize_messages(frame), _SUMMARY_INPUT_TAG
+            )
             separator = "\n" if serialized_frame and has_serialized_messages else ""
             added_ascii, added_non_ascii = text_character_counts(f"{separator}{serialized_frame}")
             if (
@@ -497,6 +506,7 @@ class LLMSummaryCompactionStrategy:
             role="user",
             text=_summary_payload(previous_summary, messages),
             scaffold=True,
+            semantic_tag=_SUMMARY_INPUT_TAG,
         ).model_copy(update={"metadata": {"kind": "compaction_input"}})
         context = ContextView(
             system_prompt=rendered_prompt,
@@ -511,7 +521,7 @@ class LLMSummaryCompactionStrategy:
         request_id = new_id("req")
         estimated_input_tokens = (
             estimate_text_tokens(rendered_prompt)
-            + estimate_text_tokens(summary_input.text_content)
+            + estimate_text_tokens(model_visible_message(summary_input).text_content)
             + 8
         )
         try:

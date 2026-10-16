@@ -92,6 +92,8 @@ metadata 中记录原因；这是当前运行策略，不是配置格式兼容�
 8. 通过统一 `ContextBuilder` 路径重新构建 ContextView，验证压缩后的请求预算。
 
 摘要请求不携带普通工具定义，不把摘要文本写回 canonical messages。
+其输入材料显式声明 `role=user, scaffold=true, semantic_tag=conversation-to-summarize`，通过统一语义包络
+与直接用户请求区分；分块预算和请求 token 估算均包含标签及正文转义后的长度。
 
 滚动摘要选块对每个候选 frame 的模型可见内容最多序列化一次；summarization prompt 和已有摘要包络只度量一次，
 随后用与默认 token estimator 精确一致的可加字符度量累计容量。一次选块对已检查 frame/message 数保持线性复杂度，
