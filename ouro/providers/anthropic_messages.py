@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from contextlib import aclosing
+from copy import deepcopy
 from typing import Any
 
 from ouro.auth.request_auth import RequestAuthenticator, StaticRequestAuthenticator
@@ -261,6 +263,10 @@ class AnthropicMessagesProvider:
         else:
             payload.pop("temperature", None)
         self.reasoning_encoder.apply(payload, model)
+        thinking = payload.get("thinking")
+        if isinstance(thinking, dict) and "display" in thinking:
+            if thinking.get("type") not in {"adaptive", "enabled"}:
+                raise ValueError("summary requests require an enabled Messages thinking profile")
         if tools and model.supports_tools:
             payload["tools"] = [tool_to_anthropic_messages(tool) for tool in tools]
         else:
@@ -284,7 +290,6 @@ class AnthropicMessagesProvider:
             return
 
         text_parts, reasoning_parts, tool_calls = content_blocks_from_response(response)
-        continuation_blocks = continuation_blocks_from_response(response)
         if tool_calls and not supports_tools:
             yield ProviderStreamEvent(
                 type="error",
@@ -297,7 +302,12 @@ class AnthropicMessagesProvider:
             yield ProviderStreamEvent(type="text_delta", text=text)
         for index, tool_call in enumerate(tool_calls):
             yield ProviderStreamEvent.from_tool_call(tool_call, index=index)
-        if tool_calls and continuation_blocks and model.reasoning.continuation == "opaque":
+        continuation_blocks = (
+            continuation_blocks_from_response(response)
+            if model.reasoning.continuation == "opaque"
+            else ()
+        )
+        if continuation_blocks:
             yield ProviderStreamEvent(
                 type="continuation",
                 continuation=ProviderContinuationArtifact(
@@ -311,7 +321,12 @@ class AnthropicMessagesProvider:
             type="done",
             usage=usage_from_anthropic(response.get("usage")),
             completion=_anthropic_messages_completion(
-                response.get("stop_reason"), has_reasoning=bool(continuation_blocks)
+                response.get("stop_reason"),
+                has_reasoning=any(
+                    block.get("type") in {"thinking", "redacted_thinking"}
+                    for block in (response.get("content") or [])
+                    if isinstance(block, Mapping)
+                ),
             ),
         )
 
@@ -324,8 +339,9 @@ class AnthropicMessagesProvider:
     ) -> AsyncGenerator[ProviderStreamEvent]:
         usage = Usage()
         saw_reasoning = False
-        saw_tool_call = False
         continuation_blocks: dict[int, dict[str, Any]] = {}
+        content_fragments: dict[tuple[int, str], list[str]] = {}
+        tool_inputs: dict[int, list[str]] = {}
         tool_call_indices: dict[int, int] = {}
         provider_finish_reason: str | None = None
         async for chunk in chunks:
@@ -344,6 +360,8 @@ class AnthropicMessagesProvider:
                 index = chunk.get("index")
                 if not isinstance(block, Mapping) or not isinstance(index, int):
                     continue
+                if model.reasoning.continuation == "opaque":
+                    continuation_blocks[index] = deepcopy(dict(block))
                 if block.get("type") == "tool_use":
                     if not supports_tools:
                         yield ProviderStreamEvent(
@@ -356,7 +374,6 @@ class AnthropicMessagesProvider:
                     name = block.get("name")
                     call_id = block.get("id")
                     if isinstance(name, str) and name and isinstance(call_id, str) and call_id:
-                        saw_tool_call = True
                         tool_call_index = tool_call_indices.setdefault(
                             index,
                             len(tool_call_indices),
@@ -370,8 +387,6 @@ class AnthropicMessagesProvider:
                             ),
                         )
                 elif block.get("type") in {"thinking", "redacted_thinking"}:
-                    if model.reasoning.continuation == "opaque":
-                        continuation_blocks[index] = dict(block)
                     saw_reasoning = True
             elif event_type == "content_block_delta":
                 delta = chunk.get("delta")
@@ -383,6 +398,8 @@ class AnthropicMessagesProvider:
                     text = str(delta["text"])
                     if text:
                         yield ProviderStreamEvent(type="text_delta", text=text)
+                    if isinstance(index, int) and index in continuation_blocks:
+                        content_fragments.setdefault((index, "text"), []).append(text)
                 elif delta_type == "thinking_delta" and isinstance(delta.get("thinking"), str):
                     thinking = str(delta["thinking"])
                     if thinking:
@@ -392,12 +409,12 @@ class AnthropicMessagesProvider:
                             reasoning_content=thinking,
                         )
                     if isinstance(index, int) and index in continuation_blocks:
-                        current = str(continuation_blocks[index].get("thinking") or "")
-                        continuation_blocks[index]["thinking"] = current + thinking
+                        content_fragments.setdefault((index, "thinking"), []).append(thinking)
                 elif delta_type == "signature_delta" and isinstance(delta.get("signature"), str):
                     if isinstance(index, int) and index in continuation_blocks:
-                        current = str(continuation_blocks[index].get("signature") or "")
-                        continuation_blocks[index]["signature"] = current + str(delta["signature"])
+                        content_fragments.setdefault((index, "signature"), []).append(
+                            str(delta["signature"])
+                        )
                 elif delta_type == "input_json_delta" and isinstance(
                     delta.get("partial_json"), str
                 ):
@@ -412,6 +429,8 @@ class AnthropicMessagesProvider:
                         return
                     if not delta.get("partial_json"):
                         continue
+                    if index in continuation_blocks:
+                        tool_inputs.setdefault(index, []).append(str(delta["partial_json"]))
                     yield ProviderStreamEvent(
                         type="tool_call_delta",
                         tool_call_delta=ToolCallDelta(
@@ -419,6 +438,11 @@ class AnthropicMessagesProvider:
                             arguments_delta=str(delta["partial_json"]),
                         ),
                     )
+                elif delta_type == "citations_delta" and isinstance(delta.get("citation"), Mapping):
+                    if isinstance(index, int) and index in continuation_blocks:
+                        continuation_blocks[index].setdefault("citations", []).append(
+                            deepcopy(dict(delta["citation"]))
+                        )
             elif event_type == "message_delta":
                 usage = merge_usage(usage, chunk.get("usage"))
                 delta = chunk.get("delta")
@@ -427,24 +451,39 @@ class AnthropicMessagesProvider:
                     if isinstance(stop_reason, str) and stop_reason:
                         provider_finish_reason = stop_reason
             elif event_type == "message_stop":
-                if saw_tool_call and continuation_blocks:
+                completion = _anthropic_messages_completion(
+                    provider_finish_reason, has_reasoning=saw_reasoning
+                )
+                if continuation_blocks and completion.finish_reason in {
+                    "stop",
+                    "tool_call",
+                    "unknown",
+                }:
+                    for (index, field), fragments in content_fragments.items():
+                        initial = str(continuation_blocks[index].get(field) or "")
+                        continuation_blocks[index][field] = initial + "".join(fragments)
+                    for index, fragments in tool_inputs.items():
+                        continuation_blocks[index]["input"] = json.loads("".join(fragments))
                     yield ProviderStreamEvent(
                         type="continuation",
                         continuation=ProviderContinuationArtifact(
                             provider_id=self.provider_id,
                             protocol="anthropic-messages",
                             model_id=model.model_id,
-                            blocks=tuple(
-                                continuation_blocks[index] for index in sorted(continuation_blocks)
+                            blocks=continuation_blocks_from_response(
+                                {
+                                    "content": [
+                                        continuation_blocks[index]
+                                        for index in sorted(continuation_blocks)
+                                    ]
+                                }
                             ),
                         ),
                     )
                 yield ProviderStreamEvent(
                     type="done",
                     usage=usage,
-                    completion=_anthropic_messages_completion(
-                        provider_finish_reason, has_reasoning=saw_reasoning
-                    ),
+                    completion=completion,
                 )
                 return
 

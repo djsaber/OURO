@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 import pytest
 from textual.widgets import Input, OptionList
 
 from ouro.application.configuration import ConfigurationFacade
-from ouro.config import reasoning_preset
+from ouro.config import EndpointReasoningConfig, reasoning_effort_preset, reasoning_summary_preset
 from ouro.core.errors import ConfigError
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.provider_screens import (
@@ -113,14 +114,32 @@ async def select_choice(app, pilot, value):
     await pilot.pause()
 
 
-@pytest.mark.parametrize("preset", ["openai-responses-effort", "openai-responses-effort-summary"])
-async def test_responses_endpoint_thinking_preset_can_be_selected_and_saved(tmp_path, preset):
+@pytest.mark.parametrize(
+    ("protocol", "preset", "summary_preset", "summaries"),
+    [
+        (
+            "openai-responses",
+            "openai-responses-effort",
+            "openai-responses",
+            ("auto", "concise", "detailed"),
+        ),
+        (
+            "anthropic-messages",
+            "anthropic-messages-adaptive-effort",
+            "anthropic-messages",
+            ("summarized", "omitted"),
+        ),
+    ],
+)
+async def test_endpoint_reasoning_presets_sync_settings_and_can_be_saved(
+    tmp_path, protocol, preset, summary_preset, summaries
+):
     app = OuroTuiApp(application=two_route_application(tmp_path))
     facade = ConfigurationFacade(tmp_path)
     created = facade.add_provider(
         display_name="Gateway",
         provider_type="custom",
-        protocol="openai-responses",
+        protocol=protocol,
         base_url="https://gateway.test/v1",
     )
     provider_id = created.changed_provider_id
@@ -129,20 +148,81 @@ async def test_responses_endpoint_thinking_preset_can_be_selected_and_saved(tmp_
         screen = EndpointConfigurationScreen(facade.provider(provider_id))
         app.push_screen(screen)
         await pilot.pause()
-        await select_choice(app, pilot, "endpoint-reasoning-preset")
+        await screen._save_field("endpoint-model-id", "custom-model")
+        choices = {choice.value: choice for choice in screen._choices}
+        assert choices["endpoint-reasoning-effort"].label == "Effort"
+        assert choices["endpoint-reasoning-summary"].label == "Summary"
+        assert choices["endpoint-reasoning-config"].label == "Settings (JSON)"
+        assert not choices["endpoint-reasoning-summary"].disabled
+        await select_choice(app, pilot, "endpoint-reasoning-summary")
+        options = app.screen.query_one("#choice-list", OptionList)
+        assert not options.get_option(f"preset:{summary_preset}").disabled
+        incompatible = (
+            "anthropic-messages" if protocol == "openai-responses" else "openai-responses"
+        )
+        assert options.get_option(f"preset:{incompatible}").disabled
+        if protocol == "openai-responses":
+            await select_choice(app, pilot, "preset:openai-responses-auto")
+            assert screen._draft().reasoning.capability.supported_summaries == ("auto",)
+            assert screen._draft().reasoning.capability.default.summary == "auto"
+            await select_choice(app, pilot, "endpoint-reasoning-summary")
+        await select_choice(app, pilot, f"preset:{summary_preset}")
+        assert screen._draft().reasoning.capability.supported_summaries == summaries
+        assert screen._draft().reasoning.capability.default.summary == summaries[0]
+        await select_choice(app, pilot, "endpoint-reasoning-effort")
         options = app.screen.query_one("#choice-list", OptionList)
         assert not options.get_option(preset).disabled
-        assert options.get_option("openai-chat-completions-effort").disabled
+        if protocol == "openai-responses":
+            assert options.get_option("openai-chat-completions-effort").disabled
         await select_choice(app, pilot, preset)
         assert app.screen is screen
-        assert screen._reasoning_preset_name() == preset
+        assert screen._reasoning_effort_preset_name() == preset
+        assert screen._draft().reasoning.capability.supported_summaries == summaries
+        await select_choice(app, pilot, "endpoint-reasoning-summary")
+        assert all(choice.group == "PRESETS" for choice in app.screen._choices)
+        assert all(choice.value.startswith("preset:") for choice in app.screen._choices)
+        await select_choice(app, pilot, f"preset:{summary_preset}")
+        assert screen._draft().reasoning.capability.default.summary == summaries[0]
         await screen._save_field("endpoint-display-name", "Main")
-        await screen._save_field("endpoint-model-id", "custom-model")
+        expected = reasoning_effort_preset(preset)
+        expected.capability.supported_summaries = summaries
+        expected.capability.default.summary = summaries[0]
+        expected.profile.summary = reasoning_summary_preset(summary_preset).profile.summary
+        settings = next(c for c in screen._choices if c.value == "endpoint-reasoning-config")
+        assert settings.trailing == settings.edit_value
+        assert EndpointReasoningConfig.model_validate_json(settings.edit_value) == expected
+        await select_choice(app, pilot, "endpoint-reasoning-config")
+        assert json.loads(screen._edit_text) == expected.model_dump(mode="json", exclude_none=True)
+        await pilot.press("escape")
+
+        await select_choice(app, pilot, "endpoint-reasoning-summary")
+        await select_choice(app, pilot, "preset:none")
+        cleared = screen._draft().reasoning
+        assert cleared.capability.supported_summaries == ()
+        assert cleared.capability.default.summary is None
+        assert cleared.capability.default.effort == expected.capability.default.effort
+        assert cleared.profile.effort == expected.profile.effort
+        assert cleared.profile.summary == {}
+        assert screen._reasoning_summary_label() == "None"
+
+        expected.capability.default.effort = (
+            "medium" if expected.capability.default.effort == "high" else "high"
+        )
+        expected.capability.default.summary = summaries[-1]
+        screen._replace_choices(
+            await screen._save_field("endpoint-reasoning-config", expected.model_dump_json()),
+            selected="endpoint-reasoning-config",
+        )
+        assert screen._reasoning_effort_preset_name() is None
+        assert screen._reasoning_summary_label() == ", ".join(value.title() for value in summaries)
+        await select_choice(app, pilot, "endpoint-reasoning-summary")
+        await select_choice(app, pilot, f"preset:{summary_preset}")
+        assert screen._draft().reasoning.capability.default.summary == summaries[-1]
         saved = await app._controller.add_endpoint(provider_id, screen._draft())
-        assert saved.reasoning == reasoning_preset(preset)
-        assert saved.reasoning.capability.output == "summary"
+        assert saved.reasoning == expected
         editor = EndpointConfigurationScreen(facade.provider(provider_id), saved)
-        assert editor._reasoning_preset_name() == preset
+        assert editor._reasoning_summary_label() == screen._reasoning_summary_label()
+        assert editor._draft().reasoning is None
 
 
 @pytest.mark.parametrize(

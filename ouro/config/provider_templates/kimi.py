@@ -21,7 +21,7 @@ _KIMI_ALWAYS_ON_REASONING = mapped_reasoning(
     default=ReasoningRequest(mode="enabled"),
     output="text",
     continuation="text",
-    variants={"enabled": {}},
+    effort={"enabled": {}},
 )
 
 # Kimi K3 always reasons and uses top-level reasoning_effort.
@@ -29,11 +29,10 @@ _KIMI_K3_REASONING = mapped_reasoning(
     name="kimi-k3-reasoning-effort",
     activation="always_on",
     supported_efforts=("low", "high", "max"),
-    default_effort="max",
     default=ReasoningRequest(mode="enabled", effort="max"),
     output="text",
     continuation="text",
-    variants={
+    effort={
         "enabled": {"reasoning_effort": "max"},
         **{effort: {"reasoning_effort": effort} for effort in ("low", "high", "max")},
     },
@@ -107,6 +106,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://platform.kimi.com/docs/models",
         verified_on=_VERIFIED_ON,
-        revision=5,
+        revision=7,
     ),
 )

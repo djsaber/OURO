@@ -20,12 +20,11 @@ from ouro.tui.menu_labels import (
     TOOL_APPROVAL_LABEL,
 )
 from ouro.tui.model_menus import (
-    REASONING_REQUESTS,
     approval_choices,
     model_choices,
     model_selection_label,
     reasoning_choices,
-    reasoning_values,
+    reasoning_request,
 )
 from ouro.tui.screens import Choice, ChoiceScreen
 from ouro.tui.theme import theme_for
@@ -185,19 +184,24 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
             if model is None:
                 return
             current = self._reasoning_value()
-            choices = reasoning_choices(model.reasoning, selected=current, theme=theme_for(self))
+            choices = reasoning_choices(
+                model.reasoning,
+                selected=current,
+                requested=self._reasoning,
+                theme=theme_for(self),
+            )
             if not choices:
                 return
             value = await self.open_child(
                 ChoiceScreen(
                     title=MODEL_THINKING_LABEL.upper(),
-                    placeholder="Choose a thinking level…",
+                    placeholder="Choose thinking settings…",
                     choices=choices,
                     initial_value=current,
                 )
             )
             if value is not None:
-                self._reasoning = REASONING_REQUESTS[value]
+                self._reasoning = reasoning_request(value, self._reasoning)
         elif selected in {"frequency", "session", "unit"}:
             labels = {
                 "frequency": FREQUENCY_LABELS,
@@ -242,17 +246,23 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
 
     def reasoning_options(self) -> dict[str, ReasoningRequest]:
         model = self._selected_model()
-        return (
-            {value: REASONING_REQUESTS[value] for value in reasoning_values(model.reasoning)}
-            if model
-            else {}
-        )
+        if model is None:
+            return {}
+        return {
+            choice.value: reasoning_request(choice.value, self._reasoning)
+            for choice in reasoning_choices(
+                model.reasoning,
+                selected=self._reasoning_value(),
+                requested=self._reasoning,
+                theme=theme_for(self),
+            )
+        }
 
     def _reasoning_value(self) -> str:
         model = self._selected_model()
         if model is not None:
             try:
-                return resolve_reasoning(model.reasoning, self._reasoning).variant
+                return resolve_reasoning(model.reasoning, self._reasoning).effort_variant
             except ValueError:
                 # Keep invalid saved settings editable after model capabilities
                 # change. Draft validation still prevents saving or execution.

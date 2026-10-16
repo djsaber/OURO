@@ -17,7 +17,6 @@ def _toggle_capability() -> ReasoningCapability:
     return ReasoningCapability(
         activation="toggle",
         supported_efforts=("low", "high"),
-        default_effort="low",
         default=ReasoningRequest(mode="enabled", effort="low"),
         output="text",
         continuation="text",
@@ -26,32 +25,39 @@ def _toggle_capability() -> ReasoningCapability:
 
 def test_reasoning_resolver_uses_endpoint_default_and_promotes_explicit_effort() -> None:
     capability = _toggle_capability()
+    capability.supported_summaries = ("auto", "detailed")
+    capability.default.summary = "auto"
 
     default = resolve_reasoning(capability)
     explicit = resolve_reasoning(capability, ReasoningRequest(effort="high"))
 
     assert default.requested == ReasoningRequest()
-    assert default.effective == ReasoningRequest(mode="enabled", effort="low")
-    assert default.variant == "low"
-    assert explicit.effective == ReasoningRequest(mode="enabled", effort="high")
-    assert explicit.variant == "high"
+    assert default.effective == ReasoningRequest(mode="enabled", effort="low", summary="auto")
+    assert default.effort_variant == "low"
+    assert explicit.effective == ReasoningRequest(mode="enabled", effort="high", summary="auto")
+    assert explicit.effort_variant == "high"
+    summary_only = resolve_reasoning(capability, ReasoningRequest(summary="provider_default"))
+    assert summary_only.effective == ReasoningRequest(
+        mode="enabled", effort="low", summary="provider_default"
+    )
+    detailed = resolve_reasoning(capability, ReasoningRequest(summary="detailed"))
+    assert detailed.effective == ReasoningRequest(mode="enabled", effort="low", summary="detailed")
 
 
 def test_enabled_reasoning_resolves_the_endpoint_default_effort() -> None:
     capability = ReasoningCapability(
         activation="toggle",
         supported_efforts=("low", "high"),
-        default_effort="high",
-        default=ReasoningRequest(mode="disabled"),
+        default=ReasoningRequest(mode="disabled", effort="high"),
     )
 
     endpoint_default = resolve_reasoning(capability)
     enabled = resolve_reasoning(capability, ReasoningRequest(mode="enabled"))
 
     assert endpoint_default.effective == ReasoningRequest(mode="disabled")
-    assert endpoint_default.variant == "disabled"
+    assert endpoint_default.effort_variant == "disabled"
     assert enabled.effective == ReasoningRequest(mode="enabled", effort="high")
-    assert enabled.variant == "high"
+    assert enabled.effort_variant == "high"
 
 
 def test_single_supported_effort_is_the_implicit_enabled_default() -> None:
@@ -61,14 +67,14 @@ def test_single_supported_effort_is_the_implicit_enabled_default() -> None:
         default=ReasoningRequest(mode="disabled"),
     )
 
-    assert capability.default_effort == "max"
+    assert capability.default.effort == "max"
     assert resolve_reasoning(
         capability,
         ReasoningRequest(mode="enabled"),
     ).effective == ReasoningRequest(mode="enabled", effort="max")
 
 
-def test_enabled_default_effort_is_derived_from_the_endpoint_default() -> None:
+def test_reasoning_defaults_roundtrip_as_one_preference_object() -> None:
     capability = ReasoningCapability.model_validate(
         {
             "activation": "toggle",
@@ -77,8 +83,10 @@ def test_enabled_default_effort_is_derived_from_the_endpoint_default() -> None:
         }
     )
 
-    assert capability.default_effort == "high"
-    assert capability.model_dump(mode="json")["default_effort"] == "high"
+    assert capability.default.effort == "high"
+    encoded = capability.model_dump(mode="json")
+    assert encoded["default"] == {"mode": "enabled", "effort": "high"}
+    assert "default_effort" not in encoded
 
 
 def test_reasoning_without_effort_controls_keeps_plain_enabled_semantics() -> None:
@@ -90,7 +98,7 @@ def test_reasoning_without_effort_controls_keeps_plain_enabled_semantics() -> No
     enabled = resolve_reasoning(capability, ReasoningRequest(mode="enabled"))
 
     assert enabled.effective == ReasoningRequest(mode="enabled")
-    assert enabled.variant == "enabled"
+    assert enabled.effort_variant == "enabled"
 
 
 @pytest.mark.parametrize(
@@ -107,26 +115,24 @@ def test_reasoning_without_effort_controls_keeps_plain_enabled_semantics() -> No
         (
             {
                 "activation": "toggle",
-                "default_effort": "high",
-                "default": ReasoningRequest(mode="enabled"),
+                "default": ReasoningRequest(mode="enabled", effort="high"),
             },
-            "without effort controls cannot declare a default effort",
+            "default reasoning effort must be supported",
         ),
         (
             {
                 "activation": "toggle",
                 "supported_efforts": ("low", "high"),
-                "default_effort": "max",
-                "default": ReasoningRequest(mode="disabled"),
+                "default": ReasoningRequest(mode="disabled", effort="max"),
             },
-            "enabled default effort must be supported",
+            "default reasoning effort must be supported",
         ),
         (
             {
                 "activation": "unsupported",
-                "default_effort": "high",
+                "default": ReasoningRequest(effort="high"),
             },
-            "unsupported reasoning cannot declare a default effort",
+            "unsupported reasoning cannot declare a non-default intent",
         ),
     ],
 )
@@ -148,8 +154,8 @@ def test_reasoning_capability_rejects_ambiguous_enabled_effort(
         ),
         (
             ReasoningCapability(),
-            ReasoningRequest(mode="disabled"),
-            "does not support reasoning controls",
+            ReasoningRequest(summary="auto"),
+            "is not supported by endpoint",
         ),
         (
             ReasoningCapability(
@@ -175,19 +181,23 @@ def test_reasoning_resolver_rejects_unfulfillable_intent(
         resolve_reasoning(capability, intent)
 
 
-def test_reasoning_capability_rejects_invalid_continuation_contract() -> None:
-    with pytest.raises(ValueError, match="text reasoning continuation"):
-        ReasoningCapability(
-            activation="toggle",
-            default=ReasoningRequest(mode="disabled"),
-            output="none",
-            continuation="text",
-        )
+def test_reasoning_continuation_is_independent_of_visible_output() -> None:
+    capability = ReasoningCapability(
+        activation="toggle",
+        default=ReasoningRequest(mode="disabled"),
+        output="none",
+        continuation="text",
+    )
+    assert capability.output == "none"
+    assert capability.continuation == "text"
 
 
-def test_disabled_reasoning_cannot_carry_an_effort() -> None:
-    with pytest.raises(ValueError, match="cannot specify an effort"):
-        ReasoningRequest(mode="disabled", effort="high")
+def test_disabled_reasoning_preserves_but_does_not_apply_effort_preference() -> None:
+    request = ReasoningRequest(mode="disabled", effort="high")
+    resolution = resolve_reasoning(_toggle_capability(), request)
+    assert resolution.requested == request
+    assert resolution.effective == ReasoningRequest(mode="disabled")
+    assert resolution.effort_variant == "disabled"
 
 
 def test_runtime_adapter_binds_validated_reasoning_without_mutating_shared_model() -> None:

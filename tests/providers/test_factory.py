@@ -11,7 +11,7 @@ from ouro.config import (
     ProviderConfigManager,
     ProviderRuntimeOptions,
     openai_chat_completions_effort_reasoning,
-    reasoning_preset,
+    reasoning_effort_preset,
 )
 from ouro.core.context import ContextView
 from ouro.core.errors import ConfigError
@@ -238,7 +238,7 @@ def test_runtime_credential_override_wins_over_configured_reference(
         ProviderRuntimeOptions(
             reasoning=openai_chat_completions_effort_reasoning(
                 supported_efforts=("low",),
-                default_effort="low",
+                default=ReasoningRequest(mode="enabled", effort="low"),
             ),
             reasoning_request=ReasoningRequest(mode="enabled", effort="high"),
         ),
@@ -274,7 +274,7 @@ async def test_configured_endpoint_drives_model_metadata_and_provider_request(tm
         supports_structured_output=True,
         reasoning=openai_chat_completions_effort_reasoning(
             supported_efforts=("low", "high"),
-            default_effort="high",
+            default=ReasoningRequest(mode="enabled", effort="high"),
         ),
         request_options={"seed": 7},
         make_default=True,
@@ -339,13 +339,13 @@ def test_factory_rejects_request_fields_owned_by_protocol_adapter() -> None:
     [
         (
             "openai-chat-completions",
-            reasoning_preset("thinking-toggle"),
+            reasoning_effort_preset("thinking-toggle"),
             ReasoningRequest(mode="disabled"),
             {"thinking": {"type": "disabled"}},
         ),
         (
             "anthropic-messages",
-            reasoning_preset("anthropic-messages-adaptive-effort"),
+            reasoning_effort_preset("anthropic-messages-adaptive-effort"),
             ReasoningRequest(mode="enabled", effort="xhigh"),
             {
                 "thinking": {"type": "adaptive"},
@@ -386,7 +386,11 @@ async def test_custom_compatible_endpoint_encodes_declared_reasoning_profile(
         )
     ]
 
-    assert [event.type for event in events] == ["text_delta", "done"]
+    assert [event.type for event in events] == [
+        "text_delta",
+        *(["continuation"] if reasoning.capability.continuation == "opaque" else []),
+        "done",
+    ]
     payload = transport.requests[0]["payload"]
     for key, value in expected.items():
         assert payload[key] == value

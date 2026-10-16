@@ -113,7 +113,6 @@ def _runtime(tmp_path) -> tuple[RuntimeService, _StaticCatalog, dict[str, _Respo
                 reasoning=ReasoningCapability(
                     activation="toggle",
                     supported_efforts=("low", "high"),
-                    default_effort="low",
                     default=ReasoningRequest(mode="enabled", effort="low"),
                 ),
             ),
@@ -129,7 +128,6 @@ def _runtime(tmp_path) -> tuple[RuntimeService, _StaticCatalog, dict[str, _Respo
                 reasoning=ReasoningCapability(
                     activation="always_on",
                     supported_efforts=("low",),
-                    default_effort="low",
                     default=ReasoningRequest(mode="enabled", effort="low"),
                 ),
             ),
@@ -332,7 +330,6 @@ async def test_active_session_reasoning_switch_applies_to_the_next_model_request
             reasoning=ReasoningCapability(
                 activation="toggle",
                 supported_efforts=("low", "high"),
-                default_effort="low",
                 default=ReasoningRequest(mode="enabled", effort="low"),
             ),
         ),

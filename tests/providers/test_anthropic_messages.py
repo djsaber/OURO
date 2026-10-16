@@ -15,7 +15,7 @@ from ouro.core.messages import (
     ToolResultReference,
 )
 from ouro.core.provider import ModelMetadata
-from ouro.core.reasoning import ReasoningRequest
+from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.core.tools import ToolCallRequest
 from ouro.providers import AnthropicMessagesProvider
 from ouro.providers.reasoning import ReasoningPayloadEncoder
@@ -111,10 +111,17 @@ async def test_anthropic_terminal_facts_survive_empty_or_hidden_output(
     events = [
         event
         async for event in provider.stream(
-            model=ModelMetadata(model_id="test", provider_id="test"), messages=[]
+            model=ModelMetadata(
+                model_id="test",
+                provider_id="test",
+                reasoning=ReasoningCapability(output="none", continuation="opaque"),
+            ),
+            messages=[],
         )
     ]
-    assert [event.type for event in events] == ["done"]
+    assert [event.type for event in events] == (["continuation", "done"] if thinking else ["done"])
+    if thinking:
+        assert events[0].continuation.blocks == ({"content": content},)
     assert events[-1].completion.finish_reason == normalized_reason
     assert events[-1].completion.provider_finish_reason == reason
     assert events[-1].completion.has_reasoning is thinking
@@ -208,7 +215,7 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
         supports_streaming=False,
         supports_image_input=True,
         reasoning=reasoning.capability,
-        reasoning_request=ReasoningRequest(mode="enabled", effort="low"),
+        reasoning_request=ReasoningRequest(mode="enabled", effort="low", summary="omitted"),
     )
 
     events = [
@@ -250,7 +257,7 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
     assert events[2].tool_call_delta is not None
     assert events[2].tool_call_delta.arguments_delta == '{"path":"CHANGELOG.md"}'
     assert events[3].continuation is not None
-    assert events[3].continuation.blocks[0]["signature"] == "sig_1"
+    assert events[3].continuation.blocks == ({"content": transport.response["content"]},)
     assert events[-1].usage is not None
     assert events[-1].usage.input_tokens == 17
     assert events[-1].usage.cache_read_tokens == 3
@@ -260,6 +267,8 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
     assert events[-1].completion.provider_finish_reason == "tool_use"
     request = transport.requests[0]
     assert request["url"] == "https://api.example.test/v1/messages"
+    assert request["payload"]["thinking"] == {"type": "adaptive", "display": "omitted"}
+    assert request["payload"]["output_config"] == {"effort": "low"}
     assert request["headers"] == {
         "user-agent": f"ouro/{__version__}",
         "anthropic-version": "2023-06-01",
@@ -345,7 +354,7 @@ async def test_anthropic_provider_streams_text_tool_deltas_and_usage() -> None:
                 "index": 2,
                 "delta": {
                     "type": "input_json_delta",
-                    "partial_json": '{"command":"pwd"}',
+                    "partial_json": '{"command":"pw',
                 },
             },
             {
@@ -364,7 +373,11 @@ async def test_anthropic_provider_streams_text_tool_deltas_and_usage() -> None:
     events = [
         event
         async for event in provider.stream(
-            model=ModelMetadata(model_id="claude-test", provider_id="anthropic"),
+            model=ModelMetadata(
+                model_id="claude-test",
+                provider_id="anthropic",
+                reasoning=ReasoningCapability(output="none", continuation="opaque"),
+            ),
             messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
         )
     ]
@@ -382,7 +395,7 @@ async def test_anthropic_provider_streams_text_tool_deltas_and_usage() -> None:
     assert deltas[0].id_delta == "call_1"
     assert deltas[1].arguments_delta == '{"path":"README.md"}'
     assert deltas[2].id_delta == "call_2"
-    assert deltas[3].arguments_delta == '{"command":"pwd"}'
+    assert deltas[3].arguments_delta == '{"command":"pw'
     assert events[-1].usage is not None
     assert events[-1].usage.input_tokens == 10
     assert events[-1].usage.output_tokens == 4
@@ -441,16 +454,44 @@ async def test_anthropic_stream_preserves_signed_thinking_for_same_route_only() 
             {
                 "type": "content_block_delta",
                 "index": 0,
-                "delta": {"type": "thinking_delta", "thinking": "check"},
+                "delta": {"type": "thinking_delta", "thinking": "ch"},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "eck"},
             },
             {
                 "type": "content_block_delta",
                 "index": 0,
                 "delta": {"type": "signature_delta", "signature": "sig"},
             },
+            {"type": "content_block_stop", "index": 0},
             {
                 "type": "content_block_start",
                 "index": 1,
+                "content_block": {"type": "text", "text": ""},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "text_delta", "text": "check"},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "text_delta", "text": "ing"},
+            },
+            {"type": "content_block_stop", "index": 1},
+            {
+                "type": "content_block_start",
+                "index": 2,
+                "content_block": {"type": "redacted_thinking", "data": "opaque"},
+            },
+            {"type": "content_block_stop", "index": 2},
+            {
+                "type": "content_block_start",
+                "index": 3,
                 "content_block": {
                     "type": "tool_use",
                     "id": "call_1",
@@ -458,6 +499,12 @@ async def test_anthropic_stream_preserves_signed_thinking_for_same_route_only() 
                     "input": {},
                 },
             },
+            {
+                "type": "content_block_delta",
+                "index": 3,
+                "delta": {"type": "input_json_delta", "partial_json": '{"path":"README.md"}'},
+            },
+            {"type": "content_block_stop", "index": 3},
             {"type": "message_stop"},
         ]
     )
@@ -485,24 +532,34 @@ async def test_anthropic_stream_preserves_signed_thinking_for_same_route_only() 
 
     assert [event.type for event in events] == [
         "reasoning_delta",
+        "reasoning_delta",
+        "text_delta",
+        "text_delta",
+        "tool_call_delta",
         "tool_call_delta",
         "continuation",
         "done",
     ]
-    continuation = events[2].continuation
+    continuation = events[-2].continuation
     assert continuation is not None
-    assert continuation.blocks == ({"type": "thinking", "thinking": "check", "signature": "sig"},)
+    native_content = [
+        {"type": "thinking", "thinking": "check", "signature": "sig"},
+        {"type": "text", "text": "checking"},
+        {"type": "redacted_thinking", "data": "opaque"},
+        {"type": "tool_use", "id": "call_1", "name": "Read", "input": {"path": "README.md"}},
+    ]
+    assert continuation.blocks == ({"content": native_content},)
 
     replay_transport = FakeTransport(
         {"type": "message", "content": [{"type": "text", "text": "ok"}]}
     )
     provider.transport = replay_transport
-    matching = MessageRecord.text(
-        session_id="ses_1", role="assistant", text="calling tool"
-    ).model_copy(
+    matching = MessageRecord.text(session_id="ses_1", role="assistant", text="checking").model_copy(
         update={
             "provider_continuation": continuation,
-            "tool_calls": [ToolCallRequest(id="call_1", name="Read", arguments={})],
+            "tool_calls": [
+                ToolCallRequest(id="call_1", name="Read", arguments={"path": "README.md"})
+            ],
         }
     )
     mismatched = matching.model_copy(
@@ -523,7 +580,7 @@ async def test_anthropic_stream_preserves_signed_thinking_for_same_route_only() 
 
     matching_content = replay_transport.requests[0]["payload"]["messages"][0]["content"]
     mismatched_content = replay_transport.requests[1]["payload"]["messages"][0]["content"]
-    assert matching_content[0] == continuation.blocks[0]
+    assert matching_content == native_content
     assert all(block.get("type") != "thinking" for block in mismatched_content)
     assert transport.requests[0]["payload"]["stream"] is True
 

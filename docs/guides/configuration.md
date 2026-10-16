@@ -146,7 +146,7 @@ TUI 复用分组列表及多行编辑器，支持 Shift+Enter 换行、编辑、
               },
               "profile": {
                 "name": "thinking-object-toggle",
-                "variants": {
+                "effort": {
                   "enabled": {
                     "thinking": {
                       "type": "enabled"

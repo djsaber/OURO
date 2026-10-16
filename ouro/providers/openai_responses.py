@@ -193,8 +193,6 @@ class OpenAIResponsesProvider:
         profile = self.reasoning_encoder.profile
         if profile is not None:
             validate_responses_reasoning_profile(profile)
-            if profile.owned_fields & self.request_options.keys():
-                raise ValueError("request options conflict with reasoning-owned fields")
         payload = deepcopy(self.request_options)
         self.reasoning_encoder.apply(payload, model)
         payload.update(

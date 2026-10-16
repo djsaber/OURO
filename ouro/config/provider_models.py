@@ -14,7 +14,12 @@ from ouro.config.reasoning import EndpointReasoningConfig, ReasoningProfileConfi
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id
 from ouro.core.content import MediaModality, input_modalities
 from ouro.core.provider import ProviderRetryPolicy
-from ouro.core.reasoning import ReasoningContinuation, ReasoningRequest
+from ouro.core.reasoning import (
+    ReasoningCapability,
+    ReasoningContinuation,
+    ReasoningRequest,
+    ReasoningSummary,
+)
 
 ProviderType = Literal[
     "faux",
@@ -133,6 +138,7 @@ class ProviderProtocolSpec:
     requires_base_url: bool
     reasoning_continuations: tuple[ReasoningContinuation, ...]
     encodable_input_modalities: frozenset[MediaModality]
+    reasoning_summaries: tuple[ReasoningSummary, ...] = ()
 
 
 _OPENAI_CHAT_COMPLETIONS_STATIC = ProviderConnectionSpec("openai-chat-completions")
@@ -199,6 +205,7 @@ _PROVIDER_PROTOCOL_SPECS: dict[ProviderProtocol, ProviderProtocolSpec] = {
         requires_base_url=True,
         reasoning_continuations=("none", "opaque"),
         encodable_input_modalities=frozenset({"image"}),
+        reasoning_summaries=("auto", "concise", "detailed"),
     ),
     "faux": ProviderProtocolSpec(
         protocol="faux",
@@ -220,6 +227,7 @@ _PROVIDER_PROTOCOL_SPECS: dict[ProviderProtocol, ProviderProtocolSpec] = {
         requires_base_url=True,
         reasoning_continuations=("none", "opaque"),
         encodable_input_modalities=frozenset({"image"}),
+        reasoning_summaries=("summarized", "omitted"),
     ),
 }
 
@@ -371,7 +379,7 @@ def validate_reasoning_protocol_compatibility(
     protocol: ProviderProtocol,
     reasoning: EndpointReasoningConfig,
 ) -> None:
-    """Reject continuation contracts a wire adapter cannot faithfully replay."""
+    """Reject reasoning controls and continuation a wire adapter cannot support."""
 
     capability = reasoning.capability
     if is_plugin_protocol(protocol):
@@ -382,10 +390,28 @@ def validate_reasoning_protocol_compatibility(
             f"reasoning continuation {capability.continuation!r} is not supported by "
             f"protocol {protocol!r}"
         )
-    if protocol == "faux" and capability.activation != "unsupported":
+    if protocol == "faux" and (
+        capability.activation != "unsupported" or capability.supported_summaries
+    ):
         raise ValueError("faux protocol does not support reasoning controls")
     if protocol == "openai-responses" and reasoning.profile is not None:
         validate_responses_reasoning_profile(reasoning.profile)
+
+
+def validate_reasoning_summary_preset(
+    protocol: ProviderProtocol, capability: ReasoningCapability
+) -> None:
+    """Limit standard presets to their protocol; explicit mappings may use extensions."""
+    if is_plugin_protocol(protocol):
+        return
+    unsupported = set(capability.supported_summaries).difference(
+        provider_protocol_spec(protocol).reasoning_summaries
+    )
+    if unsupported:
+        raise ValueError(
+            f"reasoning summaries {', '.join(sorted(unsupported))} are not supported by "
+            f"protocol {protocol!r}"
+        )
 
 
 def validate_responses_reasoning_profile(profile: ReasoningProfileConfig) -> None:
@@ -394,7 +420,7 @@ def validate_responses_reasoning_profile(profile: ReasoningProfileConfig) -> Non
         raise ValueError("Responses reasoning profiles must use the reasoning object")
     if any(
         not isinstance(fragment.get("reasoning", {}), dict)
-        for fragment in profile.variants.values()
+        for fragment in (*profile.effort.values(), *profile.summary.values())
     ):
         raise ValueError("Responses reasoning controls must be an object")
 

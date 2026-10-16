@@ -16,6 +16,7 @@ from ouro.core.messages import (
     ToolResultReference,
 )
 from ouro.core.provider import ModelMetadata, ProviderRetryPolicy
+from ouro.core.reasoning import ReasoningRequest
 from ouro.core.tools import ToolCallRequest
 from ouro.providers import OpenAIChatCompletionsProvider
 from ouro.providers import http_transport as provider_http_transport
@@ -428,6 +429,13 @@ async def test_chat_completions_streams_text_response() -> None:
 @pytest.mark.asyncio
 async def test_openai_endpoint_options_and_system_prompt_shape_request() -> None:
     transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+    reasoning = openai_chat_completions_effort_reasoning(
+        supported_efforts=("low", "high"),
+        default=ReasoningRequest(mode="enabled", effort="high"),
+    )
+    reasoning.capability.supported_summaries = ("auto",)
+    reasoning.capability.default.summary = "auto"
+    reasoning.profile.summary = {"auto": {"summary_format": "brief"}}
     provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
         api_path="responses/chat",
@@ -440,17 +448,8 @@ async def test_openai_endpoint_options_and_system_prompt_shape_request() -> None
             "max_tokens": 999,
             "tools": [{"type": "wrong"}],
         },
-        reasoning_encoder=ReasoningPayloadEncoder(
-            openai_chat_completions_effort_reasoning(
-                supported_efforts=("low", "high"),
-                default_effort="high",
-            ).profile
-        ),
+        reasoning_encoder=ReasoningPayloadEncoder(reasoning.profile),
         transport=transport,
-    )
-    reasoning = openai_chat_completions_effort_reasoning(
-        supported_efforts=("low", "high"),
-        default_effort="high",
     )
     model = ModelMetadata(
         model_id="reasoning-model",
@@ -501,6 +500,7 @@ async def test_openai_endpoint_options_and_system_prompt_shape_request() -> None
     assert request["payload"]["temperature"] == 0.2
     assert request["payload"]["max_tokens"] == 4096
     assert request["payload"]["reasoning_effort"] == "high"
+    assert request["payload"]["summary_format"] == "brief"
     assert request["payload"]["seed"] == 7
     assert "tools" not in request["payload"]
 
@@ -1140,10 +1140,12 @@ async def test_chat_completions_emits_reasoning_delta_from_response() -> None:
     assert [event.type for event in events] == [
         "reasoning_delta",
         "text_delta",
+        "continuation",
         "done",
     ]
     assert events[0].reasoning_content == "Let me compute 2 + 2."
     assert events[1].text == "The answer is 4."
+    assert events[-2].continuation.blocks == ({"reasoning_content": "Let me compute 2 + 2."},)
 
 
 @pytest.mark.asyncio
@@ -1178,6 +1180,7 @@ async def test_chat_completions_emits_reasoning_delta_from_stream_chunks() -> No
         "reasoning_delta",
         "reasoning_delta",
         "text_delta",
+        "continuation",
         "done",
     ]
     assert [event.reasoning_content for event in events[:2]] == ["Thinking", "..."]
@@ -1222,13 +1225,14 @@ async def test_chat_completions_reasoning_only_response_is_not_empty() -> None:
 
     assert [event.type for event in events] == [
         "reasoning_delta",
+        "continuation",
         "done",
     ]
     assert events[0].reasoning_content == "Only reasoning, no content."
 
 
 @pytest.mark.asyncio
-async def test_openai_chat_completions_preserves_reasoning_only_for_tool_continuation() -> None:
+async def test_openai_chat_completions_preserves_hidden_reasoning_for_tool_continuation() -> None:
     transport = FakeTransport(
         {
             "choices": [
@@ -1263,20 +1267,19 @@ async def test_openai_chat_completions_preserves_reasoning_only_for_tool_continu
             model=ModelMetadata(
                 model_id="glm-test",
                 provider_id="glm",
-                reasoning=_OPENAI_REASONING.capability,
+                reasoning=_OPENAI_REASONING.capability.model_copy(update={"output": "none"}),
             ),
             messages=[MessageRecord.text(session_id="ses_1", role="user", text="read")],
         )
     ]
 
     assert [event.type for event in events] == [
-        "reasoning_delta",
         "tool_call_delta",
         "continuation",
         "done",
     ]
-    assert events[2].continuation is not None
-    assert events[2].continuation.blocks == ({"reasoning_content": "I should inspect the file."},)
+    assert events[-2].continuation is not None
+    assert events[-2].continuation.blocks == ({"reasoning_content": "I should inspect the file."},)
 
 
 @pytest.mark.asyncio
@@ -1316,6 +1319,7 @@ async def test_chat_completions_emits_reasoning_delta_from_bare_reasoning_field(
     assert [event.type for event in events] == [
         "reasoning_delta",
         "text_delta",
+        "continuation",
         "done",
     ]
     assert events[0].reasoning_content == "Let me compute 2 + 2."
@@ -1354,8 +1358,14 @@ async def test_chat_completions_extracts_bare_reasoning_block_array() -> None:
         )
     ]
 
-    assert [event.type for event in events] == ["reasoning_delta", "text_delta", "done"]
+    assert [event.type for event in events] == [
+        "reasoning_delta",
+        "text_delta",
+        "continuation",
+        "done",
+    ]
     assert events[0].reasoning_content == "chunk one chunk two"
+    assert events[-2].continuation.blocks == ({"reasoning": [{"text": "chunk one "}, "chunk two"]},)
 
 
 @pytest.mark.asyncio
@@ -1391,7 +1401,12 @@ async def test_chat_completions_prefers_reasoning_content_over_bare_reasoning() 
         )
     ]
 
-    assert [event.type for event in events] == ["reasoning_delta", "text_delta", "done"]
+    assert [event.type for event in events] == [
+        "reasoning_delta",
+        "text_delta",
+        "continuation",
+        "done",
+    ]
     assert events[0].reasoning_content == "fallback thinking"
 
 
@@ -1426,14 +1441,16 @@ async def test_chat_completions_emits_bare_reasoning_stream_delta() -> None:
         "reasoning_delta",
         "reasoning_delta",
         "text_delta",
+        "continuation",
         "done",
     ]
     assert [event.reasoning_content for event in events[:2]] == ["Thinking", "..."]
     assert events[2].text == "Done"
+    assert events[-2].continuation.blocks == ({"reasoning": "Thinking..."},)
 
 
 @pytest.mark.asyncio
-async def test_openai_chat_completions_canonicalizes_bare_reasoning_for_tool_continuation() -> None:
+async def test_openai_chat_completions_preserves_bare_reasoning_for_tool_continuation() -> None:
     transport = FakeStreamingTransport(
         [
             {"choices": [{"delta": {"reasoning": "I should inspect the file."}}]},
@@ -1480,7 +1497,7 @@ async def test_openai_chat_completions_canonicalizes_bare_reasoning_for_tool_con
         "done",
     ]
     assert events[2].continuation is not None
-    assert events[2].continuation.blocks == ({"reasoning_content": "I should inspect the file."},)
+    assert events[2].continuation.blocks == ({"reasoning": "I should inspect the file."},)
 
 
 @pytest.mark.asyncio
@@ -1491,15 +1508,10 @@ async def test_chat_completions_sends_reasoning_content_in_history() -> None:
         api_key="secret",
         transport=transport,
     )
-    assistant = MessageRecord.text(session_id="ses_1", role="assistant", text="").model_copy(
+    assistant = MessageRecord.text(
+        session_id="ses_1", role="assistant", text="The file contains a readme."
+    ).model_copy(
         update={
-            "tool_calls": [
-                ToolCallRequest(
-                    id="call_1",
-                    name="Read",
-                    arguments={"path": "README.md"},
-                )
-            ],
             "reasoning_content": "I need to read the file.",
             "provider_continuation": ProviderContinuationArtifact(
                 provider_id="openai-chat-completions",
@@ -1509,24 +1521,18 @@ async def test_chat_completions_sends_reasoning_content_in_history() -> None:
             ),
         }
     )
-    tool_result = MessageRecord.text(
-        session_id="ses_1", role="tool_result", text="contents"
-    ).model_copy(
-        update={"tool_result": ToolResultReference(tool_call_id="call_1", tool_name="Read")}
-    )
-
     events = [
         event
         async for event in provider.stream(
             model=ModelMetadata(
                 model_id="glm-test",
                 provider_id="glm",
-                reasoning=_OPENAI_REASONING.capability,
+                reasoning=_OPENAI_REASONING.capability.model_copy(update={"output": "none"}),
             ),
             messages=[
                 MessageRecord.text(session_id="ses_1", role="user", text="read"),
                 assistant,
-                tool_result,
+                MessageRecord.text(session_id="ses_1", role="user", text="Explain it."),
             ],
         )
     ]
@@ -1535,7 +1541,7 @@ async def test_chat_completions_sends_reasoning_content_in_history() -> None:
     assistant_message = transport.requests[0]["payload"]["messages"][1]
     assert assistant_message["role"] == "assistant"
     assert assistant_message["reasoning_content"] == "I need to read the file."
-    assert assistant_message["tool_calls"][0]["id"] == "call_1"
+    assert "tool_calls" not in assistant_message
 
 
 @pytest.mark.asyncio

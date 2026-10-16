@@ -5,23 +5,36 @@ from __future__ import annotations
 from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.config.provider_templates.schema import ProviderTemplate
 from ouro.config.reasoning import openai_responses_effort_reasoning
+from ouro.core.reasoning import ReasoningRequest
 
 _VERIFIED_ON = "2026-10-10"
 
 _OPENAI_55_REASONING = openai_responses_effort_reasoning(
+    output="summary",
+    supported_summaries=("auto",),
+    default=ReasoningRequest(summary="auto"),
     supported_efforts=("low", "medium", "high", "xhigh"),
 )
 
 _OPENAI_56_REASONING = openai_responses_effort_reasoning(
+    output="summary",
+    supported_summaries=("auto",),
+    default=ReasoningRequest(summary="auto"),
     supported_efforts=("low", "medium", "high", "xhigh", "max"),
 )
 
 _CODEX_55_REASONING = openai_responses_effort_reasoning(
+    output="summary",
+    supported_summaries=("auto",),
+    default=ReasoningRequest(summary="auto"),
     activation="always_on",
     supported_efforts=("low", "medium", "high", "xhigh"),
 )
 
 _OPENAI_ALWAYS_ON_REASONING = openai_responses_effort_reasoning(
+    output="summary",
+    supported_summaries=("auto",),
+    default=ReasoningRequest(summary="auto"),
     activation="always_on",
     supported_efforts=("low", "medium", "high", "xhigh", "max"),
 )
@@ -82,7 +95,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://learn.chatgpt.com/docs/models",
         verified_on=_VERIFIED_ON,
-        revision=7,
+        revision=11,
     ),
     ProviderTemplate(
         template_id="openai",
@@ -126,6 +139,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://developers.openai.com/api/docs/models",
         verified_on=_VERIFIED_ON,
-        revision=6,
+        revision=10,
     ),
 )

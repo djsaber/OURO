@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 
 from ouro.core.content import (
@@ -108,7 +109,6 @@ def _message_to_chat_completions(
         continuation = message.provider_continuation
         if (
             include_continuation
-            and message.tool_calls
             and continuation is not None
             and continuation.matches(
                 provider_id=provider_id,
@@ -117,8 +117,7 @@ def _message_to_chat_completions(
             )
         ):
             for block in continuation.blocks:
-                if "reasoning_content" in block:
-                    converted["reasoning_content"] = block["reasoning_content"]
+                converted.update(reasoning_fields_from_response(block))
     if wire_role == "tool":
         if message.tool_result is None:
             raise ValueError("tool_result message is missing its tool result reference")
@@ -247,6 +246,15 @@ def _content_to_text(content: object) -> str:
 
 
 _REASONING_FIELDS = ("reasoning_content", "reasoning")
+
+
+def reasoning_fields_from_response(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep supported extension fields in their native shape, separately from display text."""
+    return {
+        field: deepcopy(value)
+        for field in _REASONING_FIELDS
+        if isinstance(value := payload.get(field), str | list) and value
+    }
 
 
 def _reasoning_field_value(payload: Mapping[str, Any]) -> object | None:

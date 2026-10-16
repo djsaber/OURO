@@ -42,7 +42,7 @@ from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_models import SessionContextStatus, SessionMessagePage
 from ouro.application.supervisor_models import RuntimeActivitySnapshot, RuntimeToolCallActivity
-from ouro.config import reasoning_preset
+from ouro.config import reasoning_effort_preset
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import (
     AgentCatalogEntry,
@@ -1537,7 +1537,6 @@ def _thinking_application(tmp_path: Path) -> LocalApplication:
                 reasoning=ReasoningCapability(
                     activation="toggle",
                     supported_efforts=("low", "high"),
-                    default_effort="low",
                     default=ReasoningRequest(mode="enabled", effort="low"),
                     output="summary",
                 ),
@@ -7431,6 +7430,7 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
             "CAPABILITIES",
             "THINKING",
             "THINKING",
+            "THINKING",
             "REQUEST",
             "ACTIONS",
         ]
@@ -7481,10 +7481,10 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         save_choice = next(choice for choice in screen._choices if choice.value == "endpoint-save")
         assert "JSON object" in save_choice.trailing
 
-        options.highlighted = options.get_option_index("endpoint-reasoning-preset")
+        options.highlighted = options.get_option_index("endpoint-reasoning-effort")
         options.focus()
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="THINKING PRESET")
+        await _wait_for_screen(app, ChoiceScreen, title="EFFORT")
         preset_options = app.screen.query_one("#choice-list", OptionList)
         assert preset_options.get_option("anthropic-messages-adaptive-effort").disabled is True
         incompatible = next(
@@ -7497,18 +7497,18 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         preset_options.focus()
         await pilot.press("enter")
         await _wait_for_screen(app, EndpointConfigurationScreen, title="ADD ENDPOINT")
-        assert screen._reasoning_preset_name() == "thinking-toggle"
-        assert screen._draft().reasoning == reasoning_preset("thinking-toggle")
+        assert screen._reasoning_effort_preset_name() == "thinking-toggle"
+        assert screen._draft().reasoning == reasoning_effort_preset("thinking-toggle")
         assert options.get_option("endpoint-save").disabled is False
 
         screen._values["endpoint-reasoning-config"] = (
             '{"capability":{"activation":"toggle","default":{"mode":"enabled"}},'
-            '"profile":{"name":"vendor-thinking","variants":'
+            '"profile":{"name":"vendor-thinking","effort":'
             '{"enabled":{"thinking":true},"disabled":{"thinking":false}}}}'
         )
         screen._choices = screen._endpoint_choices()
         screen._refresh_options(needle="", preferred_value="endpoint-reasoning-config")
-        assert screen._reasoning_preset_name() is None
+        assert screen._reasoning_effort_preset_name() is None
         assert options.get_option("endpoint-save").disabled is False
 
         screen._values["endpoint-request-options"] = '{"thinking":true}'
@@ -7612,7 +7612,6 @@ async def test_session_setting_shortcuts_cycle_and_wrap_available_values(
             ReasoningCapability(
                 activation="toggle",
                 supported_efforts=("low", "high"),
-                default_effort="low",
                 default=ReasoningRequest(mode="enabled", effort="low"),
             ),
             ReasoningRequest(mode="enabled", effort="low"),
@@ -7622,7 +7621,6 @@ async def test_session_setting_shortcuts_cycle_and_wrap_available_values(
             ReasoningCapability(
                 activation="always_on",
                 supported_efforts=("low", "high"),
-                default_effort="low",
                 default=ReasoningRequest(mode="enabled", effort="low"),
             ),
             ReasoningRequest(mode="enabled", effort="low"),
@@ -7669,7 +7667,9 @@ def test_thinking_choices_expose_only_distinct_user_configurable_effects(
 async def test_thinking_completion_and_modal_share_supported_choices(
     tmp_path: Path,
 ) -> None:
-    app = OuroTuiApp(application=_thinking_application(tmp_path))
+    application = _thinking_application(tmp_path)
+    application.runtime.adapter.model.reasoning.supported_summaries = ("auto", "detailed")
+    app = OuroTuiApp(application=application)
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
@@ -7677,19 +7677,33 @@ async def test_thinking_completion_and_modal_share_supported_choices(
         await pilot.pause()
 
         inline = command_popup_text(app.query_one(CommandPopup)).plain
-        for value in ("Off", "Low", "High"):
+        for value in ("Off", "Low", "High", "Summary: Auto", "Summary: Detailed"):
             assert value in inline
-        for value in ("default", "enabled", "minimal", "medium", "xhigh", "max"):
+        for value in ("enabled", "minimal", "medium", "xhigh", "max", "Concise", "Summarized"):
             assert value not in inline
 
         app.query_one(Composer).clear()
         app.action_thinking_settings()
         await pilot.pause()
         modal = {choice.value for choice in app.screen._choices}
-        for value in ("disabled", "low", "high"):
+        for value in ("disabled", "low", "high", "summary:auto", "summary:detailed"):
             assert value in modal
-        for value in ("default", "enabled", "minimal", "medium", "xhigh", "max"):
+        for value in ("default", "enabled", "minimal", "medium", "xhigh", "max", "summary:concise"):
             assert value not in modal
+        options = app.screen.query_one("#choice-list", OptionList)
+        options.highlighted = options.get_option_index("summary:detailed")
+        await pilot.press("enter")
+        await pilot.pause()
+        await app._set_reasoning("high")
+        state = await app._controller.session_reasoning()
+        assert state.requested == ReasoningRequest(
+            mode="enabled", effort="high", summary="detailed"
+        )
+        await app._set_reasoning("summary:provider_default")
+        state = await app._controller.session_reasoning()
+        assert state.requested == ReasoningRequest(
+            mode="enabled", effort="high", summary="provider_default"
+        )
 
 
 @pytest.mark.asyncio
@@ -7802,8 +7816,7 @@ async def test_status_line_default_reflects_endpoint_default(tmp_path: Path) -> 
                 reasoning=ReasoningCapability(
                     activation="toggle",
                     supported_efforts=("low", "high"),
-                    default_effort="low",
-                    default=ReasoningRequest(mode="disabled"),
+                    default=ReasoningRequest(mode="disabled", effort="low"),
                     output="summary",
                 ),
             ),
@@ -8587,7 +8600,7 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
             display_name="Shared",
             model=f"{provider_name}-model",
             supports_image_input=True,
-            reasoning=reasoning_preset("openai-chat-completions-effort"),
+            reasoning=reasoning_effort_preset("openai-chat-completions-effort"),
         )
         endpoint_id = endpoints.changed_endpoint_id
         assert endpoint_id is not None
@@ -8823,7 +8836,7 @@ async def test_endpoint_management_returns_to_catalog_after_deletion(tmp_path: P
         display_name="Chat",
         model="chat-model",
         supports_image_input=True,
-        reasoning=reasoning_preset("openai-chat-completions-effort"),
+        reasoning=reasoning_effort_preset("openai-chat-completions-effort"),
     )
     keep = configuration.add_endpoint(provider_id, display_name="Keep", model="keep-model")
     unnamed = configuration.add_endpoint(provider_id, model="alpha-model")
@@ -11407,7 +11420,6 @@ async def test_compaction_uses_shared_grouped_inline_menu_and_returns_typed_draf
                 "reasoning": ReasoningCapability(
                     activation="toggle",
                     supported_efforts=("low", "high"),
-                    default_effort="low",
                     default=ReasoningRequest(mode="enabled", effort="low"),
                     output="summary",
                 ),

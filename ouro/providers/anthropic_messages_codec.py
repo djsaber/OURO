@@ -100,11 +100,7 @@ def continuation_blocks_from_response(
     raw_content = response.get("content")
     if not isinstance(raw_content, list):
         return ()
-    return tuple(
-        deepcopy(dict(block))
-        for block in raw_content
-        if isinstance(block, Mapping) and block.get("type") in {"thinking", "redacted_thinking"}
-    )
+    return ({"content": deepcopy(raw_content)},) if raw_content else ()
 
 
 def usage_from_anthropic(value: object) -> Usage:
@@ -176,7 +172,6 @@ def _message_to_anthropic(
         continuation = message.provider_continuation
         if (
             include_continuation
-            and message.tool_calls
             and continuation is not None
             and continuation.matches(
                 provider_id=provider_id,
@@ -184,6 +179,15 @@ def _message_to_anthropic(
                 model_id=model_id,
             )
         ):
+            if len(continuation.blocks) == 1 and "content" in continuation.blocks[0]:
+                native = continuation.blocks[0]
+                _, _, calls = content_blocks_from_response(native)
+                if [(call.id, call.name, call.arguments) for call in calls] != [
+                    (call.id, call.name, call.arguments) for call in message.tool_calls
+                ]:
+                    raise ValueError("Anthropic continuation does not match tool calls")
+                return {"role": role, "content": deepcopy(native["content"])}
+            # Persisted thinking-only artifacts still need canonical text and tools.
             content = [*(deepcopy(block) for block in continuation.blocks), *content]
         content.extend(
             {

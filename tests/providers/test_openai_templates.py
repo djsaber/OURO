@@ -87,7 +87,7 @@ async def test_openai_preset_sends_native_responses_tools_and_reasoning(
     assert len(requests) == 1
     payload = requests[0]
     assert payload["model"] == model_id
-    assert payload["reasoning"] == {"effort": "high"}
+    assert payload["reasoning"] == {"effort": "high", "summary": "auto"}
     assert payload["tools"][0]["name"] == "echo"
     assert payload["max_output_tokens"] == 32768
     assert payload["store"] is False
@@ -116,7 +116,7 @@ def test_model_effort_limits_are_enforced_before_requests(template_id):
         "gpt-5.6-luna",
     ):
         capability = template.endpoint(model_id).reasoning.capability
-        assert resolve_reasoning(capability, ReasoningRequest(effort="max")).variant == "max"
+        assert resolve_reasoning(capability, ReasoningRequest(effort="max")).effort_variant == "max"
         with pytest.raises(ValueError, match="not supported"):
             resolve_reasoning(capability, ReasoningRequest(effort="minimal"))
 
@@ -124,9 +124,10 @@ def test_model_effort_limits_are_enforced_before_requests(template_id):
 def test_api_none_is_not_assumed_to_be_a_subscription_capability():
     api = get_provider_template("openai").endpoint("gpt-6-sol").reasoning
     assert (
-        resolve_reasoning(api.capability, ReasoningRequest(mode="disabled")).variant == "disabled"
+        resolve_reasoning(api.capability, ReasoningRequest(mode="disabled")).effort_variant
+        == "disabled"
     )
-    assert api.profile.variants["disabled"] == {"reasoning": {"effort": "none"}}
+    assert api.profile.effort["disabled"] == {"reasoning": {"effort": "none"}}
     subscription = get_provider_template("openai-codex").endpoint("gpt-6-sol").reasoning
     with pytest.raises(ValueError, match="always on"):
         resolve_reasoning(subscription.capability, ReasoningRequest(mode="disabled"))

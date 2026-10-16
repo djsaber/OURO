@@ -5,17 +5,19 @@ from __future__ import annotations
 from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.config.provider_templates.schema import ProviderTemplate
 from ouro.config.reasoning import openai_chat_completions_effort_reasoning
+from ouro.core.reasoning import ReasoningRequest
 
 _VERIFIED_ON = "2026-10-10"
 
 _COHERE_REASONING = openai_chat_completions_effort_reasoning(
     supported_efforts=("high",),
-    default_effort="high",
+    default=ReasoningRequest(mode="enabled", effort="high"),
 )
 
 
 TEMPLATES: tuple[ProviderTemplate, ...] = (
     ProviderTemplate(
+        revision=2,
         template_id="cohere",
         display_name="Cohere",
         description="Cohere's OpenAI-compatible API with the multilingual Command A+ model.",

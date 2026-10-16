@@ -12,7 +12,7 @@ from ouro.config import ProviderConfigManager, ProviderRuntimeOptions
 from ouro.config.reasoning import (
     mapped_reasoning,
     openai_chat_completions_effort_reasoning,
-    reasoning_preset,
+    openai_responses_effort_reasoning,
 )
 from ouro.core.context import ContextView
 from ouro.core.errors import ConfigError
@@ -253,10 +253,12 @@ async def test_compatible_config_factory_encodes_native_reasoning_without_produc
         output="summary",
         continuation="opaque",
         supported_efforts=("low",),
-        default_effort="low",
-        variants={
-            "enabled": {"reasoning": {"effort": "low", "summary": "auto"}},
-            "low": {"reasoning": {"effort": "low", "summary": "auto"}},
+        supported_summaries=("auto",),
+        summary={"auto": {"reasoning": {"summary": "auto"}}},
+        default=ReasoningRequest(summary="auto", effort="low"),
+        effort={
+            "enabled": {"reasoning": {"effort": "low"}},
+            "low": {"reasoning": {"effort": "low"}},
         },
     )
     manager = ProviderConfigManager(tmp_path)
@@ -348,7 +350,11 @@ async def test_responses_preset_roundtrips_config_and_encodes_requested_effort(
     manager.create_endpoint(
         provider.provider_id,
         model_id="custom-model",
-        reasoning=reasoning_preset("openai-responses-effort"),
+        reasoning=openai_responses_effort_reasoning(
+            output="summary",
+            supported_summaries=("auto", "concise", "detailed"),
+            default=ReasoningRequest(summary="auto"),
+        ),
         supports_streaming=streaming,
         make_default=True,
     )
@@ -381,18 +387,18 @@ async def test_responses_preset_roundtrips_config_and_encodes_requested_effort(
     assert events[-1].type == "done"
     assert len(requests) == 1
     payload = requests[0]
-    if native_effort is None:
-        assert "reasoning" not in payload
-    else:
-        assert payload["reasoning"] == {"effort": native_effort}
+    expected = {} if native_effort is None else {"effort": native_effort}
+    if native_effort != "none":
+        expected["summary"] = "auto"
+    assert payload["reasoning"] == expected
     assert "reasoning_effort" not in payload
     assert payload["include"] == ["reasoning.encrypted_content"]
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize("preset", ["openai-responses-effort", "openai-responses-effort-summary"])
+@pytest.mark.parametrize("summary", ["provider_default", "concise"])
 async def test_responses_visible_reasoning_reaches_adapter_without_becoming_answer(
-    tmp_path, monkeypatch, streaming, preset
+    tmp_path, monkeypatch, streaming, summary
 ):
     manager = ProviderConfigManager(tmp_path)
     provider = manager.create_provider(
@@ -404,7 +410,11 @@ async def test_responses_visible_reasoning_reaches_adapter_without_becoming_answ
     manager.create_endpoint(
         provider.provider_id,
         model_id="model",
-        reasoning=reasoning_preset(preset),
+        reasoning=openai_responses_effort_reasoning(
+            output="summary",
+            supported_summaries=("auto", "concise", "detailed"),
+            default=ReasoningRequest(summary=summary),
+        ),
         supports_streaming=streaming,
         make_default=True,
     )
@@ -452,10 +462,10 @@ async def test_responses_visible_reasoning_reaches_adapter_without_becoming_answ
     assert "".join(event.text or "" for event in events) == "hello"
     continuation = next(event.continuation for event in events if event.type == "continuation")
     assert continuation.blocks[0]["items"] == output
-    if preset == "openai-responses-effort":
+    if summary == "provider_default":
         assert "reasoning" not in requests[0]
     else:
-        assert requests[0]["reasoning"] == {"summary": "auto"}
+        assert requests[0]["reasoning"] == {"summary": summary}
 
 
 @pytest.mark.parametrize(

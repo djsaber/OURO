@@ -51,7 +51,7 @@ def test_endpoint_public_output_redacts_sensitive_extension_values() -> None:
             reasoning=mapped_reasoning(
                 name="private-native-config",
                 activation="toggle",
-                variants={
+                effort={
                     "enabled": {"thinking": {"type": "enabled", "password": "secret"}},
                     "disabled": {"thinking": {"type": "disabled"}},
                 },
@@ -64,7 +64,7 @@ def test_endpoint_public_output_redacts_sensitive_extension_values() -> None:
         "nested": {"password": "***"},
         "seed": 7,
     }
-    assert public["reasoning"]["profile"]["variants"]["enabled"]["thinking"]["password"] == "***"
+    assert public["reasoning"]["profile"]["effort"]["enabled"]["thinking"]["password"] == "***"
 
 
 def test_provider_options_are_redacted_in_public_output() -> None:
@@ -369,7 +369,7 @@ def test_provider_config_rejects_noncanonical_shapes(tmp_path, raw) -> None:
 def test_provider_config_resolves_endpoint_capabilities(tmp_path) -> None:
     reasoning = openai_chat_completions_effort_reasoning(
         supported_efforts=("low", "high"),
-        default_effort="high",
+        default=ReasoningRequest(mode="enabled", effort="high"),
     )
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -456,7 +456,7 @@ def test_provider_endpoint_writes_reasoning_profile_and_rejects_option_conflicts
 
     reasoning = openai_chat_completions_effort_reasoning(
         supported_efforts=("low", "high"),
-        default_effort="high",
+        default=ReasoningRequest(mode="enabled", effort="high"),
     )
     endpoint = manager.create_endpoint(
         provider.provider_id,

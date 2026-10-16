@@ -8,10 +8,11 @@ from ouro.core.base import OuroModel
 
 ReasoningMode = Literal["default", "enabled", "disabled"]
 ReasoningEffort = Literal["minimal", "low", "medium", "high", "xhigh", "max"]
+ReasoningSummary = Literal["auto", "concise", "detailed", "summarized", "omitted"]
 ReasoningActivation = Literal["unsupported", "always_on", "toggle"]
 ReasoningOutput = Literal["none", "summary", "text"]
 ReasoningContinuation = Literal["none", "text", "opaque"]
-ReasoningVariant = Literal[
+ReasoningEffortVariant = Literal[
     "default",
     "enabled",
     "disabled",
@@ -34,16 +35,14 @@ REASONING_EFFORTS: tuple[ReasoningEffort, ...] = (
 
 
 class ReasoningRequest(OuroModel):
-    """Provider-neutral user intent for one model route."""
+    """Independent reasoning preferences; effort only applies while thinking is enabled."""
 
     mode: ReasoningMode = "default"
     effort: ReasoningEffort | None = None
-
-    @model_validator(mode="after")
-    def _validate_mode_and_effort(self) -> ReasoningRequest:
-        if self.mode == "disabled" and self.effort is not None:
-            raise ValueError("disabled reasoning cannot specify an effort")
-        return self
+    # None inherits the endpoint preference; provider_default omits the native parameter.
+    summary: ReasoningSummary | Literal["provider_default"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class ReasoningCapability(OuroModel):
@@ -51,45 +50,35 @@ class ReasoningCapability(OuroModel):
 
     activation: ReasoningActivation = "unsupported"
     supported_efforts: tuple[ReasoningEffort, ...] = Field(default_factory=tuple)
-    default_effort: ReasoningEffort | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
+    supported_summaries: tuple[ReasoningSummary, ...] = Field(default_factory=tuple)
     default: ReasoningRequest = Field(default_factory=ReasoningRequest)
     output: ReasoningOutput = "none"
     continuation: ReasoningContinuation = "none"
 
     @model_validator(mode="after")
     def _validate_capability(self) -> ReasoningCapability:
+        if len(set(self.supported_summaries)) != len(self.supported_summaries):
+            raise ValueError("supported reasoning summaries must not contain duplicates")
+        if (
+            self.default.summary not in {None, "provider_default"}
+            and self.default.summary not in self.supported_summaries
+        ):
+            raise ValueError("default reasoning summary must be supported by the endpoint")
         if len(set(self.supported_efforts)) != len(self.supported_efforts):
             raise ValueError("supported reasoning efforts must not contain duplicates")
         if self.activation == "unsupported":
             if self.supported_efforts:
                 raise ValueError("unsupported reasoning cannot declare effort controls")
-            if self.default_effort is not None:
-                raise ValueError("unsupported reasoning cannot declare a default effort")
             if self.default.mode != "default" or self.default.effort is not None:
                 raise ValueError("unsupported reasoning cannot declare a non-default intent")
         if self.activation == "always_on" and self.default.mode == "disabled":
             raise ValueError("always-on reasoning cannot be disabled by default")
         if self.default.effort is not None and self.default.effort not in self.supported_efforts:
             raise ValueError("default reasoning effort must be supported by the endpoint")
-        if not self.supported_efforts:
-            if self.default_effort is not None:
-                raise ValueError(
-                    "reasoning without effort controls cannot declare a default effort"
-                )
-        else:
-            enabled_effort = self.default_effort or self.default.effort
-            if enabled_effort is None and len(self.supported_efforts) == 1:
-                enabled_effort = self.supported_efforts[0]
-            if enabled_effort is None:
+        if self.supported_efforts and self.default.effort is None:
+            if len(self.supported_efforts) != 1:
                 raise ValueError("reasoning with multiple efforts must declare a default effort")
-            if enabled_effort not in self.supported_efforts:
-                raise ValueError("enabled default effort must be supported by the endpoint")
-            self.default_effort = enabled_effort
-        if self.continuation == "text" and self.output not in {"summary", "text"}:
-            raise ValueError("text reasoning continuation requires summary or text output")
+            self.default = self.default.model_copy(update={"effort": self.supported_efforts[0]})
         return self
 
 
@@ -98,7 +87,7 @@ class ReasoningResolution(OuroModel):
 
     requested: ReasoningRequest
     effective: ReasoningRequest
-    variant: ReasoningVariant
+    effort_variant: ReasoningEffortVariant
 
 
 def resolve_reasoning(
@@ -108,34 +97,31 @@ def resolve_reasoning(
     """Resolve one request without silently approximating unsupported controls."""
 
     requested = request or ReasoningRequest()
-    effective = requested
-    if requested.mode == "default" and requested.effort is None:
-        effective = capability.default
-    elif requested.effort is not None and requested.mode == "default":
-        effective = requested.model_copy(update={"mode": "enabled"})
+    mode = requested.mode
+    if mode == "default":
+        mode = "enabled" if requested.effort is not None else capability.default.mode
+    effort = requested.effort if requested.effort is not None else capability.default.effort
 
+    summary = capability.default.summary if requested.summary is None else requested.summary
+    if summary not in {None, "provider_default"} and summary not in capability.supported_summaries:
+        raise ValueError(f"reasoning summary {summary!r} is not supported by endpoint")
     if capability.activation == "unsupported":
-        if effective.mode != "default" or effective.effort is not None:
+        if mode != "default" or effort is not None:
             raise ValueError("endpoint does not support reasoning controls")
     elif capability.activation == "always_on":
-        if effective.mode == "disabled":
+        if mode == "disabled":
             raise ValueError("endpoint reasoning is always on and cannot be disabled")
-        if effective.mode == "default":
-            effective = effective.model_copy(update={"mode": "enabled"})
+        mode = "enabled"
 
-    if effective.mode == "enabled" and effective.effort is None:
-        if capability.default_effort is not None:
-            effective = effective.model_copy(update={"effort": capability.default_effort})
+    if effort is not None and effort not in capability.supported_efforts:
+        raise ValueError(f"reasoning effort {effort!r} is not supported by endpoint")
 
-    if effective.effort is not None:
-        if effective.effort not in capability.supported_efforts:
-            raise ValueError(f"reasoning effort {effective.effort!r} is not supported by endpoint")
-        if effective.mode != "enabled":
-            effective = effective.model_copy(update={"mode": "enabled"})
-
-    variant: ReasoningVariant = effective.effort or effective.mode
+    effective = ReasoningRequest(
+        mode=mode, effort=effort if mode == "enabled" else None, summary=summary
+    )
+    effort_variant: ReasoningEffortVariant = effective.effort or effective.mode
     return ReasoningResolution(
         requested=requested,
         effective=effective,
-        variant=variant,
+        effort_variant=effort_variant,
     )

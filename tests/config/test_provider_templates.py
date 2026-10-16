@@ -166,17 +166,19 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
         "xhigh",
         "max",
     )
-    assert openai.capability.default_effort == "medium"
-    assert openai.capability.output == "none"
+    assert openai.capability.default.effort == "medium"
+    assert openai.capability.output == "summary"
     assert openai.profile is not None
-    assert openai.profile.variants["enabled"] == {"reasoning": {"effort": "medium"}}
+    assert openai.profile.effort["enabled"] == {"reasoning": {"effort": "medium"}}
+    assert openai.capability.supported_summaries == ("auto",)
+    assert openai.capability.default.summary == "auto"
     assert openai.capability.activation == "always_on"
-    assert "disabled" not in openai.profile.variants
+    assert "disabled" not in openai.profile.effort
 
     anthropic = templates["anthropic"]
     assert anthropic.endpoint("claude-sonnet-5-5").reasoning.capability.default.effort == "high"
     assert anthropic.endpoint("claude-opus-5-5").reasoning.capability.continuation == "opaque"
-    assert anthropic.endpoint("claude-haiku-5-5").reasoning.capability.default_effort == "medium"
+    assert anthropic.endpoint("claude-haiku-5-5").reasoning.capability.default.effort == "medium"
 
     gemini = templates["gemini"]
     assert gemini.endpoint("gemini-3.8-flash").reasoning.capability.activation == "always_on"
@@ -189,19 +191,19 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     deepseek = templates["deepseek"].endpoint().reasoning
     assert deepseek.capability.supported_efforts == ("low", "high", "max")
     assert deepseek.profile is not None
-    assert deepseek.profile.variants["low"] == {
+    assert deepseek.profile.effort["low"] == {
         "thinking": {"type": "enabled"},
         "reasoning_effort": "low",
     }
-    assert deepseek.profile.variants["max"] == {
+    assert deepseek.profile.effort["max"] == {
         "thinking": {"type": "enabled"},
         "reasoning_effort": "max",
     }
-    assert deepseek.capability.default_effort == "high"
-    assert templates["deepseek"].revision == 6
+    assert deepseek.capability.default.effort == "high"
+    assert templates["deepseek"].revision == 8
 
     qwen = templates["qwen"]
-    assert qwen.revision == 7
+    assert qwen.revision == 9
     qwen_max = qwen.endpoint()
     assert qwen_max.model_id == "qwen3.8-max"
     assert qwen_max.context_window == 1_000_000
@@ -213,7 +215,7 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     qwen_reasoning = qwen_max.reasoning
     assert qwen_reasoning.capability.activation == "toggle"
     assert qwen_reasoning.profile is not None
-    assert qwen_reasoning.profile.variants["enabled"]["preserve_thinking"] is True
+    assert qwen_reasoning.profile.effort["enabled"]["preserve_thinking"] is True
     qwen_flash = qwen.endpoint("qwen3.8-flash")
     assert qwen_flash.context_window == 1_000_000
     assert qwen_flash.max_output_tokens == 131_072
@@ -223,12 +225,12 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     assert flash_reasoning.capability.activation == "toggle"
     assert flash_reasoning.capability.supported_efforts == ("low", "medium", "xhigh")
     assert flash_reasoning.profile is not None
-    assert flash_reasoning.profile.variants["enabled"] == {
+    assert flash_reasoning.profile.effort["enabled"] == {
         "enable_thinking": True,
         "preserve_thinking": True,
         "reasoning_effort": "xhigh",
     }
-    assert flash_reasoning.profile.variants["disabled"]["enable_thinking"] is False
+    assert flash_reasoning.profile.effort["disabled"]["enable_thinking"] is False
     qwen_plus = qwen.endpoint("qwen3.7-plus")
     assert qwen_plus.context_window == 1_000_000
     assert qwen_plus.max_output_tokens == 131_072
@@ -237,7 +239,7 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     plus_reasoning = qwen_plus.reasoning
     assert plus_reasoning.capability.activation == "toggle"
     assert plus_reasoning.profile is not None
-    assert plus_reasoning.profile.variants["enabled"]["preserve_thinking"] is True
+    assert plus_reasoning.profile.effort["enabled"]["preserve_thinking"] is True
 
     kimi = templates["kimi"]
     assert kimi.endpoint("kimi-k2.7-code").reasoning.capability.activation == "always_on"
@@ -245,17 +247,17 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     k3_reasoning = kimi.endpoint("kimi-k3").reasoning
     assert k3_reasoning.capability.activation == "always_on"
     assert k3_reasoning.capability.supported_efforts == ("low", "high", "max")
-    assert k3_reasoning.capability.default_effort == "max"
+    assert k3_reasoning.capability.default.effort == "max"
     assert k3_reasoning.profile is not None
-    assert k3_reasoning.profile.variants["enabled"] == {"reasoning_effort": "max"}
+    assert k3_reasoning.profile.effort["enabled"] == {"reasoning_effort": "max"}
 
     glm = templates["glm"]
-    assert glm.revision == 5
+    assert glm.revision == 7
     glm_53 = glm.endpoint().reasoning
     assert glm_53.capability.activation == "always_on"
     assert glm_53.capability.supported_efforts == ("low", "high", "max")
     assert glm_53.profile is not None
-    assert glm_53.profile.variants["enabled"] == {
+    assert glm_53.profile.effort["enabled"] == {
         "thinking": {"type": "enabled"},
         "reasoning_effort": "max",
     }
@@ -274,13 +276,13 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     assert glm_flash.supports_streaming is True
     assert glm_flash.supports_structured_output is True
     assert glm_flash.reasoning.profile is not None
-    assert glm_flash.reasoning.profile.variants["low"] == {
+    assert glm_flash.reasoning.profile.effort["low"] == {
         "thinking": {"type": "enabled", "clear_thinking": False},
         "reasoning_effort": "low",
     }
     legacy_glm = glm.endpoint("glm-5.2").reasoning
     assert legacy_glm.profile is not None
-    assert legacy_glm.profile.variants["enabled"] == {
+    assert legacy_glm.profile.effort["enabled"] == {
         "thinking": {"type": "enabled", "clear_thinking": False}
     }
 
@@ -294,9 +296,9 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     assert grok.metadata["provider_output_limit"] == "unlimited"
     assert grok.reasoning.capability.activation == "always_on"
     assert grok.reasoning.capability.supported_efforts == ("low", "medium", "high", "xhigh")
-    assert grok.reasoning.capability.default_effort == "high"
+    assert grok.reasoning.capability.default.effort == "high"
     assert grok.reasoning.profile is not None
-    assert grok.reasoning.profile.variants["enabled"] == {"reasoning_effort": "high"}
+    assert grok.reasoning.profile.effort["enabled"] == {"reasoning_effort": "high"}
 
 
 def test_provider_template_requires_a_resolvable_default_endpoint() -> None:

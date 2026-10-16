@@ -18,6 +18,14 @@ REASONING_REQUESTS: dict[str, ReasoningRequest] = {
     **{effort: ReasoningRequest(mode="enabled", effort=effort) for effort in REASONING_EFFORTS},
 }
 UNAVAILABLE_MODEL_LABEL = "Unavailable model"
+SUMMARY_LABELS = {
+    "provider_default": "Provider default",
+    "auto": "Auto",
+    "concise": "Concise",
+    "detailed": "Detailed",
+    "summarized": "Summarized",
+    "omitted": "Omitted",
+}
 
 
 def model_display_label(model: AvailableModel) -> str:
@@ -64,17 +72,45 @@ def reasoning_values(capability: ReasoningCapability) -> tuple[str, ...]:
 
 
 def reasoning_choices(
-    capability: ReasoningCapability, *, selected: str, theme: TuiTheme
+    capability: ReasoningCapability,
+    *,
+    selected: str,
+    theme: TuiTheme,
+    requested: ReasoningRequest | None = None,
 ) -> tuple[Choice, ...]:
-    return tuple(
+    efforts = tuple(
         Choice(
             value,
             THINKING_LABELS[value],
             marker=theme.selected_choice_marker if value == selected else "",
             trailing="current" if value == selected else "",
+            group="EFFORT" if capability.supported_summaries else "",
         )
         for value in reasoning_values(capability)
     )
+    if not capability.supported_summaries:
+        return efforts
+    summary = requested.summary if requested is not None else None
+    summaries = tuple(
+        Choice(
+            f"summary:{value}",
+            "Endpoint default" if value == "default" else SUMMARY_LABELS[value],
+            marker=theme.selected_choice_marker if value == (summary or "default") else "",
+            group="SUMMARY",
+        )
+        for value in ("default", "provider_default", *capability.supported_summaries)
+    )
+    return (*efforts, *summaries)
+
+
+def reasoning_request(value: str, current: ReasoningRequest) -> ReasoningRequest:
+    """Change one control while preserving the other requested control."""
+    if value.startswith("summary:"):
+        summary = value.removeprefix("summary:")
+        return ReasoningRequest.model_validate(
+            {**current.model_dump(), "summary": None if summary == "default" else summary}
+        )
+    return REASONING_REQUESTS[value].model_copy(update={"summary": current.summary})
 
 
 def model_choices(

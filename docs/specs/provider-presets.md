@@ -85,7 +85,8 @@ API Key 必须与模板所选平台、区域匹配。MiniMax 使用中国站，�
 
 API 模板的 none 映射到 OURO 的 reasoning disabled；Astra 和 GPT-6.1 Sol 模板不提供关闭思考。
 两套模板默认使用 medium，订阅模板不提供关闭思考选项。Codex 的 Ultra 涉及多代理执行，不属于单请求 effort；见[官方模型与等级说明](https://learn.chatgpt.com/docs/models)。
-请求使用原生 `reasoning: {effort: ...}`，完整加密 reasoning 由 opaque 续接保存。
+模板独立声明 `supported_summaries=["auto"]` 与 `default.summary="auto"`；统一编码器按 profile 将摘要请求和 effort 组合为原生
+`reasoning: {effort: ..., summary: "auto"}`，展示返回的摘要，完整加密 reasoning 由 opaque 续接保存。
 
 ### 预算与能力
 
@@ -123,7 +124,9 @@ OURO 遇到失败不会自动回退到付费 API 或其他模型。
 
 请求使用 `thinking.type=adaptive` 与 `output_config.effort`。Haiku 关闭思考时发送
 `thinking.type=disabled` 和 `output_config.effort=medium`；其余三个端点不提供关闭选项。
-思考输出为摘要，通过 opaque continuation 保存带签名的 thinking 块。
+模板独立声明 `supported_summaries=["summarized", "omitted"]` 与 `default.summary="summarized"`，profile 以 `thinking.display=summarized`
+请求可读摘要；opaque continuation 保存完整、有序的 assistant 内容，
+包括带签名的 thinking 块，用于普通多轮与工具续接。
 
 ## Gemini
 
@@ -154,7 +157,7 @@ OURO 遇到失败不会自动回退到付费 API 或其他模型。
 [图片输入接口](https://api-docs.deepseek.com/guides/vision/)。
 
 使用 `thinking.type=enabled/disabled` 切换思考，开启时通过 `reasoning_effort` 选择等级。
-思考输出为文本，工具轮次通过 `reasoning_content` 续接。
+思考输出为文本，普通多轮与工具轮次通过 `reasoning_content` 续接。
 
 ## Qwen
 
@@ -169,7 +172,7 @@ OURO 遇到失败不会自动回退到付费 API 或其他模型。
 服务端还限制时长、分辨率与帧数；OURO 本地准备上限不替代这些限制。
 
 使用 `enable_thinking` 控制开关，`preserve_thinking` 随开关设置为相同布尔值；Flash 通过
-`reasoning_effort` 选择等级。思考输出为文本，工具轮次通过 `reasoning_content` 续接。
+`reasoning_effort` 选择等级。思考输出为文本，普通多轮与工具轮次通过 `reasoning_content` 续接。
 
 ## Kimi
 
@@ -185,7 +188,7 @@ OURO 遇到失败不会自动回退到付费 API 或其他模型。
 编码格式见[Chat Completions API](https://platform.kimi.com/docs/api/chat)。
 
 K3 使用顶层 `reasoning_effort`；K2.7 Code 系列不发送思考开关或 effort 参数。K2.6 使用
-`thinking.type=enabled/disabled`，开启时附带 `thinking.keep=all`。思考输出为文本，工具轮次通过 `reasoning_content` 续接。
+`thinking.type=enabled/disabled`，开启时附带 `thinking.keep=all`。思考输出为文本，普通多轮与工具轮次通过 `reasoning_content` 续接。
 
 ## GLM
 
@@ -204,7 +207,7 @@ K3 使用顶层 `reasoning_effort`；K2.7 Code 系列不发送思考开关或 ef
 预置视频输入关闭，以匹配 OURO 本地附件的编码方式。
 
 使用 `thinking.type=enabled/disabled`；5.3 与 5.3 Flash 固定 enabled，并通过 `reasoning_effort` 选择等级。
-除 5.3 外，端点在开启思考时设置 `thinking.clear_thinking=false`。思考输出为文本，工具轮次通过 `reasoning_content` 续接。
+除 5.3 外，端点在开启思考时设置 `thinking.clear_thinking=false`。思考输出为文本，普通多轮与工具轮次通过 `reasoning_content` 续接。
 
 ## Grok
 
@@ -239,7 +242,7 @@ M3 通过 `image_url` 和 `video_url` 接收图片、视频 Base64 输入，不�
 [官方兼容接口](https://platform.minimax.cn/docs/api-reference/text-openai-api#多模态输入)。
 
 M3 使用 `thinking.type=adaptive/disabled`；M2.7 系列不发送思考控制参数。所有端点发送
-`reasoning_split=true`，展示思考文本，并通过 `reasoning_content` 保存工具轮次续接。
+`reasoning_split=true`，展示思考文本，并通过 `reasoning_content` 保存普通多轮与工具轮次续接。
 
 ## 豆包
 

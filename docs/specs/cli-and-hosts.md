@@ -89,8 +89,8 @@ TUI 经 `TuiController` 调用 Application，使用 Runtime 事件与 Session ob
 Provider check 的 provider id 使用唯一位置参数；运行时覆盖使用 endpoint 和参数 flags。Provider 创建、更新、
 替换和 Endpoint 创建是独立意图；同 id 创建不得静默更新。Skills 单项安装可省略 selector，集合必须明确选择。
 `run` 与 `config compaction` 使用统一的 `--thinking-mode`、`--thinking-effort` 输入。Host 只构造
-`ReasoningRequest`；能力判断、默认解析和厂商参数编码不进入 CLI。非法的 `disabled + effort` 由统一错误边界
-返回配置退出码 `2`，不得输出 traceback。
+`ReasoningRequest`；能力判断、默认解析和厂商参数编码不进入 CLI。`disabled + effort` 保留强度偏好，
+关闭时不应用该等级；不受端点支持的请求由统一错误边界返回配置退出码 `2`，不得输出 traceback。
 
 ## Provider 认证命令
 

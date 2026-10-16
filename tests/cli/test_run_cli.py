@@ -438,7 +438,7 @@ def test_run_mode_passes_endpoint_capability_overrides(monkeypatch) -> None:
     assert options.reasoning_request == ReasoningRequest(mode="enabled", effort="high")
 
 
-def test_run_mode_rejects_effort_when_reasoning_is_disabled(tmp_path, capsys) -> None:
+def test_run_mode_rejects_reasoning_controls_on_unsupported_endpoint(tmp_path, capsys) -> None:
     code = main(
         [
             "run",
@@ -457,7 +457,7 @@ def test_run_mode_rejects_effort_when_reasoning_is_disabled(tmp_path, capsys) ->
     assert code == 2
     assert payload["status"] == "failed"
     assert payload["error_type"] == "ConfigError"
-    assert "disabled reasoning cannot specify an effort" in payload["error"]
+    assert "endpoint does not support reasoning controls" in payload["error"]
 
 
 def test_build_runtime_with_openai_chat_completions_provider_options(
@@ -838,7 +838,7 @@ def test_provider_commands_manage_config_and_runtime_default(
 def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, capsys) -> None:
     reasoning = openai_chat_completions_effort_reasoning(
         supported_efforts=("low", "high"),
-        default_effort="high",
+        default=ReasoningRequest(mode="enabled", effort="high"),
     )
     monkeypatch.setenv("OURO_TEST_KEY", "secret")
     assert (
@@ -981,13 +981,13 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
         ("openai-chat-completions", "thinking-toggle", {"thinking": {"type": "enabled"}}),
         ("openai-responses", "openai-responses-effort", {"reasoning": {"effort": "medium"}}),
         (
-            "openai-responses",
-            "openai-responses-effort-summary",
-            {"reasoning": {"effort": "medium", "summary": "auto"}},
+            "anthropic-messages",
+            "anthropic-messages-adaptive-effort",
+            {"thinking": {"type": "adaptive"}},
         ),
     ],
 )
-def test_provider_endpoint_reasoning_preset_configures_custom_model(
+def test_provider_endpoint_reasoning_effort_preset_configures_custom_model(
     tmp_path,
     monkeypatch,
     capsys,
@@ -1041,7 +1041,7 @@ def test_provider_endpoint_reasoning_preset_configures_custom_model(
     reasoning = payload["endpoint"]["reasoning"]
     endpoint_id = payload["endpoint"]["endpoint_id"]
     assert reasoning["capability"]["activation"] == "toggle"
-    assert reasoning["profile"]["variants"]["enabled"] == enabled_payload
+    assert reasoning["profile"]["effort"]["enabled"] == enabled_payload
     assert (
         ConfigurationFacade(tmp_path)
         .endpoint(provider_id, endpoint_id)

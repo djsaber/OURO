@@ -19,11 +19,10 @@ _QWEN_FLASH_REASONING = mapped_reasoning(
     name="qwen-flash-thinking-effort",
     activation="toggle",
     supported_efforts=("low", "medium", "xhigh"),
-    default_effort="xhigh",
     default=ReasoningRequest(mode="enabled", effort="xhigh"),
     output="text",
     continuation="text",
-    variants={
+    effort={
         "disabled": {"enable_thinking": False, "preserve_thinking": False},
         "enabled": {
             "enable_thinking": True,
@@ -99,6 +98,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://help.aliyun.com/zh/model-studio/text-generation-model",
         verified_on=_VERIFIED_ON,
-        revision=7,
+        revision=9,
     ),
 )

@@ -5,13 +5,14 @@ from __future__ import annotations
 from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.config.provider_templates.schema import ProviderTemplate
 from ouro.config.reasoning import openai_chat_completions_effort_reasoning
+from ouro.core.reasoning import ReasoningRequest
 
 _VERIFIED_ON = "2026-10-10"
 
 _GROK_REASONING = openai_chat_completions_effort_reasoning(
     activation="always_on",
     supported_efforts=("low", "medium", "high", "xhigh"),
-    default_effort="high",
+    default=ReasoningRequest(mode="enabled", effort="high"),
     output="summary",
 )
 
@@ -44,6 +45,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://docs.x.ai/developers/grok-4-7",
         verified_on=_VERIFIED_ON,
-        revision=4,
+        revision=6,
     ),
 )

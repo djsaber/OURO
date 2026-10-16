@@ -20,7 +20,7 @@ def test_endpoint_add_help_documents_reasoning_contract_choices(capsys) -> None:
     assert "reasoning contract:" in help_text
     assert "reasoning-content-effort" in help_text
     assert "openai-responses-effort" in help_text
-    assert "openai-responses-effort-summary" in help_text
+    assert "capability.supported_summaries" in help_text
     assert "anthropic-messages-adaptive-effort" in help_text
     assert '{"capability": {...}, "profile":' in help_text
     assert "Presets are explicit declarations, not capability detection" in help_text

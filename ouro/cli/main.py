@@ -678,7 +678,7 @@ def _provider_endpoint_command(
             supports_video_input=args.supports_video_input,
             supports_streaming=args.supports_streaming,
             supports_structured_output=args.supports_structured_output,
-            reasoning=args.reasoning_config or args.reasoning_preset,
+            reasoning=args.reasoning_config or args.reasoning_effort_preset,
             request_options=args.request_options,
             make_default=args.default,
             json_mode=args.json,

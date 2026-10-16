@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -12,21 +11,29 @@ from ouro.core.reasoning import (
     ReasoningCapability,
     ReasoningContinuation,
     ReasoningEffort,
+    ReasoningEffortVariant,
     ReasoningOutput,
     ReasoningRequest,
-    ReasoningVariant,
+    ReasoningSummary,
 )
 
-REASONING_PRESETS: tuple[str, ...] = (
+REASONING_EFFORT_PRESETS: tuple[str, ...] = (
     "none",
     "openai-chat-completions-effort",
     "openai-responses-effort",
-    "openai-responses-effort-summary",
     "reasoning-content-effort",
     "thinking-toggle",
     "enable-thinking-toggle",
     "anthropic-messages-adaptive-effort",
 )
+
+# Each summary preset lists supported modes in default preference order.
+REASONING_SUMMARY_PRESETS: dict[str, tuple[ReasoningSummary, ...]] = {
+    "none": (),
+    "openai-responses-auto": ("auto",),
+    "openai-responses": ("auto", "concise", "detailed"),
+    "anthropic-messages": ("summarized", "omitted"),
+}
 
 _RESERVED_REQUEST_FIELDS = frozenset(
     {
@@ -53,10 +60,11 @@ _RESERVED_REQUEST_FIELDS = frozenset(
 
 
 class ReasoningProfileConfig(OuroModel):
-    """Static native payload fragments for each resolved reasoning variant."""
+    """Independent native payload mappings for effort and summary selections."""
 
     name: str
-    variants: dict[ReasoningVariant, Metadata] = Field(default_factory=dict)
+    effort: dict[ReasoningEffortVariant, Metadata] = Field(default_factory=dict)
+    summary: dict[ReasoningSummary, Metadata] = Field(default_factory=dict)
 
     @field_validator("name")
     @classmethod
@@ -68,18 +76,22 @@ class ReasoningProfileConfig(OuroModel):
 
     @model_validator(mode="after")
     def _protect_core_request_fields(self) -> ReasoningProfileConfig:
-        for variant, fragment in self.variants.items():
-            reserved = sorted(_RESERVED_REQUEST_FIELDS.intersection(fragment))
-            if reserved:
-                raise ValueError(
-                    f"reasoning variant {variant!r} overrides reserved request fields: "
-                    f"{', '.join(reserved)}"
-                )
+        for dimension, variants in (("effort", self.effort), ("summary", self.summary)):
+            for variant, fragment in variants.items():
+                reserved = sorted(_RESERVED_REQUEST_FIELDS.intersection(fragment))
+                if reserved:
+                    raise ValueError(
+                        f"reasoning {dimension} variant {variant!r} "
+                        "overrides reserved request fields: "
+                        f"{', '.join(reserved)}"
+                    )
         return self
 
     @property
     def owned_fields(self) -> frozenset[str]:
-        return frozenset(key for fragment in self.variants.values() for key in fragment)
+        return frozenset(
+            key for fragment in (*self.effort.values(), *self.summary.values()) for key in fragment
+        )
 
 
 class EndpointReasoningConfig(OuroModel):
@@ -90,45 +102,79 @@ class EndpointReasoningConfig(OuroModel):
 
     @model_validator(mode="after")
     def _validate_profile_coverage(self) -> EndpointReasoningConfig:
-        variants = self.profile.variants if self.profile is not None else {}
-        if self.capability.activation == "unsupported":
+        capability = self.capability
+        if capability.activation == "unsupported" and not capability.supported_summaries:
             if self.profile is not None:
                 raise ValueError("unsupported reasoning cannot define a payload profile")
             return self
         if self.profile is None:
             raise ValueError("controllable reasoning requires a payload profile")
 
-        required = {"enabled"}
-        if self.capability.activation == "toggle":
+        required: set[ReasoningEffortVariant] = set(capability.supported_efforts)
+        if capability.activation != "unsupported":
+            required.add("enabled")
+        if capability.activation == "toggle":
             required.add("disabled")
-        required.update(self.capability.supported_efforts)
-        missing = sorted(required.difference(variants))
-        if missing:
-            raise ValueError(
-                "reasoning profile is missing required variants: " + ", ".join(missing)
-            )
-        allowed = {
-            "default",
-            "enabled",
-            *self.capability.supported_efforts,
-        }
-        if self.capability.activation == "toggle":
-            allowed.add("disabled")
-        unexpected = sorted(set(variants).difference(allowed))
-        if unexpected:
-            raise ValueError(
-                "reasoning profile defines unsupported variants: " + ", ".join(unexpected)
-            )
+        allowed = required | ({"default"} if required else set())
+        summaries = set(capability.supported_summaries)
+        for dimension, variants, needed, accepted in (
+            ("effort", self.profile.effort, required, allowed),
+            ("summary", self.profile.summary, summaries, summaries),
+        ):
+            missing = sorted(needed.difference(variants))
+            if missing:
+                raise ValueError(
+                    f"reasoning {dimension} profile is missing required variants: "
+                    + ", ".join(missing)
+                )
+            unexpected = sorted(set(variants).difference(accepted))
+            if unexpected:
+                raise ValueError(
+                    f"reasoning {dimension} profile defines unsupported variants: "
+                    + ", ".join(unexpected)
+                )
         return self
 
     def validate_request_options(self, request_options: Mapping[str, object]) -> None:
-        if self.profile is None:
-            return
-        collisions = sorted(self.profile.owned_fields.intersection(request_options))
+        owned = self.profile.owned_fields if self.profile is not None else frozenset()
+        collisions = sorted(owned.intersection(request_options))
         if collisions:
             raise ValueError(
                 "request_options conflict with reasoning-owned fields: " + ", ".join(collisions)
             )
+
+    def with_effort_preset(self, name: str) -> EndpointReasoningConfig:
+        """Replace effort controls while preserving summary controls and preferences."""
+        result = reasoning_effort_preset(name)
+        result.capability.supported_summaries = self.capability.supported_summaries
+        result.capability.default.summary = self.capability.default.summary
+        if self.capability.supported_summaries:
+            result.capability.output = self.capability.output
+            if self.profile is not None:
+                if result.profile is None:
+                    result.profile = ReasoningProfileConfig(name=self.profile.name)
+                result.profile.summary = self.profile.summary
+        return EndpointReasoningConfig.model_validate(result.model_dump())
+
+    def with_summary_preset(self, name: str) -> EndpointReasoningConfig:
+        """Replace summary controls while preserving effort and compatible defaults."""
+        preset = reasoning_summary_preset(name)
+        result = self.model_copy(deep=True)
+        summaries = preset.capability.supported_summaries
+        result.capability.supported_summaries = summaries
+        if result.profile is None:
+            result.profile = preset.profile
+        else:
+            result.profile.summary = preset.profile.summary if preset.profile else {}
+            if not result.profile.effort and not result.profile.summary:
+                result.profile = None
+        if not summaries:
+            result.capability.default.summary = None
+        else:
+            if result.capability.default.summary not in ("provider_default", *summaries):
+                result.capability.default.summary = preset.capability.default.summary
+            result.capability.output = preset.capability.output
+        return EndpointReasoningConfig.model_validate(result.model_dump())
 
 
 def unsupported_reasoning() -> EndpointReasoningConfig:
@@ -139,10 +185,11 @@ def mapped_reasoning(
     *,
     name: str,
     activation: ReasoningActivation,
-    variants: Mapping[ReasoningVariant, Mapping[str, object]],
+    effort: Mapping[ReasoningEffortVariant, Mapping[str, object]],
     supported_efforts: tuple[ReasoningEffort, ...] = (),
-    default_effort: ReasoningEffort | None = None,
     default: ReasoningRequest | None = None,
+    supported_summaries: tuple[ReasoningSummary, ...] = (),
+    summary: Mapping[ReasoningSummary, Mapping[str, object]] | None = None,
     output: ReasoningOutput = "none",
     continuation: ReasoningContinuation = "none",
 ) -> EndpointReasoningConfig:
@@ -152,8 +199,8 @@ def mapped_reasoning(
         {
             "activation": activation,
             "supported_efforts": supported_efforts,
-            "default_effort": default_effort,
             "default": default or ReasoningRequest(),
+            "supported_summaries": supported_summaries,
             "output": output,
             "continuation": continuation,
         }
@@ -161,7 +208,8 @@ def mapped_reasoning(
     profile = ReasoningProfileConfig.model_validate(
         {
             "name": name,
-            "variants": {key: dict(value) for key, value in variants.items()},
+            "effort": {key: dict(value) for key, value in effort.items()},
+            "summary": {key: dict(value) for key, value in (summary or {}).items()},
         }
     )
     return EndpointReasoningConfig(capability=capability, profile=profile)
@@ -170,63 +218,81 @@ def mapped_reasoning(
 def openai_chat_completions_effort_reasoning(
     *,
     supported_efforts: tuple[ReasoningEffort, ...] = REASONING_EFFORTS,
-    default_effort: ReasoningEffort = "medium",
+    default: ReasoningRequest | None = None,
     activation: ReasoningActivation = "toggle",
     output: ReasoningOutput = "none",
     continuation: ReasoningContinuation = "none",
 ) -> EndpointReasoningConfig:
-    variants: dict[ReasoningVariant, Mapping[str, object]] = {
+    default = default or ReasoningRequest(mode="enabled")
+    default = default.model_copy(update={"effort": default.effort or "medium"})
+    effort_variants: dict[ReasoningEffortVariant, Mapping[str, object]] = {
         # "enabled" must be a concrete native instruction.  Leaving the
         # payload empty would merely inherit the provider default, which can
         # be "none" and therefore would not honor the canonical intent.
-        "enabled": {"reasoning_effort": default_effort},
+        "enabled": {"reasoning_effort": default.effort},
         **{effort: {"reasoning_effort": effort} for effort in supported_efforts},
     }
     if activation == "toggle":
-        variants["disabled"] = {"reasoning_effort": "none"}
+        effort_variants["disabled"] = {"reasoning_effort": "none"}
     return mapped_reasoning(
         name="openai-chat-completions-effort",
         activation=activation,
         supported_efforts=supported_efforts,
-        default_effort=default_effort,
-        default=ReasoningRequest(mode="enabled", effort=default_effort),
+        default=default,
         output=output,
         continuation=continuation,
-        variants=variants,
+        effort=effort_variants,
     )
 
 
 def openai_responses_effort_reasoning(
     *,
     supported_efforts: tuple[ReasoningEffort, ...] = REASONING_EFFORTS,
-    default_effort: ReasoningEffort = "medium",
     activation: ReasoningActivation = "toggle",
     output: ReasoningOutput = "none",
-    summary: Literal["auto", "concise", "detailed"] | None = None,
+    supported_summaries: tuple[ReasoningSummary, ...] = (),
+    default: ReasoningRequest | None = None,
 ) -> EndpointReasoningConfig:
     """Declare native Responses effort controls and preserve opaque reasoning."""
-    summary_options = {"summary": summary} if summary is not None else {}
-    variants: dict[ReasoningVariant, Mapping[str, object]] = {
-        "enabled": {"reasoning": {"effort": default_effort, **summary_options}},
-        **{
-            effort: {"reasoning": {"effort": effort, **summary_options}}
-            for effort in supported_efforts
-        },
+    default = default or ReasoningRequest()
+    default = default.model_copy(update={"effort": default.effort or "medium"})
+    effort_variants: dict[ReasoningEffortVariant, Mapping[str, object]] = {
+        "enabled": {"reasoning": {"effort": default.effort}},
+        **{effort: {"reasoning": {"effort": effort}} for effort in supported_efforts},
     }
-    if summary is not None:
-        # Requesting a summary is opt-in; receiving visible reasoning does not
-        # imply the endpoint accepts this optional request parameter.
-        variants["default"] = {"reasoning": summary_options}
     if activation == "toggle":
-        variants["disabled"] = {"reasoning": {"effort": "none"}}
+        effort_variants["disabled"] = {"reasoning": {"effort": "none"}}
     return mapped_reasoning(
         name="openai-responses-effort",
         activation=activation,
         supported_efforts=supported_efforts,
-        default_effort=default_effort,
         output=output,
+        supported_summaries=supported_summaries,
+        summary={value: {"reasoning": {"summary": value}} for value in supported_summaries},
+        default=default,
         continuation="opaque",
-        variants=variants,
+        effort=effort_variants,
+    )
+
+
+def reasoning_summary_preset(name: str) -> EndpointReasoningConfig:
+    """Declare a standard summary capability and its native request mapping."""
+    if name not in REASONING_SUMMARY_PRESETS:
+        raise ValueError(f"unknown reasoning summary preset: {name}")
+    summaries = REASONING_SUMMARY_PRESETS[name]
+    if not summaries:
+        return unsupported_reasoning()
+    parent, field = (
+        ("thinking", "display") if name == "anthropic-messages" else ("reasoning", "summary")
+    )
+    return mapped_reasoning(
+        name=name,
+        activation="unsupported",
+        effort={},
+        supported_summaries=summaries,
+        summary={value: {parent: {field: value}} for value in summaries},
+        default=ReasoningRequest(summary=summaries[0]),
+        output="summary",
     )
 
 
@@ -245,12 +311,12 @@ def toggle_reasoning(
         default=ReasoningRequest(mode="enabled" if default_enabled else "disabled"),
         output=output,
         continuation=continuation,
-        variants={"enabled": enabled, "disabled": disabled},
+        effort={"enabled": enabled, "disabled": disabled},
     )
 
 
-def reasoning_preset(name: str) -> EndpointReasoningConfig:
-    """Resolve a common native contract for CLI-created custom endpoints."""
+def reasoning_effort_preset(name: str) -> EndpointReasoningConfig:
+    """Declare a standard effort capability and its native request mapping."""
 
     normalized = name.strip().casefold()
     if normalized == "none":
@@ -259,8 +325,6 @@ def reasoning_preset(name: str) -> EndpointReasoningConfig:
         return openai_chat_completions_effort_reasoning()
     if normalized == "openai-responses-effort":
         return openai_responses_effort_reasoning(output="summary")
-    if normalized == "openai-responses-effort-summary":
-        return openai_responses_effort_reasoning(output="summary", summary="auto")
     if normalized == "reasoning-content-effort":
         return openai_chat_completions_effort_reasoning(output="text", continuation="text")
     if normalized == "thinking-toggle":
@@ -281,11 +345,10 @@ def reasoning_preset(name: str) -> EndpointReasoningConfig:
             name="anthropic-messages-adaptive-effort",
             activation="toggle",
             supported_efforts=efforts,
-            default_effort="high",
             default=ReasoningRequest(mode="enabled", effort="high"),
             output="summary",
             continuation="opaque",
-            variants={
+            effort={
                 "disabled": {"thinking": {"type": "disabled"}},
                 "enabled": {"thinking": {"type": "adaptive"}},
                 **{
@@ -297,5 +360,5 @@ def reasoning_preset(name: str) -> EndpointReasoningConfig:
                 },
             },
         )
-    available = ", ".join(REASONING_PRESETS)
-    raise ValueError(f"unknown reasoning preset: {name}; available: {available}")
+    available = ", ".join(REASONING_EFFORT_PRESETS)
+    raise ValueError(f"unknown reasoning effort preset: {name}; available: {available}")

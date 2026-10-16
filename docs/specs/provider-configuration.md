@@ -125,7 +125,7 @@ Application 对历史附件按本次能力投影为原生媒体或带原因的�
               },
               "profile": {
                 "name": "thinking-object-toggle",
-                "variants": {
+                "effort": {
                   "enabled": {"thinking": {"type": "enabled"}},
                   "disabled": {"thinking": {"type": "disabled"}}
                 }
@@ -204,57 +204,97 @@ HTTP 合并、认证所有权和传输约束见[模型请求认证规格](reques
 思考能力分为四个相互独立的概念，避免把厂商差异泄漏到 core 或 CLI：
 
 1. `ReasoningRequest` 是本次调用的供应商无关意图：`mode` 为 `default`、`enabled` 或 `disabled`，可选
-   `effort` 为 `minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`；
-2. `ReasoningCapability` 是 Endpoint 的真实能力：是否不支持、始终开启或可切换，精确支持哪些 effort，
-   `enabled` 未指定等级时使用的 `default_effort`、Endpoint 默认意图，以及是否有可展示输出和需要续接的
-   私有状态；
-3. `ReasoningProfileConfig` 按解析后的 variant 保存静态、经过校验的厂商原生请求片段；
-4. `ReasoningResolution` 严格把一次意图解析为一个有效 variant，再由协议 adapter 编码。
+   `effort` 为 `minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`；`summary` 独立表达摘要请求偏好；
+2. `ReasoningCapability` 是 Endpoint 的真实能力：是否不支持、始终开启或可切换，`supported_efforts` 与 `supported_summaries` 分别声明支持的强度和摘要模式，
+   `default` 集中保存 mode、effort、summary 的默认偏好；另声明可展示输出和续接状态；
+3. `ReasoningProfileConfig` 使用 `effort` 和 `summary` 两张独立映射表，保存静态的原生请求片段；
+4. `ReasoningResolution` 分别解析 mode/effort 和摘要偏好，`effort_variant` 表示强度映射键，由统一的 `ReasoningPayloadEncoder` 组合编码。
+
+`profile.effort` 的键为 enabled、disabled、default 或已声明的强度，`profile.summary` 的键为已声明的摘要模式。
+两张表必须覆盖各自支持的选择，不允许额外声明未支持的选项；只有摘要控制时，effort 表为空。
+编码器取出本次选择的片段，递归合并对象，相同字段的相同值保留，不同值直接报错，数组和标量不做拼接。
+例如 effort 片段 `{"reasoning":{"effort":"high"}}` 与 summary 片段
+`{"reasoning":{"summary":"auto"}}` 合并成 `{"reasoning":{"effort":"high","summary":"auto"}}`。
 
 解析不近似等级、不猜测厂商参数，也不静默降级：不支持的开启/关闭/effort 在 adapter 构造、HTTP 请求之前
-转为 `ConfigError`。声明一个 effort 时，该等级自然成为 `default_effort`；声明多个 effort 时必须配置
-`default_effort`，也可从带 effort 的 Endpoint 默认意图中无歧义推导。`mode=enabled` 未指定 effort 时解析为这个
-确定等级，不把强度委托给厂商默认。没有 effort 控制的 Endpoint 仍解析为独立的 `enabled` variant；对于可关闭或
-原生默认值可能关闭思考的模型，该 variant 必须包含能真实开启思考的原生参数，已声明为 `always_on` 的模型可使用
-空片段。`mode=default` 使用 Endpoint 的类型化默认意图。
+转为 `ConfigError`。`default.mode` 决定默认启停行为，`default.effort` 指定开启后未选择等级时使用的强度。
+声明一个 effort 时可自动补全 `default.effort`；声明多个 effort 时必须显式配置，且默认值必须属于支持集合。
+`default={"mode":"disabled","effort":"high"}` 表示默认关闭，显式开启且未选择强度时使用 high。
+请求关闭时保留强度偏好，但有效请求不携带 effort；请求未指定 mode 且显式选择 effort 时开启思考。
+默认偏好中的 effort 本身不会开启思考：`default.mode=default` 在可切换端点上保留服务端默认行为。
+没有 effort 控制的 Endpoint 使用独立的 `enabled` variant；对于可关闭或原生默认值可能关闭思考的模型，
+该 variant 必须包含能真实开启思考的原生参数，已声明为 `always_on` 的模型可使用空片段。
+
+`effort` 与 `summary` 分别在 Endpoint 的 `supported_efforts` 与 `supported_summaries` 中选择，
+不支持的值直接失败。摘要集合为空表示不支持摘要请求控制；非空集合不隐含默认选择，也不要求具有 effort 或启停控制。
+`summary=null` 或未设置时继承 Endpoint 的 `default.summary`；`provider_default` 显式省略摘要参数，
+服务端仍可能返回摘要。协议原生的 `auto` 是一个明确请求值，与省略参数不同。摘要偏好独立继承，选择 effort
+不会覆盖它；摘要请求不会开启已关闭的思考。Endpoint 的默认摘要模式必须属于声明的集合，或使用 provider_default/null。
 
 Capability 的输出和续接是两条独立轴：
 
 - `output` 为 `none`、`summary` 或 `text`，只决定是否把可展示思考投影为 canonical reasoning；
-- `continuation` 为 `none`、`text` 或 `opaque`，只决定工具回合中是否保存供应商要求回传的状态；
+- `continuation` 为 `none`、`text` 或 `opaque`，决定是否保存供应商原生续接状态，与可见输出和工具调用无关；
 - `opaque` continuation 使用带 `provider_id`、`protocol`、`model_id` 的
-  `ProviderContinuationArtifact`，只允许同一路由重放；Anthropic 签名 thinking block 仅在 assistant 工具调用
-  与其 tool result 的续接请求中原样回放，不塞入通用文本字段。
+  `ProviderContinuationArtifact`，只允许同一路由重放。普通回答与工具调用都保留状态，不将摘要或展示文本
+  重新编码为原生思考。服务端决定回传的历史思考是否进入模型上下文。
 
 Provider profile 只拥有 reasoning 相关顶层字段，禁止覆盖 `model`、`messages`、`tools`、token limit、
 `stream` 和 `system` 等 core 请求字段。若 `request_options` 与 profile 字段冲突，配置明确失败，避免由合并顺序
-暗中改变行为。
+暗中改变行为。字段归属从两张映射表共同推导，不按摘要模式名称猜测字段路径。
 
 ### 自定义模型
 
 `custom` 创建空 Provider 后，用户可在任意 Endpoint 上使用
-`--reasoning-preset` 声明常见契约，或使用 `--reasoning-config '<JSON>'` 提交完整的 capability/profile。
-Preset 包括：
+`--reasoning-preset` 声明常见强度契约，或使用 `--reasoning-config '<JSON>'` 提交完整的 capability/profile。
+Effort preset 包括：
 
 - `none`；
-- `openai-chat-completions-effort`、`openai-responses-effort`、`openai-responses-effort-summary`、`reasoning-content-effort`；
+- `openai-chat-completions-effort`、`openai-responses-effort`、`reasoning-content-effort`；
 - `thinking-toggle`、`enable-thinking-toggle`；
 - `anthropic-messages-adaptive-effort`。
 
-CLI 与 TUI 共用预设目录和协议兼容性校验。`openai-responses-effort` 使用原生 `reasoning.effort`，
+强度与摘要预设分别由 `REASONING_EFFORT_PRESETS` / `reasoning_effort_preset` 和
+`REASONING_SUMMARY_PRESETS` / `reasoning_summary_preset` 提供。CLI 与 TUI 共用配置层的预设和协议兼容性校验。
+`EndpointReasoningConfig.with_effort_preset` / `with_summary_preset` 返回校验后的新配置，统一处理另一维度的保留与默认偏好，
+不修改输入配置。Host 只选择预设并展示结果，不自行拼装能力与映射。
+`openai-responses-effort` 使用原生 `reasoning.effort`，
 声明 minimal、low、medium、high、xhigh、max 与 toggle 能力；默认意图沿用服务端默认值，
 显式 enabled 使用 medium，disabled 发送 none，续接为 opaque。`openai-chat-completions-effort` 使用
 Chat Completions 的顶层 `reasoning_effort`，不能用于 Responses。内置模型模板与自定义预设复用
-`openai_responses_effort_reasoning`，该构造函数允许指定实际 `supported_efforts`、`default_effort` 与 `activation`。
+`openai_responses_effort_reasoning`，该构造函数允许指定实际 `supported_efforts`、`default` 与 `activation`。
 
-Responses 的输出声明与摘要请求独立：两个 Responses 预设均以 `output=summary` 开放可见思考，
-`openai-responses-effort` 不附加摘要请求；`openai-responses-effort-summary` 在 default、enabled 和各 effort variant
-中声明 `reasoning.summary=auto`，disabled 只发送 `effort=none`。构造函数的 `output` 默认为 none，
-`summary` 默认为不发送，可显式传入 auto、concise 或 detailed；模板必须按端点实际支持情况声明。
-用户配置的 output=none 仍过滤展示事件；服务端没有返回可见思考时，不从加密续接数据生成文本。
+思考强度预设不声明摘要请求能力。模板或完整 JSON 分别声明 `supported_efforts` 和 `supported_summaries`。
+TUI 的 `Effort` 和 `Summary` 分别选择能力预设，`Settings (JSON)` 展示和编辑同一份配置，三项同步。
+摘要能力预设包括空集合、Responses 仅 auto、Responses auto/concise/detailed 和 Messages summarized/omitted；
+与协议不兼容的标准预设不可选。选择摘要预设保留思考等级和 `profile.effort`，更新 `profile.summary` 并声明可见摘要输出；默认摘要偏好仍兼容时
+保持原值，否则使用预设首项。空集合清除摘要偏好，但不改变可见输出和续接能力。
+`Summary` 与 `Effort` 的选择菜单只声明能力预设，行内显示能力；默认偏好由模板、预设或完整 JSON 配置。
+选择 effort 预设保留摘要能力、偏好、`profile.summary` 和可见输出。
+会话与任务的思考菜单按能力分组展示强度和摘要选项，修改一项保留另一项；摘要可选择继承 Endpoint 默认偏好。
+Application 的模型 DTO 同时提供 capability、requested 和 effective，其他 Host 使用同一契约构建交互。
+
+标准摘要预设提供以下映射；适配器不根据摘要模式生成字段：
+
+| 协议 | 标准预设的摘要模式 | 映射目标 |
+| --- | --- | --- |
+| OpenAI Responses | auto、concise、detailed | reasoning.summary |
+| Anthropic Messages | summarized、omitted | thinking.display |
+| OpenAI Chat Completions | 无标准摘要控制 | 无标准预设 |
+
+Endpoint 只声明自身实际支持的子集。兼容服务的扩展字段可通过显式映射配置，包括 Chat Completions 的摘要扩展；
+能力值仍使用统一的摘要模式，映射片段可指定对应的原生字段和值。Messages 的 display 需要 profile 声明
+`thinking.type=enabled/adaptive`，预算和其他 thinking 字段保持不变；缺少有效模式时请求失败。
+未选择模式、选择 provider_default 或思考已关闭时，不应用摘要映射。适配器负责协议结构校验、响应解析和原生状态回传，
+不按供应商或模型名称分派行为；请求参数由 profile 定义，受字段归属和 core 字段保护约束。
+
+内置 OpenAI/Codex 模板声明 `supported_summaries=["auto"]`、`default.summary="auto"`；Anthropic 模板
+声明 `["summarized", "omitted"]`、`default.summary="summarized"`。这些模板的 `output=summary`。
+输出投影与请求控制独立；output=none 过滤展示事件，服务端没有返回可见思考时，不从加密续接数据生成文本。
+摘要偏好不改变 continuation，也不控制 TUI 本地展开状态。
 
 Preset 是显式配置，不代表 OURO 自动探测了自定义模型。模型仅支持部分 effort 或使用不同参数时，完整 JSON
-必须只列出实际支持的 effort，声明明确的 `default_effort`，并为 `enabled`、可用 effort 以及可切换模型的
+必须只列出实际支持的 effort，声明明确的 `default.effort`，并为 `enabled`、可用 effort 以及可切换模型的
 `disabled` 提供精确原生片段。
 运行和压缩模型统一接受 `--thinking-mode` 与 `--thinking-effort`；Endpoint 不支持请求意图时立即失败。
 
@@ -406,15 +446,18 @@ OpenAI Chat Completions 实现负责：
 
 - system message、文本与原生媒体输入、tool history 和声明式 reasoning profile 编码；
 - 普通 JSON 与 SSE transport；
-- usage、tool call、reasoning 和错误响应解码；思考文本同时接受 DeepSeek 风格 `reasoning_content` 与
-  OpenRouter 风格裸 `reasoning` 两种响应字段（流式 delta 与非流式 message 一致，`reasoning_content` 优先，
-  两者均支持字符串或 block 数组形态），continuation 回放统一规范化为 `reasoning_content`；
+- usage、tool call、reasoning 和错误响应解码；`reasoning_content` 与 `reasoning` 是兼容服务的扩展，
+  不是 OpenAI Chat Completions 的标准字段。展示文本优先读取 `reasoning_content`，支持字符串或 block 数组。
+  声明 `continuation=text` 时，原字段名与原生结构独立保存；流式字符串按顺序连接，block 数组按顺序追加，
+  同一字段的形态不能在流中改变。回放不改名，也不从展示文本重建状态；
 - 外部流缺失 tool index 时按块位置处理；
 - 不符合 Endpoint 能力、媒体格式或消息角色的直接输入明确报错；工具结果按能力提供原生内容或明确降级说明。
 
 Anthropic Messages 实现负责 Messages API 的顶层 system、content blocks、image source、tool use/result、
-usage/error 与 SSE event 映射，并在工具续接边界原样保存/重放同路由的签名 thinking blocks。协议差异留在
-各自 codec/adapter 中。
+usage/error 与 SSE event 映射。`continuation=opaque` 保存完整、有序的 assistant content 数组；流式响应
+按 content block index 组装文本、thinking、signature、工具参数和 citations，在消息完成时保存。续接使用
+原生数组，保留 thinking、redacted_thinking 与其他内容的相对顺序，不从 canonical 文本和工具调用重排。
+工具调用身份及参数必须与 canonical 工具记录一致。协议差异留在各自 codec/adapter 中。
 
 Endpoint 声明 structured output 能力后才接受结构化 `response_format`。共享请求重试只对明确可重试的
 timeout/HTTP 状态执行有界退避；一旦已经收到模型输出，就不再重放请求。每次重试形成可持久化

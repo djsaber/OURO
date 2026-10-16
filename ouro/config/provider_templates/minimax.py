@@ -21,7 +21,7 @@ _MINIMAX_M2_REASONING = mapped_reasoning(
     default=ReasoningRequest(mode="enabled"),
     output="text",
     continuation="text",
-    variants={"enabled": {}},
+    effort={"enabled": {}},
 )
 
 
@@ -83,6 +83,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://platform.minimax.cn/docs/api-reference/text-openai-api",
         verified_on=_VERIFIED_ON,
-        revision=2,
+        revision=3,
     ),
 )

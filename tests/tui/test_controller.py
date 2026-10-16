@@ -11,7 +11,7 @@ from ouro.application.configuration import ConfigurationFacade
 from ouro.application.plugin_models import PluginCommandExecutionView, PluginCommandView
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
-from ouro.config import reasoning_preset
+from ouro.config import reasoning_effort_preset
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import ToolSelection
 from ouro.core.billing import UsageFilter
@@ -109,7 +109,6 @@ def _reasoning_application(tmp_path: Path) -> LocalApplication:
                 reasoning=ReasoningCapability(
                     activation="toggle",
                     supported_efforts=("low", "high"),
-                    default_effort="low",
                     default=ReasoningRequest(mode="enabled", effort="low"),
                     output="summary",
                 ),
@@ -684,7 +683,7 @@ async def test_controller_configures_provider_endpoint_through_application_facad
         max_output_tokens=16_000,
         supports_tools=True,
         supports_image_input=True,
-        reasoning=reasoning_preset("thinking-toggle"),
+        reasoning=reasoning_effort_preset("thinking-toggle"),
         request_options={"seed": 7},
     )
 
@@ -698,7 +697,7 @@ async def test_controller_configures_provider_endpoint_through_application_facad
         assert saved.max_output_tokens == 16_000
         assert saved.supports_tools is True
         assert saved.supports_image_input is True
-        assert saved.reasoning == reasoning_preset("thinking-toggle")
+        assert saved.reasoning == reasoning_effort_preset("thinking-toggle")
         assert saved.request_options == {"seed": 7}
         assert f"{provider_id}/{endpoint.endpoint_id}" in {
             model.key for model in await controller.models()
@@ -714,14 +713,14 @@ async def test_controller_configures_provider_endpoint_through_application_facad
                     **draft.__dict__,
                     "model_id": "new-model-v2",
                     "supports_structured_output": True,
-                    "reasoning": reasoning_preset("none"),
+                    "reasoning": reasoning_effort_preset("none"),
                     "request_options": {"seed": 9},
                 }
             ),
         )
         assert changed.model_id == "new-model-v2"
         assert changed.supports_structured_output is True
-        assert changed.reasoning == reasoning_preset("none")
+        assert changed.reasoning == reasoning_effort_preset("none")
         assert changed.request_options == {"seed": 9}
         assert (await controller.use_endpoint(provider_id, endpoint.endpoint_id)).default is True
         with pytest.raises(ConfigError, match="cannot remove the default endpoint"):
@@ -840,10 +839,10 @@ async def test_controller_configures_preset_and_custom_providers(
                 supports_image_input=target.supports_image_input,
                 supports_streaming=target.supports_streaming,
                 supports_structured_output=target.supports_structured_output,
-                reasoning=reasoning_preset("none"),
+                reasoning=reasoning_effort_preset("none"),
             ),
         )
-        assert overridden.reasoning == reasoning_preset("none")
+        assert overridden.reasoning == reasoning_effort_preset("none")
         assert (
             configuration.endpoint(
                 primary_id,

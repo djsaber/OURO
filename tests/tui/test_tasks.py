@@ -691,7 +691,6 @@ async def test_task_model_change_resets_and_validates_thinking(tmp_path):
             "reasoning": ReasoningCapability(
                 activation="always_on",
                 supported_efforts=("low", "high"),
-                default_effort="low",
                 default=ReasoningRequest(mode="enabled", effort="low"),
             ),
         }

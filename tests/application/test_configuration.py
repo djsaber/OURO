@@ -85,7 +85,7 @@ def test_provider_commands_return_safe_views_and_explicit_effect_scope(
         model="model-name",
         reasoning=openai_chat_completions_effort_reasoning(
             supported_efforts=("low", "high"),
-            default_effort="high",
+            default=ReasoningRequest(mode="enabled", effort="high"),
         ),
         make_default=True,
     )
@@ -226,7 +226,7 @@ def test_compaction_overrides_are_validated_against_fixed_endpoint_capabilities(
         max_output_tokens=2048,
         reasoning=openai_chat_completions_effort_reasoning(
             supported_efforts=("low", "high"),
-            default_effort="low",
+            default=ReasoningRequest(mode="enabled", effort="low"),
         ),
     )
 

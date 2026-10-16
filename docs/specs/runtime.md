@@ -254,8 +254,8 @@ Session 继续的整体前提。持久 ToolInvocation、控制 activation 和 De
 - `RunModelRequests` 按到达顺序发布 `model_tool_call_delta`。Core 执行器按工具 index 追加分片，
   完成时一次拼接并解析 arguments JSON，校验身份和批次唯一性；不逐分片复制累积参数。
 - 完成事件的用量记录先于输出可用性判断。输出长度受限、过滤或不完整时，不执行工具片段，不保留可重放 continuation。
-- Provider 可在工具调用响应中产生一个 `continuation` 事件；执行器只接受一个类型化 artifact，并与
-  assistant 工具消息原子提交。普通最终回答不保存协议续接状态。
+- Provider 可在普通回答或工具调用响应中产生一个 `continuation` 事件；执行器只接受一个类型化 artifact，
+  与对应 assistant 消息原子提交。可见思考文本与原生续接状态分别保存。
 - `done` 只携带完成边界和 usage，不重复携带工具调用，避免增量流和最终快照成为两个互相竞争的真相来源。
 
 ## 预算与暂停

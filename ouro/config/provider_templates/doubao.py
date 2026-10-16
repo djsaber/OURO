@@ -13,11 +13,10 @@ _DOUBAO_REASONING = mapped_reasoning(
     name="doubao-thinking-effort",
     activation="toggle",
     supported_efforts=("minimal", "low", "medium", "high"),
-    default_effort="high",
     default=ReasoningRequest(mode="enabled", effort="high"),
     output="summary",
     continuation="text",
-    variants={
+    effort={
         "disabled": {"thinking": {"type": "disabled"}},
         "enabled": {"thinking": {"type": "enabled"}, "reasoning_effort": "high"},
         **{
@@ -73,6 +72,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://docs.volcengine.com/docs/ark/model-list?lang=zh",
         verified_on=_VERIFIED_ON,
-        revision=2,
+        revision=4,
     ),
 )

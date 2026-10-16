@@ -39,6 +39,7 @@ from ouro.providers.openai_chat_completions_codec import (
     _usage_from_response,
     _usage_from_response_or_none,
     messages_to_chat_completions,
+    reasoning_fields_from_response,
 )
 from ouro.providers.reasoning import ReasoningPayloadEncoder
 from ouro.providers.request_context import model_request_context
@@ -300,8 +301,6 @@ class OpenAIChatCompletionsProvider:
         has_reasoning = bool(reasoning)
         if reasoning:
             yield ProviderStreamEvent(type="reasoning_delta", reasoning_content=reasoning)
-        if model.reasoning.output not in {"summary", "text"}:
-            reasoning = ""
 
         content = _content_to_text(message.get("content"))
         if content:
@@ -319,14 +318,15 @@ class OpenAIChatCompletionsProvider:
             return
         for tool_call in tool_calls:
             yield ProviderStreamEvent(type="tool_call_delta", tool_call_delta=tool_call)
-        if tool_calls and reasoning and model.reasoning.continuation == "text":
+        continuation = reasoning_fields_from_response(message)
+        if continuation and model.reasoning.continuation == "text":
             yield ProviderStreamEvent(
                 type="continuation",
                 continuation=ProviderContinuationArtifact(
                     provider_id=self.provider_id,
                     protocol="openai-chat-completions",
                     model_id=model.model_id,
-                    blocks=({"reasoning_content": raw_reasoning},),
+                    blocks=(continuation,),
                 ),
             )
         yield ProviderStreamEvent(
@@ -347,8 +347,7 @@ class OpenAIChatCompletionsProvider:
         usage: Usage | None = None
         saw_reasoning = False
         saw_refusal = False
-        saw_tool_call = False
-        continuation_reasoning: list[str] = []
+        continuation_reasoning: dict[str, list[Any]] = {}
         provider_finish_reason: str | None = None
 
         async for chunk in chunks:
@@ -372,10 +371,11 @@ class OpenAIChatCompletionsProvider:
                 continue
 
             reasoning = _reasoning_content_to_text(_reasoning_field_value(delta))
+            if model.reasoning.continuation == "text":
+                for field, value in reasoning_fields_from_response(delta).items():
+                    continuation_reasoning.setdefault(field, []).append(value)
             if reasoning:
                 saw_reasoning = True
-                if model.reasoning.continuation == "text":
-                    continuation_reasoning.append(reasoning)
                 yield ProviderStreamEvent(type="reasoning_delta", reasoning_content=reasoning)
 
             content = _content_to_text(delta.get("content"))
@@ -393,7 +393,6 @@ class OpenAIChatCompletionsProvider:
                         error="provider returned tool calls for an endpoint without tool support",
                     )
                     return
-                saw_tool_call = True
                 yield ProviderStreamEvent(
                     type="tool_call_delta",
                     tool_call_delta=tool_call_delta,
@@ -406,14 +405,22 @@ class OpenAIChatCompletionsProvider:
             )
             return
 
-        if saw_tool_call and continuation_reasoning:
+        if continuation_reasoning:
+            continuation: dict[str, Any] = {}
+            for field, fragments in continuation_reasoning.items():
+                if all(isinstance(fragment, str) for fragment in fragments):
+                    continuation[field] = "".join(fragments)
+                elif all(isinstance(fragment, list) for fragment in fragments):
+                    continuation[field] = [block for fragment in fragments for block in fragment]
+                else:
+                    raise ValueError("inconsistent Chat Completions reasoning field shape")
             yield ProviderStreamEvent(
                 type="continuation",
                 continuation=ProviderContinuationArtifact(
                     provider_id=self.provider_id,
                     protocol="openai-chat-completions",
                     model_id=model.model_id,
-                    blocks=({"reasoning_content": "".join(continuation_reasoning)},),
+                    blocks=(continuation,),
                 ),
             )
         yield ProviderStreamEvent(

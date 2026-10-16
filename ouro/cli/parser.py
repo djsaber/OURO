@@ -8,9 +8,9 @@ from typing import Any
 from ouro import __version__
 from ouro.config.provider_models import CONFIGURABLE_PROVIDER_TYPES
 from ouro.config.reasoning import (
-    REASONING_PRESETS,
+    REASONING_EFFORT_PRESETS,
     EndpointReasoningConfig,
-    reasoning_preset,
+    reasoning_effort_preset,
 )
 from ouro.config.skills import SKILL_DISCOVERY_SOURCE_IDS
 from ouro.core.approvals import SESSION_APPROVAL_MODES
@@ -1283,19 +1283,23 @@ Use 'ouro provider endpoint add --help' for custom capability and reasoning cont
   ouro provider endpoint add PROVIDER_ID --model custom-model \\
     --reasoning-preset openai-responses-effort
 
-Reasoning presets:
-  {", ".join(REASONING_PRESETS)}
+Reasoning effort presets:
+  {", ".join(REASONING_EFFORT_PRESETS)}
 
 Presets are explicit declarations, not capability detection. Use --reasoning-config when a
 model supports different native fields or only a subset of efforts. Its JSON shape is:
-  {{"capability": {{...}}, "profile": {{"name": "...", "variants": {{...}}}}}}
+  {{"capability": {{...}}, "profile": {{"name": "...", "effort": {{...}}, "summary": {{...}}}}}}
 
 Use openai-responses-effort for openai-responses (reasoning.effort).
 Use openai-chat-completions-effort for Chat Completions (reasoning_effort).
 Responses default inherits the provider setting;
 enabled without an effort selects medium, and disabled sends none.
-Both openai-responses-effort and openai-responses-effort-summary expose returned reasoning text.
-Only openai-responses-effort-summary requests reasoning.summary=auto; use it when supported.
+Summary requests are independent of effort presets. In --reasoning-config, declare
+capability.supported_summaries=["auto"], capability.default.summary="auto", and a matching
+profile.summary mapping when supported. Responses standard mappings use reasoning.summary;
+Messages standard mappings use thinking.display. Custom mappings can encode service extensions.
+Declare only modes supported by the endpoint. Set default.summary="provider_default"
+to omit the summary parameter and leave summary generation to the provider.
 
 Reasoning-owned fields must not also appear in --request-options. Invalid or incomplete
 contracts are rejected before configuration is written.""",
@@ -1376,9 +1380,10 @@ def _add_endpoint_mutation_args(
     endpoint_reasoning_group = reasoning_group.add_mutually_exclusive_group()
     endpoint_reasoning_group.add_argument(
         "--reasoning-preset",
-        type=_reasoning_preset,
+        dest="reasoning_effort_preset",
+        type=_reasoning_effort_preset,
         metavar="PRESET",
-        help="Install a common native reasoning mapping",
+        help="Install a common native reasoning effort mapping",
     )
     endpoint_reasoning_group.add_argument(
         "--reasoning-config",
@@ -1928,9 +1933,9 @@ def _endpoint_reasoning_config(value: str) -> EndpointReasoningConfig:
         raise argparse.ArgumentTypeError(f"invalid reasoning config: {exc}") from exc
 
 
-def _reasoning_preset(value: str) -> EndpointReasoningConfig:
+def _reasoning_effort_preset(value: str) -> EndpointReasoningConfig:
     try:
-        return reasoning_preset(value)
+        return reasoning_effort_preset(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 

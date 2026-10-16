@@ -100,11 +100,11 @@ from ouro.tui.menu_labels import MODEL_THINKING_LABEL, THINKING_LABELS, TOOL_APP
 from ouro.tui.menu_sorting import sorted_models
 from ouro.tui.menu_styles import MENU_CSS
 from ouro.tui.model_menus import (
-    REASONING_REQUESTS,
     UNAVAILABLE_MODEL_LABEL,
     approval_choices,
     model_display_label,
     reasoning_choices,
+    reasoning_request,
     reasoning_values,
 )
 from ouro.tui.plan_confirmation import project_plan_confirmation
@@ -4626,7 +4626,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify(str(exc), severity="error", markup=False)
             return
         choices = reasoning_choices(
-            state.capability, selected=_reasoning_value(state.effective), theme=self._tui_theme
+            state.capability,
+            selected=_reasoning_value(state.effective),
+            requested=state.requested,
+            theme=self._tui_theme,
         )
         if not choices:
             self.notify(
@@ -4637,7 +4640,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title=MODEL_THINKING_LABEL.upper(),
-                placeholder="Choose a thinking level…",
+                placeholder="Choose thinking settings…",
                 choices=choices,
             )
         )
@@ -4646,10 +4649,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await self._set_reasoning(selected)
 
     async def _set_reasoning(self, value: str) -> None:
-        request = REASONING_REQUESTS.get(value)
-        if request is None:
-            return
         try:
+            current = await self._controller.session_reasoning()
+            request = reasoning_request(value, current.requested)
             state = await self._controller.set_session_reasoning(request)
         except Exception as exc:  # noqa: BLE001 - Runtime owns capability validation.
             self.notify(str(exc), severity="error", markup=False)
@@ -5666,8 +5668,19 @@ def _available_reasoning_values(state: ModelReasoningState) -> tuple[str, ...]:
 
 def _reasoning_arguments(state: ModelReasoningState) -> tuple[TuiCommandArgument, ...]:
     return tuple(
-        TuiCommandArgument(value, _reasoning_description(value), label=THINKING_LABELS[value])
-        for value in _available_reasoning_values(state)
+        TuiCommandArgument(
+            choice.value,
+            "Choose a thinking summary mode"
+            if choice.group == "SUMMARY"
+            else _reasoning_description(choice.value),
+            label=f"Summary: {choice.label}" if choice.group == "SUMMARY" else choice.label,
+        )
+        for choice in reasoning_choices(
+            state.capability,
+            selected=_reasoning_value(state.effective),
+            requested=state.requested,
+            theme=DEFAULT_TUI_THEME,
+        )
     )
 
 

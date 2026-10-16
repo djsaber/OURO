@@ -136,13 +136,13 @@ uv run --frozen ouro provider endpoint list <provider_id> --home ./.ouro-dev
 TUI 在 `Add provider` 的 `Custom connection` 分组直接提供三个协议入口；创建时可以切换协议，
 仍为默认值的 API 路径随之更新，自定义路径保持不变。已有供应商的协议只读，普通编辑保留协议和 Endpoint。
 
-`--reasoning-preset` 提供 `none`、`openai-chat-completions-effort`、`openai-responses-effort`、`openai-responses-effort-summary`、`reasoning-content-effort`、
+`--reasoning-preset` 提供 `none`、`openai-chat-completions-effort`、`openai-responses-effort`、`reasoning-content-effort`、
 `thinking-toggle`、`enable-thinking-toggle` 和 `anthropic-messages-adaptive-effort`。Preset 是用户对目标模型协议能力的
 显式声明，不是自动探测；若模型只支持部分等级，或参数值与 preset 不同，应使用
-`--reasoning-config '<JSON>'` 完整声明 capability 与各 variant 的原生请求片段。思考配置归 Endpoint 所有，
+`--reasoning-config '<JSON>'` 完整声明 capability 与 `profile.effort`、`profile.summary` 的原生请求片段。思考配置归 Endpoint 所有，
 因此 `custom` 类型的任意自定义模型都使用同一套配置与运行时 flags。
 
-Responses 端点选择 `openai-responses-effort`（TUI 的 `Thinking preset → OpenAI Responses effort`），
+Responses 端点选择 `openai-responses-effort`（TUI 的 `Effort → OpenAI Responses effort`），
 将统一等级编码为 `reasoning.effort`；`openai-chat-completions-effort` 使用 Chat Completions 的 `reasoning_effort`。
 例如，为已经使用 `openai-responses` 的供应商声明端点并指定单次运行等级：
 
@@ -154,16 +154,32 @@ uv run --frozen ouro run --home ./.ouro-dev --provider <provider_id> --endpoint 
 `openai-responses-effort` 声明 minimal、low、medium、high、xhigh、max 和开关能力；默认意图保留服务端默认值，
 显式 enabled 且未指定等级时使用 medium，disabled 编码为 none。支持等级取决于目标模型，
 不支持关闭或仅支持部分等级的模型应使用内置模型模板，或通过 `--reasoning-config` / TUI 的
-`Thinking settings (JSON)` 声明实际能力与对应 variants；Python 配置可使用 `openai_responses_effort_reasoning`
-指定 `supported_efforts`、`default_effort` 和 `activation`，用 `output` 控制可见输出，用可选 `summary`
-声明原生摘要请求。协议字段见
-[OpenAI 推理文档](https://developers.openai.com/api/docs/guides/reasoning)。
+`Settings (JSON)` 声明实际能力与对应映射；Python 配置可使用 `openai_responses_effort_reasoning`
+指定 `supported_efforts`、`default` 和 `activation`，用 `output` 声明可见输出。
+摘要能力和默认偏好分别由 `capability.supported_summaries` 与 `capability.default.summary` 声明，
+与 `supported_efforts` / `effort` 对称。Responses 可声明 auto、concise、detailed 的实际支持子集；
+Messages 可声明 summarized、omitted 的实际支持子集。空集合表示不支持该请求控制。
+协议定义见 [OpenAI 推理文档](https://developers.openai.com/api/docs/guides/reasoning) 与
+[Anthropic 思考文档](https://platform.claude.com/docs/en/build-with-claude/thinking)。
 
-`openai-responses-effort` 将 `capability.output` 设为 `summary`，展示服务端返回的思考摘要或文本，不额外发送
-`reasoning.summary`。需要显式请求摘要且服务端支持该参数时，选择 `openai-responses-effort-summary`
-（TUI 的 `OpenAI Responses effort + request summary`）；它在默认及开启思考时发送 `summary: "auto"`。
-仅有加密续接数据时不生成可见思考。已有端点可在 `Thinking settings (JSON)` 中将 `capability.output`
-设为 `summary`，保留自身等级与参数映射；TUI 的思考展开设置独立控制显示折叠状态。
+TUI 的 `Summary` 提供独立的摘要能力预设：None、Responses 仅 auto、Responses auto/concise/detailed、
+Messages summarized/omitted；与当前协议不兼容的预设不可选。预设是用户对实际支持能力的声明，
+不自动探测模型。选中预设时保留兼容的默认偏好，否则使用列表首项；None 清空摘要能力和偏好。
+`Summary` 与 `Effort` 均只选择能力预设。自定义子集和默认偏好可通过
+`Settings (JSON)` 声明，例如 `supported_summaries=["auto", "detailed"]` 与 `default.summary="auto"`，
+同时在 `profile.summary` 中为 auto 和 detailed 提供对应原生参数片段。
+`Effort`、`Summary` 与 `Settings (JSON)` 共用同一份配置；选择预设立即更新 JSON 预览和编辑内容，
+编辑 JSON 后两项也随之更新。实际使用的强度和摘要模式在会话或任务的思考菜单中选择，修改一项保留另一项。
+
+`openai-responses-effort` 将 `capability.output` 设为 `summary`，可展示服务端返回的思考内容，但不声明
+摘要请求能力。标准 summary 预设分别映射到 Responses 的 `reasoning.summary` 和 Messages 的 `thinking.display`。
+统一编码器合并 effort 与 summary 的对象字段；重叠字段值不同时报错。Messages 的 display 需要启用 thinking。
+Chat Completions 没有标准摘要预设；兼容服务支持摘要扩展时可在 JSON 中显式声明能力与字段映射。
+`Provider default` 不发送摘要参数；会话中的 `Endpoint default` 继承端点偏好。原生 Auto 与省略参数不同。
+空能力集合不发送摘要控制参数；若服务端返回可见内容，仍按 output 设置展示。
+内置 OpenAI/Codex 模板声明 auto 并默认选择 auto；Anthropic 模板声明 summarized、omitted 并默认选择 summarized。
+没有可见思考内容时，TUI 不显示思考区域；返回可见摘要时显示 `Thought`，可点击展开或使用 `/thoughts expand`。
+TUI 的思考展开设置独立控制显示折叠状态；摘要请求设置不改变签名或加密内容的回传。
 
 会话中的模型路由始终使用完整的 `provider/endpoint` 形式。交互模式可通过 `/models` 查看模型，
 通过 `/model provider/endpoint` 选择模型；若会话尚未创建，该选择会用于下一条普通消息创建的首个会话，
@@ -172,7 +188,7 @@ uv run --frozen ouro run --home ./.ouro-dev --provider <provider_id> --endpoint 
 `/thinking default|enabled|disabled|minimal|low|medium|high|xhigh|max` 设置当前会话（或下一新会话）的
 供应商中立思考意图。每个会话独立持久化该设置，共享同一 Endpoint 的会话不会相互影响；不受 Endpoint
 支持的模式或等级会在状态变更前被拒绝。切换模型时也会重新校验当前会话设置，不会静默降级或重置。有多个
-effort 的 Endpoint 使用显式 `default_effort` 解析未带等级的 `enabled`，不依赖厂商默认。TUI 菜单只显示不同的
+effort 的 Endpoint 使用显式 `default.effort` 解析未带等级的 `enabled`，不依赖厂商默认。TUI 菜单只显示不同的
 有效配置：可切换且支持 effort 时显示 `disabled` 和各 effort，不支持 effort 时显示 `enabled`、`disabled`；
 `Alt+T` 按相同集合循环，不经过重复的 `default` 状态。
 

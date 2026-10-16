@@ -13,14 +13,21 @@ _ANTHROPIC_SONNET_REASONING = mapped_reasoning(
     name="anthropic-always-on-adaptive-effort-high",
     activation="always_on",
     supported_efforts=("low", "medium", "high", "xhigh", "max"),
-    default_effort="high",
-    default=ReasoningRequest(mode="enabled", effort="high"),
+    default=ReasoningRequest(mode="enabled", effort="high", summary="summarized"),
+    supported_summaries=("summarized", "omitted"),
+    summary={value: {"thinking": {"display": value}} for value in ("summarized", "omitted")},
     output="summary",
     continuation="opaque",
-    variants={
-        "enabled": {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}},
+    effort={
+        "enabled": {
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "high"},
+        },
         **{
-            effort: {"thinking": {"type": "adaptive"}, "output_config": {"effort": effort}}
+            effort: {
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": effort},
+            }
             for effort in ("low", "medium", "high", "xhigh", "max")
         },
     },
@@ -30,12 +37,16 @@ _ANTHROPIC_OPUS_REASONING = mapped_reasoning(
     name="anthropic-always-on-adaptive-effort-medium",
     activation="always_on",
     supported_efforts=("low", "medium", "high", "xhigh", "max"),
-    default_effort="medium",
-    default=ReasoningRequest(mode="enabled", effort="medium"),
+    default=ReasoningRequest(mode="enabled", effort="medium", summary="summarized"),
+    supported_summaries=("summarized", "omitted"),
+    summary={value: {"thinking": {"display": value}} for value in ("summarized", "omitted")},
     output="summary",
     continuation="opaque",
-    variants={
-        "enabled": {"thinking": {"type": "adaptive"}, "output_config": {"effort": "medium"}},
+    effort={
+        "enabled": {
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "medium"},
+        },
         "low": {
             "thinking": {"type": "adaptive"},
             "output_config": {"effort": "low"},
@@ -63,15 +74,22 @@ _ANTHROPIC_HAIKU_REASONING = mapped_reasoning(
     name="anthropic-adaptive-effort-medium",
     activation="toggle",
     supported_efforts=("low", "medium", "high", "xhigh", "max"),
-    default_effort="medium",
-    default=ReasoningRequest(mode="enabled", effort="medium"),
+    default=ReasoningRequest(mode="enabled", effort="medium", summary="summarized"),
+    supported_summaries=("summarized", "omitted"),
+    summary={value: {"thinking": {"display": value}} for value in ("summarized", "omitted")},
     output="summary",
     continuation="opaque",
-    variants={
+    effort={
         "disabled": {"thinking": {"type": "disabled"}, "output_config": {"effort": "medium"}},
-        "enabled": {"thinking": {"type": "adaptive"}, "output_config": {"effort": "medium"}},
+        "enabled": {
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "medium"},
+        },
         **{
-            effort: {"thinking": {"type": "adaptive"}, "output_config": {"effort": effort}}
+            effort: {
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": effort},
+            }
             for effort in ("low", "medium", "high", "xhigh", "max")
         },
     },
@@ -141,6 +159,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://platform.claude.com/docs/en/models/overview",
         verified_on=_VERIFIED_ON,
-        revision=4,
+        revision=8,
     ),
 )

@@ -9,11 +9,13 @@ from ouro.application.configuration_models import (
     ProviderView,
 )
 from ouro.config import (
-    REASONING_PRESETS,
+    REASONING_EFFORT_PRESETS,
+    REASONING_SUMMARY_PRESETS,
     EndpointReasoningConfig,
     ProviderProtocol,
     ProviderType,
-    reasoning_preset,
+    reasoning_effort_preset,
+    reasoning_summary_preset,
 )
 from ouro.config.provider_headers import parse_provider_headers
 from ouro.config.provider_models import (
@@ -21,6 +23,7 @@ from ouro.config.provider_models import (
     resolve_provider_connection,
     validate_media_protocol_compatibility,
     validate_reasoning_protocol_compatibility,
+    validate_reasoning_summary_preset,
 )
 from ouro.tui.controller import TuiEndpointConfiguration, TuiProviderConfiguration
 from ouro.tui.credential_editor import (
@@ -28,18 +31,25 @@ from ouro.tui.credential_editor import (
     CredentialEditableChoiceScreen,
     credential_trailing,
 )
+from ouro.tui.model_menus import SUMMARY_LABELS
 from ouro.tui.screens import Choice, ChoiceScreen, EditableChoiceScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 
-_REASONING_PRESET_LABELS = {
+_REASONING_EFFORT_PRESET_LABELS = {
     "none": "None",
     "openai-chat-completions-effort": "OpenAI Chat Completions effort",
     "openai-responses-effort": "OpenAI Responses effort",
-    "openai-responses-effort-summary": "OpenAI Responses effort + request summary",
     "reasoning-content-effort": "Thinking level (reasoning_content)",
     "thinking-toggle": "Thinking switch (thinking)",
     "enable-thinking-toggle": "Thinking switch (enable_thinking)",
     "anthropic-messages-adaptive-effort": "Anthropic Messages adaptive effort",
+}
+
+_REASONING_SUMMARY_PRESET_LABELS = {
+    "none": "None",
+    "openai-responses-auto": "OpenAI Responses auto",
+    "openai-responses": "OpenAI Responses auto / concise / detailed",
+    "anthropic-messages": "Anthropic Messages summarized / omitted",
 }
 
 _PROTOCOL_LABELS: dict[ProviderProtocol, str] = {
@@ -425,51 +435,117 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             self._capabilities[selected] = not self._capabilities[selected]
             self._replace_choices(self._endpoint_choices(), selected=selected)
             return
-        if self._editing_value is None and selected == "endpoint-reasoning-preset":
-            await self._select_reasoning_preset()
+        if self._editing_value is None and selected == "endpoint-reasoning-effort":
+            await self._select_reasoning_effort()
+            return
+        if self._editing_value is None and selected == "endpoint-reasoning-summary":
+            await self._select_reasoning_summary()
             return
         if selected == "endpoint-save" and self._editing_value is None:
             self._submit()
             return
         await super()._select_choice(selected)
 
-    async def _select_reasoning_preset(self) -> None:
+    async def _select_reasoning_effort(self) -> None:
         selected = await self.open_child(
             ChoiceScreen(
-                title="THINKING PRESET",
-                placeholder="Search thinking presets…",
-                choices=self._reasoning_preset_choices(),
-                initial_value=self._reasoning_preset_name(),
+                title="EFFORT",
+                placeholder="Search effort presets…",
+                choices=self._reasoning_effort_choices(),
+                initial_value=self._reasoning_effort_preset_name(),
             )
         )
-        if selected not in REASONING_PRESETS:
+        if selected not in REASONING_EFFORT_PRESETS:
             return
-        self._values["endpoint-reasoning-config"] = _reasoning_text(reasoning_preset(selected))
+        try:
+            current = _reasoning_config(self._values["endpoint-reasoning-config"])
+        except ValueError:
+            current = EndpointReasoningConfig()
+        self._values["endpoint-reasoning-config"] = _reasoning_text(
+            current.with_effort_preset(selected)
+        )
         self._replace_choices(
             self._endpoint_choices(),
-            selected="endpoint-reasoning-preset",
+            selected="endpoint-reasoning-effort",
         )
 
-    def _reasoning_preset_name(self) -> str | None:
+    def _reasoning_effort_preset_name(self) -> str | None:
         try:
             current = _reasoning_config(self._values["endpoint-reasoning-config"])
         except ValueError:
             return None
-        return next(
-            (name for name in REASONING_PRESETS if reasoning_preset(name) == current),
-            None,
-        )
+        summary_supported = bool(current.capability.supported_summaries)
+        current.capability.supported_summaries = ()
+        current.capability.default.summary = None
+        if current.profile is not None:
+            current.profile.summary = {}
+            if not current.profile.effort:
+                current.profile = None
+        for name in REASONING_EFFORT_PRESETS:
+            preset = reasoning_effort_preset(name)
+            if summary_supported:
+                preset.capability.output = current.capability.output
+            if preset == current:
+                return name
+        return None
 
-    def _reasoning_preset_choices(self) -> tuple[Choice, ...]:
+    async def _select_reasoning_summary(self) -> None:
+        current = _reasoning_config(self._values["endpoint-reasoning-config"])
+        capability = current.capability
         theme = theme_for(self)
-        current_name = self._reasoning_preset_name()
+        choices: list[Choice] = []
+        for name, summaries in REASONING_SUMMARY_PRESETS.items():
+            preset = reasoning_summary_preset(name)
+            try:
+                validate_reasoning_summary_preset(self._provider.protocol, preset.capability)
+                validate_reasoning_protocol_compatibility(self._provider.protocol, preset)
+            except ValueError:
+                incompatible = True
+            else:
+                incompatible = False
+            choices.append(
+                Choice(
+                    f"preset:{name}",
+                    _REASONING_SUMMARY_PRESET_LABELS[name],
+                    trailing="Not supported by this provider" if incompatible else "",
+                    group="PRESETS",
+                    disabled=incompatible,
+                    marker=(
+                        theme.selected_choice_marker
+                        if summaries == capability.supported_summaries
+                        and (
+                            (current.profile.summary if current.profile else {})
+                            == (preset.profile.summary if preset.profile else {})
+                        )
+                        else ""
+                    ),
+                )
+            )
+        selected = await self.open_child(
+            ChoiceScreen(
+                title="SUMMARY",
+                placeholder="Search summary presets…",
+                choices=tuple(choices),
+                initial_value=next((choice.value for choice in choices if choice.marker), None),
+            )
+        )
+        if selected is None:
+            return
+        self._values["endpoint-reasoning-config"] = _reasoning_text(
+            current.with_summary_preset(selected.removeprefix("preset:"))
+        )
+        self._replace_choices(self._endpoint_choices(), selected="endpoint-reasoning-summary")
+
+    def _reasoning_effort_choices(self) -> tuple[Choice, ...]:
+        theme = theme_for(self)
+        current_name = self._reasoning_effort_preset_name()
         choices: list[Choice] = []
         if current_name is None:
             choices.append(
                 Choice(
                     "custom-reasoning-config",
                     "Custom settings",
-                    trailing=_reasoning_summary(
+                    trailing=_reasoning_effort_description(
                         self._values["endpoint-reasoning-config"], theme=theme
                     ),
                     group="CURRENT",
@@ -477,8 +553,8 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                     marker=theme.selected_choice_marker,
                 )
             )
-        for name in REASONING_PRESETS:
-            reasoning = reasoning_preset(name)
+        for name in REASONING_EFFORT_PRESETS:
+            reasoning = reasoning_effort_preset(name)
             try:
                 validate_reasoning_protocol_compatibility(
                     self._provider.protocol,
@@ -491,11 +567,11 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             choices.append(
                 Choice(
                     name,
-                    _REASONING_PRESET_LABELS[name],
+                    _REASONING_EFFORT_PRESET_LABELS[name],
                     trailing=(
                         "Not supported by this provider"
                         if incompatible
-                        else _reasoning_capability_summary(reasoning, theme=theme)
+                        else _reasoning_effort_capability_description(reasoning, theme=theme)
                     ),
                     group="PRESETS",
                     disabled=incompatible,
@@ -586,8 +662,8 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         return ""
 
     def _endpoint_choices(self) -> tuple[Choice, ...]:
-        theme = theme_for(self)
         error = self._validation_error()
+        summary_label = self._reasoning_summary_label()
 
         def state(field: str) -> str:
             return "Enabled" if self._capabilities[field] else "Disabled"
@@ -662,20 +738,27 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                 group="CAPABILITIES",
             ),
             Choice(
-                "endpoint-reasoning-preset",
-                "Thinking preset",
+                "endpoint-reasoning-effort",
+                "Effort",
                 trailing=(
-                    _REASONING_PRESET_LABELS.get(
-                        self._reasoning_preset_name() or "",
+                    _REASONING_EFFORT_PRESET_LABELS.get(
+                        self._reasoning_effort_preset_name() or "",
                         "Custom",
                     )
                 ),
                 group="THINKING",
             ),
             Choice(
+                "endpoint-reasoning-summary",
+                "Summary",
+                trailing=summary_label,
+                group="THINKING",
+                disabled=summary_label == "Invalid settings",
+            ),
+            Choice(
                 "endpoint-reasoning-config",
-                "Thinking settings (JSON)",
-                trailing=_reasoning_summary(self._values["endpoint-reasoning-config"], theme=theme),
+                "Settings (JSON)",
+                trailing=self._values["endpoint-reasoning-config"],
                 group="THINKING",
                 edit_value=self._values["endpoint-reasoning-config"],
                 edit_placeholder="Enter a reasoning JSON object",
@@ -696,6 +779,15 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                 disabled=bool(error),
             ),
         )
+
+    def _reasoning_summary_label(self) -> str:
+        try:
+            current = _reasoning_config(self._values["endpoint-reasoning-config"])
+        except ValueError:
+            return "Invalid settings"
+        if not current.capability.supported_summaries:
+            return "None"
+        return ", ".join(SUMMARY_LABELS[value] for value in current.capability.supported_summaries)
 
 
 def profile_for_provider(
@@ -765,25 +857,25 @@ def _reasoning_text(value: EndpointReasoningConfig) -> str:
 
 
 def _reasoning_config(raw: str) -> EndpointReasoningConfig:
-    value = _json_object(raw, "Thinking settings (JSON)")
+    value = _json_object(raw, "Settings (JSON)")
     try:
         return EndpointReasoningConfig.model_validate(value)
     except ValueError as exc:
         raise ValueError(f"Reasoning config is invalid: {exc}") from exc
 
 
-def _reasoning_summary(
+def _reasoning_effort_description(
     raw: str,
     *,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> str:
     try:
-        return _reasoning_capability_summary(_reasoning_config(raw), theme=theme)
+        return _reasoning_effort_capability_description(_reasoning_config(raw), theme=theme)
     except ValueError:
         return "Invalid settings"
 
 
-def _reasoning_capability_summary(
+def _reasoning_effort_capability_description(
     value: EndpointReasoningConfig,
     *,
     theme: TuiTheme = DEFAULT_TUI_THEME,

@@ -5,25 +5,26 @@ from __future__ import annotations
 from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.config.provider_templates.schema import ProviderTemplate
 from ouro.config.reasoning import openai_chat_completions_effort_reasoning
+from ouro.core.reasoning import ReasoningRequest
 
 _VERIFIED_ON = "2026-10-10"
 
 _GEMINI_FLASH_REASONING = openai_chat_completions_effort_reasoning(
     activation="always_on",
     supported_efforts=("low", "medium", "high"),
-    default_effort="medium",
+    default=ReasoningRequest(mode="enabled", effort="medium"),
 )
 
 _GEMINI_PRO_REASONING = openai_chat_completions_effort_reasoning(
     activation="always_on",
     supported_efforts=("low", "medium", "high"),
-    default_effort="high",
+    default=ReasoningRequest(mode="enabled", effort="high"),
 )
 
 _GEMINI_FLASH_LITE_REASONING = openai_chat_completions_effort_reasoning(
     activation="always_on",
     supported_efforts=("minimal", "low", "medium", "high"),
-    default_effort="minimal",
+    default=ReasoningRequest(mode="enabled", effort="minimal"),
 )
 
 
@@ -81,6 +82,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://ai.google.dev/gemini-api/docs/models",
         verified_on=_VERIFIED_ON,
-        revision=5,
+        revision=7,
     ),
 )
