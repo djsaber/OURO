@@ -1901,7 +1901,7 @@ class ApprovalPanel(Vertical):
         Binding("up", "previous_option", show=False),
         Binding("down", "next_option", show=False),
         Binding("enter", "accept", "Choose", show=False),
-        Binding("tab,shift+tab", "retain_focus", show=False, priority=True),
+        Binding("tab", "retain_focus", show=False, priority=True),
     ]
 
     def __init__(self, *, panel_id: str, title_id: str, controls_id: str) -> None:

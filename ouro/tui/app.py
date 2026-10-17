@@ -119,7 +119,6 @@ from ouro.tui.screens import (
     Choice,
     ChoiceScreen,
     EditableChoiceScreen,
-    HelpScreen,
     MenuDestination,
     MultiChoiceScreen,
     help_choices,
@@ -245,6 +244,7 @@ _MENU_PLUGINS: MenuDestination = "plugins"
 _MENU_SESSIONS: MenuDestination = "sessions"
 _MENU_TASKS: MenuDestination = "tasks"
 _MENU_SKILLS: MenuDestination = "skills"
+_MENU_HELP: MenuDestination = "help"
 _SESSION_DOMAIN_LABELS = {
     "default": "USER",
     "task": "TASK",
@@ -3954,7 +3954,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             }[operation]
             return self._tui_theme.inline_separator.join(
                 (
-                    *(("Tab/Shift+Tab switch sessions",) if operation != "delete" else ()),
+                    *(("Tab switch sessions",) if operation != "delete" else ()),
                     "↑/↓ move",
                     "←/→ group",
                     *(("Space toggle",) if operation == "delete" else ()),
@@ -3968,15 +3968,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 return None
             return choices()
 
-        async def switch_domain(direction: int) -> None:
+        async def switch_domain() -> None:
             nonlocal domain
             revision = session_menu.page_revision
             if not await self._refresh_sessions(include_subagents=True):
                 return
             if not session_menu.is_attached or session_menu.page_revision != revision:
                 return
-            domains = tuple(_SESSION_DOMAIN_LABELS)
-            domain = domains[(domains.index(domain) + direction) % len(domains)]
+            domain = _next_cycle_value(tuple(_SESSION_DOMAIN_LABELS), domain)
             self._session_domain = domain
             session_menu.replace_page(
                 navigation_id=_MENU_SESSIONS if operation == "open" else None,
@@ -4720,6 +4719,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await self._choose_tasks(menu=active_menu, switch=active_menu is not None)
             elif destination == _MENU_SKILLS:
                 await self._choose_skills(menu=active_menu, switch=active_menu is not None)
+            elif destination == _MENU_HELP:
+                await self._choose_help(menu=active_menu, switch=active_menu is not None)
 
         _worker: Worker[None] = self.run_worker(navigate, exclusive=True, group="navigation")
 
@@ -4779,7 +4780,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await self._choose_session(menu=action_screen, operation="delete")
                 return None
             if action_id == "/help":
-                self._show_help_page(action_screen)
+                await self._choose_help(menu=action_screen)
                 return None
             action_screen.dismiss(None)
             await self._dispatch_command(action_id)
@@ -5509,35 +5510,48 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     refresh_theme()
 
     def action_help(self) -> None:
-        screen = self.screen
-        if isinstance(screen, HelpScreen):
-            screen.dismiss(None)
-            return
-        menu = self._active_navigation_menu()
-        if menu is None:
-            if len(self.screen_stack) == 1:
-                self.push_screen(HelpScreen(plugin_commands=self._plugin_commands()))
-            return
-        if menu.page_title == "KEYBOARD HELP":
-            _worker: Worker[None] = self.run_worker(
-                menu.action_cancel, exclusive=True, group="navigation"
+        self._request_menu_navigation(_MENU_HELP)
+
+    async def _choose_help(
+        self,
+        *,
+        menu: ChoiceScreen | None = None,
+        switch: bool = False,
+    ) -> None:
+        choices = help_choices(plugin_commands=self._plugin_commands())
+        hint = self._tui_theme.inline_separator.join(("↑/↓ move", "←/→ group", "Esc back"))
+
+        async def keep_help_open(_selected: str) -> None:
+            # Help rows describe interactions; selection does not execute a command.
+            return None
+
+        if menu is not None:
+            navigate = menu.switch_page if switch else menu.push_page
+            navigate(
+                navigation_id=_MENU_HELP,
+                title="KEYBOARD HELP",
+                placeholder="Filter shortcuts and commands…",
+                choices=choices,
+                on_select=keep_help_open,
+                interaction_hint=hint,
             )
             return
-        self._show_help_page(menu)
-
-    def _show_help_page(self, menu: ChoiceScreen) -> None:
-        choices = help_choices(plugin_commands=self._plugin_commands())
-
-        async def keep_help_open(_selected: str) -> tuple[Choice, ...]:
-            return choices
-
-        menu.push_page(
-            title="KEYBOARD HELP",
-            placeholder="Filter shortcuts and commands…",
-            choices=choices,
-            on_select=keep_help_open,
-            interaction_hint=HelpScreen.BACK_HINT,
+        self.push_screen(
+            ChoiceScreen(
+                navigation_id=_MENU_HELP,
+                title="KEYBOARD HELP",
+                placeholder="Filter shortcuts and commands…",
+                choices=choices,
+                on_select=keep_help_open,
+                interaction_hint=hint,
+            )
         )
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        # Tab owns focus navigation; disable Textual's inherited reverse-focus action.
+        if action == "focus_previous":
+            return False
+        return super().check_action(action, parameters)
 
     async def action_copy_or_abort(self) -> None:
         focused = self.focused

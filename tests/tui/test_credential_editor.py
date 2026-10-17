@@ -93,8 +93,8 @@ async def test_credential_tab_preserves_each_input_cancel_state_and_navigation(t
     screen = ProviderConfigurationScreen(CUSTOM_PROVIDER_PROFILES[0])
     navigation = []
 
-    async def switch_menu(direction):
-        navigation.append(direction)
+    async def switch_menu():
+        navigation.append("tab")
 
     screen._on_tab = switch_menu
     async with run_ready_app(app, size=(80, 30)) as pilot:
@@ -102,7 +102,7 @@ async def test_credential_tab_preserves_each_input_cancel_state_and_navigation(t
         await pilot.pause()
         stack_size = len(app.screen_stack)
         await pilot.press("tab")
-        assert navigation == [1]
+        assert navigation == ["tab"]
         await select_choice(app, pilot, "provider-credential")
         options = screen.query_one(OptionList)
         assert "Tab type" in str(screen.query_one("#choice-hint", Static).content)
@@ -110,6 +110,8 @@ async def test_credential_tab_preserves_each_input_cancel_state_and_navigation(t
         await pilot.press(*"local-key", "tab")
         assert screen._edit_text == "" and screen._editor_trailing() == "[ENV]"
         await pilot.press(*"env:LOCAL_KEY", "shift+tab")
+        assert screen._edit_text == "env:LOCAL_KEY" and screen._editor_trailing() == "[ENV]"
+        await pilot.press("tab")
         assert screen._edit_text == "local-key" and screen._editor_trailing() == "[KEY]"
         await pilot.press("tab")
         assert screen._edit_text == "env:LOCAL_KEY"
@@ -145,10 +147,10 @@ async def test_credential_tab_preserves_each_input_cancel_state_and_navigation(t
         await pilot.press(*"env:FINAL_KEY", "enter")
         row = next(c for c in screen._choices if c.value == "provider-credential")
         assert row.trailing == theme_for(screen).mask_character * 5 + " [ENV]"
-        assert navigation == [1]
+        assert navigation == ["tab"]
         await select_choice(app, pilot, "provider-display-name")
         await pilot.press("ctrl+u", *"Visible", "tab")
         assert options.get_option("provider-display-name").prompt.plain == "Visible "
-        assert navigation == [1]
-        await pilot.press("escape", "shift+tab")
-        assert navigation == [1, -1]
+        assert navigation == ["tab"]
+        await pilot.press("escape", "tab")
+        assert navigation == ["tab", "tab"]

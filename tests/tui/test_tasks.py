@@ -505,9 +505,11 @@ async def test_tab_cycles_session_domains_even_when_some_are_empty(tmp_path):
         await pilot.press("tab")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         assert not app.screen._choices
-        for label in ("ARCHIVED", "SUBAGENT", "TASK", "USER"):
-            await pilot.press("shift+tab")
-            await _wait_for_screen(app, ChoiceScreen, title=f"SESSION • {label}")
+        focused = app.focused
+        await pilot.press("shift+tab")
+        await pilot.pause()
+        assert menu.query_one("#choice-title", Static).render().plain == "SESSION • USER"
+        assert app.focused is focused
         assert app.screen is menu
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
 

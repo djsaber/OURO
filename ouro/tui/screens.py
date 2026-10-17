@@ -70,7 +70,7 @@ _HELP_SHORTCUTS = (
     ("Ctrl+← / Ctrl+→", "move by word", "Ctrl+A", "select all input"),
     ("Ctrl+Home / Ctrl+End", "input start / end", "Ctrl+C", "copy selection / stop task"),
     ("Ctrl+X / Ctrl+V", "cut / paste", "Ctrl+Z / Ctrl+Y", "undo / redo in composer"),
-    ("Tab / Shift+Tab", "focus / switch menu domain", "Space", "toggle multi-selection"),
+    ("Tab", "focus / switch menu domain", "Space", "toggle multi-selection"),
     ("Ctrl+Q", "quit", "Esc", "close menu"),
 )
 
@@ -131,7 +131,7 @@ def help_choices(
 
 ChoiceSelectionHandler = Callable[[str], Awaitable[tuple[Choice, ...] | None]]
 ChoiceRefreshHandler = Callable[[], Awaitable[tuple[Choice, ...] | None]]
-ChoiceTabHandler = Callable[[int], Awaitable[None]]
+ChoiceTabHandler = Callable[[], Awaitable[None]]
 ChoiceCancelHandler = Callable[[], bool]
 ChoiceAdjustmentHandler = Callable[[str, int], tuple[Choice, ...] | None]
 MultiChoiceConfirmationHandler = Callable[
@@ -140,7 +140,7 @@ MultiChoiceConfirmationHandler = Callable[
 ]
 ChoiceEditHandler = Callable[[str, str], Awaitable[tuple[Choice, ...] | None]]
 ScreenResult = TypeVar("ScreenResult")
-MenuDestination = Literal["actions", "plugins", "sessions", "tasks", "skills"]
+MenuDestination = Literal["actions", "plugins", "sessions", "tasks", "skills", "help"]
 
 
 @dataclass(frozen=True)
@@ -358,8 +358,7 @@ class ChoiceScreen(ModalScreen[str | None]):
     )
 
     BINDINGS = [
-        Binding("tab", "switch_domain(1)", "Next domain", show=False, priority=True),
-        Binding("shift+tab", "switch_domain(-1)", "Previous domain", show=False, priority=True),
+        Binding("tab", "switch_domain", "Switch domain", show=False, priority=True),
         Binding("up", "previous_choice", "Previous", show=False, priority=True),
         Binding("down", "next_choice", "Next", show=False, priority=True),
         Binding("left", "previous_group", "Previous group", show=False, priority=True),
@@ -1361,16 +1360,16 @@ class ChoiceScreen(ModalScreen[str | None]):
     def action_accept_choice(self) -> None:
         self.query_one("#choice-list", OptionList).action_select()
 
-    async def action_switch_domain(self, direction: int) -> None:
+    async def action_switch_domain(self) -> None:
         if self._on_tab is not None:
             _worker: Worker[None] = self.run_worker(
-                self._switch_domain(direction), group="choice-domain", exclusive=True
+                self._switch_domain, group="choice-domain", exclusive=True
             )
 
-    async def _switch_domain(self, direction: int) -> None:
+    async def _switch_domain(self) -> None:
         with self.loading_choice():
             if self._on_tab is not None:
-                await self._on_tab(direction)
+                await self._on_tab()
 
     @staticmethod
     def _options(
@@ -2071,21 +2070,3 @@ class ConfirmationScreen(ChoiceScreen):
     @classmethod
     def confirmed(cls, selected: str | None) -> bool:
         return selected == cls.CONFIRM_VALUE
-
-
-class HelpScreen(ChoiceScreen):
-    """Expose root-level help through the same searchable menu as in-menu help."""
-
-    DEFAULT_HINT = DEFAULT_TUI_THEME.inline_separator.join(("↑/↓ move", "←/→ group", "Esc close"))
-    BACK_HINT = DEFAULT_TUI_THEME.inline_separator.join(("↑/↓ move", "←/→ group", "Esc back"))
-
-    def __init__(self, *, plugin_commands: tuple[TuiCommand, ...] = ()) -> None:
-        super().__init__(
-            title="KEYBOARD HELP",
-            placeholder="Filter shortcuts and commands…",
-            choices=help_choices(plugin_commands=plugin_commands),
-        )
-
-    async def _select_choice(self, selected: str) -> None:
-        # Help rows describe interactions; selecting one has no second meaning.
-        return None

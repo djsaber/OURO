@@ -140,7 +140,6 @@ from ouro.tui.screens import (
     ChoiceScreen,
     ConfirmationScreen,
     EditableChoiceScreen,
-    HelpScreen,
     MultiChoiceScreen,
 )
 from ouro.tui.state import (
@@ -4036,7 +4035,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         assert str(subagent_panel.styles.text_align) == "right"
         assert subagent_panel.content_region.right == app.query_one(Composer).region.right
         await pilot.press("f1")
-        await _wait_for_screen(app, HelpScreen, title="KEYBOARD HELP")
+        await _wait_for_screen(app, ChoiceScreen, title="KEYBOARD HELP")
         app.post_message(events.Key("alt+right", None))
         await pilot.pause()
         assert app._visible_session_id() == root_session_id
@@ -7154,7 +7153,7 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         assert isinstance(rename_screen, EditableChoiceScreen)
         assert rename_screen.query_one("#choice-hint", Static).render().plain == (
             app.tui_theme.inline_separator.join(
-                ("Tab/Shift+Tab switch sessions", "↑/↓ move", "←/→ group", "Enter edit", "Esc back")
+                ("Tab switch sessions", "↑/↓ move", "←/→ group", "Enter edit", "Esc back")
             )
         )
         assert action_screen.query_one("#choice-panel", Vertical).display is False
@@ -7204,7 +7203,7 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         assert rename_screen.query_one("#choice-filter", Input).has_focus is True
         assert rename_screen.query_one("#choice-hint", Static).render().plain == (
             app.tui_theme.inline_separator.join(
-                ("Tab/Shift+Tab switch sessions", "↑/↓ move", "←/→ group", "Enter edit", "Esc back")
+                ("Tab switch sessions", "↑/↓ move", "←/→ group", "Enter edit", "Esc back")
             )
         )
         assert rename_screen.query_one("#choice-filter", Input).value == ""
@@ -9623,7 +9622,7 @@ async def test_question_mark_remains_composer_input_after_help_shortcut_migratio
         await pilot.pause()
 
         assert composer.text == "?"
-        assert not isinstance(app.screen, HelpScreen)
+        assert not isinstance(app.screen, ChoiceScreen)
 
 
 @pytest.mark.asyncio
@@ -9650,7 +9649,7 @@ async def test_root_help_groups_runtime_plugin_commands(
         )
 
         await pilot.press("f1")
-        await _wait_for_screen(app, HelpScreen, title="KEYBOARD HELP")
+        await _wait_for_screen(app, ChoiceScreen, title="KEYBOARD HELP")
 
         plugins = tuple(
             choice for choice in app.screen._choices if choice.group == "PLUGIN COMMANDS"
@@ -9671,6 +9670,31 @@ async def test_root_help_groups_runtime_plugin_commands(
         await pilot.press("enter")
         assert app.screen is help_screen
 
+        for key, title in (
+            ("ctrl+p", "ACTIONS"),
+            ("ctrl+o", "SESSION • USER"),
+            ("ctrl+t", "Tasks"),
+            ("ctrl+s", "SKILLS"),
+            ("alt+p", "PLUGINS"),
+        ):
+            await pilot.press(key)
+            await _wait_for_screen(app, ChoiceScreen, title=title)
+            assert app.screen is help_screen
+            assert len(app.screen_stack) == 2
+            await pilot.press("f1")
+            await _wait_for_screen(app, ChoiceScreen, title="KEYBOARD HELP")
+            assert app.screen is help_screen
+            assert len(app.screen_stack) == 2
+
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        help_screen.query_one(Input).value = "New session"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert len(app.screen_stack) == 1
+        assert app._active_title == "New conversation"
+
 
 @pytest.mark.asyncio
 async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
@@ -9689,7 +9713,9 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         assert app.screen is menu
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
         assert menu.query_one("#choice-panel", Vertical).display is True
-        assert menu.query_one("#choice-hint", Static).render().plain == (HelpScreen.BACK_HINT)
+        assert menu.query_one("#choice-hint", Static).render().plain == (
+            app.tui_theme.inline_separator.join(("↑/↓ move", "←/→ group", "Esc back"))
+        )
         assert {choice.group for choice in menu._choices} == {
             "SHORTCUTS",
             "COMMANDS",
@@ -9700,7 +9726,7 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         }
         assert shortcuts["Alt+T"] == "cycle model thinking"
         assert shortcuts["Alt+A"] == "cycle tool approval"
-        assert shortcuts["Tab / Shift+Tab"] == "focus / switch menu domain"
+        assert shortcuts["Tab"] == "focus / switch menu domain"
         assert shortcuts["Alt+← / Alt+→"] == "previous / next agent"
         assert shortcuts["Alt+↑ / Alt+↓"] == "main / last agent"
         assert shortcuts["Ctrl+Enter"] == "new line"
@@ -9724,6 +9750,12 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         assert plan.trailing == "Enter plan mode for the current Session."
 
         await pilot.press("f1")
+        await pilot.pause()
+        assert app.screen is menu
+        assert menu.navigation_id == "help"
+        assert len(menu._page_stack) == 1
+
+        await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is menu
         assert menu.query_one("#choice-hint", Static).render().plain == (ChoiceScreen.DEFAULT_HINT)
@@ -9795,10 +9827,10 @@ async def test_alt_menu_shortcuts_do_not_replace_transient_choice_children(
         await _wait_for_screen(app, ChoiceScreen, title="COMPACTION MODEL")
         transient = app.screen
 
-        await pilot.press("alt+p")
-        await pilot.pause()
-
-        assert app.screen is transient
+        for key in ("alt+p", "f1", "ctrl+p", "ctrl+o", "ctrl+s", "ctrl+t"):
+            await pilot.press(key)
+            await pilot.pause()
+            assert app.screen is transient
         assert transient.navigation_root_id is None
         assert len(app.screen_stack) == 4
         await pilot.press("escape")
@@ -11723,7 +11755,8 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
 
         await pilot.press("enter")
         await pilot.pause()
-        assert isinstance(app.screen, HelpScreen)
+        assert isinstance(app.screen, ChoiceScreen)
+        assert app.screen.navigation_id == "help"
 
 
 @pytest.mark.asyncio

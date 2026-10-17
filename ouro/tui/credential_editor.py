@@ -66,9 +66,9 @@ class CredentialEditableChoiceScreen(EditableChoiceScreen):
         if edit is not None:
             self._show_hint(self.CREDENTIAL_EDIT_HINT)
 
-    async def action_switch_domain(self, direction: int) -> None:
+    async def action_switch_domain(self) -> None:
         if self._credential_source is None:
-            await super().action_switch_domain(direction)
+            await super().action_switch_domain()
             return
         self._credential_buffers[self._credential_source] = self._edit_text
         self._credential_source = "env" if self._credential_source == "inline" else "inline"
