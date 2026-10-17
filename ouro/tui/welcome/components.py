@@ -85,7 +85,7 @@ class WelcomeInformation(Vertical):
 _INPUT_TIPS = (
     ("/", "Commands"),
     ("Ctrl+P", "Actions"),
-    ("Ctrl+H", "Help"),
+    ("F1", "Help"),
 )
 _USAGE_DAY_META = "ouro.welcome_usage.date"
 

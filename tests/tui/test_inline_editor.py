@@ -4,11 +4,11 @@ from dataclasses import replace
 import pytest
 from rich.text import Text
 from textual import events
+from textual._xterm_parser import XTermParser
 from textual.app import App
 from textual.widgets import Input, OptionList, Static
 
 from ouro.tui.inline_editor import MultilineEditableChoiceScreen, multiline_edit_prompt
-from ouro.tui.keyboard import normalize_windows_modified_enter
 from ouro.tui.screens import Choice, EditableChoiceScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME
 
@@ -124,12 +124,11 @@ async def test_reusable_multiline_form_preserves_newlines_across_save_reopen_and
         )
         app.push_screen(form)
         await pilot.pause()
-        await pilot.press("enter", "a", "shift+enter", "b")
+        await pilot.press("enter", "a", "ctrl+enter", "b")
         assert form._edit_text == "a\nb"
-        # Exercise the normalized Windows-console event as well as enhanced keys.
-        app.post_message(
-            normalize_windows_modified_enter(events.Key("enter", "\r"), shift_pressed=True)
-        )
+        # Exercise the LF encoding used by legacy terminals as well as enhanced keys.
+        for event in XTermParser().feed("\n"):
+            app.post_message(event)
         await pilot.pause()
         await pilot.press("c")
         assert form._edit_text == "a\nb\nc"
@@ -138,7 +137,7 @@ async def test_reusable_multiline_form_preserves_newlines_across_save_reopen_and
         assert prompt.plain.split("\n") == ["a ", "b ", "c "]
         await pilot.press("home", "backspace")
         assert form._edit_text == "a\nbc"
-        await pilot.press("shift+enter", "enter")
+        await pilot.press("ctrl+enter", "enter")
         assert saved == {"instruction": "a\nb\nc"}
         assert form._editing_value is None
         assert len(app.console.render_lines(options.get_option("instruction").prompt)) == 1
@@ -158,6 +157,9 @@ async def test_reusable_multiline_form_preserves_newlines_across_save_reopen_and
         await pilot.press("enter")
         form.post_message(events.Paste("one\r\ntwo"))
         await pilot.pause()
+        await pilot.press("ctrl+enter", "ctrl+j")
+        assert form._edit_text == "one two"
+        assert "title" not in saved
         await pilot.press("enter")
         assert saved["title"] == "one two"
 

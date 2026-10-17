@@ -58,16 +58,19 @@ class Choice:
 
 
 _HELP_SHORTCUTS = (
-    ("Enter", "send / queue", "Shift+Enter", "new line"),
-    ("Ctrl+Enter / Ctrl+J", "guide current task", "↑ / ↓", "input history"),
-    ("Ctrl+N", "new session", "Ctrl+S", "sessions"),
-    ("Ctrl+T", "tasks", "Tab", "switch sessions"),
+    ("Enter", "send / queue / confirm", "Ctrl+Enter", "new line"),
+    ("Ctrl+G", "guide current task", "↑ / ↓", "cursor / history when empty"),
+    ("Ctrl+N", "new session", "Ctrl+O", "sessions"),
+    ("Ctrl+T", "tasks", "Ctrl+S", "skills"),
     ("Alt+T", "cycle model thinking", "Alt+A", "cycle tool approval"),
-    ("Alt+← / Alt+→", "switch agent", "Alt+↑ / Alt+↓", "main / recent agent"),
+    ("Alt+← / Alt+→", "previous / next agent", "Alt+↑ / Alt+↓", "main / last agent"),
     ("Alt+P", "plugins", "Ctrl+P", "actions"),
-    ("Ctrl+H", "help", "Ctrl+↑", "conversation top"),
-    ("Ctrl+↓", "conversation bottom", "Ctrl+←", "previous user message"),
-    ("Ctrl+→", "next user message", "Ctrl+C", "stop task"),
+    ("F1", "help", "Alt+Home / Alt+End", "conversation top / bottom"),
+    ("Alt+PageUp", "previous user message", "Alt+PageDown", "next user message / bottom"),
+    ("Ctrl+← / Ctrl+→", "move by word", "Ctrl+A", "select all input"),
+    ("Ctrl+Home / Ctrl+End", "input start / end", "Ctrl+C", "copy selection / stop task"),
+    ("Ctrl+X / Ctrl+V", "cut / paste", "Ctrl+Z / Ctrl+Y", "undo / redo in composer"),
+    ("Tab / Shift+Tab", "focus / switch menu domain", "Space", "toggle multi-selection"),
     ("Ctrl+Q", "quit", "Esc", "close menu"),
 )
 
@@ -128,7 +131,7 @@ def help_choices(
 
 ChoiceSelectionHandler = Callable[[str], Awaitable[tuple[Choice, ...] | None]]
 ChoiceRefreshHandler = Callable[[], Awaitable[tuple[Choice, ...] | None]]
-ChoiceTabHandler = Callable[[], Awaitable[None]]
+ChoiceTabHandler = Callable[[int], Awaitable[None]]
 ChoiceCancelHandler = Callable[[], bool]
 ChoiceAdjustmentHandler = Callable[[str, int], tuple[Choice, ...] | None]
 MultiChoiceConfirmationHandler = Callable[
@@ -137,7 +140,7 @@ MultiChoiceConfirmationHandler = Callable[
 ]
 ChoiceEditHandler = Callable[[str, str], Awaitable[tuple[Choice, ...] | None]]
 ScreenResult = TypeVar("ScreenResult")
-MenuDestination = Literal["actions", "plugins", "sessions", "tasks"]
+MenuDestination = Literal["actions", "plugins", "sessions", "tasks", "skills"]
 
 
 @dataclass(frozen=True)
@@ -355,7 +358,8 @@ class ChoiceScreen(ModalScreen[str | None]):
     )
 
     BINDINGS = [
-        Binding("tab", "switch_domain", "Switch domain", show=False, priority=True),
+        Binding("tab", "switch_domain(1)", "Next domain", show=False, priority=True),
+        Binding("shift+tab", "switch_domain(-1)", "Previous domain", show=False, priority=True),
         Binding("up", "previous_choice", "Previous", show=False, priority=True),
         Binding("down", "next_choice", "Next", show=False, priority=True),
         Binding("left", "previous_group", "Previous group", show=False, priority=True),
@@ -1357,16 +1361,16 @@ class ChoiceScreen(ModalScreen[str | None]):
     def action_accept_choice(self) -> None:
         self.query_one("#choice-list", OptionList).action_select()
 
-    async def action_switch_domain(self) -> None:
+    async def action_switch_domain(self, direction: int) -> None:
         if self._on_tab is not None:
             _worker: Worker[None] = self.run_worker(
-                self._switch_domain, group="choice-domain", exclusive=True
+                self._switch_domain(direction), group="choice-domain", exclusive=True
             )
 
-    async def _switch_domain(self) -> None:
+    async def _switch_domain(self, direction: int) -> None:
         with self.loading_choice():
             if self._on_tab is not None:
-                await self._on_tab()
+                await self._on_tab(direction)
 
     @staticmethod
     def _options(

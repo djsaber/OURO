@@ -128,7 +128,7 @@ async def test_background_completion_preserves_destination_and_draft(
                     await pilot.pause()
             expected_id = None
         else:
-            await pilot.press("ctrl+s")
+            await pilot.press("ctrl+o")
             await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
             await choose(pilot, app, "Other session")
             expected_id = other.session_id
@@ -358,7 +358,7 @@ async def test_leaving_child_restores_destination_draft_and_editable_surface(tmp
                     await pilot.pause()
             expected_draft = "Welcome draft"
         else:
-            await pilot.press("ctrl+s")
+            await pilot.press("ctrl+o")
             await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
             await choose(pilot, app, "Other session")
             expected_draft = "Other draft"

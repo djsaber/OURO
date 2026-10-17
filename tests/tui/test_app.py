@@ -2208,8 +2208,8 @@ async def test_welcome_tips_point_to_keyboard_help_instead_of_sessions(tmp_path:
             getattr(widget.render(), "plain", "") for widget in welcome.page._tips.query(Static)
         )
 
-        assert "Ctrl+H\nHelp" in tips
-        assert "Ctrl+S" not in tips
+        assert "F1\nHelp" in tips
+        assert "Ctrl+O" not in tips
         assert "Sessions" not in tips
 
 
@@ -3627,7 +3627,7 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
             active_placeholder = composer.placeholder
             assert isinstance(active_placeholder, Content)
             assert active_placeholder.plain == Composer.ACTIVE_RUN_PLACEHOLDER
-            for shortcut in ("Enter", "Ctrl+Enter"):
+            for shortcut in ("Enter", "Ctrl+G"):
                 style = active_placeholder.get_style_at_offset(
                     active_placeholder.plain.index(shortcut)
                 )
@@ -4035,7 +4035,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         assert subagent_panel.render_content(80).plain.rstrip().endswith("▣ | ■■")
         assert str(subagent_panel.styles.text_align) == "right"
         assert subagent_panel.content_region.right == app.query_one(Composer).region.right
-        await pilot.press("ctrl+h")
+        await pilot.press("f1")
         await _wait_for_screen(app, HelpScreen, title="KEYBOARD HELP")
         app.post_message(events.Key("alt+right", None))
         await pilot.pause()
@@ -4476,14 +4476,8 @@ async def test_sync_child_view_restore_preserves_live_tool_and_reasoning_clocks(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "submit_key",
-    ("ctrl+enter", "ctrl+j"),
-    ids=("enhanced-terminal", "legacy-windows-terminal"),
-)
 async def test_guide_shortcuts_steer_the_active_run_at_the_next_model_turn(
     tmp_path: Path,
-    submit_key: str,
 ) -> None:
     provider = BlockingStreamProvider()
     application = _blocking_application(tmp_path, provider)
@@ -4503,7 +4497,7 @@ async def test_guide_shortcuts_steer_the_active_run_at_the_next_model_turn(
         queue_panel = app.query_one(QueuedInputPanel)
         try:
             app.query_one(Composer).load_text("guide now")
-            await pilot.press(submit_key)
+            await pilot.press("ctrl+g")
             await _wait_until(
                 lambda: queue_panel.display,
                 pilot,
@@ -5877,14 +5871,20 @@ async def test_conversation_shortcuts_navigate_while_composer_is_focused(
         await pilot.pause()
         assert conversation.scroll_y == conversation.max_scroll_y
 
-        await pilot.press("ctrl+up")
+        await pilot.press("alt+home")
         await pilot.pause()
         assert conversation.scroll_y == 0
 
-        await pilot.press("ctrl+down")
+        await pilot.press("alt+end")
         await pilot.pause()
         assert conversation.scroll_y == conversation.max_scroll_y
         assert composer.text == "draft"
+        composer.move_cursor(composer.document.end)
+        await pilot.press("ctrl+left")
+        assert composer.cursor_location == (0, 0)
+        await pilot.press("ctrl+right")
+        assert composer.cursor_location == (0, len("draft"))
+        assert conversation.scroll_y == conversation.max_scroll_y
 
 
 @pytest.mark.asyncio
@@ -5904,24 +5904,30 @@ async def test_conversation_shortcuts_navigate_adjacent_user_messages(
 
         conversation.scroll_home(animate=False, immediate=True)
         await pilot.pause()
-        await pilot.press("ctrl+left")
+        await pilot.press("alt+pageup")
         await pilot.pause()
         assert conversation.scroll_y == history.user_lines[0]
 
-        await pilot.press("ctrl+right")
+        await pilot.press("alt+pagedown")
         await pilot.pause()
         assert conversation.scroll_y == history.user_lines[1]
 
-        await pilot.press("ctrl+right")
+        await pilot.press("alt+pagedown")
         await pilot.pause()
         assert conversation.scroll_y == history.user_lines[2]
 
-        await pilot.press("ctrl+left")
+        await pilot.press("alt+pageup")
         await pilot.pause()
         assert conversation.scroll_y == history.user_lines[1]
         assert composer.text == "draft"
 
-        await pilot.press("ctrl+down", "ctrl+right")
+        conversation.scroll_to_user_turn(len(history.user_lines) - 1)
+        await pilot.pause()
+        await pilot.press("alt+pagedown")
+        await pilot.pause()
+        assert conversation.scroll_y == conversation.max_scroll_y
+
+        await pilot.press("alt+pagedown")
         await pilot.pause()
         assert conversation.scroll_y == conversation.max_scroll_y
 
@@ -6053,15 +6059,18 @@ def test_active_stream_tail_waits_for_canonical_message_commit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_composer_uses_shift_enter_for_newline(tmp_path: Path) -> None:
+async def test_composer_uses_ctrl_enter_for_newline(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
-        await pilot.press("a", "shift+enter", "b")
+        await pilot.press("a", "ctrl+enter", "b", "ctrl+j", "c")
 
-        assert app.query_one(Composer).text == "a\nb"
+        composer = app.query_one(Composer)
+        assert composer.text == "a\nb\nc"
+        await pilot.press("ctrl+a", "ctrl+enter")
+        assert composer.text == "\n"
 
 
 @pytest.mark.asyncio
@@ -6086,7 +6095,7 @@ async def test_composer_grows_with_its_document_between_one_and_three_text_rows(
         assert composer.outer_size.height == COMPOSER_MIN_HEIGHT
 
         for text_rows in (2, 3):
-            await pilot.press("shift+enter", "a")
+            await pilot.press("ctrl+enter", "a")
             await pilot.pause()
             assert composer.size.height == text_rows
             assert composer.outer_size.height == text_rows + COMPOSER_FRAME_HEIGHT
@@ -6097,7 +6106,7 @@ async def test_composer_grows_with_its_document_between_one_and_three_text_rows(
             assert status.region.y == composer.region.bottom
 
         # Past the cap the document scrolls inside a stable widget height.
-        await pilot.press("shift+enter", "a")
+        await pilot.press("ctrl+enter", "a")
         await pilot.pause()
         assert composer.text.count("\n") == 3
         assert composer.size.height == COMPOSER_TEXT_MAX_HEIGHT
@@ -6218,7 +6227,7 @@ async def test_session_picker_hides_route_identity_and_truncates_long_titles(
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+o")
         await pilot.pause()
 
         options = app.screen.query_one(OptionList)
@@ -6266,7 +6275,7 @@ async def test_session_picker_marks_the_session_open_on_the_conversation_page(
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await _wait_for_active_session(app, pilot, current.session_id)
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
 
         choices = {choice.value: choice for choice in app.screen._choices}
@@ -6308,7 +6317,7 @@ async def test_session_picker_reads_only_the_catalog_projection(
         await pilot.pause()
 
         def unexpected_canonical_read(*_args: object) -> None:
-            raise AssertionError("Ctrl+S must not load canonical Session records")
+            raise AssertionError("Ctrl+O must not load canonical Session records")
 
         with monkeypatch.context() as catalog_guard:
             catalog_guard.setattr(
@@ -6321,7 +6330,7 @@ async def test_session_picker_reads_only_the_catalog_projection(
                 "list_sessions",
                 unexpected_canonical_read,
             )
-            await pilot.press("ctrl+s")
+            await pilot.press("ctrl+o")
             await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
             assert {choice.value for choice in app.screen._choices} == {
                 session.session_id for session in sessions
@@ -6362,7 +6371,7 @@ async def test_session_picker_opens_canonical_session_when_catalog_entry_is_inva
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         choice = next(item for item in app.screen._choices if item.value == session.session_id)
 
@@ -6397,7 +6406,7 @@ async def test_session_picker_closes_modal_before_rendering_selected_history(
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         session_menu = app.screen
 
@@ -6423,7 +6432,7 @@ async def test_session_picker_groups_child_and_agent_tree_keeps_it_navigable(
             pilot,
             description="TUI startup with persisted Agent tree",
         )
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         assert [choice.value for choice in app.screen._choices] == [root_session_id]
         await pilot.press("tab")
@@ -6450,7 +6459,7 @@ async def test_session_picker_groups_child_and_agent_tree_keeps_it_navigable(
         assert panel.display is True
         assert panel.current_session_id == child_session_id
         assert panel.visible_session_ids == (child_session_id,)
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • SUBAGENT")
         assert app.screen._choices[0].marker == DEFAULT_TUI_THEME.selected_choice_marker
         await pilot.press("escape")
@@ -6540,7 +6549,7 @@ async def test_fork_projects_animated_activity_until_the_branch_is_created(
         indicator._tick()
         assert indicator._frame != frame
 
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         assert indicator._activity == "forking"
         assert "Forking session" in indicator.render().plain
@@ -6689,7 +6698,7 @@ async def test_session_picker_restores_history_after_returning_to_welcome(
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         await pilot.press("enter")
         await _wait_for_active_session(app, pilot, session.session_id)
@@ -6703,7 +6712,7 @@ async def test_session_picker_restores_history_after_returning_to_welcome(
         )
         assert app._controller.draft_workspace == str(workspace.resolve())
         assert app._active_workspace == str(workspace.resolve())
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         await pilot.press("enter")
         await _wait_for_active_session(app, pilot, session.session_id)
@@ -6965,7 +6974,7 @@ async def test_session_picker_contains_load_failure_in_choice_dialog(
             raise PersistenceError("message journal is invalid")
 
         monkeypatch.setattr(app._controller, "load_session", fail_load)
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         session_menu = app.screen
 
@@ -7049,7 +7058,7 @@ async def test_session_picker_and_archive_menu_switch_and_toggle_archived_domain
 
     async with run_ready_app(app, size=(100, 34), notifications=True) as pilot:
         await _wait_for_active_session(app, pilot, active.session_id)
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         groups = {choice.value: choice.group for choice in app.screen._choices}
         assert groups[active.session_id] == "Today"
@@ -7145,7 +7154,7 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         assert isinstance(rename_screen, EditableChoiceScreen)
         assert rename_screen.query_one("#choice-hint", Static).render().plain == (
             app.tui_theme.inline_separator.join(
-                ("Tab switch sessions", "↑/↓ move", "←/→ group", "Enter edit", "Esc back")
+                ("Tab/Shift+Tab switch sessions", "↑/↓ move", "←/→ group", "Enter edit", "Esc back")
             )
         )
         assert action_screen.query_one("#choice-panel", Vertical).display is False
@@ -7195,7 +7204,7 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         assert rename_screen.query_one("#choice-filter", Input).has_focus is True
         assert rename_screen.query_one("#choice-hint", Static).render().plain == (
             app.tui_theme.inline_separator.join(
-                ("Tab switch sessions", "↑/↓ move", "←/→ group", "Enter edit", "Esc back")
+                ("Tab/Shift+Tab switch sessions", "↑/↓ move", "←/→ group", "Enter edit", "Esc back")
             )
         )
         assert rename_screen.query_one("#choice-filter", Input).value == ""
@@ -7914,10 +7923,11 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         assert {choice.label: choice.trailing for choice in action_choices if choice.trailing} == {
             "Theme": app._tui_theme.label,
             "New session": "Ctrl+N",
-            "Open session": "Ctrl+S",
+            "Open session": "Ctrl+O",
             "Manage tasks": "Ctrl+T",
+            "Manage skills": "Ctrl+S",
             "Manage plugins": "Alt+P",
-            "Keyboard help": "Ctrl+H",
+            "Keyboard help": "F1",
         }
 
         app.screen.query_one("#choice-filter", Input).value = "Context compaction"
@@ -9584,7 +9594,9 @@ async def test_actions_and_session_shortcuts_switch_on_the_active_menu_surface(
         menu = app.screen
 
         for key, title, page_depth in (
-            ("ctrl+s", "SESSION • USER", 1),
+            ("ctrl+o", "SESSION • USER", 1),
+            ("ctrl+s", "SKILLS", 1),
+            ("ctrl+s", "SKILLS", 1),
             ("ctrl+p", "ACTIONS", 0),
             ("ctrl+p", "ACTIONS", 0),
         ):
@@ -9637,7 +9649,7 @@ async def test_root_help_groups_runtime_plugin_commands(
             ),
         )
 
-        await pilot.press("ctrl+h")
+        await pilot.press("f1")
         await _wait_for_screen(app, HelpScreen, title="KEYBOARD HELP")
 
         plugins = tuple(
@@ -9672,7 +9684,7 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         menu = app.screen
 
-        await pilot.press("ctrl+h")
+        await pilot.press("f1")
         await _wait_for_screen(app, ChoiceScreen, title="KEYBOARD HELP")
         assert app.screen is menu
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
@@ -9688,9 +9700,12 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         }
         assert shortcuts["Alt+T"] == "cycle model thinking"
         assert shortcuts["Alt+A"] == "cycle tool approval"
-        assert shortcuts["Tab"] == "switch sessions"
-        assert shortcuts["Alt+← / Alt+→"] == "switch agent"
-        assert shortcuts["Alt+↑ / Alt+↓"] == "main / recent agent"
+        assert shortcuts["Tab / Shift+Tab"] == "focus / switch menu domain"
+        assert shortcuts["Alt+← / Alt+→"] == "previous / next agent"
+        assert shortcuts["Alt+↑ / Alt+↓"] == "main / last agent"
+        assert shortcuts["Ctrl+Enter"] == "new line"
+        assert shortcuts["Ctrl+G"] == "guide current task"
+        assert shortcuts["Ctrl+S"] == "skills"
         files = next(choice for choice in menu._choices if choice.value == "command:@file")
         assert (files.group, files.label, files.trailing) == (
             "COMMANDS",
@@ -9708,7 +9723,7 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         assert goal.trailing == "Create and control the latest Goal for this conversation."
         assert plan.trailing == "Enter plan mode for the current Session."
 
-        await pilot.press("ctrl+h")
+        await pilot.press("f1")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is menu
         assert menu.query_one("#choice-hint", Static).render().plain == (ChoiceScreen.DEFAULT_HINT)
@@ -9740,6 +9755,16 @@ async def test_navigation_menu_routes_ctrl_c_to_abort_without_closing(
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         menu = app.screen
+
+        copied: list[str] = []
+        monkeypatch.setattr(app.screen_stack[0], "_clipboard_writer", copied.append)
+        filter_input = menu.query_one(Input)
+        filter_input.value = "Theme"
+        await pilot.press("ctrl+a", "ctrl+c")
+        assert copied == ["Theme"]
+        assert app.clipboard == "Theme"
+        assert aborted is False
+        await pilot.press("end")
 
         await pilot.press("ctrl+c")
         await pilot.pause()
@@ -10897,11 +10922,7 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
 
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
-        await pilot.press("ctrl+p")
-        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        app.screen.query_one("#choice-filter", Input).value = "Manage skills"
-        await pilot.pause()
-        await pilot.press("enter")
+        await pilot.press("ctrl+s")
         await _wait_for_screen(app, ChoiceScreen, title="SKILLS")
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="SKILL • demo")
@@ -12004,7 +12025,7 @@ async def test_slash_prefix_filters_new_command_text_and_restores_existing_draft
         "/skill missing explain this",
     ),
 )
-@pytest.mark.parametrize("key, mode", (("enter", "follow_up"), ("ctrl+j", "steer")))
+@pytest.mark.parametrize("key, mode", (("enter", "follow_up"), ("ctrl+g", "steer")))
 async def test_command_popup_hides_when_no_commands_match(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str, key: str, mode: str
 ) -> None:
@@ -13847,7 +13868,7 @@ async def test_host_injected_theme_controls_css_rich_glyphs_and_static_spinner(
 @pytest.mark.parametrize(
     ("placeholder_setter", "highlight"),
     (
-        ("set_active_run_placeholder", "Ctrl+Enter"),
+        ("set_active_run_placeholder", "Ctrl+G"),
         ("set_subagent_placeholder", "Alt+↑"),
     ),
 )

@@ -180,7 +180,7 @@ async def test_task_menu_saves_multiline_instructions_and_pauses_schedule(tmp_pa
         description = "Summarize the repository.\nInclude tests and open questions."
         form.post_message(events.Paste("Summarize the repository."))
         await pilot.pause()
-        await pilot.press("shift+enter")
+        await pilot.press("ctrl+enter")
         form.post_message(events.Paste("Include tests and open questions."))
         await pilot.pause()
         assert form._edit_text == description
@@ -489,7 +489,7 @@ async def test_tab_cycles_session_domains_even_when_some_are_empty(tmp_path):
     app = OuroTuiApp(application=application)
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         menu = app.screen
         assert not app.screen._choices
@@ -505,6 +505,9 @@ async def test_tab_cycles_session_domains_even_when_some_are_empty(tmp_path):
         await pilot.press("tab")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         assert not app.screen._choices
+        for label in ("ARCHIVED", "SUBAGENT", "TASK", "USER"):
+            await pilot.press("shift+tab")
+            await _wait_for_screen(app, ChoiceScreen, title=f"SESSION • {label}")
         assert app.screen is menu
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
 
@@ -574,7 +577,7 @@ async def test_background_run_stays_silent_and_attaching_restores_live_stream(tm
         assert app.query_one(ConversationView).showing_welcome
         current = await application.tasks.get(task.task_id)
         if entry == "sessions":
-            await pilot.press("ctrl+s", "tab")
+            await pilot.press("ctrl+o", "tab")
             await _wait_for_screen(app, ChoiceScreen, title="SESSION • TASK")
             await pilot.press("enter")
         else:

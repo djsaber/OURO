@@ -58,7 +58,7 @@ CLI 支持 `list`、`add`、`edit`、`remove`、`enable`、`disable`、`move`。
 序号在命令读取的配置快照中解析为内部 ID，写入时检查 revision，防止并发修改期间操作错位。
 新增/编辑可用 `--text` 或
 `--file <UTF-8文件>` 输入正文，`--description` 修改标注，`--enabled`/`--disabled` 指定启停。
-TUI 复用分组列表及多行编辑器，支持 Shift+Enter 换行、编辑、启停、移动和删除确认。
+TUI 复用分组列表及多行编辑器，支持 Ctrl+Enter 换行、编辑、启停、移动和删除确认。
 保存后在下一次模型请求准备时生效，无需重启；已开始准备或正在生成的请求保持原快照，工具调用后的
 下一轮请求也会读取新配置。共享同一 OURO_HOME 的 CLI、TUI 和其他进程写入均适用。
 运行参数 `--system-prompt` 只覆盖基础提示词，仍保留最新启用的追加项。

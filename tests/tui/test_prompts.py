@@ -22,7 +22,7 @@ async def test_prompt_editor_requires_content_and_preserves_multiline_and_cancel
         assert all(choice.value != "id" for choice in form._choices)
         form.query_one(Input).value = "Content"
         await pilot.pause()
-        await pilot.press("enter", "a", "shift+enter", "b", "enter")
+        await pilot.press("enter", "a", "ctrl+enter", "b", "enter")
         assert form._values["text"] == "a\nb"
         save = next(choice for choice in form._choices if choice.value == "save")
         assert not save.disabled
@@ -132,7 +132,7 @@ async def test_prompt_actions_manage_order_activation_edit_and_delete(tmp_path):
         await choose("Edit")
         assert isinstance(app.screen, PromptEntryScreen)
         await choose("Content")
-        await pilot.press("ctrl+u", "n", "shift+enter", "e", "enter")
+        await pilot.press("ctrl+u", "n", "ctrl+enter", "e", "enter")
         await choose("Save")
         assert PromptConfigManager(tmp_path).snapshot().config.additions[1].text == "n\ne"
         await choose("last")

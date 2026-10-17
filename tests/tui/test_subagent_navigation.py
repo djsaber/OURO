@@ -120,10 +120,10 @@ def test_subagent_panel_keeps_interleaved_dispatches_in_stable_run_groups() -> N
     )
     assert panel.render_content(80).plain.rstrip().endswith("▣ | ■■ ■")
     panel.begin_navigation()
-    assert panel.select_latest_child() == agents[2].session_id
+    assert panel.select_last_child() == agents[1].session_id
 
 
-def test_subagent_panel_navigation_selects_root_latest_and_adjacent_children() -> None:
+def test_subagent_panel_navigation_selects_root_last_and_adjacent_children() -> None:
     panel = SubagentNavigationPanel()
     agents = tuple(_agent(index, parent_run_id="run_root") for index in range(1, 4))
     panel.set_tree(root_session_id="ses_root", agents=agents, root_status="running")
@@ -133,10 +133,14 @@ def test_subagent_panel_navigation_selects_root_latest_and_adjacent_children() -
     assert panel.select_relative(-1) == "ses_child_1"
     assert panel.selected_agent == agents[0]
     assert "Inspect task 1 • Worker 1" in panel.render_content(80).plain
+    assert panel.select_relative(-1) == "ses_root"
+    assert panel.select_relative(-1) == "ses_root"
+    assert panel.select_relative(1) == "ses_child_1"
     assert panel.select_relative(1) == "ses_child_2"
     assert panel.select_root() == "ses_root"
     assert "Inspect task" not in panel.render_content(80).plain
-    assert panel.select_latest_child() == "ses_child_3"
+    assert panel.select_last_child() == "ses_child_3"
+    assert panel.select_relative(1) == "ses_child_3"
 
     panel.end_navigation()
 

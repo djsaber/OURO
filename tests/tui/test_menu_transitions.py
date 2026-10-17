@@ -85,7 +85,7 @@ async def test_waiting_choice_animates_without_blocking_filter_navigation_or_clo
 async def test_page_refresh_wait_keeps_filter_and_close_responsive(operation):
     entered, release = asyncio.Event(), asyncio.Event()
 
-    async def refresh():
+    async def refresh(_direction=1):
         entered.set()
         await release.wait()
         return (Choice("row", "Refreshed"),)

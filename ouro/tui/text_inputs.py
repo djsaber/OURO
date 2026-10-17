@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import cast
 
 from textual import events
+from textual.binding import Binding
 from textual.document._document_navigator import DocumentNavigator
 from textual.screen import Screen
 from textual.widgets import Input, TextArea
@@ -45,6 +46,13 @@ class _TerminalCursorSync:
 class TuiInput(_TerminalCursorSync, Input):
     """Single-line input that reserves Alt-modified keys for TUI commands."""
 
+    BINDINGS = [
+        Binding("ctrl+a", "select_all", "Select all", show=False),
+        Binding("ctrl+home", "home", "Start", show=False),
+        Binding("ctrl+end", "end", "End", show=False),
+        Binding("ctrl+backspace", "delete_left_word", "Delete word left", show=False),
+    ]
+
     async def _on_key(self, event: events.Key) -> None:
         if _is_alt_modified_text(event):
             event.stop()
@@ -53,8 +61,32 @@ class TuiInput(_TerminalCursorSync, Input):
         await super()._on_key(event)
 
 
-class TuiTextArea(_TerminalCursorSync, TextArea):
+class TuiTextArea(_TerminalCursorSync, TextArea, inherit_bindings=False):
     """Multi-line input that reserves Alt-modified keys for TUI commands."""
+
+    BINDINGS = [
+        *(
+            binding
+            for binding in TextArea.BINDINGS
+            if getattr(binding, "key", "") not in {"home,ctrl+a", "f6", "f7"}
+        ),
+        Binding("home", "cursor_line_start", "Line start", show=False),
+        Binding("ctrl+a", "select_all", "Select all", show=False),
+        Binding("ctrl+home", "document_start", "Document start", show=False),
+        Binding("ctrl+end", "document_end", "Document end", show=False),
+        # Legacy terminals encode Ctrl+Enter as LF, which Textual names Ctrl+J.
+        Binding("ctrl+enter,ctrl+j", "newline", "New line", show=False),
+    ]
+
+    def action_document_start(self) -> None:
+        self.move_cursor((0, 0))
+
+    def action_document_end(self) -> None:
+        self.move_cursor(self.document.end)
+
+    def action_newline(self) -> None:
+        if not self.read_only:
+            self._replace_via_keyboard("\n", *self.selection)
 
     def _rewrap_and_refresh_virtual_size(self) -> None:
         if not isinstance(self.wrapped_document, ProseDocument):

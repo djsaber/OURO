@@ -68,7 +68,7 @@ async def test_tui_restores_history_and_observation_without_the_old_model(
         )
         async with run_ready_app(app, size=(100, 32)) as pilot:
             if entry == "picker":
-                await pilot.press("ctrl+s")
+                await pilot.press("ctrl+o")
                 async with asyncio.timeout(5):
                     while not isinstance(app.screen, ChoiceScreen):
                         await pilot.pause()

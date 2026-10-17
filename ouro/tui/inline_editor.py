@@ -18,9 +18,9 @@ class MultilineEditableChoiceScreen(EditableChoiceScreen):
     """
 
     MULTILINE_EDIT_HINT = DEFAULT_TUI_THEME.inline_separator.join(
-        ("Type edit", "↑/↓/←/→ cursor", "Enter save", "Shift+Enter new line", "Esc cancel")
+        ("Type edit", "↑/↓/←/→ cursor", "Enter save", "Ctrl+Enter new line", "Esc cancel")
     )
-    BINDINGS = [Binding("shift+enter", "edit_newline", "New line", show=False, priority=True)]
+    BINDINGS = [Binding("ctrl+enter,ctrl+j", "edit_newline", "New line", show=False, priority=True)]
 
     def __init__(
         self,

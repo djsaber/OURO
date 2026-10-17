@@ -1031,39 +1031,44 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         selector: str | None = None,
         *,
         menu: ChoiceScreen | None = None,
+        switch: bool = False,
     ) -> None:
+        revision = menu.page_revision if menu is not None else None
         try:
             catalog = await self._controller.skill_catalog()
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        selected = selector
-        if selected is None:
+        if menu is not None and (not menu.is_attached or menu.page_revision != revision):
+            return
+        if selector is None:
             choices = tuple(_skill_choice(skill, theme=theme_for(self)) for skill in catalog.skills)
-            if not choices:
-                return
-            if menu is not None:
-                skills = {skill.name: skill for skill in catalog.skills}
+            skill_menu: ChoiceScreen
+            skills = {skill.name: skill for skill in catalog.skills}
 
-                async def refresh_skills() -> tuple[Choice, ...] | None:
-                    try:
-                        refreshed = await self._controller.skill_catalog()
-                    except Exception as exc:  # noqa: BLE001
-                        await self.query_one(ConversationView).add_notice(str(exc), error=True)
-                        return None
-                    skills.clear()
-                    skills.update({skill.name: skill for skill in refreshed.skills})
-                    return tuple(
-                        _skill_choice(skill, theme=theme_for(self)) for skill in refreshed.skills
-                    )
-
-                async def select_skill(name: str) -> tuple[Choice, ...] | None:
-                    if name not in skills:
-                        return None
-                    await self._manage_skill(name, menu=menu)
+            async def refresh_skills() -> tuple[Choice, ...] | None:
+                try:
+                    refreshed = await self._controller.skill_catalog()
+                except Exception as exc:  # noqa: BLE001
+                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
                     return None
+                skills.clear()
+                skills.update({skill.name: skill for skill in refreshed.skills})
+                return tuple(
+                    _skill_choice(skill, theme=theme_for(self)) for skill in refreshed.skills
+                )
 
-                menu.push_page(
+            async def select_skill(name: str) -> tuple[Choice, ...] | None:
+                if name not in skills:
+                    return None
+                await self._manage_skill(name, menu=skill_menu)
+                return None
+
+            if menu is not None:
+                skill_menu = menu
+                navigate = menu.switch_page if switch else menu.push_page
+                navigate(
+                    navigation_id="skills",
                     title="SKILLS",
                     placeholder="Filter skills…",
                     choices=choices,
@@ -1071,18 +1076,23 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                     on_refresh=refresh_skills,
                 )
                 return
-            selected = await self.push_screen_wait(
-                ChoiceScreen(title="SKILLS", placeholder="Filter skills…", choices=choices)
+            skill_menu = ChoiceScreen(
+                navigation_id="skills",
+                title="SKILLS",
+                placeholder="Filter skills…",
+                choices=choices,
+                on_select=select_skill,
+                on_refresh=refresh_skills,
             )
-        if selected is None:
+            self.push_screen(skill_menu)
             return
-        if not any(item.name == selected for item in catalog.skills):
+        if not any(item.name == selector for item in catalog.skills):
             await self.query_one(ConversationView).add_notice(
-                f"Skill not found: {selected}",
+                f"Skill not found: {selector}",
                 error=True,
             )
             return
-        await self._manage_skill(selected)
+        await self._manage_skill(selector)
 
     async def _choose_skill_action(
         self,

@@ -129,7 +129,7 @@ Linux 与 WSL 的终端粘贴使用相同输入机制，TUI 主动读取文本�
 TUI 在提交前持久保存输入及提交身份。接受前失败保留完整草稿；接受后发生执行或显示错误保留会话，不恢复为待发送输入。
 重启时通过原生 Session 提交回执判定接受结果，不扫描消息历史，也不自动重发尚未确认的输入。
 发送时将文字和附件作为同一接受单位校验。
-Enter 沿用 follow-up，Ctrl+Enter 沿用 steer；附件不绕过现有输入策略、权限或安全 turn 边界。
+Enter 沿用 follow-up，Ctrl+G 沿用 steer；附件不绕过现有输入策略、权限或安全 turn 边界。
 同次引用多个文件时，汇总文件说明与可用内容到一条完整附件骨架，不逐文件创建消息。混合选择的全部 Skill 激活保存在同一条用户正文消息中，不逐 Skill 创建骨架或拆分提交。
 一次提交保存附件骨架（`role=user, scaffold=true, semantic_tag=attachments`）及存在时的独立用户正文
 （`role=user, scaffold=false`）。回执保留 Host 来源和触发提交关系，不能虚构工具调用。

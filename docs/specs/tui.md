@@ -118,7 +118,7 @@ System、Usage、Tips、Version 是可选的复用组件，包通过 `set_system
 会话入口支持：
 
 - `/new` 或 `Ctrl+N`：回到新会话欢迎页；
-- `/sessions`、`/resume` 或 `Ctrl+S`：浏览并打开 durable Session；
+- `/sessions`、`/resume` 或 `Ctrl+O`：浏览并打开 durable Session；
 - `/fork [full|#N]` 或 `/branch`：在合法消息边界创建独立分支；
 - `/clear`：只清空当前可见时间线，不删除 canonical 数据；
 - `/navigate [target]`：在顶部、底部和用户消息之间导航。
@@ -167,13 +167,13 @@ Markdown 遵循自身的段落与硬换行语义，保留列表缩进、行内�
 composer 支持多行编辑、历史、命令补全和运行中排队：
 
 - `Enter` 提交通常输入；
-- `Shift+Enter` 插入换行；
-- `Ctrl+Enter` 或 `Ctrl+J` 将运行中输入作为 steer 提交；
+- `Ctrl+Enter` 插入换行；
+- `Ctrl+G` 将运行中输入作为 steer 提交；
 - 普通运行中提交按配置形成 follow-up；
 - `/unqueue` 将选中的未消费输入取回 composer；
 - `/undo` 撤销最近直接用户输入，优先选择待消费输入，并恢复完整编辑草稿；
 - `/continue` 继续合法检查点，撤销后从当前历史创建新 Run；
-- `Ctrl+C` 或 `/abort` 请求中止 active Run；
+- `Ctrl+C` 优先复制选区，无选区时请求中止 active Run；`/abort` 始终请求中止；
 - `Ctrl+Q` 或 `/quit` 关闭 TUI。
 
 直接用户输入必须保持 `role=user`、`scaffold=false` 和用户 provenance。命令只负责选择 Application 动作；
@@ -231,27 +231,50 @@ composer 支持多行编辑、历史、命令补全和运行中排队：
 
 ## 快捷键
 
-全局快捷键包括：
+快捷键按输入编辑、会话操作和导航分工。所有多行输入使用 `Ctrl+Enter` 换行；
+composer 使用 `Enter` 发送或排队，菜单使用 `Enter` 确认，内联字段使用 `Enter` 保存。
+单行字段不接受换行组合，也不将其作为确认。
 
 | 快捷键 | 行为 |
 |---|---|
+| `Enter` | 发送、排队或确认当前操作 |
+| `Ctrl+Enter` | 多行输入换行，包括 composer、任务 Instruction 和提示词 |
+| `Ctrl+G` | 提交输入以引导当前运行 |
 | `Ctrl+N` | 新会话 |
-| `Ctrl+S` | 会话选择 |
+| `Ctrl+O` | 会话选择 |
 | `Ctrl+P` | Actions |
+| `Ctrl+S` | 技能管理 |
+| `Ctrl+T` | 任务管理 |
 | `Alt+P` | 插件管理 |
 | `Alt+T` | 循环思考设置 |
 | `Alt+A` | 循环审批设置 |
-| `Ctrl+↑/↓` | 对话顶部/底部 |
-| `Ctrl+←/→` | 上一/下一条用户消息 |
-| `Alt+←/→` | 上一/下一子智能体节点 |
-| `Alt+↑` | 主会话 |
-| `Alt+↓` | 最近子智能体 |
-| `Ctrl+C` | 中止 |
-| `Ctrl+H` | 帮助 |
+| `Alt+Home / Alt+End` | 对话顶部 / 底部 |
+| `Alt+PageUp / Alt+PageDown` | 上一 / 下一条用户消息；最后一条之后跳转底部 |
+| `Alt+← / Alt+→` | 按主会话、首个子智能体到最后子智能体的显示顺序切换 |
+| `Alt+↑ / Alt+↓` | 主会话 / 最后子智能体 |
+| `Ctrl+C` | 有选区时复制；无选区时中止 active Run |
+| `F1` | 帮助 |
 | `Ctrl+Q` | 退出 |
 
-Windows driver 对 `Ctrl+H`、Alt 组合键和 `Shift+Enter` 做最小规范化；其余键语义由 Textual 事件处理。
-键位修正不得污染领域输入或依赖全局轮询。
+智能体导航不循环：主会话向左、最后子智能体向右均保持原位；没有子智能体时保持主会话。
+最后子智能体按导航栏的分组显示顺序确定。消息导航在对话顶部向前、底部向后均保持原位。
+全局菜单入口复用当前菜单；瞬时确认框和编辑子屏保留自己的交互边界。
+
+composer 与菜单筛选框使用常规文本编辑组合：`Ctrl+A` 全选，`Ctrl+←/→` 按词移动，
+`Home/End` 行首行尾，`Ctrl+Home/End` 文首文尾，`Shift` 配合方向键或 `Home/End` 扩展选区，
+`Ctrl+Shift+←/→` 按词扩展选区，`Ctrl+X/C/V` 剪切、复制、粘贴。
+`Backspace/Delete` 删除字符，`Ctrl+Backspace` 或 `Ctrl+W` 删除前一个词，`Ctrl+U/K` 删除至行首或行尾。
+composer 支持 `Ctrl+Z/Y` 撤销和重做。空 composer 的 `↑/↓` 浏览输入历史；正在编辑的文本优先移动光标，
+未改动的单行历史项可继续浏览。命令候选可见时，`↑/↓` 选择候选。
+
+菜单使用 `↑/↓` 选择、`←/→` 切换分组，内联编辑时方向键移动光标；`Space` 切换多选项，
+`Tab/Shift+Tab` 切换当前菜单域或焦点，`Esc` 取消编辑或返回。问答选择保留数字 `1–5`，
+滚动预览保留 `PageUp/PageDown`。
+
+终端负责将按键编码为输入事件，OURO 负责将可辨识事件映射为一致的动作。
+`Ctrl+Enter` 同时接受增强键盘协议事件和传统终端的 LF 编码；Textual 将 LF 命名为 `ctrl+j`，
+该事件只执行换行。终端拦截的组合键或与普通键编码相同的修饰键无法由应用可靠还原。
+Windows driver 只保留 Alt 修饰信息的现有适配，不猜测 Enter 或 Backspace 的修饰键状态。
 
 Windows 输出适配器在 Textual 的 flush 边界合并画面片段，复用框架的输出线程。
 控制台输出通过一次 `WriteConsoleW` 提交完整 UTF-16 帧及末尾的输入光标恢复指令，

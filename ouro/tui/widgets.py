@@ -1620,7 +1620,10 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
     def scroll_to_next_user_turn(self) -> None:
         historical_lines = self._history.user_lines
         index = bisect_right(historical_lines, self.scroll_y)
-        self.scroll_to_user_turn(index)
+        if index < len(historical_lines):
+            self.scroll_to_user_turn(index)
+        else:
+            self.scroll_end(animate=False)
 
     async def _dismiss_welcome(self) -> None:
         """Transition from the empty welcome layout to the conversation layout."""
@@ -2966,17 +2969,14 @@ class QueuedInputPanel(VerticalScroll):
 class Composer(AttachmentTextArea):
     DEFAULT_PLACEHOLDER = "Ask anything..."
     ACTIVE_RUN_PLACEHOLDER = DEFAULT_TUI_THEME.inline_separator.join(
-        ("Enter queues a follow-up", "Ctrl+Enter guides the active run…")
+        ("Enter queues a follow-up", "Ctrl+G guides the active run…")
     )
     QUESTION_PLACEHOLDER = "Choose an option above…"
     FREEFORM_PLACEHOLDER = "Type another answer…"
     PLAN_FEEDBACK_PLACEHOLDER = "Describe the requested plan changes…"
     BINDINGS = [
-        *TextArea.BINDINGS,
         Binding("enter", "submit", "Send", show=False, priority=True),
-        # Terminals without enhanced key reporting encode Ctrl+Enter as LF / Ctrl+J.
-        Binding("ctrl+enter,ctrl+j", "submit_steer", "Guide", show=False, priority=True),
-        Binding("shift+enter", "newline", "New line", show=False, priority=True),
+        Binding("ctrl+g", "submit_steer", "Guide", show=False, priority=True),
         Binding("up", "history_previous", show=False, priority=True),
         Binding("down", "history_next", show=False, priority=True),
         Binding("escape", "dismiss_command", show=False, priority=True),
@@ -3111,7 +3111,7 @@ class Composer(AttachmentTextArea):
                 ("Enter", "key"),
                 (" queues a follow-up", "text"),
                 (theme.inline_separator, "separator"),
-                ("Ctrl+Enter", "key"),
+                ("Ctrl+G", "key"),
                 (" guides the active run…", "text"),
             )
         else:
@@ -3475,9 +3475,6 @@ class Composer(AttachmentTextArea):
         self.clear()
         self.post_message(self.Submitted(value, mode, content.attachments, content.skills))
 
-    def action_newline(self) -> None:
-        self.insert("\n")
-
     def action_cursor_right(self, select: bool = False) -> None:
         if self.suggestion and not self.command_cursor_at_end():
             self.suggestion = ""
@@ -3487,7 +3484,7 @@ class Composer(AttachmentTextArea):
         if self.command_context() is not None:
             self.post_message(self.CommandNavigated(-1))
             return
-        if "\n" in self.text or self.cursor_location[0] > 0:
+        if "\n" in self.text or not self._can_browse_history():
             self.action_cursor_up()
             return
         if self._history_index > 0:
@@ -3499,7 +3496,7 @@ class Composer(AttachmentTextArea):
         if self.command_context() is not None:
             self.post_message(self.CommandNavigated(1))
             return
-        if "\n" in self.text or self.cursor_location[0] < self.document.line_count - 1:
+        if "\n" in self.text or not self._can_browse_history():
             self.action_cursor_down()
             return
         if self._history_index < len(self._history) - 1:
@@ -3508,6 +3505,12 @@ class Composer(AttachmentTextArea):
         elif self._history_index < len(self._history):
             self._history_index = len(self._history)
             self.clear()
+
+    def _can_browse_history(self) -> bool:
+        return not self.text or (
+            self._history_index < len(self._history)
+            and self.input_content == self._history[self._history_index]
+        )
 
     def action_dismiss_command(self) -> None:
         if self.command_context() is not None:

@@ -379,7 +379,7 @@ async def test_import_queue_cancel_and_draft_restart_restore_exact_input(tmp_pat
         assert restarted.query_one(Composer).input_content == restored
 
 
-@pytest.mark.parametrize("key, mode", (("enter", "follow_up"), ("ctrl+j", "steer")))
+@pytest.mark.parametrize("key, mode", (("enter", "follow_up"), ("ctrl+g", "steer")))
 async def test_composer_at_and_plain_paste_do_not_confuse_attachment_identity(
     tmp_path, monkeypatch, key, mode
 ):
@@ -565,7 +565,7 @@ async def test_attachment_preparation_keeps_focus_and_blocks_edits(
             assert composer.styles.border_left == border
             await pilot.click(composer, offset=(1, 0))
             assert composer.selection == selection
-            for key in ("x", "backspace", "ctrl+z", "shift+enter", "up", "enter"):
+            for key in ("x", "backspace", "ctrl+z", "ctrl+enter", "up", "enter"):
                 await pilot.press(key)
                 assert composer.input_content == InputContent(text="draft")
             composer.post_message(events.Paste("another paste"))

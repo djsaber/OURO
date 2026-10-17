@@ -12,7 +12,7 @@ from dataclasses import replace
 from datetime import date, datetime
 from functools import partial
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 from weakref import ReferenceType, ref
 
 from pydantic import JsonValue
@@ -28,7 +28,7 @@ from textual.messages import Prune
 from textual.screen import Screen
 from textual.timer import Timer
 from textual.widget import Widget
-from textual.widgets import TextArea
+from textual.widgets import Input, TextArea
 from textual.worker import Worker
 
 from ouro.application.agent_models import AgentTreeNode
@@ -244,6 +244,7 @@ _MENU_ACTIONS: MenuDestination = "actions"
 _MENU_PLUGINS: MenuDestination = "plugins"
 _MENU_SESSIONS: MenuDestination = "sessions"
 _MENU_TASKS: MenuDestination = "tasks"
+_MENU_SKILLS: MenuDestination = "skills"
 _SESSION_DOMAIN_LABELS = {
     "default": "USER",
     "task": "TASK",
@@ -317,6 +318,7 @@ class _OuroHostScreen(Screen):
         except ClipboardWriteError as exc:
             self.notify(str(exc), severity="error", markup=False)
             return False
+        self.app.copy_to_clipboard(text)
         self.notify("Copied to clipboard", markup=False)
         return True
 
@@ -760,13 +762,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             priority=True,
         ),
         Binding(
-            "ctrl+s",
+            "ctrl+o",
             "sessions",
             "Sessions",
             show=False,
-            key_display="Ctrl+S",
+            key_display="Ctrl+O",
             priority=True,
         ),
+        Binding("ctrl+s", "skills", "Skills", show=False, key_display="Ctrl+S", priority=True),
         Binding(
             "ctrl+t",
             "tasks",
@@ -808,28 +811,28 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             priority=True,
         ),
         Binding(
-            "ctrl+up",
+            "alt+home",
             "conversation_top",
             "Conversation top",
             show=False,
             priority=True,
         ),
         Binding(
-            "ctrl+down",
+            "alt+end",
             "conversation_bottom",
             "Conversation bottom",
             show=False,
             priority=True,
         ),
         Binding(
-            "ctrl+left",
+            "alt+pageup",
             "previous_user_message",
             "Previous user message",
             show=False,
             priority=True,
         ),
         Binding(
-            "ctrl+right",
+            "alt+pagedown",
             "next_user_message",
             "Next user message",
             show=False,
@@ -838,17 +841,17 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         Binding("alt+left", "agent_node_left", "Previous subagent", show=False, priority=True),
         Binding("alt+right", "agent_node_right", "Next subagent", show=False, priority=True),
         Binding("alt+up", "agent_node_root", "Main session", show=False, priority=True),
-        Binding("alt+down", "agent_node_latest", "Latest subagent", show=False, priority=True),
+        Binding("alt+down", "agent_node_last", "Last subagent", show=False, priority=True),
         Binding(
             "ctrl+c",
-            "abort",
-            "Stop task",
+            "copy_or_abort",
+            "Copy / stop task",
             show=False,
             key_display="Ctrl+C",
             priority=True,
         ),
         Binding("ctrl+q", "quit", "Quit", show=False, priority=True),
-        Binding("ctrl+h", "help", "Help", show=False, key_display="Ctrl+H", priority=True),
+        Binding("f1", "help", "Help", show=False, key_display="F1", priority=True),
     ]
 
     def __init__(
@@ -3721,8 +3724,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def action_agent_node_root(self) -> None:
         self._navigate_agent_node("root")
 
-    def action_agent_node_latest(self) -> None:
-        self._navigate_agent_node("latest")
+    def action_agent_node_last(self) -> None:
+        self._navigate_agent_node("last")
 
     def on_subagent_navigation_panel_navigation_requested(
         self,
@@ -3743,7 +3746,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def _navigate_agent_node(
         self,
-        direction: Literal["left", "right", "root", "latest"],
+        direction: Literal["left", "right", "root", "last"],
     ) -> None:
         if (
             self._host_closing
@@ -3762,7 +3765,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         elif direction == "root":
             target_session_id = panel.select_root()
         else:
-            target_session_id = panel.select_latest_child()
+            target_session_id = panel.select_last_child()
         self._request_agent_switch(target_session_id)
 
     def _request_agent_switch(self, target_session_id: str | None) -> None:
@@ -3951,7 +3954,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             }[operation]
             return self._tui_theme.inline_separator.join(
                 (
-                    *(("Tab switch sessions",) if operation != "delete" else ()),
+                    *(("Tab/Shift+Tab switch sessions",) if operation != "delete" else ()),
                     "↑/↓ move",
                     "←/→ group",
                     *(("Space toggle",) if operation == "delete" else ()),
@@ -3965,14 +3968,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 return None
             return choices()
 
-        async def switch_domain() -> None:
+        async def switch_domain(direction: int) -> None:
             nonlocal domain
             revision = session_menu.page_revision
             if not await self._refresh_sessions(include_subagents=True):
                 return
             if not session_menu.is_attached or session_menu.page_revision != revision:
                 return
-            domain = _next_cycle_value(tuple(_SESSION_DOMAIN_LABELS), domain)
+            domains = tuple(_SESSION_DOMAIN_LABELS)
+            domain = domains[(domains.index(domain) + direction) % len(domains)]
             self._session_domain = domain
             session_menu.replace_page(
                 navigation_id=_MENU_SESSIONS if operation == "open" else None,
@@ -4673,6 +4677,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         self._request_menu_navigation(_MENU_TASKS)
 
+    def action_skills(self) -> None:
+        if self._visible_read_only:
+            return
+        self._request_menu_navigation(_MENU_SKILLS)
+
     def _request_menu_navigation(self, destination: MenuDestination) -> None:
         """Route global menu shortcuts through the current menu surface."""
 
@@ -4709,6 +4718,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 )
             elif destination == _MENU_TASKS:
                 await self._choose_tasks(menu=active_menu, switch=active_menu is not None)
+            elif destination == _MENU_SKILLS:
+                await self._choose_skills(menu=active_menu, switch=active_menu is not None)
 
         _worker: Worker[None] = self.run_worker(navigate, exclusive=True, group="navigation")
 
@@ -4810,6 +4821,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     if action.action_id == "plugins.list"
                     else self._shortcut_for_action("tasks")
                     if action.action_id == "tasks.list"
+                    else self._shortcut_for_action("skills")
+                    if action.action_id == "skills.list"
                     else ""
                 ),
                 group=action.group,
@@ -5525,6 +5538,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             on_select=keep_help_open,
             interaction_hint=HelpScreen.BACK_HINT,
         )
+
+    async def action_copy_or_abort(self) -> None:
+        focused = self.focused
+        selected = focused.selected_text if isinstance(focused, (Input, TextArea)) else ""
+        selected = selected or (self.screen.get_selected_text() or "")
+        if selected:
+            await cast(_OuroHostScreen, self.screen_stack[0])._copy_to_clipboard(selected)
+            return
+        self.action_abort()
 
     def action_abort(self) -> None:
         if self._visible_read_only:

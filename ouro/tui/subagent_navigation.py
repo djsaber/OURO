@@ -150,19 +150,21 @@ class SubagentNavigationPanel(Static):
     def select_relative(self, offset: int) -> str | None:
         if not self._agents or offset == 0:
             return self._selected_session_id
-        child_ids = tuple(agent.session_id for agent in self._ordered_agents())
+        session_ids = (
+            self._root_session_id,
+            *(agent.session_id for agent in self._ordered_agents()),
+        )
         selected = self._selected_session_id
-        if selected == self._root_session_id or selected not in child_ids:
-            index = 0 if offset > 0 else len(child_ids) - 1
-        else:
-            index = min(max(child_ids.index(selected) + offset, 0), len(child_ids) - 1)
-        return self._select(child_ids[index])
+        index = session_ids.index(selected) if selected in session_ids else 0
+        index = min(max(index + offset, 0), len(session_ids) - 1)
+        return self._select(session_ids[index])
 
     def select_root(self) -> str | None:
         return self._select(self._root_session_id)
 
-    def select_latest_child(self) -> str | None:
-        target = self._agents[-1].session_id if self._agents else self._root_session_id
+    def select_last_child(self) -> str | None:
+        ordered = self._ordered_agents()
+        target = ordered[-1].session_id if ordered else self._root_session_id
         return self._select(target)
 
     def select_session(self, session_id: str) -> str | None:
@@ -238,7 +240,7 @@ class SubagentNavigationPanel(Static):
             return ordered
         selected = self._selected_session_id
         if selected == self._root_session_id or selected is None:
-            selected = self._agents[-1].session_id
+            selected = ordered[-1].session_id
         index = next(
             (index for index, agent in enumerate(ordered) if agent.session_id == selected),
             len(ordered) - 1,
