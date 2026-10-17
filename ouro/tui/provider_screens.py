@@ -25,6 +25,7 @@ from ouro.config.provider_models import (
     validate_reasoning_protocol_compatibility,
     validate_reasoning_summary_preset,
 )
+from ouro.core.errors import ConfigError
 from ouro.tui.controller import TuiEndpointConfiguration, TuiProviderConfiguration
 from ouro.tui.credential_editor import (
     CredentialEdit,
@@ -860,7 +861,7 @@ def _reasoning_config(raw: str) -> EndpointReasoningConfig:
     value = _json_object(raw, "Settings (JSON)")
     try:
         return EndpointReasoningConfig.model_validate(value)
-    except ValueError as exc:
+    except (ConfigError, ValueError) as exc:
         raise ValueError(f"Reasoning config is invalid: {exc}") from exc
 
 

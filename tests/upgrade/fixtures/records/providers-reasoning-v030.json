@@ -1,0 +1,258 @@
+{
+  "providers": {
+    "default": "reasoning_fixture",
+    "items": {
+      "reasoning_fixture": {
+        "provider_type": "custom",
+        "protocol": "openai-responses",
+        "display_name": "Reasoning fixture",
+        "enabled": true,
+        "timeout_seconds": 60.0,
+        "default_endpoint": "local-inherit",
+        "endpoints": {
+          "local-inherit": {
+            "model_id": "fixture-model",
+            "context_window": 1000000,
+            "max_output_tokens": 32768,
+            "supports_tools": true,
+            "supports_image_input": false,
+            "supports_audio_input": false,
+            "supports_video_input": false,
+            "supports_streaming": true,
+            "supports_structured_output": true,
+            "reasoning": {
+              "capability": {
+                "activation": "toggle",
+                "supported_efforts": [
+                  "low",
+                  "high"
+                ],
+                "default_effort": "high",
+                "default": {
+                  "mode": "default"
+                },
+                "output": "summary",
+                "continuation": "opaque"
+              },
+              "profile": {
+                "name": "openai-responses-effort",
+                "variants": {
+                  "enabled": {
+                    "reasoning": {
+                      "effort": "high",
+                      "summary": "auto"
+                    }
+                  },
+                  "low": {
+                    "reasoning": {
+                      "effort": "low",
+                      "summary": "auto"
+                    }
+                  },
+                  "high": {
+                    "reasoning": {
+                      "effort": "high",
+                      "summary": "auto"
+                    }
+                  },
+                  "default": {
+                    "reasoning": {
+                      "summary": "auto"
+                    }
+                  },
+                  "disabled": {
+                    "reasoning": {
+                      "effort": "none"
+                    }
+                  }
+                }
+              }
+            },
+            "metadata": {
+              "variants": {
+                "default_effort": "opaque"
+              }
+            }
+          },
+          "local-selected": {
+            "model_id": "fixture-model",
+            "context_window": 1000000,
+            "max_output_tokens": 32768,
+            "supports_tools": true,
+            "supports_image_input": false,
+            "supports_audio_input": false,
+            "supports_video_input": false,
+            "supports_streaming": true,
+            "supports_structured_output": true,
+            "reasoning": {
+              "capability": {
+                "activation": "toggle",
+                "supported_efforts": [
+                  "low",
+                  "high"
+                ],
+                "default_effort": "high",
+                "default": {
+                  "mode": "default",
+                  "effort": "high"
+                },
+                "output": "summary",
+                "continuation": "opaque"
+              },
+              "profile": {
+                "name": "openai-responses-effort",
+                "variants": {
+                  "enabled": {
+                    "reasoning": {
+                      "effort": "high",
+                      "summary": "auto"
+                    }
+                  },
+                  "low": {
+                    "reasoning": {
+                      "effort": "low",
+                      "summary": "auto"
+                    }
+                  },
+                  "high": {
+                    "reasoning": {
+                      "effort": "high",
+                      "summary": "auto"
+                    }
+                  },
+                  "default": {
+                    "reasoning": {
+                      "summary": "auto"
+                    }
+                  },
+                  "disabled": {
+                    "reasoning": {
+                      "effort": "none"
+                    }
+                  }
+                }
+              }
+            },
+            "display_name": "User endpoint"
+          },
+          "local-disabled": {
+            "model_id": "fixture-model",
+            "context_window": 1000000,
+            "max_output_tokens": 32768,
+            "supports_tools": true,
+            "supports_image_input": false,
+            "supports_audio_input": false,
+            "supports_video_input": false,
+            "supports_streaming": true,
+            "supports_structured_output": true,
+            "reasoning": {
+              "capability": {
+                "activation": "toggle",
+                "supported_efforts": [
+                  "low",
+                  "high"
+                ],
+                "default_effort": "high",
+                "default": {
+                  "mode": "disabled"
+                },
+                "output": "summary",
+                "continuation": "opaque"
+              },
+              "profile": {
+                "name": "openai-responses-effort",
+                "variants": {
+                  "enabled": {
+                    "reasoning": {
+                      "effort": "high",
+                      "summary": "auto"
+                    }
+                  },
+                  "low": {
+                    "reasoning": {
+                      "effort": "low",
+                      "summary": "auto"
+                    }
+                  },
+                  "high": {
+                    "reasoning": {
+                      "effort": "high",
+                      "summary": "auto"
+                    }
+                  },
+                  "default": {
+                    "reasoning": {
+                      "summary": "auto"
+                    }
+                  },
+                  "disabled": {
+                    "reasoning": {
+                      "effort": "none"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "local-unsupported": {
+            "model_id": "fixture-text",
+            "context_window": 1000000,
+            "max_output_tokens": 32768,
+            "supports_tools": true,
+            "supports_image_input": false,
+            "supports_audio_input": false,
+            "supports_video_input": false,
+            "supports_streaming": true,
+            "supports_structured_output": true,
+            "reasoning": {
+              "capability": {
+                "activation": "unsupported",
+                "supported_efforts": [],
+                "default": {
+                  "mode": "default"
+                },
+                "output": "none",
+                "continuation": "none"
+              }
+            }
+          }
+        },
+        "credential_ref": "env:FIXTURE_KEY",
+        "base_url": "https://example.invalid/v1",
+        "api_path": "/responses",
+        "template": {
+          "template_id": "reasoning-fixture",
+          "origin": "inline",
+          "revision": 1,
+          "auth_driver": "static",
+          "credential_env": "FIXTURE_KEY",
+          "base_url": "https://example.invalid/v1",
+          "api_path": "/responses",
+          "default_endpoint": "inherit",
+          "endpoints": [
+            {
+              "template_endpoint_id": "inherit",
+              "configured_endpoint_id": "local-inherit",
+              "fingerprint": "sha256:80fc93e31608e1f3b9ab3979f6f619dbbf33ad4ebdc14f589c42e1ced0ec0820"
+            },
+            {
+              "template_endpoint_id": "selected",
+              "configured_endpoint_id": "local-selected",
+              "fingerprint": "sha256:bfd8d103b786c80230cc87a4f27bf06237ec98cf65d731b8d82da1dbc0d86f7f"
+            },
+            {
+              "template_endpoint_id": "disabled",
+              "configured_endpoint_id": "local-disabled",
+              "fingerprint": "sha256:b36bd48988677bd7ad19c82ab6c963dac844c081eda99e1f683aa0e64d5da897"
+            },
+            {
+              "template_endpoint_id": "unsupported",
+              "configured_endpoint_id": "local-unsupported",
+              "fingerprint": "sha256:ce2d560ad7b81515d93b8a498e4d0a2b59a6c9caef347fe308ec079565d6ccac"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

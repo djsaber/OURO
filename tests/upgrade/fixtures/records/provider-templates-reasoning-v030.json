@@ -1,0 +1,519 @@
+{
+  "schema_version": 4,
+  "templates": {
+    "reasoning-fixture": {
+      "template_id": "reasoning-fixture",
+      "display_name": "Reasoning fixture",
+      "description": "Synthetic migration data",
+      "provider_type": "custom",
+      "protocol": "openai-responses",
+      "auth_driver": "static",
+      "credential_env": "FIXTURE_KEY",
+      "base_url": "https://example.invalid/v1",
+      "api_path": "/responses",
+      "headers": {},
+      "default_endpoint": "inherit",
+      "endpoints": [
+        {
+          "endpoint_id": "inherit",
+          "display_name": null,
+          "model_id": "fixture-model",
+          "base_url": null,
+          "api_path": null,
+          "temperature": null,
+          "context_window": 1000000,
+          "max_output_tokens": 32768,
+          "supports_tools": true,
+          "supports_image_input": false,
+          "supports_audio_input": false,
+          "supports_video_input": false,
+          "supports_streaming": true,
+          "supports_structured_output": true,
+          "reasoning": {
+            "capability": {
+              "activation": "toggle",
+              "supported_efforts": [
+                "low",
+                "high"
+              ],
+              "default_effort": "high",
+              "default": {
+                "mode": "default",
+                "effort": null
+              },
+              "output": "summary",
+              "continuation": "opaque"
+            },
+            "profile": {
+              "name": "openai-responses-effort",
+              "variants": {
+                "enabled": {
+                  "reasoning": {
+                    "effort": "high",
+                    "summary": "auto"
+                  }
+                },
+                "low": {
+                  "reasoning": {
+                    "effort": "low",
+                    "summary": "auto"
+                  }
+                },
+                "high": {
+                  "reasoning": {
+                    "effort": "high",
+                    "summary": "auto"
+                  }
+                },
+                "default": {
+                  "reasoning": {
+                    "summary": "auto"
+                  }
+                },
+                "disabled": {
+                  "reasoning": {
+                    "effort": "none"
+                  }
+                }
+              }
+            }
+          },
+          "request_options": {},
+          "metadata": {}
+        },
+        {
+          "endpoint_id": "selected",
+          "display_name": null,
+          "model_id": "fixture-model",
+          "base_url": null,
+          "api_path": null,
+          "temperature": null,
+          "context_window": 1000000,
+          "max_output_tokens": 32768,
+          "supports_tools": true,
+          "supports_image_input": false,
+          "supports_audio_input": false,
+          "supports_video_input": false,
+          "supports_streaming": true,
+          "supports_structured_output": true,
+          "reasoning": {
+            "capability": {
+              "activation": "toggle",
+              "supported_efforts": [
+                "low",
+                "high"
+              ],
+              "default_effort": "high",
+              "default": {
+                "mode": "default",
+                "effort": "high"
+              },
+              "output": "summary",
+              "continuation": "opaque"
+            },
+            "profile": {
+              "name": "openai-responses-effort",
+              "variants": {
+                "enabled": {
+                  "reasoning": {
+                    "effort": "high",
+                    "summary": "auto"
+                  }
+                },
+                "low": {
+                  "reasoning": {
+                    "effort": "low",
+                    "summary": "auto"
+                  }
+                },
+                "high": {
+                  "reasoning": {
+                    "effort": "high",
+                    "summary": "auto"
+                  }
+                },
+                "default": {
+                  "reasoning": {
+                    "summary": "auto"
+                  }
+                },
+                "disabled": {
+                  "reasoning": {
+                    "effort": "none"
+                  }
+                }
+              }
+            }
+          },
+          "request_options": {},
+          "metadata": {}
+        },
+        {
+          "endpoint_id": "disabled",
+          "display_name": null,
+          "model_id": "fixture-model",
+          "base_url": null,
+          "api_path": null,
+          "temperature": null,
+          "context_window": 1000000,
+          "max_output_tokens": 32768,
+          "supports_tools": true,
+          "supports_image_input": false,
+          "supports_audio_input": false,
+          "supports_video_input": false,
+          "supports_streaming": true,
+          "supports_structured_output": true,
+          "reasoning": {
+            "capability": {
+              "activation": "toggle",
+              "supported_efforts": [
+                "low",
+                "high"
+              ],
+              "default_effort": "high",
+              "default": {
+                "mode": "disabled",
+                "effort": null
+              },
+              "output": "summary",
+              "continuation": "opaque"
+            },
+            "profile": {
+              "name": "openai-responses-effort",
+              "variants": {
+                "enabled": {
+                  "reasoning": {
+                    "effort": "high",
+                    "summary": "auto"
+                  }
+                },
+                "low": {
+                  "reasoning": {
+                    "effort": "low",
+                    "summary": "auto"
+                  }
+                },
+                "high": {
+                  "reasoning": {
+                    "effort": "high",
+                    "summary": "auto"
+                  }
+                },
+                "default": {
+                  "reasoning": {
+                    "summary": "auto"
+                  }
+                },
+                "disabled": {
+                  "reasoning": {
+                    "effort": "none"
+                  }
+                }
+              }
+            }
+          },
+          "request_options": {},
+          "metadata": {}
+        },
+        {
+          "endpoint_id": "unsupported",
+          "display_name": null,
+          "model_id": "fixture-text",
+          "base_url": null,
+          "api_path": null,
+          "temperature": null,
+          "context_window": 1000000,
+          "max_output_tokens": 32768,
+          "supports_tools": true,
+          "supports_image_input": false,
+          "supports_audio_input": false,
+          "supports_video_input": false,
+          "supports_streaming": true,
+          "supports_structured_output": true,
+          "reasoning": {
+            "capability": {
+              "activation": "unsupported",
+              "supported_efforts": [],
+              "default": {
+                "mode": "default",
+                "effort": null
+              },
+              "output": "none",
+              "continuation": "none"
+            },
+            "profile": null
+          },
+          "request_options": {},
+          "metadata": {}
+        }
+      ],
+      "documentation_url": "https://example.invalid/docs",
+      "verified_on": "2026-10-17",
+      "revision": 1,
+      "meta": {
+        "origin": "inline",
+        "baseline_revision": 1,
+        "baseline_fingerprint": "sha256:ca47ddc4ca2150197f70d9f4662329f82ae1ae6a453b08852e41ffcb137bb6d7",
+        "deprecated": false,
+        "enabled": false
+      }
+    },
+    "modified-fixture": {
+      "template_id": "modified-fixture",
+      "display_name": "User template",
+      "description": "Synthetic migration data",
+      "provider_type": "custom",
+      "protocol": "openai-responses",
+      "auth_driver": "static",
+      "credential_env": "FIXTURE_KEY",
+      "base_url": "https://example.invalid/v1",
+      "api_path": "/responses",
+      "headers": {},
+      "default_endpoint": "inherit",
+      "endpoints": [
+        {
+          "endpoint_id": "inherit",
+          "display_name": null,
+          "model_id": "fixture-model",
+          "base_url": null,
+          "api_path": null,
+          "temperature": null,
+          "context_window": 1000000,
+          "max_output_tokens": 32768,
+          "supports_tools": true,
+          "supports_image_input": false,
+          "supports_audio_input": false,
+          "supports_video_input": false,
+          "supports_streaming": true,
+          "supports_structured_output": true,
+          "reasoning": {
+            "capability": {
+              "activation": "toggle",
+              "supported_efforts": [
+                "low",
+                "high"
+              ],
+              "default_effort": "high",
+              "default": {
+                "mode": "default",
+                "effort": null
+              },
+              "output": "summary",
+              "continuation": "opaque"
+            },
+            "profile": {
+              "name": "openai-responses-effort",
+              "variants": {
+                "enabled": {
+                  "reasoning": {
+                    "effort": "high",
+                    "summary": "auto"
+                  }
+                },
+                "low": {
+                  "reasoning": {
+                    "effort": "low",
+                    "summary": "auto"
+                  }
+                },
+                "high": {
+                  "reasoning": {
+                    "effort": "high",
+                    "summary": "auto"
+                  }
+                },
+                "default": {
+                  "reasoning": {
+                    "summary": "auto"
+                  }
+                },
+                "disabled": {
+                  "reasoning": {
+                    "effort": "none"
+                  }
+                }
+              }
+            }
+          },
+          "request_options": {},
+          "metadata": {}
+        },
+        {
+          "endpoint_id": "selected",
+          "display_name": null,
+          "model_id": "fixture-model",
+          "base_url": null,
+          "api_path": null,
+          "temperature": null,
+          "context_window": 1000000,
+          "max_output_tokens": 32768,
+          "supports_tools": true,
+          "supports_image_input": false,
+          "supports_audio_input": false,
+          "supports_video_input": false,
+          "supports_streaming": true,
+          "supports_structured_output": true,
+          "reasoning": {
+            "capability": {
+              "activation": "toggle",
+              "supported_efforts": [
+                "low",
+                "high"
+              ],
+              "default_effort": "high",
+              "default": {
+                "mode": "default",
+                "effort": "high"
+              },
+              "output": "summary",
+              "continuation": "opaque"
+            },
+            "profile": {
+              "name": "openai-responses-effort",
+              "variants": {
+                "enabled": {
+                  "reasoning": {
+                    "effort": "high",
+                    "summary": "auto"
+                  }
+                },
+                "low": {
+                  "reasoning": {
+                    "effort": "low",
+                    "summary": "auto"
+                  }
+                },
+                "high": {
+                  "reasoning": {
+                    "effort": "high",
+                    "summary": "auto"
+                  }
+                },
+                "default": {
+                  "reasoning": {
+                    "summary": "auto"
+                  }
+                },
+                "disabled": {
+                  "reasoning": {
+                    "effort": "none"
+                  }
+                }
+              }
+            }
+          },
+          "request_options": {},
+          "metadata": {}
+        },
+        {
+          "endpoint_id": "disabled",
+          "display_name": null,
+          "model_id": "fixture-model",
+          "base_url": null,
+          "api_path": null,
+          "temperature": null,
+          "context_window": 1000000,
+          "max_output_tokens": 32768,
+          "supports_tools": true,
+          "supports_image_input": false,
+          "supports_audio_input": false,
+          "supports_video_input": false,
+          "supports_streaming": true,
+          "supports_structured_output": true,
+          "reasoning": {
+            "capability": {
+              "activation": "toggle",
+              "supported_efforts": [
+                "low",
+                "high"
+              ],
+              "default_effort": "high",
+              "default": {
+                "mode": "disabled",
+                "effort": null
+              },
+              "output": "summary",
+              "continuation": "opaque"
+            },
+            "profile": {
+              "name": "openai-responses-effort",
+              "variants": {
+                "enabled": {
+                  "reasoning": {
+                    "effort": "high",
+                    "summary": "auto"
+                  }
+                },
+                "low": {
+                  "reasoning": {
+                    "effort": "low",
+                    "summary": "auto"
+                  }
+                },
+                "high": {
+                  "reasoning": {
+                    "effort": "high",
+                    "summary": "auto"
+                  }
+                },
+                "default": {
+                  "reasoning": {
+                    "summary": "auto"
+                  }
+                },
+                "disabled": {
+                  "reasoning": {
+                    "effort": "none"
+                  }
+                }
+              }
+            }
+          },
+          "request_options": {},
+          "metadata": {}
+        },
+        {
+          "endpoint_id": "unsupported",
+          "display_name": null,
+          "model_id": "fixture-text",
+          "base_url": null,
+          "api_path": null,
+          "temperature": null,
+          "context_window": 1000000,
+          "max_output_tokens": 32768,
+          "supports_tools": true,
+          "supports_image_input": false,
+          "supports_audio_input": false,
+          "supports_video_input": false,
+          "supports_streaming": true,
+          "supports_structured_output": true,
+          "reasoning": {
+            "capability": {
+              "activation": "unsupported",
+              "supported_efforts": [],
+              "default": {
+                "mode": "default",
+                "effort": null
+              },
+              "output": "none",
+              "continuation": "none"
+            },
+            "profile": null
+          },
+          "request_options": {},
+          "metadata": {}
+        }
+      ],
+      "documentation_url": "https://example.invalid/docs",
+      "verified_on": "2026-10-17",
+      "revision": 1,
+      "meta": {
+        "origin": "inline",
+        "baseline_revision": 1,
+        "baseline_fingerprint": "sha256:ca47ddc4ca2150197f70d9f4662329f82ae1ae6a453b08852e41ffcb137bb6d7",
+        "deprecated": false,
+        "enabled": false
+      }
+    }
+  }
+}

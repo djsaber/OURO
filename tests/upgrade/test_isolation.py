@@ -78,6 +78,7 @@ def test_file_failures_keep_successful_units_and_roll_back_failed_staging(histor
     next((task / "executions").glob("*.json")).write_bytes(b"invalid JSON")
     (home / "config").mkdir()
     (home / "config/providers.json").write_bytes(b"invalid configuration")
+    (home / "config/provider-templates.json").write_bytes(b'{"schema_version":999}')
     before = hashes(home)
 
     report = upgrade(home, isolate_failures=True)
@@ -106,6 +107,7 @@ def test_file_failures_keep_successful_units_and_roll_back_failed_staging(histor
     assert result["status"] == "upgraded"
     assert not bad.exists() and not task.exists()
     assert not (home / "config/providers.json").exists()
+    assert (home / "config/provider-templates.json").read_bytes() == b'{"schema_version":999}'
     assert (home / "sessions/ses_fixture/resources/index.json").exists()
     assert upgrade(home)["status"] == "current"
     store = LocalSessionStore(home)

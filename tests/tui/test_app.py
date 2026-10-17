@@ -7474,12 +7474,18 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         assert screen._capabilities["endpoint-image-input"] is True
         assert screen._capabilities["endpoint-streaming"] is True
 
-        screen._values["endpoint-reasoning-config"] = "[]"
-        screen._choices = screen._endpoint_choices()
-        screen._refresh_options(needle="", preferred_value="endpoint-reasoning-config")
-        assert options.get_option("endpoint-save").disabled is True
-        save_choice = next(choice for choice in screen._choices if choice.value == "endpoint-save")
-        assert "JSON object" in save_choice.trailing
+        for invalid, error in (
+            ("[]", "JSON object"),
+            ('{"capability":{"default_effort":null}}', "run ouro-upgrade"),
+        ):
+            screen._values["endpoint-reasoning-config"] = invalid
+            screen._choices = screen._endpoint_choices()
+            screen._refresh_options(needle="", preferred_value="endpoint-reasoning-config")
+            assert options.get_option("endpoint-save").disabled is True
+            save_choice = next(
+                choice for choice in screen._choices if choice.value == "endpoint-save"
+            )
+            assert error in save_choice.trailing
 
         options.highlighted = options.get_option_index("endpoint-reasoning-effort")
         options.focus()

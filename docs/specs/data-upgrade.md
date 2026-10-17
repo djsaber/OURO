@@ -20,7 +20,8 @@
 
 ## 支持矩阵
 
-固定历史写入基线为 `96ebb7e`，包版本 `0.1.0`；ContextSnapshot 3 夹具由 `aa94cc5` 的模型序列化。
+固定历史写入基线为 `96ebb7e`，包版本 `0.1.0`；ContextSnapshot 3 夹具由 `aa94cc5` 的模型序列化；
+reasoning 配置夹具由 `v0.3.0`（`54757d7`）的配置 writer 生成。
 夹具和来源说明位于
 [tests/upgrade/fixtures](../../tests/upgrade/fixtures/README.md)。以下数据契约可组合升级，是否需要转换由实际记录版本确定：
 
@@ -35,7 +36,7 @@
 | SessionCommitResult | 1 | 转换 messages、Session、Event 及 truncation 中的 Message |
 | 文件任务 / SQLite 任务 | 1、3 | 目标 3；迁移 agent target、owner、result 与 cancel 字段，保留历史链与防重标记 |
 | 用量 SQLite / 用量记录 / 审计 | 1、2 | 目标 2；增加 plugin 归属，保留原 Run 归属，更新表结构及审计内嵌记录 |
-| `config/providers.json` | providers.items 下的具名端点配置；旧 supports_vision 或当前能力字段 | 旧字段改为 supports_image_input，音频、视频输入能力设为 false；使用当前配置 codec 校验 |
+| `config/providers.json` | providers.items 下的具名端点配置；supports_vision、reasoning.default_effort / profile.variants 或当前字段 | 转换端点能力与 reasoning 配置，维护模板绑定指纹；使用当前配置 codec 校验 |
 
 Run 2 的工具批次和 invocation 同样补 model producer。任务的 description 成为 agent target 的 prompt，
 workspace、model、reasoning、approval_mode、session_mode 移入该 target；execution 的 Session / Run
@@ -64,8 +65,16 @@ workspace、model、reasoning、approval_mode、session_mode 移入该 target；
 不推测应用版本，不为无版本数据编造持久化版本号；无法识别的结构由校验拒绝。旧能力字段必须为布尔值；同一端点混用新旧能力字段、
 未知根、提供方或端点字段及无效默认提供方引用均拒绝。转换保留提供方与端点身份、默认选择、连接设置、凭据引用、headers、
 模板绑定及开放 metadata，不解析或刷新凭据，不递归修改开放内容中的同名字段。
-配置与核心数据使用同一暂存、备份和恢复事务；当前格式不改写。其他配置文件，包括 provider-templates.json，
-仍在升级范围外，模板目录沿用自身的读取与回退策略。
+`reasoning.capability.default_effort` 合入 `default.effort`。保留默认启停行为：旧 `default` 已显式选择 effort 且
+mode 为 default 时转为 enabled；仅有 default_effort 时不改变原 mode。两处旧 effort 同时存在且不同，无法在单一默认值中
+无损表达，明确拒绝转换。`profile.variants` 原样移到 `profile.effort`，补空 `supported_summaries` 与 `profile.summary`。
+原生片段中的摘要参数及自定义内容保持原值，不从这些不透明片段推断独立摘要能力，不自动启用新的摘要请求。
+同一 reasoning 对象混用历史字段与当前字段时拒绝转换；提供方配置 reader 识别旧字段后报告需要升级，不忽略旧字段。
+
+提供方端点与保存的 v0.3.0 规范化指纹一致时，更新绑定指纹。原本已修改的内容保留旧基线，继续受用户修改保护。
+不根据当前内置模板猜测旧基线，不修改模板 revision、来源、启用状态或其他覆盖信息。
+配置与核心数据使用同一暂存、备份和恢复事务；当前格式不改写。其他配置文件仍在升级范围外。
+`provider-templates.json` 由模板目录自身处理：加载旧结构时备份原文件并创建当前版本模板，不参与离线升级事务。
 
 ## 转换不变量
 
@@ -189,7 +198,7 @@ journal 与主库作为同一个修改集合备份和恢复。自定义 trigger 
 | `engine.py` | 编排所选后端、报告、有限支持边界 |
 | `records.py` | 无 I/O 的版本识别、显式历史转换、转换结果验证 |
 | `steps.py` | 记录版本的前向迁移执行；检查明确目标、缺失步骤和非法推进 |
-| `configuration.py` | 提供方配置的明确历史字段转换、当前 codec 校验与暂存 |
+| `configuration.py` | 提供方的明确历史字段转换、绑定指纹维护、当前配置校验与暂存 |
 | `files.py` | 文件记录与 JSONL 转换、受影响派生索引维护 |
 | `databases.py` | 私有 SQLite 副本的 schema / payload 转换 |
 | `workspace.py` | 工具锁、路径检查、暂存、备份、写回、未完成升级恢复 |

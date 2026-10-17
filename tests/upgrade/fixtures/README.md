@@ -18,6 +18,18 @@ credential, a header declaration and opaque options/metadata. Tests cover
 offline conversion, preservation, backup restoration and TUI recovery without
 contacting a provider or resolving credentials.
 
+`records/providers-reasoning-v030.json` and
+`records/provider-templates-reasoning-v030.json` are synthetic outputs of the
+unmodified `v0.3.0` (`54757d7`) provider codec, template store and binding writer.
+They contain inherited, explicit and disabled reasoning defaults, embedded native
+summary options, an unsupported endpoint, and opaque metadata with legacy-looking
+keys. A template and an endpoint were edited after their baselines were recorded
+to represent user customizations. Tests verify provider payload semantics,
+preservation of customizations, rebasing of untouched bindings, atomic recovery
+and idempotence. The old template file is outside offline upgrade scope; the
+template reader backs it up and materializes the current catalog.
+No credentials are resolved and no user data is included.
+
 Each supported source schema needs synthetic writer output and conversion tests.
 Record steps declare source and target schemas independently of package versions;
 unregistered intermediate schemas are not inferred. Future-schema and structural

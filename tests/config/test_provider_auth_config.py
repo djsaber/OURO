@@ -436,7 +436,7 @@ def test_managed_template_rejects_api_key_and_static_template_may_omit_env(
     assert static.credential_ref.type == "none"
 
 
-def test_noncurrent_template_schema_is_not_migrated_or_rewritten(tmp_path):
+def test_old_template_schema_is_recreated_from_current_catalog(tmp_path):
     store = ProviderTemplateStore(tmp_path)
     current = store.catalog()
     path = current.config_path
@@ -445,5 +445,8 @@ def test_noncurrent_template_schema_is_not_migrated_or_rewritten(tmp_path):
     path.write_text(json.dumps(old), encoding="utf-8")
     before = path.read_bytes()
     snapshot = store.catalog()
-    assert any("unsupported provider template schema" in notice for notice in snapshot.notices)
-    assert path.read_bytes() == before
+    assert any("backed up" in notice for notice in snapshot.notices)
+    assert json.loads(path.read_text("utf-8"))["schema_version"] == SCHEMA_VERSION
+    assert snapshot.entries == current.entries
+    backup = next(path.parent.glob("provider-templates.backup-*.json"))
+    assert backup.read_bytes() == before

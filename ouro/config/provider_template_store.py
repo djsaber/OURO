@@ -4,17 +4,19 @@ The inline catalog in ``provider_templates`` stays the single source of truth.
 This store materializes it into ``config/provider-templates.json`` and keeps
 that file synchronized under the rules of
 ``docs/specs/provider-templates.md``: the file is a materialized copy plus
-a user overlay, content is compared per template revision, and templates the
-user modified or took over are never overwritten.
+a user overlay, content is compared per template revision, and user changes are
+preserved within the current schema. Older schema files are backed up and rebuilt.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -30,7 +32,7 @@ from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
 
 #: Current structure (schema) version of the local template file.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class ProviderTemplateMeta(OuroModel):
@@ -300,6 +302,18 @@ class ProviderTemplateStore:
             )
         assert isinstance(local_schema, int)
 
+        if local_schema < SCHEMA_VERSION:
+            backup = self._file.path.with_name(
+                f"provider-templates.backup-v{local_schema}-{uuid4().hex}.json"
+            )
+            try:
+                shutil.copy2(self._file.path, backup)
+                notices.append(f"previous provider templates backed up at {backup}")
+                return self._materialize(inline, notices)
+            except (OSError, ConfigError) as exc:
+                return self._inline_fallback(
+                    inline, notices, f"could not recreate provider template file: {exc}"
+                )
         if local_schema != SCHEMA_VERSION:
             return self._inline_fallback(
                 inline,
@@ -341,10 +355,14 @@ class ProviderTemplateStore:
     ) -> ProviderTemplate | None:
         try:
             return ProviderTemplate.model_validate(_business(raw))
-        except ValidationError as exc:
+        except (ValidationError, ConfigError) as exc:
+            summary = (
+                _validation_summary(exc)
+                if isinstance(exc, ValidationError)
+                else "unsupported template configuration"
+            )
             notices.append(
-                f"provider template '{template_id}' skipped; validation failed"
-                f" ({_validation_summary(exc)})"
+                f"provider template '{template_id}' skipped; validation failed ({summary})"
             )
             return None
 

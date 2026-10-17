@@ -356,19 +356,38 @@ def test_empty_templates_object_refills_from_inline(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("version", [0, 3])
-def test_old_structure_version_is_rejected_without_writing(tmp_path, version) -> None:
+def test_old_structure_version_is_backed_up_and_recreated(tmp_path, version, monkeypatch) -> None:
     store = ProviderTemplateStore(tmp_path)
     store.catalog()
     root = _read_json(tmp_path)
     root["schema_version"] = version
+    root["templates"]["openai"]["display_name"] = "User template"
     _write_json(tmp_path, root)
-    written_text = _file_path(tmp_path).read_text(encoding="utf-8")
+    original = _file_path(tmp_path).read_bytes()
+
+    def fail(*args, **kwargs):
+        raise OSError("fixture backup failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store_module.shutil, "copy2", fail)
+        failed = store.catalog()
+    assert any("could not recreate" in notice for notice in failed.notices)
+    assert _file_path(tmp_path).read_bytes() == original
 
     snapshot = store.catalog()
 
     assert {entry.template.template_id for entry in snapshot.entries} == set(_INLINE_BY_ID)
-    assert any("unsupported provider template schema" in notice for notice in snapshot.notices)
-    assert _file_path(tmp_path).read_text(encoding="utf-8") == written_text
+    assert any("backed up" in notice for notice in snapshot.notices)
+    root = _read_json(tmp_path)
+    assert root["schema_version"] == SCHEMA_VERSION
+    assert root["templates"]["openai"]["display_name"] == _INLINE_BY_ID["openai"].display_name
+    backups = list(_file_path(tmp_path).parent.glob("provider-templates.backup-*.json"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == original
+    current = _file_path(tmp_path).read_bytes()
+    assert store.catalog().notices == ()
+    assert _file_path(tmp_path).read_bytes() == current
+    assert list(_file_path(tmp_path).parent.glob("provider-templates.backup-*.json")) == backups
 
 
 def test_get_is_case_insensitive_and_reports_available_templates(tmp_path) -> None:
@@ -454,13 +473,19 @@ def test_catalog_does_not_invent_missing_content_baseline(tmp_path, monkeypatch,
 
 
 @pytest.mark.parametrize("version", [None, 0, 3, SCHEMA_VERSION + 1])
-def test_restore_does_not_relabel_an_unsupported_template_file(tmp_path, version):
+def test_restore_recreates_old_templates_and_preserves_unsupported_files(tmp_path, version):
     store = ProviderTemplateStore(tmp_path)
     store.catalog()
     root = _read_json(tmp_path)
     root["schema_version"] = version
     _write_json(tmp_path, root)
     before = _file_path(tmp_path).read_bytes()
-    with pytest.raises(ConfigError, match="unsupported provider template schema"):
-        store.restore("openai")
-    assert _file_path(tmp_path).read_bytes() == before
+    if version in (0, 3):
+        assert store.restore("openai") == _INLINE_BY_ID["openai"]
+        assert _read_json(tmp_path)["schema_version"] == SCHEMA_VERSION
+        backup = next(_file_path(tmp_path).parent.glob("provider-templates.backup-*.json"))
+        assert backup.read_bytes() == before
+    else:
+        with pytest.raises(ConfigError, match="unsupported provider template schema"):
+            store.restore("openai")
+        assert _file_path(tmp_path).read_bytes() == before
