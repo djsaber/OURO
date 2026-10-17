@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from ouro.core.base import new_id
 from ouro.tui.controller import TuiController
 from tests.application.test_attachments import PNG
 from tests.tui.test_history_commands import application_at
@@ -16,14 +17,22 @@ async def test_first_text_titles_prepared_and_new_sessions(tmp_path, backend, so
     path.write_bytes(PNG)
     await controller.start()
     try:
+        identity = new_id("ses")
         if source == "reference":
             attachments = await controller.reference_files((path,))
         else:
-            session = await controller.attachment_session()
-            attachment = await controller.import_attachment(session, path)
+            target = await controller.attachment_target(None, identity)
+            attachment = await controller.import_attachment(target, path)
             attachments = (attachment,) if source == "upload" else ()
-        first = await controller.submit("  Describe\n this picture  ", attachments=attachments)
+            if source == "removed":
+                await controller.release_input_resources(identity, ())
+        assert controller.session_id is None
+        assert application.runtime.store.list_sessions() == []
+        first = await controller.submit(
+            "  Describe\n this picture  ", attachments=attachments, new_session_id=identity
+        )
         assert first.run.status == "completed"
+        assert first.session.session_id == identity
         assert first.session.title == "Describe this picture"
         assert first.session.title_source == "fallback"
         second = await controller.submit("Another subject")
@@ -45,9 +54,13 @@ async def test_attachment_only_session_keeps_placeholder_until_text_arrives(tmp_
     path.write_bytes(PNG)
     await controller.start()
     try:
-        session = await controller.attachment_session()
-        attachment = await controller.import_attachment(session, path)
-        first = await controller.submit("", attachments=(attachment,))
+        identity = new_id("ses")
+        target = await controller.attachment_target(None, identity)
+        attachment = await controller.import_attachment(target, path)
+        assert application.runtime.store.list_sessions() == []
+        first = await controller.submit("", attachments=(attachment,), new_session_id=identity)
+        assert first.run.status == "completed"
+        assert first.session.session_id == identity
         assert first.session.title == "New conversation"
         assert first.session.title_source == "placeholder"
         second = await controller.submit("Describe the picture")

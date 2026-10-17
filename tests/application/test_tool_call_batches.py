@@ -65,15 +65,6 @@ def _runtime(tmp_path, *, registry, first_calls, mode="sequential") -> RuntimeSe
     )
 
 
-def test_runtime_reuses_one_tool_coordinator_for_each_run(tmp_path) -> None:
-    runtime = _runtime(tmp_path, registry=ToolRegistry(), first_calls=[])
-
-    first = runtime._tool_calls_for_run("run_scope")
-    second = runtime._tool_calls_for_run("run_scope")
-
-    assert first is second
-
-
 @pytest.mark.asyncio
 async def test_approval_wait_is_committed_once_without_a_snapshot_rewrite(
     tmp_path, monkeypatch

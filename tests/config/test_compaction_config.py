@@ -25,7 +25,7 @@ def test_compaction_model_config_persists_without_replacing_other_sections(tmp_p
             endpoint_id="summary",
             temperature=0.1,
             max_output_tokens=4096,
-            reasoning=ReasoningRequest(mode="disabled"),
+            reasoning=ReasoningRequest(mode="disabled", effort="high"),
         )
     )
     restored = CompactionConfigManager(tmp_path).snapshot()
@@ -34,7 +34,7 @@ def test_compaction_model_config_persists_without_replacing_other_sections(tmp_p
     assert restored == saved
     assert restored.model.provider_id == "glm"
     assert restored.model.endpoint_id == "summary"
-    assert restored.model.reasoning == ReasoningRequest(mode="disabled")
+    assert restored.model.reasoning == ReasoningRequest(mode="disabled", effort="high")
     assert raw["custom"] == {"value": "keep"}
     assert raw["compaction"]["model"]["max_output_tokens"] == 4096
 
@@ -46,7 +46,6 @@ def test_compaction_model_config_persists_without_replacing_other_sections(tmp_p
         ({"temperature": 0.1}, "dedicated model endpoint"),
         ({"max_output_tokens": 4096}, "dedicated model endpoint"),
         ({"reasoning": {"mode": "disabled"}}, "dedicated model endpoint"),
-        ({"reasoning": {"mode": "disabled", "effort": "high"}}, "cannot specify"),
         ({"reasoning": {"effort": "extreme"}}, "Input should be"),
     ],
 )

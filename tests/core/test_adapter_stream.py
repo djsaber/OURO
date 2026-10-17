@@ -1,5 +1,7 @@
 import asyncio
 from collections.abc import AsyncIterator
+from contextlib import aclosing
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +16,20 @@ from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextView
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
 from ouro.providers import FauxProvider
+
+
+@pytest.fixture
+def stream_clock(monkeypatch):
+    clock = SimpleNamespace(now=100.0)
+    loop = SimpleNamespace(time=lambda: clock.now)
+    # Only the adapter reads this clock; asyncio's scheduler and test watchdogs
+    # continue to use the real event loop.
+    monkeypatch.setattr(
+        adapter_module,
+        "asyncio",
+        SimpleNamespace(**(vars(asyncio) | {"get_running_loop": lambda: loop})),
+    )
+    return clock
 
 
 def _tool_delta(index: int) -> ProviderStreamEvent:
@@ -152,61 +168,82 @@ async def test_first_plain_delta_never_waits_for_a_future_delta() -> None:
         yield ProviderStreamEvent(type="text_delta", text="second")
         yield ProviderStreamEvent(type="done")
 
-    stream = _interruptible(source(), signal=None)
-    first = await asyncio.wait_for(anext(stream), timeout=0.1)
-
-    assert first.text == "first"
-    await stream.aclose()
+    async with aclosing(_interruptible(source(), signal=None)) as stream:
+        first = await asyncio.wait_for(anext(stream), timeout=5)
+        assert first.text == "first"
+        assert not release.is_set()
 
 
 @pytest.mark.asyncio
 async def test_fast_subsequent_plain_deltas_share_one_fixed_flush_window(
     monkeypatch: pytest.MonkeyPatch,
+    stream_clock,
 ) -> None:
-    monkeypatch.setattr(adapter_module, "_STREAM_COALESCE_WINDOW_SECONDS", 0.05)
-    release = asyncio.Event()
+    monkeypatch.setattr(adapter_module, "_STREAM_COALESCE_WINDOW_SECONDS", 60)
+    second, third, fourth = (asyncio.Event() for _ in range(3))
+    waits = []
+    next_item = adapter_module._next_stream_item
+
+    async def release_fragment(buffer, *, abort_wait, timeout=None):
+        if timeout is not None:
+            waits.append(timeout)
+            if len(waits) == 1:
+                stream_clock.now += 20
+                third.set()
+            elif len(waits) == 2:
+                stream_clock.now += 40
+                fourth.set()
+            else:
+                pytest.fail("new fragments extended the original flush deadline")
+        return await next_item(buffer, abort_wait=abort_wait, timeout=timeout)
+
+    monkeypatch.setattr(adapter_module, "_next_stream_item", release_fragment)
 
     async def source() -> AsyncIterator[ProviderStreamEvent]:
         yield ProviderStreamEvent(type="text_delta", text="first")
-        await release.wait()
+        await second.wait()
         yield ProviderStreamEvent(type="text_delta", text="second")
-        await asyncio.sleep(0.01)
+        await third.wait()
         yield ProviderStreamEvent(type="text_delta", text=" third")
-        yield ProviderStreamEvent(type="done")
+        await fourth.wait()
+        yield ProviderStreamEvent(type="text_delta", text=" fourth")
+        await asyncio.Event().wait()
 
-    stream = _interruptible(source(), signal=None)
-    assert (await asyncio.wait_for(anext(stream), timeout=0.1)).text == "first"
-
-    release.set()
-    merged = await asyncio.wait_for(anext(stream), timeout=0.1)
-
-    assert merged.text == "second third"
-    assert (await anext(stream)).type == "done"
+    async with aclosing(_interruptible(source(), signal=None)) as stream:
+        assert (await asyncio.wait_for(anext(stream), timeout=5)).text == "first"
+        assert waits == []
+        second.set()
+        merged = await asyncio.wait_for(anext(stream), timeout=5)
+        assert merged.text == "second third fourth"
+        assert waits == [60, 40]
 
 
 @pytest.mark.asyncio
 async def test_plain_delta_arriving_after_flush_deadline_is_not_delayed(
     monkeypatch: pytest.MonkeyPatch,
+    stream_clock,
 ) -> None:
-    window = 0.05
-    monkeypatch.setattr(adapter_module, "_STREAM_COALESCE_WINDOW_SECONDS", window)
-    second_ready = asyncio.Event()
+    monkeypatch.setattr(adapter_module, "_STREAM_COALESCE_WINDOW_SECONDS", 60)
+    release = asyncio.Event()
+    next_item = adapter_module._next_stream_item
+
+    async def reject_coalescing_wait(buffer, *, abort_wait, timeout=None):
+        assert timeout is None, "an expired flush deadline must not wait for more text"
+        return await next_item(buffer, abort_wait=abort_wait, timeout=timeout)
+
+    monkeypatch.setattr(adapter_module, "_next_stream_item", reject_coalescing_wait)
 
     async def source() -> AsyncIterator[ProviderStreamEvent]:
         yield ProviderStreamEvent(type="text_delta", text="first")
-        await asyncio.sleep(window * 1.5)
-        second_ready.set()
+        await release.wait()
         yield ProviderStreamEvent(type="text_delta", text="second")
         await asyncio.Event().wait()
 
-    stream = _interruptible(source(), signal=None)
-    assert (await anext(stream)).text == "first"
-    await asyncio.wait_for(second_ready.wait(), timeout=0.2)
-
-    started = asyncio.get_running_loop().time()
-    assert (await asyncio.wait_for(anext(stream), timeout=window / 2)).text == "second"
-    assert asyncio.get_running_loop().time() - started < window / 2
-    await stream.aclose()
+    async with aclosing(_interruptible(source(), signal=None)) as stream:
+        assert (await asyncio.wait_for(anext(stream), timeout=5)).text == "first"
+        stream_clock.now += 61
+        release.set()
+        assert (await asyncio.wait_for(anext(stream), timeout=5)).text == "second"
 
 
 @pytest.mark.asyncio

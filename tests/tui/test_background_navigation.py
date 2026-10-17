@@ -310,7 +310,9 @@ async def test_waiting_approval_can_leave_and_restore_the_same_interaction(tmp_p
 async def test_late_submission_failure_does_not_restore_input_into_another_session(
     tmp_path, monkeypatch
 ):
-    app = OuroTuiApp(application=streaming_application(tmp_path, NavigationProvider()))
+    application = streaming_application(tmp_path, NavigationProvider())
+    destination = application.runtime.create_session(title="Destination").session_id
+    app = OuroTuiApp(application=application)
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def fail(*args, **kwargs):
@@ -319,17 +321,20 @@ async def test_late_submission_failure_does_not_restore_input_into_another_sessi
         raise ValueError("Submission failed")
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
+        app._remember_input_draft(destination, "Destination draft")
         monkeypatch.setattr(app._controller, "submit", fail)
         app._submit_run("Original prompt", "follow_up")
         await asyncio.wait_for(entered.wait(), 5)
         worker = next(w for w in app.workers if w.group == "run")
-        await app._new_session()
+        await app._open_session(destination)
         release.set()
         await worker.wait()
         await pilot.pause()
-        assert app.query_one(ConversationView).showing_welcome
-        assert app.query_one(Composer).text == ""
-        assert app._input_drafts.draft_for(None) == ""
+        assert app._controller.session_id == destination
+        assert not app.query_one(ConversationView).showing_welcome
+        assert app.query_one(Composer).text == "Destination draft"
+        assert app._input_drafts.draft_for(destination) == "Destination draft"
+        assert app._input_drafts.draft_for(None) == "Original prompt"
 
 
 @pytest.mark.parametrize("destination", ["welcome", "session"])

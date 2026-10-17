@@ -282,9 +282,9 @@ def test_discovery_scans_cross_client_locations_and_renders_standard_catalog(
     assert [skill.name for skill in catalog.skills] == ["manual-only", "pdf", "xlsx"]
     assert "<name>pdf</name>" in prompt
     assert "<description>Extract PDF text.</description>" in prompt
-    assert "<location>" in prompt
-    assert "read the full SKILL.md" in prompt
-    assert "Invoke skills using this tool" not in prompt
+    assert f"<location>{home / '.agents/skills/pdf/SKILL.md'}</location>" in prompt
+    assert "<name>xlsx</name>" in prompt
+    assert f"<location>{workspace / '.claude/skills/xlsx/SKILL.md'}</location>" in prompt
     assert "manual-only" not in prompt
 
 

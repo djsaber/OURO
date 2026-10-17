@@ -121,15 +121,16 @@ async def test_attachment_only_image_and_binary_downgrade_and_snapshot(tmp_path)
     runtime.adapter.model.supports_image_input = False
     assert runtime.sessions.context(session.session_id) == restored
     binary = tmp_path / "opaque.bin"
-    binary.write_bytes(b"\x00\x01\xffopaque")
+    binary.write_bytes(b"\x00\x01\xffprivate-binary-content")
     ref = runtime.resources.import_resource(session.session_id, binary).resource.resource_id
     result = await runtime.run("inspect", session_id=session.session_id, resource_refs=(ref,))
     assert result.run.status == "completed"
+    projected = runtime.sessions.context(session.session_id).provider_context.messages[-2]
+    assert "contents not supplied" in projected.text_content
+    assert binary.name in projected.text_content
+    assert "private-binary-content" not in projected.text_content
     assert (
-        "Opaque binary"
-        in runtime.sessions.context(session.session_id)
-        .provider_context.messages[-1 - 1]
-        .text_content
+        runtime.resources.resource_path(session.session_id, ref).read_bytes() == binary.read_bytes()
     )
     await app.close()
 

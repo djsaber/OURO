@@ -76,6 +76,25 @@ def test_extinguished_cells_clear_once_and_ignore_invisible_light_changes():
 
 
 @pytest.mark.parametrize("monochrome", [False, True])
+def test_light_persists_between_frames_and_decays_to_an_empty_canvas(monochrome):
+    def prepare(grid):
+        lit = tuple(buffer(len(grid.x), 0.2) for _ in range(3))
+        dark = tuple(buffer(len(grid.x)) for _ in range(3))
+        return lambda seconds: lit if seconds == 0 else dark
+
+    raster = PhosphorRaster(DotArtwork("One flash", prepare), 3, 3)
+    lit = raster.frame(0, 0, monochrome=monochrome)
+    assert all(row.text.strip() for row in lit)
+    assert raster.frame(1, 0, monochrome=monochrome) == lit
+    fading = raster.frame(1, 0.05, monochrome=monochrome)
+    assert any(row.text.strip() for row in fading)
+    assert max(segment.style.color.get_truecolor().red for row in fading for segment in row) < max(
+        segment.style.color.get_truecolor().red for row in lit for segment in row
+    )
+    assert all(row.text == " " * 3 for row in raster.frame(1, 2, monochrome=monochrome))
+
+
+@pytest.mark.parametrize("monochrome", [False, True])
 async def test_dark_matrix_inherits_canvas_when_background_changes(monkeypatch, monochrome):
     class ArtworkApp(App):
         CSS = "DotMatrix {width: 8; height: 4;}"

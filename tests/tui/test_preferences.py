@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
@@ -15,46 +14,11 @@ from ouro.tui.preferences import (
     TuiPreferencesStore,
 )
 from ouro.tui.theme import (
-    DEFAULT_THEME_SATURATION_MAX,
-    DEFAULT_THEME_SATURATION_MIN,
     DEFAULT_TUI_THEME,
     THEME_SATURATION_LEVELS,
     TUI_THEMES,
     TuiTheme,
 )
-
-
-def test_tui_theme_catalog_uses_distinct_restrained_palettes() -> None:
-    assert tuple(TUI_THEMES) == (
-        "original",
-        "blossom",
-        "coral",
-        "sienna",
-        "honey",
-        "citrine",
-        "fern",
-        "jade",
-        "lagoon",
-        "glacier",
-        "azure",
-        "cobalt",
-        "indigo",
-        "orchid",
-        "wisteria",
-        "peony",
-        "lilac",
-    )
-    assert DEFAULT_TUI_THEME.theme_id in TUI_THEMES
-    assert len({theme.accent for theme in TUI_THEMES.values()}) == len(TUI_THEMES)
-    assert all(theme.accent.startswith("#") for theme in TUI_THEMES.values())
-    assert all(theme.accent_bright.startswith("#") for theme in TUI_THEMES.values())
-    assert {(theme.saturation_min, theme.saturation_max) for theme in TUI_THEMES.values()} == {
-        (DEFAULT_THEME_SATURATION_MIN, DEFAULT_THEME_SATURATION_MAX)
-    }
-    lagoon_scale = TUI_THEMES["lagoon"].accent_saturation_scale()
-    assert len(lagoon_scale) == THEME_SATURATION_LEVELS
-    assert lagoon_scale[0] == TUI_THEMES["lagoon"].accent
-    assert lagoon_scale[-1] != lagoon_scale[0]
 
 
 def test_custom_tui_theme_is_complete_immutable_and_caches_render_projections() -> None:
@@ -152,28 +116,6 @@ def test_tui_theme_type_exposes_the_complete_builtin_contract() -> None:
     assert all(theme.spinner_interval_seconds >= 0.05 for theme in TUI_THEMES.values())
     with pytest.raises(TypeError):
         TUI_THEMES["custom"] = DEFAULT_TUI_THEME  # type: ignore[index]
-
-
-def test_tui_components_do_not_hardcode_shared_design_tokens() -> None:
-    tui_root = Path(__file__).parents[2] / "ouro" / "tui"
-    forbidden_symbols = {
-        DEFAULT_TUI_THEME.section_separator_mark,
-        DEFAULT_TUI_THEME.inline_separator_mark,
-        DEFAULT_TUI_THEME.brand_mark,
-        DEFAULT_TUI_THEME.selected_choice_marker,
-        *DEFAULT_TUI_THEME.spinner_frames,
-    }
-    violations: list[str] = []
-    for path in tui_root.glob("*.py"):
-        if path.name == "theme.py":
-            continue
-        source = path.read_text(encoding="utf-8")
-        if any(symbol in source for symbol in forbidden_symbols) or re.search(
-            r"#[0-9a-fA-F]{6}", source
-        ):
-            violations.append(path.name)
-
-    assert violations == []
 
 
 def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> None:

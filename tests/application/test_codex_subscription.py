@@ -69,10 +69,6 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
         assert str(request.url) == "https://chatgpt.com/backend-api/codex/responses"
         payload = json.loads(request.content)
         model_requests.append((payload, dict(request.headers)))
-        assert "max_output_tokens" not in payload and "truncation" not in payload
-        assert payload["reasoning"] == {"effort": "medium"}
-        assert "temperature" not in payload
-        assert payload["stream"] is True and payload["store"] is False
         reply = replies.popleft()
         if isinstance(reply, int):
             return httpx.Response(reply)
@@ -102,13 +98,13 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
     provider_id = created.changed_provider_id
     assert provider_id is not None
     configured = facade.provider(provider_id)
-    gpt_55_endpoint_id = next(
-        endpoint.endpoint_id for endpoint in configured.endpoints if endpoint.model_id == "gpt-5.5"
-    )
+    endpoint_id = configured.default_endpoint
+    assert endpoint_id is not None
+    endpoint = next(item for item in configured.endpoints if item.endpoint_id == endpoint_id)
     assert configured.auth_driver == "openai-codex"
     assert "local planning budget" in configured.notice
-    assert configured.endpoints[0].reasoning.capability.continuation == "opaque"
-    assert configured.endpoints[0].supports_image_input
+    assert endpoint.reasoning.capability.continuation == "opaque"
+    assert endpoint.supports_image_input
     assert not model_requests and not token_requests
 
     # Unattended consumers fail without opening an authorization flow or sending HTTP.
@@ -126,7 +122,7 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
             TaskConfiguration(
                 target=AgentTaskTarget(
                     workspace=str(tmp_path),
-                    model=f"{provider_id}/{gpt_55_endpoint_id}",
+                    model=f"{provider_id}/{endpoint_id}",
                     prompt="Reply OK.",
                 ),
                 schedule=TaskSchedule(frequency="daily", starts_at=due, ends_at=due),
@@ -240,6 +236,12 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
             secret not in public for secret in ("access-secret", "refresh-secret", "rotated-secret")
         )
 
+    for payload, _headers in model_requests:
+        assert payload["model"] == endpoint.model_id
+        assert "max_output_tokens" not in payload and "truncation" not in payload
+        assert payload["reasoning"] == {"effort": "medium", "summary": "auto"}
+        assert "temperature" not in payload
+        assert payload["stream"] is True and payload["store"] is False
     assert len(token_requests) == 2 and not replies
     assert all(client.is_closed for client in clients)
     async with open_local_provider_auth(tmp_path) as auth:

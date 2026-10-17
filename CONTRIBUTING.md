@@ -59,6 +59,16 @@ Changes should include focused success and failure tests. Concurrency, cancellat
 credential redaction, path handling, and durable-state changes require explicit regression
 coverage. Keep generated caches, local OURO homes, credentials, and build artifacts out of commits.
 
+Retain tests that detect a concrete behavior, contract, safety or resource-cost regression.
+When removing a test, identify the obsolete requirement or the remaining tests that protect its
+useful assertions. Similar cases across storage backends, protocols and process boundaries are
+not duplicates merely because their setup looks alike. Prefer controlled clocks and event
+handshakes to short wall-clock deadlines; use real timeouts only as hang guards or when testing
+the timeout mechanism itself. Exclude inapplicable parameter combinations at collection time.
+Keep machine-speed measurements in `dev/benchmarks`, and use behavior checks instead of source
+text scans or snapshots of incidental artwork. Platform-specific regressions remain in the suite
+with explicit prerequisite checks.
+
 Before requesting review:
 
 - explain the behavior and compatibility impact;

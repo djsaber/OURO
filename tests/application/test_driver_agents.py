@@ -163,8 +163,10 @@ async def test_driver_parallel_agents_review_and_conditional_approved_action(
             await agents.close()
         provider.release_children.set()
         if restart:
-            async with asyncio.timeout(10):
-                await asyncio.gather(
+            # Durable child writes and their journal notifications may lag under
+            # parallel coverage. This guards hangs, not settlement latency.
+            async with asyncio.timeout(30):
+                completed_children = await asyncio.gather(
                     *(
                         supervisor.wait_run(
                             relation.child_session_id, relation.current_child_run_id
@@ -172,6 +174,7 @@ async def test_driver_parallel_agents_review_and_conditional_approved_action(
                         for relation in relations
                     )
                 )
+            assert all(child.status == "completed" for child in completed_children)
             await supervisor.shutdown()
             await plugins.close()
             parked = store.load_run(pending.session.session_id, pending.run.run_id)

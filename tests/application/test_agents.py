@@ -920,7 +920,7 @@ async def test_root_continue_resumes_its_interrupted_child_without_new_runs(tmp_
 
     async def stream(**kwargs):
         nonlocal child_attempts
-        if kwargs["messages"][0].text_content == "child task":
+        if kwargs["messages"][0].text_content == "<subagent-task>\nchild task\n</subagent-task>":
             child_attempts += 1
             if child_attempts == 1:
                 yield ProviderStreamEvent(type="text_delta", text="incomplete")
@@ -941,6 +941,8 @@ async def test_root_continue_resumes_its_interrupted_child_without_new_runs(tmp_
             )
         )
         await service.wait_agents((child.delegation_id,))
+        assert store.load_run(child.child_session_id, child.child_run_id).status == "failed"
+        assert child_attempts == 1
         store.save_run(parent.model_copy(update={"status": "failed", "ended_at": utc_now()}))
         store.save_session(
             store.load_session_record(root.session_id).model_copy(
@@ -1066,13 +1068,17 @@ async def test_child_context_contains_only_task_and_counts_child_input(
     await service.wait_agents((handle.delegation_id,))
 
     initial = provider.messages[0][0]
-    assert initial.text_content == "Inspect only the requested target."
+    assert initial.text_content == (
+        "<subagent-task>\nInspect only the requested target.\n</subagent-task>"
+    )
     assert "parent secret" not in initial.text_content
     assert "private plugin context" not in initial.text_content
     relation = store.load_delegation("ses_root", handle.delegation_id)
     assert relation.task_resource_refs == ()
     context = store.load_latest_context(handle.child_session_id)
     assert context is not None
+    assert context.source_messages[0].text_content == "Inspect only the requested target."
+    assert context.source_messages[0].semantic_tag == "subagent-task"
     assert context.metrics.estimated_input_tokens >= estimate_message_tokens(
         context.source_messages[0]
     )

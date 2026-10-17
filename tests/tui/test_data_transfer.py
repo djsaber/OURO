@@ -152,10 +152,21 @@ async def test_imported_history_opens_with_missing_dependencies_in_live_sqlite_h
 
 
 async def _choose_menu_row(app, pilot, identity):
-    menu = app.screen
-    menu.query_one("#choice-filter", Input).value = ""
-    await pilot.pause()
-    options = menu.query_one("#choice-list", OptionList)
+    # A background scan can leave the previous menu visible until the picker
+    # is prepared. Wait for the requested row on the currently active screen.
+    async with asyncio.timeout(10):
+        while True:
+            menu = app.screen
+            menu.query_one("#choice-filter", Input).value = ""
+            await pilot.pause()
+            if app.screen is not menu:
+                continue
+            options = menu.query_one("#choice-list", OptionList)
+            if any(
+                options.get_option_at_index(index).id == identity
+                for index in range(options.option_count)
+            ):
+                break
     options.highlighted = options.get_option_index(identity)
     await pilot.press("enter")
     await pilot.pause()

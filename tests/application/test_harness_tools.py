@@ -289,15 +289,17 @@ async def test_waiting_request_without_state_changes_still_checks_its_captured_v
     assert store.load_harness(session.session_id).state.states[0].payload == "changed concurrently"
 
 
-@pytest.mark.parametrize("failure_point", ["response", "file_application"])
+@pytest.mark.parametrize(
+    ("store", "failure_point"),
+    [("files", "response"), ("sqlite", "response"), ("files", "file_application")],
+    indirect=["store"],
+)
 async def test_tool_result_retry_after_durable_decision_is_not_applied_twice(
     store,
     state_tool,
     monkeypatch,
     failure_point,
 ):
-    if failure_point == "file_application" and not isinstance(store, LocalSessionStore):
-        pytest.skip("file replay boundary; SQLite rollback is covered by store contracts")
     tool, _owner, arguments, expected = state_tool
     app = runtime(store, tool, arguments)
     session = SessionRecord()

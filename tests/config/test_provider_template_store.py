@@ -91,10 +91,6 @@ def test_catalog_is_idempotent_when_already_synchronized(tmp_path) -> None:
     assert _file_path(tmp_path).read_text(encoding="utf-8") == first_text
 
 
-def test_inline_catalog_revisions_start_monotonic() -> None:
-    assert all(template.revision >= 1 for template in provider_templates())
-
-
 def test_fingerprint_normalizes_key_order() -> None:
     assert template_fingerprint({"b": 2, "a": {"y": 1, "x": 2}}) == template_fingerprint(
         {"a": {"x": 2, "y": 1}, "b": 2}

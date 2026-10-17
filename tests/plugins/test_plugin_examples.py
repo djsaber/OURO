@@ -43,7 +43,8 @@ async def test_configuration_playground_exercises_contract_without_business_logi
     plugin_id = "dev.ouro.configuration_playground"
     async with open_local_plugins(tmp_path / "home") as service:
         validation = service.validate(EXAMPLES / "configuration-playground")
-        assert validation.valid and validation.runtime_kind == "declarative"
+        assert validation.valid, validation.diagnostics
+        assert validation.runtime_kind == "declarative"
         service.install(EXAMPLES / "configuration-playground")
         assert service.show(plugin_id).contributions == {}
         view = service.configuration(plugin_id)
