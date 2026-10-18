@@ -14,6 +14,7 @@ from ouro.core.agents import DelegationRecord
 from ouro.core.base import VersionedOuroModel
 from ouro.core.billing import ProviderUsageEntry, UsageLedgerEvent
 from ouro.core.compaction import CompactionRecord
+from ouro.core.context import ContextMetrics
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessVersion
@@ -40,6 +41,15 @@ MODELS: dict[str, type[BaseModel]] = {
     "usage": ProviderUsageEntry,
     "usage_event": UsageLedgerEvent,
 }
+
+_LEGACY_BUDGET_FIELDS = (
+    "context_window_tokens",
+    "reserved_output_tokens",
+    "input_budget_tokens",
+    "estimated_remaining_tokens",
+    "estimated_utilization_ratio",
+    "over_budget",
+)
 
 
 def loads(text: str) -> dict[str, Any]:
@@ -105,6 +115,13 @@ def _required_facts(parsed: object, raw: object) -> None:
             "ToolCallBatchRecord": ("producer",),
             "ToolResultReference": ("producer",),
             "ToolInvocation": ("producer",),
+            "ContextMetrics": (
+                "estimated_input_tokens",
+                "estimated_fixed_tokens",
+                "budget",
+                "estimator_id",
+                "estimator_version",
+            ),
         }.get(type(parsed).__name__, ())
         if any(name not in raw for name in required):
             raise UpgradeDataError(f"missing persisted {type(parsed).__name__} facts")
@@ -143,6 +160,41 @@ def _context_v3_to_v4(value: dict[str, Any]) -> None:
     _add(value, "supports_image_input", value.pop("supports_vision"))
     _add(value, "supports_audio_input", False)
     _add(value, "supports_video_input", False)
+
+
+def _context_metrics(value: dict[str, Any]) -> None:
+    """Preserve request facts and verify redundant historical budget indicators."""
+    previous = {key: value.pop(key) for key in _LEGACY_BUDGET_FIELDS}
+    window = previous["context_window_tokens"]
+    reserve = previous["reserved_output_tokens"]
+    if type(reserve) is not int or reserve < 0:
+        raise UpgradeDataError("invalid historical output reserve")
+    _add(
+        value,
+        "budget",
+        {"context_window": window, "max_output_tokens": reserve or None}
+        if window is not None
+        else None,
+    )
+    metrics = validate(ContextMetrics, value)
+    for key, original in previous.items():
+        expected = getattr(metrics, key)
+        matches = type(original) is type(expected) and (
+            math.isclose(original, expected)
+            if isinstance(expected, float)
+            else original == expected
+        )
+        if not matches:
+            raise UpgradeDataError(f"inconsistent historical context metric: {key}")
+
+
+def _context_v4_to_v5(value: dict[str, Any]) -> None:
+    _context_metrics(value["metrics"])
+
+
+def _compaction_v1_to_v2(value: dict[str, Any]) -> None:
+    if value.get("context_metrics_after") is not None:
+        _context_metrics(value["context_metrics_after"])
 
 
 def _run_v2_to_v5(value: dict[str, Any]) -> None:
@@ -207,7 +259,8 @@ def _usage_event_v1_to_v2(value: dict[str, Any]) -> None:
 
 
 VERSION_STEPS: dict[str, dict[int, UpgradeStep]] = {
-    "context": {3: UpgradeStep(4, _context_v3_to_v4)},
+    "context": {3: UpgradeStep(4, _context_v3_to_v4), 4: UpgradeStep(5, _context_v4_to_v5)},
+    "compaction": {1: UpgradeStep(2, _compaction_v1_to_v2)},
     "run": {2: UpgradeStep(5, _run_v2_to_v5)},
     "message": {3: UpgradeStep(4, _message_v3_to_v4)},
     "task": {1: UpgradeStep(3, _task_v1_to_v3)},
@@ -265,13 +318,29 @@ def _legacy_tool_results(kind: str, value: dict[str, Any]) -> Iterator[dict[str,
                 yield result
 
 
+def _legacy_event_metrics(kind: str, value: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    # Only these Host-owned payload fields carry unversioned context metrics.
+    if kind != "event":
+        return
+    field = {
+        "model_request_started": "context_metrics",
+        "compaction_completed": "context_metrics_after",
+    }.get(value.get("event_type", ""))
+    if field is not None:
+        metrics = value.get("payload", {}).get(field)
+        if isinstance(metrics, dict) and any(key in metrics for key in _LEGACY_BUDGET_FIELDS):
+            yield metrics
+
+
 def _needs_upgrade(kind: str, value: dict[str, Any]) -> bool:
     version = value.get("schema_version")
     if type(version) is not int or version != MODELS[kind].model_fields["schema_version"].default:
         # The transition executor rejects unsupported versions before transforming.
         return True
-    return any(_needs_upgrade(child, raw) for child, raw in _nested(kind, value)) or any(
-        True for _ in _legacy_tool_results(kind, value)
+    return (
+        any(_needs_upgrade(child, raw) for child, raw in _nested(kind, value))
+        or any(True for _ in _legacy_tool_results(kind, value))
+        or any(True for _ in _legacy_event_metrics(kind, value))
     )
 
 
@@ -280,6 +349,8 @@ def _convert_nested(kind: str, value: dict[str, Any]) -> None:
         _convert_owned(child, raw)
     for result in _legacy_tool_results(kind, value):
         _producer(result)
+    for metrics in _legacy_event_metrics(kind, value):
+        _context_metrics(metrics)
 
 
 def _convert_owned(kind: str, value: dict[str, Any]) -> None:

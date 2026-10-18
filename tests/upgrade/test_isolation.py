@@ -95,7 +95,7 @@ def test_file_failures_keep_successful_units_and_roll_back_failed_staging(histor
             assert after[name] == checksum
     assert (
         loads((home / "sessions/ses_fixture/context.json").read_text("utf-8"))["schema_version"]
-        == 4
+        == 5
     )
     assert (
         loads((home / "tasks/records/task_fixture/task.json").read_text("utf-8"))["schema_version"]
@@ -189,7 +189,7 @@ def test_confirmation_rechecks_repaired_units_and_does_not_delete_new_failures(h
     assert second["status"] == "partial"
     assert second["discarded"] == []
     assert confirmed(second) == {UpgradeUnit("task", "task_fixture")}
-    assert loads(path.read_text("utf-8"))["schema_version"] == 4
+    assert loads(path.read_text("utf-8"))["schema_version"] == 5
     assert task.exists()
 
 
@@ -255,7 +255,7 @@ def test_interrupted_failed_unit_removal_restores_only_current_operation(
     assert hashes(home) == before_cleanup
     assert (
         loads((home / "sessions/ses_fixture/context.json").read_text("utf-8"))["schema_version"]
-        == 4
+        == 5
     )
 
 

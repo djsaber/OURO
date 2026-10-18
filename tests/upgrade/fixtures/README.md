@@ -30,6 +30,13 @@ and idempotence. The old template file is outside offline upgrade scope; the
 template reader backs it up and materializes the current catalog.
 No credentials are resolved and no user data is included.
 
+`records/output-budget.json` is serialized by the unmodified models at `af353d1`.
+It contains synthetic ContextSnapshot 4, Compaction 1, model request and compaction
+completion events, and a SessionCommitResult with embedded events. The request
+window and output reserve are finite; metadata and commit output retain opaque
+copies of the same metrics to verify ownership boundaries. Tests exercise file
+and SQLite publication, interrupted-write restoration, event replay and idempotence.
+
 Each supported source schema needs synthetic writer output and conversion tests.
 Record steps declare source and target schemas independently of package versions;
 unregistered intermediate schemas are not inferred. Future-schema and structural

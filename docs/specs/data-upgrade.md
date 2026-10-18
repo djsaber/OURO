@@ -29,10 +29,12 @@ reasoning 配置夹具由 `v0.3.0`（`54757d7`）的配置 writer 生成。
 |---|---|---|
 | 文件 Session 容器 | layout 9 | 保持布局；必要时重建 `sessions/index.json` |
 | SQLite Session 容器 | schema 7 | 更新在线表中的 JSON payload，重建受影响 catalog；保留行身份与序列 |
-| Session / Event / Harness / Compaction / Delegation / Resource | 2 / 2 / 1 / 1 / 1 / 2 | 识别当前版本并保留数据；新增迁移步骤后按相同管线处理 |
+| Session / Harness / Delegation / Resource | 2 / 1 / 1 / 2 | 识别当前版本并保留数据；新增迁移步骤后按相同管线处理 |
+| Event | 2 | 保留事件信封；转换模型请求和摘要完成事件中明确归属框架的预算指标 |
 | Run | 2、5 | 目标 5；源 2 绑定 `ouro.default/1`，implementation 为 null、dependencies 为空、checkpoint 为 null |
 | Message | 3、4 | 目标 4；源 3 的工具结果补 model producer |
-| ContextSnapshot | 3、4 | 目标由当前模型定义；源 3 的 supports_vision 转为 supports_image_input，音频、视频输入能力设为 false；转换 source_messages，为缺失来源的 injected tool result 补 model producer |
+| ContextSnapshot | 3、4、5 | 目标 5；源 3 的 supports_vision 转为 supports_image_input，音频、视频输入能力设为 false；转换 source_messages，为缺失来源的 injected tool result 补 model producer；将平铺预算指标转换为预算事实 |
+| Compaction | 1、2 | 目标 2；转换非空 context_metrics_after，保留摘要正文、历史边界、用量和 metadata |
 | SessionCommitResult | 1 | 转换 messages、Session、Event 及 truncation 中的 Message |
 | 文件任务 / SQLite 任务 | 1、3 | 目标 3；迁移 agent target、owner、result 与 cancel 字段，保留历史链与防重标记 |
 | 用量 SQLite / 用量记录 / 审计 | 1、2 | 目标 2；增加 plugin 归属，保留原 Run 归属，更新表结构及审计内嵌记录 |
@@ -58,8 +60,14 @@ workspace、model、reasoning、approval_mode、session_mode 移入该 target；
 版本识别沿显式声明的嵌套边界进行，目标版本从对应模型读取；不按应用版本或“当前无迁移步骤”的类型名单跳过数据。
 全部版本均为当前版本且无已知结构转换时，直接返回原记录。需要转换时，顶层记录复制一次，嵌套转换使用该副本中的子记录，
 最后对整个目标结构执行一次递归模型与必要事实校验。增加迁移步骤不需要维护另一份优化版本表。
-转换只修改规则指定字段。ContextSnapshot 保留快照内容、身份、时间、metrics、metadata 与原 context_digest。
+转换只修改规则指定字段。ContextSnapshot 保留快照内容、身份、时间、测量值、请求预算事实、metadata 与原 context_digest。
 文件和 SQLite 后端共用记录转换，不在存储层或 TUI 中实现记录版本兼容。
+
+预算指标保留输入和固定内容估算、estimator 身份，将 context_window_tokens 和 reserved_output_tokens 归入
+`budget.context_window` 与 `budget.max_output_tokens`；零预留表示空上限，无窗口且无容量的投影保持 `budget=null`。
+剩余容量、利用率和超限状态由当前模型派生，转换时核对历史值的一致性；缺失必要事实、混用结构或无法等价表达的预算明确拒绝。
+`model_request_started.context_metrics` 和 `compaction_completed.context_metrics_after` 按已知字段结构转换，
+提交回执内的这些事件使用同一规则。其他事件载荷、开放 metadata、提交 output 和历史请求摘要保持原值。
 
 提供方配置没有 schema_version，使用有序的结构转换步骤，每步仅处理明确识别的端点字段结构，全部步骤完成后由当前 codec 校验。
 不推测应用版本，不为无版本数据编造持久化版本号；无法识别的结构由校验拒绝。旧能力字段必须为布尔值；同一端点混用新旧能力字段、

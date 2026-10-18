@@ -1,0 +1,345 @@
+{
+  "context": {
+    "schema_version": 4,
+    "context_id": "ctx_budget",
+    "session_id": "ses_fixture",
+    "run_id": "run_fixture",
+    "turn_id": "turn_budget",
+    "model_round": 1,
+    "provider_id": "fixture",
+    "endpoint_id": null,
+    "model_id": "fixture-model",
+    "supports_image_input": false,
+    "supports_audio_input": false,
+    "supports_video_input": false,
+    "prepared_at": "2026-10-17T00:00:00Z",
+    "completed_at": null,
+    "system_prompt": "Synthetic budget fixture",
+    "injected_messages": [],
+    "source_messages": [],
+    "tool_definitions": [],
+    "metrics": {
+      "estimated_input_tokens": 120,
+      "estimated_fixed_tokens": 20,
+      "context_window_tokens": 1000,
+      "reserved_output_tokens": 200,
+      "input_budget_tokens": 800,
+      "estimated_remaining_tokens": 680,
+      "estimated_utilization_ratio": 0.15,
+      "over_budget": false,
+      "estimator_id": "builtin.conservative",
+      "estimator_version": "2"
+    },
+    "context_metadata": {
+      "context_metrics": {
+        "estimated_input_tokens": 120,
+        "estimated_fixed_tokens": 20,
+        "context_window_tokens": 1000,
+        "reserved_output_tokens": 200,
+        "input_budget_tokens": 800,
+        "estimated_remaining_tokens": 680,
+        "estimated_utilization_ratio": 0.15,
+        "over_budget": false,
+        "estimator_id": "builtin.conservative",
+        "estimator_version": "2"
+      },
+      "schema_version": 999
+    },
+    "context_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "provider_reported_input_tokens": null
+  },
+  "compaction": {
+    "schema_version": 1,
+    "compaction_id": "cmp_budget",
+    "session_id": "ses_fixture",
+    "previous_compaction_id": null,
+    "strategy_id": "fixture.summary",
+    "strategy_version": "1",
+    "trigger": "manual",
+    "summary": "Synthetic summary",
+    "covered_message_ids": [
+      "msg_user"
+    ],
+    "source_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "history_boundary_message_id": "msg_assistant",
+    "created_at": "2026-10-17T00:00:00Z",
+    "duration_seconds": null,
+    "model_provider": null,
+    "model_endpoint_id": null,
+    "model_id": null,
+    "prompt_version": null,
+    "prompt_hash": null,
+    "estimated_tokens_before": 0,
+    "estimated_summary_tokens": 0,
+    "estimated_tokens_after": 0,
+    "context_metrics_after": {
+      "estimated_input_tokens": 120,
+      "estimated_fixed_tokens": 20,
+      "context_window_tokens": 1000,
+      "reserved_output_tokens": 200,
+      "input_budget_tokens": 800,
+      "estimated_remaining_tokens": 680,
+      "estimated_utilization_ratio": 0.15,
+      "over_budget": false,
+      "estimator_id": "builtin.conservative",
+      "estimator_version": "2"
+    },
+    "usage": {},
+    "metadata": {
+      "context_metrics": {
+        "estimated_input_tokens": 120,
+        "estimated_fixed_tokens": 20,
+        "context_window_tokens": 1000,
+        "reserved_output_tokens": 200,
+        "input_budget_tokens": 800,
+        "estimated_remaining_tokens": 680,
+        "estimated_utilization_ratio": 0.15,
+        "over_budget": false,
+        "estimator_id": "builtin.conservative",
+        "estimator_version": "2"
+      },
+      "schema_version": 999
+    }
+  },
+  "events": [
+    {
+      "schema_version": 2,
+      "history_epoch": 0,
+      "event_id": "evt_budget_request",
+      "session_id": "ses_fixture",
+      "run_id": "run_fixture",
+      "turn_id": null,
+      "event_type": "model_request_started",
+      "created_at": "2026-10-17T00:00:00Z",
+      "sequence": 1,
+      "payload": {
+        "context_id": "ctx_budget",
+        "turn_id": "turn_budget",
+        "round": 1,
+        "provider": "fixture",
+        "model": "fixture-model",
+        "context_metrics": {
+          "estimated_input_tokens": 120,
+          "estimated_fixed_tokens": 20,
+          "context_window_tokens": 1000,
+          "reserved_output_tokens": 200,
+          "input_budget_tokens": 800,
+          "estimated_remaining_tokens": 680,
+          "estimated_utilization_ratio": 0.15,
+          "over_budget": false,
+          "estimator_id": "builtin.conservative",
+          "estimator_version": "2"
+        }
+      },
+      "metadata": {
+        "context_metrics": {
+          "estimated_input_tokens": 120,
+          "estimated_fixed_tokens": 20,
+          "context_window_tokens": 1000,
+          "reserved_output_tokens": 200,
+          "input_budget_tokens": 800,
+          "estimated_remaining_tokens": 680,
+          "estimated_utilization_ratio": 0.15,
+          "over_budget": false,
+          "estimator_id": "builtin.conservative",
+          "estimator_version": "2"
+        },
+        "schema_version": 999
+      }
+    },
+    {
+      "schema_version": 2,
+      "history_epoch": 0,
+      "event_id": "evt_budget_compacted",
+      "session_id": "ses_fixture",
+      "run_id": "run_fixture",
+      "turn_id": null,
+      "event_type": "compaction_completed",
+      "created_at": "2026-10-17T00:00:00Z",
+      "sequence": 2,
+      "payload": {
+        "compaction_id": "cmp_budget",
+        "context_metrics_after": {
+          "estimated_input_tokens": 120,
+          "estimated_fixed_tokens": 20,
+          "context_window_tokens": 1000,
+          "reserved_output_tokens": 200,
+          "input_budget_tokens": 800,
+          "estimated_remaining_tokens": 680,
+          "estimated_utilization_ratio": 0.15,
+          "over_budget": false,
+          "estimator_id": "builtin.conservative",
+          "estimator_version": "2"
+        }
+      },
+      "metadata": {
+        "context_metrics": {
+          "estimated_input_tokens": 120,
+          "estimated_fixed_tokens": 20,
+          "context_window_tokens": 1000,
+          "reserved_output_tokens": 200,
+          "input_budget_tokens": 800,
+          "estimated_remaining_tokens": 680,
+          "estimated_utilization_ratio": 0.15,
+          "over_budget": false,
+          "estimator_id": "builtin.conservative",
+          "estimator_version": "2"
+        },
+        "schema_version": 999
+      }
+    }
+  ],
+  "commit": {
+    "schema_version": 1,
+    "operation_id": "op_budget",
+    "request_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "session": {
+      "schema_version": 2,
+      "session_id": "ses_fixture",
+      "harness_version": "harness_fixture",
+      "history_epoch": 0,
+      "namespace": "default",
+      "root_session_id": "ses_fixture",
+      "parent_session_id": null,
+      "session_kind": "primary",
+      "delegation_id": null,
+      "forked_from_message_id": null,
+      "forked_from_run_id": null,
+      "title": "New conversation",
+      "title_source": "fallback",
+      "title_locked": false,
+      "created_at": "2026-10-17T00:00:00Z",
+      "updated_at": "2026-10-17T00:00:00Z",
+      "last_activity_at": "2026-10-17T00:00:00Z",
+      "archived": false,
+      "pinned": false,
+      "workspace": null,
+      "workspace_trusted": false,
+      "current_model": null,
+      "reasoning_request": {
+        "mode": "default",
+        "effort": null
+      },
+      "approval_mode": "inherit",
+      "interaction_mode": "interactive",
+      "controls": {
+        "revision": 0,
+        "activations": []
+      },
+      "active_compaction_id": null,
+      "status": "idle",
+      "active_run_id": null,
+      "continuation_request": null,
+      "last_message_id": null,
+      "last_run_id": null,
+      "message_count": 0,
+      "tags": [],
+      "metadata": {}
+    },
+    "messages": [],
+    "events": [
+      {
+        "schema_version": 2,
+        "history_epoch": 0,
+        "event_id": "evt_budget_request",
+        "session_id": "ses_fixture",
+        "run_id": "run_fixture",
+        "turn_id": null,
+        "event_type": "model_request_started",
+        "created_at": "2026-10-17T00:00:00Z",
+        "sequence": 1,
+        "payload": {
+          "context_id": "ctx_budget",
+          "turn_id": "turn_budget",
+          "round": 1,
+          "provider": "fixture",
+          "model": "fixture-model",
+          "context_metrics": {
+            "estimated_input_tokens": 120,
+            "estimated_fixed_tokens": 20,
+            "context_window_tokens": 1000,
+            "reserved_output_tokens": 200,
+            "input_budget_tokens": 800,
+            "estimated_remaining_tokens": 680,
+            "estimated_utilization_ratio": 0.15,
+            "over_budget": false,
+            "estimator_id": "builtin.conservative",
+            "estimator_version": "2"
+          }
+        },
+        "metadata": {
+          "context_metrics": {
+            "estimated_input_tokens": 120,
+            "estimated_fixed_tokens": 20,
+            "context_window_tokens": 1000,
+            "reserved_output_tokens": 200,
+            "input_budget_tokens": 800,
+            "estimated_remaining_tokens": 680,
+            "estimated_utilization_ratio": 0.15,
+            "over_budget": false,
+            "estimator_id": "builtin.conservative",
+            "estimator_version": "2"
+          },
+          "schema_version": 999
+        }
+      },
+      {
+        "schema_version": 2,
+        "history_epoch": 0,
+        "event_id": "evt_budget_compacted",
+        "session_id": "ses_fixture",
+        "run_id": "run_fixture",
+        "turn_id": null,
+        "event_type": "compaction_completed",
+        "created_at": "2026-10-17T00:00:00Z",
+        "sequence": 2,
+        "payload": {
+          "compaction_id": "cmp_budget",
+          "context_metrics_after": {
+            "estimated_input_tokens": 120,
+            "estimated_fixed_tokens": 20,
+            "context_window_tokens": 1000,
+            "reserved_output_tokens": 200,
+            "input_budget_tokens": 800,
+            "estimated_remaining_tokens": 680,
+            "estimated_utilization_ratio": 0.15,
+            "over_budget": false,
+            "estimator_id": "builtin.conservative",
+            "estimator_version": "2"
+          }
+        },
+        "metadata": {
+          "context_metrics": {
+            "estimated_input_tokens": 120,
+            "estimated_fixed_tokens": 20,
+            "context_window_tokens": 1000,
+            "reserved_output_tokens": 200,
+            "input_budget_tokens": 800,
+            "estimated_remaining_tokens": 680,
+            "estimated_utilization_ratio": 0.15,
+            "over_budget": false,
+            "estimator_id": "builtin.conservative",
+            "estimator_version": "2"
+          },
+          "schema_version": 999
+        }
+      }
+    ],
+    "output": {
+      "context_metrics": {
+        "estimated_input_tokens": 120,
+        "estimated_fixed_tokens": 20,
+        "context_window_tokens": 1000,
+        "reserved_output_tokens": 200,
+        "input_budget_tokens": 800,
+        "estimated_remaining_tokens": 680,
+        "estimated_utilization_ratio": 0.15,
+        "over_budget": false,
+        "estimator_id": "builtin.conservative",
+        "estimator_version": "2"
+      },
+      "schema_version": 999
+    },
+    "truncation": null
+  }
+}

@@ -1,10 +1,13 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from ouro.core.errors import ConfigError, UnsupportedDataVersionError
 from ouro.tui.app import OuroTuiApp
 from ouro_upgrade.engine import upgrade
 from tests.tui.helpers import run_ready_app, two_route_application
+from tests.upgrade.conftest import FIXTURES
 from tests.upgrade.test_recovery import wait_until
 
 
@@ -27,6 +30,27 @@ async def test_historical_startup_returns_version_failure_without_opening_homepa
         await wait_until(lambda: app.startup_data_error is not None)
     assert isinstance(app.startup_data_error, UnsupportedDataVersionError)
     assert app.return_value == 1
+
+
+@pytest.mark.parametrize("resume", [False, True])
+async def test_homepage_does_not_read_historical_context_until_session_is_opened(
+    historical_home: Path, resume: bool
+) -> None:
+    upgrade(historical_home)
+    context = historical_home / "sessions/ses_fixture/context.json"
+    context.write_bytes((FIXTURES / "files/sessions/ses_fixture/context.json").read_bytes())
+    app = OuroTuiApp(
+        application=two_route_application(historical_home),
+        resume_session_id="ses_fixture" if resume else None,
+    )
+    if resume:
+        async with app.run_test(size=(100, 32)):
+            await wait_until(lambda: app.startup_data_error is not None)
+        assert isinstance(app.startup_data_error, UnsupportedDataVersionError)
+    else:
+        async with run_ready_app(app, size=(100, 32)):
+            assert app._controller._started
+            assert app.startup_data_error is None
 
 
 async def test_bootstrap_failure_closes_started_services_before_return(

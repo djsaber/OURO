@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from ouro.core.context import ContextMetrics
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.errors import UnsupportedDataVersionError
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
@@ -32,12 +33,21 @@ def test_context_upgrade_preserves_snapshot_and_converts_nested_messages(
     context_v3["supports_vision"] = supports_vision
     before = copy.deepcopy(context_v3)
     result = convert("context", context_v3)
-    assert result["schema_version"] == 4
+    assert result["schema_version"] == 5
     assert "supports_vision" not in result
     assert result["supports_image_input"] is supports_vision
     assert result["supports_audio_input"] is False
     assert result["supports_video_input"] is False
-    changed = {"schema_version", "supports_vision", "source_messages", "injected_messages"}
+    changed = {
+        "schema_version",
+        "supports_vision",
+        "source_messages",
+        "injected_messages",
+        "metrics",
+    }
+    metrics = ContextMetrics.model_validate(result["metrics"])
+    for key, value in before["metrics"].items():
+        assert getattr(metrics, key) == value
     for key in before.keys() - changed:
         assert result[key] == before[key]
     for source, converted in zip(before["source_messages"], result["source_messages"], strict=True):
@@ -59,7 +69,7 @@ def test_context_upgrade_preserves_snapshot_and_converts_nested_messages(
     assert convert("context", result) == result
 
 
-def test_current_context_keeps_audio_and_video_capabilities() -> None:
+def test_context_v4_keeps_audio_and_video_capabilities() -> None:
     raw = loads((FIXTURES / "files/sessions/ses_fixture/context.json").read_text("utf-8"))
     raw.update(supports_audio_input=True, supports_video_input=True)
     result = convert("context", raw)
@@ -92,7 +102,7 @@ def test_context_upgrade_rejects_incomplete_or_ambiguous_records(context_v3: dic
     elif damage == "invalid_vision_string":
         context_v3["supports_vision"] = "false"
     elif damage in {"past_version", "future_version"}:
-        context_v3["schema_version"] = 2 if damage == "past_version" else 5
+        context_v3["schema_version"] = 2 if damage == "past_version" else 6
     else:
         context_v3[damage] = "private-value-must-not-be-logged"
     before = copy.deepcopy(context_v3)
@@ -104,18 +114,19 @@ def test_context_upgrade_rejects_incomplete_or_ambiguous_records(context_v3: dic
 
 def test_context_upgrade_runs_each_step_to_the_model_version(context_v3: dict, monkeypatch):
     class FutureContext(ContextSnapshotRecord):
-        schema_version: int = 5
+        schema_version: int = 6
         future_capability: bool
 
-    def from_v4(value: dict) -> None:
-        assert value["schema_version"] == 4
+    def from_v5(value: dict) -> None:
+        assert value["schema_version"] == 5
         assert value["supports_image_input"] is True
+        assert "budget" in value["metrics"]
         value["future_capability"] = False
 
     monkeypatch.setitem(records.MODELS, "context", FutureContext)
-    monkeypatch.setitem(records.VERSION_STEPS["context"], 4, UpgradeStep(5, from_v4))
+    monkeypatch.setitem(records.VERSION_STEPS["context"], 5, UpgradeStep(6, from_v5))
     result = convert("context", context_v3)
-    assert result["schema_version"] == 5
+    assert result["schema_version"] == 6
     assert result["future_capability"] is False
     assert result["context_digest"] == context_v3["context_digest"]
     assert convert("context", result) == result
@@ -123,11 +134,11 @@ def test_context_upgrade_runs_each_step_to_the_model_version(context_v3: dict, m
 
 def test_context_upgrade_rejects_a_missing_step(context_v3: dict, monkeypatch):
     class FutureContext(ContextSnapshotRecord):
-        schema_version: int = 5
+        schema_version: int = 6
 
     monkeypatch.setitem(records.MODELS, "context", FutureContext)
     before = copy.deepcopy(context_v3)
-    with pytest.raises(UpgradeError, match="missing context upgrade step from version 4"):
+    with pytest.raises(UpgradeError, match="missing context upgrade step from version 5"):
         convert("context", context_v3)
     assert context_v3 == before
 
