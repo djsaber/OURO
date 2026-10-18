@@ -381,11 +381,9 @@ class PluginService:
         self, session_id: str
     ) -> tuple[SessionRecord, HarnessCallSnapshot]:
         assert self.session_store is not None
-        with self.session_store.session_mutation(session_id):
-            session, harness = capture_session_harness(
-                self.session_store, session_id, usage_service=self.usage_service
-            )
-            return session, harness
+        return capture_session_harness(
+            self.session_store, session_id, usage_service=self.usage_service
+        )
 
     def dependencies(
         self,

@@ -10,6 +10,7 @@ from threading import Barrier
 import pytest
 
 from ouro.application.session_recovery import SessionRecoveryService
+from ouro.core.base import utc_now
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextBuilder, ContextMetrics
 from ouro.core.context_budget import ContextBudget
@@ -299,10 +300,31 @@ def test_session_store_replaces_latest_context_atomically(session_store: Session
     )
 
     assert session_store.load_latest_context(session.session_id) is None
+    assert session_store.load_latest_context_header(session.session_id) is None
     session_store.save_latest_context(first)
     assert session_store.load_latest_context(session.session_id) == first
+    assert session_store.load_latest_context_header(session.session_id) == first.header()
     session_store.save_latest_context(second)
     assert session_store.load_latest_context(session.session_id) == second
+    assert session_store.load_latest_context_header(session.session_id) == second.header()
+    completed = second.model_copy(
+        update={"completed_at": utc_now(), "provider_reported_input_tokens": 123}
+    )
+    session_store.save_latest_context(completed)
+    assert session_store.load_latest_context_header(session.session_id) == completed.header()
+    if isinstance(session_store, LocalSessionStore):
+        directory = session_store.sessions_dir / session.session_id
+        index = directory / "context-index.json"
+        index.unlink()
+        assert session_store.load_latest_context_header(session.session_id) == completed.header()
+        assert not index.exists()  # Reading canonical data does not rebuild a missing index.
+        session_store.save_latest_context(completed)
+        (directory / "context.json").write_text(first.model_dump_json(), encoding="utf-8")
+        assert session_store.load_latest_context_header(session.session_id) == first.header()
+        index.unlink()
+        index.mkdir()  # A derived-index write failure must not fail a canonical update.
+        session_store.save_latest_context(completed)
+        assert session_store.load_latest_context_header(session.session_id) == completed.header()
 
 
 def test_session_store_rejects_context_with_incompatible_capability_schema(
@@ -341,6 +363,8 @@ def test_session_store_rejects_context_with_incompatible_capability_schema(
 
     with pytest.raises(UnsupportedDataVersionError, match="found 3, expected 5"):
         session_store.load_latest_context(session.session_id)
+    with pytest.raises(UnsupportedDataVersionError, match="found 3, expected 5"):
+        session_store.load_latest_context_header(session.session_id)
 
 
 def test_session_store_loads_runs_without_reading_journals(session_store: SessionStore) -> None:

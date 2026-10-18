@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Iterable
+from contextlib import closing
 from datetime import datetime
 from time import monotonic
 from typing import TYPE_CHECKING, Protocol
 
 from ouro.application.dto import Diagnostic
-from ouro.application.queued_inputs import input_operation_id
+from ouro.application.event_models import project_runtime_event
+from ouro.application.queued_inputs import input_operation_id, project_pending_user_inputs
 from ouro.application.runs import abort_run_state, find_run
 from ouro.application.session_editing import undo_user_input
 from ouro.application.session_history import (
@@ -17,6 +19,7 @@ from ouro.application.session_history import (
     copy_branch_messages,
     project_replay_frames,
     select_branch_messages,
+    select_history_suffix,
 )
 from ouro.application.session_models import (
     SessionBranchResult,
@@ -28,8 +31,11 @@ from ouro.application.session_models import (
     SessionDetail,
     SessionEventPage,
     SessionExport,
+    SessionHistoryAnchor,
+    SessionHistoryWindow,
     SessionMessagePage,
     SessionMutationResult,
+    SessionObservationBatch,
     SessionObservationSnapshot,
     SessionReplay,
     SessionSummary,
@@ -116,6 +122,11 @@ class SessionService:
             diagnostics=self._refresh_index_diagnostics(session.session_id),
         )
 
+    def view(self, session_id: str) -> SessionView:
+        """Read Session identity and settings without history or recovery."""
+
+        return SessionView.from_record(self._load_session_record(session_id))
+
     def open(self, session_id: str, *, recover: bool = True) -> SessionDetail:
         try:
             session = self._store.load_session_record(session_id)
@@ -180,7 +191,7 @@ class SessionService:
 
     def context_status(self, session_id: str) -> SessionContextStatus | None:
         self._require_session(session_id)
-        record = self._store.load_latest_context(session_id)
+        record = self._store.load_latest_context_header(session_id)
         return SessionContextStatus.from_record(record) if record is not None else None
 
     def effective_context_metrics(self, session_id: str) -> ContextMetrics | None:
@@ -193,7 +204,7 @@ class SessionService:
         """
 
         self._require_session(session_id)
-        latest = self._store.load_latest_context(session_id)
+        latest = self._store.load_latest_context_header(session_id)
         active = self._store.load_active_compaction(session_id)
         if active is not None and active.context_metrics_after is not None:
             if latest is None or active.created_at > latest.prepared_at:
@@ -213,27 +224,27 @@ class SessionService:
         history requires neither a model nor loading messages and runtime events.
         """
 
-        with self._store.session_mutation(session_id):
+        with self._store.session_read(session_id):
             session = self._load_session_record(session_id)
             compactions = self._store.load_compactions(session_id)
-            active_id = session.active_compaction_id
-            if active_id is not None and not any(
-                item.compaction_id == active_id for item in compactions
-            ):
-                raise PersistenceError(
-                    f"session {session_id} references missing compaction {active_id}"
-                )
-            return tuple(
-                SessionSummary(
-                    session_id=session_id,
-                    compaction_id=item.compaction_id,
-                    created_at=item.created_at,
-                    trigger=item.trigger,
-                    summary=item.summary,
-                    active=item.compaction_id == active_id,
-                )
-                for item in compactions
+        active_id = session.active_compaction_id
+        if active_id is not None and not any(
+            item.compaction_id == active_id for item in compactions
+        ):
+            raise PersistenceError(
+                f"session {session_id} references missing compaction {active_id}"
             )
+        return tuple(
+            SessionSummary(
+                session_id=session_id,
+                compaction_id=item.compaction_id,
+                created_at=item.created_at,
+                trigger=item.trigger,
+                summary=item.summary,
+                active=item.compaction_id == active_id,
+            )
+            for item in compactions
+        )
 
     def context(self, session_id: str) -> SessionContextSnapshot | None:
         self._require_session(session_id)
@@ -276,7 +287,60 @@ class SessionService:
             commits=tuple(snapshot.commits),
         )
 
-    def observation_snapshot(self, session_id: str) -> SessionObservationSnapshot:
+    def history_window(
+        self,
+        session_id: str,
+        *,
+        limit: int = 200,
+        before: int | None = None,
+        history_epoch: int | None = None,
+        anchor: SessionHistoryAnchor | None = None,
+    ) -> SessionHistoryWindow:
+        """Read a recent complete-frame window, or continue within the same epoch.
+
+        A changed epoch returns its identity and no page. The observer supplies
+        the replacement snapshot; callers must never apply an old cursor to it.
+        """
+        if limit < 1:
+            raise ValueError("history window limit must be positive")
+        if before is not None and history_epoch is None:
+            raise ValueError("a history cursor requires its history epoch")
+        with self._store.session_read(session_id):
+            session = self._load_session_record(session_id)
+            if history_epoch is not None and history_epoch != session.history_epoch:
+                return SessionHistoryWindow(
+                    session_id=session_id, history_epoch=session.history_epoch
+                )
+            if (
+                before is None
+                and anchor is not None
+                and anchor.history_epoch == session.history_epoch
+            ):
+                limit = max(limit, session.message_count - anchor.first_sequence + 1)
+            with closing(self._store.iter_messages_before(session_id, before=before)) as records:
+                messages, cursor = select_history_suffix(records, limit=limit)
+            run_ids = dict.fromkeys(message.run_id for message in messages if message.run_id)
+            message_ids = {message.message_id for message in messages}
+            return SessionHistoryWindow(
+                session_id=session_id,
+                history_epoch=session.history_epoch,
+                messages=messages,
+                runs=tuple(self._store.load_run(session_id, run_id) for run_id in run_ids),
+                compactions=tuple(
+                    item
+                    for item in self._store.load_compactions(session_id)
+                    if item.history_boundary_message_id in message_ids
+                ),
+                before_cursor=cursor,
+            )
+
+    def observation_snapshot(
+        self,
+        session_id: str,
+        *,
+        history_limit: int | None = None,
+        history_anchor: SessionHistoryAnchor | None = None,
+    ) -> SessionObservationSnapshot:
         """Read a canonical snapshot and event cursor under one store boundary.
 
         Terminal Run events are intentionally omitted because canonical messages
@@ -286,17 +350,63 @@ class SessionService:
         """
 
         try:
-            snapshot = self._store.load_session_observation(session_id)
+            with self._store.session_read(session_id):
+                if history_limit is None:
+                    snapshot = self._store.load_session_observation(session_id)
+                    session = snapshot.session
+                    messages = tuple(snapshot.messages)
+                    runs = tuple(snapshot.runs)
+                    compactions = tuple(snapshot.compactions)
+                    events = tuple(snapshot.active_run_events)
+                    high_water = snapshot.event_high_water
+                    active = snapshot.active_compaction
+                    before_cursor = None
+                else:
+                    session = self._load_session_record(session_id)
+                    window = self.history_window(
+                        session_id, limit=history_limit, anchor=history_anchor
+                    )
+                    messages, runs, compactions = window.messages, window.runs, window.compactions
+                    recent_run_id = session.active_run_id or session.last_run_id
+                    if recent_run_id and not any(run.run_id == recent_run_id for run in runs):
+                        runs = (*runs, self._store.load_run(session_id, recent_run_id))
+                    events = self._active_run_events(session_id, session.active_run_id)
+                    high_water = self._store.latest_event_sequence(session_id)
+                    active = self._store.load_active_compaction(session_id)
+                    before_cursor = window.before_cursor
+                context = self._store.load_latest_context_header(session_id)
         except FileNotFoundError as exc:
             raise SessionNotFoundError(f"session not found: {session_id}") from exc
+        metrics = context.metrics if context is not None else None
+        if active is not None and active.context_metrics_after is not None:
+            if context is None or active.created_at > context.prepared_at:
+                metrics = active.context_metrics_after
         return SessionObservationSnapshot(
-            session=SessionView.from_record(snapshot.session),
-            messages=tuple(snapshot.messages),
-            events=tuple(snapshot.active_run_events),
-            runs=tuple(snapshot.runs),
-            compactions=tuple(snapshot.compactions),
-            event_high_water=snapshot.event_high_water,
+            session=SessionView.from_record(session),
+            queued_inputs=project_pending_user_inputs(session),
+            messages=messages,
+            events=events,
+            runs=runs,
+            compactions=compactions,
+            event_high_water=high_water,
+            context_status=SessionContextStatus.from_record(context) if context else None,
+            effective_context_metrics=metrics,
+            history_before_cursor=before_cursor,
         )
+
+    def _active_run_events(self, session_id: str, run_id: str | None) -> tuple[EventRecord, ...]:
+        if run_id is None:
+            return ()
+        events: list[EventRecord] = []
+        cursor = 0
+        while True:
+            page, next_cursor = self._store.load_events_page(
+                session_id, run_id=run_id, cursor=cursor, limit=256
+            )
+            events.extend(page)
+            if next_cursor is None:
+                return tuple(events)
+            cursor = next_cursor
 
     def message_page(
         self,
@@ -305,7 +415,7 @@ class SessionService:
         cursor: int = 0,
         limit: int = 100,
     ) -> SessionMessagePage:
-        with self._store.session_mutation(session_id):
+        with self._store.session_read(session_id):
             messages, next_cursor = self._store.load_messages_page(
                 session_id,
                 cursor=cursor,
@@ -318,6 +428,37 @@ class SessionService:
                 next_cursor=next_cursor,
             )
 
+    def observation_events(
+        self, session_id: str, *, after_sequence: int, limit: int
+    ) -> tuple[SessionObservationBatch, bool]:
+        """Read a bounded durable suffix and its input messages in one history boundary."""
+        with self._store.session_read(session_id):
+            session = self._store.load_session_record(session_id)
+            events, more = self._store.load_events_after(
+                session_id, after_sequence=after_sequence, limit=limit
+            )
+            ids = dict.fromkeys(
+                identity
+                for event in events
+                if event.history_epoch == session.history_epoch
+                and event.event_type
+                in {
+                    "user_message_added",
+                    "host_message_added",
+                    "plugin_message_added",
+                    "queued_input_consumed",
+                }
+                if isinstance((identity := event.payload.get("message_id")), str)
+            )
+            messages = tuple(self._store.load_message(session_id, identity) for identity in ids)
+        return SessionObservationBatch(
+            session_id=session_id,
+            history_epoch=session.history_epoch,
+            event_high_water=events[-1].sequence if events else after_sequence,
+            events=tuple(project_runtime_event(event) for event in events),
+            messages=messages,
+        ), more
+
     def message(self, session_id: str, message_id: str) -> MessageRecord:
         """Read one canonical message by its stable event-facing identity."""
 
@@ -327,7 +468,7 @@ class SessionService:
         self, session_id: str, message_ids: tuple[str, ...], *, history_epoch: int
     ) -> SessionMessagePage:
         """Resolve event references only within their observed canonical history."""
-        with self._store.session_mutation(session_id):
+        with self._store.session_read(session_id):
             session = self._store.load_session_record(session_id)
             return SessionMessagePage(
                 session_id=session_id,

@@ -556,6 +556,15 @@ class ReasoningView(RangeSelectionOnly, Vertical):
         self._content.set_class(not expanded, "collapsed")
         self._render_label()
 
+    def reset(self, *, expanded: bool) -> None:
+        self._stop_timer()
+        self._elapsed_at_start = 0.0
+        self._completed_seconds = None
+        self._content.replace("")
+        self._content.set_class(not expanded, "collapsed")
+        self.display = False
+        self._render_label()
+
     async def append(self, text: str, *, started_at: datetime | None = None) -> None:
         if not text:
             return
@@ -656,6 +665,25 @@ class AssistantTurn(RangeSelectionOnly, Vertical):
     def compose(self) -> ComposeResult:
         yield self.reasoning
         yield self.tail
+
+    def reset(
+        self,
+        *,
+        run_id: str | None = None,
+        after_tool: bool = False,
+        reasoning_expanded: bool = True,
+    ) -> None:
+        """Replace the live round while retaining the view's mounted surface."""
+        if self.is_attached and any(widget.text_selection for widget in self.query(Widget)):
+            self.screen.clear_selection()
+        self.display = False
+        self.run_id = run_id
+        self.set_class(after_tool, "after-tool")
+        self._stream = AssistantMarkdownStream()
+        self._reasoning_pending = True
+        self._tail_reset_pending = False
+        self.reasoning.reset(expanded=reasoning_expanded)
+        self.clear_tail()
 
     @property
     def source(self) -> str:
@@ -1110,7 +1138,6 @@ class WelcomePanel(WelcomeHost):
 
     def set_welcome_mode(self, enabled: bool) -> None:
         super().set_welcome_mode(enabled)
-        self._subagent_navigation.display = not enabled
         self._command_popup.styles.overlay = "screen" if enabled else "none"
         if not enabled:
             self._command_popup.styles.offset = (0, 0)
@@ -1233,7 +1260,10 @@ def _presents_message(
     )
 
 
-def _project_transcript_entries(
+type PreparedTranscript = tuple[tuple[TranscriptEntry, ...], frozenset[str]]
+
+
+def project_transcript_entries(
     messages: tuple[MessageRecord, ...],
     compactions: tuple[CompactionRecord, ...],
     runs: tuple[RunPresentation, ...],
@@ -1376,6 +1406,9 @@ class _ConversationTranscript(RangeSelectionOnly, Vertical):
 
 
 class ConversationView(RangeSelectionOnly, VerticalScroll):
+    class HistoryTopReached(Message):
+        """Upward navigation reached the start of the loaded history."""
+
     def __init__(
         self,
         *,
@@ -1392,8 +1425,11 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             _tool_activity_text,
             reasoning_expanded=reasoning_expanded,
         )
+        self._live_turn = AssistantTurn(reasoning_expanded=reasoning_expanded)
+        self._live_turn.display = False
         self._transcript = _ConversationTranscript(
             self._history,
+            self._live_turn,
             id="conversation-transcript",
         )
         self._system_status = TuiSystemStatus()
@@ -1407,6 +1443,41 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
 
     def compose(self) -> ComposeResult:
         yield self._transcript
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        if not event.ctrl and not event.shift and self.scroll_y <= 0:
+            self.release_anchor()
+            self.post_message(self.HistoryTopReached())
+            event.stop()
+
+    def action_page_up(self) -> None:
+        if self.scroll_y <= 0:
+            self.release_anchor()
+            self.post_message(self.HistoryTopReached())
+        else:
+            self.scroll_page_up(animate=False)
+
+    def action_page_down(self) -> None:
+        self.scroll_page_down(animate=False)
+
+    def action_scroll_up(self) -> None:
+        if self.scroll_y <= 0:
+            self.release_anchor()
+            self.post_message(self.HistoryTopReached())
+        else:
+            super().action_scroll_up()
+
+    async def on_conversation_history_prefix_rendered(
+        self, message: ConversationHistory.PrefixRendered
+    ) -> None:
+        if not self._follow_tail:
+            await self.stop_animation("scroll_y", complete=False)
+            self._restore_scroll_y(self.scroll_y + message.line_delta)
+
+    def prepend_transcript(self, prepared: PreparedTranscript) -> None:
+        entries, run_ids = prepared
+        self._presented_run_ids.update(run_ids)
+        self._history.prepend(entries)
 
     def arrange(self, size: Size, optimal: bool = False) -> DockArrangeResult:
         """Resolve the scroll position from the viewport used by this layout pass.
@@ -1424,7 +1495,8 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                 scroll_y = max_scroll_y
             elif self._restored_scroll_y is not None:
                 scroll_y = min(self._restored_scroll_y, max_scroll_y)
-                self._restored_scroll_y = None
+                if self._history.render_complete:
+                    self._restored_scroll_y = None
             else:
                 scroll_y = min(self.scroll_y, max_scroll_y)
             self.set_scroll(None, scroll_y)
@@ -1461,7 +1533,19 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
 
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
         super().watch_scroll_y(old_value, new_value)
-        if not self._follow_tail and new_value >= self.max_scroll_y:
+        # Layout rounds animated offsets to cells; detect the visible edge once.
+        if (
+            not self._follow_tail
+            and self._restored_scroll_y is None
+            and round(old_value) > 0
+            and round(new_value) == 0
+        ):
+            self.post_message(self.HistoryTopReached())
+        if (
+            not self._follow_tail
+            and self._restored_scroll_y is None
+            and new_value >= self.max_scroll_y
+        ):
             self._follow_tail = True
 
     def on_mount(self) -> None:
@@ -1470,7 +1554,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
     async def show_welcome(self) -> None:
         await self._clear_live_transcript()
         self._history.replace(())
-        self._set_showing_welcome(True)
+        self.set_welcome_mode(True)
         self._assistant = None
         self._tools.clear()
         self._current_run_id = None
@@ -1486,7 +1570,9 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
     def showing_welcome(self) -> bool:
         return self._showing_welcome
 
-    def _set_showing_welcome(self, showing: bool) -> None:
+    def set_welcome_mode(self, showing: bool) -> None:
+        if self._showing_welcome == showing:
+            return
         self._showing_welcome = showing
         if self._welcome_state_changed is not None:
             self._welcome_state_changed(showing)
@@ -1542,14 +1628,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         held_scroll_y: float | None = None,
         reusable_history: ConversationHistoryState | None = None,
     ) -> None:
-        await self._clear_live_transcript()
-        self._assistant = None
-        self._tools.clear()
-        self._showing_welcome = False
-        self._current_run_id = None
-        self._presented_run_ids.clear()
-        self._visible_scaffold_delegation_id = visible_scaffold_delegation_id
-
         # Canonical history contains both autonomous dialogue and harness
         # scaffolding. A child view deliberately presents only the user-role
         # inputs belonging to its own Delegation; every other scaffold remains
@@ -1564,7 +1642,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             run_presentations,
         ):
             transcript, presented_run_ids = await asyncio.to_thread(
-                _project_transcript_entries,
+                project_transcript_entries,
                 materialized,
                 compaction_records,
                 run_presentations,
@@ -1572,32 +1650,61 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                 visible_scaffold_delegation_id=visible_scaffold_delegation_id,
             )
         else:
-            transcript, presented_run_ids = _project_transcript_entries(
+            transcript, presented_run_ids = project_transcript_entries(
                 materialized,
                 compaction_records,
                 run_presentations,
                 mutable_tool_call_keys=mutable_tool_call_keys,
                 visible_scaffold_delegation_id=visible_scaffold_delegation_id,
             )
+        await self.load_transcript(
+            (transcript, presented_run_ids),
+            visible_scaffold_delegation_id=visible_scaffold_delegation_id,
+            held_scroll_y=held_scroll_y,
+            reusable_history=reusable_history,
+        )
+
+    async def load_transcript(
+        self,
+        prepared: PreparedTranscript,
+        *,
+        visible_scaffold_delegation_id: str | None = None,
+        held_scroll_y: float | None = None,
+        reusable_history: ConversationHistoryState | None = None,
+    ) -> None:
+        """Commit prepared content without waiting for history layout."""
+        self.anchor()
+        await self._clear_live_transcript()
+        self._assistant = None
+        self._tools.clear()
+        self._current_run_id = None
+        self._presented_run_ids.clear()
+        self._visible_scaffold_delegation_id = visible_scaffold_delegation_id
+
+        transcript, presented_run_ids = prepared
         self._presented_run_ids.update(presented_run_ids)
 
         if not transcript:
-            # A loaded session with no visible dialogue is still an empty state.
+            # An empty body may belong to an accepted input awaiting execution.
+            # History replacement does not choose which page the user is visiting.
             self._history.replace(())
-            self._set_showing_welcome(True)
             self.anchor()
             return
 
-        self._set_showing_welcome(False)
-        await self._history.load(transcript, reusable_state=reusable_history)
+        self.set_welcome_mode(False)
+        await self._history.load(transcript, reusable_state=reusable_history, wait_for_render=False)
         if held_scroll_y is None:
             self.anchor()
         else:
             self._restore_scroll_y(held_scroll_y)
 
     async def _clear_live_transcript(self) -> None:
+        self._assistant = None
+        self._live_turn.reset(reasoning_expanded=self._reasoning_expanded)
         live_children = tuple(
-            child for child in self._transcript.children if child is not self._history
+            child
+            for child in self._transcript.children
+            if child is not self._history and child is not self._live_turn
         )
         if live_children:
             # DOM teardown owns the message tasks; cancelling a renderer must
@@ -1607,15 +1714,23 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
     def user_turn_summaries(self) -> tuple[str, ...]:
         return self._history.user_turns
 
+    @property
+    def presented_run_ids(self) -> frozenset[str]:
+        return frozenset(self._presented_run_ids)
+
     def scroll_to_user_turn(self, index: int) -> None:
         historical_lines = self._history.user_lines
         if 0 <= index < len(historical_lines):
+            self.release_anchor()
             self.scroll_to(y=historical_lines[index], animate=False)
 
-    def scroll_to_previous_user_turn(self) -> None:
+    def scroll_to_previous_user_turn(self) -> bool:
         historical_lines = self._history.user_lines
         index = bisect_left(historical_lines, self.scroll_y) - 1
+        if index < 0:
+            return False
         self.scroll_to_user_turn(index)
+        return True
 
     def scroll_to_next_user_turn(self) -> None:
         historical_lines = self._history.user_lines
@@ -1628,7 +1743,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
     async def _dismiss_welcome(self) -> None:
         """Transition from the empty welcome layout to the conversation layout."""
         if self._showing_welcome:
-            self._set_showing_welcome(False)
+            self.set_welcome_mode(False)
 
     async def add_user(self, text: str, *, created_at: datetime | None = None) -> None:
         await self._dismiss_welcome()
@@ -1642,7 +1757,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                 created_at=created_at or datetime.now().astimezone(),
             )
         )
-        await self._history.wait_until_rendered()
 
     async def add_user_message(self, message: MessageRecord) -> None:
         if message.role != "user" or not self._presents_message(message):
@@ -1659,14 +1773,9 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
 
     async def append_assistant(self, text: str) -> None:
         await self._dismiss_welcome()
-        turn = self._assistant
-        if turn is None:
-            turn = self._create_turn()
-            self._assistant = turn
-            blocks = await turn.feed(text)
-            await self._transcript.mount(turn)
-        else:
-            blocks = await turn.feed(text)
+        turn = self._ensure_turn()
+        blocks = await turn.feed(text)
+        turn.display = True
         await self._freeze_blocks(turn, blocks)
         turn.commit_frozen_blocks()
 
@@ -1681,21 +1790,19 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             # Reasoning after answer text starts a new model round; the previous
             # round must freeze before the new one renders below it.
             await self.finish_assistant()
-        turn = await self._ensure_turn()
+        turn = self._ensure_turn()
         await turn.append_reasoning(text, started_at=started_at)
+        turn.display = True
 
-    async def _ensure_turn(self) -> AssistantTurn:
+    def _ensure_turn(self) -> AssistantTurn:
         if self._assistant is None:
-            self._assistant = self._create_turn()
-            await self._transcript.mount(self._assistant)
+            self._live_turn.reset(
+                run_id=self._current_run_id,
+                after_tool=self._history_ends_with_tool,
+                reasoning_expanded=self._reasoning_expanded,
+            )
+            self._assistant = self._live_turn
         return self._assistant
-
-    def _create_turn(self) -> AssistantTurn:
-        return AssistantTurn(
-            run_id=self._current_run_id,
-            after_tool=self._history_ends_with_tool,
-            reasoning_expanded=self._reasoning_expanded,
-        )
 
     async def _freeze_blocks(self, turn: AssistantTurn, blocks: Iterable[str]) -> None:
         """Freeze completed blocks, promoting pending reasoning ahead of them."""
@@ -1715,7 +1822,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                     ),
                     reasoning_expanded=reasoning_expanded,
                 )
-        await self._history.append_many_rendered(
+        self._history.append_many(
             TranscriptEntry(kind="assistant", text=block, run_id=turn.run_id)
             for block in materialized
         )
@@ -1741,7 +1848,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                     reasoning_expanded=reasoning_expanded,
                 )
         self._assistant = None
-        await asyncio.shield(turn.remove())
+        turn.reset(reasoning_expanded=self._reasoning_expanded)
 
     @property
     def _history_ends_with_tool(self) -> bool:
@@ -1763,11 +1870,12 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             await self.finish_assistant()
         self._history.append(TranscriptEntry(kind="run", run_id=run.run_id, run=run))
         self._presented_run_ids.add(run.run_id)
-        await self._history.wait_until_rendered()
 
     async def sync_tools(self, tools: tuple[RuntimeToolCallActivity, ...]) -> None:
-        await self._dismiss_welcome()
         tools = tuple(tool for tool in tools if tool.tool_name)
+        if not tools:
+            return
+        await self._dismiss_welcome()
         historical_tool_ids = self._history.update_tools(
             tools,
             run_id=self._current_run_id,
@@ -1793,7 +1901,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             else:
                 row.apply_tool(tool)
         if new_rows:
-            await self._transcript.mount_all(new_rows)
+            await self._transcript.mount_all(new_rows, before=self._live_turn)
 
         # Keep a tool batch live until every row is terminal. Archiving rows one
         # by one would move a later-completing row ahead of an earlier active row
@@ -1801,7 +1909,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         if self._tools and all(_is_terminal_tool(row.tool) for row in self._tools.values()):
             terminal_rows = tuple(self._tools.values())
             self._tools.clear()
-            await self._history.append_many_rendered(
+            self._history.append_many(
                 TranscriptEntry(
                     kind="tool",
                     run_id=row.run_id,
@@ -1856,7 +1964,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         # partial answer keeps presentation order identical to event order.
         await self.finish_assistant()
         self._history.append(TranscriptEntry(kind="notice", text=message, error=error))
-        await self._history.wait_until_rendered()
 
     async def add_command_output(self, output: str) -> None:
         """Present short feedback as a notice and multiline content as literal code."""
@@ -1866,7 +1973,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         await self._dismiss_welcome()
         await self.finish_assistant()
         self._history.append(TranscriptEntry(kind="command", text=output))
-        await self._history.wait_until_rendered()
 
     async def add_compaction(
         self,
@@ -1889,7 +1995,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                 ),
             )
         )
-        await self._history.wait_until_rendered()
 
 
 class ApprovalPanel(Vertical):
@@ -2912,7 +3017,7 @@ class CommandPopup(VerticalScroll):
 
 
 class QueuedInputPanel(VerticalScroll):
-    """Live projection of direct user inputs awaiting a Runtime boundary."""
+    """Show inputs waiting on an active Run; retain all pending inputs for withdrawal."""
 
     def __init__(self) -> None:
         super().__init__(id="queued-input-panel")
@@ -2936,6 +3041,7 @@ class QueuedInputPanel(VerticalScroll):
     def set_inputs(self, inputs: tuple[QueuedUserInputView, ...]) -> None:
         with self.app.batch_update():
             self._inputs = inputs
+            inputs = tuple(item for item in inputs if item.waiting_on_run_id is not None)
             if not inputs:
                 self.display = False
                 return
@@ -3048,6 +3154,7 @@ class Composer(AttachmentTextArea):
         self._right_click_paste_handled = False
         self.attachments_enabled = True
         self.import_pending = False
+        self.submission_pending = False
         self._history_session_id: str | None = None
 
     def bind_history(self, session_id: str | None) -> None:
@@ -3463,6 +3570,8 @@ class Composer(AttachmentTextArea):
                     draft=draft,
                 )
             )
+            return
+        if self.submission_pending:
             return
         if context is not None and self.attachment_menu_open:
             self.finish_attachment_menu()

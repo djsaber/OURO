@@ -40,7 +40,8 @@ from ouro.application.plugin_models import (
 from ouro.application.queued_inputs import QueuedUserInputView
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
-from ouro.application.session_models import SessionContextStatus, SessionMessagePage
+from ouro.application.session_models import SessionContextStatus
+from ouro.application.session_observation import observation_event
 from ouro.application.supervisor_models import RuntimeActivitySnapshot, RuntimeToolCallActivity
 from ouro.config import reasoning_effort_preset
 from ouro.core.adapter import RuntimeAdapter
@@ -71,7 +72,6 @@ from ouro.core.provider import (
     ProviderStreamEvent,
 )
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
-from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest, ToolSource
 from ouro.local_application import LocalApplication
@@ -97,7 +97,7 @@ from ouro.tools import (
     ToolResult,
     builtin_tools,
 )
-from ouro.tui.app import OuroTuiApp, _active_stream_tail, _event_record, _session_choices
+from ouro.tui.app import OuroTuiApp, _active_stream_tail, _session_choices
 from ouro.tui.commands import TUI_COMMANDS, TuiCommand, TuiCommandArgument
 from ouro.tui.configuration_screens import (
     AgentDefinitionConfigurationScreen,
@@ -110,7 +110,6 @@ from ouro.tui.configuration_screens import (
 )
 from ouro.tui.configuration_workflows import _mcp_management_choices, _skill_choice
 from ouro.tui.controller import (
-    LoadedSession,
     McpServerStatus,
     TuiBootstrap,
     TuiDailyUsage,
@@ -1880,7 +1879,7 @@ async def test_streaming_assistant_renders_completed_source_lines_once(
 
 
 @pytest.mark.asyncio
-async def test_first_assistant_chunk_is_applied_before_the_turn_is_mounted(
+async def test_first_assistant_chunk_uses_the_mounted_live_surface(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1889,6 +1888,8 @@ async def test_first_assistant_chunk_is_applied_before_the_turn_is_mounted(
     async with run_ready_app(app, size=(80, 24)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
+        turn = conversation.query_one(AssistantTurn)
+        assert not turn.display
         original_mount = conversation._transcript.mount
         mounted_sources: list[str] = []
 
@@ -1902,8 +1903,10 @@ async def test_first_assistant_chunk_is_applied_before_the_turn_is_mounted(
 
         await conversation.append_assistant("first ")
 
-        assert mounted_sources == ["first "]
-        assert conversation.query_one(AssistantTurn).source == "first "
+        assert mounted_sources == []
+        assert conversation.query_one(AssistantTurn) is turn
+        assert turn.source == "first "
+        assert turn.display
 
 
 @pytest.mark.asyncio
@@ -1946,7 +1949,7 @@ async def test_long_live_markdown_closes_without_blocking_the_ui_event_loop(
         assert parser_entered is True
         assert event_loop_remained_responsive is True
         assert parser_threads != [event_loop_thread]
-        assert not conversation.query(AssistantTurn)
+        assert not conversation.query_one(AssistantTurn).display
 
 
 @pytest.mark.asyncio
@@ -3011,37 +3014,9 @@ async def test_visible_subscription_owns_events_without_global_sink_duplicates(
             payload={"text": "duplicate sink delivery"},
         )
 
-        app._publish_runtime_event(event)
+        await app._controller._receive_event(event)
 
         assert app._pending_runtime_events == []
-
-
-@pytest.mark.asyncio
-async def test_tui_runtime_event_staging_buffer_is_bounded(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("ouro.tui.app._RUNTIME_EVENT_BUFFER_MAX", 2)
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with run_ready_app(app, size=(100, 32)) as pilot:
-        await pilot.pause()
-        events = tuple(
-            EventRecord(
-                session_id="ses_buffer",
-                run_id="run_buffer",
-                event_type="model_text_delta",
-                sequence=sequence,
-                payload={"text": str(sequence)},
-            )
-            for sequence in range(1, 4)
-        )
-
-        assert app._queue_runtime_event(events[0]) is True
-        assert app._queue_runtime_event(events[1]) is True
-        assert app._queue_runtime_event(events[2]) is False
-        assert app._pending_runtime_events == list(events[:2])
-        app._pending_runtime_events.clear()
 
 
 @pytest.mark.asyncio
@@ -3124,103 +3099,6 @@ async def test_tui_runtime_event_staging_preserves_a_streamed_tool_frame(
         assert app._pending_runtime_events == [events[2]]
         assert app._runtime_events_frame_scheduled is not None
         app._pending_runtime_events.clear()
-
-
-@pytest.mark.asyncio
-async def test_terminal_run_events_reuse_the_bounded_runtime_event_consumer(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("ouro.tui.app._RUNTIME_EVENT_APPLY_MAX", 2)
-    app = OuroTuiApp(application=_application(tmp_path))
-    session = SessionRecord(session_id="ses_terminal_prefix", title="Terminal prefix")
-    run = RunRecord(
-        session_id=session.session_id,
-        run_id="run_terminal_prefix",
-        status="completed",
-    )
-    events = [
-        EventRecord(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="model_text_delta",
-            sequence=sequence,
-            payload={"text": str(sequence)},
-        )
-        for sequence in range(1, 6)
-    ]
-    prefixes: list[tuple[int, ...]] = []
-
-    async with run_ready_app(app, size=(100, 32)) as pilot:
-        await pilot.pause()
-        app._projection = TuiSessionProjection(session.session_id)
-        apply_events = app._apply_runtime_events
-
-        async def recording_apply(events):
-            prefixes.append(tuple(event.sequence for event in events))
-            await apply_events(events)
-
-        monkeypatch.setattr(app, "_apply_runtime_events", recording_apply)
-
-        await app._apply_run_result(
-            RunResult(
-                session=session,
-                run=run,
-                final_text="12345",
-                events=events,
-            )
-        )
-
-        assert prefixes
-        assert all(len(prefix) <= 2 for prefix in prefixes)
-        assert tuple(sequence for prefix in prefixes for sequence in prefix) == (1, 2, 3, 4, 5)
-        assert app._projection.last_sequence == 5
-
-
-@pytest.mark.asyncio
-async def test_terminal_run_events_skip_live_and_pending_event_prefixes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("ouro.tui.app._RUNTIME_EVENT_APPLY_MAX", 2)
-    app = OuroTuiApp(application=_application(tmp_path))
-    session = SessionRecord(session_id="ses_terminal_dedup", title="Terminal dedup")
-    run = RunRecord(
-        session_id=session.session_id,
-        run_id="run_terminal_dedup",
-        status="completed",
-    )
-    events = [
-        EventRecord(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="model_text_delta",
-            sequence=sequence,
-            payload={"text": str(sequence)},
-        )
-        for sequence in range(1, 6)
-    ]
-    prefixes: list[tuple[int, ...]] = []
-
-    async with run_ready_app(app, size=(100, 32)) as pilot:
-        await pilot.pause()
-        projection = TuiSessionProjection(session.session_id)
-        projection.apply(events[0])
-        projection.apply(events[1])
-        app._projection = projection
-        app._pending_runtime_events.append(events[2])
-        apply_events = app._apply_runtime_events
-
-        async def recording_apply(events):
-            prefixes.append(tuple(event.sequence for event in events))
-            await apply_events(events)
-
-        monkeypatch.setattr(app, "_apply_runtime_events", recording_apply)
-
-        await app._apply_run_result(RunResult(session=session, run=run, events=events))
-
-        assert tuple(sequence for prefix in prefixes for sequence in prefix) == (3, 4, 5)
-        assert app._projection.last_sequence == 5
 
 
 @pytest.mark.asyncio
@@ -3416,12 +3294,14 @@ async def test_queued_input_rows_use_single_line_tokenized_previews(tmp_path: Pa
             prompt=long_prompt,
             mode="steer",
             queued_at=datetime.now(UTC),
+            waiting_on_run_id="active_run",
         ),
         QueuedUserInputView(
             queue_id="queue_follow_up",
             prompt="follow next",
             mode="follow_up",
             queued_at=datetime.now(UTC),
+            waiting_on_run_id="active_run",
         ),
     )
 
@@ -3675,9 +3555,12 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(
         approval_panel = app.query_one(InteractionBar)
         assert approval_panel.display is True
         subagent_panel = app.query_one(SubagentNavigationPanel)
+        queue_panel = app.query_one(QueuedInputPanel)
         assert subagent_panel.display is True
+        await pilot.pause()
         assert subagent_panel.region.bottom == approval_panel.region.y
         assert approval_panel.region.bottom == app.query_one(Composer).region.y
+        assert app.query_one(Composer).region.bottom == queue_panel.region.y
         assert (
             "Subagent General"
             in approval_panel.query_one("#interaction-summary", Static).render().plain
@@ -4350,7 +4233,7 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
             line.startswith(" " * thought_indent + "\N{BOX DRAWINGS LIGHT VERTICAL} ")
             for line in reasoning_lines
         )
-        assert not app.query(AssistantTurn)
+        assert not app.query_one(AssistantTurn).display
 
 
 @pytest.mark.asyncio
@@ -4614,7 +4497,7 @@ async def test_history_batch_mount_preserves_dialogue_order(tmp_path: Path) -> N
             ("user", "Second question"),
             ("assistant", "Second answer"),
         ]
-        assert not conversation.query(AssistantTurn)
+        assert not conversation.query_one(AssistantTurn).display
 
 
 @pytest.mark.asyncio
@@ -4774,7 +4657,7 @@ async def test_live_host_event_updates_context_without_reloading(tmp_path: Path)
             },
         )
 
-        await app._apply_runtime_events((_event_record(project_runtime_event(started)),))
+        await app._apply_runtime_events((observation_event(project_runtime_event(started)),))
         await pilot.pause()
 
         assert app.query_one("#context-detail", Static).render().plain.startswith("250 ")
@@ -4796,6 +4679,7 @@ async def test_persisted_history_uses_a_bounded_widget_tree(tmp_path: Path) -> N
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
+        initial_widgets = set(conversation.query("*"))
         await conversation.load_messages(messages)
         await pilot.pause()
 
@@ -4803,7 +4687,7 @@ async def test_persisted_history_uses_a_bounded_widget_tree(tmp_path: Path) -> N
         # Assistant messages with reasoning split into a reasoning entry plus
         # one entry per markdown block: 200 user + 200 reasoning + 200 text.
         assert len(history.entries) == 600
-        assert len(list(conversation.query("*"))) == 2
+        assert set(conversation.query("*")) == initial_widgets
 
 
 @pytest.mark.asyncio
@@ -4823,7 +4707,7 @@ async def test_history_projection_does_not_block_the_event_loop(
         entered = threading.Event()
         release = threading.Event()
         projection_threads: list[int] = []
-        project_transcript = tui_widgets._project_transcript_entries
+        project_transcript = tui_widgets.project_transcript_entries
 
         def blocking_projection(*args, **kwargs):
             projection_threads.append(threading.get_ident())
@@ -4833,7 +4717,7 @@ async def test_history_projection_does_not_block_the_event_loop(
 
         monkeypatch.setattr(
             tui_widgets,
-            "_project_transcript_entries",
+            "project_transcript_entries",
             blocking_projection,
         )
         watchdog = threading.Timer(1, release.set)
@@ -4861,15 +4745,54 @@ async def test_completed_live_turns_keep_the_widget_tree_bounded(tmp_path: Path)
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
+        live_turns = set()
         for index in range(100):
             await conversation.add_user(f"Question {index}")
             await conversation.append_assistant(f"Answer {index}")
+            live_turns.add(conversation.query_one(AssistantTurn))
             await conversation.finish_assistant()
         await pilot.pause()
 
         history = conversation.query_one(ConversationHistory)
         assert len(history.entries) == 200
-        assert len(list(conversation.query("*"))) == 2
+        assert len(live_turns) == 1
+        turn = live_turns.pop()
+        assert not turn.display
+        assert not turn.source
+        assert not turn.reasoning.text
+        assert turn.reasoning._timer is None
+
+
+@pytest.mark.asyncio
+async def test_live_surface_resets_round_content_and_reasoning_clock(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    async with run_ready_app(app) as pilot:
+        conversation = app.query_one(ConversationView)
+        conversation.begin_model_request(run_id="previous_run")
+        await conversation.append_reasoning(
+            "Previous thought", started_at=datetime.now(UTC) - timedelta(seconds=30)
+        )
+        await conversation.append_assistant("Previous answer")
+        turn = conversation.query_one(AssistantTurn)
+        assert turn.reasoning.duration_seconds >= 30
+
+        await conversation.show_welcome()
+        assert not turn.display
+        assert not turn.reasoning.text
+        assert not turn.tail.text
+        assert turn.reasoning._timer is None
+
+        conversation.begin_model_request(run_id="next_run")
+        await conversation.append_reasoning("Next thought", started_at=datetime.now(UTC))
+        await pilot.pause()
+        assert conversation.query_one(AssistantTurn) is turn
+        assert turn.run_id == "next_run"
+        assert turn.reasoning.text == "Next thought"
+        assert turn.reasoning.duration_seconds is None
+        assert turn.reasoning._elapsed_seconds() < 5
+        assert turn.reasoning._timer is not None
+        await conversation.finish_assistant()
+        assert turn.reasoning._timer is None
 
 
 @pytest.mark.asyncio
@@ -5456,19 +5379,11 @@ async def test_plugin_message_event_renders_non_scaffold_user_input(
     )
     by_id = {message.message_id: message for message in (visible, scaffold)}
 
-    async def messages_at_history(session_id, message_ids, *, history_epoch):
-        return SessionMessagePage(
-            session_id=session_id,
-            history_epoch=history_epoch,
-            messages=tuple(by_id[message_id] for message_id in message_ids),
-        )
-
     async def queued_user_inputs(_session_id: str):
         return ()
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        monkeypatch.setattr(app._controller, "messages_at_history", messages_at_history)
         monkeypatch.setattr(app._controller, "queued_user_inputs", queued_user_inputs)
         events = tuple(
             EventRecord(
@@ -5481,7 +5396,7 @@ async def test_plugin_message_event_renders_non_scaffold_user_input(
         )
 
         app._projection = TuiSessionProjection("ses_plugin_input")
-        await app._apply_runtime_events(events)
+        await app._apply_runtime_event_batch(events, input_messages=by_id)
 
         entries = app.query_one(ConversationHistory).entries
         assert [(entry.kind, entry.text) for entry in entries] == [("user", "Ship through Goal")]
@@ -6203,6 +6118,8 @@ async def test_session_picker_groups_child_and_agent_tree_keeps_it_navigable(
             pilot,
             description="root surface after direct child entry",
         )
+        await _wait_for_worker_group(app, pilot, group="navigation")
+        await pilot.pause()
 
         assert app._visible_read_only is False
         assert composer.disabled is False
@@ -6224,6 +6141,8 @@ async def test_session_picker_groups_child_and_agent_tree_keeps_it_navigable(
             pilot,
             description="child surface after clicking its navigation node",
         )
+        await _wait_for_worker_group(app, pilot, group="navigation")
+        await pilot.pause()
 
         rendered_panel = panel.render_content(panel.content_region.width).plain
         root_node_x = rendered_panel.rfind("■ | ")
@@ -6670,14 +6589,14 @@ async def test_session_load_projects_loading_activity_until_history_is_ready(
         await pilot.pause()
         load_started = asyncio.Event()
         release_load = asyncio.Event()
-        load_session = app._controller.load_session
+        load_session = app._controller.prepare_session_selection
 
-        async def slow_load(session_id: str) -> LoadedSession:
+        async def slow_load(session_id: str):
             load_started.set()
             await release_load.wait()
             return await load_session(session_id)
 
-        monkeypatch.setattr(app._controller, "load_session", slow_load)
+        monkeypatch.setattr(app._controller, "prepare_session_selection", slow_load)
         loading = asyncio.create_task(app._open_session(session.session_id))
         await asyncio.wait_for(load_started.wait(), timeout=1)
         await pilot.pause()
@@ -6706,7 +6625,7 @@ async def test_session_picker_contains_load_failure_in_choice_dialog(
         async def fail_load(_session_id: str) -> None:
             raise PersistenceError("message journal is invalid")
 
-        monkeypatch.setattr(app._controller, "load_session", fail_load)
+        monkeypatch.setattr(app._controller, "prepare_session_selection", fail_load)
         await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         session_menu = app.screen
@@ -6745,7 +6664,7 @@ async def test_startup_resume_failure_opens_choice_dialog_and_keeps_tui_running(
     async def fail_load(_session_id: str) -> None:
         raise PersistenceError("session payload is incompatible")
 
-    monkeypatch.setattr(app._controller, "load_session", fail_load)
+    monkeypatch.setattr(app._controller, "prepare_session_selection", fail_load)
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
 
@@ -12487,9 +12406,14 @@ async def test_plan_command_without_dialogue_keeps_welcome_and_updates_status_li
             description="active plan-mode status",
         )
 
+        await _wait_until(
+            lambda: app._projection is not None,
+            pilot,
+            description="empty session observation",
+        )
         conversation = app.query_one(ConversationView)
         indicator = app.query_one(ActivityIndicator)
-        assert app._projection is None
+        assert app._projection.session_id == app._controller.session_id
         assert conversation.showing_welcome is True
         assert conversation.query_one(ConversationHistory).entries == ()
         assert app._has_active_run() is False
@@ -12504,7 +12428,7 @@ async def test_plan_command_without_dialogue_keeps_welcome_and_updates_status_li
             description="released plan-mode status",
         )
 
-        assert app._projection is None
+        assert app._projection.session_id == app._controller.session_id
         assert conversation.showing_welcome is True
         assert conversation.query_one(ConversationHistory).entries == ()
         assert indicator.render().plain.startswith(" ▣ Ready")

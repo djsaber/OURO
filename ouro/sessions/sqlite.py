@@ -4,8 +4,8 @@ import json
 import re
 import sqlite3
 import threading
-from collections.abc import Iterable, Iterator, Mapping
-from contextlib import AbstractContextManager, contextmanager
+from collections.abc import Generator, Iterable, Iterator, Mapping
+from contextlib import AbstractContextManager, closing, contextmanager
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from ouro.core.agents import DelegationRecord
 from ouro.core.base import VersionedOuroModel, new_id, utc_now
 from ouro.core.compaction import CompactionRecord
-from ouro.core.context_snapshots import ContextSnapshotRecord
+from ouro.core.context_snapshots import ContextSnapshotHeader, ContextSnapshotRecord
 from ouro.core.errors import (
     DelegationRevisionConflictError,
     PersistenceError,
@@ -62,6 +62,10 @@ from ouro.sessions.sqlite_commits import SQLiteSessionCommits
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 SQLITE_SCHEMA_VERSION = 7
+_CONTEXT_HEADER_SQL = (
+    "json_remove(payload, '$.system_prompt', '$.injected_messages', "
+    "'$.source_messages', '$.tool_definitions')"
+)
 
 
 class SQLiteSessionStore:
@@ -71,6 +75,7 @@ class SQLiteSessionStore:
         self.database = Path(database).expanduser().resolve()
         self._locks_dir = self.database.parent / f".{self.database.name}.locks"
         self._transaction_state = threading.local()
+        self._read_state = threading.local()
 
     def import_bundle(
         self,
@@ -250,6 +255,10 @@ class SQLiteSessionStore:
                     CREATE INDEX IF NOT EXISTS delegations_delivery_status
                         ON delegations(delivery_status);
                 """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS latest_context_headers ON latest_contexts"
+                f"(session_id, {_CONTEXT_HEADER_SQL})"
             )
             if existing is None:
                 connection.execute(
@@ -631,6 +640,22 @@ class SQLiteSessionStore:
             ).fetchall()
         return [self._validate_model(MessageRecord, row[0], "message tail") for row in rows]
 
+    def iter_messages_before(
+        self, session_id: str, *, before: int | None = None
+    ) -> Generator[tuple[int, MessageRecord]]:
+        if before is not None and before < 0:
+            raise ValueError("message cursor must be nonnegative")
+        with self._read_connection() as connection:
+            self._require_session(connection, session_id)
+            query = "SELECT row_id, payload FROM messages WHERE session_id = ?"
+            parameters: tuple[object, ...] = (session_id,)
+            if before is not None:
+                query += " AND row_id < ?"
+                parameters += (before,)
+            with closing(connection.execute(query + " ORDER BY row_id DESC", parameters)) as rows:
+                for row in rows:
+                    yield row[0], self._validate_model(MessageRecord, row[1], "message history")
+
     def truncate_messages(
         self, session_id: str, *, before_message_id: str, expected_last_message_id: str
     ) -> MessageTruncation:
@@ -746,6 +771,23 @@ class SQLiteSessionStore:
             ContextSnapshotRecord,
             row[0],
             f"latest context for session {session_id}",
+        )
+
+    def load_latest_context_header(self, session_id: str) -> ContextSnapshotHeader | None:
+        with self._read_connection() as connection:
+            self._require_session(connection, session_id)
+            # Read the covering expression index; provider bodies stay off this path.
+            row = connection.execute(
+                f"SELECT {_CONTEXT_HEADER_SQL} FROM latest_contexts "
+                "INDEXED BY latest_context_headers WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return (
+            self._validate_model(
+                ContextSnapshotHeader, row[0], f"latest context header for session {session_id}"
+            )
+            if row is not None
+            else None
         )
 
     def append_compaction(self, compaction: CompactionRecord) -> None:
@@ -1161,6 +1203,16 @@ class SQLiteSessionStore:
                 f"could not acquire SQLite session lock for {session_id}: {exc}"
             ) from exc
 
+    @contextmanager
+    def session_read(self, session_id: str) -> Iterator[object]:
+        with self._read_connection() as connection:
+            previous = getattr(self._read_state, "connection", None)
+            self._read_state.connection = connection
+            try:
+                yield connection
+            finally:
+                self._read_state.connection = previous
+
     def session_mutation(self, session_id: str) -> AbstractContextManager[object, None]:
         _validated_record_id(session_id, kind="session")
         return _SQLiteMutation(self)
@@ -1453,6 +1505,10 @@ class SQLiteSessionStore:
         state = getattr(self._transaction_state, "value", None)
         if state is not None:
             yield state.connection
+            return
+        read_connection = getattr(self._read_state, "connection", None)
+        if read_connection is not None:
+            yield read_connection
             return
         connection: sqlite3.Connection | None = None
         try:

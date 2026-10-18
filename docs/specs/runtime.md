@@ -323,11 +323,27 @@ application 的 durable Delegation 编排，core 不递归调用 RuntimeService�
 ## 进程内监督
 
 `RuntimeSupervisor` 在 RuntimeService 外管理跨 Session FIFO 队列、全局并发上限、状态快照和 Host 订阅。
+并发上限只约束该 Supervisor 的执行工作，不是跨进程全局配额。
 它不复制本节的 durable Run 状态机。Host detach 只关闭订阅；explicit abort 通过 RuntimeService 提交取消意图并结算；
 shutdown 在有限时间内 wait 或显式 abort。未在超时内完成的 Run 在下次运行或提交所属 Session 时由
 SessionStore 定点恢复；Host 的历史展示读取不触发恢复，进程启动本身也不扫描历史 Session。
 `waiting_child` 与其他 durable waiting 状态不占 execution permit；child 或恢复后的 parent 作为独立工作重新进入
 既有 FIFO，不增加第二个 worker pool。
+
+普通交互输入使用 `UserInputRequest` 和 `submit_user_input`：先校验并持久化输入，再复用既有队列调度消费。
+受理不等待 execution permit；活动 Session 的追加输入交由现有执行者按队列策略消费。输入保持 `source=user`、
+`role=user`、`scaffold=False`，模型、推理、workspace、权限/交互模式、附件、资源引用、技能及队列模式保留原有语义。
+`RuntimeService.run` 仍提供直接等待执行的底层接口。
+
+请求携带稳定的 Session 和 input identity。相同身份与内容的重试返回原生提交回执，消费后仍能定位消息和 Run；
+身份对应不同内容、已取消或已撤销的输入不能重新入队。回执表示持久受理，`UserInputSubmission.wait` 是可选的结果等待，
+取消该等待不拥有也不取消执行。提交在移交 Supervisor 前取消不会受理；移交后由 Supervisor 完成受理与调度，
+即使 Host 尚未收到结果也可能已成功，Host 用原身份查询或重试。普通输入的私有执行回执在工作结束后释放。
+继续运行、审批和 AskUser 使用同一 Supervisor；Host 放弃等待时可 detach 回执，完成后自动回收。
+
+shutdown 先收束已移交的短期受理任务，再对已调度工作应用既定 wait/abort 策略。
+显式取消尚未开始的普通输入工作同时撤回其待消费用户输入。Session 执行锁已被另一进程取得而 Run 尚未发布时，
+消费者等待该执行者发布 Run 或释放锁，再读取当前输入事实；不重复入队或启动第二执行者。
 
 durable Run 等待与本地执行回执分别表达结果可用和调度占用释放。一个已持久化的 queued 后续 Run 若遇到同一
 Session 的前一个本地工作尚未收尾，只有在前一个 Run 已进入终态时才等待其回执释放，再核对当前 Run 与调度

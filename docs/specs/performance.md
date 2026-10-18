@@ -68,6 +68,19 @@ filter 不执行 I/O，拒绝投递不影响持久化或其他消费者。Plugin
 - 当前 Catalog 或 Run snapshot 不可确定时，必须保守走完整观察路径；
 - 存在匹配项时继续在事件发布时保留对应不可变 Registry/Catalog 视图。
 
+## 会话状态观察
+
+正文与 Agent 状态观察共享每 Session 的有序事件跟随器。状态观察只合并活动或关系变化，不缓存历史树快照；
+无关文本片段不会触发树查询。每个观察者按需执行 canonical projector，同一观察者最多一个查询在途。
+存储读取在线程中执行，读取边界在投影和排版前释放；关闭最后一个正文或状态观察者后回收跟随器。
+根节点的 Session、选中 Run、关系与事件水位共用一个短只读边界，复用数据库连接；读取 child 前释放根边界，
+不嵌套不同 Session 的文件锁。活动状态仍使用 Supervisor 的现有投影，不增加常驻树缓存。
+
+交互式历史使用 Application 的近期窗口与 before 游标，读取成本由请求的完整帧决定；Run/compaction 元数据与
+活动 Run 事件独立保留。TUI 初始窗口为 200 条消息的软限制，向前加载复用既有 Strip，不重新排版全部已加载正文。
+选择仍有执行者的会话时，恢复入口先查询执行归属；已有 owner 不进入完整执行恢复读取。显示窗口和完整导出互不替代。
+上下文状态读取持久化 header 索引，避免为请求身份、时间与 token metrics 反序列化完整输入和媒体正文。
+
 ## TUI 输入草稿
 
 内存 `TuiInputDrafts` 始终包含最新修订。磁盘保存采用 300 ms 尾沿防抖：持续编辑只延后保存，静默后保存
@@ -116,14 +129,15 @@ Provider 和工具执行中的 `AbortSignal.is_aborted()` 是高频同步检查�
   初始化期间溢出继续发布 lagged，失败或取消必须撤销订阅。不得在线程中运行持有 asyncio 队列的整个 Supervisor。
 - Supervisor 的提交、交互恢复和 enqueue 前查询离开事件循环；最后一次 await 后必须重新检查关闭状态和 Session
   调度所有权，再一次性登记 job。Agent tree 的持久化查询同样在 worker 执行，订阅集合的变更留在 loop。
-- 历史区宽度变化与主题变化共享同一个后台全量渲染 worker；完整 render request、宽度和 revision 校验通过后才
-  原子替换 strip buffer。只改变高度的 Resize 不重绘历史，已有有效 buffer 在新结果完成前保持可见。
+- 历史冷加载、增量、宽度变化与主题变化共用一个后台渲染 worker。冷加载与增量按已绘制前缀分块追加；
+  宽度或主题改变时，完整 render request、内容版本与几何校验通过后原子替换 strip buffer。
+  只改变高度不重绘已完成历史；恢复可用几何时继续未绘制内容，已有有效 buffer 在新结果完成前保持可见。
 
 - spinner、计时器和其他定宽内容动画只触发 paint；只有几何尺寸实际变化时才触发布局；
 - 同一工具批的新行使用一次批量 mount，终态使用一次批量 history append 和一次批量 remove；复杂 Markdown/批量
   immutable transcript 渲染在 worker 上完成；
-- Runtime event buffer 每个 compositor frame 最多应用 64 条；积压前缀处理完后在下一原生帧继续，buffer 上限和
-  lagged 后 durable reload 语义保持不变；
+- TUI 每个 compositor frame 最多应用 64 条，暂存不超过一个 Application 观察批次；整批内容应用成功后确认。
+  缓存 lag 从已应用位置分页追赶，排版进度不限制内容确认；
 - 帧消费由单个 Textual worker 执行，App 消息处理不等待后台解析和排版；显式排空与帧消费串行取得和应用前缀，
   包括投影前的异步读取。Host 关闭取消呈现 worker，计算线程完成后不能再发布已取消的结果；
 - `batch_update()` 只用于合并可合并的刷新，不能被当作消除 `AwaitMount`、`AwaitRemove` 或结构布局成本的替代品。

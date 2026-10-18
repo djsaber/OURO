@@ -211,7 +211,9 @@ async def test_activity_snapshot_cannot_pair_old_run_state_with_a_new_event_curs
         assert await asyncio.to_thread(captured.wait, 3)
         completion = asyncio.create_task(asyncio.to_thread(complete))
         assert await asyncio.to_thread(writing.wait, 3)
-        await asyncio.sleep(0.05)
+        if isinstance(reader, SQLiteSessionStore):
+            # MVCC permits this commit while the old snapshot remains open.
+            await completion
         release.set()
         subscription = await opening
         terminal = await completion
@@ -226,7 +228,10 @@ async def test_activity_snapshot_cannot_pair_old_run_state_with_a_new_event_curs
                     and notification.event.sequence == terminal.sequence
                 ):
                     break
-        assert supervisor.activity(session.session_id).status == "completed"
+        async with asyncio.timeout(10):
+            while supervisor.activity(session.session_id).status != "completed":
+                notification = await subscription.get()
+                assert notification.kind != "diagnostic", notification
         assert supervisor.activity(session.session_id).sequence == terminal.sequence
 
         def no_query(*args, **kwargs):
@@ -515,7 +520,7 @@ async def test_follow_failure_during_attach_is_not_relabelled_as_buffer_lag(stor
         await supervisor.shutdown()
 
 
-async def test_reattach_restarts_failed_following_with_another_observer_still_open(
+async def test_explicit_reattach_restarts_following_after_failed_observer_stops(
     stores, monkeypatch
 ):
     writer, reader = stores
@@ -537,6 +542,8 @@ async def test_reattach_restarts_failed_following_with_another_observer_still_op
         retried = await supervisor.subscribe(session.session_id)
         written = append(writer, session.session_id, "recovered")
         assert (await events(retried, 1))[0].sequence == written.sequence
-        assert (await events(existing, 1))[0].sequence == written.sequence
+        assert existing.closed
+        with pytest.raises(StopAsyncIteration):
+            await existing.get()
     finally:
         await supervisor.shutdown()

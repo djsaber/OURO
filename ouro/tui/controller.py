@@ -74,16 +74,18 @@ from ouro.application.session_models import (
     SessionCatalogEntry,
     SessionContextStatus,
     SessionDetail,
-    SessionMessagePage,
+    SessionHistoryAnchor,
+    SessionHistoryWindow,
     SessionObservationSnapshot,
     SessionSummary,
     SessionUndoResult,
     SessionView,
 )
+from ouro.application.session_observation import SessionObservation
 from ouro.application.skill_activations import SkillInvocationRequest
-from ouro.application.supervisor import RuntimeSubscription
 from ouro.application.supervisor_models import RunHandle
 from ouro.application.tasks import TaskService
+from ouro.application.user_inputs import UserInputRequest
 from ouro.config import (
     EndpointReasoningConfig,
     ProviderProtocol,
@@ -99,7 +101,7 @@ from ouro.core.approvals import (
     ToolPermissionControl,
 )
 from ouro.core.attachment_input import is_editable_user_input
-from ouro.core.base import Metadata
+from ouro.core.base import Metadata, new_id
 from ouro.core.billing import UsageFilter
 from ouro.core.callbacks import run_blocking
 from ouro.core.compaction import CompactionCommandResult, CompactionRecord
@@ -475,12 +477,23 @@ class LoadedSession:
     queued_inputs: tuple[QueuedUserInputView, ...] = ()
     session_controls: tuple[TuiSessionControlStatus, ...] = ()
     event_high_water: int = 0
+    history_before_cursor: int | None = None
+    approval_preset: TuiApprovalPreset = "inherit"
+    reasoning_state: ModelReasoningState | None = None
 
 
 @dataclass(frozen=True)
 class TuiSessionObservation:
     loaded: LoadedSession
-    subscription: RuntimeSubscription
+    subscription: SessionObservation
+    control_session: SessionView
+
+
+@dataclass(frozen=True)
+class TuiNewSession:
+    model: AvailableModel
+    initial_model: str | None
+    workspace: str | None
 
 
 class TuiController:
@@ -647,11 +660,11 @@ class TuiController:
 
     async def attachment_target(
         self, session_id: str | None, prepared_session_id: str
-    ) -> SessionRecord | str:
+    ) -> SessionView | str:
         """Capture an existing Session epoch or reserve a new input's file namespace."""
         runtime = self._runtime()
         if session_id is not None:
-            return await asyncio.to_thread(runtime.store.load_session_record, session_id)
+            return await asyncio.to_thread(runtime.sessions.view, session_id)
         await self.prepare_input_resources(prepared_session_id)
         return prepared_session_id
 
@@ -670,7 +683,7 @@ class TuiController:
             self._runtime().sessions.input_accepted, session_id, input_id
         )
 
-    async def import_attachment(self, session: SessionRecord | str, path: Path) -> InputAttachment:
+    async def import_attachment(self, session: SessionView | str, path: Path) -> InputAttachment:
         resources = self._runtime().resources
         if resources is None:
             raise ConfigError("Resource storage is unavailable")
@@ -689,9 +702,7 @@ class TuiController:
         """Capture selected paths and their workspace without creating a Session."""
         workspace = self._draft_workspace
         if self._session_id is not None:
-            session = await asyncio.to_thread(
-                self._runtime().store.load_session_record, self._session_id
-            )
+            session = await asyncio.to_thread(self._runtime().sessions.view, self._session_id)
             workspace = session.workspace
 
         def capture() -> tuple[InputFile, ...]:
@@ -714,12 +725,10 @@ class TuiController:
 
         return await asyncio.to_thread(capture)
 
-    async def validate_attachment_session(self, session: SessionRecord | str) -> None:
+    async def validate_attachment_session(self, session: SessionView | str) -> None:
         if isinstance(session, str):
             return
-        latest = await asyncio.to_thread(
-            self._runtime().store.load_session_record, session.session_id
-        )
+        latest = await asyncio.to_thread(self._runtime().sessions.view, session.session_id)
         if latest.history_epoch != session.history_epoch:
             raise SessionCommitConflict(
                 "Session history changed while importing attachments; select the files again"
@@ -775,18 +784,19 @@ class TuiController:
             self._creating_session = True
 
         def session_created(session: SessionRecord) -> None:
-            if revision == self._selection_revision:
+            if self._started and revision == self._selection_revision:
                 self._session_id = session.session_id
                 self._initial_model = None
                 self._creating_session = False
 
         try:
-            result = await runtime.run(
-                prompt,
+            assert self._application is not None
+            request = UserInputRequest(
+                prompt=prompt,
                 skill_invocations=skill_invocations,
                 session_id=self._session_id,
                 new_session_id=new_session_id if is_new_session else None,
-                input_id=input_id,
+                input_id=input_id or new_id("queued"),
                 resource_refs=resource_refs,
                 attachments=attachments,
                 queue_mode=queue_mode,
@@ -795,9 +805,16 @@ class TuiController:
                 approval_mode=self._approval_mode if is_new_session else None,
                 interaction_mode=self._interaction_mode if is_new_session else None,
                 workspace=self._draft_workspace if is_new_session else None,
-                on_session_created=session_created,
-                on_input_accepted=on_input_accepted,
             )
+
+            def input_accepted() -> None:
+                if self._started and on_input_accepted is not None:
+                    on_input_accepted()
+
+            submission = await self._application.supervisor.submit_user_input(
+                request, on_session_created=session_created, on_input_accepted=input_accepted
+            )
+            result = await submission.wait()
             if result.session.archived:
                 await self.set_session_archived(result.session.session_id, archived=False)
             return result
@@ -822,7 +839,9 @@ class TuiController:
         return tuple(sorted(skill.name for skill in self._runtime().available_skills()))
 
     async def continue_session(self) -> RunResult:
-        result = await self._runtime().continue_run(session_id=self._require_session())
+        assert self._application is not None
+        handle = await self._application.supervisor.continue_run(session_id=self._require_session())
+        result = await self._supervised_result(handle)
         if result.session.archived:
             await self.set_session_archived(result.session.session_id, archived=False)
         return result
@@ -912,8 +931,8 @@ class TuiController:
     async def _supervised_result(self, handle: RunHandle) -> RunResult:
         assert self._application is not None
         supervisor = self._application.supervisor
-        snapshot = await supervisor.wait(handle)
         try:
+            snapshot = await supervisor.wait(handle)
             if snapshot.run_id is None:
                 raise PersistenceError("Supervised interaction failed before a Run was identified")
             return await asyncio.to_thread(
@@ -922,7 +941,7 @@ class TuiController:
                 snapshot.run_id,
             )
         finally:
-            supervisor.release_handle(handle)
+            supervisor.detach_handle(handle)
 
     async def agent_interactions(self) -> tuple[AgentInteractionView, ...]:
         session_id = self._session_id
@@ -948,20 +967,17 @@ class TuiController:
         defaults.
         """
 
-        runtime = self._runtime()
-        previous_route, previous_workspace = await self._leaving_session_defaults()
-        self._selection_revision += 1
-        self._creating_session = False
-        self._session_id = None
-        self._session_archived = False
-        self._draft_workspace = previous_workspace or runtime.default_workspace
-        if previous_route is not None:
-            self._initial_model = previous_route
-        self._approval_mode = self._default_approval_mode
-        self._interaction_mode = self._default_interaction_mode
-        self._reasoning_request = ReasoningRequest()
+        prepared = await self.prepare_new_session()
+        self.activate_new_session(prepared)
+        return prepared.model
 
+    async def prepare_new_session(self) -> TuiNewSession:
+        """Resolve draft defaults without changing the selected Session."""
+        runtime = self._runtime()
         initial_model = self._initial_model
+        previous_route, previous_workspace = await self._leaving_session_defaults()
+        if previous_route is not None:
+            initial_model = previous_route
         draft: AvailableModel | None = None
         if initial_model is not None:
             try:
@@ -970,8 +986,19 @@ class TuiController:
                 draft = None
         if draft is None:
             draft = await asyncio.to_thread(runtime.current_model)
-            self._initial_model = None
-        return draft
+            initial_model = None
+        return TuiNewSession(draft, initial_model, previous_workspace or runtime.default_workspace)
+
+    def activate_new_session(self, prepared: TuiNewSession) -> None:
+        self._selection_revision += 1
+        self._creating_session = False
+        self._session_id = None
+        self._session_archived = False
+        self._draft_workspace = prepared.workspace
+        self._initial_model = prepared.initial_model
+        self._approval_mode = self._default_approval_mode
+        self._interaction_mode = self._default_interaction_mode
+        self._reasoning_request = ReasoningRequest()
 
     async def set_workspace(self, value: str) -> str:
         """Stage one existing directory for the next Session only."""
@@ -1141,7 +1168,7 @@ class TuiController:
         )
 
     def _branch_current_session(self, session_id: str) -> SessionBranchResult:
-        session = self._runtime().store.load_session_record(session_id)
+        session = self._runtime().sessions.view(session_id)
         return self._runtime().sessions.branch(session_id, session.last_message_id)
 
     async def queued_user_inputs(
@@ -1165,16 +1192,6 @@ class TuiController:
     async def message(self, session_id: str, message_id: str) -> MessageRecord:
         runtime = self._runtime()
         return await asyncio.to_thread(runtime.sessions.message, session_id, message_id)
-
-    async def messages_at_history(
-        self, session_id: str, message_ids: tuple[str, ...], *, history_epoch: int
-    ) -> SessionMessagePage:
-        return await asyncio.to_thread(
-            self._runtime().sessions.messages_at_history,
-            session_id,
-            message_ids,
-            history_epoch=history_epoch,
-        )
 
     async def run_record(self, session_id: str, run_id: str) -> RunRecord:
         return await asyncio.to_thread(self._runtime().sessions.run_record, session_id, run_id)
@@ -2317,9 +2334,7 @@ class TuiController:
             )
             approval_mode = session.approval_mode
             interaction_mode = session.interaction_mode
-        if approval_mode == "auto" and interaction_mode == "unattended":
-            return "afk"
-        return approval_mode
+        return _approval_preset(approval_mode, interaction_mode)
 
     async def set_session_approval_preset(
         self,
@@ -2392,76 +2407,76 @@ class TuiController:
         return await asyncio.to_thread(self._runtime().sessions.summaries, session_id)
 
     async def load_session(self, session_id: str) -> LoadedSession:
-        loaded, control_archived = await asyncio.to_thread(
-            self._read_session_selection,
-            session_id,
-        )
+        observation = await self.prepare_session_selection(session_id)
+        try:
+            self.activate_observation(observation)
+            return observation.loaded
+        finally:
+            observation.subscription.close()
+
+    async def prepare_session_selection(
+        self, session_id: str, *, history_anchor: SessionHistoryAnchor | None = None
+    ) -> TuiSessionObservation:
+        """Prepare an explicitly selected control Session, including execution recovery."""
+        runtime = self._runtime()
+        detail = await asyncio.to_thread(runtime.sessions.open, session_id, recover=False)
         if (
-            loaded.detail.session.session_kind == "primary"
-            and loaded.detail.recent_run is not None
-            and loaded.detail.recent_run.status == "running"
+            detail.session.session_kind == "primary"
+            and detail.recent_run is not None
+            and detail.recent_run.status == "running"
         ):
-            # Selecting the control Session is an explicit recovery boundary;
-            # read-only observation remains separate. Recovery honors live owners.
-            # A queued Run has not acquired an execution lock yet; its absence
-            # cannot prove interruption during admission or scheduler waiting.
             assert self._application is not None
             await self._application.supervisor.recover_session(session_id)
-            loaded, control_archived = await asyncio.to_thread(
-                self._read_session_selection, session_id
-            )
+        return await self.observe_session(session_id, history_anchor=history_anchor)
+
+    def activate_observation(self, observation: TuiSessionObservation) -> None:
+        """Commit a prepared selection only when its view is ready to take the surface."""
         self._selection_revision += 1
         self._creating_session = False
-        self._session_id = loaded.detail.session.agent_root_session_id
-        self._session_archived = control_archived
+        self._session_id = observation.control_session.session_id
+        self._session_archived = observation.control_session.archived
         self._initial_model = None
-        return loaded
 
-    def _read_session_selection(self, session_id: str) -> tuple[LoadedSession, bool]:
-        """Read the selected surface and resolve its canonical control Session."""
-
-        loaded = self._read_session(session_id)
-        session = loaded.detail.session
-        if session.session_kind == "primary":
-            return loaded, session.archived
-        root = (
-            self._runtime()
-            .sessions.open(
-                session.agent_root_session_id,
-                recover=False,
-            )
-            .session
-        )
-        if root.session_kind != "primary":
-            raise PersistenceError(
-                f"subagent session {session.session_id} references non-primary root "
-                f"{root.session_id}"
-            )
-        return loaded, root.archived
-
-    async def observe_session(self, session_id: str) -> TuiSessionObservation:
-        """Attach a read-only Host observation without changing the control Session."""
-
-        loaded = await asyncio.to_thread(self._read_session, session_id)
-        subscription = await self.subscribe_session(
-            session_id,
-            after_sequence=loaded.event_high_water,
-        )
-        return TuiSessionObservation(loaded=loaded, subscription=subscription)
-
-    async def subscribe_session(
-        self,
-        session_id: str,
-        *,
-        after_sequence: int,
-    ) -> RuntimeSubscription:
+    async def observe_session(
+        self, session_id: str, *, history_anchor: SessionHistoryAnchor | None = None
+    ) -> TuiSessionObservation:
+        """Prepare display facts without changing selection or recovering execution."""
         application = self._application
         if not self._started or application is None:
             raise RuntimeError("TUI controller is not started")
-        return await application.supervisor.subscribe(
+        subscription = await application.supervisor.observe_session(
+            session_id, history_limit=200, history_anchor=history_anchor
+        )
+        try:
+            loaded = await self.load_observation_snapshot(subscription.initial_snapshot)
+            session = loaded.detail.session
+            control = (
+                session
+                if session.session_kind == "primary"
+                else await asyncio.to_thread(
+                    application.runtime.sessions.view, session.agent_root_session_id
+                )
+            )
+            if control.session_kind != "primary":
+                raise PersistenceError("Observed Session does not have a primary control Session")
+            return TuiSessionObservation(loaded, subscription, control)
+        except BaseException:
+            subscription.close()
+            raise
+
+    async def load_observation_snapshot(
+        self, snapshot: SessionObservationSnapshot
+    ) -> LoadedSession:
+        return await asyncio.to_thread(self._loaded_snapshot, snapshot)
+
+    async def history_window(
+        self, session_id: str, *, before: int, history_epoch: int
+    ) -> SessionHistoryWindow:
+        return await asyncio.to_thread(
+            self._runtime().sessions.history_window,
             session_id,
-            after_sequence=after_sequence,
-            max_buffer=1000,
+            before=before,
+            history_epoch=history_epoch,
         )
 
     async def subscribe_agent_tree(self, root_session_id: str) -> AgentTreeSubscription | None:
@@ -2503,23 +2518,32 @@ class TuiController:
         self._session_archived = False
 
     def _read_session(self, session_id: str) -> LoadedSession:
+        return self._loaded_snapshot(self._runtime().observation_snapshot(session_id))
+
+    def _loaded_snapshot(self, snapshot: SessionObservationSnapshot) -> LoadedSession:
+        session_id = snapshot.session.session_id
         runtime = self._runtime()
-        sessions = runtime.sessions
-        with runtime.store.session_mutation(session_id):
-            snapshot = sessions.observation_snapshot(session_id)
-            detail = _observation_detail(snapshot)
-            return LoadedSession(
-                detail=detail,
-                messages=snapshot.messages,
-                events=snapshot.events,
-                runs=snapshot.runs,
-                context_status=sessions.context_status(session_id),
-                effective_context_metrics=runtime.session_context_metrics(session_id),
-                compactions=snapshot.compactions,
-                queued_inputs=self._queued_user_inputs(session_id),
-                session_controls=self._session_control_statuses(session_id),
-                event_high_water=snapshot.event_high_water,
-            )
+        try:
+            reasoning = runtime.reasoning_for_session(snapshot.session)
+        except ConfigError:
+            reasoning = None
+        return LoadedSession(
+            detail=_observation_detail(snapshot),
+            messages=snapshot.messages,
+            events=snapshot.events,
+            runs=snapshot.runs,
+            context_status=snapshot.context_status,
+            effective_context_metrics=snapshot.effective_context_metrics,
+            compactions=snapshot.compactions,
+            queued_inputs=snapshot.queued_inputs,
+            session_controls=self._session_control_statuses(session_id),
+            event_high_water=snapshot.event_high_water,
+            history_before_cursor=snapshot.history_before_cursor,
+            approval_preset=_approval_preset(
+                snapshot.session.approval_mode, snapshot.session.interaction_mode
+            ),
+            reasoning_state=reasoning,
+        )
 
     def _session_messages(self, session_id: str) -> list[MessageRecord]:
         sessions = self._runtime().sessions
@@ -2565,10 +2589,12 @@ class TuiController:
         )
 
     def _accepts_event(self, event: EventRecord) -> bool:
-        """Select content and control candidates without I/O before Host enqueue."""
+        """Select child control notifications without admitting Session body events."""
 
-        return self._session_id is not None and (
-            event.session_id == self._session_id or event.event_type in _CHILD_CONTROL_EVENT_TYPES
+        return (
+            self._session_id is not None
+            and event.session_id != self._session_id
+            and event.event_type in _CHILD_CONTROL_EVENT_TYPES
         )
 
     async def _receive_event(self, event: EventRecord) -> None:
@@ -2603,6 +2629,12 @@ class TuiController:
         root_session_id = session.agent_root_session_id
         self._event_root_sessions[session_id] = root_session_id
         return root_session_id
+
+
+def _approval_preset(
+    approval_mode: SessionApprovalMode, interaction_mode: SessionInteractionMode
+) -> TuiApprovalPreset:
+    return "afk" if approval_mode == "auto" and interaction_mode == "unattended" else approval_mode
 
 
 def _observation_detail(snapshot: SessionObservationSnapshot) -> SessionDetail:

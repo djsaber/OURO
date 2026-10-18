@@ -112,7 +112,7 @@ async def test_session_dispatches_input_while_stream_rendering_is_pending(
             ),
             start=1,
         ):
-            assert app._queue_runtime_event(
+            app._queue_runtime_event(
                 EventRecord(
                     session_id=session.session_id,
                     run_id="run_input",
@@ -134,9 +134,9 @@ async def test_session_dispatches_input_while_stream_rendering_is_pending(
             assert composer.region == bounds
             assert app.focused is composer
             assert app.cursor_position == composer.cursor_screen_offset
-            # A completion-triggered drain must not overtake the frame that is
-            # still rendering, even after its records left the staging buffer.
-            assert app._queue_runtime_event(
+            # Content parsing keeps frame order; strip layout does not own
+            # the content cursor and must allow the next frame to apply.
+            app._queue_runtime_event(
                 EventRecord(
                     session_id=session.session_id,
                     run_id="run_input",
@@ -147,8 +147,12 @@ async def test_session_dispatches_input_while_stream_rendering_is_pending(
             )
             draining = asyncio.create_task(app._flush_pending_runtime_events())
             await asyncio.sleep(0)
-            assert not draining.done()
-            assert app._projection is not None and app._projection.last_sequence == 2
+            if operation == "_block_starts":
+                assert not draining.done()
+                assert app._projection is not None and app._projection.last_sequence == 2
+            else:
+                await asyncio.wait_for(draining, 2)
+                assert app._projection is not None and app._projection.last_sequence == 3
         finally:
             release.set()
             await pilot.pause()
@@ -173,7 +177,7 @@ async def test_session_status_query_does_not_block_input_dispatch(tmp_path, monk
             return ()
 
         monkeypatch.setattr(app._controller, "agent_interactions", read_interactions)
-        assert app._queue_runtime_event(
+        app._queue_runtime_event(
             EventRecord(
                 session_id=session.session_id,
                 run_id="run_status",
@@ -238,7 +242,7 @@ async def test_session_frames_preserve_editor_and_menu_cursor_during_live_update
 
         async def stream():
             sequence = 1
-            assert app._queue_runtime_event(
+            app._queue_runtime_event(
                 EventRecord(
                     session_id=session.session_id,
                     run_id="run_frames",
@@ -251,7 +255,7 @@ async def test_session_frames_preserve_editor_and_menu_cursor_during_live_update
                 sequence += 1
                 reasoning = sequence < 6
                 text = f"Evidence {sequence} 中文 **answer**.\n\n"
-                assert app._queue_runtime_event(
+                app._queue_runtime_event(
                     EventRecord(
                         session_id=session.session_id,
                         run_id="run_frames",
@@ -377,7 +381,7 @@ async def test_closing_session_cancels_pending_presentation_without_waiting_for_
     try:
         async with run_ready_app(app, size=(100, 30)):
             monkeypatch.setattr(conversation_history, "_block_starts", slow_parse)
-            assert app._queue_runtime_event(
+            app._queue_runtime_event(
                 EventRecord(
                     session_id=session.session_id,
                     run_id="run_close",

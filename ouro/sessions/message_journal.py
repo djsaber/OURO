@@ -4,7 +4,9 @@ from collections.abc import Generator
 from pathlib import Path
 
 
-def reverse_jsonl(path: Path, *, block_size: int = 65536) -> Generator[tuple[int, bytes]]:
+def reverse_jsonl(
+    path: Path, *, block_size: int = 65536, before: int | None = None
+) -> Generator[tuple[int, bytes]]:
     """Read a journal suffix in bounded blocks, yielding byte offsets and records.
 
     Keep bytes until a complete line is found so UTF-8 characters may straddle
@@ -14,7 +16,7 @@ def reverse_jsonl(path: Path, *, block_size: int = 65536) -> Generator[tuple[int
     if not path.exists():
         return
     with path.open("rb") as stream:
-        position = stream.seek(0, 2)
+        position = stream.seek(0, 2) if before is None else stream.seek(before)
         fragments: list[bytes] = []
         while position:
             length = min(position, block_size)

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import pytest
 
 from ouro.application.queued_inputs import QueuedUserInputView
+from ouro.application.supervisor_models import ShutdownPolicy
 from ouro.core.billing import UsageFilter
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ProviderStreamEvent
@@ -16,6 +17,8 @@ from ouro.tui.app import OuroTuiApp
 from ouro.tui.conversation_history import ConversationHistory
 from ouro.tui.screens import ChoiceScreen
 from ouro.tui.widgets import (
+    ActivityIndicator,
+    CommandPopup,
     Composer,
     ConversationView,
     InteractionBar,
@@ -85,6 +88,192 @@ class NavigationProvider:
 
     def finish(self, prompt):
         self.streams[prompt].put_nowait(ProviderStreamEvent(type="done"))
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("destination", ["home", "empty", "completed"])
+async def test_idle_submission_does_not_present_follow_up_queue(
+    tmp_path, monkeypatch, backend, destination
+):
+    provider = NavigationProvider()
+    application = streaming_application(tmp_path, provider, backend=backend)
+    previous_turns = ()
+    if destination == "completed":
+        previous = asyncio.create_task(application.runtime.run("Previous input"))
+        assert await asyncio.wait_for(provider.started.get(), 5) == "Previous input"
+        provider.finish("Previous input")
+        session_id = (await previous).session.session_id
+        previous_turns = ("Previous input",)
+    elif destination == "empty":
+        session_id = application.runtime.sessions.create().session.session_id
+    app = OuroTuiApp(application=application)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = application.supervisor._dispatch_host_input
+
+    async def held_dispatch(session_id):
+        entered.set()
+        await release.wait()
+        return await original(session_id)
+
+    monkeypatch.setattr(application.supervisor, "_dispatch_host_input", held_dispatch)
+    async with run_ready_app(app) as pilot:
+        if destination != "home":
+            await app._open_session(session_id)
+            await pilot.pause()
+        welcome = app.query_one(WelcomePanel)
+        composer = app.query_one(Composer)
+        queue_panel = app.query_one(QueuedInputPanel)
+        origin_region = composer.region
+        transitions = []
+        frames = []
+        set_mode = welcome.set_welcome_mode
+        display = app._display
+
+        def record_mode(enabled):
+            transitions.append(enabled)
+            set_mode(enabled)
+
+        def record_frame(screen, renderable):
+            if renderable is not None and not welcome.welcome_active:
+                frames.append(
+                    (composer.region, composer.has_focus, composer.disabled, queue_panel.display)
+                )
+                assert not app.query_one(CommandPopup).display
+            display(screen, renderable)
+
+        submitting, allow_submit = asyncio.Event(), asyncio.Event()
+        submit = app._controller.submit
+        submissions = 0
+
+        async def held_submit(*args, **kwargs):
+            nonlocal submissions
+            submissions += 1
+            submitting.set()
+            await allow_submit.wait()
+            return await submit(*args, **kwargs)
+
+        monkeypatch.setattr(welcome, "set_welcome_mode", record_mode)
+        monkeypatch.setattr(app, "_display", record_frame)
+        monkeypatch.setattr(app._controller, "submit", held_submit)
+        composer.load_text("First input")
+        await pilot.press("enter")
+        try:
+            await asyncio.wait_for(submitting.wait(), 5)
+            await pilot.pause()
+            assert composer.has_focus and not composer.disabled
+            conversation_region = composer.region
+            await pilot.press(*"Next draft")
+            if destination == "home":
+                await pilot.press("enter")
+            assert composer.text == "Next draft"
+            assert submissions == 1
+            allow_submit.set()
+            await asyncio.wait_for(entered.wait(), 5)
+            await wait_until(
+                lambda: app._projection is not None and queue_panel.inputs,
+                pilot,
+                description="accepted input observation before execution",
+            )
+            session_id = app._controller.session_id
+            assert app.query_one(ConversationHistory).user_turns == previous_turns
+            assert not queue_panel.display
+            assert "Queued" in app.query_one(ActivityIndicator).render().plain
+            assert not welcome.welcome_active
+            assert not app.query_one(ConversationView).showing_welcome
+            assert True not in transitions
+            accepted_snapshot = application.runtime.observation_snapshot(session_id)
+
+            # Explicit reentry also uses the accepted input, not only the empty body.
+            await app._open_session(session_id)
+            await pilot.pause()
+            assert not welcome.welcome_active
+            assert True not in transitions
+            release.set()
+            assert await asyncio.wait_for(provider.started.get(), 5) == "First input"
+            await visible(pilot, app, "prefix.")
+            assert app.query_one(ConversationHistory).user_turns == (*previous_turns, "First input")
+            # Loading an older boundary must not mix in a newly consumed queue.
+            accepted_view = await app._controller.load_observation_snapshot(accepted_snapshot)
+            assert [item.prompt for item in accepted_view.queued_inputs] == ["First input"]
+            assert accepted_view.detail.session.active_run_id is None
+            assert True not in transitions
+            assert composer.text == "Next draft"
+            assert frames
+            assert all(
+                focused and not disabled and not queued for _, focused, disabled, queued in frames
+            )
+            positions = [
+                region
+                for index, (region, _, _, _) in enumerate(frames)
+                if index == 0 or region != frames[index - 1][0]
+            ]
+            # Welcome placement may paint once before the conversation layout;
+            # the page transition moves the same composer once, without bouncing.
+            assert positions in ([conversation_region], [origin_region, conversation_region])
+            provider.finish("First input")
+            await app._new_session()
+            assert welcome.welcome_active
+            assert app.query_one(ConversationView).showing_welcome
+        finally:
+            allow_submit.set()
+            release.set()
+            await application.supervisor.shutdown(ShutdownPolicy(mode="abort"))
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("finish", ["complete", "abort"])
+async def test_tui_submission_uses_capacity_and_host_detach_preserves_execution(
+    tmp_path, backend, finish
+):
+    provider = NavigationProvider()
+    application = streaming_application(tmp_path, provider, backend=backend)
+    application.supervisor.max_concurrency = 1
+    app = OuroTuiApp(application=application, close_application=False)
+    try:
+        async with run_ready_app(app, size=(100, 32)) as pilot:
+            first_id, _ = await submit(app, pilot, provider, "Alpha")
+            await app._new_session()
+            composer = app.query_one(Composer)
+            composer.load_text("Beta")
+            composer.focus()
+            await pilot.press("enter")
+            await wait_until(
+                lambda: len(application.supervisor._jobs_by_session) == 2,
+                pilot,
+                description="durable second submission waiting for capacity",
+            )
+            second_id = app._controller.session_id
+            assert second_id is not None and second_id != first_id
+            assert application.supervisor.status(second_id).status == "queued"
+            await wait_until(
+                lambda: "Queued" in app.query_one(ActivityIndicator).render().plain,
+                pilot,
+                description="accepted input waiting for capacity",
+            )
+            assert not app.query_one(QueuedInputPanel).display
+            assert set(provider.streams) == {"Alpha"}
+            provider.finish("Alpha")
+            assert await asyncio.wait_for(provider.started.get(), 5) == "Beta"
+            await visible(pilot, app, "prefix.")
+            assert app._projection.session_id == second_id
+            assert app._projection.assistant_text == "Beta prefix. "
+            job = application.supervisor._jobs_by_session[second_id]
+        assert not job.done.is_set()
+        assert application.supervisor.status(second_id).status == "running"
+        if finish == "abort":
+            await application.supervisor.abort(second_id)
+        else:
+            provider.text("Beta", "after detach")
+            provider.finish("Beta")
+        await asyncio.wait_for(job.done.wait(), 5)
+        snapshot = application.runtime.store.load_runtime_session(second_id)
+        assert snapshot.runs[-1].status == ("aborted" if finish == "abort" else "completed")
+        if finish == "complete":
+            assert "after detach" in snapshot.messages[-1].text_content
+        assert not application.supervisor._jobs_by_session
+        assert not application.supervisor._completion_events
+    finally:
+        await application.close()
 
 
 async def submit(app, pilot, provider, prompt):
@@ -168,6 +357,7 @@ async def test_background_completion_preserves_destination_and_draft(
         assert not app.query_one(QueuedInputPanel).display
         assert usage_queries == (1 if destination == "welcome" else 0)
         await app._open_session(session_id)
+        await pilot.pause()
         await visible(pilot, app, "Finished")
         assert app.query_one(Composer).text == "Alpha draft"
         assert app._projection.activity.status == "completed"
@@ -287,6 +477,56 @@ async def test_two_owned_sessions_keep_streaming_across_welcome_and_reentry(tmp_
         assert sum(entry.kind == "run" for entry in entries) == 1
 
 
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_three_running_sessions_keep_content_and_drafts_during_overlapping_switches(
+    tmp_path, backend
+):
+    provider = NavigationProvider()
+    app = OuroTuiApp(application=streaming_application(tmp_path, provider, backend=backend))
+    sessions, workers = [], []
+    async with run_ready_app(app, size=(100, 32)) as pilot:
+        for prompt in ("Alpha", "Beta", "Gamma"):
+            session_id, worker = await submit(app, pilot, provider, prompt)
+            sessions.append(session_id)
+            workers.append(worker)
+            app.query_one(Composer).load_text(f"{prompt} draft")
+            await pilot.pause()
+            if prompt != "Gamma":
+                await app._new_session()
+
+        prior = app._observation_subscription
+        switches = [
+            asyncio.create_task(app._open_session(session_id))
+            for session_id in (*sessions, sessions[0])
+        ]
+        provider.text("Alpha", "visible end")
+        provider.text("Beta", "background end")
+        provider.finish("Beta")
+        provider.finish("Gamma")
+        await asyncio.gather(*switches)
+        await visible(pilot, app, "visible")
+        assert prior.closed
+        assert app._controller.session_id == sessions[0]
+        assert app._projection.session_id == sessions[0]
+        assert app.query_one(Composer).text == "Alpha draft"
+        assert "background end" not in app.export_screenshot()
+        assert not workers[0].is_finished
+        provider.finish("Alpha")
+        await asyncio.gather(*(worker.wait() for worker in workers))
+        async with asyncio.timeout(8):
+            while (
+                app._projection.activity.status != "completed"
+                or app._observation_subscription.applied_sequence < app._projection.last_sequence
+            ):
+                await pilot.pause()
+        assert app.query_one(Composer).text == "Alpha draft"
+        entries = app.query_one(ConversationHistory).entries
+        assert [entry.text for entry in entries if entry.kind == "assistant"] == [
+            "Alpha prefix. visible end"
+        ]
+        assert sum(entry.kind == "run" for entry in entries) == 1
+
+
 async def test_waiting_approval_can_leave_and_restore_the_same_interaction(tmp_path):
     target = tmp_path / "approved.txt"
     app = OuroTuiApp(application=_approval_application(tmp_path, target))
@@ -338,10 +578,37 @@ async def test_late_submission_failure_does_not_restore_input_into_another_sessi
         await worker.wait()
         await pilot.pause()
         assert app._controller.session_id == destination
-        assert not app.query_one(ConversationView).showing_welcome
+        assert app.query_one(ConversationView).showing_welcome
         assert app.query_one(Composer).text == "Destination draft"
         assert app._input_drafts.draft_for(destination) == "Destination draft"
         assert app._input_drafts.draft_for(None) == "Original prompt"
+
+
+@pytest.mark.parametrize("existing_session", [False, True])
+async def test_rejected_first_input_restores_welcome_and_draft(
+    tmp_path, monkeypatch, existing_session
+):
+    application = _application(tmp_path)
+    session_id = (
+        application.runtime.create_session(title="Empty").session_id if existing_session else None
+    )
+    app = OuroTuiApp(application=application, resume_session_id=session_id)
+
+    async def fail(*args, **kwargs):
+        raise ValueError("Submission failed")
+
+    async with run_ready_app(app) as pilot:
+        monkeypatch.setattr(app._controller, "submit", fail)
+        app.query_one(Composer).load_text("Unsent input")
+        await pilot.press("enter")
+        await wait_until(
+            lambda: app.query_one(Composer).text == "Unsent input",
+            pilot,
+            description="rejected draft restored",
+        )
+        assert app.query_one(ConversationView).showing_welcome
+        assert app.query_one(WelcomePanel).welcome_active
+        assert not app.query_one(Composer).disabled
 
 
 @pytest.mark.parametrize("destination", ["welcome", "session"])

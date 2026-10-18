@@ -26,11 +26,10 @@ Windows Terminal/PowerShell 与 POSIX 终端分别覆盖以下场景，每场景
 
 ## 超长历史窗口
 
-当前 Store/Application 提供正向分页和 live high-water；TUI 冷打开仍逐页加载完整历史。
-需要窗口化时，在同一 Application 边界提供 tail/before 窗口、边界摘要与 live cursor，首屏只物化近期内容，
-向前加载保持可见锚点。工具 request/result、model turn 和 compaction 边界不可拆散。
-搜索和跳转按目标加载，切换会话后的过时结果不得提交。10,000 条消息不应创建等量 Widget 或 Markdown 任务；
-完整 export/replay 保留独立批处理语义。未来 Desktop 使用同一窗口契约。
+近期窗口、before 分页及缓存起点的现行契约见[会话观察规格](../specs/session-observation.md)和
+[TUI 规格](../specs/tui.md)。在 1,000/10,000 条消息上继续验证首个可用画面、按键尾延迟、读取量及窗口重进成本，
+不得以有界条目数代替端到端响应性证据。完整用户消息导航当前按需补齐历史；仅在测量表明该显式操作超预算时，
+再评估目标定位或窄元数据查询。完整 export/replay 保留独立批处理语义。
 
 ## 条件性计算与存储优化
 

@@ -830,13 +830,18 @@ spawn requested/failed 由 Delegation spawn_state 和原 ToolCall/Host command �
 application 提供 root subtree subscription：
 
 - `await subscribe_agent_tree(...)` 完成有界初始读取后返回订阅及 AgentTreeSnapshot；
-- Supervisor Session 订阅同样通过 `await subscribe(...)` 初始化；Store 读取在线程执行，live 队列在读取前注册，
-  回放与并发通知按 sequence 合并去重，初始化失败或取消必须解除订阅；
+- 树通过 Supervisor 的 `subscribe_state` 观察活动和 root 关系变化，与正文订阅共享同一 Session 跟随器；
+- 变化在初始快照读取前登记，每个观察者独立合并待刷新通知；读取期间到达的变化保留到下一次读取；
+- 消费者请求更新时在线程中执行 canonical projector，同一订阅最多一个查询在途，不积压历史树快照；
 - 新 child 创建后自动加入；
 - child close/archive 后移除 live subscription，但历史节点仍可查询；
 - 每 child 保留自己的 event sequence；
 - root projection 使用独立 revision，不把多个 Session sequence 假装成单一 durable 全序；
-- 慢订阅者使用有界队列和 lag diagnostic，不反向阻塞 child。
+- 文本片段在状态通知缓冲之前过滤；活动类型的改变仍触发更新，不逐片段重读树；
+- 慢状态观察者恢复消费后取得最新树，不抢占其他观察者的通知，也不反向阻塞 child；
+- 树订阅不接受 FIFO 容量参数；正文订阅仍保留独立有界缓存及其 lag 契约；
+- 初始化取消、观察关闭及查询失败释放本订阅资源并唤醒等待者；正文和状态观察全部关闭后停止共享跟随器；
+- 持久源读取错误保留原 diagnostic 的 code、severity 和原因；投影失败明确报告错误并停止该观察，重试须新建观察。
 
 ### AgentTreeSnapshot
 
@@ -927,7 +932,7 @@ child Session 约束及 child Run 定义摘要；父目录更新不能使已接�
 - descendant_active_on_archive；
 - cascade_timeout；
 - root_budget_exhausted；
-- subagent_subscription_lag。
+- agent_tree_subscription_failed、runtime_subscription_read_failed。
 
 事件、错误和 DTO 继续执行现有脱敏；不包含 credential、完整敏感工具参数、父 Session 未选择历史或本地私有路径。
 
@@ -1010,7 +1015,7 @@ CLI 的 completed-parent spawn 固定 notify-only；会启动 parent next-bounda
 - parent hard deny 不可被 child/auto/plugin 放宽的负向测试；
 - child 逐调用审批不传播到 sibling/root 的负向测试；
 - child 文本上下文严格只含 base/AgentDefinition instructions 与 task，不读取父 history/compaction 测试；
-- root subscription 重连、lag 和 snapshot 重建测试；
+- root subscription 重连、合并通知、独立消费、初始化竞争和 snapshot 重建测试；
 - Host detach 不终止 child 测试；
 - unknown_outcome 不自动重放测试；
 - reserved tool name 与插件架构边界测试；

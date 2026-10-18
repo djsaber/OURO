@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from ouro.application.session_models import ReplayFrame
 from ouro.core.attachment_input import is_editable_user_input
 from ouro.core.base import new_id
@@ -15,6 +17,45 @@ from ouro.core.harness import HarnessState, HarnessVersion
 from ouro.core.input_content import InputAttachment
 from ouro.core.messages import MessageRecord
 from ouro.core.session_controls import SessionControlState
+
+
+def select_history_suffix(
+    records: Iterable[tuple[int, MessageRecord]], *, limit: int
+) -> tuple[tuple[MessageRecord, ...], int | None]:
+    """Take a newest-first suffix without splitting a turn, input, or tool frame.
+
+    The limit is soft: one complete frame may exceed it. The exclusive cursor
+    belongs to the oldest retained message, independent of storage ordering keys.
+    """
+    messages: list[MessageRecord] = []
+    pending_results: set[tuple[str | None, str | None, str]] = set()
+    oldest_cursor: int | None = None
+    for cursor, message in records:
+        if (
+            len(messages) >= limit
+            and not pending_results
+            and not _shares_history_frame(message, messages[-1])
+        ):
+            return tuple(reversed(messages)), oldest_cursor
+        messages.append(message)
+        oldest_cursor = cursor
+        result = message.tool_result
+        if result is not None and result.producer.kind == "model":
+            pending_results.add((message.run_id, message.turn_id, result.tool_call_id))
+        pending_results.difference_update(
+            (message.run_id, message.turn_id, call.id) for call in message.tool_calls
+        )
+    return tuple(reversed(messages)), None
+
+
+def _shares_history_frame(older: MessageRecord, newer: MessageRecord) -> bool:
+    if older.run_id == newer.run_id and older.turn_id is not None:
+        if older.turn_id == newer.turn_id:
+            return True
+    batch = older.metadata.get("session_input_batch_id")
+    if batch is not None and batch == newer.metadata.get("session_input_batch_id"):
+        return True
+    return older.role == "user" and newer.turn_id is not None
 
 
 def branch_input_boundary(

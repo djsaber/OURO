@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Final, Protocol
 
 from pydantic import JsonValue
@@ -23,6 +24,9 @@ from ouro.application.runtime_activity import (
 )
 from ouro.application.session_editing import continuable_run
 from ouro.application.session_event_stream import SessionEventStream
+from ouro.application.session_models import SessionHistoryAnchor
+from ouro.application.session_observation import SessionObservation, redact_observation
+from ouro.application.session_state_subscription import SessionStateSubscription
 from ouro.application.supervisor_models import (
     HostInputReceipt,
     RunHandle,
@@ -33,6 +37,7 @@ from ouro.application.supervisor_models import (
     SupervisorRunStatus,
     SupervisorStartResult,
 )
+from ouro.application.user_inputs import UserInputRequest, UserInputSubmission
 from ouro.core.agents import AgentWaitResolution
 from ouro.core.base import utc_now
 from ouro.core.callbacks import run_blocking
@@ -40,7 +45,7 @@ from ouro.core.errors import OuroError, PersistenceError, SessionBusyError, Sess
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
 from ouro.core.session_controls import DelegatedTaskInput, HostSessionInput
-from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, RunStatus
+from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, RunStatus, SessionRecord
 from ouro.core.tools import ToolResult
 
 _CLOSED: Final = object()
@@ -78,6 +83,8 @@ class _RunJob:
     user_answer: JsonValue = None
     done: asyncio.Event = field(default_factory=asyncio.Event)
     result: RunResult | None = None
+    error: Exception | None = None
+    detached: bool = False
     cancelled: bool = False
     start_after: asyncio.Event | None = None
     provider_stream_started: asyncio.Event = field(default_factory=asyncio.Event)
@@ -115,6 +122,8 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
         return self
 
     async def __anext__(self) -> RuntimeNotification:
+        if self._closed and self._queue.empty():
+            raise StopAsyncIteration
         item = await self._queue.get()
         if item is _CLOSED:
             raise StopAsyncIteration
@@ -123,6 +132,15 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
 
     async def get(self) -> RuntimeNotification:
         return await self.__anext__()
+
+    def get_nowait(self) -> RuntimeNotification:
+        if self._closed and self._queue.empty():
+            raise StopAsyncIteration
+        item = self._queue.get_nowait()
+        if item is _CLOSED:
+            raise StopAsyncIteration
+        assert isinstance(item, RuntimeNotification)
+        return item
 
     @property
     def closed(self) -> bool:
@@ -148,6 +166,15 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
             with suppress(asyncio.QueueEmpty):
                 self._queue.get_nowait()
             self._offer_lagged()
+
+    def fail(self, diagnostic: Diagnostic) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._supervisor.unsubscribe(self)
+        while not self._queue.empty():
+            self._queue.get_nowait()
+        self._queue.put_nowait(RuntimeNotification(kind="diagnostic", diagnostic=diagnostic))
 
     def _prepend_replay(
         self,
@@ -237,11 +264,13 @@ class RuntimeSupervisor:
         self._snapshots: dict[str, RuntimeStatusSnapshot] = {}
         self._activities: dict[str, RuntimeActivitySnapshot] = {}
         self._subscriptions: dict[str, set[RuntimeSubscription]] = {}
+        self._state_subscriptions: dict[str, set[SessionStateSubscription]] = {}
         self._event_streams: dict[str, SessionEventStream] = {}
         self._event_stream_tasks: set[asyncio.Task[None]] = set()
         self._parked_session_locks: dict[str, asyncio.Lock] = {}
         self._pending_host_inputs: dict[str, HostInputReceipt] = {}
         self._host_dispatch_tasks: set[asyncio.Task[None]] = set()
+        self._input_admissions: set[asyncio.Task[UserInputSubmission]] = set()
         self._latest_job_start = asyncio.Event()
         self._latest_job_start.set()
         self._lifecycle_lock = asyncio.Lock()
@@ -250,6 +279,8 @@ class RuntimeSupervisor:
         self.runtime.add_event_sink(self._on_event)
 
     async def start(self) -> SupervisorStartResult:
+        if self._started:
+            return SupervisorStartResult()
         async with self._lifecycle_lock:
             return await self._start()
 
@@ -257,6 +288,10 @@ class RuntimeSupervisor:
         """Recover one Session execution boundary without scanning the store."""
 
         await self.start()
+        # An existing execution owner excludes recovery. Checking that boundary
+        # needs no message history; interrupted Sessions still take the full path.
+        if await run_blocking(self.runtime.run_ownership.is_locked, session_id):
+            return
         await self.runtime.reconcile_execution_session(session_id)
 
     async def _start(self) -> SupervisorStartResult:
@@ -281,6 +316,77 @@ class RuntimeSupervisor:
             raise
         self._started = True
         return SupervisorStartResult()
+
+    async def submit_user_input(
+        self,
+        request: UserInputRequest,
+        *,
+        on_session_created: Callable[[SessionRecord], None] | None = None,
+        on_input_accepted: Callable[[], None] | None = None,
+    ) -> UserInputSubmission:
+        """Hand off input admission; cancelling the caller does not retract accepted work."""
+        async with self._lifecycle_lock:
+            await self._start()
+            task = asyncio.create_task(
+                self._admit_user_input(request, on_session_created, on_input_accepted),
+                name=f"ouro-input-{request.input_id}",
+            )
+            self._input_admissions.add(task)
+            task.add_done_callback(self._input_admission_finished)
+        return await asyncio.shield(task)
+
+    def _input_admission_finished(self, task: asyncio.Task[UserInputSubmission]) -> None:
+        self._input_admissions.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            _LOGGER.error("User input admission failed: %s", type(task.exception()).__name__)
+
+    async def _admit_user_input(
+        self,
+        request: UserInputRequest,
+        on_session_created: Callable[[SessionRecord], None] | None,
+        on_input_accepted: Callable[[], None] | None,
+    ) -> UserInputSubmission:
+        receipt = await self.runtime.accept_user_input(request)
+        active = await run_blocking(self._load_active_run, receipt.session_id)
+        # Notify before execution can publish events for a newly selected Session.
+        try:
+            if request.session_id is None and on_session_created is not None:
+                session = await run_blocking(self.store.load_session_record, receipt.session_id)
+                on_session_created(session)
+            if on_input_accepted is not None:
+                on_input_accepted()
+        finally:
+            # A Host callback cannot strand a durable accepted input.
+            self._pending_host_inputs[receipt.session_id] = receipt
+            job = await self._dispatch_host_input(receipt.session_id)
+
+        async def result() -> RunResult:
+            if receipt.run_id is not None:
+                return await run_blocking(
+                    self.runtime.sessions.run_result, receipt.session_id, receipt.run_id
+                )
+            if active is not None and request.session_id is not None:
+                return await run_blocking(
+                    self.runtime.sessions.run_result, receipt.session_id, active.run_id
+                )
+            if job is not None:
+                await job.done.wait()
+                if job.cancelled and job.result is None:
+                    raise asyncio.CancelledError("Accepted input was cancelled before execution")
+                if job.error is not None:
+                    raise job.error
+                if job.result is not None:
+                    return job.result
+            return await run_blocking(self._accepted_input_result, receipt)
+
+        return UserInputSubmission(receipt=receipt, _result=result)
+
+    def _accepted_input_result(self, receipt: HostInputReceipt) -> RunResult:
+        with self.store.session_read(receipt.session_id):
+            message = self.store.find_queued_input_message(receipt.session_id, receipt.queue_id)
+            if message is None or message.run_id is None:
+                raise PersistenceError("Accepted input has no execution result")
+            return self.runtime.sessions.run_result(receipt.session_id, message.run_id)
 
     async def submit(
         self,
@@ -431,35 +537,36 @@ class RuntimeSupervisor:
         await self._dispatch_host_input(session_id)
         return receipt
 
-    async def _dispatch_host_input(self, session_id: str) -> None:
+    async def _dispatch_host_input(self, session_id: str) -> _RunJob | None:
         lock = self._parked_session_locks.setdefault(session_id, asyncio.Lock())
         async with lock:
             receipt = self._pending_host_inputs.get(session_id)
             if receipt is None or self._closed:
-                return
+                return None
             if session_id in self._jobs_by_session:
                 # A job may have passed its last queue drain. Its completion
                 # must reconsider this receipt after releasing the local slot.
-                return
+                return self._jobs_by_session[session_id]
             status = await run_blocking(self.status, session_id)
             if status.status == "running" and not await run_blocking(
                 self.runtime.run_ownership.is_locked, session_id
             ):
                 await self.runtime.reconcile_execution_session(session_id)
                 status = await run_blocking(self.status, session_id)
+            job = None
             if status.status not in ACTIVE_RUN_STATUSES:
                 session = await run_blocking(self.store.load_session_record, session_id)
                 if self.runtime.queued_inputs.find_session(session, receipt.queue_id) is not None:
-                    await self._enqueue_job(
-                        _RunJob(
-                            handle=RunHandle(session_id=session_id),
-                            prompt="",
-                            title=None,
-                            host_input_receipt=receipt,
-                        )
+                    job = _RunJob(
+                        handle=RunHandle(session_id=session_id),
+                        prompt="",
+                        title=None,
+                        host_input_receipt=receipt,
                     )
+                    await self._enqueue_job(job)
             if self._pending_host_inputs.get(session_id) is receipt:
                 self._pending_host_inputs.pop(session_id, None)
+            return job
 
     async def _dispatch_after_job(self, session_id: str) -> None:
         for attempt, delay in enumerate((0, 0.1, 0.5, 2.0)):
@@ -575,7 +682,7 @@ class RuntimeSupervisor:
         session_id = job.handle.session_id
 
         def read_boundary() -> tuple[int, int]:
-            with self.store.session_mutation(session_id):
+            with self.store.session_read(session_id):
                 if job.prepared_run is not None:
                     active = self._load_active_run(session_id)
                     if (
@@ -632,6 +739,43 @@ class RuntimeSupervisor:
             )
         self._queue.put_nowait(job)
 
+    async def observe_session(
+        self,
+        session_id: str,
+        *,
+        page_size: int = 128,
+        max_buffer: int = 256,
+        history_limit: int | None = None,
+        history_anchor: SessionHistoryAnchor | None = None,
+    ) -> SessionObservation:
+        """Observe display facts without taking over or recovering execution."""
+        if page_size <= 0 or max_buffer <= 0:
+            raise ValueError("Observation page size and buffer size must be positive")
+        read_snapshot = self.runtime.observation_snapshot
+        if history_limit is not None:
+            read_snapshot = partial(read_snapshot, history_limit=history_limit)
+        snapshot = (
+            await run_blocking(read_snapshot, session_id, history_anchor=history_anchor)
+            if history_anchor is not None
+            else await run_blocking(read_snapshot, session_id)
+        )
+        source = await self.subscribe(
+            session_id, after_sequence=snapshot.event_high_water, max_buffer=max_buffer
+        )
+        try:
+            snapshot = await run_blocking(redact_observation, snapshot)
+            return SessionObservation(
+                snapshot,
+                source,
+                sessions=self.runtime.sessions,
+                read_snapshot=read_snapshot,
+                page_size=page_size,
+                history_anchor=history_anchor,
+            )
+        except BaseException:
+            source.close()
+            raise
+
     async def subscribe(
         self,
         session_id: str,
@@ -644,64 +788,23 @@ class RuntimeSupervisor:
             raise OuroError("runtime supervisor is closed")
         if max_buffer <= 0:
             raise ValueError("max_buffer must be positive")
-        activity = self._activities.get(session_id)
-        if session_id not in self._event_streams and activity is not None and activity.run_id:
-            # An unobserved Session may have advanced in another process.
-            activity = None
-        active_job = self._jobs_by_session.get(session_id)
-        status_override = (
-            self._snapshots[active_job.handle.handle_id].status if active_job is not None else None
-        )
         subscription = RuntimeSubscription(
             self,
             session_id,
             max_buffer=max_buffer,
             include_activity=include_activity,
-            initial_activity=activity if include_activity else None,
+            initial_activity=None,
             after_sequence=after_sequence,
         )
         # Attach before the read yields: every event is covered by durable
         # replay, the bounded live queue, or both. Neither producer is paused.
         self._subscriptions.setdefault(session_id, set()).add(subscription)
         try:
-            if session_id not in self._event_streams:
-                boundary = await run_blocking(self.store.latest_event_sequence, session_id)
-                if self._closed or subscription.closed:
-                    raise OuroError("runtime supervisor is closed")
-                # Another subscriber may have started the shared stream while
-                # this read yielded. In either case it must exist BEFORE this
-                # subscriber's replay read, so a faster attach cannot skip a
-                # slower attach's snapshot/live boundary.
-                if session_id not in self._event_streams:
-                    stream = SessionEventStream(
-                        self.store,
-                        session_id,
-                        after_sequence=boundary,
-                        publish=self._publish_observed_event,
-                        report=self._report_observation_error,
-                        is_running=lambda: (
-                            session_id in self._jobs_by_session
-                            or (
-                                (current := self._activities.get(session_id)) is not None
-                                and current.status in {"queued", "running"}
-                            )
-                        ),
-                    )
-                    self._event_streams[session_id] = stream
-                    task = asyncio.create_task(
-                        stream.follow(), name=f"ouro-session-events-{session_id}"
-                    )
-                    self._event_stream_tasks.add(task)
-                    task.add_done_callback(self._event_stream_tasks.discard)
+            initial = await self._observe_session_state(session_id)
+            if include_activity:
+                subscription.initial_activity = initial
 
-            def read_replay() -> tuple[
-                RuntimeActivitySnapshot | None, tuple[RuntimeNotification, ...], bool
-            ]:
-                with self.store.session_mutation(session_id):
-                    session = self.store.load_session_record(session_id)
-                    initial = activity
-                    if initial is None or initial.history_epoch != session.history_epoch:
-                        initial = self._load_activity(session_id, status_override=status_override)
+            def read_replay() -> tuple[tuple[RuntimeNotification, ...], bool]:
                 # Events are immutable facts; read replay outside the snapshot lock.
                 events, truncated = self.store.load_events_after(
                     session_id,
@@ -712,23 +815,87 @@ class RuntimeSupervisor:
                     tuple(
                         RuntimeNotification(kind="event", event=project_runtime_event(event))
                         for event in events
-                        if event.history_epoch >= session.history_epoch
+                        if event.history_epoch >= initial.history_epoch
                     )
                     if not truncated
                     else ()
                 )
-                return initial, replay, truncated
+                return replay, truncated
 
-            initial, replay, truncated = await run_blocking(read_replay)
-            if self._closed or subscription._closed:
+            replay, truncated = await run_blocking(read_replay)
+            if self._closed:
                 raise OuroError("runtime supervisor is closed")
-            if include_activity:
-                subscription.initial_activity = initial
-            if initial is not None:
-                current = self._activities.get(session_id)
-                if current is None or current.sequence <= initial.sequence:
-                    self._activities[session_id] = initial
-            subscription._prepend_replay(replay, after_sequence=after_sequence, truncated=truncated)
+            if not subscription.closed:
+                subscription._prepend_replay(
+                    replay, after_sequence=after_sequence, truncated=truncated
+                )
+        except BaseException as exc:
+            subscription.close()
+            if isinstance(exc, FileNotFoundError):
+                raise SessionNotFoundError(f"session not found: {session_id}") from exc
+            raise
+        return subscription
+
+    async def _observe_session_state(self, session_id: str) -> RuntimeActivitySnapshot:
+        active_job = self._jobs_by_session.get(session_id)
+        status_override = (
+            self._snapshots[active_job.handle.handle_id].status if active_job is not None else None
+        )
+        cached = self._activities.get(session_id)
+        initial = (
+            cached
+            if session_id in self._event_streams
+            or (active_job is not None and cached is not None and cached.run_id is None)
+            else None
+        )
+        if initial is None:
+            initial = await run_blocking(
+                self._load_activity, session_id, status_override=status_override
+            )
+        if self._closed or not (
+            self._subscriptions.get(session_id) or self._state_subscriptions.get(session_id)
+        ):
+            raise OuroError("runtime supervisor is closed")
+        current = self._activities.get(session_id)
+        if current is None or current.sequence <= initial.sequence:
+            self._activities[session_id] = initial
+        if session_id not in self._event_streams:
+            # Seed the reducer before following this exact snapshot cursor.
+            # A concurrent writer may commit while the read transaction is
+            # open; those events must update activity as well as reach Hosts.
+            stream = SessionEventStream(
+                self.store,
+                session_id,
+                after_sequence=initial.sequence,
+                publish=self._publish_observed_event,
+                report=self._report_observation_error,
+                is_running=lambda: (
+                    session_id in self._jobs_by_session
+                    or (
+                        (current := self._activities.get(session_id)) is not None
+                        and current.status in {"queued", "running"}
+                    )
+                ),
+            )
+            self._event_streams[session_id] = stream
+            task = asyncio.create_task(stream.follow(), name=f"ouro-session-events-{session_id}")
+            self._event_stream_tasks.add(task)
+            task.add_done_callback(self._event_stream_tasks.discard)
+
+        return initial
+
+    async def subscribe_state(
+        self, session_id: str, *, event_types: frozenset[str] = frozenset()
+    ) -> SessionStateSubscription:
+        """Watch activity and selected relation changes without buffering text history."""
+        if self._closed:
+            raise OuroError("runtime supervisor is closed")
+        subscription = SessionStateSubscription(
+            session_id, event_types=event_types, on_close=self._unsubscribe_state
+        )
+        self._state_subscriptions.setdefault(session_id, set()).add(subscription)
+        try:
+            subscription.initial_activity = await self._observe_session_state(session_id)
         except BaseException as exc:
             subscription.close()
             if isinstance(exc, FileNotFoundError):
@@ -738,16 +905,28 @@ class RuntimeSupervisor:
 
     def unsubscribe(self, subscription: RuntimeSubscription) -> None:
         subscriptions = self._subscriptions.get(subscription.session_id)
-        if subscriptions is None:
+        if subscriptions is not None:
+            subscriptions.discard(subscription)
+            if not subscriptions:
+                self._subscriptions.pop(subscription.session_id, None)
+        self._release_session_stream(subscription.session_id)
+
+    def _unsubscribe_state(self, subscription: SessionStateSubscription) -> None:
+        subscriptions = self._state_subscriptions.get(subscription.session_id)
+        if subscriptions is not None:
+            subscriptions.discard(subscription)
+            if not subscriptions:
+                self._state_subscriptions.pop(subscription.session_id, None)
+        self._release_session_stream(subscription.session_id)
+
+    def _release_session_stream(self, session_id: str) -> None:
+        if self._subscriptions.get(session_id) or self._state_subscriptions.get(session_id):
             return
-        subscriptions.discard(subscription)
-        if not subscriptions:
-            self._subscriptions.pop(subscription.session_id, None)
-            stream = self._event_streams.pop(subscription.session_id, None)
-            if stream is not None:
-                stream.close()
-            if subscription.session_id not in self._jobs_by_session:
-                self._activities.pop(subscription.session_id, None)
+        stream = self._event_streams.pop(session_id, None)
+        if stream is not None:
+            stream.close()
+        if session_id not in self._jobs_by_session:
+            self._activities.pop(session_id, None)
 
     def status(self, handle_or_session: RunHandle | str) -> RuntimeStatusSnapshot:
         if isinstance(handle_or_session, RunHandle):
@@ -767,7 +946,7 @@ class RuntimeSupervisor:
             if pending.run_id is None:
                 return pending
         try:
-            with self.store.session_mutation(handle_or_session):
+            with self.store.session_read(handle_or_session):
                 session = self.store.load_session_record(handle_or_session)
                 run_id = session.active_run_id or session.last_run_id
                 run = self.store.load_run(handle_or_session, run_id) if run_id is not None else None
@@ -821,7 +1000,7 @@ class RuntimeSupervisor:
         """
 
         def boundary() -> tuple[RunRecord, int]:
-            with self.store.session_mutation(session_id):
+            with self.store.session_read(session_id):
                 run = self.store.load_run(session_id, run_id)
                 return run, self.store.latest_event_sequence(session_id)
 
@@ -874,9 +1053,18 @@ class RuntimeSupervisor:
         self._completion_events.pop(handle.handle_id, None)
         if (
             handle.session_id not in self._subscriptions
+            and handle.session_id not in self._state_subscriptions
             and handle.session_id not in self._jobs_by_session
         ):
             self._activities.pop(handle.session_id, None)
+
+    def detach_handle(self, handle: RunHandle) -> None:
+        """Release Host interest now and discard its receipt when execution finishes."""
+        job = self._jobs_by_handle.get(handle.handle_id)
+        if job is None:
+            self.release_handle(handle)
+        else:
+            job.detached = True
 
     async def abort(
         self,
@@ -914,6 +1102,13 @@ class RuntimeSupervisor:
         snapshot = self._snapshots[job.handle.handle_id]
         if snapshot.status == "queued":
             job.cancelled = True
+            if job.host_input_receipt is not None and snapshot.run_id is None:
+                for item in await run_blocking(
+                    self.runtime.pending_user_inputs, job.handle.session_id
+                ):
+                    await self.runtime.cancel_pending_user_input(
+                        job.handle.session_id, item.queue_id
+                    )
             if snapshot.run_id is not None:
                 await self.runtime.abort_run(
                     session_id=job.handle.session_id,
@@ -981,6 +1176,8 @@ class RuntimeSupervisor:
         if self._closed:
             return
         policy = policy or ShutdownPolicy()
+        # Accepted submissions must reach scheduling before shutdown chooses its jobs.
+        await asyncio.gather(*self._input_admissions, return_exceptions=True)
         self._closed = True
         for task in tuple(self._host_dispatch_tasks):
             task.cancel()
@@ -1035,8 +1232,12 @@ class RuntimeSupervisor:
         for subscriptions in tuple(self._subscriptions.values()):
             for subscription in tuple(subscriptions):
                 subscription.close()
+        for state_subscriptions in tuple(self._state_subscriptions.values()):
+            for state_subscription in tuple(state_subscriptions):
+                state_subscription.close()
         await asyncio.gather(*self._event_stream_tasks)
         self._workers.clear()
+        self._started = False
         close_results = await asyncio.gather(
             self.runtime.close(),
             *(resource.close() for resource in reversed(self._started_resources)),
@@ -1133,8 +1334,10 @@ class RuntimeSupervisor:
                             reservation=job.reservation,
                         )
                     elif job.host_input_receipt is not None:
-                        job.provider_stream_started.set()
-                        job.result = await self.runtime.consume_host_input(job.host_input_receipt)
+                        job.result = await self.runtime.consume_host_input(
+                            job.host_input_receipt,
+                            _on_provider_stream_start=job.provider_stream_started.set,
+                        )
                     else:
                         job.result = await self.runtime.run(
                             job.prompt,
@@ -1146,6 +1349,7 @@ class RuntimeSupervisor:
                     await self._finish_interrupted_job(job)
                     raise
                 except Exception as exc:  # noqa: BLE001 - task isolation boundary.
+                    job.error = exc
                     diagnostic = Diagnostic(
                         code="supervised_run_failed",
                         severity="error",
@@ -1234,6 +1438,9 @@ class RuntimeSupervisor:
         notification = RuntimeNotification(kind="event", event=project_runtime_event(event))
         for subscription in tuple(self._subscriptions.get(event.session_id, ())):
             subscription._offer(notification)
+        for state_subscription in tuple(self._state_subscriptions.get(event.session_id, ())):
+            if event.event_type in state_subscription.event_types:
+                state_subscription.offer(notification)
         if previous is not None:
             self._publish_activity(reduce_runtime_activity(previous, event))
 
@@ -1242,9 +1449,10 @@ class RuntimeSupervisor:
         stream = self._event_streams.pop(diagnostic.session_id, None)
         if stream is not None:
             stream.close()
-        notification = RuntimeNotification(kind="diagnostic", diagnostic=diagnostic)
         for subscription in tuple(self._subscriptions.get(diagnostic.session_id, ())):
-            subscription._offer(notification)
+            subscription.fail(diagnostic)
+        for state_subscription in tuple(self._state_subscriptions.get(diagnostic.session_id, ())):
+            state_subscription.fail(diagnostic)
 
     def _load_activity(
         self,
@@ -1255,7 +1463,7 @@ class RuntimeSupervisor:
     ) -> RuntimeActivitySnapshot:
         # The Run and cursor must describe one read boundary. Reading a newer
         # cursor after an older Run would permanently hide its terminal event.
-        with self.store.session_mutation(session_id):
+        with self.store.session_read(session_id):
             session = self.store.load_session_record(session_id)
             selected_run_id = run_id or session.active_run_id or session.last_run_id
             run = (
@@ -1263,16 +1471,17 @@ class RuntimeSupervisor:
                 if selected_run_id is not None
                 else None
             )
-            return project_runtime_activity_state(
-                session,
-                run,
-                sequence=self.store.latest_event_sequence(session_id),
-                status_override=status_override if run is None else None,
-                context_status=self.runtime.sessions.context_status(session_id),
-                effective_context_metrics=self.runtime.sessions.effective_context_metrics(
-                    session_id
-                ),
-            )
+            sequence = self.store.latest_event_sequence(session_id)
+            context_status = self.runtime.sessions.context_status(session_id)
+            metrics = self.runtime.sessions.effective_context_metrics(session_id)
+        return project_runtime_activity_state(
+            session,
+            run,
+            sequence=sequence,
+            status_override=status_override if run is None else None,
+            context_status=context_status,
+            effective_context_metrics=metrics,
+        )
 
     def _resolve_job(self, handle_or_session: RunHandle | str) -> _RunJob:
         if isinstance(handle_or_session, RunHandle):
@@ -1319,7 +1528,7 @@ class RuntimeSupervisor:
         if self._jobs_by_handle.get(job.handle.handle_id) is job:
             self._jobs_by_handle.pop(job.handle.handle_id, None)
         job.done.set()
-        if job.host_input_receipt is not None:
+        if job.host_input_receipt is not None or job.detached:
             # Host producers receive the durable input receipt, never this
             # private execution handle; do not retain it for process lifetime.
             self.release_handle(job.handle)
@@ -1337,6 +1546,8 @@ class RuntimeSupervisor:
         if previous is not None and not runtime_activity_changed(previous, activity):
             return
         notification = RuntimeNotification(kind="activity", activity=activity)
+        for state_subscription in tuple(self._state_subscriptions.get(activity.session_id, ())):
+            state_subscription.offer(notification)
         for subscription in tuple(self._subscriptions.get(activity.session_id, ())):
             if subscription.include_activity:
                 subscription._offer(notification)
@@ -1353,7 +1564,7 @@ class RuntimeSupervisor:
         return handle_or_session
 
     def _load_active_run(self, session_id: str) -> RunRecord | None:
-        with self.store.session_mutation(session_id):
+        with self.store.session_read(session_id):
             session = self.store.load_session_record(session_id)
             return maybe_active_run(
                 self.store.load_runs(session_id), history_epoch=session.history_epoch

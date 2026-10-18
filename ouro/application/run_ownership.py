@@ -127,6 +127,19 @@ class RunExecutionOwnership:
     def is_locked(self, session_id: str) -> bool:
         return self.store.is_session_locked(session_id)
 
+    async def wait_for_run_start(self, session_id: str) -> None:
+        """Wait for a competing execution claim to publish its Run or release its lock.
+
+        Accepted input is already durable. A lock with no Run is a preparation
+        boundary, not a failed delivery; use the same cross-process polling
+        boundary as abort and parked-Run settlement.
+        """
+        while await run_blocking(self.is_locked, session_id):
+            session = await run_blocking(self.store.load_session_record, session_id)
+            if session.active_run_id is not None:
+                return
+            await asyncio.sleep(0.05)
+
     async def activate_signal(self, session_id: str, run_id: str) -> AbortSignal:
         signal = AbortSignal()
         self._abort_signals[run_id] = signal

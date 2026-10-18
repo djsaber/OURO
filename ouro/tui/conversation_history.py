@@ -623,6 +623,33 @@ class _Piece:
     entry_index: int = -1
 
 
+def _shift_piece_indexes(pieces: list[_Piece], offset: int) -> None:
+    """Retain rendered text while moving its click targets to new entry indexes."""
+    for piece in pieces:
+        piece.entry_index += offset
+        shifted: list[Strip] = []
+        for strip in piece.strips:
+            segments: list[Segment] = []
+            changed = False
+            for segment in strip:
+                style = segment.style
+                if style is not None:
+                    metadata = {
+                        key: value + offset
+                        for key, value in style.meta.items()
+                        if key in {_REASONING_ENTRY_META, _TOOL_NAVIGATION_META, _USER_MESSAGE_META}
+                        and isinstance(value, int)
+                    }
+                    if metadata:
+                        segment = Segment(
+                            segment.text, style + Style(meta=metadata), segment.control
+                        )
+                        changed = True
+                segments.append(segment)
+            shifted.append(Strip(segments, strip.cell_length) if changed else strip)
+        piece.strips = shifted
+
+
 @dataclass(frozen=True)
 class _EntryRenderRequest:
     """Detached input for rendering one history entry outside the UI loop."""
@@ -659,6 +686,7 @@ class ConversationHistoryState:
     lines: list[Strip]
     widest_line_width: int
     render_width: int
+    rendered_count: int
     reasoning_expanded: bool
     reasoning_expanded_by_entry: dict[int, bool]
     theme: TuiTheme
@@ -929,6 +957,12 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             super().__init__()
             self.entry_index = entry_index
 
+    class PrefixRendered(Message):
+        def __init__(self, line_delta: int, revision: int) -> None:
+            super().__init__()
+            self.line_delta = line_delta
+            self.revision = revision
+
     def __init__(
         self,
         render_tool: ToolActivityRenderer,
@@ -955,6 +989,12 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._hovered_user_entry_index: int | None = None
         self._hovered_tool_entry_index: int | None = None
         self._hovered_reasoning_entry_index: int | None = None
+        self._rendered_count = 0
+        self._prefix_pending = 0
+        self._render_failed = False
+        self._render_theme: TuiTheme | None = None
+        self._content_revision = 0
+        self._full_render_pending = False
         self._theme_render_revision = 0
         self._theme_render_active = False
         self._theme_render_idle = asyncio.Event()
@@ -963,6 +1003,18 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
     @property
     def entries(self) -> tuple[TranscriptEntry, ...]:
         return tuple(self._entries)
+
+    @property
+    def render_complete(self) -> bool:
+        return (
+            self._rendered_count == len(self._entries)
+            and not self._prefix_pending
+            and not self._theme_render_active
+        )
+
+    def on_conversation_history_prefix_rendered(self, message: PrefixRendered) -> None:
+        if message.revision != self._content_revision:
+            message.stop()
 
     @property
     def user_turns(self) -> tuple[str, ...]:
@@ -1101,10 +1153,14 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             lines=self.lines,
             widest_line_width=self._widest_line_width,
             render_width=self._render_width,
+            rendered_count=0 if self._prefix_pending else self._rendered_count,
             reasoning_expanded=self._reasoning_expanded,
             reasoning_expanded_by_entry=self._reasoning_expanded_by_entry,
-            theme=theme_for(self),
+            theme=self._render_theme or theme_for(self),
         )
+        self._content_revision += 1
+        self._rendered_count = 0
+        self._prefix_pending = 0
         self._entries = []
         self._pieces = []
         self._piece_line_starts = []
@@ -1125,68 +1181,27 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         entries: Iterable[TranscriptEntry],
         *,
         reusable_state: ConversationHistoryState | None = None,
+        wait_for_render: bool = True,
     ) -> None:
-        """Replace the transcript, reusing rendered state where it is canonical.
-
-        Unchanged entries retain their Rich strips. Mutable tool and Run
-        projections re-render in place, while a structural change renders only
-        the suffix after the shared prefix. A cold load remains chunked.
-        """
+        """Install canonical entries; the render owner fills their strip buffer."""
+        self._content_revision += 1
+        self._prefix_pending = 0
+        self._render_failed = False
         self._hovered_user_entry_index = None
         self._hovered_tool_entry_index = None
         self._hovered_reasoning_entry_index = None
         materialized = list(entries)
-        if materialized and (not self._size_known or self.scrollable_content_region.width <= 0):
-            # Reveal an empty/reused log before attaching entries. Layout can
-            # establish the render width without synchronously rendering content
-            # from Resize, which keeps both cold loads and cached restores on
-            # their intended paths.
-            self.display = True
-            for _attempt in range(4):
-                await self.wait_for_refresh()
-                if self._size_known and self.scrollable_content_region.width > 0:
-                    break
         rendered = self._restore_state(reusable_state, materialized)
         if rendered is None:
             self._reasoning_expanded_by_entry.clear()
-            if not self._reset_buffer(materialized):
-                if not self._entries:
-                    return
-            rendered = 0
-        elif rendered == len(self._entries):
-            return
-        if not self._size_known or self.scrollable_content_region.width <= 0:
-            # Making a previously empty log visible schedules layout. Wait for
-            # geometry before choosing the render path so a large first load does
-            # not fall back to synchronous Markdown parsing on the UI loop.
-            for _attempt in range(4):
-                await self.wait_for_refresh()
-                if self._size_known and self.scrollable_content_region.width > 0:
-                    break
-            else:
-                self.call_after_refresh(self._render_entries)
-                await self.wait_until_rendered()
-                return
-        try:
-            while rendered < len(self._entries):
-                next_rendered = await self._write_entries_async(
-                    rendered,
-                    min(rendered + _LOAD_CHUNK_ENTRIES, len(self._entries)),
-                )
-                await self.wait_for_refresh()
-                rendered = next_rendered
-        except asyncio.CancelledError:
-            # Exclusive workers supersede an in-flight session load; finish the
-            # remaining entries off-loop so the buffer never rests half-rendered
-            # before the cancellation propagates.
-            while rendered < len(self._entries):
-                rendered = await self._write_entries_async(
-                    rendered,
-                    len(self._entries),
-                    background=True,
-                )
-            raise
-        self._render_width = self.scrollable_content_region.width
+            self._reset_buffer(materialized)
+        else:
+            self._rendered_count = rendered
+        self._full_render_pending = False
+        if self._rendered_count < len(self._entries):
+            self._schedule_buffer_render(rebuild=False)
+        if wait_for_render:
+            await self.wait_until_rendered()
 
     def _restore_state(
         self,
@@ -1207,7 +1222,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             return None
 
         shared = 0
-        for cached, current in zip(state.entries, entries, strict=False):
+        for cached, current in zip(state.entries[: state.rendered_count], entries, strict=False):
             if not self._same_entry_boundary(cached, current):
                 break
             shared += 1
@@ -1220,6 +1235,8 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self.lines = state.lines
         self._widest_line_width = state.widest_line_width
         self._render_width = state.render_width
+        self._render_theme = state.theme
+        self._rendered_count = min(shared, state.rendered_count)
         self._reasoning_expanded_by_entry = state.reasoning_expanded_by_entry
 
         if shared < len(self._entries):
@@ -1293,144 +1310,64 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._sync_virtual_size()
         return stop
 
-    async def _write_entries_async(
-        self,
-        start: int,
-        stop: int,
-        *,
-        background: bool = False,
-    ) -> int:
-        """Render a history chunk, moving frame-sized Rich work off the UI loop."""
-
-        entries = tuple(self._entries[start:stop])
-        if not entries:
-            return stop
-        if not background and not self._requires_background_render(entries):
-            return self._write_entries(start, stop)
-
-        requests = self._render_requests(
-            entries,
-            start_index=start,
-            previous_kind=self._entries[start - 1].kind if start else None,
-        )
-        console = self.app.console
-        viewport_width = self.scrollable_content_region.width
-        render_width = max(viewport_width, self.min_width)
-        options = console.options.update_width(render_width)
-        expected_piece_count = len(self._pieces)
-        rendered = await asyncio.to_thread(
-            _render_entry_requests,
-            requests,
-            render_tool=self._render_tool,
-            console=console,
-            options=options,
-        )
-        if len(self._pieces) != expected_piece_count:
-            # A resize or theme refresh rebuilt the complete buffer while this
-            # detached batch was rendering; that newer complete buffer wins.
-            return len(self._entries)
-        if theme_for(self) != requests[0].theme:
-            # Theme preview changed while this detached chunk was rendering.
-            # Retry with the latest immutable theme instead of committing stale strips.
-            return start
-        if self.scrollable_content_region.width != viewport_width:
-            # Geometry changed before its Resize callback rebuilt history. Retry
-            # this chunk after the next refresh instead of committing stale strips.
-            return start
-        self._append_rendered_entries(rendered)
-        return stop
-
     def append(
         self,
         entry: TranscriptEntry,
         *,
         reasoning_expanded: bool | None = None,
     ) -> None:
-        entry_index = self._register_entry(entry, reasoning_expanded=reasoning_expanded)
-        self.display = True
-        if self._size_known and self.scrollable_content_region.width > 0:
-            previous_kind = self._entries[-2].kind if len(self._entries) > 1 else None
-            self._write_entry(
-                entry,
-                previous_kind=previous_kind,
-                entry_index=entry_index,
-            )
-        else:
-            self.call_after_refresh(self._render_entries)
+        self._register_entry(entry, reasoning_expanded=reasoning_expanded)
+        self._render_append()
 
     def append_many(self, entries: Iterable[TranscriptEntry]) -> None:
-        """Append one immutable batch and publish its history size once."""
-
-        materialized = tuple(entries)
-        if not materialized:
-            return
-        start = len(self._entries)
-        for entry in materialized:
+        """Register content before scheduling any expensive layout work."""
+        for entry in entries:
             self._register_entry(entry)
-        self.display = True
-        if self._size_known and self.scrollable_content_region.width > 0:
-            self._write_entries(start, len(self._entries))
-        else:
-            self.call_after_refresh(self._render_entries)
+        self._render_append()
 
-    async def append_many_rendered(self, entries: Iterable[TranscriptEntry]) -> None:
-        """Append Markdown entries while keeping expensive Rich work off-loop."""
-
-        materialized = tuple(entries)
-        if not materialized:
+    def prepend(self, entries: tuple[TranscriptEntry, ...]) -> None:
+        """Register an older page; the existing render owner fills the prefix."""
+        if not entries:
             return
-        if (
-            not self._size_known
-            or self.scrollable_content_region.width <= 0
-            or not self._requires_background_render(materialized)
+        self._content_revision += 1
+        for attribute in (
+            "_hovered_user_entry_index",
+            "_hovered_tool_entry_index",
+            "_hovered_reasoning_entry_index",
         ):
-            self.append_many(materialized)
-            await self.wait_until_rendered()
-            return
+            self._set_hovered_entry(attribute, None)
+        offset = len(entries)
+        self._entries = [*entries, *self._entries]
+        self._reasoning_expanded_by_entry = {
+            index + offset: expanded
+            for index, expanded in self._reasoning_expanded_by_entry.items()
+        }
+        if self._rendered_count:
+            self._prefix_pending += offset
+            self._rendered_count += offset
+        _shift_piece_indexes(self._pieces, offset)
+        self._rebuild_lines()
+        self.display = True
+        self._schedule_buffer_render(rebuild=False)
 
-        while True:
-            start = len(self._entries)
-            previous_kind = self._entries[-1].kind if self._entries else None
-            requests = self._render_requests(
-                materialized,
-                start_index=start,
-                previous_kind=previous_kind,
-            )
-            console = self.app.console
-            viewport_width = self.scrollable_content_region.width
-            render_width = max(viewport_width, self.min_width)
-            options = console.options.update_width(render_width)
-            rendered = await asyncio.to_thread(
-                _render_entry_requests,
-                requests,
-                render_tool=self._render_tool,
-                console=console,
-                options=options,
-            )
-            if len(self._entries) != start:
-                # The message pump normally serializes transcript mutations. Keep
-                # the buffer internally consistent if an external caller races this await.
-                self.append_many(materialized)
-                await self.wait_until_rendered()
-                return
-            if (
-                self.scrollable_content_region.width == viewport_width
-                and theme_for(self) == requests[0].theme
-            ):
-                for entry in materialized:
-                    self._register_entry(entry)
-                self.display = True
-                self._append_rendered_entries(rendered)
-                return
-            await self.wait_for_refresh()
-            if (
-                not self._size_known
-                or self.scrollable_content_region.width <= 0
-                or not self._requires_background_render(materialized)
-            ):
-                self.append_many(materialized)
-                await self.wait_until_rendered()
-                return
+    def _render_append(self) -> None:
+        if self._render_failed:
+            return
+        self.display = bool(self._entries)
+        remaining = tuple(self._entries[self._rendered_count :])
+        if (
+            not self._theme_render_active
+            and not self._prefix_pending
+            and self._size_known
+            and self.scrollable_content_region.width > 0
+            and not self._requires_background_render(remaining)
+        ):
+            self._write_entries(self._rendered_count, len(self._entries))
+            self._rendered_count = len(self._entries)
+            self._render_width = self.scrollable_content_region.width
+            self._render_theme = theme_for(self)
+        elif remaining:
+            self._schedule_buffer_render(rebuild=False)
 
     def _register_entry(
         self,
@@ -1459,20 +1396,15 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         return sum(len(entry.text) for entry in entries) >= _BACKGROUND_MARKDOWN_CHARS
 
     async def wait_until_rendered(self) -> None:
-        """Render the initial line buffer once layout geometry becomes available."""
-
-        # A deferred render may run while an ancestor is still hidden and has
-        # no usable geometry. Retrying the render here makes this method own its
-        # contract instead of relying on a later Resize event that may not fire.
-        for attempt in range(4):
-            if not self._entries or self.lines:
+        """Wait for this content's pending layout, without owning its lifetime."""
+        for _attempt in range(4):
+            if self.render_complete:
                 return
-            self._render_entries()
-            await self.wait_for_theme_refresh()
-            if self.lines:
+            self._schedule_buffer_render(rebuild=False)
+            await self._theme_render_idle.wait()
+            if self.render_complete:
                 return
-            if attempt < 3:
-                await self.wait_for_refresh()
+            await self.wait_for_refresh()
 
     def update_tools(
         self,
@@ -1527,13 +1459,21 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 self._render_entries()
 
     def refresh_theme(self) -> None:
+        self._render_failed = False
         self._schedule_buffer_render()
 
-    def _schedule_buffer_render(self) -> None:
+    def _schedule_buffer_render(self, *, rebuild: bool = True) -> None:
         """Coalesce theme and geometry changes through the same render owner."""
 
-        self._theme_render_revision += 1
-        if not self._entries or not self.is_mounted or self._theme_render_active:
+        if rebuild:
+            self._theme_render_revision += 1
+            self._full_render_pending = True
+        if (
+            not self._entries
+            or not self.is_mounted
+            or self._theme_render_active
+            or self._render_failed
+        ):
             return
         self._theme_render_active = True
         self._theme_render_idle.clear()
@@ -1548,53 +1488,98 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         await self._theme_render_idle.wait()
 
     async def _refresh_buffer_async(self) -> None:
-        """Render the current theme and width off-loop, then replace atomically."""
-
+        """Own cold, incremental, theme and geometry rendering in one worker."""
         try:
             while self._entries:
-                revision = self._theme_render_revision
                 width = self.scrollable_content_region.width
-                entries = tuple(self._entries)
-                if width <= 0:
+                if width <= 0 or not self._size_known:
+                    return
+                revision = self._content_revision, self._theme_render_revision
+                rebuild = self._full_render_pending or (
+                    self._rendered_count > 0 and width != self._render_width
+                )
+                prefix = self._prefix_pending
+                start = 0 if rebuild or prefix else self._rendered_count
+                stop = (
+                    min(prefix + 1, self._rendered_count)
+                    if prefix and not rebuild
+                    else len(self._entries)
+                )
+                if start == stop:
                     return
                 requests = self._render_requests(
-                    entries,
-                    start_index=0,
-                    previous_kind=None,
+                    tuple(self._entries[start:stop]),
+                    start_index=start,
+                    previous_kind=self._entries[start - 1].kind if start else None,
                 )
                 console = self.app.console
-                render_width = max(width, self.min_width)
-                options = console.options.update_width(render_width)
-                rendered = await asyncio.to_thread(
-                    _render_entry_requests,
-                    requests,
-                    render_tool=self._render_tool,
-                    console=console,
-                    options=options,
-                )
-                current_requests = self._render_requests(
-                    tuple(self._entries),
-                    start_index=0,
-                    previous_kind=None,
-                )
+                try:
+                    # A restored window is one snapshot, not a stream of old
+                    # messages. Prepare it in cancellable chunks, then publish
+                    # its complete geometry so the first frame can show its end.
+                    rendered: list[_RenderedEntry] = []
+                    for offset in range(0, len(requests), _LOAD_CHUNK_ENTRIES):
+                        rendered.extend(
+                            await asyncio.to_thread(
+                                _render_entry_requests,
+                                requests[offset : offset + _LOAD_CHUNK_ENTRIES],
+                                render_tool=self._render_tool,
+                                console=console,
+                                options=console.options.update_width(max(width, self.min_width)),
+                            )
+                        )
+                        if (
+                            revision != (self._content_revision, self._theme_render_revision)
+                            or self.scrollable_content_region.width != width
+                        ):
+                            break
+                except Exception as exc:  # noqa: BLE001 - isolate this history renderer.
+                    if revision != (self._content_revision, self._theme_render_revision):
+                        continue
+                    self._render_failed = True
+                    self.notify(
+                        f"Cannot render session history ({type(exc).__name__}). Reopen to retry.",
+                        severity="error",
+                        markup=False,
+                    )
+                    return
                 if (
-                    revision != self._theme_render_revision
+                    revision != (self._content_revision, self._theme_render_revision)
                     or self.scrollable_content_region.width != width
-                    or current_requests != requests
+                    or requests
+                    != self._render_requests(
+                        tuple(self._entries[start:stop]),
+                        start_index=start,
+                        previous_kind=self._entries[start - 1].kind if start else None,
+                    )
                 ):
                     continue
-
-                self._pieces.clear()
-                self._piece_line_starts.clear()
-                self._piece_indexes_by_entry.clear()
-                self._user_lines.clear()
-                self._widest_line_width = 0
-                self._line_cache.clear()
-                self.lines.clear()
-                self._append_rendered_entries(rendered)
+                if rebuild:
+                    self._reset_buffer(self._entries)
+                if prefix and not rebuild:
+                    self._pieces = [
+                        *(
+                            _Piece(strips=strips, tag=tag, entry_index=entry.entry_index)
+                            for entry in rendered
+                            for strips, tag in entry.pieces
+                        ),
+                        *(piece for piece in self._pieces if piece.entry_index >= stop),
+                    ]
+                    self._rebuild_lines()
+                else:
+                    self._append_rendered_entries(tuple(rendered))
+                    self._rendered_count = stop
+                if prefix:
+                    self._prefix_pending = 0
+                    first = self._piece_indexes_by_entry.get(prefix)
+                    delta = self._piece_line_starts[first[0]] if first else len(self.lines)
+                    self.post_message(self.PrefixRendered(delta, self._content_revision))
                 self._render_width = width
+                self._render_theme = requests[0].theme
+                self._full_render_pending = False
                 self.refresh(layout=True)
-                return
+                if stop < len(self._entries):
+                    await self.wait_for_refresh()
         finally:
             self._theme_render_active = False
             self._theme_render_idle.set()
@@ -1673,12 +1658,22 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         if (
             self._entries
             and width > 0
-            and (not self.lines or not size_was_known or width != self._render_width)
+            and (
+                not size_was_known
+                or width != self._render_width
+                or self._rendered_count < len(self._entries)
+            )
         ):
-            self._render_entries()
+            self._schedule_buffer_render(
+                rebuild=self._rendered_count > 0 and width != self._render_width
+            )
 
     def _reset_buffer(self, entries: list[TranscriptEntry]) -> bool:
         """Reset the strip buffer for a full replacement; True when width is known."""
+        self._content_revision += 1
+        self._rendered_count = 0
+        self._prefix_pending = 0
+        self._render_failed = False
         self._entries = entries
         self._pieces.clear()
         self._piece_line_starts.clear()
@@ -1697,6 +1692,8 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         return self._size_known and self.scrollable_content_region.width > 0
 
     def _render_entries(self) -> None:
+        if self._render_failed:
+            return
         width = self.scrollable_content_region.width
         if width <= 0 or not self._size_known:
             return
@@ -1706,6 +1703,8 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._reset_buffer(self._entries)
         self._write_entries(0, len(self._entries))
         self._render_width = width
+        self._render_theme = theme_for(self)
+        self._rendered_count = len(self._entries)
 
     def _write_entry(
         self,

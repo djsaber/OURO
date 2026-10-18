@@ -6,7 +6,7 @@ import re
 import shutil
 import struct
 from collections import OrderedDict
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, closing, suppress
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,7 +18,7 @@ from pydantic import ValidationError
 from ouro.core.agents import DelegationRecord
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.compaction import CompactionRecord
-from ouro.core.context_snapshots import ContextSnapshotRecord
+from ouro.core.context_snapshots import ContextSnapshotHeader, ContextSnapshotRecord
 from ouro.core.errors import (
     DelegationRevisionConflictError,
     PersistenceError,
@@ -56,6 +56,7 @@ from ouro.sessions.base import (
     SessionObservationState,
     SessionSnapshot,
 )
+from ouro.sessions.context_index import read_context_index, write_context_index
 from ouro.sessions.file_commits import FileSessionCommits
 from ouro.sessions.index import SessionIndex
 from ouro.sessions.layout import DATA_LAYOUT_VERSION, DataLayoutManifest
@@ -552,6 +553,22 @@ class LocalSessionStore:
                         break
             return messages
 
+    def iter_messages_before(
+        self, session_id: str, *, before: int | None = None
+    ) -> Generator[tuple[int, MessageRecord]]:
+        if before is not None and before < 0:
+            raise ValueError("message cursor must be nonnegative")
+        with self.session_read(session_id):
+            path = self._require_session_dir(session_id) / "messages.jsonl"
+            with closing(reverse_jsonl(path, before=before)) as lines:
+                for offset, line in lines:
+                    yield (
+                        offset,
+                        decode_versioned_record_json(
+                            MessageRecord, line, label=f"message in session {session_id}"
+                        ),
+                    )
+
     def truncate_messages(
         self, session_id: str, *, before_message_id: str, expected_last_message_id: str
     ) -> MessageTruncation:
@@ -721,6 +738,18 @@ class LocalSessionStore:
         with self.session_mutation(context.session_id):
             session_dir = self._require_session_dir(context.session_id)
             self._write_model_atomic(session_dir / "context.json", context)
+            write_context_index(session_dir / "context.json", context)
+
+    def load_latest_context_header(self, session_id: str) -> ContextSnapshotHeader | None:
+        with self.session_read(session_id):
+            path = self._require_session_dir(session_id) / "context.json"
+            if not path.exists():
+                return None
+            header = read_context_index(path)
+            if header is not None:
+                return header
+            context = self.load_latest_context(session_id)
+            return context.header() if context is not None else None
 
     def load_latest_context(self, session_id: str) -> ContextSnapshotRecord | None:
         with self.session_mutation(session_id):
@@ -806,7 +835,7 @@ class LocalSessionStore:
             return self._load_runtime_session(session_id)
 
     def load_session_observation(self, session_id: str) -> SessionObservationState:
-        with self.session_mutation(session_id):
+        with self.session_read(session_id):
             runtime = self._load_runtime_session(session_id)
             active_run_id = runtime.session.active_run_id
             path = self._session_dir(session_id) / "events.jsonl"
@@ -1108,6 +1137,10 @@ class LocalSessionStore:
             raise PersistenceError(
                 f"could not acquire session lock for {session_id}: {exc}"
             ) from exc
+
+    def session_read(self, session_id: str) -> SessionMutationLock:
+        # Files need the same short, reentrant Session lock for coherent reads.
+        return self.session_mutation(session_id)
 
     def session_mutation(self, session_id: str) -> SessionMutationLock:
         return _SessionMutation(self, session_id)

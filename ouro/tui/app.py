@@ -8,7 +8,7 @@ from calendar import month_name
 from collections import Counter, OrderedDict
 from collections.abc import Callable, Sequence
 from contextlib import ExitStack
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from functools import partial
 from pathlib import Path
@@ -33,14 +33,20 @@ from textual.worker import Worker
 
 from ouro.application.agent_models import AgentTreeNode
 from ouro.application.agent_tree import AgentTreeSubscription
-from ouro.application.dto import Diagnostic
-from ouro.application.event_models import RuntimeEventView
 from ouro.application.models import AvailableModel, ModelReasoningState
 from ouro.application.queued_inputs import QueuedInputMode, QueuedUserInputView
-from ouro.application.runtime_activity import overlay_run_activity
-from ouro.application.session_models import SessionCatalogEntry, SessionSummary
+from ouro.application.session_content import active_stream_tail as _active_stream_tail
+from ouro.application.session_content import restore_session_content
+from ouro.application.session_models import (
+    SessionCatalogEntry,
+    SessionHistoryAnchor,
+    SessionHistoryWindow,
+    SessionObservationBatch,
+    SessionObservationSnapshot,
+    SessionSummary,
+)
+from ouro.application.session_observation import SessionObservation, observation_event
 from ouro.application.skill_activations import SkillInvocationRequest
-from ouro.application.supervisor import RuntimeSubscription
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.attachment_input import editable_input_content
@@ -52,7 +58,6 @@ from ouro.core.input_content import InputContent, InputFile, InputSkillReference
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import REASONING_EFFORTS, ReasoningRequest
-from ouro.core.results import RunResult
 from ouro.core.state import DEFAULT_SESSION_TITLE
 from ouro.deployment import SessionBackend, TaskBackend
 from ouro.local_application import LocalApplication
@@ -84,6 +89,7 @@ from ouro.tui.controller import (
     TuiBootstrap,
     TuiController,
     TuiLifecycleStatus,
+    TuiSessionObservation,
     TuiSystemStatus,
     project_mcp_system_status,
     project_usage_system_status,
@@ -126,7 +132,6 @@ from ouro.tui.screens import (
 from ouro.tui.skill_picker import SkillPicker
 from ouro.tui.state import (
     PendingInteraction,
-    RunPresentation,
     TuiSessionProjection,
     canonical_event_order,
     describe_run_pause,
@@ -162,9 +167,11 @@ from ouro.tui.widgets import (
     ConversationView,
     InteractionBar,
     PlanConfirmationPanel,
+    PreparedTranscript,
     QueuedInputPanel,
     StatusLine,
     WelcomePanel,
+    project_transcript_entries,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -180,17 +187,30 @@ class LifecycleStatusReceived(Message):
         self.status = status
 
 
-class SessionObservationLagged(Message):
-    def __init__(self, *, session_id: str, diagnostic: Diagnostic) -> None:
-        super().__init__()
-        self.session_id = session_id
-        self.diagnostic = diagnostic
+@dataclass
+class ObservationDelivery:
+    subscription: SessionObservation
+    batch: SessionObservationBatch
+    done: asyncio.Event = field(default_factory=asyncio.Event)
+    error: BaseException | None = None
+
+
+@dataclass(frozen=True)
+class CachedSessionHistory:
+    state: ConversationHistoryState
+    anchor: SessionHistoryAnchor | None
+
+
+@dataclass
+class HistoryLoadRequest:
+    revision: int
+    all_pages: bool = False
+    navigate_to: str | None = None
 
 
 _MCP_STATUS_SYNC_INTERVAL_SECONDS = 0.25
 _INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS = 0.3
 _SESSION_TITLE_MAX_CELLS = 56
-_RUNTIME_EVENT_BUFFER_MAX = 1000
 _RUNTIME_EVENT_APPLY_MAX = 64
 _SESSION_HISTORY_CACHE_SIZE = 3
 _RUNTIME_RENDER_BOUNDARY_EVENTS = {
@@ -914,7 +934,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         super().__init__()
         self.console.push_theme(self._tui_theme.rich_theme())
         self._controller = TuiController(
-            self._publish_runtime_event,
+            self._publish_control_event,
             self._publish_lifecycle_status,
             home=home,
             system_prompt=system_prompt,
@@ -932,7 +952,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._history_edit_in_progress = False
         self._visible_read_only = False
         self._visible_agent: AgentTreeNode | None = None
-        self._observation_subscription: RuntimeSubscription | None = None
+        self._observation_subscription: SessionObservation | None = None
         self._agent_tree_subscription: AgentTreeSubscription | None = None
         self._agent_tree_revision = 0
         self._agent_nodes: dict[str, AgentTreeNode] = {}
@@ -941,7 +961,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._pending_agent_switch: tuple[str, AgentTreeNode | None] | None = None
         self._controlled_composer_draft: str | None = None
         self._held_session_scroll_y: dict[str, float] = {}
-        self._session_history_states: OrderedDict[str, ConversationHistoryState] = OrderedDict()
+        self._session_history_states: OrderedDict[str, CachedSessionHistory] = OrderedDict()
+        self._history_anchor: SessionHistoryAnchor | None = None
+        self._history_before_cursor: int | None = None
+        self._history_run_ids: set[str] = set()
+        self._history_request: HistoryLoadRequest | None = None
+        self._history_load_failed = False
         self._interaction: PendingInteraction | None = None
         self._models: tuple[AvailableModel, ...] = ()
         self._model_menu_loading = False
@@ -955,12 +980,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._welcome_refresh_lock = asyncio.Lock()
         self._welcome_refresh_requested: Literal["usage", "system"] | None = None
         self._host_closing = False
-        self._waiting_for_session_event = False
         self._dismissed_command_text: str | None = None
         self._attachment_picker: AttachmentPicker | None = None
         self._skill_picker: SkillPicker | None = None
         self._pending_runtime_events: list[EventRecord] = []
-        self._runtime_event_buffer_lagged: set[str] = set()
+        self._observation_delivery: ObservationDelivery | None = None
+        self._view_revision = 0
         self._runtime_events_ready_posted = False
         self._runtime_events_frame_scheduled = False
         self._runtime_events_worker: Worker[None] | None = None
@@ -1010,7 +1035,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         with Vertical(id="main"):
             yield ConversationView(
                 reasoning_expanded=self._preferences.reasoning_expanded,
-                welcome_state_changed=self._set_welcome_mode,
+                welcome_state_changed=self._apply_welcome_mode,
                 system_status_changed=self._set_welcome_system_status,
             )
             self._input_surface = WelcomePanel(
@@ -1299,28 +1324,21 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         finally:
             self._session_controls_refresh_task = None
 
-    def _publish_runtime_event(self, event: EventRecord) -> None:
-        """Accept fallback sink events not already owned by the visible subscription."""
-
-        if self._host_closing:
+    def _publish_control_event(self, event: EventRecord) -> None:
+        """Refresh child interactions without admitting another body delivery path."""
+        if self._host_closing or self._visible_read_only:
             return
-        subscription = self._observation_subscription
-        if (
-            subscription is not None
-            and not subscription.closed
-            and subscription.session_id == event.session_id
-        ):
-            return
-        if not self._queue_runtime_event(event):
-            self._signal_runtime_event_buffer_lag(event.session_id)
+        _worker: Worker[PendingInteraction | None] = self.run_worker(
+            partial(self._refresh_interaction, refresh_agents=True),
+            group="child-interactions",
+            exclusive=True,
+        )
 
-    def _queue_runtime_event(self, event: EventRecord) -> bool:
-        if len(self._pending_runtime_events) >= _RUNTIME_EVENT_BUFFER_MAX:
-            return False
+    def _queue_runtime_event(self, event: EventRecord) -> None:
         self._pending_runtime_events.append(event)
         if event.event_type in _RUNTIME_RENDER_BOUNDARY_EVENTS:
             self._post_runtime_events_ready()
-            return True
+            return
         if not self._runtime_events_ready_posted and not self._runtime_events_frame_scheduled:
             # The compositor already owns the display cadence. Schedule one
             # prefix per native frame instead of undersampling it with a
@@ -1328,35 +1346,22 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._runtime_events_frame_scheduled = self.call_after_refresh(
                 self._post_runtime_events_ready,
             )
-        return True
 
-    def _signal_runtime_event_buffer_lag(self, session_id: str) -> None:
-        if session_id in self._runtime_event_buffer_lagged or self._host_closing:
-            return
-        self._runtime_event_buffer_lagged.add(session_id)
-        self.post_message(
-            SessionObservationLagged(
-                session_id=session_id,
-                diagnostic=Diagnostic(
-                    code="tui_runtime_event_buffer_lagged",
-                    severity="warning",
-                    component="tui.session_observation",
-                    message="TUI event buffer overflowed; reload the durable Session snapshot",
-                    session_id=session_id,
-                    recoverable=True,
-                    suggested_action="Reload the visible Session observation.",
-                ),
-            )
-        )
-
-    def _replace_observation(self, subscription: RuntimeSubscription | None) -> None:
+    def _replace_observation(self, subscription: SessionObservation | None) -> None:
         if self._host_closing:
             if subscription is not None:
                 subscription.close()
             return
         previous = self._observation_subscription
-        if previous is not None and previous is not subscription:
+        if previous is subscription:
+            return
+        if previous is not None:
             previous.close()
+        delivery = self._observation_delivery
+        if delivery is not None:
+            delivery.done.set()
+        self._observation_delivery = None
+        self._pending_runtime_events.clear()
         self._observation_subscription = subscription
         if subscription is None:
             return
@@ -1371,31 +1376,51 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             exclusive=True,
         )
 
-    async def _consume_observation(self, subscription: RuntimeSubscription) -> None:
+    async def _consume_observation(self, subscription: SessionObservation) -> None:
         try:
-            async for notification in subscription:
+            async for batch in subscription:
                 if self._host_closing or self._observation_subscription is not subscription:
                     return
-                if notification.kind == "event" and notification.event is not None:
-                    if not self._queue_runtime_event(_event_record(notification.event)):
-                        self._signal_runtime_event_buffer_lag(subscription.session_id)
-                        return
-                elif notification.kind == "diagnostic" and notification.diagnostic is not None:
-                    self.post_message(
-                        SessionObservationLagged(
-                            session_id=subscription.session_id,
-                            diagnostic=notification.diagnostic,
-                        )
-                    )
+                if batch.diagnostic is not None:
+                    self.notify(batch.diagnostic.message, severity="error", markup=False)
                     return
+                if batch.snapshot is not None:
+                    revision = self._view_revision
+                    loaded = await self._controller.load_observation_snapshot(batch.snapshot)
+                    if not await self._install_session_surface(
+                        loaded, subscription=subscription, revision=revision
+                    ):
+                        return
+                    continue
+                delivery = ObservationDelivery(subscription, batch)
+                self._observation_delivery = delivery
+                for event in batch.events:
+                    self._queue_runtime_event(observation_event(event))
+                if not batch.events:
+                    delivery.done.set()
+                await delivery.done.wait()
+                if self._host_closing or self._observation_subscription is not subscription:
+                    return
+                if delivery.error is not None:
+                    self.notify(str(delivery.error), severity="error", markup=False)
+                    return
+                subscription.acknowledge(batch)
+                self._observation_delivery = None
+        except Exception as exc:  # noqa: BLE001 - observation failure is local to this view.
+            if self._observation_subscription is subscription and not self._host_closing:
+                self.notify(str(exc), severity="error", markup=False)
         finally:
             subscription.close()
 
-    async def _replace_agent_tree(self, root_session_id: str | None) -> tuple[AgentTreeNode, ...]:
+    async def _replace_agent_tree(
+        self, root_session_id: str | None, *, prepared: AgentTreeSubscription | None = None
+    ) -> tuple[AgentTreeNode, ...]:
         self._agent_tree_revision += 1
         revision = self._agent_tree_revision
         previous = self._agent_tree_subscription
         if previous is not None and previous.root_session_id == root_session_id:
+            if prepared is not None and prepared is not previous:
+                prepared.close()
             self._sync_subagent_navigation_panel(root_session_id=root_session_id)
             return tuple(self._agent_nodes.values())
         if previous is not None:
@@ -1406,7 +1431,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if root_session_id is None:
             self._sync_subagent_navigation_panel(root_session_id=None)
             return ()
-        subscription = await self._controller.subscribe_agent_tree(root_session_id)
+        subscription = prepared or await self._controller.subscribe_agent_tree(root_session_id)
         if subscription is None:
             self._sync_subagent_navigation_panel(root_session_id=root_session_id)
             return ()
@@ -1442,6 +1467,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             agents=self._agent_nodes.values(),
             root_status=self._agent_root_status,
         )
+        panel.display = (
+            bool(panel.visible_session_ids) or not self.query_one(WelcomePanel).welcome_active
+        )
         visible_session_id = current_session_id or self._visible_session_id()
         if visible_session_id is not None:
             panel.set_current_session(visible_session_id)
@@ -1454,17 +1482,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 if notification.kind == "diagnostic" and notification.diagnostic is not None:
                     self.notify(
                         notification.diagnostic.message,
-                        severity="warning",
+                        severity=(
+                            "error" if notification.diagnostic.severity == "error" else "warning"
+                        ),
                         markup=False,
                     )
-                    snapshot = await self._controller.agent_tree_snapshot(
-                        subscription.root_session_id
-                    )
-                    if snapshot is None:
-                        continue
-                    nodes = snapshot.nodes
-                    root_activity = snapshot.root_activity
-                    self._agent_nodes = {node.delegation_id: node for node in nodes}
+                    return
                 elif notification.kind == "snapshot" and notification.snapshot is not None:
                     snapshot = notification.snapshot
                     nodes = snapshot.nodes
@@ -1491,19 +1514,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         finally:
             subscription.close()
-
-    async def on_session_observation_lagged(
-        self,
-        message: SessionObservationLagged,
-    ) -> None:
-        self._runtime_event_buffer_lagged.discard(message.session_id)
-        if message.session_id != self._visible_session_id() or self._host_closing:
-            return
-        if message.diagnostic.code == "runtime_subscription_read_failed":
-            self.notify(message.diagnostic.message, severity="error", markup=False)
-            return
-        self.notify("Live view fell behind; reloading durable session history…", severity="warning")
-        await self._reload_visible_observation()
 
     def _post_runtime_events_ready(self) -> None:
         self._runtime_events_frame_scheduled = False
@@ -1548,7 +1558,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if not self._surface_available():
             return
         self._restore_input_draft(self._controller.session_id)
-        self._set_welcome_mode(True)
         if refresh_status:
             self.call_after_refresh(self._start_welcome_status_refresh)
 
@@ -1559,9 +1568,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
 
     def _set_welcome_mode(self, enabled: bool) -> None:
+        self.query_one(ConversationView).set_welcome_mode(enabled)
+
+    def _apply_welcome_mode(self, enabled: bool) -> None:
         self.query_one(BrandHeader).display = not enabled
         self.query_one("#main", Vertical).set_class(enabled, "welcome-page")
         self.query_one(WelcomePanel).set_welcome_mode(enabled)
+        self._sync_subagent_navigation_panel(root_session_id=self._controller.session_id)
 
     def _set_welcome_system_status(self, status: TuiSystemStatus) -> None:
         self.query_one(WelcomePanel).set_system_status(status)
@@ -1604,7 +1617,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 return
             events = _runtime_event_frame_prefix(self._pending_runtime_events)
             del self._pending_runtime_events[: len(events)]
-            await self._apply_runtime_events(events)
+            delivery = self._observation_delivery
+            try:
+                await self._apply_runtime_events(events)
+            except Exception as exc:  # noqa: BLE001 - fail only this content observer.
+                if delivery is None:
+                    raise
+                delivery.error = exc
+                delivery.done.set()
+                self._pending_runtime_events.clear()
+                return
+            if not self._pending_runtime_events and delivery is not None:
+                delivery.done.set()
         if (
             self._pending_runtime_events
             and not self._runtime_events_ready_posted
@@ -1618,64 +1642,16 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self,
         events: Sequence[EventRecord],
     ) -> None:
-        projection = self._projection
-        if projection is not None and any(
-            event.session_id == projection.session_id
-            and (
-                event.history_epoch > projection.history_epoch
-                or (
-                    event.sequence > projection.last_sequence
-                    and event.history_epoch == projection.history_epoch
-                    and event.event_type == "run_status_changed"
-                    and event.payload.get("resumed") is True
-                )
-            )
-            for event in events
-        ):
-            # A new history or resumed checkpoint uses the same snapshot/live handoff.
-            await self._reload_visible_observation()
-        projection = self._projection
-        if projection is None:
-            events = tuple(
-                event for event in events if event.session_id == self._controller.session_id
-            )
-        input_messages: dict[str, MessageRecord] = {}
-        if events:
-            session_id = projection.session_id if projection is not None else events[0].session_id
-            epoch = projection.history_epoch if projection is not None else events[0].history_epoch
-            message_ids = tuple(
-                dict.fromkeys(
-                    identity
-                    for event in events
-                    if event.session_id == session_id
-                    and event.history_epoch == epoch
-                    and (projection is None or event.sequence > projection.last_sequence)
-                    and event.event_type
-                    in {*_SESSION_INPUT_MESSAGE_EVENTS, "queued_input_consumed"}
-                    if isinstance((identity := event.payload.get("message_id")), str)
-                )
-            )
-            if message_ids:
-                page = await self._controller.messages_at_history(
-                    session_id, message_ids, history_epoch=epoch
-                )
-                if page.history_epoch != epoch:
-                    await self._reload_visible_observation()
-                    return
-                input_messages = {message.message_id: message for message in page.messages}
+        delivery = self._observation_delivery
+        input_messages = (
+            {message.message_id: message for message in delivery.batch.messages}
+            if delivery is not None
+            else {}
+        )
         async with self._runtime_event_apply_lock:
-            current = self._projection
-            if current is not projection and (
-                current is None
-                or projection is None
-                or current.session_id != projection.session_id
-                or current.history_epoch != projection.history_epoch
-            ):
+            if delivery is not self._observation_delivery:
                 return
-            await self._apply_runtime_event_batch(
-                events,
-                input_messages=input_messages,
-            )
+            await self._apply_runtime_event_batch(events, input_messages=input_messages)
 
     async def _apply_runtime_event_batch(
         self,
@@ -1687,23 +1663,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         projection = self._projection
         if projection is None:
-            if not self._waiting_for_session_event:
-                return
-            events = tuple(
-                event for event in events if event.session_id == self._controller.session_id
-            )
-            if not events:
-                return
-            projection = TuiSessionProjection(
-                events[0].session_id, history_epoch=events[0].history_epoch
-            )
-            self._projection = projection
-            # Only the selected draft may become a durable Session on this surface.
-            await self._replace_agent_tree(projection.session_id)
-            composer = self.query_one(Composer)
-            composer.disabled = False
-            if self.app_focus:
-                composer.focus()
+            return
 
         diagnostics: list[str] = []
         latest_update = None
@@ -1870,20 +1830,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         for diagnostic in diagnostics:
             self.notify(diagnostic, severity="error", markup=False)
-        if (
-            not self._visible_read_only
-            and self._controller.session_id == projection.session_id
-            and (
-                self._observation_subscription is None
-                or self._observation_subscription.session_id != projection.session_id
-            )
-        ):
-            self._replace_observation(
-                await self._controller.subscribe_session(
-                    projection.session_id,
-                    after_sequence=projection.last_sequence,
-                )
-            )
 
     async def _append_run_summary(self, event: EventRecord, *, model: str | None) -> None:
         if event.run_id is None:
@@ -2268,13 +2214,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     ) -> None:
         if self._visible_read_only:
             return
+        welcome_on_failure = self.query_one(ConversationView).showing_welcome
         self._set_welcome_mode(False)
         active_run = self._has_active_run()
         if not active_run:
             self.query_one(StatusLine).set_activity("queued")
-        if self._projection is None:
-            self.query_one(Composer).disabled = True
-            self._waiting_for_session_event = True
         attachments = (
             attachments
             if attachments is not None
@@ -2299,10 +2243,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 }
             )
         self._set_input_drafts(drafts)
+        self._sync_input_state(self._interaction)
         self._run_prompt(
             pending,
             queue_mode,
             revision=self._controller.selection_revision,
+            view_revision=self._view_revision,
+            welcome_on_failure=welcome_on_failure,
         )
 
     @work(group="run")
@@ -2312,6 +2259,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         queue_mode: QueuedInputMode,
         *,
         revision: int,
+        view_revision: int,
+        welcome_on_failure: bool,
     ) -> None:
         origin_session_id = pending.origin_session_id
         accepted = False
@@ -2322,7 +2271,28 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             drafts = self._input_drafts.finish_submission(pending.input_id)
             if origin_session_id is None:
                 drafts = drafts.model_copy(update={"welcome_resource_id": None})
+            if (
+                origin_session_id is None
+                and revision == self._controller.selection_revision
+                and view_revision == self._view_revision
+                and not self._host_closing
+            ):
+                content = self.query_one(Composer).input_content
+                drafts = drafts.remember(None, "").remember(
+                    pending.session_id,
+                    content.text,
+                    attachments=content.attachments,
+                    skills=content.skills,
+                )
             self._set_input_drafts(drafts)
+            self._sync_input_state(self._interaction)
+            if revision == self._controller.selection_revision:
+                _worker: Worker[None] = self.run_worker(
+                    partial(
+                        self._observe_accepted_input, pending.session_id, revision, view_revision
+                    ),
+                    group="input-observation",
+                )
 
         try:
             await self._flush_input_drafts()
@@ -2346,7 +2316,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 new_session_id=pending.session_id if origin_session_id is None else None,
                 input_id=pending.input_id,
             )
-            await self._apply_run_result(result)
+            await self._refresh_welcome_status()
             await self._sync_queued_inputs(result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - providers and tools fail across this boundary.
             same_selection = revision == self._controller.selection_revision
@@ -2361,14 +2331,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if not accepted:
                 self._set_input_drafts(self._input_drafts.finish_submission(pending.input_id))
                 self._restore_unsent_input(pending, revision, origin_session_id)
-                if self._controller.session_id is None:
+                if welcome_on_failure and same_selection and view_revision == self._view_revision:
                     self._set_welcome_mode(True)
             if same_selection:
                 self.query_one(StatusLine).set_activity("failed")
             self.notify(str(exc), severity="error", markup=False)
         finally:
             if revision == self._controller.selection_revision:
-                self._waiting_for_session_event = False
                 if not self._host_closing and self.query(Composer):
                     self._sync_input_state(self._interaction)
 
@@ -2389,95 +2358,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if same_selection:
             self._edit_draft(restored)
 
-    async def _apply_run_result(self, result: RunResult) -> None:
-        if not self._owns_session_surface(result.session.session_id):
-            await self._refresh_welcome_status()
-            return
-        await self._flush_pending_runtime_events()
-        await self._apply_run_result_events(result.events)
-        if not self._surface_available():
-            return
-        async with self._runtime_event_apply_lock:
-            if not self._owns_session_surface(result.session.session_id):
-                return
-            if (
-                self._projection is not None
-                and result.run.history_epoch < self._projection.history_epoch
-            ):
-                return
-            if self._projection is None:
-                self._projection = TuiSessionProjection(
-                    result.session.session_id, history_epoch=result.session.history_epoch
-                )
-            if result.final_text and not self._projection.assistant_text:
-                self._projection.assistant_text = result.final_text
-                conversation = self.query_one(ConversationView)
-                await conversation.append_assistant(result.final_text)
-                await conversation.finish_assistant()
-            self._active_title = result.session.title
-            self._active_workspace = result.session.workspace or self._system_status.workspace
-            self.query_one(BrandHeader).set_context(
-                session_title=self._active_title,
-                workspace=self._active_workspace,
-            )
-        await self._refresh_welcome_status()
-        await self._refresh_interaction()
-        await self._refresh_session_controls()
-
     def _owns_session_surface(self, session_id: str) -> bool:
         if self._visible_read_only:
             return False
         if self._projection is not None:
             return self._projection.session_id == session_id
-        return self._waiting_for_session_event and self._controller.session_id == session_id
-
-    async def _apply_run_result_events(self, events: Sequence[EventRecord]) -> None:
-        if not events or self._host_closing:
-            return
-        session_id = events[0].session_id
-        projection = self._projection
-        high_water = (
-            projection.last_sequence
-            if projection is not None and projection.session_id == session_id
-            else 0
-        )
-        high_water = max(
-            (
-                high_water,
-                *(
-                    event.sequence
-                    for event in self._pending_runtime_events
-                    if event.session_id == session_id
-                ),
-            )
-        )
-        target_sequence = high_water
-        for event in events:
-            if event.session_id != session_id or event.sequence <= high_water:
-                continue
-            if not self._queue_runtime_event(event):
-                self._signal_runtime_event_buffer_lag(event.session_id)
-                break
-            high_water = event.sequence
-            target_sequence = event.sequence
-        if target_sequence == 0:
-            return
-
-        await self._flush_pending_runtime_events()
-        while not self._host_closing:
-            projection = self._projection
-            if (
-                projection is not None
-                and projection.session_id == session_id
-                and projection.last_sequence >= target_sequence
-            ):
-                return
-            if not any(
-                event.session_id == session_id and event.sequence <= target_sequence
-                for event in self._pending_runtime_events
-            ):
-                return
-            await self.wait_for_refresh()
+        return self._controller.session_id == session_id
 
     async def _refresh_welcome_status(self, *, full: bool = False) -> None:
         # Entry and completion notifications share one reader. A full snapshot
@@ -2559,6 +2445,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if not self._surface_available() or not self._owns_session_surface(session_id):
             return
         self.query_one(QueuedInputPanel).set_inputs(inputs)
+        if self._projection is not None:
+            self._sync_activity(self._projection.activity)
 
     def on_text_area_changed(self, message: TextArea.Changed) -> None:
         if not self._surface_available():
@@ -2885,7 +2773,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 approved=approved,
             )
             if result is not None:
-                await self._apply_run_result(result)
+                await self._refresh_welcome_status()
             if revision == self._controller.selection_revision:
                 await self._refresh_interaction()
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
@@ -2902,7 +2790,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             result = await self._controller.answer(interaction=interaction, answer=answer)
             if result is not None:
-                await self._apply_run_result(result)
+                await self._refresh_welcome_status()
             if revision == self._controller.selection_revision:
                 await self._refresh_interaction()
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
@@ -2953,8 +2841,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _sync_activity(self, activity: RuntimeActivitySnapshot) -> None:
         status_line = self.query_one(StatusLine)
         if self._activity_override is None:
+            preparing_input = any(
+                item.waiting_on_run_id is None for item in self.query_one(QueuedInputPanel).inputs
+            )
             status_line.set_activity(
-                activity.activity,
+                "queued" if preparing_input else activity.activity,
                 model_attempt=activity.model_attempt,
                 model_max_attempts=activity.model_max_attempts,
             )
@@ -3058,12 +2949,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         preparing_first_input = self._controller.session_id is None and any(
             item.origin_session_id is None for item in self._input_drafts.pending
         )
+        composer.submission_pending = preparing_first_input
         composer.attachments_enabled = composer.attachments_enabled and not preparing_first_input
         if not composer.attachments_enabled:
             self._close_attachment_menu()
-        if preparing_first_input:
-            composer.disabled = True
-            return
         if self._visible_read_only:
             composer.disabled = True
             return
@@ -3412,7 +3301,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             TuiCommandArgument(
                 value=item.queue_id,
                 description=(
-                    "Follow-up message" if item.mode == "follow_up" else "Active-run guidance"
+                    "Accepted input awaiting dispatch"
+                    if item.waiting_on_run_id is None
+                    else "Follow-up message"
+                    if item.mode == "follow_up"
+                    else "Active-run guidance"
                 ),
                 label=f"{index}. {_queued_input_preview(item)}",
                 trailing_badge=file_count_label(item.attachments, item.resource_refs),
@@ -3513,6 +3406,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _user_message_arguments(self) -> tuple[TuiCommandArgument, ...]:
         """Project visible user turns as stable numbered command options."""
 
+        if self._history_before_cursor is not None:
+            if not self._history_loading and not self._history_load_failed:
+                self._request_earlier_history(all_pages=True)
+            return ()
         try:
             conversation = self.query_one(ConversationView)
         except Exception:  # noqa: BLE001 — app may not have mounted the view yet.
@@ -3559,16 +3456,22 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     @work(group="plugin-command")
     async def _run_plugin_command(self, value: str) -> None:
         revision = self._controller.selection_revision
+        view_revision = self._view_revision
         command_text, _, argument = value.strip().partition(" ")
         selector = command_text.removeprefix("/")
         creating_projection = self._projection is None
         if creating_projection:
-            self._waiting_for_session_event = True
             self.query_one(Composer).disabled = True
 
         def submitted() -> None:
             if revision == self._controller.selection_revision:
                 self._schedule_session_controls_refresh()
+                session_id = self._controller.session_id
+                if session_id is not None:
+                    _worker: Worker[None] = self.run_worker(
+                        partial(self._observe_accepted_input, session_id, revision, view_revision),
+                        group="input-observation",
+                    )
 
         try:
             result = await self._controller.execute_plugin_command(
@@ -3606,13 +3509,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     json.dumps(command_data, ensure_ascii=False, indent=2)
                 )
             for run_result in result.run_results:
-                await self._apply_run_result(run_result)
                 await self._sync_queued_inputs(run_result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - plugin failures are user-visible.
             self.notify(str(exc), severity="error", markup=False)
         finally:
             if creating_projection and revision == self._controller.selection_revision:
-                self._waiting_for_session_event = False
                 self._sync_input_state(self._interaction, focus=True)
 
     @work(exclusive=True, group="session-summary")
@@ -3645,9 +3546,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         composer.disabled = True
         self.query_one(StatusLine).set_activity("compacting")
         try:
-            result = await self._controller.compact()
+            await self._controller.compact()
             await self._flush_pending_runtime_events()
-            await self._apply_runtime_events(result.events)
             await self._refresh_welcome_status()
         except Exception as exc:  # noqa: BLE001 - compaction errors are user-visible.
             self.query_one(StatusLine).set_activity("failed")
@@ -3656,17 +3556,28 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._sync_input_state(self._interaction, focus=True)
 
     async def _new_session(self) -> None:
+        self._view_revision += 1
+        revision = self._view_revision
         try:
-            model = await self._controller.new_session()
+            prepared = await self._controller.prepare_new_session()
         except Exception as exc:  # noqa: BLE001 - keep the current view on failure.
             self.notify(str(exc), severity="error", markup=False)
             return
+        if self._host_closing or revision != self._view_revision:
+            return
         async with self._runtime_event_apply_lock:
+            if self._host_closing or revision != self._view_revision:
+                return
+            self._controller.activate_new_session(prepared)
+            model = prepared.model
             with self.batch_update():
                 self._remember_visible_session_history()
                 self._replace_observation(None)
                 self._projection = None
-                self._waiting_for_session_event = False
+                self._history_anchor = None
+                self._history_before_cursor = None
+                self._history_request = None
+                self._history_load_failed = False
                 self._pending_runtime_events.clear()
                 self._visible_read_only = False
                 self._visible_agent = None
@@ -3782,6 +3693,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if not self._agent_switch_in_progress and target_session_id == self._visible_session_id():
             panel.end_navigation()
             return
+        self._view_revision += 1
         self._pending_agent_switch = (target_session_id, target_agent)
         if self._agent_switch_in_progress:
             return
@@ -3827,16 +3739,21 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._navigate_to("bottom")
 
     def action_previous_user_message(self) -> None:
-        self.query_one(ConversationView).scroll_to_previous_user_turn()
+        self._cancel_history_navigation()
+        conversation = self.query_one(ConversationView)
+        if not conversation.scroll_to_previous_user_turn():
+            conversation.release_anchor()
+            self._request_earlier_history(navigate_to="previous")
 
     def action_next_user_message(self) -> None:
+        self._cancel_history_navigation()
         self.query_one(ConversationView).scroll_to_next_user_turn()
 
     def _visible_session_id(self) -> str | None:
         """Return the Session that currently owns the conversation surface."""
 
         projection = self._projection
-        if projection is None or self.query_one(ConversationView).showing_welcome:
+        if projection is None:
             return None
         return projection.session_id
 
@@ -3850,9 +3767,16 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._session_history_states.pop(session_id, None)
         if state is None:
             return
-        self._session_history_states[session_id] = state
+        self._session_history_states[session_id] = CachedSessionHistory(state, self._history_anchor)
         while len(self._session_history_states) > _SESSION_HISTORY_CACHE_SIZE:
-            self._session_history_states.popitem(last=False)
+            removed, _state = self._session_history_states.popitem(last=False)
+            self._held_session_scroll_y.pop(removed, None)
+
+    def _retained_history_anchor(self, session_id: str) -> SessionHistoryAnchor | None:
+        if self._projection is not None and self._projection.session_id == session_id:
+            return self._history_anchor
+        cached = self._session_history_states.get(session_id)
+        return cached.anchor if cached is not None else None
 
     def _remember_visible_session_history(self) -> None:
         session_id = self._visible_session_id()
@@ -3896,10 +3820,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def _navigate_to(self, target: str) -> None:
         """Scroll the conversation to the target identified by the /navigate argument."""
+        if target != "bottom" and self._history_before_cursor is not None:
+            self._request_earlier_history(all_pages=True, navigate_to=target)
+            return
         conversation = self.query_one(ConversationView)
         if target == "top":
+            conversation.release_anchor()
             conversation.scroll_home(animate=False)
         elif target == "bottom":
+            self._cancel_history_navigation()
             conversation.anchor()
         elif target.startswith("#") and target[1:].isdigit():
             index = int(target[1:]) - 1
@@ -4111,42 +4040,93 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return True
 
     async def _open_session(self, session_id: str) -> None:
+        self._view_revision += 1
+        revision = self._view_revision
         previous_projection = self._projection
         status_line = self.query_one(StatusLine)
         status_line.set_activity("loading_session")
-        subscription: RuntimeSubscription | None = None
+        observation: TuiSessionObservation | None = None
         try:
-            loaded = await self._controller.load_session(session_id)
-            subscription = await self._controller.subscribe_session(
-                session_id,
-                after_sequence=loaded.event_high_water,
+            anchor = self._retained_history_anchor(session_id)
+            observation = (
+                await self._controller.prepare_session_selection(session_id, history_anchor=anchor)
+                if anchor is not None
+                else await self._controller.prepare_session_selection(session_id)
             )
             await self._install_session_surface(
-                loaded,
-                subscription=subscription,
+                observation.loaded,
+                subscription=observation.subscription,
+                revision=revision,
+                selection=observation,
             )
         except Exception, asyncio.CancelledError:
-            if subscription is not None:
-                subscription.close()
-            if previous_projection is None:
-                status_line.set_activity("idle")
-            else:
-                self._sync_activity(previous_projection.activity)
+            if revision == self._view_revision:
+                if previous_projection is None:
+                    status_line.set_activity("idle")
+                else:
+                    self._sync_activity(previous_projection.activity)
             raise
+        finally:
+            if (
+                observation is not None
+                and self._observation_subscription is not observation.subscription
+            ):
+                observation.subscription.close()
+
+    async def _observe_accepted_input(
+        self, session_id: str, selection_revision: int, view_revision: int
+    ) -> None:
+        if (
+            self._host_closing
+            or view_revision != self._view_revision
+            or selection_revision != self._controller.selection_revision
+            or self._controller.session_id != session_id
+            or (self._projection is not None and self._projection.session_id != session_id)
+        ):
+            return
+        current = self._observation_subscription
+        if current is not None and current.session_id == session_id and not current.closed:
+            return
+        observation = await self._controller.observe_session(session_id)
+        try:
+            await self._install_session_surface(
+                observation.loaded, subscription=observation.subscription, revision=view_revision
+            )
+        finally:
+            if self._observation_subscription is not observation.subscription:
+                observation.subscription.close()
 
     async def _install_session_surface(
         self,
         loaded: LoadedSession,
         *,
-        subscription: RuntimeSubscription,
-    ) -> None:
+        subscription: SessionObservation,
+        revision: int,
+        selection: TuiSessionObservation | None = None,
+    ) -> bool:
         session = loaded.detail.session
-        projection, run_presentations, active_stream_tail = await asyncio.to_thread(
+        projection, transcript, active_stream_tail = await asyncio.to_thread(
             self._prepare_loaded_session,
             loaded,
             self._models,
         )
-        agents = await self._replace_agent_tree(session.agent_root_session_id)
+        if self._host_closing or revision != self._view_revision:
+            return False
+        tree = self._agent_tree_subscription
+        prepared_tree = (
+            await self._controller.subscribe_agent_tree(session.agent_root_session_id)
+            if tree is None or tree.root_session_id != session.agent_root_session_id
+            else None
+        )
+        if self._host_closing or revision != self._view_revision:
+            if prepared_tree is not None:
+                prepared_tree.close()
+            return False
+        agents = (
+            prepared_tree.initial_snapshot.nodes
+            if prepared_tree is not None
+            else tuple(self._agent_nodes.values())
+        )
         read_only = session.session_kind == "subagent"
         agent = next(
             (
@@ -4158,138 +4138,303 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             None,
         )
         if read_only and agent is None:
+            if prepared_tree is not None:
+                prepared_tree.close()
             raise PersistenceError(
                 f"subagent session {session.session_id} is absent from Agent tree "
                 f"{session.agent_root_session_id}"
             )
-        async with self._runtime_event_apply_lock:
-            # Session history still renders in bounded chunks, but switching the
-            # shared surface is one visual commit. Repainting an incomplete
-            # destination would expose its growing height and stale scroll state.
-            with self.batch_update():
-                conversation = self.query_one(ConversationView)
-                visible_session_id = self._visible_session_id()
-                self._remember_visible_session_history()
-                reusable_history = self._session_history_states.pop(
-                    session.session_id,
-                    None,
+        try:
+            async with self._runtime_event_apply_lock:
+                if self._host_closing or revision != self._view_revision:
+                    if prepared_tree is not None:
+                        prepared_tree.close()
+                    return False
+                if selection is not None:
+                    self._controller.activate_observation(selection)
+                await self._replace_agent_tree(
+                    session.agent_root_session_id, prepared=prepared_tree
                 )
-                composer = self.query_one(Composer)
-                if read_only and not self._visible_read_only:
-                    self._controlled_composer_draft = (
-                        composer.text
-                        if self._projection is not None
-                        else self._input_drafts.draft_for(session.agent_root_session_id)
+                # Commit the prepared content; the history owns deferred layout.
+                with self.batch_update():
+                    conversation = self.query_one(ConversationView)
+                    visible_session_id = self._visible_session_id()
+                    self._remember_visible_session_history()
+                    reusable_history = self._session_history_states.pop(
+                        session.session_id,
+                        None,
                     )
-                    composer.restore_command_draft("")
-                elif not read_only and self._visible_read_only:
                     if (
-                        self._visible_agent is not None
-                        and self._visible_agent.root_session_id == session.session_id
+                        reusable_history is not None
+                        and reusable_history.anchor is not None
+                        and reusable_history.anchor.history_epoch != session.history_epoch
                     ):
-                        composer.restore_command_draft(self._controlled_composer_draft or "")
-                    else:
+                        reusable_history = None
+                        self._held_session_scroll_y.pop(session.session_id, None)
+                    composer = self.query_one(Composer)
+                    if read_only and not self._visible_read_only:
+                        self._controlled_composer_draft = (
+                            composer.text
+                            if self._projection is not None
+                            else self._input_drafts.draft_for(session.agent_root_session_id)
+                        )
+                        composer.restore_command_draft("")
+                    elif not read_only and self._visible_read_only:
+                        if (
+                            self._visible_agent is not None
+                            and self._visible_agent.root_session_id == session.session_id
+                        ):
+                            composer.restore_command_draft(self._controlled_composer_draft or "")
+                        else:
+                            self._restore_input_draft(session.session_id)
+                        self._controlled_composer_draft = None
+                    elif (
+                        not read_only
+                        and visible_session_id != session.session_id
+                        and selection is not None
+                    ):
                         self._restore_input_draft(session.session_id)
-                    self._controlled_composer_draft = None
-                elif not read_only and visible_session_id != session.session_id:
-                    self._restore_input_draft(session.session_id)
-                # The selected Session now owns the surface. Clear every interaction
-                # projected by the previous Session before yielding while its history
-                # is mounted; the new projection will restore its own pending request.
-                self._visible_read_only = read_only
-                self._visible_agent = agent
-                composer.set_class(read_only, "read-only-session")
-                self.query_one(SubagentNavigationPanel).set_current_session(session.session_id)
-                self._projection = None
-                self._waiting_for_session_event = False
-                self._interaction = None
-                self._sync_interaction(None)
-                await conversation.load_messages(
-                    loaded.messages,
-                    loaded.compactions,
-                    run_presentations,
-                    mutable_tool_calls=(
-                        (projection.activity.run_id, tool.tool_call_id)
-                        for tool in projection.activity.tool_calls
-                    ),
-                    visible_scaffold_delegation_id=(
-                        session.delegation_id if session.session_kind == "subagent" else None
-                    ),
-                    held_scroll_y=self._held_session_scroll_y.get(session.session_id),
-                    reusable_history=reusable_history,
-                )
-                self._set_welcome_mode(conversation.showing_welcome)
-                self.query_one(QueuedInputPanel).set_inputs(
-                    () if read_only else loaded.queued_inputs
-                )
-                await self._restore_projection(
-                    projection,
-                    active_stream_tail=active_stream_tail,
-                )
-                conversation.sync_agents(agents)
-                agent_name = None if agent is None else agent.nickname or agent.agent_name
-                self._active_title = agent_name if agent_name is not None else session.title
-                self._active_workspace = session.workspace or self._system_status.workspace
-                if session.current_model is not None:
-                    self._active_model = _model_display_name(
-                        session.current_model,
-                        self._models,
+                    # The selected Session now owns the surface. Clear every interaction
+                    # projected by the previous Session before yielding while its history
+                    # is mounted; the new projection will restore its own pending request.
+                    self._visible_read_only = read_only
+                    self._visible_agent = agent
+                    composer.set_class(read_only, "read-only-session")
+                    self.query_one(SubagentNavigationPanel).set_current_session(session.session_id)
+                    self._projection = None
+                    self._interaction = None
+                    self._sync_interaction(None)
+                    has_conversation = bool(
+                        transcript[0] or loaded.queued_inputs or session.active_run_id
                     )
-                self.query_one(BrandHeader).set_context(
-                    session_title=self._active_title,
-                    session_detail=agent.task_description if agent is not None else None,
-                    workspace=self._active_workspace,
-                )
-                status_line = self.query_one(StatusLine)
-                status_line.set_model(self._active_model)
-                status_line.set_subagent(agent if read_only else None)
-                status_line.set_session_controls(
-                    () if read_only else tuple(status.label for status in loaded.session_controls)
-                )
-                if read_only:
-                    composer.disabled = True
-                    composer.set_subagent_placeholder()
-                else:
-                    await self._refresh_approval_indicator()
-                    await self._refresh_reasoning_indicator()
-                    self._sync_composer_placeholder()
-                    self._sync_input_state(self._interaction, focus=True)
-        self._replace_observation(subscription)
+                    if (
+                        selection is not None
+                        or (
+                            visible_session_id is not None
+                            and visible_session_id != session.session_id
+                        )
+                        or has_conversation
+                    ):
+                        self._set_welcome_mode(not has_conversation)
+                    await conversation.load_transcript(
+                        transcript,
+                        visible_scaffold_delegation_id=(
+                            session.delegation_id if session.session_kind == "subagent" else None
+                        ),
+                        held_scroll_y=self._held_session_scroll_y.get(session.session_id),
+                        reusable_history=reusable_history.state if reusable_history else None,
+                    )
+                    self._history_anchor = _history_anchor(session.history_epoch, loaded.messages)
+                    self._history_before_cursor = loaded.history_before_cursor
+                    self._history_run_ids = {
+                        message.run_id for message in loaded.messages if message.run_id is not None
+                    }
+                    self._history_request = None
+                    self._history_load_failed = False
+                    self.query_one(QueuedInputPanel).set_inputs(
+                        () if read_only else loaded.queued_inputs
+                    )
+                    await self._restore_projection(
+                        projection,
+                        active_stream_tail=active_stream_tail,
+                    )
+                    conversation.sync_agents(agents)
+                    agent_name = None if agent is None else agent.nickname or agent.agent_name
+                    self._active_title = agent_name if agent_name is not None else session.title
+                    self._active_workspace = session.workspace or self._system_status.workspace
+                    if session.current_model is not None:
+                        self._active_model = _model_display_name(
+                            session.current_model,
+                            self._models,
+                        )
+                    self.query_one(BrandHeader).set_context(
+                        session_title=self._active_title,
+                        session_detail=agent.task_description if agent is not None else None,
+                        workspace=self._active_workspace,
+                    )
+                    status_line = self.query_one(StatusLine)
+                    status_line.set_model(self._active_model)
+                    status_line.set_subagent(agent if read_only else None)
+                    status_line.set_session_controls(
+                        ()
+                        if read_only
+                        else tuple(status.label for status in loaded.session_controls)
+                    )
+                    if read_only:
+                        composer.disabled = True
+                        composer.set_subagent_placeholder()
+                    else:
+                        status_line.set_approval_mode(loaded.approval_preset)
+                        self._reasoning_state = loaded.reasoning_state
+                        if loaded.reasoning_state is None:
+                            status_line.set_reasoning(None)
+                        else:
+                            self._apply_reasoning_state(loaded.reasoning_state)
+                        self._sync_composer_placeholder()
+                        self._sync_input_state(self._interaction, focus=True)
+                initial = await subscription.get()
+                subscription.acknowledge(initial)
+                if self._history_anchor is not None:
+                    subscription.retain_history_from(self._history_anchor)
+                self._replace_observation(subscription)
+        finally:
+            if prepared_tree is not None and prepared_tree is not self._agent_tree_subscription:
+                prepared_tree.close()
+        return True
 
     async def _open_child_session(self, agent: AgentTreeNode) -> None:
-        observation = await self._controller.observe_session(agent.session_id)
-        try:
-            await self._install_session_surface(
-                observation.loaded,
-                subscription=observation.subscription,
-            )
-        except Exception, asyncio.CancelledError:
-            observation.subscription.close()
-            raise
+        await self._show_observed_session(agent.session_id)
 
     async def _show_main_session(self) -> None:
         session_id = self._controller.session_id
-        if session_id is None:
-            return
-        observation = await self._controller.observe_session(session_id)
+        if session_id is not None:
+            await self._show_observed_session(session_id)
+
+    async def _show_observed_session(self, session_id: str) -> None:
+        self._view_revision += 1
+        revision = self._view_revision
+        observation = await self._controller.observe_session(
+            session_id, history_anchor=self._retained_history_anchor(session_id)
+        )
         try:
             await self._install_session_surface(
-                observation.loaded,
-                subscription=observation.subscription,
+                observation.loaded, subscription=observation.subscription, revision=revision
             )
-        except Exception, asyncio.CancelledError:
-            observation.subscription.close()
-            raise
+        finally:
+            if self._observation_subscription is not observation.subscription:
+                observation.subscription.close()
 
-    async def _reload_visible_observation(self) -> None:
-        agent = self._visible_agent
+    def on_conversation_view_history_top_reached(
+        self, message: ConversationView.HistoryTopReached
+    ) -> None:
+        message.stop()
+        self._request_earlier_history()
+
+    def _request_earlier_history(
+        self, *, all_pages: bool = False, navigate_to: str | None = None
+    ) -> None:
+        if self._history_before_cursor is None:
+            return
+        request = self._history_request
+        if request is not None and request.revision == self._view_revision:
+            request.all_pages |= all_pages
+            if navigate_to is not None:
+                request.navigate_to = navigate_to
+            return
+        request = HistoryLoadRequest(self._view_revision, all_pages, navigate_to)
+        self._history_request = request
+        self._history_load_failed = False
+        self._load_earlier_history(request)
+
+    @property
+    def _history_loading(self) -> bool:
+        return self._history_request is not None
+
+    def _cancel_history_navigation(self) -> None:
+        if self._history_request is not None:
+            self._history_request.all_pages = False
+            self._history_request.navigate_to = None
+
+    @work(exclusive=True, group="earlier-history")
+    async def _load_earlier_history(self, request: HistoryLoadRequest) -> None:
+        revision = request.revision
         try:
-            if self._visible_read_only and agent is not None:
-                await self._open_child_session(agent)
-            else:
-                await self._show_main_session()
-        except Exception as exc:  # noqa: BLE001 - observation recovery is user-visible.
-            self.notify(str(exc), severity="error", markup=False)
+            while revision == self._view_revision and self._history_before_cursor is not None:
+                if not await self._prepend_history_window(revision):
+                    return
+                await self.query_one(ConversationHistory).wait_until_rendered()
+                await self.screen.wait_for_refresh()
+                if revision != self._view_revision:
+                    return
+                if request.navigate_to == "previous":
+                    if self.query_one(ConversationView).scroll_to_previous_user_turn():
+                        request.navigate_to = None
+                        break
+                    continue
+                if not request.all_pages:
+                    break
+            if revision == self._view_revision and self._history_before_cursor is None:
+                await self.screen.wait_for_refresh()
+                if revision != self._view_revision:
+                    return
+                if request.navigate_to is not None:
+                    self._navigate_to(request.navigate_to)
+                composer = self.query_one(Composer)
+                command_context = composer.command_context()
+                if command_context is not None:
+                    self._show_command_arguments(command_context[0])
+        except Exception as exc:  # noqa: BLE001 - page failures leave the current view usable.
+            if revision == self._view_revision:
+                self._history_load_failed = True
+                self.notify(
+                    f"Cannot load earlier messages ({type(exc).__name__}).",
+                    severity="error",
+                    markup=False,
+                )
+        finally:
+            if self._history_request is request:
+                self._history_request = None
+
+    async def _prepend_history_window(self, revision: int) -> bool:
+        projection = self._projection
+        cursor = self._history_before_cursor
+        if projection is None or cursor is None:
+            return False
+        window = await self._controller.history_window(
+            projection.session_id, before=cursor, history_epoch=projection.history_epoch
+        )
+        if window.history_epoch != projection.history_epoch:
+            return False
+        transcript = await asyncio.to_thread(
+            self._prepare_history_window,
+            window,
+            frozenset(self._history_run_ids) | self.query_one(ConversationView).presented_run_ids,
+            self._models,
+            self._visible_agent.delegation_id if self._visible_agent is not None else None,
+        )
+        async with self._runtime_event_apply_lock:
+            if (
+                self._host_closing
+                or revision != self._view_revision
+                or projection is not self._projection
+                or cursor != self._history_before_cursor
+            ):
+                return False
+            self.query_one(ConversationView).prepend_transcript(transcript)
+            self._history_anchor = (
+                _history_anchor(window.history_epoch, window.messages) or self._history_anchor
+            )
+            self._history_before_cursor = window.before_cursor
+            self._history_run_ids.update(run.run_id for run in window.runs)
+            if self._history_anchor is not None and self._observation_subscription is not None:
+                self._observation_subscription.retain_history_from(self._history_anchor)
+        return True
+
+    @staticmethod
+    def _prepare_history_window(
+        window: SessionHistoryWindow,
+        newer_run_ids: frozenset[str],
+        models: tuple[AvailableModel, ...],
+        delegation_id: str | None,
+    ) -> PreparedTranscript:
+        presentations = project_run_presentations(
+            (run for run in window.runs if run.kind == "agent"), window.messages, models=models
+        )
+        entries, presented = project_transcript_entries(
+            window.messages,
+            window.compactions,
+            presentations,
+            mutable_tool_call_keys=frozenset(),
+            visible_scaffold_delegation_id=delegation_id,
+        )
+        return (
+            tuple(
+                entry
+                for entry in entries
+                if entry.kind != "run" or entry.run_id not in newer_run_ids
+            ),
+            presented - newer_run_ids,
+        )
 
     def _show_session_load_error(
         self,
@@ -4361,10 +4506,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     )
             else:
                 result = await self._controller.continue_session()
-                await self._apply_run_result(result)
+                await self._refresh_welcome_status()
                 if not self._owns_session_surface(session_id):
                     return
-                await self._show_main_session()
                 if result.run.status == "paused":
                     self.notify(describe_run_pause(result.run), severity="warning", markup=False)
                 elif result.run.status == "failed":
@@ -4451,38 +4595,42 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         models: tuple[AvailableModel, ...],
     ) -> tuple[
         TuiSessionProjection,
-        tuple[RunPresentation, ...],
+        PreparedTranscript,
         tuple[str, str],
     ]:
         """Build persisted projections without occupying Textual's event loop."""
 
         ordered_events = canonical_event_order(loaded.events)
-        projection = TuiSessionProjection(
-            loaded.detail.session.session_id, history_epoch=loaded.detail.session.history_epoch
-        )
-        projection.restore(
-            ordered_events,
-            event_high_water=loaded.event_high_water,
-        )
-        if loaded.detail.recent_run is not None:
-            projection.activity = overlay_run_activity(
-                projection.activity, loaded.detail.recent_run
+        projection = restore_session_content(
+            SessionObservationSnapshot(
+                session=loaded.detail.session,
+                messages=loaded.messages,
+                events=ordered_events,
+                runs=loaded.runs,
+                compactions=loaded.compactions,
+                queued_inputs=loaded.queued_inputs,
+                event_high_water=loaded.event_high_water,
+                context_status=loaded.context_status,
+                effective_context_metrics=loaded.effective_context_metrics,
             )
-        projection.activity = projection.activity.model_copy(
-            update={
-                "context_status": loaded.context_status,
-                "effective_context_metrics": loaded.effective_context_metrics,
-            }
         )
-        return (
-            projection,
-            project_run_presentations(
-                (run for run in loaded.runs if run.kind == "agent"),
-                loaded.messages,
-                models=models,
+        presentations = project_run_presentations(
+            (run for run in loaded.runs if run.kind == "agent"), loaded.messages, models=models
+        )
+        session = loaded.detail.session
+        transcript = project_transcript_entries(
+            loaded.messages,
+            loaded.compactions,
+            presentations,
+            mutable_tool_call_keys=frozenset(
+                (projection.activity.run_id, tool.tool_call_id)
+                for tool in projection.activity.tool_calls
             ),
-            _active_stream_tail(ordered_events, loaded.messages),
+            visible_scaffold_delegation_id=(
+                session.delegation_id if session.session_kind == "subagent" else None
+            ),
         )
+        return projection, transcript, _active_stream_tail(ordered_events, loaded.messages)
 
     async def _restore_projection(
         self,
@@ -5587,6 +5735,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify(str(exc), severity="error", markup=False)
 
 
+def _history_anchor(
+    history_epoch: int, messages: tuple[MessageRecord, ...]
+) -> SessionHistoryAnchor | None:
+    if not messages or messages[0].sequence < 1:
+        return None
+    return SessionHistoryAnchor(history_epoch=history_epoch, first_sequence=messages[0].sequence)
+
+
 def _model_display_name(route: str, models: tuple[AvailableModel, ...]) -> str:
     if route.startswith("faux/"):
         return ""
@@ -5610,67 +5766,6 @@ def _runtime_event_frame_prefix(events: Sequence[EventRecord]) -> tuple[EventRec
             prefix = prefix[:index]
             break
     return tuple(prefix)
-
-
-def _event_record(event: RuntimeEventView) -> EventRecord:
-    """Adapt the redacted Host event DTO to the existing TUI reducer input."""
-
-    return EventRecord(
-        history_epoch=event.history_epoch,
-        event_id=event.event_id,
-        session_id=event.session_id,
-        run_id=event.run_id,
-        turn_id=event.turn_id,
-        event_type=event.event_type,
-        created_at=event.created_at,
-        sequence=event.sequence,
-        payload=dict(event.data),
-    )
-
-
-def _active_stream_tail(
-    events: Sequence[EventRecord],
-    messages: Sequence[MessageRecord] = (),
-) -> tuple[str, str]:
-    """Return stream text not yet represented by a canonical assistant message.
-
-    ``model_message_completed`` closes the provider stream, but the Runtime
-    persists the resulting MessageRecord at a later durable boundary. A Host
-    snapshot can legitimately land between those operations, so only an actual
-    canonical assistant message proves that the corresponding deltas are
-    already present in history.
-    """
-
-    ordered = canonical_event_order(events)
-    run_id = next((event.run_id for event in ordered if event.run_id is not None), None)
-    covered_turns = {
-        message.turn_id
-        for message in messages
-        if message.role == "assistant" and message.run_id == run_id and message.turn_id is not None
-    }
-    start = 0
-    for index, event in enumerate(ordered):
-        if event.event_type == "run_status_changed" and event.payload.get("resumed") is True:
-            start = index + 1
-            continue
-        if event.event_type != "model_message_completed":
-            continue
-        if event.turn_id is not None and event.turn_id in covered_turns:
-            start = index + 1
-    reasoning: list[str] = []
-    answer: list[str] = []
-    for event in ordered[start:]:
-        value = (
-            event.payload.get("reasoning_content")
-            if event.event_type == "model_reasoning_delta"
-            else event.payload.get("text")
-            if event.event_type == "model_text_delta"
-            else None
-        )
-        if not isinstance(value, str):
-            continue
-        (reasoning if event.event_type == "model_reasoning_delta" else answer).append(value)
-    return "".join(reasoning), "".join(answer)
 
 
 def _next_cycle_value(values: Sequence[str], current: str) -> str:

@@ -84,15 +84,38 @@ Host 可观察的 Session snapshot 至少包含：
 - `SessionView`；
 - canonical messages；
 - 与展示相关的 Run/compaction 投影；
+- 待处理直接用户输入及其等待的活动 Run；
 - snapshot 已覆盖的 `event_high_water`；
 - 必要的 diagnostics。
 
-snapshot 的 message/event 读取必须定义一致性边界。允许采用“锁内读取”或“订阅先行 + 有序合并”，但必须证明：
+snapshot 的 Session、message/event/context、待处理输入与高水位在 Application 管理的一致性只读边界内读取。
+`SessionRepository.session_read` 组合必要的同步查询：SQLite 复用同一读事务，不预留写锁；文件后端持有短会话锁。
+边界在投影、模型配置解析、排版和异步等待之前释放，Host 不直接管理存储事务。待处理输入从已经读取的 Session
+投影，不额外加载历史，也不清理或改写队列；`waiting_on_run_id` 为空表示输入可参与新 Run 调度，不代表已取得执行容量。
+插件显示名和控制标签等附加展示信息独立查询，不扩大正文快照的事务范围。必须保证：
 
 - 在边界之前持久化的事件包含在 snapshot 或 replay 中；
 - 在边界之后持久化的事件由 replay/live 交付；
 - 边界事件最多渲染一次；
 - active Run 的 partial text/reasoning/tool 状态可从事件重建。
+- 输入队列与正文使用同一消费边界，Host 加载快照时不以之后的队列状态替换快照中的事实。
+
+上下文状态和有效 token metrics 使用轻量 `ContextSnapshotHeader` 查询，与 Session/Run 共享只读边界；
+稳定查询路径不物化完整 provider context；文件派生索引缺失或失效时回退到 canonical context 验证。
+完整参数与媒体内容由显式 context 查询读取并验证 digest，索引规则见[会话持久化](session-persistence.md)。
+
+`observe_session(history_limit=...)` 可只读取近期消息；不指定时保留完整历史快照语义。
+`SessionService.history_window` 提供 tail 与 exclusive before 窗口，按 canonical 顺序返回消息、所属 Run 和
+锚定于页内消息的 compaction。条数是软限制：model turn、工具 request/result 和同批输入不得被窗口边界拆开。
+compaction 保留自身 coverage 与 lineage，不要求把已压缩的全部正文带入窗口。
+
+`before_cursor` 是后端不透明位置，仅对所属 Session 和 `history_epoch` 有效。向前读取必须携带代次；
+代次改变时返回新代次与空页，由正文观察提供替换快照，不能将新旧页混合。文件后端倒读完整 JSONL 记录，
+SQLite 按索引逆序读取；读取足够完整帧后关闭迭代器并释放事务，不物化未请求的前缀。
+
+Host 可用 `SessionHistoryAnchor(history_epoch, first_sequence)` 保留已加载窗口的起点；这是消息顺序锚点，
+不是事件确认游标或存储 before 游标。`retain_history_from` 使同代次的观察重置保留该起点；历史代次改变时
+锚点失效，恢复初始窗口策略。较早历史加载不会推进事件确认水位。完整导出与 replay 独立于显示窗口。
 
 交互式观察不得在每次 attach 时线性扫描已经结束的 Run event history。Local Files 后端必须以可重建的 Run
 字节偏移直接定位 active Run，并以稀疏 sequence→byte checkpoint 为 `after_sequence` replay 选择有界的前向扫描
@@ -111,6 +134,29 @@ Local 加速索引不是 canonical 数据：缺失、尾部不完整或损坏不
 
 订阅通知必须包含 Session identity、event sequence 和可区分的 event/lag/closed 状态。发生 lag 时，通知必须给出恢复
 所需的最后安全游标或明确要求 Host 重新加载 snapshot。Host 完成恢复后方可恢复 synced 状态。
+
+## 通用正文观察
+
+`RuntimeSupervisor.observe_session` 返回 `SessionObservation`，在一致快照后接入同一共享事件来源。
+该入口只读取显示事实，不启动 Supervisor worker、不申请执行锁，也不调用执行恢复。关闭观察只释放本观察资源。
+
+`get()` 交付 `SessionObservationBatch`：初始批次携带 snapshot；后续批次携带有序、脱敏的 `RuntimeEventView`
+和相关 canonical 输入消息。每个观察者只保留一页待确认内容。消费者成功应用内容投影后调用 `acknowledge(batch)`；
+仅取出、入队或交给 renderer 不推进 `applied_sequence`。未确认时再次读取仍得到同一批次；不能确认其他观察者的批次。
+快照也须在恢复其内容后确认，历史排版与终端绘制可以随后进行。
+
+实时缓存容量和补读页大小分别配置。缓存 lag 后，观察从本消费者已应用的游标通过 `load_events_after` 分页追赶，
+追赶跨度不受缓存容量限制；页与实时缓存重叠按 sequence 丢弃，持续写入仍通过同一来源衔接。
+持久化页证明序号区间的完整性，允许导入历史中的序号间隔，不构造缺失事件。临时缓冲受页大小与缓存容量约束。
+历史代次改变或 Run 恢复检查点时交付新快照，确认前不推进应用游标。输入消息点查与事件批次核对相同历史代次。
+
+`SessionContentProjection` 及 `restore_session_content` 负责活动、工具、交互和 text/reasoning 的通用恢复；
+`active_stream_tail` 根据同一快照中的 canonical assistant 消息判定已覆盖的 model turn。
+`model_message_completed` 只说明模型流结束，不能证明对应消息已提交；未被消息覆盖的尾部必须保留。
+这些投影不依赖 Rich、Textual、布局、滚动或任何执行控制。
+
+共享来源失败向所有依赖它的观察者交付原 diagnostic，并停止这些失败订阅；另一观察者的新订阅不复活旧订阅。
+单个观察者的分页读取失败只关闭该观察，保留已应用游标和错误类别。重新打开是明确的重试入口，不自动无限重载。
 
 ## 历史代次
 
@@ -135,8 +181,9 @@ Session/Run 构建，旧 job 和旧 Run 事件不能覆盖它。增量投影与�
   256 条增量读取；不轮询完整 transcript，不扫描未订阅 Session，不为不同后端增加另一套观察路径。
 - 运行或排队时最多每 100ms 检查一次外部写入，空闲或已结束时每 500ms 检查；本地序号缺口立即唤醒。
   长工具没有 token 输出时仍持续观察。磁盘读取在受管理线程边界执行，不阻塞 Host event loop。
-- 各订阅保留独立、有界缓冲；慢订阅的 lag 不暂停执行者或其他订阅。最后一个订阅关闭后停止该 Session 的
-  增量读取，Supervisor 关闭时等待在途读取完成。
+- 正文订阅保留独立、有界缓冲；慢订阅的 lag 不暂停执行者或其他订阅。状态订阅只保留一个合并通知，活动改变
+  和选定关系事件在入队前筛选；消费者按需查询最新状态。正文与状态观察全部关闭后停止该 Session 的增量读取，
+  Supervisor 关闭时等待在途读取完成。
 - 持久化读取失败通过 `runtime_subscription_read_failed` 报告，并停止该跟踪器。Host 显示错误并关闭失效订阅，
   用户重新打开会话可重试；不得静默停留，也不得无休止地自动重载历史。
 
@@ -148,7 +195,7 @@ Session/Run 构建，旧 job 和旧 Run 事件不能覆盖它。增量投影与�
   排队接管、竞争失败或旧 job 延迟返回不得覆盖较新的会话状态。调度器仅在尚未绑定 Run 时投影临时排队/启动状态。
 - 持续观察时，活动查询复用共享跟踪器维护的投影，不逐次读取磁盘。未持续观察的缓存不可用于新订阅或按需查询，
   因为其他 Host 可能已更新同一个 Run。
-- 按需状态查询读取 Session 引用的 active/last Run，不枚举全部 Run。活动快照在同一 Session mutation 边界内读取
+- 按需状态查询读取 Session 引用的 active/last Run，不枚举全部 Run。活动快照在同一 Session 只读边界内读取
   Run 和事件水位，避免“旧状态配新游标”吞掉终态事件；该读取仍遵循受管理线程与有界查询的既有约束。
 - 失败、中断或可恢复 Run 保留的 ToolBatch 属于恢复检查点。实时投影与重新打开时均将未结算工具投影为对应终止
   状态，保留已提交结果并停止动画；耗时优先使用持久化结束时间，不修改恢复检查点本身。
@@ -169,8 +216,9 @@ TUI 必须实现：
 9. 视图切换不应阻塞 Textual event loop 的持续刷新；大历史装载必须分块/yield。
 10. 关闭 TUI 必须释放所有观察任务/订阅；复用共享 Application 时不得终止后台 Session。若 TUI 是 Application 的
     composition root，则整体退出遵循既有 Runtime shutdown policy，而不是由会话视图逻辑隐式控制 child。
-11. composer 上方的导航面板只消费 Agent tree DTO，不读取 store 或解析工具文本；无 child 时隐藏，有 child 时在
-    root/child surface 上使用同一 widget，按当前/选中节点调整最多十个 child 的有界窗口。
+11. composer 上方的导航面板只消费 Agent tree DTO，不读取 store 或解析工具文本；正文布局保留单行导航区域，
+    无 child 时内容为空。空正文页面有 child 时仍显示导航；root/child surface 使用同一 widget，按当前/选中节点
+    调整最多十个 child 的有界窗口。已打开 Session 的身份独立于正文是否为空，不因欢迎页布局丢失命令或导航目标。
 12. 导航面板必须保持在当前最上层 inline 菜单（命令、审批、问答或计划确认）的上方，使菜单与 composer 相邻；
     运行、结束和失败节点分别使用运行语义色、常规低亮色和失败语义色，不复制颜色常量。
 13. 终端协议只产生带 modifier 的按键事件，不产生独立 Alt key-up。`Alt+方向键` 必须立即更新节点选择，但 TUI

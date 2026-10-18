@@ -916,7 +916,9 @@ class ChoiceScreen(ModalScreen[str | None]):
         # Widget display changes queue a layout message. Invalidate the screen
         # now so its next repaint cannot reuse the hidden parent's compositor.
         self.refresh(layout=True)
-        self.call_after_refresh(self.query_one("#choice-filter", Input).focus)
+        # Resume owns this focus change; the child result may select another
+        # control before the next frame, so do not defer it past that result.
+        self.query_one("#choice-filter", Input).focus()
 
     def _page(self) -> _ChoicePage:
         return _ChoicePage(

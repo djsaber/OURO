@@ -6,17 +6,19 @@ from typing import Literal
 from pydantic import Field
 
 from ouro.application.dto import ApplicationDTO, Diagnostic
+from ouro.application.event_models import RuntimeEventView
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.compaction import CompactionRecord, CompactionTrigger
 from ouro.core.context import ContextMetrics, ProviderContext
-from ouro.core.context_snapshots import ContextSnapshotRecord
+from ouro.core.context_snapshots import ContextSnapshotHeader
 from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessVersion
-from ouro.core.input_content import InputFile
+from ouro.core.input_content import InputFile, InputSkillReference
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.session_commits import SessionCommitResult
+from ouro.core.session_controls import SessionInputMode
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import (
     RunRecord,
@@ -227,7 +229,7 @@ class SessionContextStatus(ApplicationDTO):
     active_compaction_id: str | None = None
 
     @classmethod
-    def from_record(cls, record: ContextSnapshotRecord) -> SessionContextStatus:
+    def from_record(cls, record: ContextSnapshotHeader) -> SessionContextStatus:
         compaction_id = record.context_metadata.get("compaction_id")
         return cls(
             context_id=record.context_id,
@@ -278,6 +280,41 @@ class SessionEventPage(ApplicationDTO):
     next_cursor: int | None = None
 
 
+class SessionHistoryAnchor(ApplicationDTO):
+    """The first retained canonical message in one history epoch."""
+
+    history_epoch: int = Field(ge=0)
+    first_sequence: int = Field(ge=1)
+
+
+class SessionHistoryWindow(ApplicationDTO):
+    """A history page with complete model turns and their presentation records."""
+
+    session_id: str
+    history_epoch: int
+    messages: tuple[MessageRecord, ...] = ()
+    runs: tuple[RunRecord, ...] = ()
+    compactions: tuple[CompactionRecord, ...] = ()
+    before_cursor: int | None = None
+
+
+class QueuedUserInputView(ApplicationDTO):
+    """One pending input and the Run it currently awaits, read from the same Session.
+
+    Without an active Run, the input is ready for dispatch. This is independent
+    of a Supervisor's available execution capacity and the Host's presentation.
+    """
+
+    queue_id: str
+    prompt: str
+    mode: SessionInputMode
+    queued_at: datetime
+    waiting_on_run_id: str | None = None
+    skills: tuple[InputSkillReference, ...] = ()
+    attachments: tuple[InputFile, ...] = Field(default=(), max_length=16)
+    resource_refs: tuple[str, ...] = ()
+
+
 class SessionObservationSnapshot(ApplicationDTO):
     """One atomic durable boundary from which a Host can attach a live stream."""
 
@@ -286,7 +323,23 @@ class SessionObservationSnapshot(ApplicationDTO):
     events: tuple[EventRecord, ...] = ()
     runs: tuple[RunRecord, ...] = ()
     compactions: tuple[CompactionRecord, ...] = ()
+    queued_inputs: tuple[QueuedUserInputView, ...] = ()
     event_high_water: int = Field(default=0, ge=0)
+    context_status: SessionContextStatus | None = None
+    effective_context_metrics: ContextMetrics | None = None
+    history_before_cursor: int | None = None
+
+
+class SessionObservationBatch(ApplicationDTO):
+    """Display facts awaiting content application by one observation consumer."""
+
+    session_id: str
+    history_epoch: int
+    event_high_water: int
+    snapshot: SessionObservationSnapshot | None = None
+    events: tuple[RuntimeEventView, ...] = ()
+    messages: tuple[MessageRecord, ...] = ()
+    diagnostic: Diagnostic | None = None
 
 
 class SessionMutationResult(ApplicationDTO):

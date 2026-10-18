@@ -350,17 +350,19 @@ async def test_streaming_tail_strips_always_carry_a_base_style() -> None:
 
 
 @pytest.mark.asyncio
-async def test_first_appended_batch_is_rendered_before_returning() -> None:
+async def test_first_appended_batch_is_registered_before_rendering() -> None:
     app = _HistoryApp()
 
     async with app.run_test(size=(100, 30)):
-        await app.history.append_many_rendered(
+        app.history.append_many(
             (
                 TranscriptEntry(kind="assistant", reasoning="Inspect the workspace."),
                 TranscriptEntry(kind="assistant", text="Before tool."),
             )
         )
 
+        assert len(app.history.entries) == 2
+        await app.history.wait_until_rendered()
         assert "Inspect the workspace." in app.history.rendered_text
         assert "Before tool." in app.history.rendered_text
 
@@ -373,14 +375,14 @@ async def test_wait_until_rendered_recovers_after_a_deferred_layout_miss(
 
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
-        render_entries = app.history._render_entries
+        schedule_render = app.history._schedule_buffer_render
         layout_available = False
 
-        def render_when_visible() -> None:
+        def render_when_visible(*, rebuild=True) -> None:
             if layout_available:
-                render_entries()
+                schedule_render(rebuild=rebuild)
 
-        monkeypatch.setattr(app.history, "_render_entries", render_when_visible)
+        monkeypatch.setattr(app.history, "_schedule_buffer_render", render_when_visible)
         # Model the welcome transition after its one-shot deferred render ran
         # while the conversation ancestor still had no layout geometry.
         app.history._reset_buffer([TranscriptEntry(kind="user", text="first message")])
@@ -419,6 +421,13 @@ async def test_same_session_history_reuse_renders_only_the_changed_suffix(
             write_entry(*args, entry_index=entry_index, **kwargs)
 
         monkeypatch.setattr(app.history, "_write_entry", record_write_entry)
+        render_entries = conversation_history._render_entry_requests
+
+        def record_render_entries(requests, **kwargs):
+            rendered_indexes.extend(request.entry_index for request in requests)
+            return render_entries(requests, **kwargs)
+
+        monkeypatch.setattr(conversation_history, "_render_entry_requests", record_render_entries)
         await app.history.load(entries, reusable_state=state)
 
         assert rendered_indexes == []
@@ -432,6 +441,175 @@ async def test_same_session_history_reuse_renders_only_the_changed_suffix(
         assert rendered_indexes == [120]
         assert app.history.entries == appended
         assert "new tail" in app.history.rendered_text
+
+
+async def test_prepend_reuses_existing_strips_and_remaps_user_click_targets(monkeypatch):
+    app = _HistoryApp()
+    entries = tuple(TranscriptEntry(kind="user", text=f"recent {i}") for i in range(30))
+    older = tuple(TranscriptEntry(kind="assistant", text=f"older {i}") for i in range(12))
+    rendered = []
+    original = conversation_history._render_entry_requests
+
+    def counted(requests, **kwargs):
+        rendered.extend(request.entry.text for request in requests)
+        return original(requests, **kwargs)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await app.history.load(entries)
+        monkeypatch.setattr(conversation_history, "_render_entry_requests", counted)
+        app.history.prepend(older)
+        app.history.append(TranscriptEntry(kind="assistant", text="live tail"))
+        await app.history.wait_until_rendered()
+        assert app.history.entries == (
+            *older,
+            *entries,
+            TranscriptEntry(kind="assistant", text="live tail"),
+        )
+        assert rendered == [*(entry.text for entry in older), "recent 0", "live tail"]
+        # This user frame was retained, including its remapped right-click target.
+        indexes = {
+            segment.style.meta.get("ouro_user_message")
+            for piece in app.history._pieces
+            if piece.entry_index == 17
+            for strip in piece.strips
+            for segment in strip
+            if segment.style is not None and "ouro_user_message" in segment.style.meta
+        }
+        assert indexes == {17}
+        assert app.history.rendered_text.index("older 0") < app.history.rendered_text.index(
+            "recent 0"
+        )
+
+
+async def test_late_prefix_render_cannot_enter_a_replacement_history(monkeypatch):
+    app = _HistoryApp()
+    entered, release = threading.Event(), threading.Event()
+    original = conversation_history._render_entry_requests
+
+    def held(requests, **kwargs):
+        if requests[0].entry.text == "older":
+            entered.set()
+            assert release.wait(5)
+        return original(requests, **kwargs)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await app.history.load((TranscriptEntry(kind="user", text="current"),))
+        monkeypatch.setattr(conversation_history, "_render_entry_requests", held)
+        app.history.prepend((TranscriptEntry(kind="user", text="older"),))
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            await app.history.load(
+                (TranscriptEntry(kind="user", text="replacement"),), wait_for_render=False
+            )
+        finally:
+            release.set()
+        await app.history.wait_until_rendered()
+        assert "replacement" in app.history.rendered_text
+        assert "older" not in app.history.rendered_text
+        assert "current" not in app.history.rendered_text
+
+
+@pytest.mark.asyncio
+async def test_replacing_unpublished_history_discards_old_render_and_stops_remaining_work(
+    monkeypatch,
+):
+    app = _HistoryApp()
+    old_entries = tuple(TranscriptEntry(kind="assistant", text=f"old {i}") for i in range(160))
+    entered, release = threading.Event(), threading.Event()
+    rendered = []
+    original = conversation_history._render_entry_requests
+
+    def held_render(requests, **kwargs):
+        rendered.extend(request.entry.text for request in requests)
+        if len(rendered) > 50 and not entered.is_set():
+            entered.set()
+            assert release.wait(5)
+        return original(requests, **kwargs)
+
+    async with app.run_test(size=(100, 30)):
+        monkeypatch.setattr(conversation_history, "_render_entry_requests", held_render)
+        await app.history.load(old_entries, wait_for_render=False)
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            state = app.history.take_state()
+            assert state is not None and state.rendered_count == 0
+            assert not state.lines
+            await app.history.load(
+                (TranscriptEntry(kind="user", text="new target"),), wait_for_render=False
+            )
+        finally:
+            release.set()
+        await app.history.wait_until_rendered()
+        assert "new target" in app.history.rendered_text
+        assert "old" not in app.history.rendered_text
+        assert "old 100" not in rendered
+        rendered.clear()
+        await app.history.load(old_entries, reusable_state=state)
+        assert rendered == [entry.text for entry in old_entries]
+        assert "old 159" in app.history.rendered_text
+
+
+@pytest.mark.asyncio
+async def test_cached_history_publishes_missing_tail_together_without_replaying_it(monkeypatch):
+    app = _HistoryApp()
+    prefix = tuple(TranscriptEntry(kind="user", text=f"cached {i}") for i in range(40))
+    tail = tuple(TranscriptEntry(kind="assistant", text=f"new {i}") for i in range(120))
+    entered, release = threading.Event(), threading.Event()
+    rendered = []
+    render = conversation_history._render_entry_requests
+
+    def held_render(requests, **kwargs):
+        rendered.extend(request.entry.text for request in requests)
+        if len(rendered) > 50 and not entered.is_set():
+            entered.set()
+            assert release.wait(5)
+        return render(requests, **kwargs)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await app.history.load(prefix)
+        state = app.history.take_state()
+        monkeypatch.setattr(conversation_history, "_render_entry_requests", held_render)
+        await app.history.load((*prefix, *tail), reusable_state=state, wait_for_render=False)
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            await pilot.pause()
+            assert "cached 39" in app.history.rendered_text
+            assert "new 0" not in app.history.rendered_text
+        finally:
+            release.set()
+        await app.history.wait_until_rendered()
+        assert "new 119" in app.history.rendered_text
+        assert rendered == [entry.text for entry in tail]
+
+
+@pytest.mark.asyncio
+async def test_failed_history_renderer_stops_until_content_is_reopened(monkeypatch):
+    app = _HistoryApp()
+    entries = tuple(TranscriptEntry(kind="assistant", text=f"entry {i}") for i in range(3))
+    render = conversation_history._render_entry_requests
+    failures, calls = [], []
+
+    def fail(*args, **kwargs):
+        calls.append(True)
+        raise ValueError("invalid render input")
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        monkeypatch.setattr(
+            app.history, "notify", lambda message, **kwargs: failures.append(message)
+        )
+        monkeypatch.setattr(conversation_history, "_render_entry_requests", fail)
+        await app.history.load(entries)
+        assert len(failures) == 1 and "ValueError" in failures[0]
+        assert app.history.entries == entries
+        app.history.append(TranscriptEntry(kind="assistant", text="later"))
+        await pilot.resize_terminal(80, 30)
+        assert len(calls) == 1
+        assert app.is_running
+        monkeypatch.setattr(conversation_history, "_render_entry_requests", render)
+        await app.history.load(entries)
+        assert "entry 2" in app.history.rendered_text
 
 
 @pytest.mark.asyncio
@@ -481,7 +659,7 @@ async def test_same_session_history_reuse_updates_mutable_entry_in_place(
 
 
 @pytest.mark.asyncio
-async def test_cold_history_load_publishes_virtual_size_once_per_chunk(
+async def test_cold_history_load_publishes_one_complete_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _HistoryApp()
@@ -502,7 +680,7 @@ async def test_cold_history_load_publishes_virtual_size_once_per_chunk(
         monkeypatch.setattr(app.history, "_sync_virtual_size", count_size_sync)
         await app.history.load(entries)
 
-        assert 0 < sync_count <= 3
+        assert sync_count == 1
         assert app.history.entries == entries
 
 

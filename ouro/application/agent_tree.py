@@ -3,8 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Callable
-from contextlib import suppress
-from typing import Final, Protocol
+from typing import Protocol
 
 from ouro.application.agent_models import (
     AgentInteractionSummary,
@@ -24,7 +23,6 @@ from ouro.core.state import RunRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.sessions import SessionStore
 
-_CLOSED: Final = object()
 _RELATION_EVENT_TYPES = frozenset(
     {
         "agent_spawned",
@@ -49,13 +47,8 @@ class RuntimeSubscriptionPort(Protocol):
 class AgentTreeRuntime(Protocol):
     def activity(self, handle_or_session: str) -> RuntimeActivitySnapshot: ...
 
-    async def subscribe(
-        self,
-        session_id: str,
-        *,
-        after_sequence: int = 0,
-        max_buffer: int = 256,
-        include_activity: bool = False,
+    async def subscribe_state(
+        self, session_id: str, *, event_types: frozenset[str] = frozenset()
     ) -> RuntimeSubscriptionPort: ...
 
 
@@ -67,24 +60,27 @@ class AgentTreeProjector:
         self.runtime = runtime
 
     def snapshot(self, root_session_id: str) -> AgentTreeSnapshot:
-        root = self.store.load_session_record(root_session_id)
-        if root.session_kind != "primary":
-            raise ValueError("Agent tree root must be a primary Session")
-
-        root_run = self._selected_root_run(root_session_id)
+        # One root read boundary avoids reopening the database for each fact.
+        # Release it before reading children; file adapters must not nest Session locks.
+        with self.store.session_read(root_session_id):
+            root = self.store.load_session_record(root_session_id)
+            if root.session_kind != "primary":
+                raise ValueError("Agent tree root must be a primary Session")
+            run_id = root.active_run_id or root.last_run_id
+            root_run = self.store.load_run(root_session_id, run_id) if run_id is not None else None
+            try:
+                root_activity = self.runtime.activity(root_session_id)
+            except FileNotFoundError, KeyError, SessionNotFoundError:
+                root_activity = None
+            relations = self.store.list_delegations(root_session_id)
+            revision = self.store.latest_event_sequence(root_session_id)
         root_budget = self._run_budget(root_run)
-        try:
-            root_activity = self.runtime.activity(root_session_id)
-        except FileNotFoundError, KeyError, SessionNotFoundError:
-            root_activity = None
-        relations = self.store.list_delegations(root_session_id)
         nodes: list[AgentTreeNode] = []
         edges: list[AgentTreeEdge] = []
         active_count = 0
         waiting_count = 0
         terminal_count = 0
         pending_interaction_count = 0
-        revision = self.store.latest_event_sequence(root_session_id)
         root_usage = dict(root_run.usage) if root_run is not None else {}
 
         for relation in relations:
@@ -218,14 +214,6 @@ class AgentTreeProjector:
             if relation.child_session_id is not None and relation.control_state == "open"
         )
 
-    def latest_sequence(self, session_id: str) -> int:
-        return self.store.latest_event_sequence(session_id)
-
-    def _selected_root_run(self, root_session_id: str) -> RunRecord | None:
-        root = self.store.load_session_record(root_session_id)
-        run_id = root.active_run_id or root.last_run_id
-        return self.store.load_run(root_session_id, run_id) if run_id is not None else None
-
     @staticmethod
     def _run_budget(run: RunRecord | None) -> RunBudgetPolicy | None:
         if run is None:
@@ -322,7 +310,7 @@ def _arguments_preview(arguments: dict[str, object]) -> str:
 
 
 class AgentTreeSubscription(AsyncIterator[AgentTreeNotification]):
-    """Compose existing per-Session streams into a bounded root tree stream."""
+    """Coalesce tree changes and project canonical state only when requested."""
 
     def __init__(
         self,
@@ -330,27 +318,22 @@ class AgentTreeSubscription(AsyncIterator[AgentTreeNotification]):
         root_session_id: str,
         projector: AgentTreeProjector,
         runtime: AgentTreeRuntime,
-        max_buffer: int = 64,
-        runtime_buffer: int = 64,
         on_close: Callable[[AgentTreeSubscription], None] | None = None,
     ) -> None:
-        if max_buffer <= 0 or runtime_buffer <= 0:
-            raise ValueError("Agent tree subscription buffers must be positive")
         self.root_session_id = root_session_id
         self.initial_snapshot: AgentTreeSnapshot
         self._projector = projector
         self._runtime = runtime
-        self._runtime_buffer = runtime_buffer
         self._on_close = on_close
-        self._queue: asyncio.Queue[AgentTreeNotification | object] = asyncio.Queue(max_buffer)
         self._subscriptions: dict[str, RuntimeSubscriptionPort] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._closed = False
+        self._changed = asyncio.Event()
+        self._diagnostic: Diagnostic | None = None
         self._refresh_lock = asyncio.Lock()
 
     async def start(self) -> None:
-        """Attach live streams before publishing the initial durable tree."""
-
+        """Register changes before reading; changes during the read remain pending."""
         async with self._refresh_lock:
             await self._open_runtime_subscription(self.root_session_id)
             await self._sync_child_subscriptions()
@@ -362,11 +345,29 @@ class AgentTreeSubscription(AsyncIterator[AgentTreeNotification]):
         return self
 
     async def __anext__(self) -> AgentTreeNotification:
-        item = await self._queue.get()
-        if item is _CLOSED:
+        async with self._refresh_lock:
+            await self._changed.wait()
+            if self._diagnostic is not None:
+                diagnostic, self._diagnostic = self._diagnostic, None
+                return AgentTreeNotification(kind="diagnostic", diagnostic=diagnostic)
+            if self._closed:
+                raise StopAsyncIteration
+            self._changed.clear()
+            try:
+                await self._sync_child_subscriptions()
+                snapshot = await run_blocking(self._projector.snapshot, self.root_session_id)
+            except asyncio.CancelledError:
+                self.close()
+                raise
+            except Exception as exc:  # noqa: BLE001 - isolate a failed state observer.
+                self._fail_projection(exc)
+            else:
+                if not self._closed:
+                    return AgentTreeNotification(kind="snapshot", snapshot=snapshot)
+            if self._diagnostic is not None:
+                diagnostic, self._diagnostic = self._diagnostic, None
+                return AgentTreeNotification(kind="diagnostic", diagnostic=diagnostic)
             raise StopAsyncIteration
-        assert isinstance(item, AgentTreeNotification)
-        return item
 
     async def get(self) -> AgentTreeNotification:
         return await self.__anext__()
@@ -378,29 +379,29 @@ class AgentTreeSubscription(AsyncIterator[AgentTreeNotification]):
         for subscription in tuple(self._subscriptions.values()):
             subscription.close()
         for task in tuple(self._tasks.values()):
-            task.cancel()
+            if task is not asyncio.current_task():
+                task.cancel()
         self._subscriptions.clear()
         self._tasks.clear()
-        self._offer_closed()
+        self._changed.set()
         if self._on_close is not None:
             self._on_close(self)
 
     async def _open_runtime_subscription(self, session_id: str) -> None:
         if session_id in self._subscriptions or self._closed:
             return
-        sequence = await run_blocking(self._projector.latest_sequence, session_id)
-        subscription = await self._runtime.subscribe(
+        subscription = await self._runtime.subscribe_state(
             session_id,
-            after_sequence=sequence,
-            max_buffer=self._runtime_buffer,
-            include_activity=True,
+            event_types=_RELATION_EVENT_TYPES
+            if session_id == self.root_session_id
+            else frozenset(),
         )
         if self._closed:
             subscription.close()
             return
         self._subscriptions[session_id] = subscription
         self._tasks[session_id] = asyncio.create_task(
-            self._consume_runtime(session_id, subscription),
+            self._consume_runtime(subscription),
             name=f"ouro-agent-tree-{self.root_session_id}-{session_id}",
         )
 
@@ -412,89 +413,38 @@ class AgentTreeSubscription(AsyncIterator[AgentTreeNotification]):
         if self._closed:
             return
         for session_id in sorted(current_children.difference(expected)):
-            subscription = self._subscriptions.pop(session_id)
-            subscription.close()
-            task = self._tasks.pop(session_id)
-            if task is not asyncio.current_task():
-                task.cancel()
+            self._subscriptions.pop(session_id).close()
+            self._tasks.pop(session_id).cancel()
 
-    async def _consume_runtime(
-        self,
-        session_id: str,
-        subscription: RuntimeSubscriptionPort,
-    ) -> None:
+    async def _consume_runtime(self, subscription: RuntimeSubscriptionPort) -> None:
         try:
             while not self._closed:
                 notification = await subscription.get()
-                if notification.kind == "diagnostic":
-                    self._offer_lagged(session_id)
-                    continue
-                if notification.kind == "event":
-                    if (
-                        session_id != self.root_session_id
-                        or notification.event is None
-                        or notification.event.event_type not in _RELATION_EVENT_TYPES
-                    ):
-                        continue
-                async with self._refresh_lock:
-                    if self._closed:
-                        return
-                    await self._sync_child_subscriptions()
-                    snapshot = await run_blocking(self._projector.snapshot, self.root_session_id)
-                    self._offer(AgentTreeNotification(kind="snapshot", snapshot=snapshot))
-                if session_id not in self._subscriptions:
+                if notification.diagnostic is not None:
+                    self.close()
+                    self._diagnostic = notification.diagnostic
                     return
-        except StopAsyncIteration, asyncio.CancelledError:
+                self._changed.set()
+        except StopAsyncIteration:
+            self.close()
+        except asyncio.CancelledError:
             return
-        except Exception as exc:  # noqa: BLE001 - isolate each child subscription.
-            self._offer_diagnostic(
-                code="agent_tree_subscription_failed",
-                session_id=session_id,
-                message=f"Agent tree source failed ({type(exc).__name__}); reload the snapshot",
-            )
+        except Exception as exc:  # noqa: BLE001 - isolate a failed state observer.
+            self._fail_projection(exc)
 
-    def _offer(self, notification: AgentTreeNotification) -> None:
-        if self._closed:
+    def _fail_projection(self, exc: Exception) -> None:
+        self.close()
+        if self._diagnostic is not None:
             return
-        try:
-            self._queue.put_nowait(notification)
-        except asyncio.QueueFull:
-            self._clear_queue()
-            self._offer_lagged(self.root_session_id)
-
-    def _offer_lagged(self, session_id: str) -> None:
-        self._offer_diagnostic(
-            code="agent_tree_subscription_lagged",
-            session_id=session_id,
-            message="Agent tree subscriber buffer overflowed; reload the canonical snapshot",
-        )
-
-    def _offer_diagnostic(self, *, code: str, session_id: str, message: str) -> None:
-        if self._closed:
-            return
-        self._clear_queue()
-        diagnostic = Diagnostic(
-            code=code,
-            severity="warning",
+        self._diagnostic = Diagnostic(
+            code="agent_tree_subscription_failed",
+            severity="error",
             component="application.agents",
-            message=message,
-            session_id=session_id,
+            message=f"Cannot project Agent tree ({type(exc).__name__}).",
+            session_id=self.root_session_id,
             recoverable=True,
-            suggested_action="Call agent_tree_snapshot and continue from its revision.",
+            suggested_action="Open a new Agent tree observation to retry.",
         )
-        self._queue.put_nowait(AgentTreeNotification(kind="diagnostic", diagnostic=diagnostic))
-
-    def _clear_queue(self) -> None:
-        with suppress(asyncio.QueueEmpty):
-            while True:
-                self._queue.get_nowait()
-
-    def _offer_closed(self) -> None:
-        try:
-            self._queue.put_nowait(_CLOSED)
-        except asyncio.QueueFull:
-            self._clear_queue()
-            self._queue.put_nowait(_CLOSED)
 
 
 def delegation_status(store: SessionStore, relation: DelegationRecord) -> str:

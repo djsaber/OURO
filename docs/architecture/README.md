@@ -54,7 +54,8 @@ Host 需要新增能力时先扩展 Application 用例。其他基础设施不�
 ## 一次运行的主链
 
 1. `LocalApplication` 装配存储、配置、Provider 工厂、Runtime、扩展目录、Supervisor、Agent 与任务服务；轻量配置 / 认证命令只装配所需服务。
-2. Runtime 在会话执行所有权下恢复和验证状态，接受输入并开始 Run；`RunLifecycle` 维护持久化 Run / Session 转换。
+2. Application 按稳定输入身份持久受理请求；Supervisor 持有长期执行、FIFO 和并发许可。Runtime 在会话执行所有权下
+   恢复和验证状态，开始或继续 Run；`RunLifecycle` 维护持久化 Run / Session 转换。Host 等待受理回执或观察结果，切换视图不拥有运行取消权。
 3. Run 的 Driver 决定下一步操作。模型请求端口准备上下文，组合有效路由、提示词、压缩、Skills、动态贡献与原子历史帧，记录真实请求快照；`InnerAgentLoop` 是默认算法。
 4. `RuntimeAdapter` 调用 Provider；协议适配器把响应投影为统一流事件，Core 不解释供应商的私有认证或续接内容。
 5. 完整响应边界形成类型化模型工具调用；Driver 也可显式提交程序化调用。两者共用工具预检、权限、交互和 `ToolBatchExecutor`，结果按调用顺序提交；等待与 Driver checkpoint 使用同一原子提交。
@@ -122,7 +123,10 @@ Provider 实例、产品类型与线协议独立；工厂按协议选择 adapter
 
 ### Host 与观察
 
-初始快照与 live cursor 在同一观察边界衔接。订阅有容量上限，慢消费者通过快照和持久事件追赶；流式内容保持顺序，UI 刷新可以合并。工作线程、过时结果隔离、主题和 Markdown 缓存由对应渲染生命周期管理，详见[会话观察](../specs/session-observation.md)和[TUI 渲染](tui-rendering.md)。
+`SessionObservation` 在 Application 内衔接一致快照、live 事件和分页追赶；Host 成功应用内容后才确认游标。
+`SessionContentProjection` 复用通用会话语义，TUI 负责 TranscriptEntry、交互布局与 Strip。状态观察合并失效通知，
+消费时查询权威 Agent 树；正文订阅保留顺序并限制批次容量。视图准备结果按目标版本提交，排版独立推进，
+不可见会话关闭正文观察。详见[会话观察](../specs/session-observation.md)和[TUI 渲染](tui-rendering.md)。
 
 ## 扩展与验证
 

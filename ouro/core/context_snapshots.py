@@ -15,8 +15,8 @@ from ouro.core.tools import ToolDefinition
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
-class ContextSnapshotRecord(VersionedOuroModel):
-    """Lossless latest-request snapshot retaining text and native media bytes."""
+class ContextSnapshotHeader(VersionedOuroModel):
+    """Request identity and metrics without provider arguments or media bodies."""
 
     schema_version: int = 5
 
@@ -28,22 +28,14 @@ class ContextSnapshotRecord(VersionedOuroModel):
     provider_id: str
     endpoint_id: str | None = None
     model_id: str
-    supports_image_input: bool = False
-    supports_audio_input: bool = False
-    supports_video_input: bool = False
     prepared_at: datetime = Field(default_factory=utc_now)
     completed_at: datetime | None = None
-    system_prompt: str = ""
-    injected_messages: list[ModelMessage] = Field(default_factory=list)
-    source_messages: list[MessageRecord] = Field(default_factory=list)
-    tool_definitions: list[ToolDefinition] = Field(default_factory=list)
     metrics: ContextMetrics
     context_metadata: Metadata = MetadataField
-    context_digest: str
     provider_reported_input_tokens: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
-    def _validate_identity_and_digest(self) -> ContextSnapshotRecord:
+    def _validate_identity_and_completion(self) -> ContextSnapshotHeader:
         if not all(
             value.strip()
             for value in (
@@ -56,10 +48,32 @@ class ContextSnapshotRecord(VersionedOuroModel):
             )
         ):
             raise ValueError("context snapshot identity fields must not be empty")
-        if not _DIGEST.fullmatch(self.context_digest):
-            raise ValueError("context snapshot digest must be a lowercase sha256 digest")
         if self.completed_at is None and self.provider_reported_input_tokens is not None:
             raise ValueError("provider input tokens require a completed_at timestamp")
+        return self
+
+
+class ContextSnapshotRecord(ContextSnapshotHeader):
+    """Lossless latest-request snapshot retaining text and native media bytes."""
+
+    supports_image_input: bool = False
+    supports_audio_input: bool = False
+    supports_video_input: bool = False
+    system_prompt: str = ""
+    injected_messages: list[ModelMessage] = Field(default_factory=list)
+    source_messages: list[MessageRecord] = Field(default_factory=list)
+    tool_definitions: list[ToolDefinition] = Field(default_factory=list)
+    context_digest: str
+
+    def header(self) -> ContextSnapshotHeader:
+        return ContextSnapshotHeader.model_validate(
+            self.model_dump(include=set(ContextSnapshotHeader.model_fields))
+        )
+
+    @model_validator(mode="after")
+    def _validate_digest(self) -> ContextSnapshotRecord:
+        if not _DIGEST.fullmatch(self.context_digest):
+            raise ValueError("context snapshot digest must be a lowercase sha256 digest")
         return self
 
 
@@ -76,4 +90,4 @@ def context_view_digest(view: ContextView) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-__all__ = ["ContextSnapshotRecord", "context_view_digest"]
+__all__ = ["ContextSnapshotHeader", "ContextSnapshotRecord", "context_view_digest"]

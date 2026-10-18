@@ -42,6 +42,7 @@ from ouro.tui.widgets import _BUSY_ACTIVITIES, ActivityIndicator, Composer
 class ScriptedProvider:
     provider_id = "faux"
     deltas_per_round = 40
+    delta_interval_ms = 5.0
 
     def __init__(self) -> None:
         self.round = 0
@@ -49,7 +50,7 @@ class ScriptedProvider:
     async def stream(self, **_):
         self.round += 1
         for index in range(self.deltas_per_round):
-            await asyncio.sleep(0.005)
+            await asyncio.sleep(self.delta_interval_ms / 1000)
             yield ProviderStreamEvent(type="text_delta", text=f"Evidence {index}. " * 8 + "\n\n")
         if self.round % 2:
             yield ProviderStreamEvent.from_tool_call(
@@ -87,6 +88,8 @@ class Probe:
         self.slow_callbacks = []
         self.gc_ms = []
         self.gc_started = 0.0
+        self.gc_stack = []
+        self.gc_collections = []
         self.running = True
         self.originals = {}
         for name in dir(store):
@@ -161,8 +164,18 @@ class Probe:
     def gc_callback(self, phase, info):
         if phase == "start":
             self.gc_started = time.perf_counter()
+            self.gc_stack = (
+                [f"{frame.name}:{frame.lineno}" for frame in traceback.extract_stack(limit=12)]
+                if info["generation"] == 2
+                else []
+            )
         else:
-            self.gc_ms.append((time.perf_counter() - self.gc_started) * 1000)
+            elapsed = (time.perf_counter() - self.gc_started) * 1000
+            self.gc_ms.append(elapsed)
+            if elapsed > 16:
+                self.gc_collections.append(
+                    {**info, "ms": round(elapsed, 3), "stack": self.gc_stack}
+                )
 
     def restore(self):
         if self.gc_callback in gc.callbacks:
@@ -185,6 +198,7 @@ class Probe:
             "slow_render_stacks": self.slow_render_stacks,
             "slow_callbacks": self.slow_callbacks,
             "gc": distribution(self.gc_ms),
+            "slow_gc_collections": self.gc_collections,
         }
 
 
@@ -286,9 +300,19 @@ async def run_one(backend, mode, delay_ms):
                     await asyncio.sleep(0.01)
                     await tui._open_session(session.session_id)
                     probe.phase = "run"
+                    previous_workers = set(tui.workers)
+                    composer = tui.query_one(Composer)
+                    composer.focus()
+                    composer.load_text("Inspect evidence")
+                    await pilot.press("enter")
+                    worker = next(
+                        worker
+                        for worker in tui.workers
+                        if worker.group == "run" and worker not in previous_workers
+                    )
                     tasks.append(asyncio.create_task(probe.keys(tui)))
-                    worker = tui._run_prompt("Inspect evidence", "follow_up")
-                    await worker.wait()
+                    async with asyncio.timeout(60):
+                        await worker.wait()
                     await tui._flush_pending_runtime_events()
                     await asyncio.sleep(0.2)
                     assert tui._projection.activity.status == "completed"
@@ -356,10 +380,14 @@ async def main():
     parser.add_argument("--backend", choices=["files", "sqlite", "all"], default="all")
     parser.add_argument("--store-delay-ms", type=float, default=0)
     parser.add_argument("--deltas-per-round", type=int, default=40)
+    parser.add_argument("--delta-interval-ms", type=float, default=5)
     args = parser.parse_args()
     if args.deltas_per_round < 1:
         parser.error("--deltas-per-round must be positive")
     ScriptedProvider.deltas_per_round = args.deltas_per_round
+    if args.delta_interval_ms < 0:
+        parser.error("--delta-interval-ms must be nonnegative")
+    ScriptedProvider.delta_interval_ms = args.delta_interval_ms
     print(
         json.dumps(
             {

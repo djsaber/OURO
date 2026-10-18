@@ -147,15 +147,15 @@ async def test_controller_filters_background_content_before_sink_delivery(tmp_pa
             await application.runtime.event_recorder.publish(
                 session_id=background.session_id, run_id=None, event_type=kind, payload=payload
             )
-        foreground = await application.runtime.event_recorder.publish(
+        await application.runtime.event_recorder.publish(
             session_id=selected.session_id,
             run_id=None,
             event_type="model_text_delta",
             payload={"text": "Visible"},
         )
         await application.runtime.drain_events()
-        assert received == [foreground]
-        assert published == [foreground]
+        assert received == []
+        assert published == []
 
         await controller.new_session()
         await application.runtime.event_recorder.publish(
@@ -165,7 +165,7 @@ async def test_controller_filters_background_content_before_sink_delivery(tmp_pa
             payload={},
         )
         await application.runtime.drain_events()
-        assert received == [foreground]
+        assert received == []
     finally:
         await controller.close()
 
@@ -189,26 +189,33 @@ async def test_controller_detaches_event_sink_when_shared_application_stays_open
     )
     await controller.load_session(session.session_id)
 
+    child = SessionRecord(
+        session_kind="subagent",
+        root_session_id=session.session_id,
+        parent_session_id=session.session_id,
+        delegation_id="delegation_shared",
+    )
+    application.runtime.store.create_session(child)
     try:
         await application.runtime.event_recorder.publish(
-            session_id=session.session_id,
-            run_id="run_shared",
-            event_type="run_started",
+            session_id=child.session_id,
+            run_id=None,
+            event_type="approval_requested",
             payload={"trigger": "user"},
         )
         await application.runtime.drain_events()
-        assert [event.event_type for event in published] == ["run_started"]
+        assert [event.event_type for event in published] == ["approval_requested"]
 
         await controller.close()
         await application.runtime.event_recorder.publish(
-            session_id=session.session_id,
-            run_id="run_shared",
-            event_type="run_completed",
+            session_id=child.session_id,
+            run_id=None,
+            event_type="approval_requested",
             payload={},
         )
         await application.runtime.drain_events()
 
-        assert [event.event_type for event in published] == ["run_started"]
+        assert [event.event_type for event in published] == ["approval_requested"]
     finally:
         await controller.close()
         await application.close()
@@ -348,7 +355,7 @@ async def test_late_session_creation_does_not_replace_navigation(
     application = two_route_application(tmp_path)
     controller = TuiController(lambda _event: None, lambda _status: None, application=application)
     entered, release = asyncio.Event(), asyncio.Event()
-    run = application.runtime.run
+    run = application.runtime.accept_user_input
 
     async def delayed_run(*args, **kwargs):
         entered.set()
@@ -356,7 +363,7 @@ async def test_late_session_creation_does_not_replace_navigation(
         return await run(*args, **kwargs)
 
     await controller.start()
-    monkeypatch.setattr(application.runtime, "run", delayed_run)
+    monkeypatch.setattr(application.runtime, "accept_user_input", delayed_run)
     submission = asyncio.create_task(controller.submit("Background creation"))
     try:
         await asyncio.wait_for(entered.wait(), 5)
@@ -1898,11 +1905,11 @@ async def test_controller_load_session_does_not_block_the_event_loop(
         reader_threads: list[int] = []
         original_snapshot = application.runtime.sessions.observation_snapshot
 
-        def blocking_snapshot(session_id: str):
+        def blocking_snapshot(session_id: str, **kwargs):
             reader_threads.append(threading.get_ident())
             entered.set()
             release.wait()
-            return original_snapshot(session_id)
+            return original_snapshot(session_id, **kwargs)
 
         monkeypatch.setattr(
             application.runtime.sessions,
@@ -2103,19 +2110,22 @@ async def test_new_primary_session_cannot_be_claimed_by_concurrent_child_events(
 
         assert controller.session_id is None
         assert published == []
-        run = application.runtime.run
+        submit = application.supervisor.submit_user_input
 
-        async def create_bound_session(prompt, *, on_session_created, **kwargs):
-            on_session_created(root)
+        async def create_bound_session(request, *, on_session_created, **kwargs):
+            def bound(session):
+                on_session_created(session)
+                assert controller.session_id == session.session_id
+
+            result = await submit(request, on_session_created=bound, **kwargs)
             await controller._receive_event(root_event)
-            assert controller.session_id == root.session_id
-            assert published == [root_event]
-            return await run(prompt, session_id=root.session_id)
+            assert root_event not in published
+            return result
 
-        monkeypatch.setattr(application.runtime, "run", create_bound_session)
-        await controller.submit("Use the bound root")
+        monkeypatch.setattr(application.supervisor, "submit_user_input", create_bound_session)
+        result = await controller.submit("Use the bound root")
+        assert controller.session_id == result.session.session_id
 
-        assert controller.session_id == root.session_id
     finally:
         await controller.close()
 

@@ -58,10 +58,88 @@ uv run --frozen python -m dev.benchmarks.session_pipeline --mode tui --store-del
 ```
 
 每个 Session 包含 120 条历史消息；两轮模型响应各含 40 个间隔 5 ms 的文本 delta，并执行一个约 32 KiB 的工具。
-`--mode runtime|tui|activity|all` 选择场景，`--backend files|sqlite|all` 选择后端。`--deltas-per-round` 控制流长度。
+`--mode runtime|tui|activity|all` 选择场景，`--backend files|sqlite|all` 选择后端。`--deltas-per-round` 控制流长度，
+`--delta-interval-ms` 控制分片间隔；设为 0 可测量连续突发。
 TUI 使用 Textual `run_test(size=(120, 40))`，记录 1 ms ticker 的 loop lag、按键到 Composer 更新、动画 tick 间隔、
-GC、慢回调和 Store 线程归属。Store 计数包含嵌套公共调用，不等于物理 IO；注入延迟不代表特定硬件。
+GC、慢回调和 Store 线程归属。超过 16ms 的 GC 附带代次、回收对象数与 gen2 触发栈。
+Store 计数包含嵌套公共调用，不等于物理 IO；注入延迟不代表特定硬件。
 探针在退出时恢复，不修改生产 GC、动画频率、流式窗口和背压。
+
+## 会话观察
+
+```powershell
+uv run --frozen python dev/benchmarks/session_observation.py --messages 120 1000 10000 --repeat 3
+uv run --frozen python dev/benchmarks/session_observation.py --root C:\checkouts\baseline --repeat 3
+```
+
+观察基准用临时 home、合成历史和可保持运行的 Provider 测量冷进入、重新进入和流式会话切换。
+合成模型使用 2,000,000 token 上下文容量，避免历史规模触发自动压缩；探针断言请求 purpose 为 chat，
+并在重进后检查未提交正文，确保测量正文流阶段。
+`--root` 指向待测源码，使用同一探针和当前锁定依赖；每个样本使用独立事件循环，线程收尾后才删除临时数据。
+输出内容提交、首个正文帧与已加载窗口就绪延迟，以及排版项数、排版耗时、Store 公共查询次数、正文快照/窗口读取消息数、
+归约事件数、跟随器、订阅、任务和缓存数量。5 ms ticker 记录选择期间的 loop lag；首帧探针被动等待新正文出现，
+随后等待一次原生刷新，不在准备期间持续请求刷新。阶段耗时可相互包含，查询计数包含嵌套调用；排版计数包含主题和
+尺寸变化的重复工作。消息计数不包含执行恢复或完整 context 内嵌消息；总读取成本需结合进程 IO 判断。
+窗口就绪要求其历史行已生成且主题刷新结束，不要求未请求的旧页就绪。
+Windows 输出当前进程 working set 和本次选择的读取传输字节，包含缓存 IO，不等于物理磁盘流量；其他平台不提供这两项。
+这些指标均不包含实际终端 paint 或操作系统键盘链路。不同版本必须使用同一探针比较，不混用测量口径。
+
+```powershell
+uv run --frozen python -m dev.benchmarks.session_collaboration --cycles 20
+```
+
+协作基准在同一进程的两个 headless TUI 中观察三个并发 Run：固定一个观察者，另一个循环切换三会话。
+记录每次切换、任务/订阅/跟随器/缓存数量、进程工作集，以及 Agent 树查询次数与耗时。持续注入按键并记录 loop lag、
+Composer 更新、GC 和读取/准备/安装/恢复各阶段耗时。单独记录双方均不可见的
+两个 Run 的正文排版计数，退出后检查观察资源释放。持续新增正文会增加存储和内容占用，working set 增长本身不等于泄漏。
+`read_transfer_bytes` 在此为进程累计传输量；两个 TUI 共用 CPU 和事件循环，不代表两个终端进程的延迟。
+
+### 人工终端验收入口
+
+在项目目录的两个实际终端中分别运行同一命令。只操作合成数据，不需要模型凭据；目录会保留供另一终端读取：
+
+```powershell
+uv run --frozen python -m dev.benchmarks.session_terminal --home .ouro-dev/manual-files --backend files
+```
+
+SQLite 使用另一个目录，并在两端都指定 `--home .ouro-dev/manual-sqlite --backend sqlite`。
+需要长历史时仅在第一端追加 `--seed-history 10000`，然后从两端会话菜单打开 `Synthetic 10000 messages`。
+种子快照写入后会刷新会话目录；另一端重新打开 Ctrl+O 菜单即可读取。每次使用 `--seed-history` 都创建一个新会话，
+后续重启普通测试时省略该参数即可复用已有数据。初次打开显示最近消息，向上滚动时才加载更早历史。
+每次输入会生成两轮文本和一个合成工具结果；默认每轮 400 片、间隔 25ms。可用 `--deltas` 和 `--interval-ms`
+调整持续时间或突发，不会调用外部模型或系统命令。
+
+将两个终端分别记为 A（发起运行）和 B（只观察）。首轮按下表逐项定位问题；全部通过后，按
+[性能规划](../../docs/plans/performance.md)在两后端及 Windows/POSIX 实际终端分别重复各场景至少 20 次。
+合成输出的每一轮从 1 开始计数，工具结果后开始下一轮；不要将合法的第二轮计数误记为重复消息。
+开始下一项提交测试前，先清空上一项留下的未发送草稿。
+
+| 场景 | 操作 | 通过条件 |
+|---|---|---|
+| 主页提交 | A 按 Ctrl+N，输入 `first` 并 Enter，随后立即输入 `draft`，暂不发送 | 仅切换到会话页一次；主页、命令菜单和队列不闪现；输入框无高度往返或焦点丢失，`draft` 保留 |
+| 空闲会话提交 | 等待输出、工具及第二轮全部结束，再提交 `second` | 消息进入正文前不先展开队列；输入栏稳定，发送后仍可继续编辑 |
+| 活动 Run 追加 | 输出过程中输入 `follow-up` 并 Enter | 队列出现在输入栏下方；输入被消费后队列消失，正式用户消息只出现一次；等待该追加运行结束再测空闲提交 |
+| 多会话切换 | A 用 Ctrl+N 依次提交 `session-1`、`session-2`、`session-3`，用 Ctrl+O 选择会话，Enter 打开；在各会话保留不同的未发送草稿 | 草稿不串会话；返回后补齐不可见期间的输出，已完成会话有终态，无旧会话内容闪入 |
+| 双终端观察 | B 用 Ctrl+O 打开 A 正在运行的同一会话；A 持续键入草稿，B 向上滚动并调整窗口宽度 | 两端输出均继续；草稿保持可编辑；B 阅读旧内容时不被拉回底部，滚动或缩放不会令 A 停止 |
+| 分页与导航 | 打开种子长历史，向上滚动至已加载顶部；将焦点放到正文后按 PgUp/PgDn；输入 `/navigate #1`、`/navigate bottom`，再用 Alt+PageUp/Alt+PageDown 定位用户消息 | 无“加载更多”按钮；补页保留阅读位置；翻页直接定位，无滚动动画；编号、顺序正确，切换并重进后无重复内容或摘要 |
+| 生命周期隔离 | A 保持运行，B 按 Ctrl+Q 退出；A 切换到其中一个运行中会话并输入 `/abort` | B 退出不停止 A；只中止选中的 Run，其余后台 Run 继续并可完成 |
+
+Ctrl+O 菜单可输入文字筛选，↑/↓ 选择、Enter 打开、Esc 返回。需要区分测试会话时，用 Ctrl+P 打开 Actions，
+选择 `Rename session`，为会话设置不同名称。默认运行较短，多会话操作来不及时可重新启动入口并追加
+`--deltas 1200`，每次运行的两轮输出合计约 60 秒，实际时间还包括工具、存储与排版。
+
+长历史首端启动示例（仅在 A 使用 `--seed-history`，B 仍使用同一 home 的普通启动命令）：
+
+```powershell
+uv run --frozen python -m dev.benchmarks.session_terminal --home .ouro-dev/manual-files --backend files --seed-history 10000
+```
+
+若一项失败，记录场景、操作顺序、期望与实际现象后即可反馈，不必先完成全部重复。仅“未见异常”不能代替
+毫秒级响应性指标；人工外观验收和有时间数据的性能验收分别记录。
+
+每份记录包含源码版本、操作系统、终端及版本、Python、后端、字符尺寸、数据规模、重复次数、结果和截图/录屏位置。
+记录首个正文帧、键入回显、动画停顿、滚动跳变及异常；headless 指标不能填入实际 paint 一栏。
+此入口仅提供可重现的人工环境，运行脚本或通过进程测试不表示已完成人工验收。
 
 ## Run 资源与状态读取
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Generator, Iterable, Mapping
 from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Protocol
 
@@ -9,7 +9,7 @@ from pydantic import Field
 from ouro.core.agents import DelegationRecord
 from ouro.core.base import OuroModel
 from ouro.core.compaction import CompactionRecord
-from ouro.core.context_snapshots import ContextSnapshotRecord
+from ouro.core.context_snapshots import ContextSnapshotHeader, ContextSnapshotRecord
 from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessVersion
 from ouro.core.message_frames import MessageTruncation
@@ -130,6 +130,16 @@ class SessionRepository(Protocol):
         """Read at most limit canonical messages, newest first."""
         ...
 
+    def iter_messages_before(
+        self, session_id: str, *, before: int | None = None
+    ) -> Generator[tuple[int, MessageRecord]]:
+        """Yield newest-first messages with exclusive, backend-local cursors.
+
+        A cursor is valid only for its Session and history epoch. Close the
+        iterator after reading the required boundary to release its reader.
+        """
+        ...
+
     def truncate_messages(
         self,
         session_id: str,
@@ -158,6 +168,10 @@ class SessionRepository(Protocol):
     def save_latest_context(self, context: ContextSnapshotRecord) -> None: ...
 
     def load_latest_context(self, session_id: str) -> ContextSnapshotRecord | None: ...
+
+    def load_latest_context_header(self, session_id: str) -> ContextSnapshotHeader | None:
+        """Read request status without materializing provider arguments."""
+        ...
 
     def append_compaction(self, compaction: CompactionRecord) -> None: ...
 
@@ -247,6 +261,14 @@ class SessionRepository(Protocol):
         self,
         session_id: str,
     ) -> AbstractContextManager[object, None]: ...
+
+    def session_read(self, session_id: str) -> AbstractContextManager[object, bool | None]:
+        """Compose synchronous reads of one Session at a consistent boundary.
+
+        The boundary holds no execution ownership and must end before projection,
+        rendering or asynchronous waiting. SQLite readers do not reserve a writer.
+        """
+        ...
 
     def acquire_session_lock(self, session_id: str, run_id: str) -> SessionLock | None: ...
 

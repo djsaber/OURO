@@ -2844,9 +2844,9 @@ async def test_root_tree_subscription_adds_children_and_reconnects_from_store(tm
 
 
 @pytest.mark.asyncio
-async def test_slow_root_tree_subscriber_gets_lag_diagnostic(tmp_path) -> None:
+async def test_slow_root_tree_subscriber_converges_to_current_state(tmp_path) -> None:
     service, supervisor, _, _ = await _services(tmp_path)
-    subscription = await service.subscribe_agent_tree("ses_root", max_buffer=1)
+    subscription = await service.subscribe_agent_tree("ses_root")
 
     children = await asyncio.gather(
         *(
@@ -2867,10 +2867,9 @@ async def test_slow_root_tree_subscriber_gets_lag_diagnostic(tmp_path) -> None:
     await asyncio.sleep(0)
 
     notification = await subscription.get()
-    assert notification.kind == "diagnostic"
-    assert notification.diagnostic is not None
-    assert notification.diagnostic.code == "agent_tree_subscription_lagged"
-    tree = service.agent_tree_snapshot("ses_root")
+    assert notification.kind == "snapshot"
+    tree = notification.snapshot
+    assert tree is not None
     assert tree.terminal_count == 2
     assert {node.delegation_id for node in tree.nodes} == {
         child.delegation_id for child in children

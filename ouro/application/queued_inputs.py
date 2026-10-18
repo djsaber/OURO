@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import AliasChoices, Field, ValidationError, field_validator, model_validator
 
-from ouro.application.dto import ApplicationDTO
+from ouro.application.session_models import QueuedUserInputView as QueuedUserInputView
 from ouro.application.supervisor_models import HostInputReceipt
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.input_content import InputContent, InputFile, InputSkillReference
@@ -26,18 +26,6 @@ QUEUED_INPUTS_KEY = "follow_up_queue"
 
 QueuedInputMode = SessionInputMode
 QueuedInputSource = Literal["user", "host", "plugin", "delegation"]
-
-
-class QueuedUserInputView(ApplicationDTO):
-    """Host-safe view of one direct user input awaiting a consumption boundary."""
-
-    queue_id: str
-    prompt: str
-    mode: QueuedInputMode
-    queued_at: datetime
-    skills: tuple[InputSkillReference, ...] = ()
-    attachments: tuple[InputFile, ...] = Field(default=(), max_length=16)
-    resource_refs: tuple[str, ...] = ()
 
 
 class QueuedInput(OuroModel):
@@ -184,7 +172,7 @@ class QueuedInput(OuroModel):
 
 
 class QueuedInputQueue:
-    """Durable FIFO storage for input submitted while a run is active.
+    """Durable FIFO storage for accepted input awaiting a consumption boundary.
 
     Delivery timing is selected per item. Consumers may filter by delivery mode;
     eligible items always retain their enqueue order.
@@ -363,10 +351,24 @@ class QueuedInputQueue:
             if item.history_epoch != latest.history_epoch:
                 raise SessionCommitConflict("Queued input belongs to withdrawn Session history")
             metadata = dict(latest.metadata)
-            queue = self._raw_queue(metadata)
+            queue = _raw_queue(metadata)
+            receipt = self.store.load_commit(latest.session_id, input_operation_id(item.queue_id))
+            if receipt is not None:
+                existing = self.find_session(receipt.session, item.queue_id)
+                if existing is None or not same_queued_input(existing, item):
+                    raise ValueError("Input id is already bound to another input")
+                if self.find_session(latest, item.queue_id) is None and (
+                    self.store.find_queued_input_message(latest.session_id, item.queue_id) is None
+                ):
+                    raise ValueError(
+                        "Input was already accepted and has been withdrawn or cancelled"
+                    )
+                return latest, existing, len(queue)
             for raw_item in queue:
-                existing = self._parse_item(raw_item)
+                existing = _parse_item(raw_item)
                 if existing is not None and existing.queue_id == item.queue_id:
+                    if not same_queued_input(existing, item):
+                        raise ValueError("Input id is already bound to another input")
                     return latest, existing, len(queue)
             queue.append(item.model_dump(mode="python"))
             metadata[QUEUED_INPUTS_KEY] = queue
@@ -435,7 +437,7 @@ class QueuedInputQueue:
             latest = self.store.load_session_record(snapshot.session.session_id)
             session, superseded = self.stage_batch(latest, queued_items)
             self.store.save_session(session)
-        return session, queued_items, len(self._raw_queue(session.metadata)), superseded
+        return session, queued_items, len(_raw_queue(session.metadata)), superseded
 
     def stage_batch(
         self,
@@ -451,8 +453,8 @@ class QueuedInputQueue:
         metadata = dict(session.metadata)
         superseded: list[QueuedInput] = []
         retained: list[object] = []
-        for raw_item in self._raw_queue(metadata):
-            existing = self._parse_item(raw_item)
+        for raw_item in _raw_queue(metadata):
+            existing = _parse_item(raw_item)
             if (
                 first.coalesce_key is not None
                 and existing is not None
@@ -485,8 +487,8 @@ class QueuedInputQueue:
         """Read contracts retained by persisted queue entries without changing the queue."""
         return tuple(
             item.driver
-            for raw in self._raw_queue(session.metadata)
-            if (item := self._parse_item(raw)) is not None and item.driver is not None
+            for raw in _raw_queue(session.metadata)
+            if (item := _parse_item(raw)) is not None and item.driver is not None
         )
 
     def eligible_session(
@@ -498,30 +500,7 @@ class QueuedInputQueue:
     ) -> list[QueuedInput]:
         """Read queue metadata without loading unrelated messages or Run records."""
 
-        raw_queue = self._raw_queue(session.metadata)
-        valid: list[QueuedInput] = []
-        saw_invalid = False
-        for raw_item in raw_queue:
-            item = self._parse_item(raw_item)
-            if item is None:
-                saw_invalid = True
-                continue
-            if item.history_epoch != session.history_epoch:
-                if item.history_bound or item.source in {"plugin", "delegation"}:
-                    continue
-                item = item.model_copy(
-                    update={
-                        "history_epoch": session.history_epoch,
-                        "prompt_policy_checked": False,
-                        "prospective_run_id": None,
-                        "extension_catalog_id": None,
-                        "extension_generations": (),
-                    }
-                )
-            if mode is None or item.mode == mode:
-                valid.append(item)
-                if limit is not None and len(valid) >= limit:
-                    break
+        valid, saw_invalid = _read_eligible_inputs(session, mode=mode, limit=limit)
         if saw_invalid:
             self._remove_invalid(session.session_id)
         return valid
@@ -583,9 +562,9 @@ class QueuedInputQueue:
         with self.store.session_mutation(session_id):
             latest = self.store.load_session_record(session_id)
             metadata = dict(latest.metadata)
-            queue = self._raw_queue(metadata)
+            queue = _raw_queue(metadata)
             for index, raw_item in enumerate(queue):
-                item = self._parse_item(raw_item)
+                item = _parse_item(raw_item)
                 if item is None or item.queue_id != queue_id or item.source != "user":
                     continue
                 queue.pop(index)
@@ -599,7 +578,7 @@ class QueuedInputQueue:
         metadata = dict(session.metadata)
         retained = [
             raw
-            for raw in self._raw_queue(metadata)
+            for raw in _raw_queue(metadata)
             if not isinstance(raw, dict) or raw.get("queue_id") not in selected
         ]
         if retained:
@@ -612,8 +591,8 @@ class QueuedInputQueue:
         """Keep independent accepted inputs, replacing only their obsolete execution permits."""
         retained = []
         cancelled = []
-        for raw in self._raw_queue(session.metadata):
-            item = self._parse_item(raw)
+        for raw in _raw_queue(session.metadata):
+            item = _parse_item(raw)
             if item is None:
                 continue
             if item.history_bound or item.source in {"plugin", "delegation"}:
@@ -648,8 +627,8 @@ class QueuedInputQueue:
         cancelled: list[str] = []
         metadata = dict(session.metadata)
         retained: list[object] = []
-        for raw_item in self._raw_queue(metadata):
-            item = self._parse_item(raw_item)
+        for raw_item in _raw_queue(metadata):
+            item = _parse_item(raw_item)
             if item is not None and (
                 item.session_control_controller_id == controller_id
                 and item.session_control_activation_id == activation_id
@@ -670,9 +649,7 @@ class QueuedInputQueue:
             latest = self.store.load_session_record(session_id)
             metadata = dict(latest.metadata)
             queue = [
-                raw_item
-                for raw_item in self._raw_queue(metadata)
-                if self._parse_item(raw_item) is not None
+                raw_item for raw_item in _raw_queue(metadata) if _parse_item(raw_item) is not None
             ]
             self._save_queue(latest, metadata, queue)
 
@@ -689,19 +666,107 @@ class QueuedInputQueue:
         updated = session.model_copy(update={"metadata": metadata, "updated_at": utc_now()})
         self.store.save_session(updated)
 
-    def _raw_queue(self, metadata: dict[str, object]) -> list[object]:
-        current = metadata.get(QUEUED_INPUTS_KEY)
-        return list(current) if isinstance(current, list) else []
 
-    def _parse_item(self, item: object) -> QueuedInput | None:
-        if not isinstance(item, dict):
-            return None
-        try:
-            return QueuedInput.model_validate(item)
-        except ValidationError:
-            return None
+def _raw_queue(metadata: dict[str, object]) -> list[object]:
+    current = metadata.get(QUEUED_INPUTS_KEY)
+    return list(current) if isinstance(current, list) else []
+
+
+def _parse_item(item: object) -> QueuedInput | None:
+    if not isinstance(item, dict):
+        return None
+    try:
+        return QueuedInput.model_validate(item)
+    except ValidationError:
+        return None
+
+
+def _read_eligible_inputs(
+    session: SessionRecord,
+    *,
+    mode: QueuedInputMode | None = None,
+    limit: int | None = None,
+) -> tuple[list[QueuedInput], bool]:
+    valid: list[QueuedInput] = []
+    saw_invalid = False
+    for raw_item in _raw_queue(session.metadata):
+        item = _parse_item(raw_item)
+        if item is None:
+            saw_invalid = True
+            continue
+        if item.history_epoch != session.history_epoch:
+            if item.history_bound or item.source in {"plugin", "delegation"}:
+                continue
+            item = item.model_copy(
+                update={
+                    "history_epoch": session.history_epoch,
+                    "prompt_policy_checked": False,
+                    "prospective_run_id": None,
+                    "extension_catalog_id": None,
+                    "extension_generations": (),
+                }
+            )
+        if mode is None or item.mode == mode:
+            valid.append(item)
+            if limit is not None and len(valid) >= limit:
+                break
+    return valid, saw_invalid
+
+
+def project_pending_user_inputs(session: SessionRecord) -> tuple[QueuedUserInputView, ...]:
+    """Project one immutable Session boundary without mutating its queue."""
+    items, _ = _read_eligible_inputs(session)
+    return tuple(
+        project_queued_user_input(item, waiting_on_run_id=session.active_run_id)
+        for item in items
+        if item.source == "user"
+    )
+
+
+def project_queued_user_input(
+    item: QueuedInput, *, waiting_on_run_id: str | None
+) -> QueuedUserInputView:
+    return QueuedUserInputView(
+        queue_id=item.queue_id,
+        prompt=item.prompt,
+        mode=item.mode,
+        queued_at=item.queued_at,
+        waiting_on_run_id=waiting_on_run_id,
+        skills=tuple(
+            InputSkillReference(name=skill.name, text_offset=skill.text_offset, order=skill.order)
+            for skill in item.skill_activations
+        ),
+        attachments=item.attachments,
+        resource_refs=item.resource_refs,
+    )
 
 
 def input_operation_id(queue_id: str) -> str:
     """Acceptance survives consumption and history withdrawal in the native receipt journal."""
     return "input_" + hashlib.sha256(queue_id.encode("utf-8")).hexdigest()
+
+
+def same_queued_input(first: QueuedInput, second: QueuedInput) -> bool:
+    """Compare the submitted input, independent of its later execution bindings."""
+    fields = (
+        "prompt",
+        "mode",
+        "title",
+        "resource_refs",
+        "attachments",
+        "source",
+        "role",
+        "scaffold",
+        "semantic_tag",
+        "host_source_id",
+        "delegation_id",
+        "plugin_id",
+        "contribution_id",
+    )
+    return (
+        all(getattr(first, name) == getattr(second, name) for name in fields)
+        and (first.driver.driver_id if first.driver else None)
+        == (second.driver.driver_id if second.driver else None)
+        and [(item.name, item.text_offset, item.order) for item in first.skill_activations]
+        == [(item.name, item.text_offset, item.order) for item in second.skill_activations]
+    )

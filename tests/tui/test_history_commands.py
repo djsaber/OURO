@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from textual.worker import WorkerCancelled
 
 from ouro.application.resources import ResourceService
 from ouro.application.runtime import RuntimeService
@@ -200,7 +201,7 @@ async def test_undo_returns_latest_user_message_to_composer_and_edit_stays_in_se
         assert app.query_one(Composer).text == "second question"
         assert app._controller.session_id == first.session.session_id
         assert app.query_one(ConversationView).user_turn_summaries() == ("first question",)
-        await app._apply_run_result(second)
+        await app._apply_runtime_events(second.events)
         assert app._projection.assistant_text == ""
         messages = application.runtime.store.load_runtime_session(first.session.session_id).messages
         assert all(message.run_id != second.run.run_id for message in messages)
@@ -227,35 +228,52 @@ async def test_tui_message_query_reloads_if_history_changes_during_event_deliver
     first = await runtime.run("keep")
     session_id = first.session.session_id
     app = OuroTuiApp(application=application, resume_session_id=session_id)
-    async with run_ready_app(app, size=(100, 32)):
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         session = runtime.store.load_session_record(session_id)
         message = MessageRecord.text(session_id=session_id, role="user", text="withdraw")
         added = runtime.store.commit_session(
             SessionCommit(before=session, steps=(SessionCommitStep(message=message),))
         )
-        read = app._controller.messages_at_history
+        read = runtime.sessions.messages_at_history
 
-        async def withdraw_before_read(*args, **kwargs):
+        def withdraw_before_read(*args, **kwargs):
             runtime.store.commit_session(
                 SessionCommit(before=added.session, before_message_id=message.message_id)
             )
-            return await read(*args, **kwargs)
+            return read(*args, **kwargs)
 
-        monkeypatch.setattr(app._controller, "messages_at_history", withdraw_before_read)
+        monkeypatch.setattr(runtime.sessions, "messages_at_history", withdraw_before_read)
         event = EventRecord(
             session_id=session_id,
             sequence=app._projection.last_sequence + 1,
             event_type="user_message_added",
             payload={"message_id": message.message_id},
         )
-        await app._apply_runtime_events((event,))
+        runtime.store.append_ordered_event(event)
+        async with asyncio.timeout(8):
+            while app._projection.history_epoch != 1:
+                await pilot.pause()
         assert app._projection.history_epoch == 1
         assert app._projection.activity.activity == "idle"
         assert app.query_one(ConversationView).user_turn_summaries() == ("keep",)
-        monkeypatch.setattr(app._controller, "messages_at_history", read)
+        monkeypatch.setattr(runtime.sessions, "messages_at_history", read)
         # The same missing identity within the current epoch is data loss, not lag.
-        with pytest.raises(PersistenceError, match="message not found"):
-            await app._apply_runtime_events((event.model_copy(update={"history_epoch": 1}),))
+        failures = []
+        monkeypatch.setattr(app, "notify", lambda message, **kwargs: failures.append(message))
+        runtime.store.append_ordered_event(
+            EventRecord(
+                session_id=session_id,
+                history_epoch=1,
+                event_type="user_message_added",
+                payload={"message_id": message.message_id},
+            )
+        )
+        async with asyncio.timeout(8):
+            while not failures:
+                await pilot.pause()
+        assert app._observation_subscription.closed
+        assert any("PersistenceError" in message for message in failures)
+        assert app.query_one(ConversationView).user_turn_summaries() == ("keep",)
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -282,8 +300,12 @@ async def test_abort_undo_edit_resubmit_and_restart_in_tui(tmp_path, backend, ed
         await command(app, pilot, "/abort")
         async with asyncio.timeout(10):
             workers = tuple(w for w in app.workers if w.group in {"abort", "run"})
-            if workers:
-                await app.workers.wait_for_complete(workers)
+            results = await asyncio.gather(
+                *(worker.wait() for worker in workers), return_exceptions=True
+            )
+            assert all(result is None or isinstance(result, WorkerCancelled) for result in results)
+            while app._projection is None or app._projection.activity.status != "aborted":
+                await pilot.pause()
         assert app._projection.activity.status == "aborted"
         session_id = app._controller.session_id
         original = application.runtime.store.load_messages_tail(session_id)[0]

@@ -28,6 +28,8 @@ OURO_HOME/
       event-index/sequences.bin
       event-index/runs/<run_id>.json
       compactions.jsonl
+      context.json
+      context-index.json
       runs/<run_id>.json
       delegations/<delegation_id>.json
       resources/index.json
@@ -64,6 +66,7 @@ Canonical 数据包括：
 - `runs/*.json`；
 - root Session 下的 `delegations/*.json`；
 - `compactions.jsonl`；
+- 最新模型请求的 `context.json`；
 - 所属会话的资源元信息与不可变附件文件；
 - 不可变 Harness 版本、Session 的当前版本引用和消息前版本锚点；
 - 原生提交回执及文件后端的未完成提交决定。
@@ -74,6 +77,12 @@ sequence→byte checkpoint。
 缺失、截断或损坏时读取必须回退到 `events.jsonl`，且可在目标 Session mutation 边界内惰性重建；索引绝不能使
 canonical Session 不可读或隐藏事件。派生索引维护是 best-effort 且不执行 fsync，失败不能阻断 canonical append；
 offset 0 由索引缺失隐式表达，只有游标能跳过非空历史前缀时才落盘。
+
+`load_latest_context_header` 只返回请求身份、时间和 metrics，不物化 provider 参数、消息或媒体正文。
+文件后端在写入 `context.json` 后，以同一 Session 锁维护可丢弃的 `context-index.json`；索引记录文件身份、大小和
+修改时间，读取时逐项核对。缺失、损坏或失效时读取并校验 canonical context，查询不写入索引；索引写入失败不改变
+canonical 写入结果。SQLite 的 `latest_context_headers` 覆盖表达式索引与 context 行在同一事务更新，查询直接读取
+去除 provider 参数后的投影。派生索引不改变持久化版本，完整 context 查询、导出和 digest 校验仍读取 canonical 数据。
 
 Session、Run、Message、Event、Compaction、ContextSnapshot 和 Delegation 是独立持久化根记录。每个 payload
 必须显式携带各自当前 `schema_version`：Session/Event 为 2，Run/ContextSnapshot 为 5，Message 为 4，Compaction 为 2，Delegation 为 1。

@@ -1,7 +1,6 @@
 # OURO TUI 视觉样式与 Markdown 渲染设计
 
-> 文档类型：设计提案
-> 设计基线：2026-09-02
+> 文档类型：架构设计
 > 适用实现：`ouro/tui/`
 
 ## 设计目标
@@ -29,6 +28,16 @@ Session 中的用户文本、assistant Markdown、reasoning、工具状态和 Ru
 属于 Host 投影。样式不进入 canonical Message、Event、Run 或 ToolCall，也不改变 Application 提供的业务状态。
 
 复制使用 canonical 文本或 TUI 选择语义，不包含颜色、背景、spinner 或 ANSI 样式。
+
+页面状态独立于历史缓冲的内容量。会话视图保存当前页面选择，Host 将它一次性应用到标题、欢迎布局和输入层；
+导航和输入提交决定页面转换。替换历史只更新正文，不能因空快照返回主页，避免输入受理与正文持久化之间的正常间隙
+改变页面。显式选择空闲会话时，Host 使用正文、待处理输入和活动 Run 的完整事实确定初始布局。
+
+输入层的命令和交互面板位于输入框上方，队列提示与状态栏位于下方。受理进度只影响发送资格，
+不通过禁用编辑器表达等待；焦点、高亮和下一条草稿不随受理阶段反复切换。
+内部持久队列承载输入受理，不直接决定组件可见性。TUI 将待调度输入呈现为发送状态，等待活动 Run 的输入
+呈现为下方队列；正文只呈现已消费的 canonical 消息。Application 提供同一快照中的正文、Run 和待处理输入事实，
+不包含主页状态、组件选择或显示时序规则。
 
 ### 主题是受约束的数据
 
@@ -278,6 +287,10 @@ Rich `markdown.*` 命名样式和 SyntaxTheme 由 TuiTheme 的纯投影方法提
 完成块、重新加载历史和后台批量渲染调用同一个 Markdown factory。活动 Markdown tail 使用追加式纯文本，在稳定块
 边界进入最终 Markdown factory。
 
+ConversationView 持有稳定的历史组件和 AssistantTurn。AssistantTurn 在轮次或会话切换时重置源流、reasoning、计时器、
+选择及 Run 身份，空内容不占布局；完成内容进入历史后仍保留该组件。工具批次位于这两个组件之间，结束后整体归入历史。
+这一生命周期属于 TUI，不进入 Application 的会话与执行模型。
+
 ### Markdown 语义映射
 
 | Markdown 语义 | 样式 |
@@ -331,12 +344,22 @@ OuroTuiApp 在任何历史渲染 worker 启动前确定活动 TuiTheme。Rich Ma
 - TuiTheme；
 - reasoning 展开与交互高亮状态。
 
-`ConversationHistoryState` 保存生成 Strip 所使用的完整 TuiTheme。恢复缓存需要同时满足：
+`ConversationHistoryState` 保存生成 Strip 所使用的完整 TuiTheme 和已绘制条目数。恢复缓存需要同时满足：
 
 - render width 相同；
 - reasoning 展开状态兼容；
 - TuiTheme 值相同；
 - entry boundary 相同。
+
+内容与绘制分别推进。Application 的 `SessionContentProjection` 负责会话语义，TUI 在线程中准备
+TranscriptEntry，确认目标版本后安装内容；`ConversationHistory` 接管条目并统一调度冷加载、增量、宽度与主题排版。
+正文观察的已应用游标在内容应用后确认，不等待整个历史生成 Strip。
+
+一个待绘制批次在线程中分块准备，整批完成后一次发布行缓冲及其几何尺寸。首次进入直接呈现近期窗口末尾；
+排版分块只用于控制工作量和检查失效，不构成可见消息更新。宽度或主题刷新保留旧 buffer，准备完成后替换。
+工作结果校验内容版本、条目、宽度与主题，切换后不提交旧结果或启动旧目标剩余块。
+会话缓存保存已发布的兼容内容，重进只准备缺失部分，再一次并入显示。
+滚动恢复保留目标偏移直到历史布局完成；用户主动滚动会接管锚点。
 
 不同 App 或不同 TuiTheme 值不共享 Markdown style、SyntaxTheme 或 history Strip。theme id 只用于身份和 preference，
 不能替代完整主题值参与缓存判断。实现不使用全局 mutable current theme、ContextVar 或线程局部主题。

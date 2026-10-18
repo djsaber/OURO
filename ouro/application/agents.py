@@ -103,13 +103,8 @@ class RunScheduler(Protocol):
 
     def activity(self, handle_or_session: RunHandle | str) -> RuntimeActivitySnapshot: ...
 
-    async def subscribe(
-        self,
-        session_id: str,
-        *,
-        after_sequence: int = 0,
-        max_buffer: int = 256,
-        include_activity: bool = False,
+    async def subscribe_state(
+        self, session_id: str, *, event_types: frozenset[str] = frozenset()
     ) -> RuntimeSubscriptionPort: ...
 
     async def resume_agent_wait(
@@ -1230,9 +1225,6 @@ class AgentService:
     async def subscribe_agent_tree(
         self,
         root_session_id: str,
-        *,
-        max_buffer: int = 64,
-        runtime_buffer: int = 64,
     ) -> AgentTreeSubscription:
         if self._closed:
             raise RuntimeError("AgentService is closed")
@@ -1240,8 +1232,6 @@ class AgentService:
             root_session_id=root_session_id,
             projector=self._tree_projector,
             runtime=self.scheduler,
-            max_buffer=max_buffer,
-            runtime_buffer=runtime_buffer,
             on_close=self._tree_subscriptions.discard,
         )
         self._tree_subscriptions.add(subscription)

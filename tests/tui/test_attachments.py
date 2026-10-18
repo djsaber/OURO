@@ -28,7 +28,7 @@ from ouro.tui.widgets import (
     ConversationView,
     QueuedInputPanel,
     WelcomePanel,
-    _project_transcript_entries,
+    project_transcript_entries,
 )
 from tests.tui.helpers import command_popup_text, run_ready_app
 from tests.tui.test_history_commands import application_at
@@ -68,7 +68,7 @@ def test_attachment_input_appears_once_in_conversation(prompt):
     messages = separate_attachments(
         MessageRecord.text(session_id="s", role="user", text=prompt), (item,)
     )
-    entries, _ = _project_transcript_entries(
+    entries, _ = project_transcript_entries(
         tuple(messages),
         (),
         (),
@@ -494,10 +494,10 @@ async def test_accepted_input_is_not_restored_when_rendering_fails(tmp_path, mon
         path.write_text("data", encoding="utf-8")
         await app._attach_files(str(path)).wait()
 
-        async def fail(_result):
+        async def fail(_events, *, input_messages):
             raise ValueError("view refresh failed")
 
-        monkeypatch.setattr(app, "_apply_run_result", fail)
+        monkeypatch.setattr(app, "_apply_runtime_event_batch", fail)
         await pilot.press("enter")
         await pilot.pause()
         if workers := [w for w in app.workers if w.group == "run"]:
