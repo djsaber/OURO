@@ -18,8 +18,6 @@ def _toggle_capability() -> ReasoningCapability:
         activation="toggle",
         supported_efforts=("low", "high"),
         default=ReasoningRequest(mode="enabled", effort="low"),
-        output="text",
-        continuation="text",
     )
 
 
@@ -179,17 +177,6 @@ def test_reasoning_resolver_rejects_unfulfillable_intent(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         resolve_reasoning(capability, intent)
-
-
-def test_reasoning_continuation_is_independent_of_visible_output() -> None:
-    capability = ReasoningCapability(
-        activation="toggle",
-        default=ReasoningRequest(mode="disabled"),
-        output="none",
-        continuation="text",
-    )
-    assert capability.output == "none"
-    assert capability.continuation == "text"
 
 
 def test_disabled_reasoning_preserves_but_does_not_apply_effort_preference() -> None:

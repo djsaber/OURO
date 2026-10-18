@@ -149,9 +149,7 @@ TUI 复用分组列表及多行编辑器，支持 Ctrl+Enter 换行、编辑、�
                 "default": {
                   "mode": "enabled",
                   "effort": null
-                },
-                "output": "text",
-                "continuation": "text"
+                }
               },
               "profile": {
                 "name": "thinking-object-toggle",

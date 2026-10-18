@@ -116,11 +116,9 @@ def test_go_limits_and_capabilities_follow_the_gateway_and_local_codecs():
     assert chat.endpoint("deepseek-v4.1-flash").supports_image_input
     assert not chat.endpoint("deepseek-v4-pro").supports_image_input
     assert not chat.endpoint("mimo-v2.5-pro").supports_image_input
-    assert chat.endpoint().reasoning.capability.continuation == "text"
     messages = get_provider_template("opencode-go-messages")
     assert messages.endpoint("minimax-m2.7").context_window == 204_800
     assert not messages.endpoint("minimax-m2.7").supports_image_input
-    assert messages.endpoint().reasoning.capability.continuation == "opaque"
     for template_id, _, _ in GO_ROUTES:
         template = get_provider_template(template_id)
         for endpoint in template.endpoints:

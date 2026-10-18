@@ -21,7 +21,7 @@ from ouro.plugins.catalog import GenerationGate
 from ouro.plugins.environment import PluginEnvironmentService
 from ouro.plugins.instructions import AgentInstructionError, AgentInstructionLoader
 from ouro.providers import FauxProvider
-from ouro.sdk.plugins import v4 as sdk
+from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
 

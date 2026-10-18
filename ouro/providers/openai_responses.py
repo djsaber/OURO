@@ -99,7 +99,6 @@ class OpenAIResponsesProvider:
                 headers=headers,
             ),
             self.retry_policy,
-            include_reasoning=model.reasoning.output in {"summary", "text"},
         )
         async with aclosing(attempts):
             async for event in attempts:

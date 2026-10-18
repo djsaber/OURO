@@ -4,7 +4,7 @@
   "namespace": "faux_provider",
   "name": "Faux Model Protocol",
   "version": "0.1.0",
-  "engines": {"ouro": "^0.3.0", "plugin_api": "^4.0.0"},
+  "engines": {"ouro": "^0.3.0", "plugin_api": "^5.0.0"},
   "runtime": {"kind": "python-inprocess", "entrypoint": "faux_provider_plugin:create_plugin"},
   "contributes": {"providers": [{"id": "faux"}]}
 }

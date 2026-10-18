@@ -513,7 +513,7 @@ Core 不依赖 Schema、Manifest、Host 或插件安装实现。SDK 只公开运
 安装复用包校验取得的定义；运行时的独立准入检查仍验证配置与不可变包完整性。不引入持久 Schema 缓存或
 配置 watcher；后续优化必须以重复 I/O 或 validator 构建的实际测量为依据，且不能跨包摘要误用定义。
 
-该配置契约由 Plugin API `4.0.0` 提供，依赖它的插件声明 `engines.plugin_api: ">=4.0.0,<5.0.0"`，使不支持
+该配置契约由 Plugin API `5.0.0` 提供，依赖它的插件声明 `engines.plugin_api: ">=5.0.0,<6.0.0"`，使不支持
 语义的 Host 在包兼容性校验时拒绝。Manifest 为版本 `3`，worker protocol 为 `3.0`，state 为版本 `4`；
 worker 的普通配置通过独立 JSON 对象传递，凭据按槽位注入；持久修订保存完整绑定。配置业务版本变化不自动迁移数据。
 

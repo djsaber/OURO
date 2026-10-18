@@ -67,8 +67,6 @@ async def responses_runtime(tmp_path, monkeypatch, request):
                 activation="always_on",
                 default=ReasoningRequest(mode="enabled"),
                 effort={"enabled": {"reasoning": {"effort": "low"}}},
-                output="summary",
-                continuation="opaque",
             ),
         )
         endpoint_ids[endpoint] = configured.endpoint_id
@@ -357,8 +355,6 @@ async def test_model_switch_after_failure_preserves_completed_tool_frames(
                 activation="always_on",
                 default=ReasoningRequest(mode="enabled"),
                 effort={"enabled": {}},
-                output="text",
-                continuation="text",
             ),
         )
         source_route = f"{source.provider_id}/{endpoint.endpoint_id}"

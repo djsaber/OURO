@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import cast
 
-from ouro.sdk.plugins.v4 import JsonValue, PluginSessionStateView
+from ouro.sdk.plugins.v5 import JsonValue, PluginSessionStateView
 
 STATE_SCHEMA_VERSION = 2
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")

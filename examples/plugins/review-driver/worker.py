@@ -5,7 +5,7 @@ from dataclasses import asdict
 
 from review_driver_plugin import request_review, review
 
-from ouro.sdk.plugins import v4 as sdk
+from ouro.sdk.plugins import v5 as sdk
 from ouro.sdk.plugins.worker import WorkerPeer
 from ouro.sdk.plugins.worker_drivers import WorkerRunDrivers
 

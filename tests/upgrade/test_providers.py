@@ -12,6 +12,7 @@ from ouro.config.provider_template_store import (
     ProviderTemplateStore,
     template_fingerprint,
 )
+from ouro.config.provider_templates import get_provider_template
 from ouro.config.providers import ProviderConfigManager
 from ouro.config.reasoning import EndpointReasoningConfig
 from ouro.core.errors import ConfigError, UnsupportedDataVersionError
@@ -96,8 +97,9 @@ def test_provider_upgrade_preserves_configuration_and_is_idempotent(provider_hom
         assert endpoint["supports_image_input"] is source["supports_vision"]
         assert endpoint["supports_audio_input"] is False
         assert endpoint["supports_video_input"] is False
-        for key in source.keys() - {"supports_vision"}:
+        for key in source.keys() - {"supports_vision", "reasoning"}:
             assert endpoint[key] == source[key]
+        assert not {"output", "continuation"} & endpoint["reasoning"]["capability"].keys()
     snapshot = ProviderConfigManager(provider_home).snapshot(include_builtin=False)
     assert snapshot.default_provider_id == "provider_fixture"
     source = before["providers"]["items"]["reasoning_fixture"]
@@ -251,6 +253,8 @@ def test_mixed_endpoint_formats_preserve_current_capabilities(provider_home: Pat
     endpoint.update(
         supports_image_input=False, supports_audio_input=True, supports_video_input=True
     )
+    endpoint["reasoning"]["capability"].pop("output")
+    endpoint["reasoning"]["capability"].pop("continuation")
     reasoning_provider = configuration.convert_providers(
         json.loads((FIXTURES / "records/providers-reasoning-v030.json").read_text("utf-8"))
     )["providers"]["items"]["reasoning_fixture"]
@@ -260,6 +264,44 @@ def test_mixed_endpoint_formats_preserve_current_capabilities(provider_home: Pat
     after = json.loads(path.read_text("utf-8"))
     assert after["providers"]["items"]["provider_fixture"]["endpoints"]["text"] == endpoint
     assert after["providers"]["items"]["reasoning_fixture"] == reasoning_provider
+
+
+@pytest.mark.parametrize("modified", [False, True])
+def test_removing_response_controls_preserves_endpoint_binding_ownership(tmp_path, modified):
+    manager = ProviderConfigManager(tmp_path)
+    created = manager.create_from_template(get_provider_template("deepseek"))
+    raw = json.loads((tmp_path / "config/providers.json").read_text("utf-8"))
+    provider = raw["providers"]["items"][created.provider_id]
+    for binding in provider["template"]["endpoints"]:
+        endpoint = provider["endpoints"][binding["configured_endpoint_id"]]
+        endpoint["reasoning"]["capability"].update(output="text", continuation="text")
+        business = created.endpoint(binding["configured_endpoint_id"]).model_dump(mode="json")
+        business["endpoint_id"] = binding["template_endpoint_id"]
+        business["reasoning"]["capability"].update(output="text", continuation="text")
+        binding["fingerprint"] = template_fingerprint(business)
+        if modified:
+            endpoint["context_window"] += 1
+    original = copy.deepcopy(raw)
+    with pytest.raises(UnsupportedDataVersionError):
+        provider_config_from_mapping(created.provider_id, provider)
+    converted = configuration.convert_providers(raw)
+    assert raw == original
+    assert configuration.convert_providers(converted) == converted
+    value = converted["providers"]["items"][created.provider_id]
+    parsed = provider_config_from_mapping(created.provider_id, value)
+    for old, binding in zip(
+        provider["template"]["endpoints"], value["template"]["endpoints"], strict=True
+    ):
+        endpoint = parsed.endpoint(binding["configured_endpoint_id"])
+        business = endpoint.model_dump(mode="json")
+        business["endpoint_id"] = binding["template_endpoint_id"]
+        assert binding["fingerprint"] == (
+            old["fingerprint"] if modified else template_fingerprint(business)
+        )
+        assert (
+            not {"output", "continuation"}
+            & value["endpoints"][endpoint.endpoint_id]["reasoning"]["capability"].keys()
+        )
 
 
 async def test_tui_routes_legacy_config_to_offline_upgrade(provider_home: Path) -> None:

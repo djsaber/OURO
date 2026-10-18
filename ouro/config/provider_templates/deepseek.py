@@ -14,8 +14,6 @@ _DEEPSEEK_REASONING = mapped_reasoning(
     activation="toggle",
     supported_efforts=("low", "high", "max"),
     default=ReasoningRequest(mode="enabled", effort="high"),
-    output="text",
-    continuation="text",
     effort={
         "disabled": {"thinking": {"type": "disabled"}},
         "enabled": {"thinking": {"type": "enabled"}},
@@ -66,6 +64,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://api-docs.deepseek.com/quick_start/pricing/",
         verified_on=_VERIFIED_ON,
-        revision=9,
+        revision=10,
     ),
 )

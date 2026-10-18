@@ -827,7 +827,6 @@ async def test_spawn_runs_child_as_independent_session_with_frozen_tools(tmp_pat
         supports_image_input=False,
         provider_id="capture",
         model_id="capture",
-        include_continuation=False,
     )
     assert anthropic_system.endswith("CHILD READER INSTRUCTIONS")
     assert [message["role"] for message in anthropic_messages] == ["user"]

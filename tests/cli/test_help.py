@@ -18,7 +18,7 @@ def test_endpoint_add_help_documents_reasoning_contract_choices(capsys) -> None:
     assert "model route:" in help_text
     assert "endpoint capabilities:" in help_text
     assert "reasoning contract:" in help_text
-    assert "reasoning-content-effort" in help_text
+    assert "always-on" in help_text
     assert "openai-responses-effort" in help_text
     assert "capability.supported_summaries" in help_text
     assert "anthropic-messages-adaptive-effort" in help_text

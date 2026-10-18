@@ -130,7 +130,7 @@ async def test_anthropic_terminal_facts_survive_empty_or_hidden_output(
                 max_output_tokens=1024,
                 model_id="test",
                 provider_id="test",
-                reasoning=ReasoningCapability(output="none", continuation="opaque"),
+                reasoning=ReasoningCapability(),
             ),
             messages=[],
         )
@@ -395,7 +395,7 @@ async def test_anthropic_provider_streams_text_tool_deltas_and_usage() -> None:
                 max_output_tokens=1024,
                 model_id="claude-test",
                 provider_id="anthropic",
-                reasoning=ReasoningCapability(output="none", continuation="opaque"),
+                reasoning=ReasoningCapability(),
             ),
             messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
         )

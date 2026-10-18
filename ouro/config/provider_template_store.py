@@ -32,7 +32,7 @@ from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
 
 #: Current structure (schema) version of the local template file.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class ProviderTemplateMeta(OuroModel):

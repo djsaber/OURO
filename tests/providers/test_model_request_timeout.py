@@ -8,7 +8,6 @@ import httpx
 import pytest
 
 from ouro.core.provider import ModelMetadata, ProviderRetryPolicy
-from ouro.core.reasoning import ReasoningCapability
 from ouro.providers.http_transport import HttpxProviderHTTPTransport, ProviderResponseTimeout
 from ouro.providers.openai_chat_completions import OpenAIChatCompletionsProvider
 from ouro.providers.openai_responses import OpenAIResponsesProvider
@@ -141,7 +140,7 @@ def response_chunks(provider, lane, text="abcdefgh"):
             delta("response.function_call_arguments.delta", 0, output["id"], part)
             for part in output["arguments"]
         ]
-    elif lane in {"reasoning", "hidden_reasoning"}:
+    elif lane == "reasoning":
         output = reasoning(text)
         chunks = [
             delta("response.reasoning_summary_text.delta", 0, "rs", part, summary_index=0)
@@ -160,14 +159,10 @@ def response_chunks(provider, lane, text="abcdefgh"):
 
 
 @pytest.mark.parametrize("provider_class", PROVIDERS)
-@pytest.mark.parametrize("lane", ["text", "tool", "reasoning", "hidden_reasoning", "lifecycle"])
+@pytest.mark.parametrize("lane", ["text", "tool", "reasoning", "lifecycle"])
 async def test_active_stream_can_exceed_timeout_regardless_of_display_lane(provider_class, lane):
     text = "abcdefgh"
-    model = MODEL.model_copy(
-        update={
-            "reasoning": ReasoningCapability(output="summary" if lane == "reasoning" else "none")
-        }
-    )
+    model = MODEL
     body = ResponseBody(response_chunks(provider_class, lane, text))
     requests = []
 
@@ -191,10 +186,8 @@ async def test_active_stream_can_exceed_timeout_regardless_of_display_lane(provi
         assert "".join(
             event.tool_call_delta.arguments_delta for event in events if event.tool_call_delta
         ) == json.dumps({"content": text})
-    elif lane in {"reasoning", "hidden_reasoning"}:
-        assert "".join(event.reasoning_content or "" for event in events) == (
-            text if lane == "reasoning" else ""
-        )
+    elif lane == "reasoning":
+        assert "".join(event.reasoning_content or "" for event in events) == text
     else:
         assert "".join(event.text or "" for event in events) == text
 
@@ -277,7 +270,7 @@ async def test_no_response_times_out_and_retries_with_a_fresh_budget(streaming, 
 
 
 @pytest.mark.parametrize("provider_class", PROVIDERS)
-@pytest.mark.parametrize("lane", ["text", "tool", "hidden_reasoning"])
+@pytest.mark.parametrize("lane", ["text", "tool", "reasoning"])
 @pytest.mark.parametrize("private_headers", [False, True])
 async def test_stalled_output_has_common_safe_error_without_replay(
     provider_class, lane, private_headers

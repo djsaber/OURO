@@ -15,7 +15,7 @@ from ouro.plugins.paths import portable_relative_path
 from ouro.plugins.semver import version_satisfies
 
 OURO_VERSION = __version__
-PLUGIN_API_VERSION = "4.0.0"
+PLUGIN_API_VERSION = "5.0.0"
 WORKER_PROTOCOL_VERSION = "3.0"
 NATIVE_MANIFEST = Path(".ouro-plugin") / "plugin.json"
 

@@ -14,8 +14,6 @@ ProviderStreamFactory = Callable[[], AsyncIterator[ProviderStreamEvent]]
 async def stream_with_retries(
     stream_once: ProviderStreamFactory,
     retry_policy: ProviderRetryPolicy,
-    *,
-    include_reasoning: bool = True,
 ) -> AsyncGenerator[ProviderStreamEvent]:
     """One model-attempt budget, with at most one pre-output authentication recovery."""
     attempt = 1
@@ -27,10 +25,6 @@ async def stream_with_retries(
             try:
                 async for event in events:
                     emitted_response_event = True
-                    # Hidden model output still commits this attempt: visibility
-                    # must never make a partially generated response replayable.
-                    if event.type == "reasoning_delta" and not include_reasoning:
-                        continue
                     yield event
             finally:
                 close = getattr(events, "aclose", None)

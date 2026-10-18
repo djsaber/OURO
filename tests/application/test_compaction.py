@@ -374,8 +374,6 @@ def _summary_adapter(
                 activation="toggle",
                 supported_efforts=("low", "high"),
                 default=ReasoningRequest(mode="enabled", effort="low"),
-                output="text",
-                continuation="text",
             ),
             reasoning_request=ReasoningRequest(mode="enabled", effort="low"),
         ),
@@ -664,7 +662,6 @@ async def test_runtime_compaction_inherits_always_on_session_reasoning() -> None
             reasoning=ReasoningCapability(
                 activation="always_on",
                 default=ReasoningRequest(mode="enabled"),
-                output="text",
             ),
             reasoning_request=ReasoningRequest(mode="enabled"),
         ),

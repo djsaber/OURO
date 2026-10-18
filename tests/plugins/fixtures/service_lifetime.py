@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 from uuid import uuid4
 
-from ouro.sdk.plugins import v4 as sdk
+from ouro.sdk.plugins import v5 as sdk
 from ouro.sdk.plugins.services import ServiceCall, ServiceContribution
 from ouro.sdk.plugins.worker import WorkerPeer
 from ouro.sdk.plugins.worker_services import WorkerServices

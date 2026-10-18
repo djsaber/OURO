@@ -110,7 +110,6 @@ class OpenAIChatCompletionsProvider:
                 headers=headers,
             ),
             self.retry_policy,
-            include_reasoning=model.reasoning.output in {"summary", "text"},
         )
         async with aclosing(attempts):
             async for event in attempts:
@@ -247,7 +246,6 @@ class OpenAIChatCompletionsProvider:
             supports_video_input=model.supports_video_input,
             provider_id=self.provider_id,
             model_id=model.model_id,
-            include_continuation=model.reasoning.continuation == "text",
         )
         payload: dict[str, Any] = dict(self.request_options)
         if "response_format" in payload and not model.supports_structured_output:
@@ -319,7 +317,7 @@ class OpenAIChatCompletionsProvider:
         for tool_call in tool_calls:
             yield ProviderStreamEvent(type="tool_call_delta", tool_call_delta=tool_call)
         continuation = reasoning_fields_from_response(message)
-        if continuation and model.reasoning.continuation == "text":
+        if continuation:
             yield ProviderStreamEvent(
                 type="continuation",
                 continuation=ProviderContinuationArtifact(
@@ -371,9 +369,8 @@ class OpenAIChatCompletionsProvider:
                 continue
 
             reasoning = _reasoning_content_to_text(_reasoning_field_value(delta))
-            if model.reasoning.continuation == "text":
-                for field, value in reasoning_fields_from_response(delta).items():
-                    continuation_reasoning.setdefault(field, []).append(value)
+            for field, value in reasoning_fields_from_response(delta).items():
+                continuation_reasoning.setdefault(field, []).append(value)
             if reasoning:
                 saw_reasoning = True
                 yield ProviderStreamEvent(type="reasoning_delta", reasoning_content=reasoning)

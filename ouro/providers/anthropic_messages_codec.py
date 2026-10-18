@@ -19,7 +19,6 @@ def messages_to_anthropic_messages(
     supports_image_input: bool,
     provider_id: str,
     model_id: str,
-    include_continuation: bool,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Project canonical history into Anthropic's top-level system/messages shape."""
 
@@ -40,7 +39,6 @@ def messages_to_anthropic_messages(
             supports_image_input=supports_image_input,
             provider_id=provider_id,
             model_id=model_id,
-            include_continuation=include_continuation,
         )
         if converted and converted[-1]["role"] == item["role"]:
             converted[-1]["content"].extend(item["content"])
@@ -145,7 +143,6 @@ def _message_to_anthropic(
     supports_image_input: bool,
     provider_id: str,
     model_id: str,
-    include_continuation: bool,
 ) -> dict[str, Any]:
     if message.role == "tool_result":
         if message.tool_result is None:
@@ -170,14 +167,10 @@ def _message_to_anthropic(
     content = _message_content(message, supports_image_input=supports_image_input)
     if role == "assistant":
         continuation = message.provider_continuation
-        if (
-            include_continuation
-            and continuation is not None
-            and continuation.matches(
-                provider_id=provider_id,
-                protocol="anthropic-messages",
-                model_id=model_id,
-            )
+        if continuation is not None and continuation.matches(
+            provider_id=provider_id,
+            protocol="anthropic-messages",
+            model_id=model_id,
         ):
             if len(continuation.blocks) == 1 and "content" in continuation.blocks[0]:
                 native = continuation.blocks[0]

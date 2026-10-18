@@ -33,7 +33,17 @@ def response(provider, streaming):
             "stop_reason": "end_turn",
         }
         chunks = [
-            {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "ok"}},
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "ok"},
+            },
+            {"type": "content_block_stop", "index": 0},
             {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
             {"type": "message_stop"},
         ]
@@ -87,7 +97,7 @@ async def test_each_protocol_uses_each_driver_and_rechecks_logout(
             events = await collect(adapter, streaming)
             expected = (
                 ["text_delta", "continuation", "done"]
-                if provider is OpenAIResponsesProvider
+                if provider in {OpenAIResponsesProvider, AnthropicMessagesProvider}
                 else ["text_delta", "done"]
             )
             assert [event.type for event in events] == expected

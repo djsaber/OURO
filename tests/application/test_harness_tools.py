@@ -19,7 +19,7 @@ from ouro.plugins.api import adapt_sdk_contributions
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.worker import WorkerPluginInstance
 from ouro.providers import FauxProvider
-from ouro.sdk.plugins import v4 as sdk
+from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.file_commits import FileSessionCommits
 from ouro.tools import ToolExecutionContext, ToolExecutor, ToolRegistry

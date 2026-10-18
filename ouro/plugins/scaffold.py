@@ -47,7 +47,7 @@ def create_plugin_scaffold(
             "version": "0.1.0",
             "description": "A local OURO user plugin.",
             "namespace": local_namespace,
-            "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^4.0.0"},
+            "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^5.0.0"},
             "runtime": {
                 "kind": "python-inprocess",
                 "entrypoint": f"{module_name}:create_plugin",
@@ -97,7 +97,7 @@ def create_plugin_scaffold(
 
 _INPROCESS_TEMPLATE = """from __future__ import annotations
 
-from ouro.sdk.plugins.v4 import CommandContribution, ContributionSet
+from ouro.sdk.plugins.v5 import CommandContribution, ContributionSet
 
 
 class Plugin:

@@ -12,7 +12,7 @@ from ouro.core.content import (
     ToolContent,
     VideoContent,
 )
-from ouro.sdk.plugins import v4 as sdk
+from ouro.sdk.plugins import v5 as sdk
 
 _CONTENT: TypeAdapter[ToolContent] = TypeAdapter(ToolContent)
 

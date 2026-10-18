@@ -38,10 +38,10 @@ from ouro.tui.screens import Choice, ChoiceScreen, EditableChoiceScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 
 _REASONING_EFFORT_PRESET_LABELS = {
-    "none": "None",
+    "none": "No controls",
+    "always-on": "Always on",
     "openai-chat-completions-effort": "OpenAI Chat Completions effort",
     "openai-responses-effort": "OpenAI Responses effort",
-    "reasoning-content-effort": "Thinking level (reasoning_content)",
     "thinking-toggle": "Thinking switch (thinking)",
     "enable-thinking-toggle": "Thinking switch (enable_thinking)",
     "anthropic-messages-adaptive-effort": "Anthropic Messages adaptive effort",
@@ -49,7 +49,6 @@ _REASONING_EFFORT_PRESET_LABELS = {
 
 _REASONING_SUMMARY_PRESET_LABELS = {
     "none": "None",
-    "openai-responses-auto": "OpenAI Responses auto",
     "openai-responses": "OpenAI Responses auto / concise / detailed",
     "anthropic-messages": "Anthropic Messages summarized / omitted",
 }
@@ -478,7 +477,6 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             current = _reasoning_config(self._values["endpoint-reasoning-config"])
         except ValueError:
             return None
-        summary_supported = bool(current.capability.supported_summaries)
         current.capability.supported_summaries = ()
         current.capability.default.summary = None
         if current.profile is not None:
@@ -487,8 +485,6 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                 current.profile = None
         for name in REASONING_EFFORT_PRESETS:
             preset = reasoning_effort_preset(name)
-            if summary_supported:
-                preset.capability.output = current.capability.output
             if preset == current:
                 return name
         return None

@@ -387,7 +387,7 @@ async def test_custom_compatible_endpoint_encodes_declared_reasoning_profile(
 
     assert [event.type for event in events] == [
         "text_delta",
-        *(["continuation"] if reasoning.capability.continuation == "opaque" else []),
+        *(["continuation"] if protocol == "anthropic-messages" else []),
         "done",
     ]
     payload = transport.requests[0]["payload"]

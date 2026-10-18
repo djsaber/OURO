@@ -1274,7 +1274,7 @@ Use 'ouro provider endpoint add --help' for custom capability and reasoning cont
         epilog=f"""Examples:
   ouro provider endpoint add PROVIDER_ID --model private-model --default
   ouro provider endpoint add PROVIDER_ID --model reasoning-model \\
-    --reasoning-preset reasoning-content-effort --default
+    --reasoning-preset openai-chat-completions-effort --default
   ouro provider endpoint add PROVIDER_ID --model custom-claude \\
     --reasoning-preset anthropic-messages-adaptive-effort
   ouro provider endpoint add PROVIDER_ID --model custom-model \\

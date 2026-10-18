@@ -14,7 +14,7 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.plugins.api import adapt_sdk_contributions
 from ouro.providers import FauxProvider
-from ouro.sdk.plugins import v4 as sdk
+from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from ouro.tools.builtin_todolist import builtin_todolist_tool

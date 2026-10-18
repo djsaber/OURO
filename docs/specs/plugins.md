@@ -223,7 +223,7 @@ calendar-plugin/
   "namespace": "calendar",
   "engines": {
     "ouro": ">=0.3.0,<0.4.0",
-    "plugin_api": "^4.0.0"
+    "plugin_api": "^5.0.0"
   },
   "runtime": {
     "kind": "python-inprocess",
@@ -353,7 +353,7 @@ Worker 返回的 contribution 必须是 Manifest 静态声明集合的子集；�
 
 ## 8. Plugin API
 
-插件只依赖 `ouro.sdk.plugins.v4`，不依赖 `ouro.core.*`、`ouro.application.*`、具体 registry
+插件只依赖 `ouro.sdk.plugins.v5`，不依赖 `ouro.core.*`、`ouro.application.*`、具体 registry
 或 Host 类型。
 
 ```python
@@ -567,7 +567,7 @@ Host capability 清单由以下 15 类组成。这里的“消费者”指真正
 prepare、contract、projection 与文档删除，不保留空 adapter 或迁移别名。
 
 观察型扩展只公开 `observers`；`prompt_policies` 是独立语义边界。Manifest schema 3 不接受 `hooks` 字段；
-Plugin API 使用 4.0.0，worker protocol 使用 3.0；Python SDK 入口为 `ouro.sdk.plugins.v4`。
+Plugin API 使用 5.0.0，worker protocol 使用 3.0；Python SDK 入口为 `ouro.sdk.plugins.v5`。
 
 公开交互 DTO 位于 `ouro.sdk.plugins.interactions`。计划确认请求包含预览文本、计划引用、可选方案和明确的动作，
 答案包含动作及用户选择或反馈。Host 按 DTO 类型呈现，不以 builtin 身份或工具显示名赋予特殊界面；请求来源仍
@@ -1230,7 +1230,7 @@ ouro/plugins/
   worker.py          # worker protocol/process adapter
   compatibility.py   # community inspection/import
 
-ouro/sdk/plugins/v4.py
+ouro/sdk/plugins/v5.py
   # public plugin API only
 
 ouro/application/plugins.py

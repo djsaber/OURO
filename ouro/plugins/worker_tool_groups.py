@@ -11,7 +11,7 @@ from ouro.core.base import OuroModel
 from ouro.plugins.manifest import ToolContributionSpec
 from ouro.plugins.tool_groups import PluginToolGroups, ToolGroupPublication
 from ouro.plugins.worker_services import WorkerRequests
-from ouro.sdk.plugins import v4 as sdk
+from ouro.sdk.plugins import v5 as sdk
 
 
 class ToolGroupWorker(WorkerRequests, Protocol):

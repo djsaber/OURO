@@ -59,6 +59,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://docs.mistral.ai/models",
         verified_on=_VERIFIED_ON,
-        revision=4,
+        revision=5,
     ),
 )

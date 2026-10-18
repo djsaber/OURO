@@ -5,7 +5,7 @@
   "description": "Explore the generic plugin configuration contract without business logic.",
   "version": "1.0.0",
   "namespace": "configuration_playground",
-  "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^4.0.0"},
+  "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^5.0.0"},
   "runtime": {"kind": "declarative"},
   "configuration": {
     "schema": "./configuration.schema.json",

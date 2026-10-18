@@ -12,7 +12,7 @@ from ouro.sdk.plugins.interactions import (
     PlanConfirmationRequest,
     PlanOption,
 )
-from ouro.sdk.plugins.v4 import (
+from ouro.sdk.plugins.v5 import (
     CommandContribution,
     CommandOutput,
     ContextContribution,

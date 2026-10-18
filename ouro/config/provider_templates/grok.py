@@ -13,7 +13,6 @@ _GROK_REASONING = openai_chat_completions_effort_reasoning(
     activation="always_on",
     supported_efforts=("low", "medium", "high", "xhigh"),
     default=ReasoningRequest(mode="enabled", effort="high"),
-    output="summary",
 )
 
 
@@ -43,6 +42,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://docs.x.ai/developers/grok-4-7",
         verified_on=_VERIFIED_ON,
-        revision=7,
+        revision=8,
     ),
 )

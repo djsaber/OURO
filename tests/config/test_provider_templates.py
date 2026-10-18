@@ -167,7 +167,6 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
         "max",
     )
     assert openai.capability.default.effort == "medium"
-    assert openai.capability.output == "summary"
     assert openai.profile is not None
     assert openai.profile.effort["enabled"] == {"reasoning": {"effort": "medium"}}
     assert openai.capability.supported_summaries == ("auto",)
@@ -177,7 +176,6 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
 
     anthropic = templates["anthropic"]
     assert anthropic.endpoint("claude-sonnet-5-5").reasoning.capability.default.effort == "high"
-    assert anthropic.endpoint("claude-opus-5-5").reasoning.capability.continuation == "opaque"
     assert anthropic.endpoint("claude-haiku-5-5").reasoning.capability.default.effort == "medium"
 
     gemini = templates["gemini"]

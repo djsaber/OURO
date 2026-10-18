@@ -21,7 +21,7 @@ from ouro.local_application import open_local_plugins
 from ouro.plugins.installer import PluginInstaller
 from ouro.plugins.store import PluginPackageStore
 
-_PLUGIN = """from ouro.sdk.plugins.v4 import CommandContribution, ContributionSet
+_PLUGIN = """from ouro.sdk.plugins.v5 import CommandContribution, ContributionSet
 
 class Plugin:
     async def prepare(self):
@@ -86,7 +86,7 @@ def prepare_home(root: Path, kind: str, count: int) -> Path:
             "name": f"Probe {index}",
             "version": "1.0.0",
             "namespace": f"probe_{index}",
-            "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^4.0.0"},
+            "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^5.0.0"},
             "runtime": runtime,
             "contributes": contributes,
         }

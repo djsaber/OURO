@@ -16,7 +16,6 @@ from ouro.core.content import MediaModality, input_modalities
 from ouro.core.provider import ProviderRetryPolicy
 from ouro.core.reasoning import (
     ReasoningCapability,
-    ReasoningContinuation,
     ReasoningRequest,
     ReasoningSummary,
 )
@@ -136,7 +135,6 @@ class ProviderProtocolSpec:
     protocol: ProviderProtocol
     default_api_path: str | None
     requires_base_url: bool
-    reasoning_continuations: tuple[ReasoningContinuation, ...]
     encodable_input_modalities: frozenset[MediaModality]
     reasoning_summaries: tuple[ReasoningSummary, ...] = ()
 
@@ -203,7 +201,6 @@ _PROVIDER_PROTOCOL_SPECS: dict[ProviderProtocol, ProviderProtocolSpec] = {
         protocol="openai-responses",
         default_api_path="/responses",
         requires_base_url=True,
-        reasoning_continuations=("none", "opaque"),
         encodable_input_modalities=frozenset({"image"}),
         reasoning_summaries=("auto", "concise", "detailed"),
     ),
@@ -211,21 +208,18 @@ _PROVIDER_PROTOCOL_SPECS: dict[ProviderProtocol, ProviderProtocolSpec] = {
         protocol="faux",
         default_api_path=None,
         requires_base_url=False,
-        reasoning_continuations=("none",),
         encodable_input_modalities=frozenset(),
     ),
     "openai-chat-completions": ProviderProtocolSpec(
         protocol="openai-chat-completions",
         default_api_path="/chat/completions",
         requires_base_url=True,
-        reasoning_continuations=("none", "text"),
         encodable_input_modalities=frozenset({"image", "audio", "video"}),
     ),
     "anthropic-messages": ProviderProtocolSpec(
         protocol="anthropic-messages",
         default_api_path="/v1/messages",
         requires_base_url=True,
-        reasoning_continuations=("none", "opaque"),
         encodable_input_modalities=frozenset({"image"}),
         reasoning_summaries=("summarized", "omitted"),
     ),
@@ -379,17 +373,11 @@ def validate_reasoning_protocol_compatibility(
     protocol: ProviderProtocol,
     reasoning: EndpointReasoningConfig,
 ) -> None:
-    """Reject reasoning controls and continuation a wire adapter cannot support."""
+    """Reject request controls a wire adapter cannot encode."""
 
     capability = reasoning.capability
     if is_plugin_protocol(protocol):
         return
-    spec = provider_protocol_spec(protocol)
-    if capability.continuation not in spec.reasoning_continuations:
-        raise ValueError(
-            f"reasoning continuation {capability.continuation!r} is not supported by "
-            f"protocol {protocol!r}"
-        )
     if protocol == "faux" and (
         capability.activation != "unsupported" or capability.supported_summaries
     ):

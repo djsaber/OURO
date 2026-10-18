@@ -16,8 +16,6 @@ _ANTHROPIC_SONNET_REASONING = mapped_reasoning(
     default=ReasoningRequest(mode="enabled", effort="high", summary="summarized"),
     supported_summaries=("summarized", "omitted"),
     summary={value: {"thinking": {"display": value}} for value in ("summarized", "omitted")},
-    output="summary",
-    continuation="opaque",
     effort={
         "enabled": {
             "thinking": {"type": "adaptive"},
@@ -40,8 +38,6 @@ _ANTHROPIC_OPUS_REASONING = mapped_reasoning(
     default=ReasoningRequest(mode="enabled", effort="medium", summary="summarized"),
     supported_summaries=("summarized", "omitted"),
     summary={value: {"thinking": {"display": value}} for value in ("summarized", "omitted")},
-    output="summary",
-    continuation="opaque",
     effort={
         "enabled": {
             "thinking": {"type": "adaptive"},
@@ -77,8 +73,6 @@ _ANTHROPIC_HAIKU_REASONING = mapped_reasoning(
     default=ReasoningRequest(mode="enabled", effort="medium", summary="summarized"),
     supported_summaries=("summarized", "omitted"),
     summary={value: {"thinking": {"display": value}} for value in ("summarized", "omitted")},
-    output="summary",
-    continuation="opaque",
     effort={
         "disabled": {"thinking": {"type": "disabled"}, "output_config": {"effort": "medium"}},
         "enabled": {
@@ -159,6 +153,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://platform.claude.com/docs/en/models/overview",
         verified_on=_VERIFIED_ON,
-        revision=8,
+        revision=9,
     ),
 )

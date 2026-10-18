@@ -161,11 +161,6 @@ async def test_endpoint_reasoning_presets_sync_settings_and_can_be_saved(
             "anthropic-messages" if protocol == "openai-responses" else "openai-responses"
         )
         assert options.get_option(f"preset:{incompatible}").disabled
-        if protocol == "openai-responses":
-            await select_choice(app, pilot, "preset:openai-responses-auto")
-            assert screen._draft().reasoning.capability.supported_summaries == ("auto",)
-            assert screen._draft().reasoning.capability.default.summary == "auto"
-            await select_choice(app, pilot, "endpoint-reasoning-summary")
         await select_choice(app, pilot, f"preset:{summary_preset}")
         assert screen._draft().reasoning.capability.supported_summaries == summaries
         assert screen._draft().reasoning.capability.default.summary == summaries[0]

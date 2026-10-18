@@ -10,19 +10,17 @@ from ouro.core.reasoning import (
     REASONING_EFFORTS,
     ReasoningActivation,
     ReasoningCapability,
-    ReasoningContinuation,
     ReasoningEffort,
     ReasoningEffortVariant,
-    ReasoningOutput,
     ReasoningRequest,
     ReasoningSummary,
 )
 
 REASONING_EFFORT_PRESETS: tuple[str, ...] = (
     "none",
+    "always-on",
     "openai-chat-completions-effort",
     "openai-responses-effort",
-    "reasoning-content-effort",
     "thinking-toggle",
     "enable-thinking-toggle",
     "anthropic-messages-adaptive-effort",
@@ -31,7 +29,6 @@ REASONING_EFFORT_PRESETS: tuple[str, ...] = (
 # Each summary preset lists supported modes in default preference order.
 REASONING_SUMMARY_PRESETS: dict[str, tuple[ReasoningSummary, ...]] = {
     "none": (),
-    "openai-responses-auto": ("auto",),
     "openai-responses": ("auto", "concise", "detailed"),
     "anthropic-messages": ("summarized", "omitted"),
 }
@@ -106,9 +103,10 @@ class EndpointReasoningConfig(OuroModel):
     def _require_current_format(cls, value: object) -> object:
         if isinstance(value, Mapping):
             capability, profile = value.get("capability"), value.get("profile")
-            if (isinstance(capability, Mapping) and "default_effort" in capability) or (
-                isinstance(profile, Mapping) and "variants" in profile
-            ):
+            if (
+                isinstance(capability, Mapping)
+                and {"default_effort", "output", "continuation"}.intersection(capability)
+            ) or (isinstance(profile, Mapping) and "variants" in profile):
                 raise UnsupportedConfigVersionError(
                     "unsupported reasoning configuration format; run ouro-upgrade"
                 )
@@ -162,12 +160,10 @@ class EndpointReasoningConfig(OuroModel):
         result = reasoning_effort_preset(name)
         result.capability.supported_summaries = self.capability.supported_summaries
         result.capability.default.summary = self.capability.default.summary
-        if self.capability.supported_summaries:
-            result.capability.output = self.capability.output
-            if self.profile is not None:
-                if result.profile is None:
-                    result.profile = ReasoningProfileConfig(name=self.profile.name)
-                result.profile.summary = self.profile.summary
+        if self.capability.supported_summaries and self.profile is not None:
+            if result.profile is None:
+                result.profile = ReasoningProfileConfig(name=self.profile.name)
+            result.profile.summary = self.profile.summary
         return EndpointReasoningConfig.model_validate(result.model_dump())
 
     def with_summary_preset(self, name: str) -> EndpointReasoningConfig:
@@ -184,10 +180,8 @@ class EndpointReasoningConfig(OuroModel):
                 result.profile = None
         if not summaries:
             result.capability.default.summary = None
-        else:
-            if result.capability.default.summary not in ("provider_default", *summaries):
-                result.capability.default.summary = preset.capability.default.summary
-            result.capability.output = preset.capability.output
+        elif result.capability.default.summary not in ("provider_default", *summaries):
+            result.capability.default.summary = preset.capability.default.summary
         return EndpointReasoningConfig.model_validate(result.model_dump())
 
 
@@ -204,8 +198,6 @@ def mapped_reasoning(
     default: ReasoningRequest | None = None,
     supported_summaries: tuple[ReasoningSummary, ...] = (),
     summary: Mapping[ReasoningSummary, Mapping[str, object]] | None = None,
-    output: ReasoningOutput = "none",
-    continuation: ReasoningContinuation = "none",
 ) -> EndpointReasoningConfig:
     """Build a validated profile for templates and custom endpoint config."""
 
@@ -215,8 +207,6 @@ def mapped_reasoning(
             "supported_efforts": supported_efforts,
             "default": default or ReasoningRequest(),
             "supported_summaries": supported_summaries,
-            "output": output,
-            "continuation": continuation,
         }
     )
     profile = ReasoningProfileConfig.model_validate(
@@ -234,8 +224,6 @@ def openai_chat_completions_effort_reasoning(
     supported_efforts: tuple[ReasoningEffort, ...] = REASONING_EFFORTS,
     default: ReasoningRequest | None = None,
     activation: ReasoningActivation = "toggle",
-    output: ReasoningOutput = "none",
-    continuation: ReasoningContinuation = "none",
 ) -> EndpointReasoningConfig:
     default = default or ReasoningRequest(mode="enabled")
     default = default.model_copy(update={"effort": default.effort or "medium"})
@@ -253,8 +241,6 @@ def openai_chat_completions_effort_reasoning(
         activation=activation,
         supported_efforts=supported_efforts,
         default=default,
-        output=output,
-        continuation=continuation,
         effort=effort_variants,
     )
 
@@ -263,11 +249,10 @@ def openai_responses_effort_reasoning(
     *,
     supported_efforts: tuple[ReasoningEffort, ...] = REASONING_EFFORTS,
     activation: ReasoningActivation = "toggle",
-    output: ReasoningOutput = "none",
     supported_summaries: tuple[ReasoningSummary, ...] = (),
     default: ReasoningRequest | None = None,
 ) -> EndpointReasoningConfig:
-    """Declare native Responses effort controls and preserve opaque reasoning."""
+    """Declare native Responses effort and summary request controls."""
     default = default or ReasoningRequest()
     default = default.model_copy(update={"effort": default.effort or "medium"})
     effort_variants: dict[ReasoningEffortVariant, Mapping[str, object]] = {
@@ -280,11 +265,9 @@ def openai_responses_effort_reasoning(
         name="openai-responses-effort",
         activation=activation,
         supported_efforts=supported_efforts,
-        output=output,
         supported_summaries=supported_summaries,
         summary={value: {"reasoning": {"summary": value}} for value in supported_summaries},
         default=default,
-        continuation="opaque",
         effort=effort_variants,
     )
 
@@ -306,7 +289,6 @@ def reasoning_summary_preset(name: str) -> EndpointReasoningConfig:
         supported_summaries=summaries,
         summary={value: {parent: {field: value}} for value in summaries},
         default=ReasoningRequest(summary=summaries[0]),
-        output="summary",
     )
 
 
@@ -316,15 +298,11 @@ def toggle_reasoning(
     enabled: Mapping[str, object],
     disabled: Mapping[str, object],
     default_enabled: bool = True,
-    output: ReasoningOutput = "text",
-    continuation: ReasoningContinuation = "text",
 ) -> EndpointReasoningConfig:
     return mapped_reasoning(
         name=name,
         activation="toggle",
         default=ReasoningRequest(mode="enabled" if default_enabled else "disabled"),
-        output=output,
-        continuation=continuation,
         effort={"enabled": enabled, "disabled": disabled},
     )
 
@@ -335,12 +313,16 @@ def reasoning_effort_preset(name: str) -> EndpointReasoningConfig:
     normalized = name.strip().casefold()
     if normalized == "none":
         return unsupported_reasoning()
+    if normalized == "always-on":
+        return mapped_reasoning(
+            name="always-on",
+            activation="always_on",
+            effort={"enabled": {}},
+        )
     if normalized == "openai-chat-completions-effort":
         return openai_chat_completions_effort_reasoning()
     if normalized == "openai-responses-effort":
-        return openai_responses_effort_reasoning(output="summary")
-    if normalized == "reasoning-content-effort":
-        return openai_chat_completions_effort_reasoning(output="text", continuation="text")
+        return openai_responses_effort_reasoning()
     if normalized == "thinking-toggle":
         return toggle_reasoning(
             name="thinking-object-toggle",
@@ -360,8 +342,6 @@ def reasoning_effort_preset(name: str) -> EndpointReasoningConfig:
             activation="toggle",
             supported_efforts=efforts,
             default=ReasoningRequest(mode="enabled", effort="high"),
-            output="summary",
-            continuation="opaque",
             effort={
                 "disabled": {"thinking": {"type": "disabled"}},
                 "enabled": {"thinking": {"type": "adaptive"}},

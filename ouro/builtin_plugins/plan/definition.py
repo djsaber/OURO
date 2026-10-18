@@ -20,7 +20,7 @@ PLAN_PLUGIN = BuiltinPluginDefinition(
             "version": "1.0.0",
             "description": "Implements plan mode as composable OURO harness contributions.",
             "namespace": "plan",
-            "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^4.0.0"},
+            "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^5.0.0"},
             "runtime": {
                 "kind": "python-inprocess",
                 "entrypoint": "plan_plugin:create_plugin",

@@ -163,7 +163,7 @@ def test_enabled_reasoning_encodes_the_default_effort_variant() -> None:
         "none",
         "openai-chat-completions-effort",
         "openai-responses-effort",
-        "reasoning-content-effort",
+        "always-on",
         "thinking-toggle",
         "enable-thinking-toggle",
         "anthropic-messages-adaptive-effort",
@@ -173,8 +173,49 @@ def test_reasoning_effort_presets_are_valid_endpoint_contracts(name: str) -> Non
     assert isinstance(reasoning_effort_preset(name), EndpointReasoningConfig)
 
 
+def test_always_on_preset_declares_no_level_or_toggle_parameters() -> None:
+    reasoning = reasoning_effort_preset("always-on")
+    model = ModelMetadata(provider_id="fixture", model_id="model", reasoning=reasoning.capability)
+    assert model.reasoning_resolution.effective == ReasoningRequest(mode="enabled")
+    payload = {}
+    ReasoningPayloadEncoder(reasoning.profile).apply(payload, model)
+    assert payload == {}
+    with pytest.raises(ValueError, match="always on"):
+        resolve_reasoning(reasoning.capability, ReasoningRequest(mode="disabled"))
+
+
+@pytest.mark.parametrize("effort", ["none", "always-on", "openai-responses-effort"])
+@pytest.mark.parametrize("summary", ["none", "openai-responses"])
+def test_effort_and_summary_presets_are_independent(effort: str, summary: str) -> None:
+    base = EndpointReasoningConfig()
+    combined = base.with_effort_preset(effort).with_summary_preset(summary)
+    assert combined == base.with_summary_preset(summary).with_effort_preset(effort)
+    assert combined.with_summary_preset("none") == reasoning_effort_preset(effort)
+    summary_only = combined.with_effort_preset("none")
+    expected = reasoning_summary_preset(summary)
+    assert summary_only.capability == expected.capability
+    if expected.profile is not None:
+        assert summary_only.profile.effort == {}
+        assert summary_only.profile.summary == expected.profile.summary
+    else:
+        assert summary_only.profile is None
+    assert base == EndpointReasoningConfig()
+
+
+def test_serialized_reasoning_only_contains_request_controls() -> None:
+    reasoning = reasoning_effort_preset("openai-chat-completions-effort")
+    assert set(reasoning.capability.model_dump()) == {
+        "activation",
+        "supported_efforts",
+        "supported_summaries",
+        "default",
+    }
+
+
 def test_unknown_reasoning_effort_preset_lists_available_names() -> None:
-    with pytest.raises(ValueError, match="available: none, openai-chat-completions-effort"):
+    with pytest.raises(
+        ValueError, match="available: none, always-on, openai-chat-completions-effort"
+    ):
         reasoning_effort_preset("unknown")
 
 
@@ -183,8 +224,6 @@ def test_responses_preset_preserves_native_defaults_and_owns_reasoning_object() 
     assert reasoning.capability.default == ReasoningRequest(effort="medium")
     assert resolve_reasoning(reasoning.capability).effective == ReasoningRequest()
     assert reasoning.capability.default.effort == "medium"
-    assert reasoning.capability.continuation == "opaque"
-    assert reasoning.capability.output == "summary"
     assert reasoning.profile is not None
     assert reasoning.profile.effort["enabled"] == {"reasoning": {"effort": "medium"}}
     assert reasoning.profile.effort["disabled"] == {"reasoning": {"effort": "none"}}
@@ -195,7 +234,6 @@ def test_responses_preset_preserves_native_defaults_and_owns_reasoning_object() 
 def test_responses_summary_request_is_explicit_and_applies_to_provider_default() -> None:
     native = reasoning_effort_preset("openai-responses-effort")
     requested = openai_responses_effort_reasoning(
-        output="summary",
         supported_summaries=("auto", "concise", "detailed"),
         default=ReasoningRequest(summary="auto"),
     )
@@ -207,7 +245,6 @@ def test_responses_summary_request_is_explicit_and_applies_to_provider_default()
     assert all(
         "summary" not in fragment["reasoning"] for fragment in native.profile.effort.values()
     )
-    assert requested.capability.output == "summary"
     assert resolve_reasoning(requested.capability).effective == ReasoningRequest(summary="auto")
     assert resolve_reasoning(
         requested.capability, ReasoningRequest(effort="high")
@@ -249,45 +286,4 @@ def test_responses_profile_supports_endpoint_specific_default_effort() -> None:
     with pytest.raises(ValueError, match="default reasoning effort must be supported"):
         openai_responses_effort_reasoning(
             supported_efforts=("high",), default=ReasoningRequest(effort="medium")
-        )
-
-
-@pytest.mark.parametrize(
-    ("protocol", "continuation"),
-    [
-        ("openai-chat-completions", "opaque"),
-        ("anthropic-messages", "text"),
-    ],
-)
-def test_provider_rejects_reasoning_continuation_unsupported_by_protocol(
-    protocol,
-    continuation,
-) -> None:
-    reasoning = mapped_reasoning(
-        name="incompatible-continuation",
-        activation="toggle",
-        default=ReasoningRequest(mode="enabled"),
-        output="text",
-        continuation=continuation,
-        effort={
-            "enabled": {"thinking": {"type": "enabled"}},
-            "disabled": {"thinking": {"type": "disabled"}},
-        },
-    )
-
-    with pytest.raises(ValueError, match="is not supported by protocol"):
-        ProviderConfig(
-            provider_id="custom",
-            display_name="Custom",
-            provider_type="custom",
-            protocol=protocol,
-            base_url="https://example.test",
-            default_endpoint="chat",
-            endpoints=(
-                ProviderEndpointConfig(
-                    endpoint_id="chat",
-                    model_id="custom-model",
-                    reasoning=reasoning,
-                ),
-            ),
         )

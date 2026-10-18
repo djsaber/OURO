@@ -250,8 +250,6 @@ async def test_compatible_config_factory_encodes_native_reasoning_without_produc
     contract = mapped_reasoning(
         name="fixture-native",
         activation="always_on",
-        output="summary",
-        continuation="opaque",
         supported_efforts=("low",),
         supported_summaries=("auto",),
         summary={"auto": {"reasoning": {"summary": "auto"}}},
@@ -351,7 +349,6 @@ async def test_responses_preset_roundtrips_config_and_encodes_requested_effort(
         provider.provider_id,
         model_id="custom-model",
         reasoning=openai_responses_effort_reasoning(
-            output="summary",
             supported_summaries=("auto", "concise", "detailed"),
             default=ReasoningRequest(summary="auto"),
         ),
@@ -411,7 +408,6 @@ async def test_responses_visible_reasoning_reaches_adapter_without_becoming_answ
         provider.provider_id,
         model_id="model",
         reasoning=openai_responses_effort_reasoning(
-            output="summary",
             supported_summaries=("auto", "concise", "detailed"),
             default=ReasoningRequest(summary=summary),
         ),
@@ -487,7 +483,7 @@ def test_factory_validates_structured_output_contract(options):
     "lane,coordinate",
     [("reasoning_summary_text", "summary_index"), ("reasoning_text", "content_index")],
 )
-async def test_network_failure_after_hidden_reasoning_does_not_replay_response(lane, coordinate):
+async def test_network_failure_after_reasoning_does_not_replay_response(lane, coordinate):
     class DroppingTransport(StreamTransport):
         async def stream_json(self, **kwargs):
             self.requests.append(kwargs)
@@ -501,5 +497,5 @@ async def test_network_failure_after_hidden_reasoning_does_not_replay_response(l
         retry_policy=ProviderRetryPolicy(max_attempts=2, initial_backoff_seconds=0),
     )
     events = await collect(provider)
-    assert [event.type for event in events] == ["error"]
+    assert [event.type for event in events] == ["reasoning_delta", "error"]
     assert len(transport.requests) == 1

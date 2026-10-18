@@ -142,7 +142,7 @@ OURO 遇到失败不会自动回退到付费 API 或其他模型。
 [3.1 Pro](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview)、
 [3.5 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite)。
 
-通过 Chat Completions 兼容接口发送 `reasoning_effort`。模板不声明可展示的思考输出与 continuation。
+通过 Chat Completions 兼容接口发送 `reasoning_effort`。响应中的已支持思考字段由协议适配器接收和续接。
 
 ## DeepSeek
 
@@ -214,7 +214,7 @@ K3 使用顶层 `reasoning_effort`；K2.7 Code 系列不发送思考开关或 ef
 |---|---:|---:|---|---|---|---|
 | `grok-4.7`（默认） | 500,000 | 不限制 | 图片 | 开启 | 始终开启 / high | low、medium、high、xhigh |
 
-通过 `reasoning_effort` 选择等级，展示思考摘要，不声明 continuation。模板不配置请求输出上限。
+通过 `reasoning_effort` 选择等级；适配器接收返回的思考正文并保留原生续接字段。模板不配置请求输出上限。
 
 ## Mistral
 
@@ -264,7 +264,7 @@ Pro 的音频输入关闭，能力范围以[模型目录](https://docs.volcengin
 |---|---:|---:|---|---|---|---|
 | `command-a-plus-05-2026`（默认） | 128,000 | 不限制 | 图片 | 开启 | 可切换，默认开启 / high | high |
 
-使用 `reasoning_effort=high/none` 映射思考开关。模板不声明可展示的思考输出与 continuation。
+使用 `reasoning_effort=high/none` 映射思考开关。响应中的已支持思考字段由协议适配器接收和续接。
 
 ## 使用方式
 
@@ -304,8 +304,8 @@ Messages 和 Responses 适配器本身也仅编码图片。Messages 的结构化
 
 思考默认交由 Go 服务决定；模板不声明未经 Go 文档确认的开关或 effort 档位，
 `reasoning.capability.activation=unsupported` 表示不提供本地思考控制，并不表示模型没有推理能力。
-Chat Completions 在目录明确 `reasoning_content` 时保留文本续接；Hy3、Hy4 未声明该字段，不启用文本续接。
-Responses 与 Messages 保留 opaque 续接，不混用直连厂商的思考请求参数。
+三个协议适配器均按实际响应接收思考正文与原生续接数据，不依赖目录是否声明思考控制。
+请求不混用直连厂商的思考参数。
 
 ### OpenCode Go (Chat Completions)
 

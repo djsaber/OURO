@@ -1431,7 +1431,7 @@ def _write_skill_plugin(source: Path) -> None:
   "name": "TUI Skill",
   "version": "1.0.0",
   "namespace": "tui_skill",
-  "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^4.0.0"},
+  "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^5.0.0"},
   "runtime": {"kind": "declarative"},
   "contributes": {"skills": [{"id": "calendar", "path": "./skills/calendar"}]},
   "permissions": [],
@@ -1538,7 +1538,6 @@ def _thinking_application(tmp_path: Path) -> LocalApplication:
                     activation="toggle",
                     supported_efforts=("low", "high"),
                     default=ReasoningRequest(mode="enabled", effort="low"),
-                    output="summary",
                 ),
             ),
         ),
@@ -7824,7 +7823,6 @@ async def test_status_line_default_reflects_endpoint_default(tmp_path: Path) -> 
                     activation="toggle",
                     supported_efforts=("low", "high"),
                     default=ReasoningRequest(mode="disabled", effort="low"),
-                    output="summary",
                 ),
             ),
         ),
@@ -11473,7 +11471,6 @@ async def test_compaction_uses_shared_grouped_inline_menu_and_returns_typed_draf
                     activation="toggle",
                     supported_efforts=("low", "high"),
                     default=ReasoningRequest(mode="enabled", effort="low"),
-                    output="summary",
                 ),
             }
         )

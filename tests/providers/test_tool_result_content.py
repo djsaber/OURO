@@ -17,10 +17,9 @@ def encode(protocol, messages, *, image_input, audio_input=False, video_input=Fa
     if protocol == "responses":
         return responses_input(messages, scope=("scope",), **kwargs)["input"]
     if protocol == "messages":
-        return messages_to_anthropic_messages(messages, include_continuation=False, **kwargs)[1]
+        return messages_to_anthropic_messages(messages, **kwargs)[1]
     return messages_to_chat_completions(
         messages,
-        include_continuation=False,
         supports_audio_input=audio_input,
         supports_video_input=video_input,
         **kwargs,

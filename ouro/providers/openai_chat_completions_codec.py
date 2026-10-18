@@ -30,7 +30,6 @@ def messages_to_chat_completions(
     supports_video_input: bool = False,
     provider_id: str,
     model_id: str,
-    include_continuation: bool,
 ) -> list[dict[str, Any]]:
     """Encode one request with at most one leading Chat Completions system message."""
 
@@ -51,7 +50,6 @@ def messages_to_chat_completions(
             modalities=modalities,
             provider_id=provider_id,
             model_id=model_id,
-            include_continuation=include_continuation,
         )
         if converted["role"] == "system":
             system_contents.append(converted["content"])
@@ -88,7 +86,6 @@ def _message_to_chat_completions(
     modalities: frozenset[MediaModality],
     provider_id: str,
     model_id: str,
-    include_continuation: bool,
 ) -> dict[str, Any]:
     role = message.role
     if role == "tool_result":
@@ -107,14 +104,10 @@ def _message_to_chat_completions(
                 for item in message.tool_calls
             ]
         continuation = message.provider_continuation
-        if (
-            include_continuation
-            and continuation is not None
-            and continuation.matches(
-                provider_id=provider_id,
-                protocol="openai-chat-completions",
-                model_id=model_id,
-            )
+        if continuation is not None and continuation.matches(
+            provider_id=provider_id,
+            protocol="openai-chat-completions",
+            model_id=model_id,
         ):
             for block in continuation.blocks:
                 converted.update(reasoning_fields_from_response(block))

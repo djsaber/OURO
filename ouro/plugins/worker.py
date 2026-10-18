@@ -29,7 +29,7 @@ from ouro.plugins.worker_providers import WorkerProviderBridge
 from ouro.plugins.worker_scheduling import WorkerSchedulerBridge
 from ouro.plugins.worker_services import WorkerServiceBridge
 from ouro.plugins.worker_tool_groups import WorkerToolGroupBridge
-from ouro.sdk.plugins import v4 as sdk
+from ouro.sdk.plugins import v5 as sdk
 
 
 class WorkerProtocolError(RuntimeError):

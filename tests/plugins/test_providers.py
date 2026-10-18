@@ -17,6 +17,7 @@ from ouro.core.messages import (
 from ouro.core.request_context import ProviderRequestContext
 from ouro.core.tools import ToolCallProducer, ToolCallRequest
 from ouro.local_application import LocalApplication, open_local_plugins
+from ouro.plugins.package import PluginPackageError, validate_plugin_package
 
 PLUGIN = "test.protocol.provider"
 PROTOCOL = f"{PLUGIN}/providers/probe"
@@ -44,7 +45,7 @@ def package(tmp_path, kind):
                 "namespace": "provider_probe",
                 "name": "Provider probe",
                 "version": "1.0.0",
-                "engines": {"ouro": "^0.3.0", "plugin_api": "^4.0.0"},
+                "engines": {"ouro": "^0.3.0", "plugin_api": "^5.0.0"},
                 "runtime": runtime,
                 "permissions": [
                     {"id": "models.request", "reason": "Generate"},
@@ -60,6 +61,16 @@ def package(tmp_path, kind):
         encoding="utf-8",
     )
     return root
+
+
+def test_provider_package_rejects_previous_request_contract(tmp_path: Path) -> None:
+    root = package(tmp_path, "python-inprocess")
+    path = root / ".ouro-plugin/plugin.json"
+    manifest = json.loads(path.read_text("utf-8"))
+    manifest["engines"]["plugin_api"] = "^4.0.0"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(PluginPackageError, match="plugin API is incompatible"):
+        validate_plugin_package(root)
 
 
 @pytest.fixture(params=["python-inprocess", "worker"])
@@ -146,6 +157,7 @@ async def test_provider_request_preserves_model_visible_semantics_and_multimodal
         )
     ]
     raw = json.loads(events[0].text)
+    assert not {"reasoning_output", "reasoning_continuation"}.intersection(raw["model"])
     expected_messages = [item.model_dump(mode="json") for item in messages]
     # Editing coordinates stay in canonical history, outside the Provider contract.
     expected_messages[0]["content"][4] = content[4].model_dump(

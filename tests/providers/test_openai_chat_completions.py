@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 import pytest
 
-from ouro.config import openai_chat_completions_effort_reasoning
+from ouro.config import EndpointReasoningConfig, openai_chat_completions_effort_reasoning
 from ouro.core.messages import (
     ImageContent,
     MessageRecord,
@@ -26,7 +26,7 @@ from ouro.providers.http_transport import (
 )
 from ouro.providers.reasoning import ReasoningPayloadEncoder
 
-_OPENAI_REASONING = openai_chat_completions_effort_reasoning(output="text", continuation="text")
+_OPENAI_REASONING = openai_chat_completions_effort_reasoning()
 
 
 class FakeTransport:
@@ -1189,6 +1189,60 @@ async def test_chat_completions_emits_reasoning_delta_from_stream_chunks() -> No
     assert events[-1].completion.finish_reason == "length"
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("configured", [False, True])
+async def test_reasoning_response_and_replay_are_independent_of_request_controls(
+    streaming: bool, configured: bool
+) -> None:
+    reasoning = (
+        openai_chat_completions_effort_reasoning() if configured else EndpointReasoningConfig()
+    )
+    response = {"reasoning_content": "Compute the result.", "content": "4"}
+    transport = (
+        FakeStreamingTransport([{"choices": [{"delta": response, "finish_reason": "stop"}]}])
+        if streaming
+        else FakeTransport({"choices": [{"message": response, "finish_reason": "stop"}]})
+    )
+    provider = OpenAIChatCompletionsProvider(
+        base_url="https://example.test",
+        transport=transport,
+        reasoning_encoder=ReasoningPayloadEncoder(reasoning.profile),
+    )
+    model = ModelMetadata(
+        provider_id=provider.provider_id,
+        model_id="compatible-model",
+        reasoning=reasoning.capability,
+        reasoning_request=ReasoningRequest(effort="max") if configured else ReasoningRequest(),
+    )
+    events = [event async for event in provider.stream(model=model, messages=[])]
+    assert [event.type for event in events] == [
+        "reasoning_delta",
+        "text_delta",
+        "continuation",
+        "done",
+    ]
+    assert events[0].reasoning_content == response["reasoning_content"]
+    assert transport.requests[0]["payload"].get("reasoning_effort") == (
+        "max" if configured else None
+    )
+    assistant = MessageRecord(
+        session_id="ses_1",
+        role="assistant",
+        content=[TextContent(text="4")],
+        provider_continuation=events[2].continuation,
+    )
+    # Changing request controls must not discard the previous response's native state.
+    model = model.model_copy(
+        update={
+            "reasoning": EndpointReasoningConfig().capability,
+            "reasoning_request": ReasoningRequest(),
+        }
+    )
+    provider.reasoning_encoder = ReasoningPayloadEncoder(None)
+    _ = [event async for event in provider.stream(model=model, messages=[assistant])]
+    assert transport.requests[1]["payload"]["messages"][0] == {"role": "assistant", **response}
+
+
 @pytest.mark.asyncio
 async def test_chat_completions_reasoning_only_response_is_not_empty() -> None:
     transport = FakeTransport(
@@ -1232,7 +1286,9 @@ async def test_chat_completions_reasoning_only_response_is_not_empty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_openai_chat_completions_preserves_hidden_reasoning_for_tool_continuation() -> None:
+async def test_openai_chat_completions_preserves_reasoning_for_display_and_tool_continuation() -> (
+    None
+):
     transport = FakeTransport(
         {
             "choices": [
@@ -1267,13 +1323,14 @@ async def test_openai_chat_completions_preserves_hidden_reasoning_for_tool_conti
             model=ModelMetadata(
                 model_id="glm-test",
                 provider_id="glm",
-                reasoning=_OPENAI_REASONING.capability.model_copy(update={"output": "none"}),
+                reasoning=_OPENAI_REASONING.capability,
             ),
             messages=[MessageRecord.text(session_id="ses_1", role="user", text="read")],
         )
     ]
 
     assert [event.type for event in events] == [
+        "reasoning_delta",
         "tool_call_delta",
         "continuation",
         "done",
@@ -1527,7 +1584,7 @@ async def test_chat_completions_sends_reasoning_content_in_history() -> None:
             model=ModelMetadata(
                 model_id="glm-test",
                 provider_id="glm",
-                reasoning=_OPENAI_REASONING.capability.model_copy(update={"output": "none"}),
+                reasoning=_OPENAI_REASONING.capability,
             ),
             messages=[
                 MessageRecord.text(session_id="ses_1", role="user", text="read"),

@@ -10,8 +10,6 @@ ReasoningMode = Literal["default", "enabled", "disabled"]
 ReasoningEffort = Literal["minimal", "low", "medium", "high", "xhigh", "max"]
 ReasoningSummary = Literal["auto", "concise", "detailed", "summarized", "omitted"]
 ReasoningActivation = Literal["unsupported", "always_on", "toggle"]
-ReasoningOutput = Literal["none", "summary", "text"]
-ReasoningContinuation = Literal["none", "text", "opaque"]
 ReasoningEffortVariant = Literal[
     "default",
     "enabled",
@@ -46,14 +44,12 @@ class ReasoningRequest(OuroModel):
 
 
 class ReasoningCapability(OuroModel):
-    """What an endpoint can control and preserve across model turns."""
+    """Declared request controls and defaults for an endpoint."""
 
     activation: ReasoningActivation = "unsupported"
     supported_efforts: tuple[ReasoningEffort, ...] = Field(default_factory=tuple)
     supported_summaries: tuple[ReasoningSummary, ...] = Field(default_factory=tuple)
     default: ReasoningRequest = Field(default_factory=ReasoningRequest)
-    output: ReasoningOutput = "none"
-    continuation: ReasoningContinuation = "none"
 
     @model_validator(mode="after")
     def _validate_capability(self) -> ReasoningCapability:

@@ -16,7 +16,7 @@ Provider 配置分别表达用户实例、产品配置、线协议和认证选�
 | `auth_driver` | 认证方式的稳定标识；省略为 static | `static` |
 
 `provider_id` 不参与协议推断且不接受用户配置；相同厂商或相同展示名可以有多个实例，多个厂商也可以复用同一个协议 adapter。
-Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它只在选定协议内声明该模型的真实控制能力和
+Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它只在选定协议内声明该端点配置的请求控制项和
 原生参数映射。
 
 ## 产品类型与协议
@@ -39,9 +39,9 @@ Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它�
 `ProviderTypeSpec.default_connection` 可为空，`connections` 提供完整允许集合；没有默认连接时，
 省略协议会明确失败，省略认证仍使用 static。
 
-`custom` 类型允许用户为自定义 Endpoint 声明思考配置。协议档案同时限制 adapter 能忠实保存的
-continuation：OpenAI Chat Completions 支持 `none/text`，Responses 与 Anthropic Messages 支持 `none/opaque`。不兼容的
-声明在配置或 adapter 构造时失败，不能接受后再丢弃。
+`custom` 类型允许用户为自定义 Endpoint 声明思考请求配置。协议适配器独立解析可读思考和原生续接状态，
+不由启停、等级或摘要配置过滤返回内容。Chat Completions 保存已支持的 reasoning 字段，Responses 与 Messages
+保存原生 item/block；回传时校验来源与协议结构。
 
 `faux` 类型和协议只保留给内部安全运行时与测试，不属于用户可配置类型，也不出现在用户 Provider 目录中。当前注册协议是 `faux`、
 `openai-chat-completions`、`openai-responses` 和 `anthropic-messages`。不接受任意协议字符串，也不通过 provider id 猜测厂商。Responses 注册不代表订阅产品已开放；其参数和 static 续接范围见[Responses 规格](responses-codec.md)。
@@ -72,7 +72,7 @@ continuation：OpenAI Chat Completions 支持 `none/text`，Responses 与 Anthro
 厂商模板不会产生一厂商一个 adapter。Gemini、DeepSeek、Qwen、KIMI、GLM、Grok、Mistral、MiniMax、豆包和 Cohere 当前都
 复用 OpenAI Chat Completions adapter；Anthropic 使用 Messages adapter。
 
-`ProviderProtocolSpec` 是已注册 adapter 的实现档案，保存默认 API 路径、连接要求、可保存的 reasoning continuation
+`ProviderProtocolSpec` 是已注册 adapter 的实现档案，保存默认 API 路径、连接要求、标准摘要请求选项
 和 `encodable_input_modalities`。输入集合只描述 OURO 的编码实现范围，不代表同协议下所有服务与模型都支持这些输入。
 
 | Adapter | 可编码的媒体输入 |

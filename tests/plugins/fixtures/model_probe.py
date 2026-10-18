@@ -1,7 +1,7 @@
 import asyncio
 from dataclasses import asdict
 
-from ouro.sdk.plugins import v4 as sdk
+from ouro.sdk.plugins import v5 as sdk
 from ouro.sdk.plugins.models import ModelInput, ModelRequest
 from ouro.sdk.plugins.services import ServiceCall
 from ouro.sdk.plugins.worker import WorkerPeer

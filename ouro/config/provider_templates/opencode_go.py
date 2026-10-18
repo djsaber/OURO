@@ -12,17 +12,6 @@ from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.config.provider_headers import ContextHeaderValue
 from ouro.config.provider_models import ProviderType
 from ouro.config.provider_templates.schema import ProviderTemplate
-from ouro.config.reasoning import EndpointReasoningConfig
-from ouro.core.reasoning import ReasoningCapability
-
-# Preserve server-default reasoning without advertising undocumented controls.
-_CHAT_REASONING = EndpointReasoningConfig(
-    capability=ReasoningCapability(output="text", continuation="text"),
-)
-_NATIVE_REASONING = EndpointReasoningConfig(
-    capability=ReasoningCapability(output="summary", continuation="opaque"),
-)
-
 
 _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
     "openai-chat-completions": (
@@ -33,7 +22,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_000_000,
             supports_image_input=True,
             supports_structured_output=True,
-            reasoning=_CHAT_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="glm-5.3",
@@ -42,7 +30,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_000_000,
             supports_image_input=False,
             supports_structured_output=True,
-            reasoning=_CHAT_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="glm-5.2",
@@ -51,7 +38,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_000_000,
             supports_image_input=False,
             supports_structured_output=True,
-            reasoning=_CHAT_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="kimi-k3",
@@ -60,7 +46,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_048_576,
             supports_image_input=True,
             supports_structured_output=True,
-            reasoning=_CHAT_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="kimi-k2.7-code",
@@ -69,7 +54,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=262_144,
             supports_image_input=True,
             supports_structured_output=True,
-            reasoning=_CHAT_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="kimi-k2.6",
@@ -78,7 +62,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=262_144,
             supports_image_input=True,
             supports_structured_output=False,
-            reasoning=_CHAT_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="longcat-2.0",
@@ -87,7 +70,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_000_000,
             supports_image_input=False,
             supports_structured_output=False,
-            reasoning=_CHAT_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="deepseek-v4.1-flash",
@@ -96,7 +78,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_000_000,
             supports_image_input=True,
             supports_structured_output=True,
-            reasoning=_CHAT_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="deepseek-v4-pro",
@@ -105,7 +86,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_000_000,
             supports_image_input=False,
             supports_structured_output=True,
-            reasoning=_CHAT_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="mimo-v2.6-flash",
@@ -114,7 +94,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_048_576,
             supports_image_input=True,
             supports_structured_output=False,
-            reasoning=_CHAT_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="mimo-v2.6-pro",
@@ -123,7 +102,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_048_576,
             supports_image_input=True,
             supports_structured_output=False,
-            reasoning=_CHAT_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="mimo-v2.5",
@@ -132,7 +110,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_000_000,
             supports_image_input=True,
             supports_structured_output=False,
-            reasoning=_CHAT_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="mimo-v2.5-pro",
@@ -141,7 +118,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_048_576,
             supports_image_input=False,
             supports_structured_output=False,
-            reasoning=_CHAT_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="hy4-preview",
@@ -150,7 +126,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_024_000,
             supports_image_input=False,
             supports_structured_output=False,
-            reasoning=EndpointReasoningConfig(capability=ReasoningCapability(output="text")),
         ),
         ProviderEndpointConfig(
             endpoint_id="hy3",
@@ -159,7 +134,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=256_000,
             supports_image_input=False,
             supports_structured_output=False,
-            reasoning=EndpointReasoningConfig(capability=ReasoningCapability(output="text")),
             metadata={"provider_input_limit": 192_000},
         ),
         ProviderEndpointConfig(
@@ -169,7 +143,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_048_576,
             supports_image_input=True,
             supports_structured_output=False,
-            reasoning=_CHAT_REASONING,
             metadata={"provider_input_limit": 524_288},
         ),
         ProviderEndpointConfig(
@@ -179,7 +152,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_000_000,
             supports_image_input=True,
             supports_structured_output=False,
-            reasoning=_CHAT_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="step-5-preview-free",
@@ -188,7 +160,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_000_000,
             supports_image_input=True,
             supports_structured_output=True,
-            reasoning=_CHAT_REASONING,
             metadata={"provider_input_limit": 1_000_000},
         ),
         ProviderEndpointConfig(
@@ -198,7 +169,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=262_144,
             supports_image_input=False,
             supports_structured_output=True,
-            reasoning=_CHAT_REASONING,
         ),
     ),
     "openai-responses": (
@@ -209,7 +179,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=500_000,
             supports_image_input=True,
             supports_structured_output=True,
-            reasoning=_NATIVE_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="grok-4.6",
@@ -218,7 +187,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=500_000,
             supports_image_input=True,
             supports_structured_output=True,
-            reasoning=_NATIVE_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="gpt-6-luna",
@@ -227,7 +195,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_050_000,
             supports_image_input=True,
             supports_structured_output=True,
-            reasoning=_NATIVE_REASONING,
             metadata={"provider_input_limit": 922_000},
         ),
         ProviderEndpointConfig(
@@ -237,7 +204,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_050_000,
             supports_image_input=True,
             supports_structured_output=True,
-            reasoning=_NATIVE_REASONING,
             metadata={"provider_input_limit": 922_000},
         ),
         ProviderEndpointConfig(
@@ -247,7 +213,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_048_576,
             supports_image_input=True,
             supports_structured_output=True,
-            reasoning=_NATIVE_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="muse-spark-1.2-contributor",
@@ -256,7 +221,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             context_window=1_048_576,
             supports_image_input=True,
             supports_structured_output=True,
-            reasoning=_NATIVE_REASONING,
         ),
     ),
     "anthropic-messages": (
@@ -268,7 +232,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             max_output_tokens=32_768,
             supports_image_input=True,
             supports_structured_output=False,
-            reasoning=_NATIVE_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="minimax-m3",
@@ -278,7 +241,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             max_output_tokens=32_768,
             supports_image_input=True,
             supports_structured_output=False,
-            reasoning=_NATIVE_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="minimax-m2.7",
@@ -288,7 +250,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             max_output_tokens=32_768,
             supports_image_input=False,
             supports_structured_output=False,
-            reasoning=_NATIVE_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="qwen3.8-max",
@@ -298,7 +259,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             max_output_tokens=32_768,
             supports_image_input=True,
             supports_structured_output=False,
-            reasoning=_NATIVE_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="qwen3.8-flash",
@@ -308,7 +268,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             max_output_tokens=32_768,
             supports_image_input=True,
             supports_structured_output=False,
-            reasoning=_NATIVE_REASONING,
         ),
         ProviderEndpointConfig(
             endpoint_id="qwen3.7-plus",
@@ -318,7 +277,6 @@ _ENDPOINTS: dict[str, tuple[ProviderEndpointConfig, ...]] = {
             max_output_tokens=32_768,
             supports_image_input=True,
             supports_structured_output=False,
-            reasoning=_NATIVE_REASONING,
         ),
     ),
 }
@@ -339,7 +297,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = tuple(
         endpoints=_ENDPOINTS[protocol],
         documentation_url="https://opencode.ai/docs/go/",
         verified_on="2026-10-14",
-        revision=2,
+        revision=3,
     )
     for template_id, label, protocol, api_path, default_model in (
         (

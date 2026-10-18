@@ -4,7 +4,7 @@
   "name": "Delegating Run Driver",
   "namespace": "delegating_driver",
   "version": "0.1.0",
-  "engines": {"ouro": "^0.3.0", "plugin_api": "^4.0.0"},
+  "engines": {"ouro": "^0.3.0", "plugin_api": "^5.0.0"},
   "runtime": {"kind": "python-inprocess", "entrypoint": "delegating_driver_plugin:create_plugin"},
   "permissions": [{"id": "sessions.write", "reason": "Coordinate native Agents and review their results in a user-selected Run."}],
   "contributes": {"run_drivers": [{"id": "delegate"}]}

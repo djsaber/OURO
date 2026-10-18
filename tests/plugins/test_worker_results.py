@@ -11,7 +11,7 @@ from ouro.plugins import worker as worker_module
 from ouro.plugins.harness_calls import PluginStateView
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.worker import WorkerPluginInstance, WorkerProtocolError
-from ouro.sdk.plugins import v4 as sdk
+from ouro.sdk.plugins import v5 as sdk
 
 CALLS = {
     "tool": sdk.ToolCall("call", "session", "run", "echo", {}),

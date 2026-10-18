@@ -20,7 +20,7 @@ from ouro.plugins.models import PluginDiagnostic, PluginGenerationRecord
 from ouro.plugins.resources import OwnedTaskGroup, ScopedPluginDataStore
 from ouro.plugins.services import ServiceEndpoint
 from ouro.plugins.tool_groups import PluginToolGroups
-from ouro.sdk.plugins.v4 import StopReason
+from ouro.sdk.plugins.v5 import StopReason
 
 
 @dataclass

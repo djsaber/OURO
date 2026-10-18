@@ -10,21 +10,18 @@ from ouro.core.reasoning import ReasoningRequest
 _VERIFIED_ON = "2026-10-10"
 
 _OPENAI_55_REASONING = openai_responses_effort_reasoning(
-    output="summary",
     supported_summaries=("auto",),
     default=ReasoningRequest(summary="auto"),
     supported_efforts=("low", "medium", "high", "xhigh"),
 )
 
 _OPENAI_56_REASONING = openai_responses_effort_reasoning(
-    output="summary",
     supported_summaries=("auto",),
     default=ReasoningRequest(summary="auto"),
     supported_efforts=("low", "medium", "high", "xhigh", "max"),
 )
 
 _CODEX_55_REASONING = openai_responses_effort_reasoning(
-    output="summary",
     supported_summaries=("auto",),
     default=ReasoningRequest(summary="auto"),
     activation="always_on",
@@ -32,7 +29,6 @@ _CODEX_55_REASONING = openai_responses_effort_reasoning(
 )
 
 _OPENAI_ALWAYS_ON_REASONING = openai_responses_effort_reasoning(
-    output="summary",
     supported_summaries=("auto",),
     default=ReasoningRequest(summary="auto"),
     activation="always_on",
@@ -94,7 +90,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://learn.chatgpt.com/docs/models",
         verified_on=_VERIFIED_ON,
-        revision=12,
+        revision=13,
     ),
     ProviderTemplate(
         template_id="openai",
@@ -137,6 +133,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://developers.openai.com/api/docs/models",
         verified_on=_VERIFIED_ON,
-        revision=11,
+        revision=12,
     ),
 )

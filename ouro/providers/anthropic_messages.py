@@ -110,7 +110,6 @@ class AnthropicMessagesProvider:
                 headers=headers,
             ),
             self.retry_policy,
-            include_reasoning=model.reasoning.output in {"summary", "text"},
         )
         async with aclosing(attempts):
             async for event in attempts:
@@ -246,7 +245,6 @@ class AnthropicMessagesProvider:
             supports_image_input=model.supports_image_input,
             provider_id=self.provider_id,
             model_id=model.model_id,
-            include_continuation=model.reasoning.continuation == "opaque",
         )
         payload: dict[str, Any] = dict(self.request_options)
         payload.update(
@@ -304,11 +302,7 @@ class AnthropicMessagesProvider:
             yield ProviderStreamEvent(type="text_delta", text=text)
         for index, tool_call in enumerate(tool_calls):
             yield ProviderStreamEvent.from_tool_call(tool_call, index=index)
-        continuation_blocks = (
-            continuation_blocks_from_response(response)
-            if model.reasoning.continuation == "opaque"
-            else ()
-        )
+        continuation_blocks = continuation_blocks_from_response(response)
         if continuation_blocks:
             yield ProviderStreamEvent(
                 type="continuation",
@@ -362,8 +356,7 @@ class AnthropicMessagesProvider:
                 index = chunk.get("index")
                 if not isinstance(block, Mapping) or not isinstance(index, int):
                     continue
-                if model.reasoning.continuation == "opaque":
-                    continuation_blocks[index] = deepcopy(dict(block))
+                continuation_blocks[index] = deepcopy(dict(block))
                 if block.get("type") == "tool_use":
                     if not supports_tools:
                         yield ProviderStreamEvent(

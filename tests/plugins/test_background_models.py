@@ -36,7 +36,7 @@ def package(tmp_path, kind, scope):
                 "namespace": "model",
                 "name": PLUGIN,
                 "version": "1.0.0",
-                "engines": {"ouro": "^0.3.0", "plugin_api": "^4.0.0"},
+                "engines": {"ouro": "^0.3.0", "plugin_api": "^5.0.0"},
                 "runtime": runtime,
                 "configuration": {"schema": "./configuration.json", "version": 1},
                 "permissions": [{"id": "models.request", "reason": "Initialize service"}],

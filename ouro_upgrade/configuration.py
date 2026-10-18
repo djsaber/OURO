@@ -79,6 +79,8 @@ def _reasoning_controls(endpoint: dict[str, Any]) -> None:
             profile["summary"] = {}
         capability["supported_summaries"] = []
         reasoning["capability"] = capability
+    capability.pop("output", None)
+    capability.pop("continuation", None)
 
 
 # Unversioned formats use ordered, explicitly recognized structural transitions.
@@ -91,12 +93,19 @@ ENDPOINT_STEPS: tuple[Callable[[dict[str, Any]], None], ...] = (
 def _previous_endpoint_fingerprint(
     endpoint: ProviderEndpointConfig, source: dict[str, Any], template_endpoint_id: str
 ) -> str:
-    """Reconstruct the v0.3.0 normalized hash input, never a template's inferred content."""
+    """Reconstruct the source schema's normalized hash without inferring template content."""
     business = endpoint.model_dump(mode="json")
     business["endpoint_id"] = template_endpoint_id
     previous = source.get("reasoning") or {}
     source_capability = previous.get("capability") or {}
     capability = business["reasoning"]["capability"]
+    profile = previous.get("profile")
+    historical = "supported_summaries" not in source_capability
+    for field in ("output", "continuation"):
+        if historical or field in source_capability:
+            capability[field] = source_capability.get(field, "none")
+    if not historical:
+        return template_fingerprint(business)
     capability.pop("supported_summaries")
     default = source_capability.get("default") or {}
     capability["default"] = {
@@ -108,7 +117,6 @@ def _previous_endpoint_fingerprint(
         effort = capability["supported_efforts"][0]
     if effort is not None:
         capability["default_effort"] = effort
-    profile = previous.get("profile")
     if profile is not None and "variants" in profile:
         business["reasoning"]["profile"] = {
             "name": profile["name"].strip(),

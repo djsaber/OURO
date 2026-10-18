@@ -41,7 +41,7 @@
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "templates": {
     "openai": {
       "template_id": "openai",
@@ -87,8 +87,9 @@
 
 ## 版本模型
 
-结构版本为 5。模板包含 Provider 与 Endpoint 展示名，不包含实例 Provider ID。
-端点 reasoning 分别声明 effort 与 summary 能力及原生请求映射，默认偏好统一保存在 capability.default。
+结构版本为 6。模板包含 Provider 与 Endpoint 展示名，不包含实例 Provider ID。
+端点 reasoning 分别声明 effort 与 summary 请求控制及原生映射，默认偏好统一保存在 capability.default。
+思考正文解析与原生续接由协议适配器负责，端点模板不控制返回内容的接收。
 模板中的 `endpoint_id` 是模板目录内部用于版本合并的稳定身份，不会成为实例 Endpoint ID；实例化时
 OURO 为 Provider 和每个 Endpoint 分别生成内部 ID。模板 auth_driver 默认 static；credential_env 可省略，
 managed 模板必须省略或置为 null。

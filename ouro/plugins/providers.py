@@ -151,8 +151,6 @@ class PluginProvider:
                 supports_structured_output=model.supports_structured_output,
                 input_modalities=tuple(sorted(model.input_modalities)),
                 reasoning=ModelReasoning(effective.mode, effective.effort),
-                reasoning_output=model.reasoning.output,
-                reasoning_continuation=model.reasoning.continuation,
             ),
             system_prompt=system_prompt,
             messages=tuple(_MESSAGE.validate_python(item.model_dump()) for item in messages or ()),

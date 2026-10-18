@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ouro.sdk.plugins import v4 as sdk
+from ouro.sdk.plugins import v5 as sdk
 
 
 def summarize(results: tuple[sdk.NativeToolResult, ...]) -> str:

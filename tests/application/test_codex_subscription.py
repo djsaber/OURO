@@ -103,7 +103,6 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
     endpoint = next(item for item in configured.endpoints if item.endpoint_id == endpoint_id)
     assert configured.auth_driver == "openai-codex"
     assert "local planning budget" in configured.notice
-    assert endpoint.reasoning.capability.continuation == "opaque"
     assert endpoint.supports_image_input
     assert not model_requests and not token_requests
 

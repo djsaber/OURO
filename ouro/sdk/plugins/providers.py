@@ -82,8 +82,6 @@ class ProviderModel:
     supports_structured_output: bool
     input_modalities: tuple[Literal["image", "audio", "video"], ...]
     reasoning: ModelReasoning
-    reasoning_output: Literal["none", "summary", "text"]
-    reasoning_continuation: Literal["none", "text", "opaque"]
 
 
 @dataclass(frozen=True)

@@ -9,7 +9,7 @@ from ouro.sdk.plugins.providers import (
     ProviderOutput,
     ProviderRequest,
 )
-from ouro.sdk.plugins.v4 import ContributionSet, PluginContext, StopReason
+from ouro.sdk.plugins.v5 import ContributionSet, PluginContext, StopReason
 
 
 def validate(request: ProviderRequest) -> None:

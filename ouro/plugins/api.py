@@ -86,7 +86,7 @@ from ouro.plugins.session_controllers import (
     PluginSessionControllerOutput,
 )
 from ouro.plugins.tool_content import from_sdk_content
-from ouro.sdk.plugins import v4 as sdk
+from ouro.sdk.plugins import v5 as sdk
 from ouro.tools import (
     Tool,
     ToolDefinition,

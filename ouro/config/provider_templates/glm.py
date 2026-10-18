@@ -20,8 +20,6 @@ _GLM_53_REASONING = mapped_reasoning(
     activation="always_on",
     supported_efforts=("low", "high", "max"),
     default=ReasoningRequest(mode="enabled", effort="max"),
-    output="text",
-    continuation="text",
     effort={
         "enabled": {"thinking": {"type": "enabled"}, "reasoning_effort": "max"},
         **{
@@ -39,8 +37,6 @@ _GLM_53_FLASH_REASONING = mapped_reasoning(
     activation="always_on",
     supported_efforts=("low", "high", "max"),
     default=ReasoningRequest(mode="enabled", effort="max"),
-    output="text",
-    continuation="text",
     effort={
         "enabled": {
             "thinking": {"type": "enabled", "clear_thinking": False},
@@ -127,6 +123,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://docs.bigmodel.cn/cn/guide/start/model-overview",
         verified_on=_VERIFIED_ON,
-        revision=8,
+        revision=9,
     ),
 )
