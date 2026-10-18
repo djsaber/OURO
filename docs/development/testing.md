@@ -54,7 +54,9 @@ uv run --frozen --extra themes pytest -n 4 --dist worksteal --durations=20 --cov
 
 每个进程使用自己的 pytest 临时目录。真实存储、同步写入和子进程协议仍参与测试；
 不通过全局屏蔽 `fsync` 或放松数据库事务来加速回归。资源较少的机器可以使用 `-n 2`。
-CI 在三个系统上执行功能和安装检查，lint、格式及类型检查在独立 Linux job 中执行一次。
+CI 在三个系统上执行功能和安装检查，lint、格式及类型检查在独立 Windows job 中执行一次。
+静态门禁安装 `themes`，mypy 使用显式 `--platform win32 --no-incremental`：完整源码包含 Windows
+原生适配器，类型检查需要相应的标准库声明及可选扩展的实际安装；增量缓存不能作为依赖可用性的证据。
 
 诊断单个模块时保持串行，避免把竞争负载误当成模块自身成本：
 

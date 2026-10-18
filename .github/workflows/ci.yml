@@ -36,7 +36,7 @@ jobs:
 
   static-checks:
     name: Lint, formatting and types
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 5
 
     steps:
@@ -50,17 +50,17 @@ jobs:
           python-version: "3.14"
           enable-cache: true
 
-      - name: Sync locked development dependencies
-        run: uv sync --frozen --all-groups
+      - name: Sync locked development and theme dependencies
+        run: uv sync --frozen --all-groups --extra themes
 
       - name: Check lint
-        run: uv run --frozen ruff check ouro tests dev/check_distribution.py
+        run: uv run --frozen --extra themes ruff check ouro tests dev/check_distribution.py
 
       - name: Check formatting
-        run: uv run --frozen ruff format --check ouro tests dev/check_distribution.py
+        run: uv run --frozen --extra themes ruff format --check ouro tests dev/check_distribution.py
 
       - name: Check types
-        run: uv run --frozen mypy ouro
+        run: uv run --frozen --extra themes mypy --no-incremental --platform win32 ouro
 
   quality:
     name: Python 3.14 / ${{ matrix.os }}

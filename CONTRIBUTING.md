@@ -15,7 +15,7 @@ uv sync --frozen --all-groups --extra themes
 uv run --frozen --extra themes pytest -n 4 --dist worksteal --durations=20 --cov=ouro --cov-report=term-missing
 uv run --frozen --extra themes ruff check ouro tests dev/check_distribution.py
 uv run --frozen --extra themes ruff format --check ouro tests dev/check_distribution.py
-uv run --frozen --extra themes mypy ouro
+uv run --frozen --extra themes mypy --no-incremental --platform win32 ouro
 uv run --frozen --extra themes python -m compileall -q ouro
 uv build
 ```
@@ -23,6 +23,10 @@ uv build
 The full suite includes optional theme renderers. `--all-groups` selects development groups;
 `--extra themes` selects the user-facing theme dependencies. Linux source builds may need the
 compiler settings in the [theme installation guide](docs/guides/running.md#欢迎页主题).
+
+The single CI static-check job runs on Windows with theme dependencies installed. The explicit
+`win32` mypy target covers the native Windows adapters; disabling incremental reads ensures the
+current dependency environment is checked. Linux and macOS run the full runtime and installation gates.
 
 Also verify the base installation in a separate environment without optional dependencies:
 
