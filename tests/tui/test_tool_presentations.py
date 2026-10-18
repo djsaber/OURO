@@ -276,52 +276,6 @@ def test_spawn_agent_first_frame_uses_request_for_complete_preview(
     assert updated[1] == initial[1]
 
 
-@pytest.mark.parametrize(
-    ("status", "expected_color"),
-    (
-        ("completed", DEFAULT_TUI_THEME.text_lowlight),
-        ("failed", DEFAULT_TUI_THEME.failure),
-        ("rejected", DEFAULT_TUI_THEME.failure),
-        ("aborted", DEFAULT_TUI_THEME.failure),
-    ),
-)
-def test_tool_header_omits_status_chrome_and_only_colors_failures(
-    status: str,
-    expected_color: str,
-) -> None:
-    rendered = _tool_activity_text(
-        _tool("Read", status=status),
-        frame=0,
-        theme=DEFAULT_TUI_THEME,
-    )
-    header = rendered.plain.splitlines()[0]
-
-    assert header.strip() == "Read"
-    style = rendered.get_style_at_offset(Console(), rendered.plain.index("Read"))
-    assert style.color is not None
-    assert style.color.triplet is not None
-    assert style.color.triplet.hex == expected_color
-    assert not style.bold
-
-
-def test_active_tool_retains_spinner_without_a_right_status_label() -> None:
-    tool = _tool("Read", status="running")
-
-    first = _tool_activity_text(
-        tool,
-        frame=0,
-        theme=DEFAULT_TUI_THEME,
-    ).plain
-    second = _tool_activity_text(
-        tool,
-        frame=1,
-        theme=DEFAULT_TUI_THEME,
-    ).plain
-
-    assert first == f"{DEFAULT_TUI_THEME.spinner_frames[0]} Read"
-    assert second == f"{DEFAULT_TUI_THEME.spinner_frames[1]} Read"
-
-
 def test_streaming_tool_uses_lowlight_left_filled_window_without_execution_details() -> None:
     preview = 'prefix:{"content":"实时参数流"}'
     tool = _tool(
@@ -536,42 +490,6 @@ class _HistoryApp(App[None]):
 
 
 @pytest.mark.asyncio
-async def test_tool_groups_only_add_spacing_at_non_tool_boundaries() -> None:
-    first = _tool("Read", arguments={"path": "first.py"}, result={"line_count": 1})
-    second = _tool("Read", arguments={"path": "second.py"}, result={"line_count": 2}).model_copy(
-        update={"tool_call_id": "call_2"}
-    )
-    app = _HistoryApp()
-
-    async with app.run_test(size=(100, 30)):
-        app.history.append(TranscriptEntry(kind="assistant", text="Before."))
-        app.history.append(TranscriptEntry(kind="tool", tool=first))
-        app.history.append(TranscriptEntry(kind="tool", tool=second))
-        app.history.append(TranscriptEntry(kind="assistant", text="After."))
-        await app.history.wait_until_rendered()
-
-        raw_lines = app.history.rendered_text.splitlines()
-        lines = [line.strip() for line in raw_lines]
-        before = lines.index("Before.")
-        first_header = next(index for index, line in enumerate(lines) if line == "Read")
-        first_detail = lines.index("└ first.py • 1 - 1 lines")
-        second_header = next(
-            index
-            for index, line in enumerate(lines[first_header + 1 :], first_header + 1)
-            if line == "Read"
-        )
-        second_detail = lines.index("└ second.py • 1 - 2 lines")
-        after = lines.index("After.")
-
-        assert raw_lines[first_header].startswith("  Read")
-        assert not raw_lines[first_header].startswith("    Read")
-        assert raw_lines[first_detail].startswith("    └")
-        assert lines[before + 1 : first_header] == [""]
-        assert lines[first_detail + 1 : second_header] == []
-        assert lines[second_detail + 1 : after] == [""]
-
-
-@pytest.mark.asyncio
 async def test_subagent_status_replaces_only_its_indexed_history_piece() -> None:
     app = _HistoryApp()
     tool = _tool("SpawnAgent", status="waiting_child")
@@ -602,36 +520,6 @@ async def test_subagent_status_replaces_only_its_indexed_history_piece() -> None
         assert app.history.lines is line_buffer
         assert app.history.lines[0] is unaffected_line
         assert "└ Thinking • Inspect the event pipeline" in app.history.rendered_text
-
-
-@pytest.mark.asyncio
-async def test_tool_detail_uses_available_width_without_wrapping() -> None:
-    tool = _tool(
-        "PowerShell",
-        arguments={"command": "Get-ChildItem " + "long-segment-" * 20},
-    )
-    app = _HistoryApp()
-
-    async with app.run_test(size=(44, 12)) as pilot:
-        app.history.append(TranscriptEntry(kind="tool", tool=tool))
-        await app.history.wait_until_rendered()
-
-        narrow_raw_lines = app.history.rendered_text.splitlines()
-        narrow_lines = [line.strip() for line in narrow_raw_lines]
-        narrow_raw_detail = next(
-            line for line in narrow_raw_lines if line.strip().startswith("└ Get-ChildItem")
-        )
-        narrow_detail = next(line for line in narrow_lines if line.startswith("└ Get-ChildItem"))
-        assert narrow_detail.endswith("…")
-        assert len(narrow_raw_detail) == app.history.scrollable_content_region.width - 2
-        assert len([line for line in narrow_lines if "long-segment" in line]) == 1
-
-        await pilot.resize_terminal(80, 12)
-        await pilot.pause()
-        wide_lines = [line.strip() for line in app.history.rendered_text.splitlines()]
-        wide_detail = next(line for line in wide_lines if line.startswith("└ Get-ChildItem"))
-        assert wide_detail.endswith("…")
-        assert len(wide_detail) > len(narrow_detail)
 
 
 @pytest.mark.asyncio

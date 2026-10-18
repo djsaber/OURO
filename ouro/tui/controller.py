@@ -867,8 +867,14 @@ class TuiController:
             )
             return None
         assert self._application is not None
+        session_id = self._require_session()
+        # Preflight can show the request before its resumable batch is saved.
+        # Keep the user's decision until the durable boundary permits admission.
+        await self._application.supervisor.wait_run(
+            session_id, interaction.run_id, until=frozenset({"waiting_approval"})
+        )
         handle = await self._application.supervisor.resolve_tool_approval(
-            session_id=self._require_session(),
+            session_id=session_id,
             run_id=interaction.run_id,
             approval_id=interaction.request_id,
             approved=approved,

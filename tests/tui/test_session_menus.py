@@ -11,11 +11,12 @@ from ouro.core.state import SessionRecord
 from ouro.tui.app import OuroTuiApp, _session_choices
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.screens import ChoiceScreen, EditableChoiceScreen, MultiChoiceScreen
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import choose_menu, run_ready_app
 from tests.tui.test_app import (
     _application,
     _persist_direct_child_session,
     _wait_for_screen,
+    _wait_for_worker_group,
     _wait_until,
 )
 
@@ -77,10 +78,14 @@ async def test_session_menus_share_domains_grouping_filter_and_navigation(
     app = OuroTuiApp(home=tmp_path, application=application)
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         parent = app.screen
-        parent.query_one(Input).value = action
-        await pilot.pause()
-        await pilot.press("enter")
+        title = {
+            "Open session": "SESSION",
+            "Rename session": "RENAME SESSION",
+            "Archive session": "ARCHIVE SESSIONS",
+        }[action]
+        await choose_menu(pilot, action, title=f"{title} • USER")
         screen = app.screen
         assert isinstance(screen, ChoiceScreen)
         for domain, expected in (
@@ -93,6 +98,12 @@ async def test_session_menus_share_domains_grouping_filter_and_navigation(
             ),
             ("USER", {user.session_id: workspace}),
         ):
+            page_title = (
+                "UNARCHIVE SESSIONS"
+                if action == "Archive session" and domain == "ARCHIVED"
+                else title
+            )
+            await _wait_for_screen(app, ChoiceScreen, title=f"{page_title} • {domain}")
             assert app.screen is screen
             assert screen.page_title.endswith(f" • {domain}")
             assert {choice.value: choice.group for choice in screen._choices} == expected
@@ -132,14 +143,16 @@ async def test_rename_archived_and_subagent_sessions_preserves_editor_context(
     app = OuroTuiApp(home=tmp_path, application=application)
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.press("ctrl+p")
-        app.screen.query_one(Input).value = "Rename session"
-        await pilot.pause()
-        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Rename session", title="RENAME SESSION • USER")
         await _wait_for_screen(app, EditableChoiceScreen, title="RENAME SESSION • USER")
         screen = app.screen
         assert not screen._choices
-        await pilot.press("tab", "tab")
+        await pilot.press("tab")
+        await _wait_for_screen(app, EditableChoiceScreen, title="RENAME SESSION • TASK")
+        await pilot.press("tab")
         for session_id, domain in ((child.session_id, "SUBAGENT"), (root.session_id, "ARCHIVED")):
+            await _wait_for_screen(app, EditableChoiceScreen, title=f"RENAME SESSION • {domain}")
             await pilot.press("enter", "ctrl+u", "n", "e", "w", "tab")
             assert screen.page_title == f"RENAME SESSION • {domain}"
             assert screen._editing_value == session_id
@@ -159,10 +172,8 @@ async def test_session_grouping_setting_persists_only_after_success(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.press("ctrl+p")
-        app.screen.query_one(Input).value = "Session grouping"
-        await pilot.pause()
-        await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="SESSION GROUPING")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Session grouping", title="SESSION GROUPING")
         screen = app.screen
         assert [choice.value for choice in screen._choices if choice.marker] == ["date"]
         if fail_save:
@@ -172,7 +183,7 @@ async def test_session_grouping_setting_persists_only_after_success(
 
             monkeypatch.setattr(app._preferences_store, "save", failed_save)
         await pilot.press("down", "enter")
-        await pilot.pause()
+        await _wait_for_worker_group(app, pilot, group=f"choice-selection-{id(screen)}")
         expected = "date" if fail_save else "workspace"
         assert app._preferences.session_grouping == expected
         assert TuiPreferencesStore(tmp_path).load().session_grouping == expected
@@ -200,9 +211,8 @@ async def test_delete_menu_is_archived_only_and_rechecks_before_confirmation(
     app = OuroTuiApp(home=tmp_path, application=application)
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.press("ctrl+p")
-        app.screen.query_one(Input).value = "Delete session"
-        await pilot.pause()
-        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Delete session", title="DELETE SESSIONS • ARCHIVED")
         await _wait_for_screen(app, MultiChoiceScreen, title="DELETE SESSIONS • ARCHIVED")
         screen = app.screen
         assert [choice.value for choice in screen._choices] == (
@@ -233,9 +243,11 @@ async def test_archive_open_and_delete_subagent_uses_existing_navigation(tmp_pat
     app = OuroTuiApp(home=tmp_path, application=application)
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.press("ctrl+p")
-        app.screen.query_one(Input).value = "Archive session"
-        await pilot.pause()
-        await pilot.press("enter", "tab", "tab")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Archive session", title="ARCHIVE SESSIONS • USER")
+        await pilot.press("tab")
+        await _wait_for_screen(app, ChoiceScreen, title="ARCHIVE SESSIONS • TASK")
+        await pilot.press("tab")
         await _wait_for_screen(app, ChoiceScreen, title="ARCHIVE SESSIONS • SUBAGENT")
         await pilot.press("enter")
         await _wait_until(lambda: not app.screen._choices, pilot, description="archived subagent")

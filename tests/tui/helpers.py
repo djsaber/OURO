@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from rich.text import Text
+from textual.app import App
+from textual.widgets import Input
 
 from ouro.application.models import AvailableModel, close_runtime_adapters
 from ouro.application.runtime import RuntimeService
@@ -17,7 +21,84 @@ from ouro.local_application import LocalApplication
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
+from ouro.tui.screens import ChoiceScreen
 from ouro.tui.widgets import CommandPopup
+
+
+def surface_state(app: App) -> str:
+    """Keep timeout failures useful without dumping an entire transcript."""
+
+    workers = [(worker.name, worker.group, worker.state.name) for worker in app.workers]
+    focused = app.focused
+    projection = getattr(app, "_projection", None)
+    pending = [item.tool_call_id for item in getattr(projection, "pending_interactions", ())]
+    bound = getattr(focused, "_interaction", None)
+    return (
+        f"page={getattr(app.screen, 'page_title', type(app.screen).__name__)!r}, "
+        f"focus={focused!r}, pending={pending!r}, "
+        f"bound={getattr(bound, 'tool_call_id', None)!r}, "
+        f"disabled={getattr(focused, 'disabled', None)!r}, workers={workers!r}"
+    )
+
+
+async def wait_until(
+    predicate: Callable[[], bool],
+    pilot,
+    *,
+    description: str,
+    timeout: float = 15.0,
+) -> None:
+    """Wait for a business outcome; CPU idleness does not imply completed I/O."""
+
+    try:
+        async with asyncio.timeout(timeout):
+            while not predicate():
+                await pilot._wait_for_screen()
+                await asyncio.sleep(0.01)
+            await pilot._wait_for_screen()
+    except TimeoutError:
+        raise AssertionError(
+            f"Timed out waiting for {description}; {surface_state(pilot.app)}"
+        ) from None
+
+
+async def wait_for_screen(
+    app: App,
+    screen_type: type[ChoiceScreen],
+    *,
+    title: str,
+    timeout: float = 15.0,
+) -> None:
+    """Wait for the requested page, including mount and its first refresh."""
+
+    try:
+        async with asyncio.timeout(timeout):
+            while True:
+                screen = app.screen
+                if (
+                    isinstance(screen, screen_type)
+                    and screen.page_title == title
+                    and screen.is_mounted
+                    and len(screen.query("#choice-filter")) == 1
+                ):
+                    await screen.wait_for_refresh()
+                    if app.screen is screen and screen.page_title == title:
+                        return
+                await asyncio.sleep(0.01)
+    except TimeoutError:
+        raise AssertionError(f"Timed out waiting for {title}; {surface_state(app)}") from None
+
+
+async def choose_menu(pilot, label: str, *, title: str | None = None) -> None:
+    """Filter and accept a choice, optionally awaiting the resulting page."""
+
+    pilot.app.screen.query_one("#choice-filter", Input).value = label
+    await pilot.pause()
+    await pilot.press("enter")
+    if title is not None:
+        await wait_for_screen(pilot.app, ChoiceScreen, title=title)
+    else:
+        await pilot._wait_for_screen()
 
 
 def command_popup_text(popup: CommandPopup) -> Text:

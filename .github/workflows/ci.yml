@@ -34,6 +34,34 @@ jobs:
       - name: Check architecture and core units
         run: uv run --frozen pytest -q tests/architecture tests/core tests/tui/test_optional_welcome_styles.py
 
+  static-checks:
+    name: Lint, formatting and types
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.28"
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Sync locked development dependencies
+        run: uv sync --frozen --all-groups
+
+      - name: Check lint
+        run: uv run --frozen ruff check ouro tests dev/check_distribution.py
+
+      - name: Check formatting
+        run: uv run --frozen ruff format --check ouro tests dev/check_distribution.py
+
+      - name: Check types
+        run: uv run --frozen mypy ouro
+
   quality:
     name: Python 3.14 / ${{ matrix.os }}
     needs: architecture-unit
@@ -62,20 +90,11 @@ jobs:
 
       - name: Run tests
         if: runner.os != 'Linux'
-        run: uv run --frozen --extra themes pytest
+        run: uv run --frozen --extra themes pytest -n 4 --dist worksteal --durations=20
 
       - name: Run tests with coverage
         if: runner.os == 'Linux'
-        run: uv run --frozen --extra themes pytest --cov=ouro --cov-report=term-missing
-
-      - name: Check lint
-        run: uv run --frozen --extra themes ruff check ouro tests dev/check_distribution.py
-
-      - name: Check formatting
-        run: uv run --frozen --extra themes ruff format --check ouro tests dev/check_distribution.py
-
-      - name: Check types
-        run: uv run --frozen --extra themes mypy ouro
+        run: uv run --frozen --extra themes pytest -n 4 --dist worksteal --durations=20 --cov=ouro --cov-report=term-missing
 
       - name: Compile package
         run: uv run --frozen --extra themes python -m compileall -q ouro

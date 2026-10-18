@@ -12,7 +12,7 @@ Before handoff, run the complete local quality gate:
 
 ```bash
 uv sync --frozen --all-groups --extra themes
-uv run --frozen --extra themes pytest --cov=ouro --cov-report=term-missing
+uv run --frozen --extra themes pytest -n 4 --dist worksteal --durations=20 --cov=ouro --cov-report=term-missing
 uv run --frozen --extra themes ruff check ouro tests dev/check_distribution.py
 uv run --frozen --extra themes ruff format --check ouro tests dev/check_distribution.py
 uv run --frozen --extra themes mypy ouro
@@ -68,6 +68,10 @@ the timeout mechanism itself. Exclude inapplicable parameter combinations at col
 Keep machine-speed measurements in `dev/benchmarks`, and use behavior checks instead of source
 text scans or snapshots of incidental artwork. Platform-specific regressions remain in the suite
 with explicit prerequisite checks.
+
+Use component tests for widget and menu behavior, and full applications for Host integration.
+Visual appearance is checked manually; see the [test strategy](docs/development/testing.md)
+for test selection, asynchronous synchronization, profiling and visual review.
 
 Before requesting review:
 

@@ -342,6 +342,10 @@ Provider 子菜单的 `Authentication` 入口通过 `TuiController.provider_auth
 - AFK resolution 使用 host-policy provenance，不渲染为用户回答；
 - 交互完成前不得提前显示成功 ToolResult。
 
+审批预检可能先发布请求、再保存可恢复批次。面板已经允许用户决定时，Controller 必须保留该决定，
+通过 Supervisor 的持久化 Run 状态订阅等待 `waiting_approval` 检查点，再向捕获的目标 Session
+提交一次；终态与取消必须结束等待，不使用固定延迟、轮询或重复提交来跨越此边界。
+
 Plan 的退出确认可使用专用计划正文视图，但提交仍走通用 resumable tool/Session control 契约。
 
 ## 子智能体视图

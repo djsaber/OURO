@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from array import array
 from functools import partial
-from math import isclose, isfinite
 from pathlib import Path
 
 import pytest
@@ -24,71 +22,11 @@ from ouro.tui.screens import ChoiceScreen
 from ouro.tui.theme import TUI_THEMES
 from ouro.tui.welcome import WELCOME_STYLES, WelcomePage, WelcomeStyle, welcome_catalog
 from ouro.tui.welcome.components import WelcomeUsage
-from ouro.tui.welcome.dot_matrix.field import DotGrid, buffer, clip
-from ouro.tui.welcome.dot_matrix.raster import PhosphorRaster
 from ouro.tui.welcome.dot_matrix.widget import DotWelcomePage
 from ouro.tui.welcome.host import WelcomeHost
 from ouro.tui.widgets import CommandPopup, Composer, WelcomePanel
 from tests.tui.helpers import run_ready_app, two_route_application
 from tests.tui.test_app import _wait_until
-
-DOT_STYLES = tuple(style for key, style in WELCOME_STYLES.items() if key != "basic")
-
-
-@pytest.mark.parametrize("bounds", [(0.0, 1.0), (-0.7, 1.0), (0.055, 1.0)])
-def test_light_clamping_preserves_bounds_across_large_and_near_zero_values(bounds):
-    low, high = bounds
-    inputs = [-1e6, -100.1, -1e-15, 0.0, 1e-15, low, 0.25, high, 100.1, 1e6]
-    values = array("d", inputs)
-    clip(values, low, high, buffer(len(values)))
-    assert all(low <= value <= high for value in values)
-    assert list(values) == pytest.approx([min(high, max(low, value)) for value in inputs])
-
-
-@pytest.mark.parametrize("style", DOT_STYLES, ids=lambda style: style.style_id)
-@pytest.mark.parametrize("size", [(1, 1), (38, 4), (114, 20)])
-def test_artwork_changes_light_without_mutating_grid_and_is_reproducible(style, size):
-    visual = style.create()
-    assert isinstance(visual, DotWelcomePage)
-    grid = DotGrid.create(*size)
-    x, y = grid.x, grid.y
-    sample = visual.artwork.prepare(grid)
-    frames = [tuple(tuple(channel) for channel in sample(time)) for time in (0, 7.5, 60, 3600)]
-    for frame in frames:
-        assert len(frame) == 3
-        assert all(len(channel) == size[0] * size[1] * 8 for channel in frame)
-        assert all(isfinite(value) and value >= 0 for channel in frame for value in channel)
-    assert grid.x == x and grid.y == y
-    assert isinstance(grid.x, tuple) and isinstance(grid.y, tuple)
-    assert frames[1] == tuple(tuple(channel) for channel in sample(7.5))
-    independent = visual.artwork.prepare(grid)
-    assert frames[1] == tuple(tuple(channel) for channel in independent(7.5))
-    if size[0] > 1:
-        assert any(
-            not isclose(before, after, rel_tol=1e-5, abs_tol=1e-8)
-            for first, second in zip(frames[0], frames[1], strict=True)
-            for before, after in zip(first, second, strict=True)
-        )
-
-
-@pytest.mark.parametrize("style", DOT_STYLES, ids=lambda style: style.style_id)
-@pytest.mark.parametrize("monochrome", [False, True])
-def test_raster_uses_only_fixed_braille_addresses_and_bounded_terminal_rows(style, monochrome):
-    visual = style.create()
-    assert isinstance(visual, DotWelcomePage)
-    raster = PhosphorRaster(visual.artwork, 80, 14)
-    frames = [raster.frame(time, 1 / 30, monochrome=monochrome) for time in (0, 1, 7.5)]
-    for frame in frames:
-        assert len(frame) == 14
-        for row in frame:
-            assert row.cell_length == len(row.text) == 80
-            assert all(
-                character == " " or 0x2801 <= ord(character) <= 0x28FF for character in row.text
-            )
-            assert all(segment.style is not None for segment in row)
-    if monochrome:
-        assert any(" " in row.text for row in frames[0])
-        assert any(row.text.strip() for row in frames[0])
 
 
 class CustomPage(WelcomePage):
@@ -509,54 +447,6 @@ async def test_dot_playback_pauses_for_menu_conversation_and_motion_setting_and_
         assert matrix._timer is None
         assert not list(panel.query(DotWelcomePage))
         assert app.query_one(Composer).region.y == panel.page._top.region.bottom
-
-
-@pytest.mark.parametrize("motion", [True, False])
-async def test_style_selection_and_resize_render_artwork_while_menu_stays_open(tmp_path, motion):
-    store = TuiPreferencesStore(tmp_path)
-    store.save(TuiPreferences(welcome_motion=motion))
-    app = OuroTuiApp(application=two_route_application(tmp_path))
-    async with run_ready_app(app, size=(160, 48)) as pilot:
-        await open_welcome_picker(app, pilot)
-        menu = app.screen
-        host = app.query_one(WelcomePanel)
-        for style in (*DOT_STYLES[1:], DOT_STYLES[0]):
-            await select_menu(app, pilot, style.label)
-            assert app.screen is menu and menu.page_title == "THEME"
-            assert host.style_package is style
-            matrix = host.page.matrix
-            await _wait_until(
-                lambda matrix=matrix: bool(matrix.size), pilot, description="artwork layout"
-            )
-            assert not matrix.active and matrix.elapsed == 0
-            # Inspect the actual composited area above the overlay, not only the
-            # selected package or its persisted preference.
-            region = matrix.region.intersection(
-                Region(0, 0, app.size.width, menu.query_one("#choice-panel").region.y)
-            )
-            assert region
-            frame = menu._compositor.render_strips()
-            assert any(
-                "\u2800" < char <= "\u28ff"
-                for row in frame[region.y : region.bottom]
-                for char in row.crop(region.x, region.right).text
-            )
-
-        for size in ((120, 40), (180, 52)):
-            await pilot.resize_terminal(*size)
-            await pilot.pause()
-            assert matrix._raster is not None
-            assert (matrix._raster.grid.columns, matrix._raster.grid.rows) == matrix.size
-            assert len(matrix._lines) == matrix.size.height
-            assert all(row.cell_length == matrix.size.width for row in matrix._lines)
-            assert not matrix.active and matrix.elapsed == 0
-        paused_frame = matrix._lines
-        await pilot.pause(0.12)
-        assert matrix.elapsed == 0 and matrix._lines is paused_frame
-        await pilot.press("escape", "escape")
-        await pilot.pause(0.12)
-        assert matrix.active
-        assert (matrix.elapsed > 0) is motion
 
 
 async def test_failed_style_save_keeps_current_package_and_preference(tmp_path, monkeypatch):

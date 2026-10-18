@@ -22,7 +22,7 @@ from ouro.tui.widgets import (
     QueuedInputPanel,
     WelcomePanel,
 )
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import run_ready_app, wait_until
 from tests.tui.test_app import (
     _application,
     _approval_application,
@@ -89,9 +89,16 @@ class NavigationProvider:
 
 async def submit(app, pilot, provider, prompt):
     previous_workers = set(app.workers)
-    app.query_one(Composer).load_text(prompt)
+    composer = app.query_one(Composer)
+    assert not composer.disabled
+    composer.focus()
+    composer.load_text(prompt)
+    await pilot._wait_for_screen()
     await pilot.press("enter")
-    assert await asyncio.wait_for(provider.started.get(), 5) == prompt
+    await wait_until(
+        lambda: not provider.started.empty(), pilot, description="submitted model stream"
+    )
+    assert provider.started.get_nowait() == prompt
     await visible(pilot, app, "prefix.")
     return app._controller.session_id, next(
         w for w in app.workers if w.group == "run" and w not in previous_workers

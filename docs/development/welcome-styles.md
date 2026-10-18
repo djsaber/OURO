@@ -165,15 +165,14 @@ Windows 控制台的完整帧提交由终端适配器负责，与欢迎页包无
 uv run --frozen --extra themes pytest tests/tui/test_optional_welcome_styles.py tests/tui/test_welcome_styles.py tests/tui/test_welcome_layout.py tests/tui/test_welcome_refresh.py tests/tui/test_preferences.py
 uv run --frozen --extra themes pytest tests/tui/test_app.py -k 'welcome or theme or composer_growth or session_input_surface or startup'
 uv run --frozen --extra themes pytest tests/tui/test_dot_animation.py tests/tui/test_windows_driver.py
-uv run --frozen --extra themes pytest tests/tui/test_dot_raster.py
 ```
 
 自定义包需验证全视口绘制、公共组件组合、输入布局与增长、短终端、命令弹窗方向、局部样式撤销、
 快照更新、动画暂停/恢复、卸载资源回收和主题刷新。切换包时应保持同一输入实例与草稿；动画不得驱动全页布局。
-点阵包还应验证不同时间下的有限非负输出、固定坐标不变、尺寸边界、确定性和终端行宽。
-`test_dot_raster.py` 使用合成光源验证熄灭、色相、背景合成和余辉衰减；
 `test_dot_animation.py` 验证局部重绘、输入响应和暂停／卸载时不发布过期帧。
-艺术包的具体图案与调色通过视觉审查确认，不以逐像素快照或图案差异比例作为功能门禁。
+艺术包的具体图案、配色、光照、背景合成和余辉衰减由实际终端中的人工视觉检查确认。
+自动回归保护包的加载与失败处理、偏好保存、输入保留、动画生命周期和资源成本；
+验证边界与完整回归命令见[测试策略](testing.md)。
 
 端到端帧计算基准包含采样、光照映射、Braille 编码和 Strip 构造，不包含终端 I/O：
 

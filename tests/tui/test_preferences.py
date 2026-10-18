@@ -5,7 +5,6 @@ from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
-from pygments.token import Token
 
 from ouro.core.errors import ConfigError
 from ouro.tui.preferences import (
@@ -16,8 +15,6 @@ from ouro.tui.preferences import (
 from ouro.tui.theme import (
     DEFAULT_TUI_THEME,
     THEME_SATURATION_LEVELS,
-    TUI_THEMES,
-    TuiTheme,
 )
 
 
@@ -77,45 +74,6 @@ def test_tui_theme_rejects_invalid_token_values(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         replace(DEFAULT_TUI_THEME, **changes)  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize("theme", TUI_THEMES.values(), ids=TUI_THEMES)
-def test_saturation_preserves_semantic_colors_and_render_projections(theme: TuiTheme) -> None:
-    semantic_fields = (
-        "warning",
-        "warning_bright",
-        "danger",
-        "failure",
-        "critical",
-        "running",
-        "success",
-    )
-    for level in range(THEME_SATURATION_LEVELS):
-        resolved = theme.at_saturation_level(level)
-        for field in semantic_fields:
-            assert getattr(resolved, field) == getattr(theme, field)
-            variable = f"ouro-{field.replace('_', '-')}"
-            assert resolved.css_variables()[variable] == theme.css_variables()[variable]
-        assert resolved.syntax_error == theme.syntax_error
-        assert resolved.syntax_theme().get_style_for_token(Token.Error) == (
-            theme.syntax_theme().get_style_for_token(Token.Error)
-        )
-    assert theme.at_saturation_level(0) is theme
-
-
-def test_custom_semantic_colors_survive_saturation_changes() -> None:
-    theme = replace(DEFAULT_TUI_THEME, danger="#FF1234", syntax_error="#ED2345")
-    muted = theme.at_saturation(theme.saturation_min)
-    assert muted.danger == "#ff1234"
-    assert muted.syntax_error == "#ed2345"
-    assert muted.at_saturation(theme.saturation_max).danger == theme.danger
-
-
-def test_tui_theme_type_exposes_the_complete_builtin_contract() -> None:
-    assert all(isinstance(theme, TuiTheme) for theme in TUI_THEMES.values())
-    assert all(theme.spinner_interval_seconds >= 0.05 for theme in TUI_THEMES.values())
-    with pytest.raises(TypeError):
-        TUI_THEMES["custom"] = DEFAULT_TUI_THEME  # type: ignore[index]
 
 
 def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> None:

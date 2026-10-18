@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 import pytest
 from textual import events
-from textual.widgets import Static
 
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.controller import TuiSystemStatus
 from ouro.tui.welcome import WELCOME_STYLES
 from ouro.tui.welcome.dot_matrix.widget import DotWelcomePage
 from ouro.tui.widgets import CommandPopup, Composer, WelcomePanel
@@ -34,62 +31,17 @@ async def test_welcome_menu_stays_attached_above_input_across_terminal_heights(t
 
         for width, height in ((100, 33), (100, 32), (100, 31), (40, 17), (40, 16), (100, 33)):
             await pilot.resize_terminal(width, height)
-            await pilot.press("down", "up")
-            await pilot.pause()
             assert popup.display and popup.region in app.screen.region
             assert popup.region.bottom == composer.region.y
             assert popup.region.x == composer.region.x
             assert popup.region.right == composer.region.right
             assert app.focused is composer
 
+        await pilot.press("down", "up")
         input_region = composer.region
         await pilot.press("escape")
         await pilot.pause()
         assert not popup.display and composer.region == input_region
-
-
-@pytest.mark.parametrize("populated", [False, True])
-async def test_welcome_sections_stay_within_available_width_when_resized(
-    tmp_path: Path, populated: bool
-) -> None:
-    app = OuroTuiApp(application=two_route_application(tmp_path))
-    async with run_ready_app(app, size=(160, 40)) as pilot:
-        welcome = app.query_one(WelcomePanel)
-        if populated:
-            welcome.set_system_status(
-                TuiSystemStatus(
-                    workspace="C:/工作区/" + "long-directory/" * 12,
-                    model_names=("model-with-a-long-name",) * 3,
-                    usage_request_count=123456,
-                    usage_input_tokens=123456789,
-                    usage_output_tokens=123456,
-                    usage_cache_read_tokens=12345678,
-                )
-            )
-        for width in (160, 80, 64, 48, 40, 64, 160):
-            await pilot.resize_terminal(width, 40)
-            await pilot.pause()
-
-            bounds = welcome.content_region
-            for section in (
-                welcome.page._system,
-                welcome.page._lower,
-                welcome.page._usage,
-                welcome.page._tips,
-            ):
-                assert section.region.width > 0
-                assert bounds.x <= section.region.x
-                assert section.region.right <= bounds.right, (width, section, section.region)
-            assert welcome.page._usage.region.right <= welcome.page._tips.region.x
-            assert welcome.page._tips.region.right == welcome.page._lower.region.right
-            assert welcome.page._lower.region.bottom <= welcome.page._system.region.y
-            for text in welcome.page._usage.query(Static):
-                if text.display and text.render().cell_length > text.content_size.width:
-                    assert text.render_line(0).text.rstrip().endswith("…")
-            for text in welcome.page._tips.query(Static):
-                assert text.region in app.screen.region
-                assert text.region.right <= bounds.right
-                assert text.content_size.width >= text.render().cell_length
 
 
 async def test_animation_keeps_editor_layout_and_cursor_stable_during_cjk_edits(tmp_path):

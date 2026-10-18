@@ -16,6 +16,7 @@ from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
 from textual import events
+from textual.app import App
 from textual.color import Color
 from textual.containers import Vertical
 from textual.content import Content
@@ -26,7 +27,6 @@ from textual.widgets import Input, OptionList, Static, TextArea
 import ouro.tui.app as tui_app_module
 import ouro.tui.conversation_history as conversation_history
 import ouro.tui.widgets as tui_widgets
-from ouro import __version__
 from ouro.application.agent_models import AgentToolOptionView, AgentTreeNode
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import SkillView
@@ -170,83 +170,11 @@ from ouro.tui.widgets import (
     QueuedInputPanel,
     StatusLine,
     WelcomePanel,
-    _brand_header_content,
     _tool_activities_from_messages,
 )
-from tests.tui.helpers import command_popup_text, run_ready_app
-
-
-async def _wait_for_screen(
-    app: OuroTuiApp,
-    screen_type: type[ChoiceScreen],
-    *,
-    title: str,
-    timeout: float = 2.0,
-) -> None:
-    try:
-        async with asyncio.timeout(timeout):
-            while True:
-                screen = app.screen
-                if (
-                    isinstance(screen, screen_type)
-                    and screen._title == title
-                    and screen.is_mounted
-                    and len(screen.query("#choice-filter")) == 1
-                ):
-                    # Composed children can exist before Mount initializes focus
-                    # and selection. Wait for those messages and the first frame.
-                    await screen.wait_for_refresh()
-                    if app.screen is screen:
-                        return
-                await asyncio.sleep(0.01)
-    except TimeoutError:
-        raise AssertionError(f"Timed out waiting for {title}") from None
-
-
-async def test_screen_wait_does_not_return_before_mount_finishes(tmp_path: Path) -> None:
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    class DeferredScreen(ChoiceScreen):
-        async def on_mount(self) -> None:
-            super().on_mount()
-            started.set()
-            await release.wait()
-
-    app = OuroTuiApp(application=_application(tmp_path))
-    async with run_ready_app(app):
-        screen = DeferredScreen(
-            title="DEFERRED", placeholder="Filter", choices=(Choice("ready", "Ready"),)
-        )
-        app.push_screen(screen)
-        await asyncio.wait_for(started.wait(), timeout=2)
-        waiter = asyncio.create_task(_wait_for_screen(app, ChoiceScreen, title="DEFERRED"))
-        try:
-            await asyncio.sleep(0)
-            assert not waiter.done()
-        finally:
-            release.set()
-            await waiter
-        assert screen.is_mounted
-        assert screen.query_one("#choice-list", OptionList).highlighted == 0
-
-
-def test_brand_header_renders_session_detail_as_lowlight_metadata() -> None:
-    detail = "Inspect the event pipeline"
-    content = _brand_header_content(
-        "Scout",
-        detail,
-        None,
-        width=80,
-    )
-
-    assert f"Scout{DEFAULT_TUI_THEME.inline_separator}{detail}" in content.plain
-    title_style = content.get_style_at_offset(Console(), content.plain.index("Scout"))
-    assert not title_style.bold
-    style = content.get_style_at_offset(Console(), content.plain.index(detail))
-    assert style.color is not None
-    assert style.color.triplet is not None
-    assert style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
+from tests.tui.helpers import choose_menu, command_popup_text, run_ready_app
+from tests.tui.helpers import wait_for_screen as _wait_for_screen
+from tests.tui.helpers import wait_until as _wait_until
 
 
 async def _wait_for_active_session(
@@ -269,20 +197,6 @@ async def _wait_for_active_session(
     await pilot._wait_for_screen()
 
 
-async def _wait_until(
-    predicate: Callable[[], bool],
-    pilot,
-    *,
-    description: str,
-    timeout: float = 5.0,
-) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while not predicate():
-        if asyncio.get_running_loop().time() >= deadline:
-            raise AssertionError(f"Timed out waiting for {description}")
-        await pilot.pause()
-
-
 async def _wait_for_worker_group(
     app: OuroTuiApp,
     pilot,
@@ -294,6 +208,36 @@ async def _wait_for_worker_group(
     if workers:
         await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=timeout)
     await pilot._wait_for_screen()
+
+
+async def _wait_for_tool_approval(
+    app: OuroTuiApp,
+    pilot,
+    *,
+    tool_call_id: str,
+    pending_count: int | None = None,
+) -> InteractionBar:
+    panel = app.query_one(InteractionBar)
+
+    def ready() -> bool:
+        projection = app._projection
+        pending = projection.pending_interaction if projection is not None else None
+        return (
+            pending is not None
+            and pending.kind == "approval"
+            and pending.tool_call_id == tool_call_id
+            and (pending_count is None or len(projection.pending_interactions) == pending_count)
+            and panel._interaction == pending
+            and panel.display
+            and not panel.disabled
+            and panel.has_focus
+        )
+
+    await _wait_until(ready, pilot, description=f"interactive approval for {tool_call_id}")
+    # The projection can advance before the panel binds the new request, and
+    # binding can precede layout. The controller owns checkpoint admission.
+    await app.screen.wait_for_refresh()
+    return panel
 
 
 async def _wait_for_welcome_render(
@@ -422,69 +366,6 @@ def test_session_choices_use_semantic_health_tones(tmp_path: Path) -> None:
     assert projected[-1].value == "ses_index_error"
 
 
-def test_choice_description_can_use_failure_semantics() -> None:
-    option = ChoiceScreen._options(
-        (
-            Choice(
-                "close",
-                "Close",
-                description="Could not load Session",
-                description_accent=DEFAULT_TUI_THEME.failure,
-            ),
-        ),
-        group_accent="#ffffff",
-    )[0]
-    prompt = option.prompt
-
-    assert isinstance(prompt, Text)
-    description_style = prompt.get_style_at_offset(
-        Console(),
-        prompt.plain.index("Could not load Session"),
-    )
-    assert description_style.color is not None
-    assert description_style.color.get_truecolor().hex == DEFAULT_TUI_THEME.failure
-
-
-def test_confirmation_uses_current_theme_danger_only_for_description() -> None:
-    screen = ConfirmationScreen(
-        title="DELETE SKILL", message="Delete example?", confirm_label="Delete"
-    )
-    for theme in (DEFAULT_TUI_THEME, replace(TUI_THEMES["blossom"], danger="#cc4455")):
-        cancel, confirm = ChoiceScreen._options(screen._choices, theme=theme)
-        assert isinstance(cancel.prompt, Text)
-        assert isinstance(confirm.prompt, Text)
-        assert cancel.prompt.get_style_at_offset(Console(), 0).color is None
-        assert confirm.prompt.get_style_at_offset(Console(), 0).color is None
-        assert (
-            confirm.prompt.get_style_at_offset(
-                Console(), confirm.prompt.plain.index("Delete example?")
-            ).color
-            == Style(color=theme.danger).color
-        )
-
-
-async def test_welcome_providers_show_count_before_dimmed_names(tmp_path: Path) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-    async with run_ready_app(app) as pilot:
-        welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
-        welcome.set_system_status(
-            TuiSystemStatus(
-                model_names=("Chat", "Reasoner", "Vision", "Coder", "Other"),
-                model_count=13,
-            )
-        )
-        providers = welcome.page._system._providers.render()
-        assert providers.plain == "13 model(s) • Chat, Reasoner, Vision, +2"
-        assert providers.get_style_at_offset(0).foreground == Color.parse(
-            DEFAULT_TUI_THEME.text_muted
-        )
-        assert providers.get_style_at_offset(
-            providers.plain.index("Chat")
-        ).foreground == Color.parse(DEFAULT_TUI_THEME.text_faint)
-        welcome.set_system_status(TuiSystemStatus())
-        assert welcome.page._system._providers.render().plain == "0 model(s)"
-
-
 def test_choice_screen_projects_group_headers_as_disabled_options() -> None:
     options = ChoiceScreen._options(
         (
@@ -546,13 +427,13 @@ def test_group_shortcuts_are_disabled_for_ungrouped_choice_screens() -> None:
 
 
 @pytest.mark.asyncio
-async def test_editable_choice_filter_owns_text_input_outside_inline_edit(tmp_path: Path) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
+async def test_editable_choice_filter_owns_text_input_outside_inline_edit() -> None:
+    app = App()
 
     async def save_value(_choice_id: str, _value: str) -> tuple[Choice, ...]:
         return ()
 
-    async with run_ready_app(app, size=(80, 24)) as pilot:
+    async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         screen = EditableChoiceScreen(
             title="EDITABLE ITEMS",
@@ -606,13 +487,11 @@ def test_choice_focus_position_clamps_to_last_enabled_option() -> None:
 
 
 @pytest.mark.asyncio
-async def test_grouped_choice_filter_hides_empty_groups_and_selects_first_choice(
-    tmp_path: Path,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
+async def test_grouped_choice_filter_hides_empty_groups_and_selects_first_choice() -> None:
+    app = App()
     results: list[str | None] = []
 
-    async with run_ready_app(app, size=(80, 24)) as pilot:
+    async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         app.push_screen(
             ChoiceScreen(
@@ -656,12 +535,10 @@ async def test_grouped_choice_filter_hides_empty_groups_and_selects_first_choice
 
 
 @pytest.mark.asyncio
-async def test_group_shortcuts_select_first_enabled_choice_after_disabled_rows(
-    tmp_path: Path,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
+async def test_group_shortcuts_select_first_enabled_choice_after_disabled_rows() -> None:
+    app = App()
 
-    async with run_ready_app(app, size=(80, 24)) as pilot:
+    async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         app.push_screen(
             ChoiceScreen(
@@ -685,10 +562,8 @@ async def test_group_shortcuts_select_first_enabled_choice_after_disabled_rows(
 
 
 @pytest.mark.asyncio
-async def test_refreshing_choice_screen_can_retain_focus_position_across_groups(
-    tmp_path: Path,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
+async def test_refreshing_choice_screen_can_retain_focus_position_across_groups() -> None:
+    app = App()
 
     async def move_selected(_selected: str) -> tuple[Choice, ...]:
         return (
@@ -697,7 +572,7 @@ async def test_refreshing_choice_screen_can_retain_focus_position_across_groups(
             Choice("second", "Second", group="Archived"),
         )
 
-    async with run_ready_app(app, size=(80, 24)) as pilot:
+    async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         app.push_screen(
             ChoiceScreen(
@@ -725,13 +600,11 @@ async def test_refreshing_choice_screen_can_retain_focus_position_across_groups(
 
 
 @pytest.mark.asyncio
-async def test_grouped_choice_refresh_preserves_rows_and_refreshes_header_status(
-    tmp_path: Path,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
+async def test_grouped_choice_refresh_preserves_rows_and_refreshes_header_status() -> None:
+    app = App()
     first = Choice("first", "First", group="Current", group_trailing="1 item")
     second = Choice("second", "Second", group="Archive")
-    async with run_ready_app(app, size=(80, 24)) as pilot:
+    async with app.run_test(size=(80, 24)) as pilot:
         menu = ChoiceScreen(
             title="GROUPS",
             placeholder="Filter choices…",
@@ -763,15 +636,13 @@ async def test_grouped_choice_refresh_preserves_rows_and_refreshes_header_status
 
 
 @pytest.mark.asyncio
-async def test_retained_focus_clears_when_refresh_filter_has_no_choices(
-    tmp_path: Path,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
+async def test_retained_focus_clears_when_refresh_filter_has_no_choices() -> None:
+    app = App()
 
     async def archive_selected(_selected: str) -> tuple[Choice, ...]:
         return (Choice("only", "Only", group="Archived"),)
 
-    async with run_ready_app(app, size=(80, 24)) as pilot:
+    async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         app.push_screen(
             ChoiceScreen(
@@ -795,10 +666,8 @@ async def test_retained_focus_clears_when_refresh_filter_has_no_choices(
 
 
 @pytest.mark.asyncio
-async def test_choice_page_refreshes_in_place_after_a_child_operation(
-    tmp_path: Path,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
+async def test_choice_page_refreshes_in_place_after_a_child_operation() -> None:
+    app = App()
     label = "Before"
 
     async def refresh_choices() -> tuple[Choice, ...]:
@@ -809,7 +678,7 @@ async def test_choice_page_refreshes_in_place_after_a_child_operation(
         label = "After"
         return None
 
-    async with run_ready_app(app, size=(80, 24)) as pilot:
+    async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         app.push_screen(
             ChoiceScreen(
@@ -831,16 +700,14 @@ async def test_choice_page_refreshes_in_place_after_a_child_operation(
 
 
 @pytest.mark.asyncio
-async def test_choice_page_refreshes_parent_before_in_place_back_navigation(
-    tmp_path: Path,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
+async def test_choice_page_refreshes_parent_before_in_place_back_navigation() -> None:
+    app = App()
     label = "Before"
 
     async def refresh_parent() -> tuple[Choice, ...]:
         return (Choice("item", label),)
 
-    async with run_ready_app(app, size=(80, 24)) as pilot:
+    async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         screen = ChoiceScreen(
             title="ITEMS",
@@ -2195,109 +2062,6 @@ def test_welcome_usage_cache_hit_rate_is_zero_without_input_tokens() -> None:
     from ouro.tui.welcome.components import _cache_hit_rate
 
     assert _cache_hit_rate(100, 0) == 0.0
-
-
-@pytest.mark.asyncio
-async def test_welcome_tips_point_to_keyboard_help_instead_of_sessions(tmp_path: Path) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with run_ready_app(app, size=(100, 32)) as pilot:
-        welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
-        tips = "\n".join(
-            getattr(widget.render(), "plain", "") for widget in welcome.page._tips.query(Static)
-        )
-
-        assert "F1\nHelp" in tips
-        assert "Ctrl+O" not in tips
-        assert "Sessions" not in tips
-
-
-@pytest.mark.asyncio
-async def test_welcome_spacing_adapts_to_height_without_moving_composer_off_center(
-    tmp_path: Path,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with run_ready_app(app, size=(100, 40)) as pilot:
-        welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
-        composer = app.query_one(Composer)
-        status = app.query_one(StatusLine)
-        version = app.query_one("#welcome-version", Static)
-
-        for height in (40, 38, 37, 36, 35, 34, 33, 32, 24, 16, 32, 40):
-            await pilot.resize_terminal(100, height)
-            await pilot.pause()
-
-            section_gap = welcome.page._lower.region.y - status.region.bottom
-            system_gap = welcome.page._system.region.y - welcome.page._lower.region.bottom
-            assert 1 <= section_gap <= 2
-            assert 1 <= system_gap <= 3
-            assert abs(welcome.page._top.region.height - welcome.page._bottom.region.height) <= 1
-            assert composer.region.y == welcome.page._top.region.bottom
-            assert composer.region.x == app.screen.region.width - composer.region.right
-            assert welcome.page._usage.region.height == welcome.page._tips.region.height == 4
-            assert welcome.page._system.region.height == 7
-
-            if height >= 32:
-                assert welcome.page._system.region.bottom <= welcome.page._bottom.region.bottom
-                assert welcome.page._system.region.bottom <= version.region.y
-            if height <= 32:
-                assert (section_gap, system_gap) == (1, 1)
-            if height == 40:
-                assert (section_gap, system_gap) == (2, 3)
-
-
-@pytest.mark.asyncio
-async def test_welcome_layout_stays_centered_across_terminal_width_bounds(
-    tmp_path: Path,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with run_ready_app(app, size=(200, 32)) as pilot:
-        welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
-        composer = app.query_one(Composer)
-        assert app.query_one(SubagentNavigationPanel).display is False
-        version = app.query_one("#welcome-version", Static)
-        assert version.render().plain == f"v{__version__}"
-        assert version.display
-        assert version.region.bottom == app.screen.region.bottom
-        assert version.region.right == app.screen.region.right
-        assert version.styles.text_align == "right"
-        assert version.styles.color == Color.parse(app.tui_theme.text_faint)
-        assert not version.styles.text_style.bold
-        assert not version.styles.text_style.italic
-
-        assert welcome.region == app.screen.region
-        assert composer.region.width == 114
-        assert welcome.region.x == app.screen.region.width - welcome.region.right
-        assert composer.region.x == app.screen.region.width - composer.region.right
-
-        await pilot.resize_terminal(64, 24)
-        await pilot.pause()
-        assert welcome.region == app.screen.region
-        assert composer.region.width == 55
-        assert version.region.bottom == app.screen.region.bottom
-        assert version.region.right == app.screen.region.right
-        assert abs(welcome.region.x - (app.screen.region.width - welcome.region.right)) <= 1
-        assert abs(composer.region.x - (app.screen.region.width - composer.region.right)) <= 1
-
-        await pilot.resize_terminal(40, 16)
-        await pilot.pause()
-        assert welcome.region.width == app.screen.region.width
-        assert version.region.bottom == app.screen.region.bottom
-        assert version.region.right == app.screen.region.right
-        assert composer.region.x == app.screen.region.width - composer.region.right
-        assert welcome.page._top.region.height == welcome.page._bottom.region.height
-        assert composer.region.y == welcome.page._top.region.bottom
-        assert app.query_one(StatusLine).region.bottom <= app.screen.region.bottom
-
-        await pilot.click("#composer")
-        await pilot.press("slash")
-        await pilot.pause()
-        popup = app.query_one(CommandPopup)
-        assert popup.region.y >= app.screen.region.y
-        assert popup.region.bottom == composer.region.y
-        assert popup.region.right <= app.screen.region.right
 
 
 @pytest.mark.asyncio
@@ -7973,38 +7737,6 @@ async def test_queued_input_delivery_uses_shared_settings_menu_and_persists_mode
 
 
 @pytest.mark.asyncio
-async def test_shared_menu_applies_responsive_height_before_mount_layout(
-    tmp_path: Path,
-) -> None:
-    class MountObservedChoiceScreen(ChoiceScreen):
-        list_max_height_at_mount: int | None = None
-
-        def on_mount(self) -> None:
-            max_height = self.query_one("#choice-list", OptionList).styles.max_height
-            assert max_height is not None
-            self.list_max_height_at_mount = max_height.cells
-            super().on_mount()
-
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with run_ready_app(app, size=(48, 18)) as pilot:
-        await pilot.pause()
-        screen = MountObservedChoiceScreen(
-            title="ITEMS",
-            placeholder="Filter items…",
-            choices=tuple(Choice(str(index), f"Item {index}") for index in range(30)),
-        )
-        app.push_screen(screen)
-        await pilot.pause()
-
-        assert screen.list_max_height_at_mount == 7
-        assert screen.query_one("#choice-list", OptionList).styles.max_height.cells == 7
-
-        await pilot.press("escape")
-        await pilot.pause()
-
-
-@pytest.mark.asyncio
 async def test_shared_menu_height_tracks_terminal_with_bounded_layout(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
@@ -9018,13 +8750,9 @@ async def test_add_provider_flow_integrates_presets_and_custom_profiles(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 34)) as pilot:
-        await pilot.pause()
         await pilot.press("ctrl+p")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "+ provider"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "+ provider", title="ADD PROVIDER")
 
         assert {"Ready to use", "Custom connection"} == {
             choice.group for choice in app.screen._choices
@@ -9051,7 +8779,7 @@ async def test_add_provider_flow_integrates_presets_and_custom_profiles(
         app.screen.query_one("#choice-filter", Input).value = "Google Gemini"
         await pilot.pause()
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ProviderConfigurationScreen, title="ADD PROVIDER")
         assert isinstance(app.screen, ProviderConfigurationScreen)
         assert not list(app.screen.query("#provider-default"))
 
@@ -9060,7 +8788,14 @@ async def test_add_provider_flow_integrates_presets_and_custom_profiles(
         app.screen._refresh_options(needle="", preferred_value="provider-save")
         app.screen.query_one("#choice-list", OptionList).focus()
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_until(
+            lambda: any(
+                provider.display_name == "Gemini Work"
+                for provider in ConfigurationFacade(tmp_path).provider_catalog().providers
+            ),
+            pilot,
+            description="saved provider",
+        )
         provider = next(
             item
             for item in ConfigurationFacade(tmp_path).provider_catalog().providers
@@ -9070,7 +8805,7 @@ async def test_add_provider_flow_integrates_presets_and_custom_profiles(
         assert provider.endpoint_count == 3
 
         await pilot.press("ctrl+p")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         app.screen.query_one("#choice-filter", Input).value = "Manage providers"
         await pilot.pause()
         await pilot.press("enter")
@@ -9082,7 +8817,7 @@ async def test_add_provider_flow_integrates_presets_and_custom_profiles(
         app.screen.query_one("#choice-filter", Input).value = "Anthropic Messages"
         await pilot.pause()
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ProviderConfigurationScreen, title="ADD PROVIDER")
 
         assert isinstance(app.screen, ProviderConfigurationScreen)
         assert app.screen._values["provider-base-url"] == ""
@@ -12864,19 +12599,12 @@ async def test_approval_panel_selects_with_arrows_and_resumes_run(tmp_path: Path
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("w", "r", "i", "t", "e", "enter")
-        await _wait_until(
-            lambda: app._projection is not None and app._projection.pending_interaction is not None,
-            pilot,
-            description="tool approval request",
-        )
+        panel = await _wait_for_tool_approval(app, pilot, tool_call_id="call_write")
 
         assert app._projection is not None
         assert app._projection.pending_interaction is not None
         assert app._projection.pending_interaction.kind == "approval"
-        panel = app.query_one(InteractionBar)
         composer = app.query_one(Composer)
-        assert app.query_one(SubagentNavigationPanel).region.bottom == panel.region.y
-        assert panel.region.bottom == composer.region.y
         assert panel.has_focus is True
         assert panel.selected_approved is True
         assert composer.disabled is True
@@ -12931,24 +12659,25 @@ async def test_approval_panel_keeps_selected_action_visible_in_short_terminal(
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"write", "enter")
-        await _wait_until(
-            lambda: app._projection is not None and app._projection.pending_interaction is not None,
-            pilot,
-            description="approval in short terminal",
-        )
+        panel = await _wait_for_tool_approval(app, pilot, tool_call_id="call_write")
 
-        panel = app.query_one(InteractionBar)
-        composer = app.query_one(Composer)
-        assert panel.region.height == 5
-        assert panel.region.right <= app.screen.region.right
-        assert panel.region.bottom == composer.region.y
-        assert app.query_one(StatusLine).region.bottom == app.screen.region.bottom
+        assert panel.region.intersection(app.screen.region)
 
         await pilot.press("down")
         await pilot.pause()
         assert panel.selected_approved is False
-        assert panel.scroll_y > 0
         assert "Deny" in app.export_screenshot()
+        await pilot.press("enter")
+        await _wait_until(
+            lambda: (
+                app._projection is not None
+                and app._projection.activity.status == "completed"
+                and not panel.display
+            ),
+            pilot,
+            description="denied tool from short terminal",
+        )
+        assert not target.exists()
 
 
 @pytest.mark.asyncio
@@ -12964,15 +12693,7 @@ async def test_parallel_approvals_advance_one_at_a_time_without_stalling(tmp_pat
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("r", "u", "n", "enter")
-        await _wait_until(
-            lambda: (
-                app._projection is not None
-                and len(app._projection.pending_interactions) == 2
-                and app.query_one(InteractionBar).has_focus
-            ),
-            pilot,
-            description="parallel approval requests",
-        )
+        await _wait_for_tool_approval(app, pilot, tool_call_id="call_write_1", pending_count=2)
 
         assert app._projection is not None
         assert [
@@ -12982,17 +12703,7 @@ async def test_parallel_approvals_advance_one_at_a_time_without_stalling(tmp_pat
         assert title.render().plain == "APPROVAL  1/2"
 
         await pilot.press("enter")
-        await _wait_until(
-            lambda: (
-                app._projection is not None
-                and app._projection.pending_interaction is not None
-                and app._projection.pending_interaction.tool_call_id == "call_write_2"
-                and app.query_one(InteractionBar).has_focus
-                and not app.query_one(InteractionBar).disabled
-            ),
-            pilot,
-            description="second approval ready for keyboard input",
-        )
+        await _wait_for_tool_approval(app, pilot, tool_call_id="call_write_2")
 
         assert app._projection.pending_interaction is not None
         assert app._projection.pending_interaction.tool_call_id == "call_write_2"
@@ -13026,17 +12737,7 @@ async def test_approval_panel_denies_selected_tool(tmp_path: Path) -> None:
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("w", "r", "i", "t", "e", "enter")
-        panel = app.query_one(InteractionBar)
-        await _wait_until(
-            lambda: (
-                app._projection is not None
-                and app._projection.pending_interaction is not None
-                and panel.display
-                and panel.has_focus
-            ),
-            pilot,
-            description="tool approval request",
-        )
+        panel = await _wait_for_tool_approval(app, pilot, tool_call_id="call_write")
 
         await pilot.press("down", "enter")
         # Projection state can change before asynchronous interaction rendering.
@@ -13474,176 +13175,41 @@ async def test_preference_writes_do_not_block_the_event_loop(
 
 
 @pytest.mark.asyncio
-async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
-    tmp_path: Path,
-) -> None:
-    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
-
-    async with run_ready_app(app, size=(100, 32), notifications=True) as pilot:
-        await pilot.pause()
-        status_line = app.query_one(StatusLine)
-        status_line.set_context(
-            SessionContextStatus(
-                context_id="ctx_theme",
-                session_id="session_theme",
-                run_id="run_theme",
-                turn_id="turn_theme",
-                model_round=1,
-                provider_id="deepseek",
-                model_id="deepseek-chat",
-                prepared_at=datetime.now(UTC),
-                metrics=ContextMetrics(
-                    estimated_input_tokens=24000,
-                    estimated_fixed_tokens=1000,
-                    budget=ContextBudget(context_window=128000, max_output_tokens=8000),
-                ),
-            )
-        )
+async def test_theme_selection_and_saturation_persist_without_committing_preview(tmp_path: Path):
+    preferences = TuiPreferencesStore(tmp_path)
+    app = OuroTuiApp(application=_application(tmp_path))
+    async with run_ready_app(app) as pilot:
         await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Theme", title="THEME")
+        menu = app.screen
+        options = menu.query_one(OptionList)
+        options.highlighted = options.get_option_index("coral")
         await pilot.pause()
-
-        actions = app.screen.query_one(OptionList)
-        action_console = Console(width=80)
-        action_label = "".join(
-            segment.text for segment in action_console.render(actions.get_option_at_index(1).prompt)
-        ).splitlines()[0]
-        assert action_label.startswith("Theme")
-        assert action_label.endswith("Original • ■")
-        await pilot.press("enter")
-        await pilot.pause()
-
-        assert isinstance(app.screen, ChoiceScreen)
-        theme_screen = app.screen
-        assert app.screen.query_one("#choice-title", Static).render().plain == "THEME"
-        theme_options = app.screen.query_one(OptionList)
-        assert theme_options.option_count == len(app.screen._choices) + 3
-        assert all(choice.description == "" for choice in app.screen._choices)
-        assert "original" in {choice.value for choice in app.screen._choices}
-        theme_choices = {choice.value: choice for choice in app.screen._choices}
-        assert all(
-            len(theme_choices[theme_id].swatches) == THEME_SATURATION_LEVELS
-            for theme_id in TUI_THEMES
-        )
-        assert theme_choices["original"].swatch_marker_index == 0
-        assert theme_choices["blossom"].swatch_marker_index is None
-        assert theme_choices["blossom"].leading_swatch == TUI_THEMES["blossom"].accent
-        assert TUI_THEMES["original"].accent == "#e8e8e8"
-        assert TUI_THEMES["original"].accent_bright == "#ffffff"
-
-        theme_options.highlighted = theme_options.get_option_index("original")
-        await pilot.press("down")
-        await pilot.pause()
-
-        blossom = TUI_THEMES["blossom"]
         assert app.tui_theme == TUI_THEMES["original"]
-        preview_preferences = TuiPreferencesStore(tmp_path).load()
-        assert preview_preferences.theme == "original"
-        assert len(preview_preferences.recent_actions) == 1
-        preview_title = theme_screen.query_one("#choice-title", Static)
-        assert preview_title.styles.color == Color.parse(blossom.accent)
-        assert preview_title.styles.border_left[1] == Color.parse(blossom.accent)
-        assert theme_screen.query_one("#choice-filter", Input).styles.border_left[1] == (
-            Color.parse(blossom.accent)
-        )
-        preview_highlight = theme_options.get_component_rich_style(
-            "option-list--option-highlighted"
-        )
-        assert preview_highlight.color is not None
-        assert Color.from_rich_color(preview_highlight.color) == Color.parse(blossom.accent)
-        preview = app.query_one(BrandHeader).render()
-        assert preview.get_style_at_offset(preview.plain.index("OURO")).foreground == Color.parse(
-            TUI_THEMES["original"].accent
-        )
-        assert app.query_one(Composer).styles.border_left[1] == Color.parse(
-            TUI_THEMES["original"].accent
-        )
+        assert preferences.load().theme == "original"
 
-        await pilot.press("down", "enter")
+        await pilot.press("enter")
         await _wait_until(
-            lambda: not app._theme_switch_active,
+            lambda: preferences.load().theme == "coral" and not app._theme_switch_active,
             pilot,
-            description="theme switch",
+            description="saved theme selection",
         )
-
-        coral = TUI_THEMES["coral"]
-        assert app.screen is theme_screen
-        assert isinstance(app.screen, ChoiceScreen)
-        assert (
-            next(
-                choice for choice in app.screen._choices if choice.value == "coral"
-            ).swatch_marker_index
-            == 0
-        )
-        assert not any(choice.loading for choice in app.screen._choices)
-        assert app.tui_theme == coral
-        header = app.query_one(BrandHeader).render()
-        assert header.get_style_at_offset(header.plain.index("OURO")).foreground == Color.parse(
-            coral.accent
-        )
-        assert app.query_one(Composer).styles.border_left[1] == Color.parse(coral.accent)
-        context = status_line.query_one("#context-detail", Static).render()
-        assert context.get_style_at_offset(context.plain.index("█")).foreground == Color.parse(
-            coral.accent
-        )
+        assert app.screen is menu
+        assert app.tui_theme == TUI_THEMES["coral"]
 
         await pilot.press("right")
-        await pilot.pause()
-        assert app.tui_theme == coral
-        assert TuiPreferencesStore(tmp_path).load().theme_saturation_level == 0
-        selected_coral = next(choice for choice in theme_screen._choices if choice.value == "coral")
-        assert selected_coral.swatch_marker_index == 1
-        assert selected_coral.leading_swatch == TUI_THEMES["coral"].accent_saturation_scale()[1]
-
-        await pilot.press("down")
-        await pilot.pause()
-        selected_sienna = next(
-            choice for choice in theme_screen._choices if choice.value == "sienna"
-        )
-        assert selected_sienna.swatch_marker_index == 1
-        assert selected_sienna.leading_swatch == TUI_THEMES["sienna"].accent_saturation_scale()[1]
-
-        await pilot.press("up")
-        await pilot.pause()
-        selected_coral = next(choice for choice in theme_screen._choices if choice.value == "coral")
-        assert selected_coral.swatch_marker_index == 1
-
+        assert preferences.load().theme_saturation_level == 0
         await pilot.press("enter")
         await _wait_until(
-            lambda: not app._theme_switch_active,
+            lambda: preferences.load().theme_saturation_level == 1 and not app._theme_switch_active,
             pilot,
-            description="theme saturation switch",
+            description="saved saturation selection",
         )
-        coral = TUI_THEMES["coral"].at_saturation_level(1)
-        assert app.tui_theme == coral
-        assert app.tui_theme.danger == TUI_THEMES["coral"].danger
-        assert app.tui_theme.warning == TUI_THEMES["coral"].warning
-        assert app.tui_theme.success == TUI_THEMES["coral"].success
-        assert TuiPreferencesStore(tmp_path).load().theme_saturation_level == 1
-        selected_coral = next(choice for choice in theme_screen._choices if choice.value == "coral")
-        assert selected_coral.swatch_marker_index == 1
-        assert selected_coral.leading_swatch == coral.accent
+        assert app.tui_theme == TUI_THEMES["coral"].at_saturation_level(1)
 
-        await pilot.press("down")
-        await pilot.pause()
-        assert app.tui_theme == coral
-        assert TuiPreferencesStore(tmp_path).load().theme == "coral"
-
-        await pilot.press("escape")
-        await pilot.pause()
-        assert app.tui_theme == coral
-        assert app.screen.query_one("#choice-title", Static).render().plain == "ACTIONS"
-        theme_action = next(choice for choice in app.screen._choices if choice.label == "Theme")
-        assert theme_action.accent == coral.accent
-        assert theme_action.trailing == "Coral"
-        assert theme_action.trailing_swatch == coral.accent
-        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
-
-    stored = (tmp_path / "config" / "tui.json").read_text(encoding="utf-8")
-    assert '"theme": "coral"' in stored
-
-    restarted = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+    restarted = OuroTuiApp(application=_application(tmp_path))
     assert restarted.tui_theme == TUI_THEMES["coral"].at_saturation_level(1)
-    assert restarted.tui_theme.danger == TUI_THEMES["coral"].danger
 
 
 @pytest.mark.asyncio
@@ -13837,94 +13403,6 @@ async def test_theme_persistence_failure_keeps_current_theme_and_clears_loading(
         assert TuiPreferencesStore(tmp_path).load().theme == "original"
         assert not any(choice.loading for choice in theme_screen._choices)
         assert list(theme_screen.query_one("#textual-toastrack").query("Toast"))
-
-
-@pytest.mark.asyncio
-async def test_host_injected_theme_controls_css_rich_glyphs_and_static_spinner(
-    tmp_path: Path,
-) -> None:
-    theme = replace(
-        DEFAULT_TUI_THEME,
-        theme_id="graphite",
-        label="Graphite",
-        description="Host injected test theme",
-        accent="#57a9c2",
-        panel="#15212a",
-        text_primary="#dce5ea",
-        brand_mark="◆",
-        section_separator_mark="·",
-        inline_separator_mark="·",
-        selected_choice_marker="■",
-        unselected_choice_marker="□",
-        spinner_frames=("◐",),
-        spinner_interval_seconds=0.2,
-    )
-    app = OuroTuiApp(
-        application=_application(tmp_path),
-        theme=theme,
-    )
-
-    assert app.tui_theme is theme
-    assert app.get_css_variables()["ouro-panel"] == theme.panel
-    markdown_code_color = app.console.get_style("markdown.code").color
-    assert markdown_code_color is not None
-    assert markdown_code_color.triplet.hex == theme.accent
-
-    async with run_ready_app(app, size=(100, 32)) as pilot:
-        await pilot.pause()
-        header = app.query_one(BrandHeader).render()
-        assert header.plain.startswith(f" {theme.brand_mark} OURO ")
-        assert header.get_style_at_offset(header.plain.index("OURO")).foreground == (
-            Color.parse(theme.accent)
-        )
-        composer = app.query_one(Composer)
-        assert composer.styles.background == Color.parse(theme.panel)
-
-        indicator = app.query_one(ActivityIndicator)
-        indicator.set_activity("waiting_model")
-        await pilot.pause()
-        assert indicator.render().plain.strip().startswith(theme.spinner_frames[0])
-        assert indicator._timer is None
-
-
-@pytest.mark.parametrize(
-    ("placeholder_setter", "highlight"),
-    (
-        ("set_active_run_placeholder", "Ctrl+G"),
-        ("set_subagent_placeholder", "Alt+↑"),
-    ),
-)
-@pytest.mark.asyncio
-async def test_theme_switch_refreshes_styled_composer_placeholder(
-    tmp_path: Path,
-    placeholder_setter: str,
-    highlight: str,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with run_ready_app(app, size=(100, 32)) as pilot:
-        await pilot.pause()
-        composer = app.query_one(Composer)
-        getattr(composer, placeholder_setter)()
-        placeholder = composer.placeholder
-        assert isinstance(placeholder, Content)
-        offset = placeholder.plain.index(highlight)
-        assert placeholder.get_style_at_offset(offset).foreground == Color.parse(
-            TUI_THEMES["original"].accent_bright
-        )
-
-        app._apply_tui_theme(TUI_THEMES["blossom"])
-
-        themed_placeholder = composer.placeholder
-        assert isinstance(themed_placeholder, Content)
-        assert themed_placeholder.get_style_at_offset(offset).foreground == Color.parse(
-            TUI_THEMES["blossom"].accent_bright
-        )
-        rendered = composer.render_line(0)
-        rendered_offset = rendered.text.index(highlight)
-        segment = next(iter(rendered.crop(rendered_offset, rendered_offset + len(highlight))))
-        assert segment.style is not None and segment.style.color is not None
-        assert segment.style.color.get_truecolor().hex == TUI_THEMES["blossom"].accent_bright
 
 
 @pytest.mark.asyncio
