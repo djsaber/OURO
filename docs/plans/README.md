@@ -6,6 +6,7 @@
 
 | 规划 | 范围与进入条件 |
 |---|---|
+| [会话执行、观察与 TUI 协作](session-observation.md) | Agent 状态通知、多后台会话、切换恢复与多终端观察；按执行归属、只读快照、独立订阅和视图生命周期分阶段推进 |
 | [桌面 Host](desktop-host.md) | 复用 Application / Supervisor 的本地桌面产品面 |
 | [高级智能体能力](advanced-agents.md) | 长期记忆与通用 Workflow；需独立业务需求和持久化边界 |
 | [性能治理](performance.md) | 真实终端、长历史和条件性计算 / I/O 优化；先取得可重复证据 |
