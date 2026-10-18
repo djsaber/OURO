@@ -2,10 +2,59 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 import ouro.local_processes as processes
+
+
+@pytest.mark.parametrize("remaining_group", ["gone", "descendants", "denied"])
+async def test_group_permission_race_reaps_leader_and_preserves_descendant_cleanup(
+    monkeypatch, remaining_group
+):
+    process = SimpleNamespace(pid=123456, returncode=None)
+
+    async def reap():
+        process.returncode = 0
+        return 0
+
+    process.wait = AsyncMock(side_effect=reap)
+    signals = []
+
+    def signal_group(pid, signal):
+        assert (pid, signal) == (-process.pid, 9)
+        signals.append(pid)
+        if len(signals) == 1:
+            raise PermissionError("group contains only an unreaped leader")
+        assert process.returncode == 0
+        if remaining_group == "gone":
+            raise ProcessLookupError
+        if remaining_group == "denied":
+            raise PermissionError("live descendants still deny termination")
+
+    monkeypatch.setattr(processes.os, "kill", signal_group)
+    owner = processes.LocalProcess(process, None)
+    if remaining_group == "denied":
+        with pytest.raises(PermissionError, match="live descendants"):
+            await owner.terminate()
+    else:
+        await owner.terminate()
+    assert len(signals) == 2
+    process.wait.assert_awaited_once()
+
+
+async def test_group_permission_failure_still_reports_a_live_leader(monkeypatch):
+    process = SimpleNamespace(pid=123456, returncode=None)
+    process.wait = AsyncMock(side_effect=TimeoutError)
+
+    def denied(_pid, _signal):
+        raise PermissionError("live group denies termination")
+
+    monkeypatch.setattr(processes.os, "kill", denied)
+    with pytest.raises(PermissionError, match="live group"):
+        await processes.LocalProcess(process, None).terminate()
 
 
 async def test_cancellation_during_spawn_retains_and_closes_the_created_process(monkeypatch):

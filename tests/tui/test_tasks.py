@@ -628,56 +628,78 @@ async def test_background_run_stays_silent_and_attaching_restores_live_stream(tm
 
 
 @pytest.mark.parametrize("entry", ["session", "menu"])
-async def test_tui_cancels_a_queued_task_before_it_can_start(tmp_path, entry):
+async def test_tui_cancels_a_queued_task_before_it_can_start(tmp_path, entry, monkeypatch):
     provider = StreamingTaskProvider()
     application = streaming_application(tmp_path, provider)
     application.supervisor.max_concurrency = 1
+    now = datetime.now(UTC)
+    monkeypatch.setattr(application.tasks, "clock", lambda: now)
+    queued, settled = asyncio.Event(), asyncio.Event()
+    submit_prepared = application.supervisor.submit_prepared
+    record_execution = application.tasks.record_execution
+
+    async def observed_submission(*args, **kwargs):
+        handle = await submit_prepared(*args, **kwargs)
+        queued.set()
+        return handle
+
+    async def observed_settlement(execution):
+        await record_execution(execution)
+        if execution.status == "interrupted":
+            settled.set()
+
+    monkeypatch.setattr(application.supervisor, "submit_prepared", observed_submission)
+    monkeypatch.setattr(application.tasks, "record_execution", observed_settlement)
     app = OuroTuiApp(application=application)
     async with run_ready_app(app, size=(100, 34)) as pilot:
-        occupying = await application.supervisor.submit("Occupy the worker")
-        async with asyncio.timeout(5):
-            await provider.started.wait()
-        task = await application.tasks.create(
-            TaskConfiguration(
-                schedule=TaskSchedule(
-                    frequency="custom",
-                    unit="minutes",
-                    starts_at=datetime.now(UTC) + timedelta(seconds=0.1),
-                ),
-                target=AgentTaskTarget(
-                    prompt="Task must never reach the model",
-                    workspace=str(tmp_path),
-                    model="faux/faux",
-                ),
-            )
-        )
-        async with asyncio.timeout(5):
-            while not (await application.tasks.get(task.task_id)).active_execution_id:
-                await pilot.pause()
-        task = await application.tasks.get(task.task_id)
-        async with asyncio.timeout(5):
-            while application.supervisor.status(task.session_id).status != "queued":
-                await pilot.pause()
-        if entry == "session":
-            await app._open_session(task.session_id)
-            assert app._projection.activity.status == "queued", app._projection
-            app.action_abort()
-        else:
-            await pilot.press("ctrl+t")
-            await choose(pilot, app, "Task must never reach the model")
-            rows = {row.value: row for row in app.screen._choices}
-            assert rows["delete"].disabled
-            assert not rows["interrupt"].disabled
-            await choose(pilot, app, "Interrupt")
-        async with asyncio.timeout(5):
-            while (await application.tasks.get(task.task_id)).active_execution_id is not None:
-                await pilot.pause()
-        assert (await application.tasks.get(task.task_id)).status == "waiting"
-        assert (await application.tasks.executions(task.task_id))[0].status == "interrupted"
-        provider.release.set()
-        await application.supervisor.wait(occupying)
-        application.supervisor.release_handle(occupying)
-        assert provider.prompts == ["Occupy the worker"]
+        try:
+            async with asyncio.timeout(30):
+                occupying = await application.supervisor.submit("Occupy the worker")
+                await provider.started.wait()
+                task = await application.tasks.create(
+                    TaskConfiguration(
+                        schedule=TaskSchedule(frequency="custom", unit="minutes", starts_at=now),
+                        target=AgentTaskTarget(
+                            prompt="Task must never reach the model",
+                            workspace=str(tmp_path),
+                            model="faux/faux",
+                        ),
+                    )
+                )
+                await queued.wait()
+                task = await application.tasks.get(task.task_id)
+                assert task.active_execution_id is not None
+                assert application.supervisor.status(task.session_id).status == "queued"
+                if entry == "session":
+                    await app._open_session(task.session_id)
+                    assert app._projection.activity.status == "queued", app._projection
+                    app.action_abort()
+                else:
+                    await pilot.press("ctrl+t")
+                    await _wait_for_screen(app, ChoiceScreen, title="Tasks")
+                    await choose(pilot, app, "Task must never reach the model")
+                    await _wait_for_screen(
+                        app,
+                        ChoiceScreen,
+                        title=theme_for(app).section_separator.join(
+                            ("TASK", "Task must never reach the model")
+                        ),
+                    )
+                    rows = {row.value: row for row in app.screen._choices}
+                    assert rows["delete"].disabled
+                    assert not rows["interrupt"].disabled
+                    await choose(pilot, app, "Interrupt")
+                await settled.wait()
+                task = await application.tasks.get(task.task_id)
+                assert task.active_execution_id is None
+                assert task.status == "waiting"
+                assert (await application.tasks.executions(task.task_id))[0].status == "interrupted"
+                provider.release.set()
+                await application.supervisor.wait(occupying)
+                application.supervisor.release_handle(occupying)
+                assert provider.prompts == ["Occupy the worker"]
+        finally:
+            provider.release.set()
 
 
 async def test_task_model_change_resets_and_validates_thinking(tmp_path):

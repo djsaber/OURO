@@ -4,7 +4,7 @@ import json
 from dataclasses import replace
 
 import pytest
-from textual.widgets import Input, OptionList
+from textual.widgets import OptionList
 
 from ouro.application.configuration import ConfigurationFacade
 from ouro.config import EndpointReasoningConfig, reasoning_effort_preset, reasoning_summary_preset
@@ -17,8 +17,14 @@ from ouro.tui.provider_screens import (
     ProviderSetupProfile,
     profile_for_provider,
 )
-from ouro.tui.screens import EditableChoiceScreen
-from tests.tui.helpers import run_ready_app, two_route_application
+from ouro.tui.screens import ChoiceScreen, EditableChoiceScreen
+from tests.tui.helpers import (
+    choose_menu,
+    run_ready_app,
+    two_route_application,
+    wait_for_screen,
+    wait_until,
+)
 
 
 async def test_endpoint_media_toggles_use_shared_configuration_validation(tmp_path):
@@ -234,11 +240,10 @@ async def test_create_custom_provider_through_protocol_entry_and_preserve_on_edi
     app = OuroTuiApp(application=two_route_application(tmp_path))
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.press("ctrl+p")
-        app.screen.query_one("#choice-filter", Input).value = "+ provider"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "+ provider", title="ADD PROVIDER")
         await select_choice(app, pilot, f"custom:{protocol}")
+        await wait_for_screen(app, ProviderConfigurationScreen, title="ADD PROVIDER")
         screen = app.screen
         assert isinstance(screen, EditableChoiceScreen)
         assert all(choice.value != "provider-protocol" for choice in screen._choices)
@@ -256,6 +261,11 @@ async def test_create_custom_provider_through_protocol_entry_and_preserve_on_edi
         await pilot.pause()
         await select_choice(app, pilot, "provider-save")
         facade = ConfigurationFacade(tmp_path)
+        await wait_until(
+            lambda: len(facade.provider_catalog().providers) == 1,
+            pilot,
+            description="saved custom provider",
+        )
         providers = facade.provider_catalog().providers
         assert len(providers) == 1
         provider = providers[0]

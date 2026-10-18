@@ -8245,13 +8245,9 @@ async def test_default_provider_and_endpoint_show_badges_and_disable_deletion(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 34)) as pilot:
-        await pilot.pause()
         await pilot.press("ctrl+p")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Manage providers"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Manage providers", title="PROVIDERS")
         provider_choice = next(
             choice for choice in app.screen._choices if choice.value == provider_id
         )
@@ -8271,10 +8267,7 @@ async def test_default_provider_and_endpoint_show_badges_and_disable_deletion(
             and line.text.index("default") < line.text.index("custom")
             for y in range(provider_options.size.height)
         )
-        app.screen.query_one("#choice-filter", Input).value = "Primary"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await choose_menu(pilot, "Primary", title="PROVIDER • Primary")
 
         toggle = next(choice for choice in app.screen._choices if choice.value == "toggle")
         assert toggle.label == "Disable"
@@ -8347,13 +8340,9 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 34)) as pilot:
-        await pilot.pause()
         await pilot.press("ctrl+p")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = action_label
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, action_label, title=title)
 
         assert app.screen.query_one("#choice-title", Static).render().plain == title
         choices = {choice.value: choice for choice in app.screen._choices}
@@ -8672,18 +8661,21 @@ async def test_setting_default_endpoint_also_switches_default_provider(tmp_path:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 34), notifications=True) as pilot:
-        await pilot.pause()
         await pilot.press("ctrl+p")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Set default endpoint"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Set default endpoint", title="SET DEFAULT ENDPOINT")
         app.screen.query_one("#choice-filter", Input).value = "Secondary chat"
         await pilot.pause()
         default_endpoint_screen = app.screen
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_until(
+            lambda: any(
+                choice.value == "/".join(routes["secondary"]) and choice.trailing_badge == "default"
+                for choice in default_endpoint_screen._choices
+            ),
+            pilot,
+            description="committed default endpoint reflected in the menu",
+        )
 
         assert app.screen is default_endpoint_screen
         assert isinstance(app.screen, ChoiceScreen)

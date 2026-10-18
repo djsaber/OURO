@@ -356,17 +356,25 @@ async def test_active_session_reasoning_switch_applies_to_the_next_model_request
     )
 
     running = asyncio.create_task(runtime.run("start"))
-    await asyncio.wait_for(provider.request_started.wait(), timeout=2)
-    session_id = next(entry.session_id for entry in runtime.sessions.catalog().entries)
-    high = ReasoningRequest(mode="enabled", effort="high")
+    try:
+        # This verifies request boundaries and persistence, not storage latency.
+        async with asyncio.timeout(30):
+            await provider.request_started.wait()
+            session_id = next(entry.session_id for entry in runtime.sessions.catalog().entries)
+            high = ReasoningRequest(mode="enabled", effort="high")
+            switched = runtime.set_session_reasoning(session_id, high)
+            provider.release.set()
+            result = await running
 
-    switched = runtime.set_session_reasoning(session_id, high)
-    provider.release.set()
-    result = await asyncio.wait_for(running, timeout=2)
-
-    assert switched.reasoning_request == high
-    assert provider.reasoning_requests == [ReasoningRequest(), high]
-    assert result.final_text == "alpha-response"
+        assert switched.reasoning_request == high
+        assert provider.reasoning_requests == [ReasoningRequest(), high]
+        assert result.final_text == "alpha-response"
+    finally:
+        provider.release.set()
+        if not running.done():
+            running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        await runtime.close()
 
 
 @pytest.mark.asyncio

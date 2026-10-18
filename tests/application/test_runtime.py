@@ -2803,7 +2803,7 @@ async def test_runtime_aborts_plugin_tool_through_execution_context(tmp_path) ->
 
     async def wait_tool(invocation, context: ToolExecutionContext) -> ToolResult:
         started.set()
-        await context.sleep(5)
+        await context.sleep(float("inf"))
         return ToolResult(
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,
@@ -2842,22 +2842,30 @@ async def test_runtime_aborts_plugin_tool_through_execution_context(tmp_path) ->
     )
 
     run_task = asyncio.create_task(runtime.run("Run plugin tool"))
-    session = await _wait_for_active_session(store)
-    await asyncio.wait_for(started.wait(), timeout=1)
+    try:
+        async with asyncio.timeout(30):
+            # Tool entry proves the Session exists; abort ends the wait rather
+            # than racing a finite sleep or imposing a one-second I/O budget.
+            await started.wait()
+            session = store.list_sessions()[0]
+            await runtime.abort_run(
+                session_id=session.session_id,
+                run_id=session.last_run_id,
+            )
+            result = await run_task
+        snapshot = store.load_session(session.session_id)
 
-    await runtime.abort_run(
-        session_id=session.session_id,
-        run_id=session.last_run_id,
-    )
-    result = await asyncio.wait_for(run_task, timeout=1)
-    snapshot = store.load_session(session.session_id)
-
-    assert result.run.status == "aborted"
-    assert result.session.status == "idle"
-    assert "run_aborted" in [event.event_type for event in snapshot.events]
-    assert not any(
-        message.metadata.get("tool_name") == "WaitPlugin" for message in snapshot.messages
-    )
+        assert result.run.status == "aborted"
+        assert result.session.status == "idle"
+        assert "run_aborted" in [event.event_type for event in snapshot.events]
+        assert not any(
+            message.metadata.get("tool_name") == "WaitPlugin" for message in snapshot.messages
+        )
+    finally:
+        if not run_task.done():
+            run_task.cancel()
+        await asyncio.gather(run_task, return_exceptions=True)
+        await runtime.close()
 
 
 @pytest.mark.asyncio

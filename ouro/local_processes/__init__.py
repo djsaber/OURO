@@ -23,8 +23,18 @@ class LocalProcess:
         if self.job is not None:
             self.job.terminate()
         else:
-            with suppress(ProcessLookupError):
-                os.kill(-self.process.pid, 9)
+            try:
+                with suppress(ProcessLookupError):
+                    os.kill(-self.process.pid, 9)
+            except PermissionError as denied:
+                # Darwin can reject a group containing only unreaped zombies.
+                # Reap our leader, then still terminate any surviving descendants.
+                try:
+                    await asyncio.wait_for(self.process.wait(), 5)
+                except TimeoutError as timeout:
+                    raise denied from timeout
+                with suppress(ProcessLookupError):
+                    os.kill(-self.process.pid, 9)
 
     async def close(self) -> None:
         if self._close_task is not None and self._close_task.done():

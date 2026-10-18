@@ -7,6 +7,7 @@ import sys
 import textwrap
 from contextlib import asynccontextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 from ouro.application.plugins import PluginService
 from ouro.application.task_scheduler import TaskScheduler
@@ -23,6 +24,15 @@ async def worker_host(home):
     try:
         await runtime.start()
         async with task_runtime(home) as (tasks, execution, _, _):
+            elected = asyncio.Event()
+            loop = asyncio.get_running_loop()
+            acquire = tasks.repository.acquire_scheduler
+
+            def observed_election():
+                result = acquire()
+                loop.call_soon_threadsafe(elected.set)
+                return result
+
             scheduler = TaskScheduler(
                 tasks,
                 execution,
@@ -30,11 +40,14 @@ async def worker_host(home):
                 refresh_environment=runtime.synchronize,
                 owned_services=runtime,
             )
-            await scheduler.start()
-            try:
-                yield runtime, scheduler
-            finally:
-                await scheduler.close()
+            with patch.object(tasks.repository, "acquire_scheduler", observed_election):
+                await scheduler.start()
+                try:
+                    async with asyncio.timeout(15):
+                        await elected.wait()
+                    yield runtime, scheduler
+                finally:
+                    await scheduler.close()
     finally:
         await runtime.close()
 
@@ -75,6 +88,8 @@ async def test_worker_home_service_handover_between_real_hosts_and_disable(tmp_p
                     if action == 'close':
                         break
                     await runtime.synchronize()
+                    if action == 'stopped':
+                        await runtime.wait_stopped(PLUGIN_ID)
                     print(json.dumps({
                         'status': runtime.status(PLUGIN_ID),
                         'diagnostics': [d.message for d in scheduler.diagnostics],
@@ -118,14 +133,13 @@ async def test_worker_home_service_handover_between_real_hosts_and_disable(tmp_p
                 assert line, await child.stderr.read()
                 return json.loads(line)
 
-            async def child_status():
-                child.stdin.write(b"status\n")
+            async def child_status(*, stopped=False):
+                child.stdin.write(b"stopped\n" if stopped else b"status\n")
                 await child.stdin.drain()
                 return await read_child()
 
             assert await read_child() == {"ready": True}
-            # Let the non-owner attempt election before inspecting its diagnostics.
-            await asyncio.sleep(0.15)
+            # Host readiness includes a real singleton election attempt.
             assert await child_status() == {"status": "active", "diagnostics": []}
             assert events() == [first]
             assert (data / "owner").read_text(encoding="utf-8") == str(first["pid"])
@@ -144,7 +158,7 @@ async def test_worker_home_service_handover_between_real_hosts_and_disable(tmp_p
         stopped = await wait_events(4)
         assert stopped[-1] == {"action": "stop", "pid": transferred[2]["pid"]}
         assert not (data / "owner").exists()
-        assert await child_status() == {"status": "disabled", "diagnostics": []}
+        assert await child_status(stopped=True) == {"status": "disabled", "diagnostics": []}
         child.stdin.write(b"close\n")
         await child.stdin.drain()
         async with asyncio.timeout(15):

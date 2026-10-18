@@ -588,10 +588,11 @@ async def test_pause_during_tool_execution_preserves_completed_results(goal_app,
     await g.command("Check then change the information")
     task = asyncio.create_task(g.consume())
     try:
-        await asyncio.wait_for(started.wait(), 5)
-        await asyncio.wait_for(g.submit("pause"), 5)
-        assert stopped.is_set()
-        paused = await task
+        async with asyncio.timeout(30):
+            await started.wait()
+            await g.submit("pause")
+            assert stopped.is_set()
+            paused = await task
         assert paused.run.status == "aborted"
         assert g.executed_tools == ["ReadInfo"]
         submission = await g.submit("resume")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 from contextlib import contextmanager
+from tempfile import TemporaryDirectory
 from threading import Event
 
 import pytest
@@ -12,7 +13,7 @@ from textual.app import App
 from textual.worker import WorkerCancelled
 
 from ouro.core.attachment_input import separate_attachments
-from ouro.core.errors import PersistenceError
+from ouro.core.errors import PersistenceError, UnsafeResourcePathError
 from ouro.core.input_content import InputAttachment, InputContent
 from ouro.core.messages import MessageRecord
 from ouro.tui import attachment_paths
@@ -31,6 +32,34 @@ from ouro.tui.widgets import (
 )
 from tests.tui.helpers import command_popup_text, run_ready_app
 from tests.tui.test_history_commands import application_at
+
+
+def test_owned_paste_source_imports_through_an_aliased_temporary_root(tmp_path, monkeypatch):
+    actual = tmp_path / "temporary"
+    actual.mkdir()
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(actual, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    @contextmanager
+    def aliased_directory(**options):
+        with TemporaryDirectory(dir=alias, **options) as directory:
+            yield directory
+
+    monkeypatch.setattr(attachment_paths, "TemporaryDirectory", aliased_directory)
+    resources = application_at(tmp_path / "home").runtime.resources
+    identity = resources.reserve()
+    text = "  中文😀\r\n" * 600
+    with attachment_paths.pasted_text_file(text) as source:
+        imported = resources.import_prepared_resource(identity, source).resource
+        assert imported.size == len(text.encode("utf-8"))
+        assert source == source.resolve()
+        external_alias = alias / source.relative_to(actual.resolve())
+        with pytest.raises(UnsafeResourcePathError, match="symbolic links"):
+            resources.import_prepared_resource(identity, external_alias)
+    assert not source.exists()
 
 
 @pytest.mark.parametrize("prompt", ("Explain this file", ""))

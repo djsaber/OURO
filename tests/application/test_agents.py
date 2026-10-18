@@ -1439,37 +1439,38 @@ async def test_idle_child_follow_up_waits_for_previous_execution_receipt(
     else:
         monkeypatch.setattr(supervisor.runtime, "run_prepared", hold_completed_run)
     try:
-        first = await service.spawn_agent(
-            SpawnAgentRequest(
-                request_id="host/initial-child",
-                parent_session_id="ses_root",
-                parent_run_id="run_parent",
-                agent_id="reader",
-                task="Inspect once.",
-                description="Initial inspection",
+        async with asyncio.timeout(30):
+            first = await service.spawn_agent(
+                SpawnAgentRequest(
+                    request_id="host/initial-child",
+                    parent_session_id="ses_root",
+                    parent_run_id="run_parent",
+                    agent_id="reader",
+                    task="Inspect once.",
+                    description="Initial inspection",
+                )
             )
-        )
-        await asyncio.wait_for(completed.wait(), 5)
-        await service.wait_agents((first.delegation_id,))
-        submit_prepared = supervisor.submit_prepared
+            await completed.wait()
+            await service.wait_agents((first.delegation_id,))
+            submit_prepared = supervisor.submit_prepared
 
-        async def release_predecessor_after_admission_starts(run, session_input, **options):
-            asyncio.get_running_loop().call_soon(release.set)
-            return await submit_prepared(run, session_input, **options)
+            async def release_predecessor_after_admission_starts(run, session_input, **options):
+                asyncio.get_running_loop().call_soon(release.set)
+                return await submit_prepared(run, session_input, **options)
 
-        monkeypatch.setattr(
-            supervisor, "submit_prepared", release_predecessor_after_admission_starts
-        )
-        resumed = await service.send_agent_message(
-            first.delegation_id,
-            "Inspect again.",
-            request_id="host/follow-up",
-            mode="follow_up",
-        )
-        await service.wait_agents((first.delegation_id,))
-        assert resumed.child_session_id == first.child_session_id
-        assert resumed.child_run_id != first.child_run_id
-        assert len(store.load_runtime_session(first.child_session_id).runs) == 2
+            monkeypatch.setattr(
+                supervisor, "submit_prepared", release_predecessor_after_admission_starts
+            )
+            resumed = await service.send_agent_message(
+                first.delegation_id,
+                "Inspect again.",
+                request_id="host/follow-up",
+                mode="follow_up",
+            )
+            await service.wait_agents((first.delegation_id,))
+            assert resumed.child_session_id == first.child_session_id
+            assert resumed.child_run_id != first.child_run_id
+            assert len(store.load_runtime_session(first.child_session_id).runs) == 2
     finally:
         release.set()
         await service.close()

@@ -19,7 +19,9 @@ PASTED_TEXT_ATTACHMENT_THRESHOLD = 4000
 def pasted_text_file(text: str) -> Iterator[Path]:
     """Keep one UTF-8 source alive for the ordinary attachment import operation."""
     with TemporaryDirectory(prefix="ouro-paste-") as directory:
-        path = Path(directory) / f"{new_id('pasted-text')}.txt"
+        # System temporary roots may be aliases, such as /var on macOS. This
+        # source is ours; external attachment paths still undergo link rejection.
+        path = Path(directory).resolve(strict=True) / f"{new_id('pasted-text')}.txt"
         path.write_text(text, encoding="utf-8", newline="")
         yield path
 
