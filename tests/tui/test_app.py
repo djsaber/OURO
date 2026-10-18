@@ -7470,13 +7470,13 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="EFFORT")
         preset_options = app.screen.query_one("#choice-list", OptionList)
-        assert preset_options.get_option("anthropic-messages-adaptive-effort").disabled is True
-        incompatible = next(
+        assert preset_options.get_option("anthropic-messages-adaptive-effort").disabled is False
+        adaptive = next(
             choice
             for choice in app.screen._choices
             if choice.value == "anthropic-messages-adaptive-effort"
         )
-        assert incompatible.trailing == "Not supported by this provider"
+        assert "5 efforts" in adaptive.trailing
         preset_options.highlighted = preset_options.get_option_index("thinking-toggle")
         preset_options.focus()
         await pilot.press("enter")

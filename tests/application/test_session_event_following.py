@@ -217,9 +217,16 @@ async def test_activity_snapshot_cannot_pair_old_run_state_with_a_new_event_curs
         terminal = await completion
         initial = subscription.initial_activity
         assert initial.status == "running" and initial.sequence == first.sequence
-        async with asyncio.timeout(3):
-            while supervisor.activity(session.session_id).status != "completed":
-                await asyncio.sleep(0.01)
+        async with asyncio.timeout(10):
+            while True:
+                notification = await subscription.get()
+                assert notification.kind != "diagnostic", notification
+                if (
+                    notification.event is not None
+                    and notification.event.sequence == terminal.sequence
+                ):
+                    break
+        assert supervisor.activity(session.session_id).status == "completed"
         assert supervisor.activity(session.session_id).sequence == terminal.sequence
 
         def no_query(*args, **kwargs):
