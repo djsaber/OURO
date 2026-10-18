@@ -134,8 +134,8 @@ async def test_session_dispatches_input_while_stream_rendering_is_pending(
             assert composer.region == bounds
             assert app.focused is composer
             assert app.cursor_position == composer.cursor_screen_offset
-            # Content parsing keeps frame order; strip layout does not own
-            # the content cursor and must allow the next frame to apply.
+            # A visible-content handoff keeps frame order while the editor
+            # remains responsive; later deltas cannot overtake that transfer.
             app._queue_runtime_event(
                 EventRecord(
                     session_id=session.session_id,
@@ -147,12 +147,8 @@ async def test_session_dispatches_input_while_stream_rendering_is_pending(
             )
             draining = asyncio.create_task(app._flush_pending_runtime_events())
             await asyncio.sleep(0)
-            if operation == "_block_starts":
-                assert not draining.done()
-                assert app._projection is not None and app._projection.last_sequence == 2
-            else:
-                await asyncio.wait_for(draining, 2)
-                assert app._projection is not None and app._projection.last_sequence == 3
+            assert not draining.done()
+            assert app._projection is not None and app._projection.last_sequence == 2
         finally:
             release.set()
             await pilot.pause()

@@ -8,6 +8,7 @@ import pytest
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.application.supervisor_models import ShutdownPolicy
 from ouro.application.user_inputs import UserInputRequest
+from ouro.core.messages import MessageRecord
 from ouro.core.provider import ProviderStreamEvent
 from tests.tui.test_tasks import streaming_application
 
@@ -245,5 +246,38 @@ async def test_execution_failure_releases_private_job_and_reports_original_error
         assert not app.supervisor._jobs_by_session
         assert not app.supervisor._completion_events
         assert not app.supervisor._snapshots
+    finally:
+        await app.close()
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_pending_input_receipt_does_not_search_canonical_message_history(
+    tmp_path, monkeypatch, backend
+):
+    app = streaming_application(tmp_path, HeldProvider(), backend=backend)
+    session = app.runtime.sessions.create().session
+    store = app.runtime.store
+    store.append_messages(
+        [
+            MessageRecord.text(session_id=session.session_id, role="user", text=f"history {i}")
+            for i in range(200)
+        ]
+    )
+    lookups = []
+    find = store.find_queued_input_message
+
+    def counted_find(*args):
+        lookups.append(args)
+        return find(*args)
+
+    monkeypatch.setattr(store, "find_queued_input_message", counted_find)
+    try:
+        request = UserInputRequest(session_id=session.session_id, prompt="still pending")
+        first = await app.runtime.accept_user_input(request)
+        retry = await app.runtime.accept_user_input(request)
+        assert first == retry
+        assert first.message_id is None and first.run_id is None
+        assert not lookups
+        assert len(app.runtime.pending_user_inputs(session.session_id)) == 1
     finally:
         await app.close()

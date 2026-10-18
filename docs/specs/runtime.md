@@ -335,7 +335,8 @@ SessionStore 定点恢复；Host 的历史展示读取不触发恢复，进程�
 `role=user`、`scaffold=False`，模型、推理、workspace、权限/交互模式、附件、资源引用、技能及队列模式保留原有语义。
 `RuntimeService.run` 仍提供直接等待执行的底层接口。
 
-请求携带稳定的 Session 和 input identity。相同身份与内容的重试返回原生提交回执，消费后仍能定位消息和 Run；
+请求携带稳定的 Session 和 input identity。相同身份与内容的重试返回原生提交回执，消费后仍能定位消息和 Run。
+仍在持久队列中的输入直接返回待消费回执，不搜索历史消息；队列移除与消息写入共享消费提交边界。
 身份对应不同内容、已取消或已撤销的输入不能重新入队。回执表示持久受理，`UserInputSubmission.wait` 是可选的结果等待，
 取消该等待不拥有也不取消执行。提交在移交 Supervisor 前取消不会受理；移交后由 Supervisor 完成受理与调度，
 即使 Host 尚未收到结果也可能已成功，Host 用原身份查询或重试。普通输入的私有执行回执在工作结束后释放。

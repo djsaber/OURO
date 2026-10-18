@@ -129,7 +129,7 @@ Provider 和工具执行中的 `AbortSignal.is_aborted()` 是高频同步检查�
   初始化期间溢出继续发布 lagged，失败或取消必须撤销订阅。不得在线程中运行持有 asyncio 队列的整个 Supervisor。
 - Supervisor 的提交、交互恢复和 enqueue 前查询离开事件循环；最后一次 await 后必须重新检查关闭状态和 Session
   调度所有权，再一次性登记 job。Agent tree 的持久化查询同样在 worker 执行，订阅集合的变更留在 loop。
-- 历史冷加载、增量、宽度变化与主题变化共用一个后台渲染 worker。冷加载与增量按已绘制前缀分块追加；
+- 历史冷加载、增量、宽度变化与主题变化共用一个后台渲染 worker。冷加载与增量在后台分块准备、整批发布；
   宽度或主题改变时，完整 render request、内容版本与几何校验通过后原子替换 strip buffer。
   只改变高度不重绘已完成历史；恢复可用几何时继续未绘制内容，已有有效 buffer 在新结果完成前保持可见。
 
@@ -137,7 +137,7 @@ Provider 和工具执行中的 `AbortSignal.is_aborted()` 是高频同步检查�
 - 同一工具批的新行使用一次批量 mount，终态使用一次批量 history append 和一次批量 remove；复杂 Markdown/批量
   immutable transcript 渲染在 worker 上完成；
 - TUI 每个 compositor frame 最多应用 64 条，暂存不超过一个 Application 观察批次；整批内容应用成功后确认。
-  缓存 lag 从已应用位置分页追赶，排版进度不限制内容确认；
+  缓存 lag 从已应用位置分页追赶；快照确认不等待历史排版，可见活动内容的转移须等待替代行就绪；
 - 帧消费由单个 Textual worker 执行，App 消息处理不等待后台解析和排版；显式排空与帧消费串行取得和应用前缀，
   包括投影前的异步读取。Host 关闭取消呈现 worker，计算线程完成后不能再发布已取消的结果；
 - `batch_update()` 只用于合并可合并的刷新，不能被当作消除 `AwaitMount`、`AwaitRemove` 或结构布局成本的替代品。

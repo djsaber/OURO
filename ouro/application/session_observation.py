@@ -198,7 +198,9 @@ class SessionObservation(AsyncIterator[SessionObservationBatch]):
                     after_sequence=self._applied_sequence,
                     limit=self._page_size,
                 )
-                if batch.history_epoch != self._history_epoch:
+                if batch.history_epoch != self._history_epoch or any(
+                    self._requires_snapshot(event) for event in batch.events
+                ):
                     return await self._reset()
                 self._catching_up = more
                 if batch.event_high_water > self._applied_sequence:
@@ -214,10 +216,7 @@ class SessionObservation(AsyncIterator[SessionObservationBatch]):
                     break
                 event = notification.event
                 if event is not None and event.sequence > self._applied_sequence:
-                    if event.history_epoch > self._history_epoch or (
-                        event.event_type == "run_status_changed"
-                        and event.data.get("resumed") is True
-                    ):
+                    if self._requires_snapshot(event):
                         return await self._reset()
                     events.append(event)
                 if len(events) >= self._page_size:
@@ -256,3 +255,10 @@ class SessionObservation(AsyncIterator[SessionObservationBatch]):
                 messages=messages,
             )
         raise StopAsyncIteration
+
+    def _requires_snapshot(self, event: RuntimeEventView) -> bool:
+        return event.history_epoch > self._history_epoch or (
+            event.history_epoch == self._history_epoch
+            and event.event_type == "run_status_changed"
+            and event.data.get("resumed") is True
+        )

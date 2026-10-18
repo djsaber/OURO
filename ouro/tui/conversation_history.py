@@ -1405,6 +1405,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             if self.render_complete:
                 return
             await self.wait_for_refresh()
+        raise RuntimeError("Session history layout did not complete")
 
     def update_tools(
         self,

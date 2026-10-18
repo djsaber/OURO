@@ -176,7 +176,10 @@ async def test_late_prepared_selection_cannot_replace_the_newer_view(tmp_path, m
         assert app._projection.session_id == first.session_id
 
 
-async def test_history_render_does_not_hold_the_content_cursor(tmp_path, monkeypatch):
+@pytest.mark.parametrize("streaming_snapshot", [False, True])
+async def test_history_render_does_not_hold_the_content_cursor(
+    tmp_path, monkeypatch, streaming_snapshot
+):
     import ouro.tui.conversation_history as history_module
     from ouro.core.messages import MessageRecord
 
@@ -193,6 +196,24 @@ async def test_history_render_does_not_hold_the_content_cursor(tmp_path, monkeyp
             for index in range(160)
         ]
     )
+    if streaming_snapshot:
+        from ouro.core.events import EventRecord
+        from ouro.core.state import RunRecord
+
+        run = RunRecord(session_id=session.session_id, status="running")
+        application.runtime.store.save_run(run)
+        record = application.runtime.store.load_session_record(session.session_id)
+        application.runtime.store.save_session(
+            record.model_copy(update={"active_run_id": run.run_id})
+        )
+        application.runtime.store.append_ordered_event(
+            EventRecord(
+                session_id=session.session_id,
+                run_id=run.run_id,
+                event_type="model_text_delta",
+                payload={"text": "Earlier partial paragraph\n\nCurrent tail"},
+            )
+        )
     app = OuroTuiApp(application=application)
     entered, release = threading.Event(), threading.Event()
     original = history_module._render_entry_requests
@@ -206,16 +227,19 @@ async def test_history_render_does_not_hold_the_content_cursor(tmp_path, monkeyp
     async with run_ready_app(app) as pilot:
         monkeypatch.setattr(history_module, "_render_entry_requests", held_render)
         try:
-            await app._open_session(session.session_id)
+            # Observation itself does not recover this synthetic running Run.
+            opening = asyncio.create_task(app._show_observed_session(session.session_id))
             assert await asyncio.to_thread(entered.wait, 5)
+            await asyncio.wait_for(asyncio.shield(opening), 3)
             observation = app._observation_subscription
             last = append(application.runtime.store, session.session_id, "new tail")
             async with asyncio.timeout(5):
                 while observation.applied_sequence < last.sequence:
                     await pilot.pause()
-            assert app._projection.assistant_text == "new tail"
+            assert app._projection.assistant_text.endswith("new tail")
             assert app.query_one(ConversationHistory)._rendered_count == 0
             await pilot.press("a")
             assert app.query_one(Composer).text == "a"
         finally:
             release.set()
+            await opening

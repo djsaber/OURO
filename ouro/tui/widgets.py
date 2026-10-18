@@ -1083,7 +1083,7 @@ def _append_subagent_detail(
     )
 
 
-def _is_terminal_tool(tool: RuntimeToolCallActivity) -> bool:
+def is_terminal_tool(tool: RuntimeToolCallActivity) -> bool:
     return tool.status in {
         "completed",
         "failed",
@@ -1804,49 +1804,39 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             self._assistant = self._live_turn
         return self._assistant
 
-    async def _freeze_blocks(self, turn: AssistantTurn, blocks: Iterable[str]) -> None:
-        """Freeze completed blocks, promoting pending reasoning ahead of them."""
+    async def _freeze_blocks(
+        self, turn: AssistantTurn, blocks: Iterable[str], *, final: bool = False
+    ) -> None:
+        """Transfer live content only when its replacement is ready to display."""
         materialized = tuple(block for block in blocks if block.strip())
-        if not materialized:
+        if not materialized and not final:
             return
         if turn.reasoning_pending:
-            reasoning_expanded = turn.reasoning_expanded
-            reasoning, seconds = turn.take_reasoning()
+            reasoning = turn.reasoning.text
             if reasoning:
                 self._history.append(
                     TranscriptEntry(
                         kind="assistant",
                         reasoning=reasoning,
-                        reasoning_seconds=seconds,
+                        reasoning_seconds=turn.reasoning.duration_seconds,
                         run_id=turn.run_id,
                     ),
-                    reasoning_expanded=reasoning_expanded,
+                    reasoning_expanded=turn.reasoning_expanded,
                 )
         self._history.append_many(
             TranscriptEntry(kind="assistant", text=block, run_id=turn.run_id)
             for block in materialized
         )
+        await self._history.wait_until_rendered()
+        if turn.reasoning_pending:
+            turn.take_reasoning()
 
     async def finish_assistant(self) -> None:
         """Freeze the live round into the immutable history."""
         turn = self._assistant
         if turn is None:
             return
-        await self._freeze_blocks(turn, await turn.close())
-        turn.clear_tail()
-        if turn.reasoning_pending:
-            reasoning_expanded = turn.reasoning_expanded
-            reasoning, seconds = turn.take_reasoning()
-            if reasoning:
-                self._history.append(
-                    TranscriptEntry(
-                        kind="assistant",
-                        reasoning=reasoning,
-                        reasoning_seconds=seconds,
-                        run_id=turn.run_id,
-                    ),
-                    reasoning_expanded=reasoning_expanded,
-                )
+        await self._freeze_blocks(turn, await turn.close(), final=True)
         self._assistant = None
         turn.reset(reasoning_expanded=self._reasoning_expanded)
 
@@ -1906,9 +1896,8 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         # Keep a tool batch live until every row is terminal. Archiving rows one
         # by one would move a later-completing row ahead of an earlier active row
         # because the immutable history always precedes the live widget region.
-        if self._tools and all(_is_terminal_tool(row.tool) for row in self._tools.values()):
+        if self._tools and all(is_terminal_tool(row.tool) for row in self._tools.values()):
             terminal_rows = tuple(self._tools.values())
-            self._tools.clear()
             self._history.append_many(
                 TranscriptEntry(
                     kind="tool",
@@ -1918,6 +1907,8 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                 )
                 for row in terminal_rows
             )
+            await self._history.wait_until_rendered()
+            self._tools.clear()
             await asyncio.shield(self._transcript.remove_children(terminal_rows))
 
     def _adopt_streaming_tool_rows(

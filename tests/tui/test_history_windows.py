@@ -538,6 +538,53 @@ async def test_window_reset_keeps_loaded_prefix_only_within_the_same_epoch(tmp_p
         assert app._history_before_cursor is None
 
 
+async def test_history_reset_stops_the_previous_navigation_request(tmp_path, monkeypatch):
+    application = streaming_application(tmp_path, None)
+    session, messages = seed(application, 605)
+    store = application.runtime.store
+    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
+    entered, release = asyncio.Event(), asyncio.Event()
+    async with run_ready_app(app) as pilot:
+        history = app.query_one(ConversationHistory)
+        wait_for_render = history.wait_until_rendered
+
+        async def held_wait():
+            await wait_for_render()
+            if not entered.is_set():
+                entered.set()
+                await release.wait()
+
+        monkeypatch.setattr(history, "wait_until_rendered", held_wait)
+        app._request_earlier_history(all_pages=True, navigate_to="top")
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            withdrawal = store.commit_session(
+                SessionCommit(
+                    before=store.load_session_record(session.session_id),
+                    before_message_id=messages[404].message_id,
+                    events=(
+                        EventRecord(
+                            session_id=session.session_id, event_type="session_history_withdrawn"
+                        ),
+                    ),
+                )
+            )
+            await wait_until(
+                lambda: app._projection.history_epoch == withdrawal.session.history_epoch,
+                pilot,
+                description="replacement history snapshot",
+            )
+        finally:
+            release.set()
+        await app.workers.wait_for_complete(
+            [worker for worker in app.workers if worker.group == "earlier-history"]
+        )
+        await wait_for_render()
+        assert len(history.entries) == 200
+        assert history.entries[-1].text == "message 403"
+        assert app._history_before_cursor is not None
+
+
 @pytest.mark.parametrize("run_message_count", [5, 300])
 async def test_older_pages_present_each_run_summary_at_its_last_message(
     tmp_path, run_message_count

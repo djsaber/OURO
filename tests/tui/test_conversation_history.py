@@ -7,6 +7,7 @@ import pytest
 from rich.console import Console
 from textual.app import App, ComposeResult
 from textual.color import Color
+from textual.widgets import Input
 
 import ouro.tui.conversation_history as conversation_history
 import ouro.tui.markdown as tui_markdown
@@ -27,7 +28,7 @@ from ouro.tui.conversation_history import (
 )
 from ouro.tui.state import RunPresentation
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
-from ouro.tui.widgets import ReasoningLabel, ToolActivityRow
+from ouro.tui.widgets import AssistantTurn, ConversationView, ReasoningLabel, ToolActivityRow
 
 _MULTIBLOCK_ANSWER = """Here is the plan:
 
@@ -315,6 +316,101 @@ class _StreamingLinesApp(App[None]):
         yield self.tail
 
 
+class _ConversationApp(App[None]):
+    def compose(self) -> ComposeResult:
+        yield ConversationView()
+        yield Input()
+
+
+@pytest.mark.parametrize("finish", [False, True])
+async def test_live_answer_stays_visible_until_its_history_is_ready(monkeypatch, finish):
+    app = _ConversationApp()
+    entered, release = threading.Event(), threading.Event()
+    render = conversation_history._render_entry_requests
+
+    def held_render(*args, **kwargs):
+        entered.set()
+        assert release.wait(10)
+        return render(*args, **kwargs)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        conversation = app.query_one(ConversationView)
+        history = app.query_one(ConversationHistory)
+        turn = app.query_one(AssistantTurn)
+        await conversation.append_assistant("Visible answer " + "content " * 300)
+        await pilot.pause()
+        monkeypatch.setattr(conversation_history, "_render_entry_requests", held_render)
+        transferring = asyncio.create_task(
+            conversation.finish_assistant()
+            if finish
+            else conversation.append_assistant("\n\nNext paragraph")
+        )
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            await pilot.pause()
+            assert "Visible answer" not in history.rendered_text
+            assert turn.display and turn.tail.display
+            assert "Visible answer" in turn.tail.text
+            app.query_one(Input).focus()
+            await pilot.press("x")
+            assert app.query_one(Input).value == "x"
+        finally:
+            release.set()
+            await transferring
+        await history.wait_until_rendered()
+        assert "Visible answer" in history.rendered_text
+        if finish:
+            assert not turn.display
+        else:
+            assert turn.tail.text == "Next paragraph"
+
+
+@pytest.mark.parametrize("content", ["reasoning", "tools"])
+async def test_live_reasoning_and_tools_transfer_only_after_history_renders(monkeypatch, content):
+    app = _ConversationApp()
+    entered, release = threading.Event(), threading.Event()
+    render = conversation_history._render_entry_requests
+
+    def held_render(*args, **kwargs):
+        entered.set()
+        assert release.wait(10)
+        return render(*args, **kwargs)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        conversation = app.query_one(ConversationView)
+        history = app.query_one(ConversationHistory)
+        turn = app.query_one(AssistantTurn)
+        if content == "reasoning":
+            await conversation.append_reasoning("Visible thought " + "reasoning " * 300)
+        else:
+            tool = RuntimeToolCallActivity(
+                tool_call_id="call_transfer", tool_name="Read", status="running", source_index=0
+            )
+            await conversation.sync_tools((tool,))
+        await pilot.pause()
+        monkeypatch.setattr(conversation_history, "_render_entry_requests", held_render)
+        transferring = asyncio.create_task(
+            conversation.finish_assistant()
+            if content == "reasoning"
+            else conversation.sync_tools((tool.model_copy(update={"status": "completed"}),))
+        )
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            await pilot.pause()
+            assert not history.lines
+            if content == "reasoning":
+                assert turn.display and turn.reasoning.display
+                assert "Visible thought" in turn.reasoning.text
+            else:
+                assert conversation.query_one(ToolActivityRow).is_attached
+        finally:
+            release.set()
+            await transferring
+        assert history.lines
+        assert not turn.display
+        assert not conversation.query(ToolActivityRow)
+
+
 class _LiveToolApp(App[None]):
     def __init__(self) -> None:
         super().__init__()
@@ -600,7 +696,8 @@ async def test_failed_history_renderer_stops_until_content_is_reopened(monkeypat
             app.history, "notify", lambda message, **kwargs: failures.append(message)
         )
         monkeypatch.setattr(conversation_history, "_render_entry_requests", fail)
-        await app.history.load(entries)
+        with pytest.raises(RuntimeError, match="layout did not complete"):
+            await app.history.load(entries)
         assert len(failures) == 1 and "ValueError" in failures[0]
         assert app.history.entries == entries
         app.history.append(TranscriptEntry(kind="assistant", text="later"))

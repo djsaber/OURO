@@ -95,9 +95,11 @@ from ouro.tui.controller import (
     project_usage_system_status,
 )
 from ouro.tui.conversation_history import (
+    AssistantMarkdownStream,
     ConversationHistory,
     ConversationHistoryState,
     ToolNavigationRequested,
+    TranscriptEntry,
     UserMessageCopyRequested,
 )
 from ouro.tui.draft_recovery import recover_input_drafts, release_unused_draft_resources
@@ -171,6 +173,7 @@ from ouro.tui.widgets import (
     QueuedInputPanel,
     StatusLine,
     WelcomePanel,
+    is_terminal_tool,
     project_transcript_entries,
 )
 
@@ -4339,12 +4342,16 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _load_earlier_history(self, request: HistoryLoadRequest) -> None:
         revision = request.revision
         try:
-            while revision == self._view_revision and self._history_before_cursor is not None:
+            while (
+                self._history_request is request
+                and revision == self._view_revision
+                and self._history_before_cursor is not None
+            ):
                 if not await self._prepend_history_window(revision):
                     return
                 await self.query_one(ConversationHistory).wait_until_rendered()
                 await self.screen.wait_for_refresh()
-                if revision != self._view_revision:
+                if self._history_request is not request or revision != self._view_revision:
                     return
                 if request.navigate_to == "previous":
                     if self.query_one(ConversationView).scroll_to_previous_user_turn():
@@ -4353,9 +4360,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     continue
                 if not request.all_pages:
                     break
-            if revision == self._view_revision and self._history_before_cursor is None:
+            if (
+                self._history_request is request
+                and revision == self._view_revision
+                and self._history_before_cursor is None
+            ):
                 await self.screen.wait_for_refresh()
-                if revision != self._view_revision:
+                if self._history_request is not request or revision != self._view_revision:
                     return
                 if request.navigate_to is not None:
                     self._navigate_to(request.navigate_to)
@@ -4364,7 +4375,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 if command_context is not None:
                     self._show_command_arguments(command_context[0])
         except Exception as exc:  # noqa: BLE001 - page failures leave the current view usable.
-            if revision == self._view_revision:
+            if self._history_request is request and revision == self._view_revision:
                 self._history_load_failed = True
                 self.notify(
                     f"Cannot load earlier messages ({type(exc).__name__}).",
@@ -4618,19 +4629,61 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             (run for run in loaded.runs if run.kind == "agent"), loaded.messages, models=models
         )
         session = loaded.detail.session
+        tools = tuple(tool for tool in projection.activity.tool_calls if tool.tool_name)
+        terminal_tools = all(is_terminal_tool(tool) for tool in tools)
         transcript = project_transcript_entries(
             loaded.messages,
             loaded.compactions,
             presentations,
             mutable_tool_call_keys=frozenset(
                 (projection.activity.run_id, tool.tool_call_id)
-                for tool in projection.activity.tool_calls
+                for tool in tools
+                if not terminal_tools
             ),
             visible_scaffold_delegation_id=(
                 session.delegation_id if session.session_kind == "subagent" else None
             ),
         )
-        return projection, transcript, _active_stream_tail(ordered_events, loaded.messages)
+        entries, presented_runs = transcript
+        prepared = list(entries)
+        if tools and terminal_tools:
+            historical_tools = {
+                (entry.run_id, entry.tool.tool_call_id)
+                for entry in entries
+                if entry.tool is not None
+            }
+            prepared.extend(
+                TranscriptEntry(kind="tool", run_id=projection.activity.run_id, tool=tool)
+                for tool in tools
+                if (projection.activity.run_id, tool.tool_call_id) not in historical_tools
+            )
+
+        # A snapshot installs complete state; it does not replay streaming handoffs.
+        # Prepare stable blocks together with history, leaving only the open tail live.
+        reasoning, answer = _active_stream_tail(ordered_events, loaded.messages)
+        stream = AssistantMarkdownStream()
+        blocks, _ = stream.append(answer)
+        if tools and not terminal_tools:
+            blocks += stream.close()
+            answer = ""
+        else:
+            answer = stream.tail
+        if blocks or (tools and not terminal_tools):
+            if reasoning:
+                prepared.append(
+                    TranscriptEntry(
+                        kind="assistant",
+                        run_id=projection.activity.run_id,
+                        reasoning=reasoning,
+                        reasoning_seconds=projection.reasoning_duration_seconds,
+                    )
+                )
+                reasoning = ""
+            prepared.extend(
+                TranscriptEntry(kind="assistant", run_id=projection.activity.run_id, text=block)
+                for block in blocks
+            )
+        return projection, (tuple(prepared), presented_runs), (reasoning, answer)
 
     async def _restore_projection(
         self,
@@ -4649,6 +4702,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         reasoning, answer = active_stream_tail
         if projection.activity.run_id is not None:
             conversation.begin_model_request(run_id=projection.activity.run_id)
+        await conversation.sync_tools(projection.activity.tool_calls)
         if reasoning:
             await conversation.append_reasoning(
                 reasoning,
@@ -4658,7 +4712,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 conversation.finish_reasoning(projection.reasoning_duration_seconds)
         if answer:
             await conversation.append_assistant(answer)
-        await conversation.sync_tools(projection.activity.tool_calls)
 
     async def _select_model(self, selector: str) -> None:
         applies_to_next_request = self._has_active_run()

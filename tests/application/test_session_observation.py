@@ -150,6 +150,41 @@ async def test_history_change_replaces_snapshot_and_does_not_mix_epochs(stores):
         await supervisor.shutdown()
 
 
+@pytest.mark.parametrize("max_buffer", [1, 16])
+async def test_checkpoint_resume_rebuilds_snapshot_during_live_and_durable_delivery(
+    stores, max_buffer
+):
+    writer, reader = stores
+    session = SessionRecord()
+    writer.create_session(session)
+    supervisor = supervisor_for(reader)
+    observation = await supervisor.observe_session(
+        session.session_id, max_buffer=max_buffer, page_size=2
+    )
+    observation.acknowledge(await observation.get())
+    try:
+        # A resume invalidates the old partial turn even within the same epoch.
+        for event_type, payload in (
+            ("run_status_changed", {"resumed": True, "status": "running"}),
+            ("model_request_started", {}),
+            ("model_text_delta", {"text": "resumed answer"}),
+        ):
+            event = writer.append_ordered_event(
+                EventRecord(session_id=session.session_id, event_type=event_type, payload=payload)
+            )
+            await supervisor._on_event(event)
+        reset = await asyncio.wait_for(observation.get(), 5)
+        assert reset.diagnostic is None
+        assert reset.snapshot is not None
+        assert reset.history_epoch == session.history_epoch
+        assert reset.event_high_water == event.sequence
+        assert observation.applied_sequence == 0
+        observation.acknowledge(reset)
+    finally:
+        observation.close()
+        await supervisor.shutdown()
+
+
 async def test_source_failure_survives_full_buffer_and_closes_observation(stores, monkeypatch):
     writer, reader = stores
     session = SessionRecord()

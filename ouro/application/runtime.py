@@ -1406,9 +1406,15 @@ class RuntimeService:
                 ]
             ):
                 raise ValueError("Input id is already bound to another input")
-            message = self.store.find_queued_input_message(session_id, item.queue_id)
-            if message is None and self.queued_inputs.find_session(session, item.queue_id) is None:
-                raise ValueError("Input was already accepted and has been withdrawn or cancelled")
+            # Consumption removes the queue item and writes its message atomically.
+            # A still-pending input cannot have a canonical message to search for.
+            message = None
+            if self.queued_inputs.find_session(session, item.queue_id) is None:
+                message = self.store.find_queued_input_message(session_id, item.queue_id)
+                if message is None:
+                    raise ValueError(
+                        "Input was already accepted and has been withdrawn or cancelled"
+                    )
             return HostInputReceipt(
                 session_id=session_id,
                 queue_id=item.queue_id,
