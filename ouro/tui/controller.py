@@ -90,6 +90,7 @@ from ouro.config import (
     ProviderType,
     QueuedInputConsumptionMode,
 )
+from ouro.config.endpoints import EndpointChanges
 from ouro.config.prompts import PromptDraft, PromptKind
 from ouro.core.agents import ExecutionMode, ToolSelection
 from ouro.core.approvals import (
@@ -312,7 +313,7 @@ class TuiEndpointConfiguration:
     display_name: str | None
     model_id: str
     context_window: int
-    max_output_tokens: int
+    max_output_tokens: int | None
     supports_tools: bool = True
     supports_image_input: bool = False
     supports_audio_input: bool = False
@@ -1357,22 +1358,23 @@ class TuiController:
         draft: TuiEndpointConfiguration,
     ) -> ProviderEndpointView:
         configuration = self._require_configuration()
-        catalog = configuration.update_endpoint(
-            provider_id,
-            endpoint_id,
-            display_name=draft.display_name,
-            model=draft.model_id,
-            context_window=draft.context_window,
-            max_output_tokens=draft.max_output_tokens,
-            supports_tools=draft.supports_tools,
-            supports_image_input=draft.supports_image_input,
-            supports_audio_input=draft.supports_audio_input,
-            supports_video_input=draft.supports_video_input,
-            supports_streaming=draft.supports_streaming,
-            supports_structured_output=draft.supports_structured_output,
-            reasoning=draft.reasoning,
-            request_options=draft.request_options,
-        )
+        changes: EndpointChanges = {
+            "display_name": draft.display_name,
+            "model_id": draft.model_id,
+            "context_window": draft.context_window,
+            "max_output_tokens": draft.max_output_tokens,
+            "supports_tools": draft.supports_tools,
+            "supports_image_input": draft.supports_image_input,
+            "supports_audio_input": draft.supports_audio_input,
+            "supports_video_input": draft.supports_video_input,
+            "supports_streaming": draft.supports_streaming,
+            "supports_structured_output": draft.supports_structured_output,
+        }
+        if draft.reasoning is not None:
+            changes["reasoning"] = draft.reasoning
+        if draft.request_options is not None:
+            changes["request_options"] = draft.request_options
+        catalog = configuration.update_endpoint(provider_id, endpoint_id, **changes)
         return next(
             endpoint for endpoint in catalog.endpoints if endpoint.endpoint_id == endpoint_id
         )
@@ -1998,25 +2000,11 @@ class TuiController:
                 if not separator or not provider_id or not endpoint_id:
                     raise ConfigError(f"invalid compaction model route: {draft.model_key}")
                 model = self._runtime().resolve_model(draft.model_key)
-            if (
-                draft.max_output_tokens is not None
-                and draft.max_output_tokens > model.max_output_tokens
-            ):
-                raise ConfigError(
-                    "compaction max_output_tokens exceed the selected endpoint output limit"
-                )
             if draft.reasoning is not None:
                 try:
                     resolve_reasoning(model.reasoning, draft.reasoning)
                 except ValueError as exc:
                     raise ConfigError(f"invalid compaction reasoning override: {exc}") from exc
-        elif any(
-            value is not None
-            for value in (draft.temperature, draft.max_output_tokens, draft.reasoning)
-        ):
-            raise ConfigError(
-                "compaction model request overrides require a default or dedicated model endpoint"
-            )
         return self._require_configuration().save_compaction(
             CompactionConfigInput(
                 strategy_id=draft.strategy_id,

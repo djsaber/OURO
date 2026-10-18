@@ -782,8 +782,6 @@ class CompactionCall:
     run_id: str | None
     previous_summary: str | None
     messages: tuple[Mapping[str, object], ...]
-    input_token_budget: int
-    summary_output_tokens: int
 
 
 @dataclass(frozen=True)

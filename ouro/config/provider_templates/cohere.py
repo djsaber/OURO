@@ -17,7 +17,7 @@ _COHERE_REASONING = openai_chat_completions_effort_reasoning(
 
 TEMPLATES: tuple[ProviderTemplate, ...] = (
     ProviderTemplate(
-        revision=2,
+        revision=3,
         template_id="cohere",
         display_name="Cohere",
         description="Cohere's OpenAI-compatible API with the multilingual Command A+ model.",
@@ -33,7 +33,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 display_name="Command A+",
                 model_id="command-a-plus-05-2026",
                 context_window=128_000,
-                max_output_tokens=32_768,
                 supports_tools=True,
                 supports_image_input=True,
                 supports_streaming=True,

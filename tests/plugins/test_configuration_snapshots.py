@@ -128,7 +128,7 @@ async def test_sdk_receives_recursive_read_only_snapshot(tmp_path):
     )
     (source / "echo_plugin.py").write_text(
         """
-from ouro.sdk.plugins.v3 import ContributionSet
+from ouro.sdk.plugins.v4 import ContributionSet
 class Plugin:
     def __init__(self, context): self.context = context
     async def prepare(self):

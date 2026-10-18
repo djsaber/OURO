@@ -25,6 +25,7 @@ from ouro.config.provider_models import (
     validate_reasoning_protocol_compatibility,
     validate_reasoning_summary_preset,
 )
+from ouro.core.context_budget import ContextBudget
 from ouro.core.errors import ConfigError
 from ouro.tui.controller import TuiEndpointConfiguration, TuiProviderConfiguration
 from ouro.tui.credential_editor import (
@@ -402,8 +403,10 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             "endpoint-context-window": str(
                 existing.context_window if existing is not None else 1_000_000
             ),
-            "endpoint-max-output": str(
-                existing.max_output_tokens if existing is not None else 32_768
+            "endpoint-max-output": (
+                str(existing.max_output_tokens)
+                if existing is not None and existing.max_output_tokens is not None
+                else ""
             ),
             "endpoint-reasoning-config": _reasoning_text(reasoning),
             "endpoint-request-options": request_options,
@@ -605,12 +608,9 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             self._values["endpoint-context-window"],
             "Context window",
         )
-        max_output_tokens = _positive_int(
-            self._values["endpoint-max-output"],
-            "Max output tokens",
-        )
-        if max_output_tokens > context_window:
-            raise ValueError("Max output tokens cannot exceed the context window")
+        value = self._values["endpoint-max-output"]
+        max_output_tokens = _positive_int(value, "Max output tokens") if value else None
+        ContextBudget(context_window=context_window, max_output_tokens=max_output_tokens)
         request_options = _json_object(
             self._values["endpoint-request-options"],
             "Request options",
@@ -695,7 +695,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             Choice(
                 "endpoint-max-output",
                 "Max output tokens",
-                trailing=f"{self._values['endpoint-max-output']} tokens",
+                trailing=self._values["endpoint-max-output"] or "Optional",
                 group="LIMITS",
                 edit_value=self._values["endpoint-max-output"],
             ),

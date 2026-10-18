@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 from ouro.sdk.plugins.scheduled import ScheduledInvocation
 from ouro.sdk.plugins.services import ServiceCall, ServiceContribution
 from ouro.sdk.plugins.worker import WorkerPeer

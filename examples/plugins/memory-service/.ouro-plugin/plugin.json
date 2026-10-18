@@ -4,7 +4,7 @@
   "name": "Memory Service",
   "namespace": "memory_example",
   "version": "0.1.0",
-  "engines": {"ouro": "^0.3.0", "plugin_api": "^3.0.0"},
+  "engines": {"ouro": "^0.3.0", "plugin_api": "^4.0.0"},
   "runtime": {"kind": "worker", "command": ["{python}", "worker.py"], "protocol": "3.0"},
   "exports": [{
     "id": "memory",

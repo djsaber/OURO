@@ -94,15 +94,14 @@ async def test_output_limit_follows_service_capability_not_billing_or_auth(
             for override in (None, 512):
                 events = [
                     event
-                    async for event in adapter.stream(
+                    async for event in adapter.with_output_limit(override).stream(
                         ContextView(model_messages=[ModelMessage.text(role="user", text="hello")]),
-                        max_output_tokens=override,
                     )
                 ]
                 assert events[-1].type == "done"
                 assert not any(event.type == "error" for event in events)
-                if supports_limit:
-                    assert payloads[-1][limit_field] == (1024 if override is None else override)
+                if supports_limit and override is not None:
+                    assert payloads[-1][limit_field] == override
                 else:
                     assert limit_field not in payloads[-1]
                 assert adapter.model.max_output_tokens == 1024
@@ -195,7 +194,6 @@ def test_factory_uses_ad_hoc_provider_identity_and_preserves_zero_temperature() 
     [
         (ProviderRuntimeOptions(timeout=0), "timeout"),
         (ProviderRuntimeOptions(context_window=0), "context_window"),
-        (ProviderRuntimeOptions(max_output_tokens=0), "max_output_tokens"),
     ],
 )
 def test_factory_rejects_zero_instead_of_replacing_it_with_a_default(
@@ -365,6 +363,7 @@ async def test_custom_compatible_endpoint_encodes_declared_reasoning_profile(
             protocol=protocol,
             provider_id="custom",
             model="custom-model",
+            max_output_tokens=1024,
             base_url="https://example.test/v1",
             supports_streaming=False,
             reasoning=reasoning,

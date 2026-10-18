@@ -86,7 +86,7 @@ from ouro.plugins.session_controllers import (
     PluginSessionControllerOutput,
 )
 from ouro.plugins.tool_content import from_sdk_content
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 from ouro.tools import (
     Tool,
     ToolDefinition,
@@ -870,8 +870,6 @@ class _SDKCompactionStrategy:
             messages=tuple(
                 message.model_dump(mode="json", exclude_none=True) for message in request.messages
             ),
-            input_token_budget=request.input_token_budget,
-            summary_output_tokens=request.summary_output_tokens,
         )
         raw, _ = await invoke_plugin_callback(
             self._handler,

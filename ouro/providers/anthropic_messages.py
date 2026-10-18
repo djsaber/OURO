@@ -238,6 +238,8 @@ class AnthropicMessagesProvider:
         tools: list[dict[str, Any]] | None,
         extra_payload: Mapping[str, Any],
     ) -> dict[str, Any]:
+        if model.max_output_tokens is None:
+            raise ValueError("Messages protocol requires an explicit max_output_tokens")
         system, converted_messages = messages_to_anthropic_messages(
             messages,
             system_prompt=system_prompt,

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from time import monotonic
 from typing import Protocol, cast
@@ -12,10 +10,9 @@ from ouro.application.events import RuntimeEventRecorder
 from ouro.application.harness import capture_harness
 from ouro.application.prompt_context import PromptContext, PromptContextResolver
 from ouro.application.usage import UsageService
-from ouro.config.compaction import CompactionConfig, CompactionModelConfig
+from ouro.config.compaction import CompactionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id, utc_now
-from ouro.core.billing import UsagePurpose
 from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal, settle_owned_tasks
 from ouro.core.compaction import (
@@ -28,7 +25,6 @@ from ouro.core.compaction import (
     CompactionStrategyError,
     CompactionStrategyRegistry,
     CompactionTrigger,
-    compaction_frames,
     compaction_source_digest,
     plan_compaction,
     project_compacted_messages,
@@ -37,10 +33,9 @@ from ouro.core.content import MediaModality
 from ouro.core.context import (
     ContextBuilder,
     ContextView,
+    estimate_message_tokens,
     estimate_text_tokens,
-    estimate_text_tokens_from_character_counts,
     project_recovery_messages,
-    text_character_counts,
 )
 from ouro.core.context_providers import (
     AttributedContextFragment,
@@ -64,26 +59,17 @@ from ouro.core.message_frames import project_tool_exchanges
 from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import (
     SemanticTag,
-    escape_semantic_envelope_delimiters,
-    render_semantic_envelope,
 )
-from ouro.core.messages import MessageRecord, ModelMessage, model_visible_message
+from ouro.core.messages import MessageRecord
 from ouro.core.observers import ContextPreparedObservation, FrozenJson, freeze_json
 from ouro.core.provider import (
-    ModelMetadata,
-    ProviderCompletion,
-    ProviderStreamEvent,
     Usage,
 )
-from ouro.core.request_context import ProviderRequestContext
 from ouro.core.session_commits import SessionCommitConflict
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolDefinition
-from ouro.prompts import AFK_CONTEXT_PROMPT, SUMMARIZATION_PROMPT, render_summarization_prompt
+from ouro.prompts import AFK_CONTEXT_PROMPT
 from ouro.sessions import SessionStore
-
-_SUMMARY_PATTERN = re.compile(r"<summary>\s*(.*?)\s*</summary>", re.DOTALL)
-_SUMMARY_INPUT_TAG = "conversation-to-summarize"
 
 
 class ModelMessageProjector(Protocol):
@@ -94,19 +80,6 @@ class ModelMessageProjector(Protocol):
         input_modalities: frozenset[MediaModality],
         input_budget_tokens: int | None = None,
     ) -> list[MessageRecord]: ...
-
-
-class CompactionUsageRecorder(Protocol):
-    def __call__(
-        self,
-        *,
-        session_id: str,
-        run_id: str,
-        usage: Usage,
-        model: ModelMetadata,
-        request_id: str,
-        purpose: UsagePurpose,
-    ) -> RunRecord: ...
 
 
 class ContextMessageAppender(Protocol):
@@ -129,19 +102,6 @@ class CompactionExecution:
     record: CompactionRecord | None
     sequence: int
     skipped: bool = False
-
-
-@dataclass(frozen=True)
-class _CompactionAdapterRoute:
-    adapter: RuntimeAdapter
-    route: str
-
-
-@dataclass(frozen=True)
-class _SummaryChunkResult:
-    summary: str
-    usage: dict[str, int | float]
-    model_output: CompactionModelOutput
 
 
 async def _compact_until_aborted(
@@ -195,464 +155,6 @@ async def _compact_until_aborted(
             model_outputs=exc.model_outputs,
             terminal=True,
         ) from exc
-
-
-class LLMSummaryCompactionStrategy:
-    """Generate an incremental summary without entering the normal agent loop."""
-
-    strategy_id = "builtin.llm_summary"
-    version = "1"
-    prompt_version = "2"
-
-    def __init__(
-        self,
-        adapter: RuntimeAdapter,
-        prompt: str = SUMMARIZATION_PROMPT,
-        *,
-        configured_adapter: RuntimeAdapter | None = None,
-        configured_adapter_error: str | None = None,
-        configured_adapter_resolver: Callable[[], RuntimeAdapter] | None = None,
-        model_config: CompactionModelConfig | None = None,
-        runtime_adapter_resolver: Callable[[str], RuntimeAdapter] | None = None,
-        usage_recorder: CompactionUsageRecorder | None = None,
-    ) -> None:
-        self.runtime_adapter = adapter
-        self.runtime_adapter_resolver = runtime_adapter_resolver
-        self.configured_adapter = configured_adapter
-        self.configured_adapter_error = configured_adapter_error
-        self.configured_adapter_resolver = configured_adapter_resolver
-        self.model_config = model_config or CompactionModelConfig()
-        self.usage_recorder = usage_recorder
-        self.prompt = prompt
-
-    async def compact(
-        self,
-        request: CompactionRequest,
-        *,
-        signal: AbortSignal | None = None,
-    ) -> CompactionArtifact:
-        failures: list[str] = []
-        model_outputs: list[CompactionModelOutput] = []
-        if self.configured_adapter_error:
-            failures.append(self.configured_adapter_error)
-
-        routes = await run_blocking(self._adapter_routes, request.session_id)
-        for route in routes:
-            try:
-                adapter = (
-                    _apply_dedicated_compaction_model_config(route.adapter, self.model_config)
-                    if route.route == "configured"
-                    else route.adapter
-                )
-                artifact = await self._compact_with_adapter(
-                    request,
-                    adapter=adapter,
-                    route=route.route,
-                    signal=signal,
-                )
-            except Exception as exc:  # noqa: BLE001 - model-route fallback boundary.
-                model_outputs.extend(_outputs_from_error(exc))
-                if signal is not None and signal.is_aborted():
-                    raise CompactionAbortedError(
-                        "summary compaction was aborted",
-                        model_outputs=model_outputs,
-                    ) from exc
-                if isinstance(exc, CompactionStrategyError) and exc.terminal:
-                    raise CompactionStrategyError(
-                        str(exc),
-                        model_outputs=model_outputs,
-                        terminal=True,
-                    ) from exc
-                failures.append(f"{route.route}: {type(exc).__name__}: {exc}")
-                continue
-            prior_outputs = list(model_outputs)
-            model_outputs.extend(artifact.model_outputs)
-            metadata = dict(artifact.metadata)
-            metadata["model_route"] = route.route
-            metadata["model_request_count"] = len(model_outputs)
-            if failures:
-                metadata["model_fallback_reason"] = "; ".join(failures)
-            total_usage = dict(artifact.usage)
-            for output in prior_outputs:
-                total_usage = _merge_usage(total_usage, output.usage)
-            return artifact.model_copy(
-                update={
-                    "usage": total_usage,
-                    "metadata": metadata,
-                    "model_outputs": model_outputs,
-                }
-            )
-
-        message = "all compaction model routes failed: " + "; ".join(failures)
-        if model_outputs:
-            raise CompactionStrategyError(message, model_outputs=model_outputs)
-        raise CompactionError(message)
-
-    def _adapter_routes(self, session_id: str) -> list[_CompactionAdapterRoute]:
-        routes: list[_CompactionAdapterRoute] = []
-        try:
-            configured = (
-                self.configured_adapter_resolver()
-                if self.configured_adapter_resolver is not None
-                else self.configured_adapter
-            )
-        except ConfigError as exc:
-            raise CompactionStrategyError(str(exc), terminal=True) from exc
-        if configured is not None:
-            routes.append(
-                _CompactionAdapterRoute(
-                    adapter=configured,
-                    route="configured",
-                )
-            )
-        runtime_route = "runtime_fallback" if self.model_config.has_configured_route else "runtime"
-        runtime_adapter = (
-            self.runtime_adapter_resolver(session_id)
-            if self.runtime_adapter_resolver is not None
-            else self.runtime_adapter
-        )
-        routes.append(
-            _CompactionAdapterRoute(
-                adapter=runtime_adapter,
-                route=runtime_route,
-            )
-        )
-        return routes
-
-    async def _compact_with_adapter(
-        self,
-        request: CompactionRequest,
-        *,
-        adapter: RuntimeAdapter,
-        route: str,
-        signal: AbortSignal | None,
-    ) -> CompactionArtifact:
-        rolling_summary = request.previous_summary
-        total_usage: dict[str, int | float] = {}
-        model_outputs: list[CompactionModelOutput] = []
-        remaining_frames = compaction_frames(request.messages)
-        if not remaining_frames:
-            raise CompactionError("summary compaction received no canonical messages")
-
-        summary_output_tokens = adapter.model.max_output_tokens
-        rendered_prompt = render_summarization_prompt(self.prompt, summary_output_tokens)
-        chunk_count = 0
-        try:
-            while remaining_frames:
-                chunk, consumed_frames = self._next_chunk(
-                    remaining_frames,
-                    adapter=adapter,
-                    previous_summary=rolling_summary,
-                    summary_output_tokens=summary_output_tokens,
-                )
-                try:
-                    result = await self._summarize_chunk(
-                        adapter=adapter,
-                        route=route,
-                        chunk_index=chunk_count + 1,
-                        attempt_index=1,
-                        input_frame_count=consumed_frames,
-                        session_id=request.session_id,
-                        run_id=request.run_id,
-                        previous_summary=rolling_summary,
-                        messages=chunk,
-                        rendered_prompt=rendered_prompt,
-                        summary_output_tokens=summary_output_tokens,
-                        signal=signal,
-                    )
-                except CompactionStrategyError as first_error:
-                    if not _should_retry_smaller_chunk(first_error, consumed_frames):
-                        raise
-                    model_outputs.extend(first_error.model_outputs)
-                    for output in first_error.model_outputs:
-                        total_usage = _merge_usage(total_usage, output.usage)
-                    consumed_frames = max(1, consumed_frames // 2)
-                    chunk = [
-                        message for frame in remaining_frames[:consumed_frames] for message in frame
-                    ]
-                    try:
-                        result = await self._summarize_chunk(
-                            adapter=adapter,
-                            route=route,
-                            chunk_index=chunk_count + 1,
-                            attempt_index=2,
-                            input_frame_count=consumed_frames,
-                            session_id=request.session_id,
-                            run_id=request.run_id,
-                            previous_summary=rolling_summary,
-                            messages=chunk,
-                            rendered_prompt=rendered_prompt,
-                            summary_output_tokens=summary_output_tokens,
-                            signal=signal,
-                        )
-                    except Exception as retry_error:
-                        raise CompactionStrategyError(
-                            str(retry_error),
-                            model_outputs=_outputs_from_error(retry_error),
-                            terminal=True,
-                        ) from retry_error
-                rolling_summary = result.summary
-                total_usage = _merge_usage(total_usage, result.usage)
-                model_outputs.append(result.model_output)
-                chunk_count += 1
-                remaining_frames = remaining_frames[consumed_frames:]
-        except Exception as exc:
-            outputs = [*model_outputs, *_outputs_from_error(exc)]
-            if outputs:
-                raise CompactionStrategyError(
-                    str(exc),
-                    model_outputs=outputs,
-                    terminal=isinstance(exc, CompactionStrategyError) and exc.terminal,
-                ) from exc
-            raise
-
-        return CompactionArtifact(
-            summary=rolling_summary or "",
-            usage=total_usage,
-            model_outputs=model_outputs,
-            metadata={
-                "prompt_version": self.prompt_version,
-                "prompt_hash": hashlib.sha256(rendered_prompt.encode("utf-8")).hexdigest(),
-                "chunk_count": chunk_count,
-                "model_request_count": len(model_outputs),
-                "model_provider": adapter.model.provider_id,
-                "model_endpoint_id": adapter.model.endpoint_id,
-                "model_id": adapter.model.model_id,
-                "model_temperature": adapter.model.temperature,
-                "model_max_output_tokens": adapter.model.max_output_tokens,
-                "summary_output_tokens": summary_output_tokens,
-                "model_reasoning": adapter.model.reasoning_resolution.effective.model_dump(
-                    mode="json"
-                ),
-            },
-        )
-
-    def _next_chunk(
-        self,
-        frames: Sequence[Sequence[MessageRecord]],
-        *,
-        adapter: RuntimeAdapter,
-        previous_summary: str | None,
-        summary_output_tokens: int,
-    ) -> tuple[list[MessageRecord], int]:
-        """Choose one provider-safe chunk using the latest rolling summary size."""
-
-        capacity = adapter.model.context_window - summary_output_tokens
-        rendered_prompt = render_summarization_prompt(self.prompt, summary_output_tokens)
-        fixed_tokens = estimate_text_tokens(rendered_prompt) + 8
-        empty_payload = render_semantic_envelope(
-            _summary_payload(previous_summary, []), _SUMMARY_INPUT_TAG
-        )
-        ascii_characters, non_ascii_characters = text_character_counts(empty_payload)
-        if (
-            fixed_tokens
-            + estimate_text_tokens_from_character_counts(
-                ascii_characters=ascii_characters,
-                non_ascii_characters=non_ascii_characters,
-            )
-            >= capacity
-        ):
-            raise ContextOverflowError(
-                "summary prompt and previous summary exceed model input budget"
-            )
-
-        current: list[MessageRecord] = []
-        consumed_frames = 0
-        has_serialized_messages = False
-        for frame in frames:
-            serialized_frame = escape_semantic_envelope_delimiters(
-                _serialize_messages(frame), _SUMMARY_INPUT_TAG
-            )
-            separator = "\n" if serialized_frame and has_serialized_messages else ""
-            added_ascii, added_non_ascii = text_character_counts(f"{separator}{serialized_frame}")
-            if (
-                fixed_tokens
-                + estimate_text_tokens_from_character_counts(
-                    ascii_characters=ascii_characters + added_ascii,
-                    non_ascii_characters=non_ascii_characters + added_non_ascii,
-                )
-                > capacity
-            ):
-                if current:
-                    break
-                raise ContextOverflowError(
-                    "a single context frame exceeds the summary input budget"
-                )
-            current.extend(frame)
-            ascii_characters += added_ascii
-            non_ascii_characters += added_non_ascii
-            has_serialized_messages = has_serialized_messages or bool(serialized_frame)
-            consumed_frames += 1
-        return current, consumed_frames
-
-    async def _summarize_chunk(
-        self,
-        *,
-        adapter: RuntimeAdapter,
-        route: str,
-        chunk_index: int,
-        attempt_index: int,
-        input_frame_count: int,
-        session_id: str,
-        run_id: str | None,
-        previous_summary: str | None,
-        messages: Sequence[MessageRecord],
-        rendered_prompt: str,
-        summary_output_tokens: int,
-        signal: AbortSignal | None,
-    ) -> _SummaryChunkResult:
-        summary_input = MessageRecord.text(
-            session_id=session_id,
-            role="user",
-            text=_summary_payload(previous_summary, messages),
-            scaffold=True,
-            semantic_tag=_SUMMARY_INPUT_TAG,
-        ).model_copy(update={"metadata": {"kind": "compaction_input"}})
-        context = ContextView(
-            system_prompt=rendered_prompt,
-            model_messages=[ModelMessage.from_record(summary_input)],
-            tool_definitions=[],
-        )
-        text_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        usage: dict[str, int | float] = {}
-        saw_done = False
-        completion = ProviderCompletion()
-        request_id = new_id("req")
-        estimated_input_tokens = (
-            estimate_text_tokens(rendered_prompt)
-            + estimate_text_tokens(model_visible_message(summary_input).text_content)
-            + 8
-        )
-        try:
-            async for event in adapter.stream(
-                context,
-                signal=signal,
-                max_output_tokens=summary_output_tokens,
-                request_context=ProviderRequestContext(
-                    {
-                        "session.id": session_id,
-                        "request.purpose": "compaction",
-                        **({"run.id": run_id} if run_id is not None else {}),
-                    }
-                ),
-            ):
-                if event.type == "reasoning_delta" and event.reasoning_content:
-                    reasoning_parts.append(event.reasoning_content)
-                text_parts, usage, saw_done = _consume_summary_event(
-                    event,
-                    text_parts=text_parts,
-                    usage=usage,
-                    saw_done=saw_done,
-                )
-                if event.type == "done" and event.completion is not None:
-                    completion = event.completion
-                if (
-                    event.type == "done"
-                    and event.usage is not None
-                    and self.usage_recorder is not None
-                    and run_id is not None
-                ):
-                    self.usage_recorder(
-                        session_id=session_id,
-                        run_id=run_id,
-                        usage=event.usage,
-                        model=adapter.model,
-                        request_id=request_id,
-                        purpose="compaction",
-                    )
-        except Exception as exc:
-            raise _summary_output_error(
-                exc,
-                adapter=adapter,
-                request_id=request_id,
-                route=route,
-                chunk_index=chunk_index,
-                attempt_index=attempt_index,
-                input_frame_count=input_frame_count,
-                requested_output_tokens=summary_output_tokens,
-                estimated_input_tokens=estimated_input_tokens,
-                input_message_count=len(messages),
-                completion=completion,
-                text_parts=text_parts,
-                reasoning_parts=reasoning_parts,
-                usage=usage,
-            ) from exc
-        if signal is not None and signal.is_aborted():
-            error: CompactionError = CompactionAbortedError("summary compaction was aborted")
-            raise _summary_output_error(
-                error,
-                adapter=adapter,
-                request_id=request_id,
-                route=route,
-                chunk_index=chunk_index,
-                attempt_index=attempt_index,
-                input_frame_count=input_frame_count,
-                requested_output_tokens=summary_output_tokens,
-                estimated_input_tokens=estimated_input_tokens,
-                input_message_count=len(messages),
-                completion=completion,
-                text_parts=text_parts,
-                reasoning_parts=reasoning_parts,
-                usage=usage,
-            ) from error
-        if not saw_done:
-            error = CompactionError("summary provider stream ended without completion")
-            raise _summary_output_error(
-                error,
-                adapter=adapter,
-                request_id=request_id,
-                route=route,
-                chunk_index=chunk_index,
-                attempt_index=attempt_index,
-                input_frame_count=input_frame_count,
-                requested_output_tokens=summary_output_tokens,
-                estimated_input_tokens=estimated_input_tokens,
-                input_message_count=len(messages),
-                completion=completion,
-                text_parts=text_parts,
-                reasoning_parts=reasoning_parts,
-                usage=usage,
-            ) from error
-        raw_summary = "".join(text_parts)
-        match = _SUMMARY_PATTERN.search(raw_summary)
-        if match is None or not match.group(1).strip():
-            error = CompactionError("summary response did not contain a non-empty <summary> block")
-            raise _summary_output_error(
-                error,
-                adapter=adapter,
-                request_id=request_id,
-                route=route,
-                chunk_index=chunk_index,
-                attempt_index=attempt_index,
-                input_frame_count=input_frame_count,
-                requested_output_tokens=summary_output_tokens,
-                estimated_input_tokens=estimated_input_tokens,
-                input_message_count=len(messages),
-                completion=completion,
-                text_parts=text_parts,
-                reasoning_parts=reasoning_parts,
-                usage=usage,
-            ) from error
-        return _SummaryChunkResult(
-            summary=match.group(1).strip(),
-            usage=usage,
-            model_output=_compaction_model_output(
-                adapter=adapter,
-                request_id=request_id,
-                route=route,
-                chunk_index=chunk_index,
-                attempt_index=attempt_index,
-                input_frame_count=input_frame_count,
-                requested_output_tokens=summary_output_tokens,
-                estimated_input_tokens=estimated_input_tokens,
-                input_message_count=len(messages),
-                completion=completion,
-                text_parts=text_parts,
-                reasoning_parts=reasoning_parts,
-                usage=usage,
-            ),
-        )
 
 
 class ContextPreparationService:
@@ -1091,11 +593,12 @@ class ContextPreparationService:
         )
         target_tokens = int(budget * self.config.policy.target_ratio)
         fixed_tokens = initial_view.metrics.estimated_fixed_tokens
-        summary_output_tokens = active_adapter.model.max_output_tokens
-        tail_budget = max(
-            1,
-            target_tokens - fixed_tokens - summary_output_tokens,
+        summary_tokens = sum(
+            estimate_message_tokens(message, self.context_builder.token_estimator)
+            for message in initial_view.model_messages
+            if message.semantic_tag == "conversation-summary"
         )
+        tail_budget = max(0, target_tokens - fixed_tokens - summary_tokens)
         plan = await run_blocking(
             plan_compaction,
             materialized_messages,
@@ -1161,8 +664,6 @@ class ContextPreparationService:
             trigger=trigger,
             previous_summary=active.summary if active else None,
             messages=plan.messages_to_compact,
-            input_token_budget=budget,
-            summary_output_tokens=summary_output_tokens,
         )
         try:
             strategy, artifact = await self._execute_strategy(
@@ -1322,7 +823,9 @@ class ContextPreparationService:
                 if isinstance(exc, CompactionStrategyError) and exc.terminal:
                     raise
                 failures.append(exc)
-                model_outputs.extend(_outputs_from_error(exc))
+                model_outputs.extend(
+                    exc.model_outputs if isinstance(exc, CompactionStrategyError) else ()
+                )
         if model_outputs:
             message = (
                 str(failures[0])
@@ -1472,8 +975,7 @@ class ContextPreparationService:
             system_prompt=prompt_context.system_prompt,
             added_context=added_context,
             additional_skill_instructions=skill_instructions,
-            context_window_tokens=adapter.model.context_window,
-            reserved_output_tokens=adapter.model.max_output_tokens,
+            budget=adapter.model.context_budget,
         )
 
     def _commit_compaction(self, record: CompactionRecord, run: RunRecord) -> None:
@@ -1497,220 +999,4 @@ class ContextPreparationService:
         )
 
     def _input_budget(self, adapter: RuntimeAdapter) -> int:
-        return max(1, adapter.model.context_window - adapter.model.max_output_tokens)
-
-
-def _apply_dedicated_compaction_model_config(
-    adapter: RuntimeAdapter,
-    config: CompactionModelConfig,
-) -> RuntimeAdapter:
-    """Apply explicit dedicated-route overrides without replacing endpoint defaults."""
-
-    updates: dict[str, object] = {}
-    if config.temperature is not None:
-        updates["temperature"] = config.temperature
-    if config.max_output_tokens is not None:
-        if config.max_output_tokens > adapter.model.max_output_tokens:
-            raise CompactionError(
-                "compaction max_output_tokens exceed the selected endpoint output limit"
-            )
-        updates["max_output_tokens"] = config.max_output_tokens
-
-    if config.reasoning is not None:
-        updates["reasoning_request"] = config.reasoning
-
-    if not updates:
-        return adapter
-
-    try:
-        model = type(adapter.model).model_validate(
-            adapter.model.model_copy(update=updates).model_dump()
-        )
-    except ValueError as exc:
-        raise CompactionError(f"invalid compaction model override: {exc}") from exc
-    return RuntimeAdapter(provider=adapter.provider, model=model)
-
-
-def _consume_summary_event(
-    event: ProviderStreamEvent,
-    *,
-    text_parts: list[str],
-    usage: dict[str, int | float],
-    saw_done: bool,
-) -> tuple[list[str], dict[str, int | float], bool]:
-    if event.usage is not None:
-        usage = _merge_usage(usage, event.usage)
-    if event.type == "text_delta" and event.text:
-        text_parts.append(event.text)
-    elif event.type == "tool_call_delta":
-        raise CompactionError("summary provider attempted to call a tool")
-    elif event.type == "error":
-        raise CompactionStrategyError(
-            event.error or "summary provider returned an error",
-            # A classified authentication/access/quota failure must not silently
-            # switch accounts or billing sources through the compaction fallback.
-            terminal=event.error_code is not None,
-        )
-    elif event.type == "done":
-        saw_done = True
-    return text_parts, usage, saw_done
-
-
-def _compaction_model_output(
-    *,
-    adapter: RuntimeAdapter,
-    request_id: str,
-    route: str,
-    chunk_index: int,
-    attempt_index: int,
-    input_frame_count: int,
-    requested_output_tokens: int,
-    estimated_input_tokens: int,
-    input_message_count: int,
-    completion: ProviderCompletion,
-    text_parts: Sequence[str],
-    reasoning_parts: Sequence[str],
-    usage: dict[str, int | float],
-    error: Exception | None = None,
-) -> CompactionModelOutput:
-    raw_text = "".join(text_parts)
-    summary_opened, summary_closed = _summary_markup_state(raw_text)
-    return CompactionModelOutput(
-        request_id=request_id,
-        route=route,
-        chunk_index=chunk_index,
-        attempt_index=attempt_index,
-        status="failed" if error is not None else "completed",
-        requested_output_tokens=requested_output_tokens,
-        estimated_input_tokens=estimated_input_tokens,
-        input_message_count=input_message_count,
-        input_frame_count=input_frame_count,
-        finish_reason=completion.finish_reason,
-        provider_finish_reason=completion.provider_finish_reason,
-        summary_opened=summary_opened,
-        summary_closed=summary_closed,
-        raw_text=raw_text,
-        raw_reasoning="".join(reasoning_parts),
-        model_provider=adapter.model.provider_id,
-        model_endpoint_id=adapter.model.endpoint_id,
-        model_id=adapter.model.model_id,
-        usage=usage,
-        error_type=type(error).__name__ if error is not None else None,
-        error=str(error) if error is not None else None,
-    )
-
-
-def _summary_output_error(
-    error: Exception,
-    *,
-    adapter: RuntimeAdapter,
-    request_id: str,
-    route: str,
-    chunk_index: int,
-    attempt_index: int,
-    input_frame_count: int,
-    requested_output_tokens: int,
-    estimated_input_tokens: int,
-    input_message_count: int,
-    completion: ProviderCompletion,
-    text_parts: Sequence[str],
-    reasoning_parts: Sequence[str],
-    usage: dict[str, int | float],
-) -> CompactionStrategyError:
-    return CompactionStrategyError(
-        str(error),
-        terminal=isinstance(error, CompactionStrategyError) and error.terminal,
-        model_outputs=(
-            _compaction_model_output(
-                adapter=adapter,
-                request_id=request_id,
-                route=route,
-                chunk_index=chunk_index,
-                attempt_index=attempt_index,
-                input_frame_count=input_frame_count,
-                requested_output_tokens=requested_output_tokens,
-                estimated_input_tokens=estimated_input_tokens,
-                input_message_count=input_message_count,
-                completion=completion,
-                text_parts=text_parts,
-                reasoning_parts=reasoning_parts,
-                usage=usage,
-                error=error,
-            ),
-        ),
-    )
-
-
-def _summary_markup_state(raw_text: str) -> tuple[bool, bool]:
-    opening = raw_text.find("<summary>")
-    if opening < 0:
-        return False, False
-    return True, raw_text.find("</summary>", opening + len("<summary>")) >= 0
-
-
-def _should_retry_smaller_chunk(
-    error: CompactionStrategyError,
-    input_frame_count: int,
-) -> bool:
-    if input_frame_count <= 1 or len(error.model_outputs) != 1:
-        return False
-    output = error.model_outputs[0]
-    return (
-        output.finish_reason == "length"
-        and output.summary_opened
-        and not output.summary_closed
-        and output.error == "summary response did not contain a non-empty <summary> block"
-    )
-
-
-def _outputs_from_error(exc: Exception) -> tuple[CompactionModelOutput, ...]:
-    if isinstance(exc, CompactionStrategyError):
-        return exc.model_outputs
-    return ()
-
-
-def _serialize_messages(messages: Sequence[MessageRecord]) -> str:
-    parts: list[str] = []
-    for message in messages:
-        label = {
-            "system": "System",
-            "user": "User",
-            "assistant": "Assistant",
-            "tool_result": "Tool result",
-        }[message.role]
-        if message.semantic_tag is not None:
-            label += f" ({message.semantic_tag})"
-        if message.metadata.get("incomplete"):
-            label += " (interrupted/incomplete)"
-        parts.append(f"[{label}] {model_visible_message(message).text_content}")
-        if message.tool_calls:
-            serialized_calls = [call.model_dump(mode="json") for call in message.tool_calls]
-            parts.append(f"[Assistant tool calls] {serialized_calls}")
-        if message.role == "tool_result" and message.tool_result is not None:
-            parts.append(f"[Tool result metadata] {message.tool_result.model_dump(mode='json')}")
-    return "\n".join(parts)
-
-
-def _summary_payload(
-    previous_summary: str | None,
-    messages: Sequence[MessageRecord],
-) -> str:
-    sections: list[str] = []
-    if previous_summary:
-        sections.extend(["<previous_summary>", previous_summary, "</previous_summary>", ""])
-    sections.extend(["<conversation>", _serialize_messages(messages), "</conversation>"])
-    return "\n".join(sections)
-
-
-def _merge_usage(
-    current: dict[str, int | float],
-    usage: Usage | dict[str, int | float],
-) -> dict[str, int | float]:
-    values = usage.model_dump() if isinstance(usage, Usage) else usage
-    merged = dict(current)
-    for key, value in values.items():
-        if value is None:
-            continue
-        existing = merged.get(key, 0)
-        merged[key] = existing + value if isinstance(existing, int | float) else value
-    return merged
+        return adapter.model.context_budget.input_tokens

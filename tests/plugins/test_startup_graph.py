@@ -14,7 +14,7 @@ from ouro.plugins.models import BuiltinPluginActivationOverride, PluginStateDocu
 from ouro.plugins.registry import PluginCommandRegistry
 from ouro.plugins.runtime import PluginRuntimeResource
 from ouro.plugins.store import PluginPackageStore
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 from ouro.skills import SkillMetadata
 from ouro.tools import ToolRegistry
 from tests.plugins.test_plugin_system import _runtime, _write_native_plugin
@@ -62,7 +62,7 @@ def graph_runtime(tmp_path, dependencies, *, fail=None, phase="prepare", on_prep
                         "name": key,
                         "namespace": key,
                         "version": "1.0.0",
-                        "engines": {"ouro": "^0.3.0", "plugin_api": "^3.0.0"},
+                        "engines": {"ouro": "^0.3.0", "plugin_api": "^4.0.0"},
                         "runtime": {
                             "kind": "python-inprocess",
                             "entrypoint": f"{key}_plugin:create",

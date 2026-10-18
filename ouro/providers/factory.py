@@ -221,11 +221,6 @@ def _model_metadata(
     billing_mode: BillingMode,
 ) -> ModelMetadata:
     context_window = 128_000 if options.context_window is None else options.context_window
-    max_output_tokens = 8192 if options.max_output_tokens is None else options.max_output_tokens
-    if context_window < 1:
-        raise ConfigError("context_window must be at least 1")
-    if max_output_tokens < 1 or max_output_tokens > context_window:
-        raise ConfigError("max_output_tokens must be between 1 and context_window")
     if options.temperature is not None and not 0.0 <= options.temperature <= 2.0:
         raise ConfigError("temperature must be between 0 and 2")
 
@@ -252,7 +247,7 @@ def _model_metadata(
             endpoint_id=options.endpoint_id,
             display_name=model_id,
             context_window=context_window,
-            max_output_tokens=max_output_tokens,
+            max_output_tokens=options.max_output_tokens,
             temperature=options.temperature,
             supports_tools=True if options.supports_tools is None else options.supports_tools,
             supports_image_input=False

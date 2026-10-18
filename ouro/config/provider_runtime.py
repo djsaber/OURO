@@ -94,7 +94,7 @@ def merge_runtime_options(
         ),
         max_output_tokens=(
             override.max_output_tokens
-            if override.max_output_tokens is not None
+            if "max_output_tokens" in override.model_fields_set
             else base.max_output_tokens
         ),
         supports_tools=(

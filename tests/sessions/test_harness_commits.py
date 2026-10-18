@@ -9,6 +9,7 @@ import pytest
 
 from ouro.application.harness import capture_session_harness
 from ouro.core.context import ContextBuilder
+from ouro.core.context_budget import ContextBudget
 from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
 from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
@@ -58,7 +59,7 @@ def test_request_context_survives_harness_changes_but_not_history_withdrawal(sto
     session = SessionRecord()
     store.create_session(session)
     view = ContextBuilder().build(
-        messages=[], tools=[], context_window_tokens=10_000, reserved_output_tokens=1_000
+        messages=[], tools=[], budget=ContextBudget(context_window=10000, max_output_tokens=1000)
     )
     context = ContextSnapshotRecord(
         session_id=session.session_id,

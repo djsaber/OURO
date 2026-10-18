@@ -791,9 +791,6 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
 
     def _normalize_model_options(self) -> None:
         model_key = self._values["compaction-model"]
-        if model_key == _RUNTIME_MODEL:
-            self._values["compaction-temperature"] = ""
-            self._values["compaction-max-output"] = ""
         reasoning_options = _compaction_reasoning_options(self._model(model_key))
         if self._values["compaction-reasoning"] not in reasoning_options:
             self._values["compaction-reasoning"] = "default"
@@ -855,24 +852,9 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
             raise ValueError("Target ratio must be lower than trigger ratio")
         if fallback == strategy:
             raise ValueError("Fallback strategy must differ from the primary strategy")
-        configured = self._model(model)
-        max_output_tokens = (
-            None
-            if model == _RUNTIME_MODEL
-            else _optional_positive_int(
-                self._values["compaction-max-output"],
-                "Max output tokens",
-            )
+        max_output_tokens = _optional_positive_int(
+            self._values["compaction-max-output"], "Max output tokens"
         )
-        if (
-            configured is not None
-            and max_output_tokens is not None
-            and max_output_tokens > configured.max_output_tokens
-        ):
-            raise ValueError(
-                "Max output tokens must not exceed the selected endpoint output limit "
-                f"({configured.max_output_tokens:,})"
-            )
         return TuiCompactionConfiguration(
             strategy_id=strategy,
             fallback_strategy_id=None if fallback == _NO_FALLBACK else fallback,
@@ -881,9 +863,7 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
             target_ratio=target,
             model_key=None if model == _RUNTIME_MODEL else model,
             temperature=(
-                None
-                if model == _RUNTIME_MODEL
-                else _optional_bounded_float(
+                _optional_bounded_float(
                     self._values["compaction-temperature"],
                     "Temperature",
                     minimum=0.0,
@@ -891,11 +871,7 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
                 )
             ),
             max_output_tokens=max_output_tokens,
-            reasoning=(
-                None
-                if model == _RUNTIME_MODEL
-                else _reasoning_request(self._values["compaction-reasoning"])
-            ),
+            reasoning=_reasoning_request(self._values["compaction-reasoning"]),
         )
 
     def _validation_error(self) -> str:
@@ -908,12 +884,8 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
     def _compaction_choices(self) -> tuple[Choice, ...]:
         model_key = self._values["compaction-model"]
         configured = self._model(model_key)
-        uses_runtime_model = model_key == _RUNTIME_MODEL
-        request_options_disabled = uses_runtime_model or configured is None
         reasoning_disabled = (
-            request_options_disabled
-            or configured is not None
-            and configured.reasoning.activation == "unsupported"
+            configured is not None and configured.reasoning.activation == "unsupported"
         )
         error = self._validation_error()
         fallback = self._values["compaction-fallback"]
@@ -973,36 +945,23 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
             Choice(
                 "compaction-temperature",
                 "Temperature",
-                trailing=(
-                    "Session model"
-                    if uses_runtime_model
-                    else self._values["compaction-temperature"] or "Endpoint default"
-                ),
+                trailing=self._values["compaction-temperature"] or "Endpoint default",
                 group="MODEL",
-                disabled=request_options_disabled,
                 edit_value=self._values["compaction-temperature"],
                 edit_placeholder="Leave blank to use the endpoint default",
             ),
             Choice(
                 "compaction-max-output",
                 "Max output tokens",
-                trailing=(
-                    "Session model"
-                    if uses_runtime_model
-                    else self._values["compaction-max-output"] or "Endpoint default"
-                ),
+                trailing=self._values["compaction-max-output"] or "Optional",
                 group="MODEL",
-                disabled=request_options_disabled,
                 edit_value=self._values["compaction-max-output"],
-                edit_placeholder="Leave blank to use the endpoint default",
             ),
             Choice(
                 "compaction-reasoning",
                 "Thinking",
                 trailing=(
-                    "Session model"
-                    if uses_runtime_model
-                    else "Unsupported"
+                    "Unsupported"
                     if reasoning_disabled
                     else THINKING_LABELS[self._values["compaction-reasoning"]]
                 ),
@@ -1656,7 +1615,9 @@ def _reasoning_request(value: str) -> ReasoningRequest | None:
 
 
 def _compaction_reasoning_options(model: AvailableModel | None) -> tuple[str, ...]:
-    if model is None or model.reasoning.activation == "unsupported":
+    if model is None:
+        return tuple(THINKING_LABELS)
+    if model.reasoning.activation == "unsupported":
         return ("default",)
     values = ["default", "enabled"]
     if model.reasoning.activation == "toggle":

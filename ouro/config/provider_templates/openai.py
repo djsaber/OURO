@@ -59,7 +59,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
             "Browser subscription login with the documented Codex model catalog. "
             "Availability depends on the account and rollout. "
             "GPT-5.5 retires from Codex on 2026-10-14. "
-            "No request output limit; context 1050000 and output 32768 are local planning budgets. "
+            "No request output limit is configured; the local context window is 1050000. "
             "Image input is enabled; "
             "structured output is not declared supported by this integration."
         ),
@@ -75,7 +75,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 display_name=_OPENAI_MODEL_DISPLAY_NAMES[model_id],
                 model_id=model_id,
                 context_window=1_050_000,
-                max_output_tokens=32_768,
                 supports_tools=True,
                 supports_image_input=True,
                 supports_streaming=True,
@@ -95,7 +94,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://learn.chatgpt.com/docs/models",
         verified_on=_VERIFIED_ON,
-        revision=11,
+        revision=12,
     ),
     ProviderTemplate(
         template_id="openai",
@@ -103,8 +102,8 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         description=(
             "OpenAI Responses API with GPT-6.1 Sol, GPT-6 Astra/Sol/Luna, GPT-5.6 Sol/Terra/Luna "
             "and GPT-5.5. "
-            "Documented context 1050000 and output maximum 128000; "
-            "the preset requests an output budget of 32768. GPT-6 tool calling requires Responses. "
+            "Local context window 1050000 with no configured output limit. "
+            "GPT-6 tool calling requires Responses. "
             "Image input is supported by the OURO Responses adapter."
         ),
         provider_type="openai",
@@ -119,7 +118,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 display_name=_OPENAI_MODEL_DISPLAY_NAMES[model_id],
                 model_id=model_id,
                 context_window=1_050_000,
-                max_output_tokens=32_768,
                 supports_tools=True,
                 supports_image_input=True,
                 supports_streaming=True,
@@ -139,6 +137,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://developers.openai.com/api/docs/models",
         verified_on=_VERIFIED_ON,
-        revision=10,
+        revision=11,
     ),
 )

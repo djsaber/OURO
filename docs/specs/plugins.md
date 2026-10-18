@@ -223,7 +223,7 @@ calendar-plugin/
   "namespace": "calendar",
   "engines": {
     "ouro": ">=0.3.0,<0.4.0",
-    "plugin_api": "^3.1.0"
+    "plugin_api": "^4.0.0"
   },
   "runtime": {
     "kind": "python-inprocess",
@@ -353,7 +353,7 @@ Worker 返回的 contribution 必须是 Manifest 静态声明集合的子集；�
 
 ## 8. Plugin API
 
-插件只依赖 `ouro.sdk.plugins.v3`，不依赖 `ouro.core.*`、`ouro.application.*`、具体 registry
+插件只依赖 `ouro.sdk.plugins.v4`，不依赖 `ouro.core.*`、`ouro.application.*`、具体 registry
 或 Host 类型。
 
 ```python
@@ -491,7 +491,7 @@ canonical 历史、预算、计数和用量仍属于调用者的 Run。跨 worke
 ### 独立模型请求
 
 `PluginContext.models.generate(ModelRequest, on_output=...)` 执行一次独立文本对话请求，要求 `models.request`。
-输入包含 system/user/assistant 消息、临时系统指令、模型路由、思考配置、输出上限和请求期限。
+输入包含 system/user/assistant 消息、临时系统指令、模型路由、思考配置、输出上限和请求期限。输出上限缺省为 None，表示不限制；有限值依据当前请求窗口校验，不与端点的输出配置比较。
 `default` 解析当前配置的默认端点；缺少默认配置明确失败。Application 复用模型目录与 Core 请求执行器，
 插件适配层仅校验权限、调用作用域并转换 SDK 数据，不持有供应商客户端或存储实现。
 
@@ -502,6 +502,12 @@ canonical 历史、预算、计数和用量仍属于调用者的 Run。跨 worke
 准备阶段、只读回调、已结束调用或已撤销代次不能发起请求。活跃 Run 中必须使用 `models.request`，保留原生
 预算与历史提交；独立请求不能绕过这些约束。worker 使用 `WorkerModels(peer)`，注册其 `output` 到
 `models.output`；双向调用继承父请求生命周期，SDK 请求期限不受普通 RPC 默认超时截断。
+
+### 摘要策略
+
+`CompactionCall` 提供 session/run 身份、可选只读状态视图、已有摘要与待压缩材料，不传入主请求预算。`CompactionOutput.summary` 是规范化的非空摘要正文；插件自行定义提示词、原始格式与解析过程，正文无需使用内置策略的 XML 标签。
+
+Host 用实际正文重新投影主上下文，通过容量和状态校验后提交。策略可报告用量，失败或取消不激活部分摘要。具体边界见[上下文与压缩](context-and-compaction.md#摘要执行)。
 
 ### 受管理进程与环境
 
@@ -561,7 +567,7 @@ Host capability 清单由以下 15 类组成。这里的“消费者”指真正
 prepare、contract、projection 与文档删除，不保留空 adapter 或迁移别名。
 
 观察型扩展只公开 `observers`；`prompt_policies` 是独立语义边界。Manifest schema 3 不接受 `hooks` 字段；
-Plugin API 使用 3.1.0，worker protocol 使用 3.0；Python SDK 入口为 `ouro.sdk.plugins.v3`。
+Plugin API 使用 4.0.0，worker protocol 使用 3.0；Python SDK 入口为 `ouro.sdk.plugins.v4`。
 
 公开交互 DTO 位于 `ouro.sdk.plugins.interactions`。计划确认请求包含预览文本、计划引用、可选方案和明确的动作，
 答案包含动作及用户选择或反馈。Host 按 DTO 类型呈现，不以 builtin 身份或工具显示名赋予特殊界面；请求来源仍
@@ -1224,7 +1230,7 @@ ouro/plugins/
   worker.py          # worker protocol/process adapter
   compatibility.py   # community inspection/import
 
-ouro/sdk/plugins/v3.py
+ouro/sdk/plugins/v4.py
   # public plugin API only
 
 ouro/application/plugins.py

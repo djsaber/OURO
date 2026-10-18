@@ -75,7 +75,7 @@ class ProviderModel:
     model_id: str
     endpoint_id: str | None
     context_window: int
-    max_output_tokens: int
+    max_output_tokens: int | None
     temperature: float | None
     supports_tools: bool
     supports_streaming: bool

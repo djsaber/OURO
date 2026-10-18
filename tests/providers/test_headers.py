@@ -47,6 +47,7 @@ async def test_registered_context_fields_use_actual_route_and_explicit_call_fact
             event
             async for event in provider.stream(
                 model=ModelMetadata(
+                    max_output_tokens=8192,
                     model_id="selected-model",
                     provider_id="selected-provider",
                     endpoint_id="selected-endpoint",
@@ -153,7 +154,12 @@ async def test_all_protocols_checks_and_retries_share_resolved_headers(
                 }
             ),
         )
-        model = ModelMetadata(model_id="model", provider_id="service", supports_streaming=streaming)
+        model = ModelMetadata(
+            max_output_tokens=8192,
+            model_id="model",
+            provider_id="service",
+            supports_streaming=streaming,
+        )
         events = [
             event
             async for event in provider.stream(
@@ -202,7 +208,10 @@ async def test_missing_values_fail_before_authentication_or_http(
             [
                 event
                 async for event in provider.stream(
-                    model=ModelMetadata(model_id="model", provider_id="test"), messages=[]
+                    model=ModelMetadata(
+                        max_output_tokens=8192, model_id="model", provider_id="test"
+                    ),
+                    messages=[],
                 )
             ]
     finally:
@@ -239,7 +248,8 @@ async def test_authentication_conflict_is_case_insensitive_and_sends_no_request(
         events = [
             event
             async for event in provider.stream(
-                model=ModelMetadata(model_id="model", provider_id="test"), messages=[]
+                model=ModelMetadata(max_output_tokens=8192, model_id="model", provider_id="test"),
+                messages=[],
             )
         ]
     assert events[-1].type == "error"
@@ -267,7 +277,12 @@ async def test_upstream_error_cannot_echo_custom_header_values(provider_class, s
         events = [
             event
             async for event in provider.stream(
-                model=ModelMetadata(model_id="model", provider_id="test", supports_streaming=False),
+                model=ModelMetadata(
+                    max_output_tokens=8192,
+                    model_id="model",
+                    provider_id="test",
+                    supports_streaming=False,
+                ),
                 messages=[],
             )
         ]

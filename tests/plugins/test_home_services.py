@@ -6,7 +6,7 @@ import pytest
 
 from ouro.application.task_scheduler import TaskScheduler
 from ouro.automation.local_files import LocalTaskRepository
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 from tests.application.test_tasks import task_runtime
 from tests.plugins.test_lifecycle import PLUGIN_ID, LifecyclePlugin, create_runtime
 

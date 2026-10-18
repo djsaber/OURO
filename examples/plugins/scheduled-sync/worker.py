@@ -8,7 +8,7 @@ from pathlib import Path
 
 from scheduled_sync_plugin import ScheduledSync
 
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 from ouro.sdk.plugins.scheduled import ScheduledInvocation
 from ouro.sdk.plugins.services import ServiceCall
 from ouro.sdk.plugins.worker import WorkerPeer

@@ -68,7 +68,7 @@ class ProviderEndpointView(ApplicationDTO):
     api_path: str | None = None
     temperature: float | None = None
     context_window: int
-    max_output_tokens: int
+    max_output_tokens: int | None = None
     supports_tools: bool
     supports_image_input: bool
     supports_audio_input: bool

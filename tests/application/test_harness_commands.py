@@ -19,7 +19,7 @@ from ouro.plugins.api import adapt_sdk_contributions
 from ouro.plugins.catalog import ExtensionCatalogBase, build_extension_catalog
 from ouro.plugins.registry import PluginCommandRegistry
 from ouro.plugins.session_controllers import PluginSessionControllerRegistry
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
 

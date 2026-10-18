@@ -89,7 +89,7 @@ async def test_openai_preset_sends_native_responses_tools_and_reasoning(
     assert payload["model"] == model_id
     assert payload["reasoning"] == {"effort": "high", "summary": "auto"}
     assert payload["tools"][0]["name"] == "echo"
-    assert payload["max_output_tokens"] == 32768
+    assert "max_output_tokens" not in payload
     assert payload["store"] is False
     assert "reasoning.encrypted_content" in payload["include"]
     assert (

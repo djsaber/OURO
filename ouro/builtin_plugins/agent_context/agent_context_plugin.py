@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ouro import __version__
 from ouro.sdk.plugins.environment import PluginEnvironment
-from ouro.sdk.plugins.v3 import (
+from ouro.sdk.plugins.v4 import (
     ContextCall,
     ContextContribution,
     ContextFragment,

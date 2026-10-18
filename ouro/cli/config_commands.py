@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Unpack
 
 from ouro.application.configuration import ConfigurationFacade
 from ouro.cli.errors import error_exit_code
 from ouro.config import QueuedInputConsumptionMode
+from ouro.config.compaction import CompactionRequestChanges
 from ouro.core.agents import ExecutionMode
 from ouro.core.errors import ConfigError, OuroError
-from ouro.core.reasoning import ReasoningRequest
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode
 
@@ -136,11 +137,9 @@ def show_compaction_config(
     endpoint_id: str | None = None,
     runtime_endpoint: bool = False,
     default_model: bool = False,
-    temperature: float | None = None,
-    max_output_tokens: int | None = None,
-    reasoning: ReasoningRequest | None = None,
     clear: bool = False,
     json_mode: bool = False,
+    **request: Unpack[CompactionRequestChanges],
 ) -> int:
     try:
         facade = ConfigurationFacade(home)
@@ -151,10 +150,8 @@ def show_compaction_config(
                 endpoint_id is not None,
                 runtime_endpoint,
                 default_model,
-                temperature is not None,
-                max_output_tokens is not None,
-                reasoning is not None,
                 clear,
+                bool(request),
             )
         )
         if has_update:
@@ -163,10 +160,8 @@ def show_compaction_config(
                 endpoint_id=endpoint_id,
                 use_runtime_endpoint=runtime_endpoint,
                 use_default_model=default_model,
-                temperature=temperature,
-                max_output_tokens=max_output_tokens,
-                reasoning=reasoning,
                 clear=clear,
+                **request,
             )
     except OuroError as exc:
         _print_config_error(exc, json_mode=json_mode)
@@ -194,27 +189,16 @@ def show_compaction_config(
         if model.use_default_model
         else "session runtime endpoint"
     )
-    thinking_mode: str
-    thinking_effort: str
-    if model.has_configured_route:
-        thinking_mode = model.reasoning.mode if model.reasoning is not None else "-"
-        thinking_effort = (
-            model.reasoning.effort
-            if model.reasoning is not None and model.reasoning.effort is not None
-            else "-"
-        )
-    else:
-        thinking_mode = "inherited from Session"
-        thinking_effort = "inherited from Session"
+    thinking_mode = model.reasoning.mode if model.reasoning is not None else "Endpoint default"
+    thinking_effort = model.reasoning.effort if model.reasoning is not None else None
     print(
         "\n".join(
             [
                 f"Compaction model route: {route}",
                 f"Temperature: {model.temperature if model.temperature is not None else '-'}",
-                "Max output tokens: "
-                f"{model.max_output_tokens if model.max_output_tokens is not None else '-'}",
+                f"Max output tokens: {model.max_output_tokens or 'unlimited'}",
                 f"Thinking mode: {thinking_mode}",
-                f"Thinking effort: {thinking_effort}",
+                f"Thinking effort: {thinking_effort or 'Endpoint default'}",
                 f"Config: {config.config_path}",
             ]
         )

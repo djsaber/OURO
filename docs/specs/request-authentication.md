@@ -73,7 +73,7 @@ factory 仍只按 protocol 分派，可接收已装配的 authenticator/service 
 
 `LocalApplication.build` / `build_local_runtime` 显式接收 driver 与 ProviderServicePolicy 注册；策略包含稳定 policy id、纯目标规则和 ProviderRequestPolicy 服务事实。组合时校验产品声明引用及 id 唯一性，按已校验引用注入 factory；没有插件热加载或用户自定义注册表。static 仍由原 resolver 解析，同样应用产品声明的服务策略。
 
-ProviderRequestPolicy 包含额度错误码、计费方式和 supports_output_limit（默认 true）。输出上限能力与认证和计费方式独立，由受信服务装配注入，不成为用户配置开关。false 表示单一 max_output_tokens 只保留本地预算语义，Responses/Chat adapter 省略相应输出上限字段，使用入口明确披露实际输出可能超过预算。Messages 协议要求输出上限，装配 false 时明确拒绝。Core 预算、压缩和用量记账不依赖此服务标记，也不通过本地截流伪造硬上限。
+ProviderRequestPolicy 包含额度错误码、计费方式和 supports_output_limit（默认 true）。输出上限能力与认证和计费方式独立，由受信服务装配注入，不成为用户配置开关。max_output_tokens 缺失或为 null 时表示不配置输出上限；false 表示有限的 max_output_tokens 只保留本地预算语义，Responses/Chat adapter 省略相应输出上限字段，使用入口明确披露实际输出可能超过预算。Messages 协议要求输出上限，装配 false 时明确拒绝。Core 预算、压缩和用量记账不依赖此服务标记，也不通过本地截流伪造硬上限。
 
 每个本地 Runtime 创建一个 home 范围的 CredentialService 和 ProviderAuthService，主模型、专用压缩、子会话路由和连接检查借用同一凭据核心。`LocalApplication.provider_auth` 暴露该 Application 用例；注入测试 Runtime 时该 facet 可为空。不同 home 不共享材料或关闭行为；构造和目录查询不读取 managed 秘密，未登录默认模型可以启动、进入管理及执行注销。
 

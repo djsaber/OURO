@@ -12,6 +12,7 @@ import pytest
 from ouro.application.session_recovery import SessionRecoveryService
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextBuilder, ContextMetrics
+from ouro.core.context_budget import ContextBudget
 from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
 from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
 from ouro.core.events import EventRecord
@@ -270,8 +271,7 @@ def test_session_store_replaces_latest_context_atomically(session_store: Session
         .build(
             messages=[message],
             tools=[],
-            context_window_tokens=10_000,
-            reserved_output_tokens=1_000,
+            budget=ContextBudget(context_window=10000, max_output_tokens=1000),
         )
         .model_copy(update={"context_id": "ctx_first"})
     )
@@ -339,7 +339,7 @@ def test_session_store_rejects_context_with_incompatible_capability_schema(
             )
             connection.commit()
 
-    with pytest.raises(UnsupportedDataVersionError, match="found 3, expected 4"):
+    with pytest.raises(UnsupportedDataVersionError, match="found 3, expected 5"):
         session_store.load_latest_context(session.session_id)
 
 

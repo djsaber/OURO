@@ -4,22 +4,21 @@ import hashlib
 import inspect
 import json
 from collections.abc import Callable
-from dataclasses import replace
 from threading import Lock
 from typing import Protocol
 
-from pydantic import Field, TypeAdapter
+from pydantic import Field
 
 from ouro.config.provider_models import ProviderRuntimeOptions
 from ouro.config.providers import ProviderConfigManager
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import OuroModel
+from ouro.core.context_budget import ContextBudget
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 
 AdapterBuilder = Callable[[ProviderRuntimeOptions], RuntimeAdapter]
-_OPTIONS_CODEC = TypeAdapter(ProviderRuntimeOptions)
 
 
 class AvailableModel(OuroModel):
@@ -33,8 +32,14 @@ class AvailableModel(OuroModel):
     display_name: str | None = None
     temperature: float | None = None
     context_window: int = Field(default=128_000, ge=1)
-    max_output_tokens: int = Field(default=8192, ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1, strict=True)
     reasoning: ReasoningCapability = Field(default_factory=ReasoningCapability)
+
+    @property
+    def context_budget(self) -> ContextBudget:
+        return ContextBudget(
+            context_window=self.context_window, max_output_tokens=self.max_output_tokens
+        )
 
 
 class ModelReasoningState(OuroModel):
@@ -260,7 +265,7 @@ class ConfiguredModelCatalog:
             else ProviderRuntimeOptions()
         )
         return self._configs.resolve_runtime_options(
-            replace(overrides, provider_id=provider_id, endpoint_id=endpoint_id)
+            overrides.model_copy(update={"provider_id": provider_id, "endpoint_id": endpoint_id})
         )
 
     async def close(self) -> None:
@@ -288,9 +293,7 @@ def model_route_key(model: ModelMetadata) -> str:
 def _options_fingerprint(options: ProviderRuntimeOptions) -> str:
     # repr intentionally hides inline credentials. Hash canonical data instead;
     # neither the serialized material nor the fingerprint is exposed to Hosts.
-    payload = json.dumps(
-        _OPTIONS_CODEC.dump_python(options, mode="json"), sort_keys=True, separators=(",", ":")
-    )
+    payload = json.dumps(options.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

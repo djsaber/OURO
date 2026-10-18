@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from ouro.core.context import ContextBuilder, estimate_message_tokens, estimate_text_tokens
+from ouro.core.context_budget import ContextBudget
 from ouro.core.context_providers import ContextFragment
 from ouro.core.messages import (
     ImageContent,
@@ -27,7 +28,9 @@ def test_context_projects_batch_contract_without_changing_registered_tools(descr
     original_cost = sum(len(tool.model_dump_json(exclude_none=True)) for tool in definitions)
     builder = ContextBuilder(token_estimator=len)
 
-    context = builder.build(messages=[], tools=definitions, input_token_budget=original_cost)
+    context = builder.build(
+        messages=[], tools=definitions, budget=ContextBudget(context_window=original_cost)
+    )
     projected = context.provider_context().tools
     constraint = (
         "This must be the only tool call in your response. If you include other tool calls, "
@@ -55,8 +58,8 @@ def test_conservative_estimate_counts_ascii_and_unicode(text, tokens):
 
 
 def test_context_builder_rejects_non_positive_token_budget() -> None:
-    with pytest.raises(ValueError, match="at least 1"):
-        ContextBuilder().build(messages=[], tools=[], input_token_budget=0)
+    with pytest.raises(ValueError, match="context_window"):
+        ContextBuilder().build(messages=[], tools=[], budget=ContextBudget(context_window=0))
 
 
 def test_context_builder_preserves_all_messages_and_reports_hard_overflow() -> None:
@@ -67,9 +70,7 @@ def test_context_builder_preserves_all_messages_and_reports_hard_overflow() -> N
     ]
 
     context = ContextBuilder().build(
-        messages=messages,
-        tools=[],
-        input_token_budget=20,
+        messages=messages, tools=[], budget=ContextBudget(context_window=20)
     )
 
     assert context.model_messages == [ModelMessage.from_record(message) for message in messages]
@@ -168,12 +169,14 @@ def test_context_builder_preserves_native_system_prompt_when_no_skills_are_prese
 
 
 def test_context_builder_counts_scaffold_context_as_fixed_tokens() -> None:
-    without_context = ContextBuilder().build(messages=[], tools=[], input_token_budget=100)
+    without_context = ContextBuilder().build(
+        messages=[], tools=[], budget=ContextBudget(context_window=100)
+    )
     with_context = ContextBuilder().build(
         messages=[],
         tools=[],
         added_context=["dynamic context"],
-        input_token_budget=100,
+        budget=ContextBudget(context_window=100),
     )
 
     assert (
@@ -321,8 +324,7 @@ def test_context_builder_derives_budget_metrics_from_model_limits() -> None:
     context = ContextBuilder().build(
         messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
         tools=[],
-        context_window_tokens=1_000,
-        reserved_output_tokens=200,
+        budget=ContextBudget(context_window=1000, max_output_tokens=200),
     )
 
     assert context.metrics.context_window_tokens == 1_000
@@ -339,16 +341,12 @@ def test_context_metrics_apply_model_limits_without_changing_usage_facts() -> No
         .build(
             messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
             tools=[],
-            context_window_tokens=1_000,
-            reserved_output_tokens=200,
+            budget=ContextBudget(context_window=1000, max_output_tokens=200),
         )
         .metrics
     )
 
-    updated = original.with_model_limits(
-        context_window_tokens=2_000,
-        reserved_output_tokens=300,
-    )
+    updated = original.with_budget(ContextBudget(context_window=2000, max_output_tokens=300))
 
     assert updated.estimated_input_tokens == original.estimated_input_tokens
     assert updated.estimated_fixed_tokens == original.estimated_fixed_tokens

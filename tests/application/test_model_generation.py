@@ -11,7 +11,7 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.billing import UsageFilter
 from ouro.core.errors import ConfigError
 from ouro.core.model_generation import ModelGenerationRequest, ModelInput
-from ouro.core.provider import ModelMetadata, ProviderStreamEvent, Usage
+from ouro.core.provider import ModelMetadata, ProviderCompletion, ProviderStreamEvent, Usage
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.providers import FauxProvider
 
@@ -34,6 +34,53 @@ async def generate(service, request=REQUEST, **kwargs):
     return await service.generate(
         request, plugin_id=PLUGIN, session_id=None, workspace=None, **kwargs
     )
+
+
+@pytest.mark.parametrize("limit", [None, 128])
+async def test_independent_request_limit_does_not_inherit_or_mutate_shared_adapter(tmp_path, limit):
+    seen = []
+
+    class Provider(FauxProvider):
+        async def stream(self, **kwargs):
+            seen.append(kwargs["model"].max_output_tokens)
+            yield ProviderStreamEvent(type="text_delta", text="answer")
+            yield ProviderStreamEvent(type="done")
+
+    service, adapter = generation(tmp_path, Provider(), max_output_tokens=32)
+    await asyncio.gather(
+        generate(service, REQUEST.model_copy(update={"max_output_tokens": limit})),
+        generate(service, REQUEST.model_copy(update={"max_output_tokens": 64})),
+    )
+    assert seen.count(limit) == 1 and seen.count(64) == 1
+    assert adapter.model.max_output_tokens == 32
+
+
+@pytest.mark.parametrize("finish", ["stop", "length"])
+async def test_unlimited_long_reasoning_requires_completed_response_and_preserves_usage(
+    tmp_path, finish
+):
+    reasoning = "思考" * 40_000
+    service, _ = generation(
+        tmp_path,
+        FauxProvider(
+            [
+                ProviderStreamEvent(type="reasoning_delta", reasoning_content=reasoning),
+                ProviderStreamEvent(type="text_delta", text="answer"),
+                ProviderStreamEvent(
+                    type="done",
+                    completion=ProviderCompletion(finish_reason=finish),
+                    usage=Usage(input_tokens=100, output_tokens=40_001),
+                ),
+            ]
+        ),
+    )
+    if finish == "stop":
+        result = await generate(service)
+        assert result.reasoning == reasoning and result.text == "answer"
+    else:
+        with pytest.raises(RuntimeError, match="output limit"):
+            await generate(service)
+    assert service.usage.summarize(UsageFilter()).totals.output_tokens == 40_001
 
 
 async def test_independent_generation_streams_and_records_only_real_request_identity(tmp_path):
@@ -71,7 +118,7 @@ async def test_independent_generation_streams_and_records_only_real_request_iden
         (2, "text", "answer"),
     ]
     assert calls[0]["model"].max_output_tokens == 64
-    assert adapter.model.max_output_tokens == 8192
+    assert adapter.model.max_output_tokens is None
     assert calls[0]["tools"] == []
     assert calls[0]["request_context"].values == {
         "request.id": result.request_id,
@@ -111,7 +158,7 @@ async def test_generation_attributes_actual_session_without_creating_run(tmp_pat
 @pytest.mark.parametrize(
     ("updates", "error", "message"),
     [
-        ({"max_output_tokens": 17}, ValueError, "output exceeds"),
+        ({"max_output_tokens": 64}, ValueError, "context_window"),
         (
             {"messages": (ModelInput(role="user", text="large input " * 500),)},
             ValueError,

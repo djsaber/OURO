@@ -29,7 +29,7 @@ from ouro.plugins.worker_providers import WorkerProviderBridge
 from ouro.plugins.worker_scheduling import WorkerSchedulerBridge
 from ouro.plugins.worker_services import WorkerServiceBridge
 from ouro.plugins.worker_tool_groups import WorkerToolGroupBridge
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 
 
 class WorkerProtocolError(RuntimeError):
@@ -864,8 +864,6 @@ class WorkerPluginInstance:
                         "run_id": call.run_id,
                         "previous_summary": call.previous_summary,
                         "messages": [dict(message) for message in call.messages],
-                        "input_token_budget": call.input_token_budget,
-                        "summary_output_tokens": call.summary_output_tokens,
                     },
                 },
                 decode=_decode_worker_compaction,

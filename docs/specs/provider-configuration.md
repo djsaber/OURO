@@ -30,7 +30,13 @@ Endpoint 表示一个具体可调用模型：
 - 类型化 reasoning capability 与声明式原生参数 profile；
 - request options 与展示 metadata。
 
-Endpoint 使用单一正整数 `max_output_tokens` 定义输出预算，同时用于本地上下文预算预留；该值不能超过 context window。默认服务将其发送为请求输出上限；受信服务声明不支持输出上限时不发送该字段，仅保留本地预算语义，实际输出可能超过该值，使用入口必须明确标注这一限制。服务能力通过 ProviderRequestPolicy 注入，不由认证方式推断，也不增加 Endpoint 预留参数或 nullable/server-default 模式。思考能力、原生编码和运行时意图使用下文的统一契约；
+`max_output_tokens` 为可空正整数，默认 `None`。完整配置中省略字段与显式 `null` 同义，表示 OURO 不配置输出上限；正整数表示本次请求的有限上限，必须小于 `context_window`，为输入留下空间。它不是服务端能力声明，OURO 不发现或推算服务端输出限制。
+
+本地 `ContextBudget` 从最终请求参数计算：空上限预留 0，有限上限等额预留，输入预算为上下文窗口减预留。Chat Completions 和 Responses 在空值时省略相应参数，不发送 JSON `null`；Messages 协议要求显式有限值，空值在编码边界报错。受信 `ProviderRequestPolicy.supports_output_limit=false` 时可省略上限的协议不发送该参数，有限配置仍用于本地预留；使用入口披露这一约束，不通过本地截流模拟请求硬上限。
+
+配置编辑只应用提交的字段：不提交上限表示保留，提交 `null` 表示清空。CLI 用 `--max-output-tokens none` 清空，TUI 的 `Max output tokens` 是可选项，空值标为 `Optional`，不显示输入占位提示。运行时覆写在构造最终模型时按字段是否提交合并；独立模型调用与摘要调用各自的上限默认 `None`，不继承端点数值。请求执行直接使用完整模型。
+
+思考能力、原生编码和运行时意图使用下文的统一契约；
 `request_options` 不能同时拥有 reasoning profile 已管理的顶层字段。
 
 ## 插件协议

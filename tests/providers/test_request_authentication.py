@@ -58,7 +58,10 @@ async def collect(adapter, streaming=False):
         event
         async for event in adapter.stream(
             model=ModelMetadata(
-                model_id="fixture", provider_id="fixture", supports_streaming=streaming
+                max_output_tokens=8192,
+                model_id="fixture",
+                provider_id="fixture",
+                supports_streaming=streaming,
             ),
             messages=[],
         )
@@ -293,7 +296,7 @@ async def test_check_uses_same_recovery_and_safe_error_boundary(tmp_path, provid
     try:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             result = await build(provider, auth, client).check_connection(
-                ModelMetadata(model_id="fixture", provider_id="fixture")
+                ModelMetadata(max_output_tokens=8192, model_id="fixture", provider_id="fixture")
             )
             assert not result.ok and result.error_code == "authentication_required"
             assert len(requests) == 2 and "fixture-access" not in result.message

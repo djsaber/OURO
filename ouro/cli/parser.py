@@ -1041,9 +1041,9 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
   ouro config compaction --runtime-endpoint
   ouro config compaction --clear
 
-The session runtime route inherits each Session's complete model request configuration.
-Temperature, output-token, and thinking overrides require a default or dedicated model route.
---runtime-endpoint clears the dedicated route and all of its request overrides.""",
+Summary request settings apply to every selected route.
+The output limit defaults to none and does not inherit the endpoint limit.
+--runtime-endpoint keeps summary request settings; --clear resets the route and settings.""",
     )
     compaction_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     compaction_parser.add_argument("--provider", dest="provider_id", help="Provider id")
@@ -1054,30 +1054,27 @@ Temperature, output-token, and thinking overrides require a default or dedicated
     compaction_parser.add_argument(
         "--runtime-endpoint",
         action="store_true",
-        help=(
-            "Use each Session's runtime model configuration; clear the dedicated route "
-            "and all request overrides"
-        ),
+        help="Use each Session's runtime endpoint while keeping summary request settings",
     )
     compaction_parser.add_argument(
         "--temperature",
         type=float,
         default=None,
         metavar="FLOAT",
-        help="Dedicated-model sampling temperature override",
+        help="Summary sampling temperature",
     )
     compaction_parser.add_argument(
         "--max-output-tokens",
-        type=int,
-        default=None,
-        metavar="INT",
-        help="Dedicated-model maximum output token override",
+        type=_output_limit,
+        default=argparse.SUPPRESS,
+        metavar="TOKENS|none",
+        help="Summary output limit; none means no configured limit",
     )
     compaction_parser.add_argument(
         "--thinking-mode",
         choices=("default", "enabled", "disabled"),
         default=None,
-        help="Dedicated-model reasoning intent; unavailable for the Session runtime route",
+        help="Summary reasoning intent",
     )
     compaction_parser.add_argument(
         "--thinking-effort",
@@ -1369,10 +1366,10 @@ def _add_endpoint_mutation_args(
     )
     route_group.add_argument(
         "--max-output-tokens",
-        type=int,
-        default=None,
-        metavar="TOKENS",
-        help="Maximum output tokens; must not exceed context window",
+        type=_output_limit,
+        default=argparse.SUPPRESS,
+        metavar="TOKENS|none",
+        help="Request output limit; none means no configured limit",
     )
     capability_group = parser.add_argument_group("endpoint capabilities")
     _add_endpoint_capability_args(capability_group)
@@ -1866,10 +1863,10 @@ def _add_provider_args(
     route_group.add_argument(
         "--max-output-tokens",
         dest=f"{prefix}max_output_tokens",
-        type=int,
-        default=None,
-        metavar="INT",
-        help="Endpoint maximum output tokens",
+        type=_output_limit,
+        default=argparse.SUPPRESS,
+        metavar="TOKENS|none",
+        help="Request output limit; none clears the endpoint limit",
     )
     capability_group = parser.add_argument_group("endpoint capability overrides")
     _add_endpoint_capability_args(capability_group, prefix=prefix)
@@ -1954,3 +1951,15 @@ def _tool_effect_override(value: str) -> tuple[str, str]:
             "tool effect must be read_only, state_changing, or unknown"
         )
     return tool_name, effect
+
+
+def _output_limit(value: str) -> int | None:
+    if value.casefold() == "none":
+        return None
+    try:
+        limit = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected a positive integer or none") from None
+    if limit < 1:
+        raise argparse.ArgumentTypeError("expected a positive integer or none")
+    return limit

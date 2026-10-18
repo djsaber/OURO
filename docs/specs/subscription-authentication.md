@@ -126,7 +126,7 @@ transport 保留内部 HTTP status、Retry-After 和所需错误 code；provider
 
 Responses codec 映射 system prompt → instructions、消息 → input、tool call/result → function_call/function_call_output，保持 call_id 与 item id 的区别；reasoning intent 通过已校验 profile 映射。不得用 Codex 的 Agent 提示词或内置工具替换 OURO 的提示词与工具契约。
 
-Codex 服务规则当前采用 SSE、store=false、完整本地上下文，不依赖 previous_response_id。温度、结构化输出等服务能力以实际核验结果为准。保持单一正整数 max_output_tokens 用于本地上下文预算；实测 Codex 订阅后端拒绝该字段，此集成接受没有请求级输出硬上限，由受信服务策略声明 supports_output_limit=false，adapter 不发送输出上限，实际输出可能超过本地预算。默认服务策略仍发送上限；不按厂商或 OAuth 分支，不新增独立预留参数，不在 HTTP 失败后自动调整。当前探针通过启动提示及 output_limit_enforced=false 明确披露限制；正式 Provider/Template DTO 携带只读服务 notice，CLI/TUI 创建、查看和管理入口展示该限制。正式 adapter 的验证方法见[协议探针](../../dev/probes/README.md#正式-adapter-验证)，产品支持边界见[使用指南](../guides/subscriptions.md#证据范围)。图像未验收时 capability 为不支持。
+Codex 服务规则当前采用 SSE、store=false、完整本地上下文，不依赖 previous_response_id。温度、结构化输出等服务能力以实际核验结果为准。max_output_tokens 为可空正整数，缺失和 null 均不设置输出上限、不预留输出空间，有限值用于本地上下文预算；实测 Codex 订阅后端拒绝该字段，此集成接受没有请求级输出硬上限，由受信服务策略声明 supports_output_limit=false，adapter 不发送输出上限，实际输出可能超过本地预算。默认服务策略在配置非空时发送上限；不按厂商或 OAuth 分支，不新增独立预留参数，不在 HTTP 失败后自动调整。当前探针通过启动提示及 output_limit_enforced=false 明确披露限制；正式 Provider/Template DTO 携带只读服务 notice，CLI/TUI 创建、查看和管理入口展示该限制。正式 adapter 的验证方法见[协议探针](../../dev/probes/README.md#正式-adapter-验证)，产品支持边界见[使用指南](../guides/subscriptions.md#证据范围)。图像未验收时 capability 为不支持。
 
 | Responses 输入/事件 | canonical 行为 |
 |---|---|

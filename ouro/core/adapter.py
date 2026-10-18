@@ -36,23 +36,24 @@ class RuntimeAdapter:
         _ = model.reasoning_resolution
         return RuntimeAdapter(self.provider, model)
 
+    def with_output_limit(self, max_output_tokens: int | None) -> RuntimeAdapter:
+        """Bind this request's output limit without changing the shared adapter."""
+        model = ModelMetadata.model_validate(
+            {**self.model.model_dump(), "max_output_tokens": max_output_tokens}
+        )
+        return RuntimeAdapter(self.provider, model)
+
     async def stream(
         self,
         context: ContextView,
         *,
         request_context: ProviderRequestContext | None = None,
         signal: AbortSignal | None = None,
-        max_output_tokens: int | None = None,
         on_stream_start: Callable[[], None] | None = None,
     ) -> AsyncGenerator[ProviderStreamEvent]:
-        model = self.model
-        if max_output_tokens is not None:
-            if max_output_tokens < 1 or max_output_tokens > self.model.context_window:
-                raise ValueError("max_output_tokens must be between 1 and the context window")
-            model = self.model.model_copy(update={"max_output_tokens": max_output_tokens})
         provider_context = context.provider_context()
         provider_events = self.provider.stream(
-            model=model,
+            model=self.model,
             system_prompt=provider_context.system_prompt,
             messages=provider_context.messages,
             tools=provider_context.tools,

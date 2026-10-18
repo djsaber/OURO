@@ -43,9 +43,6 @@ def test_compaction_model_config_persists_without_replacing_other_sections(tmp_p
     ("kwargs", "message"),
     [
         ({"provider_id": "glm"}, "configured together"),
-        ({"temperature": 0.1}, "dedicated model endpoint"),
-        ({"max_output_tokens": 4096}, "dedicated model endpoint"),
-        ({"reasoning": {"mode": "disabled"}}, "dedicated model endpoint"),
         ({"reasoning": {"effort": "extreme"}}, "Input should be"),
     ],
 )
@@ -77,7 +74,7 @@ def test_compaction_manager_rejects_invalid_persisted_shape(tmp_path) -> None:
         CompactionConfigManager(tmp_path).snapshot()
 
 
-def test_compaction_manager_ignores_removed_global_summary_output_override(tmp_path) -> None:
+def test_compaction_manager_rejects_unknown_policy_fields(tmp_path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     (config_dir / "config.json").write_text(
@@ -93,12 +90,11 @@ def test_compaction_manager_ignores_removed_global_summary_output_override(tmp_p
         encoding="utf-8",
     )
 
-    snapshot = CompactionConfigManager(tmp_path).snapshot()
+    with pytest.raises(ConfigError, match="Extra inputs are not permitted"):
+        CompactionConfigManager(tmp_path).snapshot()
 
-    assert "summary_output_tokens" not in snapshot.policy.model_dump()
 
-
-def test_runtime_endpoint_clears_dedicated_route_and_all_request_overrides(tmp_path) -> None:
+def test_runtime_endpoint_changes_only_the_route(tmp_path) -> None:
     manager = CompactionConfigManager(tmp_path)
     manager.set_model(
         CompactionModelConfig(
@@ -114,9 +110,9 @@ def test_runtime_endpoint_clears_dedicated_route_and_all_request_overrides(tmp_p
 
     assert saved.model.provider_id is None
     assert saved.model.endpoint_id is None
-    assert saved.model.reasoning is None
-    assert saved.model.temperature is None
-    assert saved.model.max_output_tokens is None
+    assert saved.model.reasoning == ReasoningRequest(mode="enabled", effort="high")
+    assert saved.model.temperature == 0.1
+    assert saved.model.max_output_tokens == 4096
 
 
 @pytest.mark.parametrize(
@@ -127,8 +123,9 @@ def test_runtime_endpoint_clears_dedicated_route_and_all_request_overrides(tmp_p
         {"reasoning": ReasoningRequest(mode="disabled")},
     ],
 )
-def test_runtime_endpoint_rejects_request_overrides(tmp_path, override) -> None:
+def test_runtime_endpoint_accepts_independent_request_settings(tmp_path, override) -> None:
     manager = CompactionConfigManager(tmp_path)
 
-    with pytest.raises(ConfigError, match="cannot be combined"):
-        manager.update_model(use_runtime_endpoint=True, **override)
+    saved = manager.update_model(use_runtime_endpoint=True, **override)
+    for key, value in override.items():
+        assert getattr(saved.model, key) == value

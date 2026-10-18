@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import TypedDict, Unpack
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ouro.config.file import JsonConfigFile, atomic_config_update
 from ouro.config.providers import ProviderConfigManager
@@ -14,18 +15,15 @@ from ouro.core.reasoning import ReasoningRequest
 
 
 class CompactionModelConfig(OuroModel):
-    """Dedicated route and request overrides owned by the compaction policy.
+    """Route selection and independent request settings for each summary call."""
 
-    A Session runtime route owns its complete model request configuration.  A
-    compaction-specific override therefore only has meaning with a dedicated
-    endpoint.
-    """
+    model_config = ConfigDict(extra="forbid")
 
     provider_id: str | None = None
     endpoint_id: str | None = None
     use_default_model: bool = False
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
-    max_output_tokens: int | None = Field(default=None, ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1, strict=True)
     reasoning: ReasoningRequest | None = None
 
     @field_validator("provider_id", "endpoint_id")
@@ -44,14 +42,6 @@ class CompactionModelConfig(OuroModel):
             )
         if self.use_default_model and self.has_dedicated_endpoint:
             raise ValueError("default model cannot be combined with a dedicated endpoint")
-        has_request_overrides = any(
-            value is not None
-            for value in (self.temperature, self.max_output_tokens, self.reasoning)
-        )
-        if has_request_overrides and not self.has_configured_route:
-            raise ValueError(
-                "compaction model request overrides require a default or dedicated model endpoint"
-            )
         return self
 
     @property
@@ -63,7 +53,15 @@ class CompactionModelConfig(OuroModel):
         return self.use_default_model or self.has_dedicated_endpoint
 
 
+class CompactionRequestChanges(TypedDict, total=False):
+    temperature: float | None
+    max_output_tokens: int | None
+    reasoning: ReasoningRequest | None
+
+
 class CompactionConfig(OuroModel):
+    model_config = ConfigDict(extra="forbid")
+
     strategy_id: str = "builtin.llm_summary"
     fallback_strategy_id: str | None = None
     policy: CompactionPolicy = Field(default_factory=CompactionPolicy)
@@ -118,110 +116,33 @@ class CompactionConfigManager:
         endpoint_id: str | None = None,
         use_runtime_endpoint: bool = False,
         use_default_model: bool = False,
-        temperature: float | None = None,
-        max_output_tokens: int | None = None,
-        reasoning: ReasoningRequest | None = None,
         clear: bool = False,
         validate: Callable[[CompactionModelConfig], None] | None = None,
+        **request: Unpack[CompactionRequestChanges],
     ) -> CompactionConfig:
-        """Merge one validated CLI/application update into persisted model settings."""
-
-        model = self._prepare_model_update(
-            provider_id=provider_id,
-            endpoint_id=endpoint_id,
-            use_runtime_endpoint=use_runtime_endpoint,
-            use_default_model=use_default_model,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            reasoning=reasoning,
-            clear=clear,
-        )
+        """Apply the submitted route and request edits in one configuration transaction."""
+        dedicated = provider_id is not None or endpoint_id is not None
+        if sum((use_runtime_endpoint, use_default_model, dedicated)) > 1:
+            raise ConfigError("select only one compaction model route")
+        if clear and (dedicated or use_runtime_endpoint or use_default_model or request):
+            raise ConfigError("clear cannot be combined with compaction model options")
+        model = CompactionModelConfig() if clear else self.snapshot().model
+        updates: dict[str, object] = dict(request)
+        if use_runtime_endpoint or use_default_model:
+            updates.update(provider_id=None, endpoint_id=None, use_default_model=use_default_model)
+        elif dedicated:
+            updates.update(
+                provider_id=provider_id or model.provider_id,
+                endpoint_id=endpoint_id or model.endpoint_id,
+                use_default_model=False,
+            )
+        try:
+            model = CompactionModelConfig.model_validate({**model.model_dump(), **updates})
+        except ValueError as exc:
+            raise ConfigError(f"invalid compaction config: {exc}") from exc
         if validate is not None:
             validate(model)
         return self.set_model(model)
-
-    def _prepare_model_update(
-        self,
-        *,
-        provider_id: str | None = None,
-        endpoint_id: str | None = None,
-        use_runtime_endpoint: bool = False,
-        use_default_model: bool = False,
-        temperature: float | None = None,
-        max_output_tokens: int | None = None,
-        reasoning: ReasoningRequest | None = None,
-        clear: bool = False,
-    ) -> CompactionModelConfig:
-        """Build a validated model update without mutating durable configuration."""
-
-        if (
-            use_runtime_endpoint
-            and any(
-                value is not None
-                for value in (
-                    provider_id,
-                    endpoint_id,
-                    temperature,
-                    max_output_tokens,
-                    reasoning,
-                )
-            )
-            or (use_runtime_endpoint and use_default_model)
-        ):
-            raise ConfigError(
-                "use_runtime_endpoint cannot be combined with a model route or request override"
-            )
-        if use_default_model and (provider_id is not None or endpoint_id is not None):
-            raise ConfigError("default model cannot be combined with a dedicated endpoint")
-        if clear and any(
-            (
-                provider_id is not None,
-                endpoint_id is not None,
-                use_runtime_endpoint,
-                use_default_model,
-                temperature is not None,
-                max_output_tokens is not None,
-                reasoning is not None,
-            )
-        ):
-            raise ConfigError("clear cannot be combined with compaction model options")
-
-        current = self.snapshot()
-        model = CompactionModelConfig() if clear else current.model
-        updates: dict[str, object] = {}
-        if use_runtime_endpoint:
-            updates.update(
-                {
-                    "provider_id": None,
-                    "endpoint_id": None,
-                    "use_default_model": False,
-                    "temperature": None,
-                    "max_output_tokens": None,
-                    "reasoning": None,
-                }
-            )
-        elif use_default_model:
-            updates.update({"provider_id": None, "endpoint_id": None, "use_default_model": True})
-        elif provider_id is not None or endpoint_id is not None:
-            updates.update(
-                {
-                    "provider_id": provider_id or model.provider_id,
-                    "endpoint_id": endpoint_id or model.endpoint_id,
-                    "use_default_model": False,
-                }
-            )
-        if temperature is not None:
-            updates["temperature"] = temperature
-        if max_output_tokens is not None:
-            updates["max_output_tokens"] = max_output_tokens
-        if reasoning is not None:
-            updates["reasoning"] = reasoning
-        try:
-            return CompactionModelConfig.model_validate(
-                model.model_copy(update=updates).model_dump()
-            )
-        except ValueError as exc:
-            raise ConfigError(f"invalid compaction config: {exc}") from exc
 
 
 def compaction_config_to_public_dict(config: CompactionConfig) -> dict[str, object]:

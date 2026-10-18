@@ -5,10 +5,10 @@ from typing import Any, cast
 
 import pytest
 
-from ouro.application.compaction import LLMSummaryCompactionStrategy
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.summary_compaction import LLMSummaryCompactionStrategy
 from ouro.cli.main import main
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime, run_json, run_print
 from ouro.config import ProviderConfigManager, openai_chat_completions_effort_reasoning

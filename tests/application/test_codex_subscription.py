@@ -204,9 +204,9 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
         assert executions == [1, 2]
         session_id = first.session.session_id
         saved = app.runtime.store.load_session(session_id).messages
-        assert app.runtime.adapter.model.max_output_tokens == 32_768
+        assert app.runtime.adapter.model.max_output_tokens is None
         context = app.runtime.store.load_latest_context(session_id)
-        assert context.metrics.reserved_output_tokens == 32_768
+        assert context.metrics.reserved_output_tokens == 0
         for key in first.run.usage_entry_ids:
             entry = app.runtime.usage.ledger.get(key)
             assert entry.billing_mode == "subscription" and entry.estimated_cost is None

@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Literal, cast
 
-from ouro.sdk.plugins.v3 import (
+from ouro.sdk.plugins.v4 import (
     JsonValue,
     PluginRunControl,
     PluginSessionControl,

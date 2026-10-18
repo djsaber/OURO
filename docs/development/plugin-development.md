@@ -91,7 +91,7 @@ manifest 与 digest 校验。
 
 ## 4. SDK contribution
 
-in-process 插件只从 `ouro.sdk.plugins.v3` 使用公开类型。factory 接收 `PluginContext` 并返回实现以下生命周期的对象：
+in-process 插件只从 `ouro.sdk.plugins.v4` 使用公开类型。factory 接收 `PluginContext` 并返回实现以下生命周期的对象：
 
 ```python
 class Plugin:
@@ -152,7 +152,7 @@ Tool handler 除 `ToolOutput` 或字符串外，还可返回 `ToolInputRequest(d
 
 ```python
 from ouro.sdk.plugins.interactions import PlanConfirmationRequest
-from ouro.sdk.plugins.v3 import ToolInputRequest
+from ouro.sdk.plugins.v4 import ToolInputRequest
 
 async def confirm_plan(call):
     return ToolInputRequest(
@@ -174,7 +174,7 @@ Context Provider 返回的字符串或普通 `ContextFragment` 默认只影响�
 可恢复的 canonical history，显式返回持久 fragment：
 
 ```python
-from ouro.sdk.plugins.v3 import ContextFragment, ContextOutput
+from ouro.sdk.plugins.v4 import ContextFragment, ContextOutput
 
 def plan_scaffold(call):
     return ContextOutput(
@@ -293,8 +293,8 @@ Harness 版本、history_epoch 和消息头前置条件处理。
 
 ### 调用内会话状态
 
-Python SDK 入口为 `ouro.sdk.plugins.v3`，当前 Host 的 Plugin API 为 `3.1.0`，worker 使用 protocol `3.0`。
-依赖通用配置契约的插件在 `engines.plugin_api` 声明 `>=3.1.0,<4.0.0`。
+Python SDK 入口为 `ouro.sdk.plugins.v4`，当前 Host 的 Plugin API 为 `4.0.0`，worker 使用 protocol `3.0`。
+依赖通用配置契约的插件在 `engines.plugin_api` 声明 `>=4.0.0,<5.0.0`。
 PluginContext 不提供会话状态写入器。可修改状态的回调使用本次调用的 owner 视图：
 
 ```python
@@ -381,7 +381,7 @@ revision、传递 dependency lock、Plugin API/worker protocol 和 contribution 
 ```
 
 ```python
-from ouro.sdk.plugins.v3 import ToolContribution, ToolGroupContribution
+from ouro.sdk.plugins.v4 import ToolContribution, ToolGroupContribution
 
 group = ToolGroupContribution(
     id="sources",
@@ -583,7 +583,7 @@ result = await context.models.generate(
 
 `receive_output` 是可选异步回调，按序接收带 sequence、kind（text/reasoning）和 text 的 `ModelOutput`。
 回调应及时处理文本；它的完成控制后续输出交付。结果含请求 ID、实际模型路由、文本、思考文本和供应商用量。
-`ModelReasoning` 与调度 Agent 共用思考配置契约；输出上限不得超过所选端点配置，输入不得超出上下文预算。
+`ModelReasoning` 与调度 Agent 共用思考配置契约；独立生成的输出上限默认 None，不继承或受限于所选端点的配置数值；有限值须为当前窗口留下输入空间，输入不得超出该请求预算。
 `default` 要求已配置默认端点，也可传 `provider/endpoint`。命令自身的 timeout_seconds 应覆盖模型请求期限。
 
 用量归属插件，存在调用者 Session 时保留该关联；此调用不创建 Session 或 Run。准备阶段、只读回调以及活跃
@@ -680,7 +680,7 @@ worker tool 以 `{"input_request": <任意 JSON 值>}` 返回同一种挂起请�
 还必须在 manifest 中声明 `supports_unattended=true`。Worker protocol `3.0` 只接受 `resolution` 判别联合；出现
 `answer` 字段时协议校验失败。
 协议 `3.0` 在 `session_controller.call` 输入中提供 `session_kind`，允许 `continuation.call` 输出
-`session_control_transitions`，与 in-process Plugin API `3.1.0` 使用相同状态及结算语义。
+`session_control_transitions`，与 in-process Plugin API `4.0.0` 使用相同状态及结算语义。
 `context.call` 的 `fragments` 既接受字符串，也接受带 `text`、`persistence`、`target`、`role`、`scaffold` 和
 可选 `semantic_tag` 的对象。Worker 应传递自己选择的字段；Host 不从 target、persistence 或 provenance 反推
 消息属性。

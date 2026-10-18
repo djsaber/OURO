@@ -258,7 +258,7 @@ class OpenAIChatCompletionsProvider:
             payload["temperature"] = model.temperature
         else:
             payload.pop("temperature", None)
-        if self.request_policy.supports_output_limit:
+        if self.request_policy.supports_output_limit and model.max_output_tokens is not None:
             payload["max_tokens"] = model.max_output_tokens
         else:
             payload.pop("max_tokens", None)

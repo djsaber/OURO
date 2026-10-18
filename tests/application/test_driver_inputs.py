@@ -12,7 +12,7 @@ from ouro.core.prompt_policies import (
 )
 from ouro.core.provider import ProviderStreamEvent, ToolCallDelta
 from ouro.core.session_controls import HostSessionInput
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from tests.application.test_run_drivers import DRIVER, PLUGIN, host, plugin_source, set_driver_body
 from tests.application.test_runtime import GateProvider

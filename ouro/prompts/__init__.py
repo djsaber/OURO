@@ -162,8 +162,7 @@ CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.
 
 - Do NOT use Read, Write, Edit, Bash, or ANY other tool.
 - Your entire response must be plain text: an <analysis> block followed by a <summary> block.
-- The complete response, including both blocks, must fit within at most
-  {{ max_output_tokens }} output tokens. Reserve enough space to close both XML tags.
+- Keep both blocks concise and close both XML tags.
 
 Create a continuation-grade summary of the supplied conversation. Preserve every fact, decision,
 constraint, unresolved issue, and implementation detail needed to continue the work correctly, while
@@ -184,14 +183,8 @@ In <summary>, provide these sections when applicable:
 6. Pending work and the immediate next step
 
 Before responding, verify that the summary is technically accurate, complete enough for continuation,
-within the stated output-token limit, and ends with a non-empty </summary> block.
+concise, and ends with a non-empty </summary> block.
 """.strip()
-
-
-def render_summarization_prompt(template: str, max_output_tokens: int) -> str:
-    if max_output_tokens < 1:
-        raise ValueError("summary max_output_tokens must be positive")
-    return template.replace("{{ max_output_tokens }}", f"{max_output_tokens:,}")
 
 
 __all__ = [
@@ -199,6 +192,5 @@ __all__ = [
     "DEFAULT_SYSTEM_PROMPT",
     "AGENT_SKILLS_PROMPT_TEMPLATE",
     "render_agent_skills_prompt",
-    "render_summarization_prompt",
     "SUMMARIZATION_PROMPT",
 ]

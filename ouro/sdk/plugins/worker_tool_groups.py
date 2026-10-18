@@ -7,7 +7,7 @@ from dataclasses import fields
 from typing import Any
 from uuid import uuid4
 
-from .v3 import ToolContribution, ToolGroupContribution
+from .v4 import ToolContribution, ToolGroupContribution
 from .worker import WorkerPeer
 from .worker_tools import invoke_worker_tool
 

@@ -471,17 +471,23 @@ def _config_command(args: argparse.Namespace) -> int:
         )
 
     if args.config_command == "compaction":
+        request = {}
+        if args.temperature is not None:
+            request["temperature"] = args.temperature
+        reasoning = _reasoning_request(args)
+        if reasoning is not None:
+            request["reasoning"] = reasoning
+        if hasattr(args, "max_output_tokens"):
+            request["max_output_tokens"] = args.max_output_tokens
         return show_compaction_config(
             home=home,
             provider_id=args.provider_id,
             endpoint_id=args.endpoint_id,
             runtime_endpoint=args.runtime_endpoint,
             default_model=args.default_model,
-            temperature=args.temperature,
-            max_output_tokens=args.max_output_tokens,
-            reasoning=_reasoning_request(args),
             clear=args.clear,
             json_mode=args.json,
+            **request,
         )
 
     if args.config_command == "tool-execution":
@@ -658,30 +664,44 @@ def _provider_endpoint_command(
             json_mode=args.json,
         )
     if args.endpoint_command in {"add", "update"}:
-        command = (
-            create_provider_endpoint if args.endpoint_command == "add" else update_provider_endpoint
+        fields = (
+            "display_name",
+            "base_url",
+            "api_path",
+            "temperature",
+            "context_window",
+            "supports_tools",
+            "supports_image_input",
+            "supports_audio_input",
+            "supports_video_input",
+            "supports_streaming",
+            "supports_structured_output",
+            "request_options",
         )
-        return command(
+        changes = {name: getattr(args, name) for name in fields if getattr(args, name) is not None}
+        reasoning = args.reasoning_config or args.reasoning_effort_preset
+        if reasoning is not None:
+            changes["reasoning"] = reasoning
+        if hasattr(args, "max_output_tokens"):
+            changes["max_output_tokens"] = args.max_output_tokens
+        if args.endpoint_command == "add":
+            return create_provider_endpoint(
+                args.provider_id,
+                home=home,
+                model=args.model,
+                make_default=args.default,
+                json_mode=args.json,
+                **changes,
+            )
+        if args.model is not None:
+            changes["model_id"] = args.model
+        return update_provider_endpoint(
             args.provider_id,
-            *(() if args.endpoint_command == "add" else (args.endpoint_id,)),
+            args.endpoint_id,
             home=home,
-            display_name=args.display_name,
-            model=args.model,
-            base_url=args.base_url,
-            api_path=args.api_path,
-            temperature=args.temperature,
-            context_window=args.context_window,
-            max_output_tokens=args.max_output_tokens,
-            supports_tools=args.supports_tools,
-            supports_image_input=args.supports_image_input,
-            supports_audio_input=args.supports_audio_input,
-            supports_video_input=args.supports_video_input,
-            supports_streaming=args.supports_streaming,
-            supports_structured_output=args.supports_structured_output,
-            reasoning=args.reasoning_config or args.reasoning_effort_preset,
-            request_options=args.request_options,
             make_default=args.default,
             json_mode=args.json,
+            **changes,
         )
     if args.endpoint_command == "use":
         return use_provider_endpoint(
@@ -808,29 +828,32 @@ def _usage_filters(args: argparse.Namespace) -> UsageFilterArgs:
 
 
 def _provider_options(args: argparse.Namespace, *, prefix: str = "") -> RuntimeProviderOptions:
-    return RuntimeProviderOptions(
-        provider_id=_argument_value(args, prefix, "provider_id"),
-        endpoint_id=_argument_value(args, prefix, "endpoint_id"),
-        base_url=_argument_value(args, prefix, "base_url"),
-        api_path=_argument_value(args, prefix, "api_path"),
-        api_key=_argument_value(args, prefix, "api_key"),
-        api_key_env=_argument_value(args, prefix, "api_key_env"),
-        timeout=_argument_value(args, prefix, "timeout"),
-        temperature=_argument_value(args, prefix, "temperature"),
-        context_window=_argument_value(args, prefix, "context_window"),
-        max_output_tokens=_argument_value(args, prefix, "max_output_tokens"),
-        supports_tools=_argument_value(args, prefix, "supports_tools"),
-        supports_image_input=_argument_value(args, prefix, "supports_image_input"),
-        supports_audio_input=_argument_value(args, prefix, "supports_audio_input"),
-        supports_video_input=_argument_value(args, prefix, "supports_video_input"),
-        supports_streaming=_argument_value(args, prefix, "supports_streaming"),
-        supports_structured_output=_argument_value(
-            args,
-            prefix,
-            "supports_structured_output",
-        ),
-        reasoning_request=_reasoning_request(args, prefix=prefix),
+    fields = (
+        "provider_id",
+        "endpoint_id",
+        "base_url",
+        "api_path",
+        "api_key",
+        "api_key_env",
+        "timeout",
+        "temperature",
+        "context_window",
+        "supports_tools",
+        "supports_image_input",
+        "supports_audio_input",
+        "supports_video_input",
+        "supports_streaming",
+        "supports_structured_output",
     )
+    values = {
+        name: value for name in fields if (value := _argument_value(args, prefix, name)) is not None
+    }
+    if hasattr(args, f"{prefix}max_output_tokens"):
+        values["max_output_tokens"] = getattr(args, f"{prefix}max_output_tokens")
+    reasoning = _reasoning_request(args, prefix=prefix)
+    if reasoning is not None:
+        values["reasoning_request"] = reasoning
+    return RuntimeProviderOptions.model_validate(values)
 
 
 def _reasoning_request(

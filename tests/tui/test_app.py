@@ -53,6 +53,7 @@ from ouro.core.agents import (
 )
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextMetrics
+from ouro.core.context_budget import ContextBudget
 from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.messages import (
@@ -1430,7 +1431,7 @@ def _write_skill_plugin(source: Path) -> None:
   "name": "TUI Skill",
   "version": "1.0.0",
   "namespace": "tui_skill",
-  "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^3.0.0"},
+  "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^4.0.0"},
   "runtime": {"kind": "declarative"},
   "contributes": {"skills": [{"id": "calendar", "path": "./skills/calendar"}]},
   "permissions": [],
@@ -2372,13 +2373,9 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
             prepared_at=datetime.now(UTC),
             completed_at=datetime.now(UTC),
             metrics=ContextMetrics(
-                estimated_input_tokens=48_000,
-                estimated_fixed_tokens=1_000,
-                context_window_tokens=128_000,
-                reserved_output_tokens=8_000,
-                input_budget_tokens=120_000,
-                estimated_remaining_tokens=72_000,
-                estimated_utilization_ratio=0.4,
+                estimated_input_tokens=48000,
+                estimated_fixed_tokens=1000,
+                budget=ContextBudget(context_window=128000, max_output_tokens=8000),
             ),
             # Provider usage can exclude cached input and therefore is not
             # the current prepared context size shown by /context.
@@ -2393,13 +2390,9 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
         assert context.get_style_at_offset(percentage_offset).foreground == Color.parse("#6f7a87")
 
         at_warning_boundary = ContextMetrics(
-            estimated_input_tokens=96_000,
-            estimated_fixed_tokens=1_000,
-            context_window_tokens=128_000,
-            reserved_output_tokens=8_000,
-            input_budget_tokens=120_000,
-            estimated_remaining_tokens=24_000,
-            estimated_utilization_ratio=0.8,
+            estimated_input_tokens=96000,
+            estimated_fixed_tokens=1000,
+            budget=ContextBudget(context_window=128000, max_output_tokens=8000),
         )
         status_line.set_context(context_status.model_copy(update={"metrics": at_warning_boundary}))
         boundary = context_detail.render()
@@ -2409,13 +2402,9 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
         )
 
         above_warning_boundary = ContextMetrics(
-            estimated_input_tokens=97_200,
-            estimated_fixed_tokens=1_000,
-            context_window_tokens=128_000,
-            reserved_output_tokens=8_000,
-            input_budget_tokens=120_000,
-            estimated_remaining_tokens=22_800,
-            estimated_utilization_ratio=0.81,
+            estimated_input_tokens=97200,
+            estimated_fixed_tokens=1000,
+            budget=ContextBudget(context_window=128000, max_output_tokens=8000),
         )
         status_line.set_context(
             context_status.model_copy(update={"metrics": above_warning_boundary})
@@ -2607,23 +2596,13 @@ async def test_context_detail_only_layouts_when_its_cell_width_changes(
 
         monkeypatch.setattr(detail, "refresh", record_refresh)
         metrics = ContextMetrics(
-            estimated_input_tokens=48_000,
-            estimated_fixed_tokens=1_000,
-            context_window_tokens=128_000,
-            reserved_output_tokens=8_000,
-            input_budget_tokens=120_000,
-            estimated_remaining_tokens=72_000,
-            estimated_utilization_ratio=0.4,
+            estimated_input_tokens=48000,
+            estimated_fixed_tokens=1000,
+            budget=ContextBudget(context_window=128000, max_output_tokens=8000),
         )
         status_line.set_context_metrics(metrics)
         status_line.set_context_metrics(
-            metrics.model_copy(
-                update={
-                    "estimated_input_tokens": 49_200,
-                    "estimated_remaining_tokens": 70_800,
-                    "estimated_utilization_ratio": 0.41,
-                }
-            )
+            metrics.model_copy(update={"estimated_input_tokens": 49_200})
         )
         status_line.set_context_metrics(None)
 
@@ -4962,11 +4941,7 @@ async def test_compaction_completion_updates_context_and_transcript_without_next
     metrics = ContextMetrics(
         estimated_input_tokens=250,
         estimated_fixed_tokens=100,
-        context_window_tokens=1_000,
-        reserved_output_tokens=100,
-        input_budget_tokens=900,
-        estimated_remaining_tokens=650,
-        estimated_utilization_ratio=250 / 900,
+        budget=ContextBudget(context_window=1000, max_output_tokens=100),
     )
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
@@ -5012,11 +4987,7 @@ async def test_live_host_event_updates_context_without_reloading(tmp_path: Path)
     metrics = ContextMetrics(
         estimated_input_tokens=250,
         estimated_fixed_tokens=100,
-        context_window_tokens=1_000,
-        reserved_output_tokens=100,
-        input_budget_tokens=900,
-        estimated_remaining_tokens=650,
-        estimated_utilization_ratio=250 / 900,
+        budget=ContextBudget(context_window=1000, max_output_tokens=100),
     )
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
@@ -7447,7 +7418,7 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         assert screen._capabilities["endpoint-video-input"] is False
         assert screen._capabilities["endpoint-structured-output"] is True
         assert screen._values["endpoint-context-window"] == "1000000"
-        assert screen._values["endpoint-max-output"] == "32768"
+        assert screen._values["endpoint-max-output"] == ""
 
         options = screen.query_one("#choice-list", OptionList)
         for field_id, value in (
@@ -7466,7 +7437,7 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         assert results == []
         assert options.get_option("endpoint-save").disabled is True
         save_choice = next(choice for choice in screen._choices if choice.value == "endpoint-save")
-        assert "cannot exceed" in save_choice.trailing
+        assert "must be lower than" in save_choice.trailing
 
         options.highlighted = options.get_option_index("endpoint-max-output")
         options.focus()
@@ -7565,6 +7536,28 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         assert draft.reasoning.profile is not None
         assert draft.reasoning.profile.name == "vendor-thinking"
         assert draft.request_options == {"seed": 7}
+
+        saved = await app._controller.add_endpoint(provider_id, draft)
+        edit = EndpointConfigurationScreen(provider, saved)
+        app.push_screen(edit)
+        await pilot.pause()
+        edit._refresh_options(needle="", preferred_value="endpoint-max-output")
+        edit.query_one("#choice-list", OptionList).focus()
+        await pilot.press("enter", "ctrl+u", "enter")
+        await pilot.pause()
+        cleared = await app._controller.update_endpoint(
+            provider_id, saved.endpoint_id, edit._draft()
+        )
+        assert cleared.max_output_tokens is None
+        assert cleared.reasoning == saved.reasoning
+        assert cleared.request_options == saved.request_options
+        reopened = EndpointConfigurationScreen(
+            provider, configuration.endpoint(provider_id, saved.endpoint_id)
+        )
+        output_choice = next(c for c in reopened._choices if c.value == "endpoint-max-output")
+        assert output_choice.label == "Max output tokens"
+        assert output_choice.trailing == "Optional"
+        assert output_choice.edit_placeholder == ""
 
 
 @pytest.mark.asyncio
@@ -11512,9 +11505,12 @@ async def test_compaction_uses_shared_grouped_inline_menu_and_returns_typed_draf
         choices = {choice.value: choice for choice in screen._choices}
         assert choices["compaction-strategy"].disabled is True
         assert choices["compaction-fallback"].disabled is True
-        assert choices["compaction-temperature"].disabled is True
-        assert choices["compaction-max-output"].disabled is True
-        assert choices["compaction-reasoning"].disabled is True
+        assert choices["compaction-temperature"].disabled is False
+        assert choices["compaction-max-output"].disabled is False
+        assert choices["compaction-max-output"].label == "Max output tokens"
+        assert choices["compaction-max-output"].trailing == "Optional"
+        assert choices["compaction-max-output"].edit_placeholder == ""
+        assert choices["compaction-reasoning"].disabled is False
 
         screen._refresh("compaction-model")
         await pilot.press("enter")
@@ -13500,13 +13496,9 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
                 model_id="deepseek-chat",
                 prepared_at=datetime.now(UTC),
                 metrics=ContextMetrics(
-                    estimated_input_tokens=24_000,
-                    estimated_fixed_tokens=1_000,
-                    context_window_tokens=128_000,
-                    reserved_output_tokens=8_000,
-                    input_budget_tokens=120_000,
-                    estimated_remaining_tokens=96_000,
-                    estimated_utilization_ratio=0.2,
+                    estimated_input_tokens=24000,
+                    estimated_fixed_tokens=1000,
+                    budget=ContextBudget(context_window=128000, max_output_tokens=8000),
                 ),
             )
         )

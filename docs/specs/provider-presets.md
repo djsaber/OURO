@@ -63,7 +63,7 @@ API Key 必须与模板所选平台、区域匹配。MiniMax 使用中国站，�
 预置开关要求模型、所选服务接口和 OURO 本地附件编码同时可用；原生接口或 URL 输入能力不自动启用该开关。
 视频输入不保证识别音轨，媒体大小、时长与数量还受厂商限制。
 
-`context_window` 用于上下文规划；`max_output_tokens` 是默认请求预算，Codex 订阅仅将其用于本地规划。
+`context_window` 用于上下文规划；`max_output_tokens` 是可空的请求输出上限。Chat Completions 与 Responses 模板默认不配置上限；Messages 模板保留显式有限值以满足协议必填字段。表中的“不限制”表示空值，不建模服务端输出额度。Codex 订阅的有限配置仅用于本地规划。
 表中的思考默认值对应 `reasoning.capability.default`；effort 为开启思考时可选的等级。
 
 ## OpenAI API 与订阅
@@ -96,15 +96,14 @@ API 模板的 none 映射到 OURO 的 reasoning disabled；Astra 和 GPT-6.1 Sol
 | 配置 | API Key 模板 | 订阅模板 |
 |---|---|---|
 | context_window | 1,050,000，本地规划值 | 1,050,000，本地规划值；未验证订阅后端极限 |
-| max_output_tokens | 32,768，实际发送的默认请求预算 | 32,768，仅本地预算，不发送；未核实订阅后端输出上限 |
+| max_output_tokens | 不限制，省略请求字段 | 不限制，省略请求字段 |
 | 文本 / 流式 / 函数工具 | 开启 | 开启 |
 | 结构化输出 | 开启，Responses text.format | 未声明支持 |
 | 图像输入 | 开启，使用 Responses input_image | 开启，使用同一 Responses 图像编码 |
 | 音频 / 视频输入 | 关闭 | 关闭 |
 | 计费 | API 用量计费 | 订阅归属，未取得价格时金额未知 |
 
-模板预算用于 OURO 的上下文规划与请求控制。厂商限制见各模型官方页面；
-[GPT-6.1 Sol API](https://developers.openai.com/api/docs/models/gpt-6.1-sol)的上下文为 1,050,000、输出上限为 128,000。
+模板数值用于 OURO 的上下文规划与请求控制，不推算服务端额度。
 
 static 认证的 opaque 重放绑定认证实例生命周期；重建 API Key adapter 后通过通用聊天与工具帧继续任务，
 不发送旧 opaque 状态。浏览器订阅使用稳定账户 scope，跨进程可重放兼容状态。详细边界见
@@ -132,9 +131,9 @@ OURO 遇到失败不会自动回退到付费 API 或其他模型。
 
 | 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `gemini-3.8-flash`（默认） | 1,048,576 | 32,768 | 图片、音频 | 开启 | 始终开启 / medium | low、medium、high |
-| `gemini-3.1-pro-preview` | 1,048,576 | 32,768 | 图片、音频 | 开启 | 始终开启 / high | low、medium、high |
-| `gemini-3.5-flash-lite` | 1,048,576 | 32,768 | 图片、音频 | 开启 | 始终开启 / minimal | minimal、low、medium、high |
+| `gemini-3.8-flash`（默认） | 1,048,576 | 不限制 | 图片、音频 | 开启 | 始终开启 / medium | low、medium、high |
+| `gemini-3.1-pro-preview` | 1,048,576 | 不限制 | 图片、音频 | 开启 | 始终开启 / high | low、medium、high |
+| `gemini-3.5-flash-lite` | 1,048,576 | 不限制 | 图片、音频 | 开启 | 始终开启 / minimal | minimal、low、medium、high |
 
 三个 Gemini 端点均启用 WAV/MP3 音频输入，使用官方 Chat Completions 兼容接口的 `input_audio`。
 视频输入关闭：官方兼容接口未声明 `video_url` 输入。
@@ -149,8 +148,8 @@ OURO 遇到失败不会自动回退到付费 API 或其他模型。
 
 | 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `deepseek-v4-pro`（默认） | 1,000,000 | 32,768 | — | 开启 | 可切换，默认开启 / high | low、high、max |
-| `deepseek-flash` | 1,000,000 | 32,768 | 图片 | 开启 | 可切换，默认开启 / high | low、high、max |
+| `deepseek-v4-pro`（默认） | 1,000,000 | 不限制 | — | 开启 | 可切换，默认开启 / high | low、high、max |
+| `deepseek-flash` | 1,000,000 | 不限制 | 图片 | 开启 | 可切换，默认开启 / high | low、high、max |
 
 `deepseek-flash` 使用 `image_url` 接收图片 Base64 data URI；`deepseek-v4-pro` 为文本模型。
 依据：[模型能力表](https://api-docs.deepseek.com/quick_start/pricing/)、
@@ -163,9 +162,9 @@ OURO 遇到失败不会自动回退到付费 API 或其他模型。
 
 | 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `qwen3.8-max`（默认） | 1,000,000 | 131,072 | 图片、视频 | 开启 | 可切换，默认开启 | — |
-| `qwen3.8-flash` | 1,000,000 | 131,072 | 图片、视频 | 开启 | 可切换，默认开启 / xhigh | low、medium、xhigh |
-| `qwen3.7-plus` | 1,000,000 | 131,072 | 图片、视频 | 开启 | 可切换，默认开启 | — |
+| `qwen3.8-max`（默认） | 1,000,000 | 不限制 | 图片、视频 | 开启 | 可切换，默认开启 | — |
+| `qwen3.8-flash` | 1,000,000 | 不限制 | 图片、视频 | 开启 | 可切换，默认开启 / xhigh | low、medium、xhigh |
+| `qwen3.7-plus` | 1,000,000 | 不限制 | 图片、视频 | 开启 | 可切换，默认开启 | — |
 
 三个 Qwen 端点均启用 MP4 视频输入，使用 `video_url` 扩展；音频输入关闭。
 [视频接口文档](https://www.alibabacloud.com/help/en/model-studio/vision)规定 Base64 视频小于 10 MB，
@@ -178,10 +177,10 @@ OURO 遇到失败不会自动回退到付费 API 或其他模型。
 
 | 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `kimi-k3`（默认） | 1,048,576 | 32,768 | 图片、视频 | 开启 | 始终开启 / max | low、high、max |
-| `kimi-k2.7-code` | 262,144 | 32,768 | 图片、视频 | 开启 | 始终开启 | — |
-| `kimi-k2.7-code-highspeed` | 262,144 | 32,768 | 图片、视频 | 开启 | 始终开启 | — |
-| `kimi-k2.6` | 262,144 | 32,768 | 图片、视频 | 开启 | 可切换，默认开启 | — |
+| `kimi-k3`（默认） | 1,048,576 | 不限制 | 图片、视频 | 开启 | 始终开启 / max | low、high、max |
+| `kimi-k2.7-code` | 262,144 | 不限制 | 图片、视频 | 开启 | 始终开启 | — |
+| `kimi-k2.7-code-highspeed` | 262,144 | 不限制 | 图片、视频 | 开启 | 始终开启 | — |
+| `kimi-k2.6` | 262,144 | 不限制 | 图片、视频 | 开启 | 可切换，默认开启 | — |
 
 四个 Kimi 端点均通过 `video_url.url` 接收 MP4 Base64 data URI。
 模型支持范围见[视觉输入](https://platform.kimi.com/docs/guide/use-kimi-vision-model)，
@@ -194,11 +193,11 @@ K3 使用顶层 `reasoning_effort`；K2.7 Code 系列不发送思考开关或 ef
 
 | 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `glm-5.3`（默认） | 1,000,000 | 128,000 | — | 开启 | 始终开启 / max | low、high、max |
-| `glm-5.3-flash` | 1,000,000 | 128,000 | 图片 | 开启 | 始终开启 / max | low、high、max |
-| `glm-5.2` | 1,000,000 | 32,768 | — | 开启 | 可切换，默认开启 | — |
-| `glm-5-turbo` | 200,000 | 32,768 | — | 开启 | 可切换，默认开启 | — |
-| `glm-5v-turbo` | 200,000 | 32,768 | 图片 | 关闭 | 可切换，默认开启 | — |
+| `glm-5.3`（默认） | 1,000,000 | 不限制 | — | 开启 | 始终开启 / max | low、high、max |
+| `glm-5.3-flash` | 1,000,000 | 不限制 | 图片 | 开启 | 始终开启 / max | low、high、max |
+| `glm-5.2` | 1,000,000 | 不限制 | — | 开启 | 可切换，默认开启 | — |
+| `glm-5-turbo` | 200,000 | 不限制 | — | 开启 | 可切换，默认开启 | — |
+| `glm-5v-turbo` | 200,000 | 不限制 | 图片 | 关闭 | 可切换，默认开启 | — |
 
 [GLM-5.3-Flash](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash) 和
 [GLM-5V-Turbo](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5v-turbo) 原生支持视频，
@@ -213,18 +212,17 @@ K3 使用顶层 `reasoning_effort`；K2.7 Code 系列不发送思考开关或 ef
 
 | 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `grok-4.7`（默认） | 500,000 | 128,000 | 图片 | 开启 | 始终开启 / high | low、medium、high、xhigh |
+| `grok-4.7`（默认） | 500,000 | 不限制 | 图片 | 开启 | 始终开启 / high | low、medium、high、xhigh |
 
-通过 `reasoning_effort` 选择等级，展示思考摘要，不声明 continuation。`provider_output_limit=unlimited`
-记录厂商输出限制声明；表中的 128,000 是 OURO 默认请求预算。
+通过 `reasoning_effort` 选择等级，展示思考摘要，不声明 continuation。模板不配置请求输出上限。
 
 ## Mistral
 
 | 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `mistral-medium-3-5`（默认） | 256,000 | 32,768 | 图片 | 开启 | 固定关闭 | — |
-| `mistral-small-2603` | 256,000 | 32,768 | 图片 | 开启 | 固定关闭 | — |
-| `mistral-large-4-0` | 1,000,000 | 32,768 | 图片 | 开启 | 固定关闭 | — |
+| `mistral-medium-3-5`（默认） | 256,000 | 不限制 | 图片 | 开启 | 固定关闭 | — |
+| `mistral-small-2603` | 256,000 | 不限制 | 图片 | 开启 | 固定关闭 | — |
+| `mistral-large-4-0` | 1,000,000 | 不限制 | 图片 | 开启 | 固定关闭 | — |
 
 三个端点均固定发送 `reasoning_effort=none`，不提供思考开关或档位。Chat Completions adapter 按文本解码，
 不处理 Mistral 的 thinking chunk。`mistral-small-2603` 对应 Small 4，`mistral-large-4-0` 对应 Large 4 Public Preview。
@@ -233,9 +231,9 @@ K3 使用顶层 `reasoning_effort`；K2.7 Code 系列不发送思考开关或 ef
 
 | 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `MiniMax-M3`（默认） | 1,000,000 | 131,072 | 图片、视频 | 关闭 | 可切换，默认开启 | — |
-| `MiniMax-M2.7` | 204,800 | 65,536 | — | 关闭 | 始终开启 | — |
-| `MiniMax-M2.7-highspeed` | 204,800 | 65,536 | — | 关闭 | 始终开启 | — |
+| `MiniMax-M3`（默认） | 1,000,000 | 不限制 | 图片、视频 | 关闭 | 可切换，默认开启 | — |
+| `MiniMax-M2.7` | 204,800 | 不限制 | — | 关闭 | 始终开启 | — |
+| `MiniMax-M2.7-highspeed` | 204,800 | 不限制 | — | 关闭 | 始终开启 | — |
 
 M3 通过 `image_url` 和 `video_url` 接收图片、视频 Base64 输入，不支持音频；M2.7 系列为文本模型。
 服务端图片上限为 10 MB，URL 或 Base64 视频上限为 50 MB，请求体上限为 64 MB，见
@@ -248,8 +246,8 @@ M3 使用 `thinking.type=adaptive/disabled`；M2.7 系列不发送思考控制�
 
 | 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `doubao-seed-2-1-pro-260915`（默认） | 1,048,576 | 32,768 | 图片、视频 | 开启 | 可切换，默认开启 / high | minimal、low、medium、high |
-| `doubao-seed-2-1-lite-260915` | 1,048,576 | 32,768 | 图片、音频、视频 | 开启 | 可切换，默认开启 / high | minimal、low、medium、high |
+| `doubao-seed-2-1-pro-260915`（默认） | 1,048,576 | 不限制 | 图片、视频 | 开启 | 可切换，默认开启 / high | minimal、low、medium、high |
+| `doubao-seed-2-1-lite-260915` | 1,048,576 | 不限制 | 图片、音频、视频 | 开启 | 可切换，默认开启 / high | minimal、low、medium、high |
 
 Pro 与 Lite 均通过 `video_url` 接收视频；Lite 另通过 `input_audio.data` 和 `format=wav/mp3` 接收音频。
 Pro 的音频输入关闭，能力范围以[模型目录](https://docs.volcengine.com/docs/ark/model-list?lang=zh)为准。
@@ -264,7 +262,7 @@ Pro 的音频输入关闭，能力范围以[模型目录](https://docs.volcengin
 
 | 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `command-a-plus-05-2026`（默认） | 128,000 | 32,768 | 图片 | 开启 | 可切换，默认开启 / high | high |
+| `command-a-plus-05-2026`（默认） | 128,000 | 不限制 | 图片 | 开启 | 可切换，默认开启 / high | high |
 
 使用 `reasoning_effort=high/none` 映射思考开关。模板不声明可展示的思考输出与 continuation。
 
@@ -287,7 +285,7 @@ uv run --frozen ouro provider list --home ./.ouro-dev --json
 模型列表 API 中额外的别名、旧型号和未公开路由不自动加入。Gemini 4 Argon Contributor 使用 Google 原生协议，
 不属于这三个模板支持的协议。目录为本地预制数据，启动与模型调用不访问远程模型目录。
 
-模型 ID、协议和服务地址来自 [Go 官方文档](https://opencode.ai/docs/go/)；上下文、输出上限、
+模型 ID、协议和服务地址来自 [Go 官方文档](https://opencode.ai/docs/go/)；上下文、
 工具、输入模态和结构化输出声明来自 OpenCode 使用的 [Models.dev](https://opencode.ai/docs/models/)
 中 `opencode-go` 专属条目（[数据 API](https://models.dev/api.json)）。不将直连厂商的模型配置套用到 Go。
 
@@ -296,9 +294,9 @@ uv run --frozen ouro provider list --home ./.ouro-dev --json
 协议适配器默认发送 `User-Agent: ouro/<version>`。API Key 在创建实例时输入，或显式绑定 `OPENCODE_API_KEY`。
 密钥和会话运行值均不属于模板内容。
 
-所有模型默认输出预算为 32,768 tokens；表中的服务输出上限另存于 `metadata.provider_output_limit`，
+Chat Completions 与 Responses 模板不配置输出上限，Messages 模板显式配置 32,768 tokens。服务输出额度不进入 OURO 的配置模型；
 官方单列的输入上限保存为 `metadata.provider_input_limit`，它是参考信息，不是独立的本地输入限额。
-上下文窗口与服务输出上限不表示两者可同时取满。所有端点支持工具调用与流式输出。
+所有端点支持工具调用与流式输出。
 
 输入能力按 Go 与 OURO 编码方式的交集启用：表中“图片”表示已启用图片附件；音频和视频均关闭。
 Models.dev 的模型模态声明不单独证明 Go 接受 OURO 的 `input_audio` / Base64 `video_url` 编码；
@@ -313,53 +311,53 @@ Responses 与 Messages 保留 opaque 续接，不混用直连厂商的思考请�
 
 模板 ID：`opencode-go`；默认模型：`kimi-k3`。
 
-| 模型 ID | 上下文 | 服务输出上限 | OURO 图片输入 | OURO 结构化输出 |
+| 模型 ID | 上下文 | OURO 输出上限 | OURO 图片输入 | OURO 结构化输出 |
 |---|---:|---:|---|---|
-| `glm-5.3-flash` | 1,000,000 | 131,072 | 开启 | 开启 |
-| `glm-5.3` | 1,000,000 | 131,072 | 关闭 | 开启 |
-| `glm-5.2` | 1,000,000 | 131,072 | 关闭 | 开启 |
-| `kimi-k3` | 1,048,576 | 131,072 | 开启 | 开启 |
-| `kimi-k2.7-code` | 262,144 | 262,144 | 开启 | 开启 |
-| `kimi-k2.6` | 262,144 | 65,536 | 开启 | 关闭 |
-| `longcat-2.0` | 1,000,000 | 131,072 | 关闭 | 关闭 |
-| `deepseek-v4.1-flash` | 1,000,000 | 384,000 | 开启 | 开启 |
-| `deepseek-v4-pro` | 1,000,000 | 384,000 | 关闭 | 开启 |
-| `mimo-v2.6-flash` | 1,048,576 | 131,072 | 开启 | 关闭 |
-| `mimo-v2.6-pro` | 1,048,576 | 131,072 | 开启 | 关闭 |
-| `mimo-v2.5` | 1,000,000 | 128,000 | 开启 | 关闭 |
-| `mimo-v2.5-pro` | 1,048,576 | 128,000 | 关闭 | 关闭 |
-| `hy4-preview` | 1,024,000 | 64,000 | 关闭 | 关闭 |
-| `hy3` | 256,000 | 128,000 | 关闭 | 关闭 |
-| `space-bunny` | 1,048,576 | 524,288 | 开启 | 关闭 |
-| `longcat-2.5-preview-free` | 1,000,000 | 131,072 | 开启 | 关闭 |
-| `step-5-preview-free` | 1,000,000 | 65,536 | 开启 | 开启 |
-| `cat-jam-free` | 262,144 | 131,072 | 关闭 | 开启 |
+| `glm-5.3-flash` | 1,000,000 | 不限制 | 开启 | 开启 |
+| `glm-5.3` | 1,000,000 | 不限制 | 关闭 | 开启 |
+| `glm-5.2` | 1,000,000 | 不限制 | 关闭 | 开启 |
+| `kimi-k3` | 1,048,576 | 不限制 | 开启 | 开启 |
+| `kimi-k2.7-code` | 262,144 | 不限制 | 开启 | 开启 |
+| `kimi-k2.6` | 262,144 | 不限制 | 开启 | 关闭 |
+| `longcat-2.0` | 1,000,000 | 不限制 | 关闭 | 关闭 |
+| `deepseek-v4.1-flash` | 1,000,000 | 不限制 | 开启 | 开启 |
+| `deepseek-v4-pro` | 1,000,000 | 不限制 | 关闭 | 开启 |
+| `mimo-v2.6-flash` | 1,048,576 | 不限制 | 开启 | 关闭 |
+| `mimo-v2.6-pro` | 1,048,576 | 不限制 | 开启 | 关闭 |
+| `mimo-v2.5` | 1,000,000 | 不限制 | 开启 | 关闭 |
+| `mimo-v2.5-pro` | 1,048,576 | 不限制 | 关闭 | 关闭 |
+| `hy4-preview` | 1,024,000 | 不限制 | 关闭 | 关闭 |
+| `hy3` | 256,000 | 不限制 | 关闭 | 关闭 |
+| `space-bunny` | 1,048,576 | 不限制 | 开启 | 关闭 |
+| `longcat-2.5-preview-free` | 1,000,000 | 不限制 | 开启 | 关闭 |
+| `step-5-preview-free` | 1,000,000 | 不限制 | 开启 | 开启 |
+| `cat-jam-free` | 262,144 | 不限制 | 关闭 | 开启 |
 
 ### OpenCode Go (Responses)
 
 模板 ID：`opencode-go-responses`；默认模型：`gpt-6-luna`。
 
-| 模型 ID | 上下文 | 服务输出上限 | OURO 图片输入 | OURO 结构化输出 |
+| 模型 ID | 上下文 | OURO 输出上限 | OURO 图片输入 | OURO 结构化输出 |
 |---|---:|---:|---|---|
-| `grok-4.7` | 500,000 | 500,000 | 开启 | 开启 |
-| `grok-4.6` | 500,000 | 500,000 | 开启 | 开启 |
-| `gpt-6-luna` | 1,050,000 | 128,000 | 开启 | 开启 |
-| `gpt-5.6-luna` | 1,050,000 | 128,000 | 开启 | 开启 |
-| `muse-spark-1.3-contributor` | 1,048,576 | 131,072 | 开启 | 开启 |
-| `muse-spark-1.2-contributor` | 1,048,576 | 131,072 | 开启 | 开启 |
+| `grok-4.7` | 500,000 | 不限制 | 开启 | 开启 |
+| `grok-4.6` | 500,000 | 不限制 | 开启 | 开启 |
+| `gpt-6-luna` | 1,050,000 | 不限制 | 开启 | 开启 |
+| `gpt-5.6-luna` | 1,050,000 | 不限制 | 开启 | 开启 |
+| `muse-spark-1.3-contributor` | 1,048,576 | 不限制 | 开启 | 开启 |
+| `muse-spark-1.2-contributor` | 1,048,576 | 不限制 | 开启 | 开启 |
 
 ### OpenCode Go (Messages)
 
 模板 ID：`opencode-go-messages`；默认模型：`minimax-m3`。
 
-| 模型 ID | 上下文 | 服务输出上限 | OURO 图片输入 | OURO 结构化输出 |
+| 模型 ID | 上下文 | OURO 输出上限 | OURO 图片输入 | OURO 结构化输出 |
 |---|---:|---:|---|---|
-| `claude-haiku-5-5` | 1,000,000 | 128,000 | 开启 | 关闭 |
-| `minimax-m3` | 1,000,000 | 131,072 | 开启 | 关闭 |
-| `minimax-m2.7` | 204,800 | 131,072 | 关闭 | 关闭 |
-| `qwen3.8-max` | 1,000,000 | 131,072 | 开启 | 关闭 |
-| `qwen3.8-flash` | 1,000,000 | 131,072 | 开启 | 关闭 |
-| `qwen3.7-plus` | 1,000,000 | 65,536 | 开启 | 关闭 |
+| `claude-haiku-5-5` | 1,000,000 | 32,768 | 开启 | 关闭 |
+| `minimax-m3` | 1,000,000 | 32,768 | 开启 | 关闭 |
+| `minimax-m2.7` | 204,800 | 32,768 | 关闭 | 关闭 |
+| `qwen3.8-max` | 1,000,000 | 32,768 | 开启 | 关闭 |
+| `qwen3.8-flash` | 1,000,000 | 32,768 | 开启 | 关闭 |
+| `qwen3.7-plus` | 1,000,000 | 32,768 | 开启 | 关闭 |
 
 Go 的服务可用性、临时免费模型、区域限制和使用额度由 OpenCode 决定；
 Muse Spark Contributor 的输入和输出可能用于模型训练，具体数据政策以 [Go 隐私说明](https://opencode.ai/docs/go/#privacy)为准。

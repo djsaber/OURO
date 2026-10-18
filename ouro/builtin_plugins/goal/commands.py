@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 
-from ouro.sdk.plugins.v3 import (
+from ouro.sdk.plugins.v4 import (
     CommandCall,
     CommandOutput,
     JsonValue,

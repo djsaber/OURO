@@ -5,7 +5,7 @@ import sys
 from collections.abc import Mapping
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Unpack
 
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import (
@@ -17,6 +17,7 @@ from ouro.application.configuration_models import (
 from ouro.cli.errors import error_exit_code
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime
 from ouro.config import EndpointReasoningConfig, ProviderProtocol, ProviderType
+from ouro.config.endpoints import EndpointChanges
 from ouro.config.provider_models import is_plugin_protocol
 from ouro.core.base import new_id
 from ouro.core.errors import OuroError
@@ -607,46 +608,13 @@ def update_provider_endpoint(
     endpoint_id: str,
     *,
     home: str | Path | None = None,
-    display_name: str | None = None,
-    model: str | None = None,
-    base_url: str | None = None,
-    api_path: str | None = None,
-    temperature: float | None = None,
-    context_window: int | None = None,
-    max_output_tokens: int | None = None,
-    supports_tools: bool | None = None,
-    supports_image_input: bool | None = None,
-    supports_audio_input: bool | None = None,
-    supports_video_input: bool | None = None,
-    supports_streaming: bool | None = None,
-    supports_structured_output: bool | None = None,
-    reasoning: EndpointReasoningConfig | None = None,
-    request_options: Mapping[str, Any] | None = None,
     make_default: bool = False,
     json_mode: bool = False,
+    **changes: Unpack[EndpointChanges],
 ) -> int:
     try:
-        facade = ConfigurationFacade(home)
-        current = facade.endpoint(provider_id, endpoint_id)
-        catalog = facade.update_endpoint(
-            provider_id,
-            endpoint_id,
-            display_name=(display_name if display_name is not None else current.display_name),
-            model=model,
-            base_url=base_url,
-            api_path=api_path,
-            temperature=temperature,
-            context_window=context_window,
-            max_output_tokens=max_output_tokens,
-            supports_tools=supports_tools,
-            supports_image_input=supports_image_input,
-            supports_audio_input=supports_audio_input,
-            supports_video_input=supports_video_input,
-            supports_streaming=supports_streaming,
-            supports_structured_output=supports_structured_output,
-            reasoning=reasoning,
-            request_options=request_options,
-            make_default=make_default,
+        catalog = ConfigurationFacade(home).update_endpoint(
+            provider_id, endpoint_id, make_default=make_default, **changes
         )
         endpoint = next(item for item in catalog.endpoints if item.endpoint_id == endpoint_id)
     except OuroError as exc:

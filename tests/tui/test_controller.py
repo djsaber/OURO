@@ -1171,7 +1171,7 @@ async def test_controller_installs_and_configures_user_plugin(tmp_path: Path) ->
                 "name": "TUI configuration",
                 "version": "1.0.0",
                 "namespace": "tui_config",
-                "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^4.0.0"},
                 "runtime": {"kind": "declarative"},
                 "contributes": {},
                 "permissions": [],
@@ -1533,7 +1533,7 @@ async def test_controller_skill_catalog_tracks_live_plugin_skills(tmp_path: Path
                 "name": "TUI Skill",
                 "version": "1.0.0",
                 "namespace": "tui_skill",
-                "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^3.0.0"},
+                "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^4.0.0"},
                 "runtime": {"kind": "declarative"},
                 "contributes": {"skills": [{"id": "calendar", "path": "./skills/calendar"}]},
                 "permissions": [],
@@ -2361,19 +2361,9 @@ async def test_controller_restores_compaction_boundaries_and_effective_metrics(
         before = application.runtime.sessions.context_status(session_id)
         assert before is not None
         used = before.metrics.estimated_input_tokens
-        budget = before.metrics.input_budget_tokens
         compacted_tokens = max(before.metrics.estimated_fixed_tokens, used // 2)
         compacted_metrics = before.metrics.model_copy(
-            update={
-                "estimated_input_tokens": compacted_tokens,
-                "estimated_remaining_tokens": (
-                    budget - compacted_tokens if budget is not None else None
-                ),
-                "estimated_utilization_ratio": (
-                    compacted_tokens / budget if budget is not None else None
-                ),
-                "over_budget": budget is not None and compacted_tokens > budget,
-            }
+            update={"estimated_input_tokens": compacted_tokens}
         )
         compaction = CompactionRecord(
             session_id=session_id,

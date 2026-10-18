@@ -15,7 +15,7 @@ from ouro.providers.openai_responses import OpenAIResponsesProvider
 from tests.providers.responses_fixtures import call, delta, item_event, message, reasoning, terminal
 from tests.providers.test_request_authentication import PROVIDERS
 
-MODEL = ModelMetadata(model_id="model", provider_id="fixture")
+MODEL = ModelMetadata(max_output_tokens=8192, model_id="model", provider_id="fixture")
 TIMEOUT = 0.2
 INTERVAL = 0.04
 

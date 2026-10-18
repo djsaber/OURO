@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Sequence
-from math import ceil, isclose
+from math import ceil
 from typing import Any
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
 from ouro.core.content import MEDIA_CONTENT_COST, MediaContent
+from ouro.core.context_budget import ContextBudget
 from ouro.core.context_providers import ContextFragment
 from ouro.core.message_semantics import render_semantic_envelope
 from ouro.core.messages import (
@@ -23,76 +24,59 @@ TokenEstimator = Callable[[str], int]
 
 
 class ContextMetrics(OuroModel):
-    """Typed context-budget facts for one effective model request."""
+    """Measured input and request limits; budget indicators are derived facts."""
+
+    model_config = ConfigDict(extra="forbid")
 
     estimated_input_tokens: int = Field(ge=0)
     estimated_fixed_tokens: int = Field(ge=0)
-    context_window_tokens: int | None = Field(default=None, ge=1)
-    reserved_output_tokens: int = Field(default=0, ge=0)
-    input_budget_tokens: int | None = Field(default=None, ge=1)
-    estimated_remaining_tokens: int | None = None
-    estimated_utilization_ratio: float | None = Field(default=None, ge=0)
-    over_budget: bool = False
+    budget: ContextBudget | None = None
     estimator_id: str = "builtin.conservative"
     estimator_version: str = "2"
 
     @model_validator(mode="after")
-    def _validate_budget_facts(self) -> ContextMetrics:
+    def _validate_measurement(self) -> ContextMetrics:
         if self.estimated_fixed_tokens > self.estimated_input_tokens:
             raise ValueError("fixed tokens must not exceed the total input estimate")
         if not self.estimator_id.strip() or not self.estimator_version.strip():
             raise ValueError("context estimator identity must not be empty")
-        budget = self.input_budget_tokens
-        if self.context_window_tokens is not None:
-            if self.reserved_output_tokens >= self.context_window_tokens:
-                raise ValueError("reserved output must be lower than the context window")
-            expected_budget = self.context_window_tokens - self.reserved_output_tokens
-            if budget != expected_budget:
-                raise ValueError("input budget must equal context window minus reserved output")
-        if budget is None:
-            if self.estimated_remaining_tokens is not None:
-                raise ValueError("remaining tokens require an input budget")
-            if self.estimated_utilization_ratio is not None:
-                raise ValueError("utilization requires an input budget")
-            if self.over_budget:
-                raise ValueError("over-budget state requires an input budget")
-            return self
-        expected_remaining = budget - self.estimated_input_tokens
-        if self.estimated_remaining_tokens != expected_remaining:
-            raise ValueError("remaining tokens do not match the input estimate and budget")
-        expected_utilization = self.estimated_input_tokens / budget
-        if self.estimated_utilization_ratio is None or not isclose(
-            self.estimated_utilization_ratio,
-            expected_utilization,
-        ):
-            raise ValueError("utilization does not match the input estimate and budget")
-        if self.over_budget != (self.estimated_input_tokens > budget):
-            raise ValueError("over-budget state does not match the input estimate and budget")
         return self
 
-    def with_model_limits(
-        self,
-        *,
-        context_window_tokens: int,
-        reserved_output_tokens: int,
-    ) -> ContextMetrics:
-        """Keep measured context facts while applying another model's capacity."""
+    @property
+    def context_window_tokens(self) -> int | None:
+        return self.budget.context_window if self.budget is not None else None
 
-        input_budget_tokens = context_window_tokens - reserved_output_tokens
-        if input_budget_tokens < 1:
-            raise ValueError("reserved_output_tokens must be lower than context_window_tokens")
-        estimated_remaining_tokens = input_budget_tokens - self.estimated_input_tokens
-        return ContextMetrics.model_validate(
-            {
-                **self.model_dump(),
-                "context_window_tokens": context_window_tokens,
-                "reserved_output_tokens": reserved_output_tokens,
-                "input_budget_tokens": input_budget_tokens,
-                "estimated_remaining_tokens": estimated_remaining_tokens,
-                "estimated_utilization_ratio": (self.estimated_input_tokens / input_budget_tokens),
-                "over_budget": estimated_remaining_tokens < 0,
-            }
+    @property
+    def reserved_output_tokens(self) -> int:
+        return self.budget.reserved_output_tokens if self.budget is not None else 0
+
+    @property
+    def input_budget_tokens(self) -> int | None:
+        return self.budget.input_tokens if self.budget is not None else None
+
+    @property
+    def estimated_remaining_tokens(self) -> int | None:
+        return (
+            self.budget.input_tokens - self.estimated_input_tokens
+            if self.budget is not None
+            else None
         )
+
+    @property
+    def estimated_utilization_ratio(self) -> float | None:
+        return (
+            self.estimated_input_tokens / self.budget.input_tokens
+            if self.budget is not None
+            else None
+        )
+
+    @property
+    def over_budget(self) -> bool:
+        return self.budget is not None and self.estimated_input_tokens > self.budget.input_tokens
+
+    def with_budget(self, budget: ContextBudget) -> ContextMetrics:
+        """Apply another request's capacity without changing the input measurement."""
+        return self.model_copy(update={"budget": budget})
 
 
 class ProviderContext(OuroModel):
@@ -144,25 +128,10 @@ class ContextBuilder:
         system_prompt: str = "",
         added_context: Sequence[str | ContextFragment] | None = None,
         additional_skill_instructions: str = "",
-        input_token_budget: int | None = None,
-        context_window_tokens: int | None = None,
-        reserved_output_tokens: int = 0,
+        budget: ContextBudget | None = None,
     ) -> ContextView:
         """Prepare a request from registered tool definitions and canonical context."""
 
-        if input_token_budget is not None and input_token_budget < 1:
-            raise ValueError("input_token_budget must be at least 1")
-        if context_window_tokens is not None and context_window_tokens < 1:
-            raise ValueError("context_window_tokens must be at least 1")
-        if reserved_output_tokens < 0:
-            raise ValueError("reserved_output_tokens must not be negative")
-        if context_window_tokens is not None:
-            derived_budget = context_window_tokens - reserved_output_tokens
-            if derived_budget < 1:
-                raise ValueError("reserved_output_tokens must be lower than the context window")
-            if input_token_budget is not None and input_token_budget != derived_budget:
-                raise ValueError("input_token_budget does not match the supplied context limits")
-            input_token_budget = derived_budget
         skill_instructions = _compose_skill_instructions(
             self.skill_instructions,
             additional_skill_instructions,
@@ -210,12 +179,6 @@ class ContextBuilder:
         estimated_tokens = fixed_tokens + sum(
             estimate_message_tokens(message, self.token_estimator) for message in model_messages
         )
-        remaining = (
-            input_token_budget - estimated_tokens if input_token_budget is not None else None
-        )
-        utilization = (
-            estimated_tokens / input_token_budget if input_token_budget is not None else None
-        )
         return ContextView(
             model_messages=[*context_messages, *model_messages],
             system_prompt=composed_prompt,
@@ -223,14 +186,7 @@ class ContextBuilder:
             metrics=ContextMetrics(
                 estimated_fixed_tokens=fixed_tokens,
                 estimated_input_tokens=estimated_tokens,
-                context_window_tokens=context_window_tokens,
-                reserved_output_tokens=reserved_output_tokens,
-                input_budget_tokens=input_token_budget,
-                estimated_remaining_tokens=remaining,
-                estimated_utilization_ratio=utilization,
-                over_budget=(
-                    input_token_budget is not None and estimated_tokens > input_token_budget
-                ),
+                budget=budget,
             ),
             context_metadata={
                 "skills_injected": bool(skill_instructions),

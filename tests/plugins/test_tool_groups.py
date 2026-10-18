@@ -13,7 +13,7 @@ from ouro.plugins.invocation import plugin_invocation
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.runtime import PluginRuntimeResource
 from ouro.plugins.store import PluginPackageStore
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 from ouro.tools import Tool, ToolDefinition, ToolInvocation, ToolRegistry
 from ouro.tools.executor import ToolExecutor
 
@@ -65,7 +65,7 @@ def make_runtime(tmp_path, instances, factory=Discovery, *, contributes=None):
             "namespace": "discovery",
             "name": "Discovery",
             "version": "1.0.0",
-            "engines": {"ouro": "^0.3.0", "plugin_api": "^3.0.0"},
+            "engines": {"ouro": "^0.3.0", "plugin_api": "^4.0.0"},
             "runtime": {"kind": "python-inprocess", "entrypoint": "discovery_plugin:create"},
             "tool_groups": [{"id": "remote", "permission_mode": "auto", "effect": "read_only"}],
             "contributes": contributes or {},

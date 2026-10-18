@@ -32,7 +32,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         display_name="DeepSeek",
         description=(
             "DeepSeek's Chat Completions API with V4 Pro and V4.1 Flash (deepseek-flash). "
-            "Text-only models; the preset requests an output budget of 32768."
+            "No request output limit is configured."
         ),
         provider_type="deepseek",
         protocol="openai-chat-completions",
@@ -46,7 +46,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 display_name="DeepSeek V4 Pro",
                 model_id="deepseek-v4-pro",
                 context_window=1_000_000,
-                max_output_tokens=32_768,
                 supports_tools=True,
                 supports_image_input=False,
                 supports_streaming=True,
@@ -58,7 +57,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 display_name="DeepSeek V4.1 Flash",
                 model_id="deepseek-flash",
                 context_window=1_000_000,
-                max_output_tokens=32_768,
                 supports_tools=True,
                 supports_image_input=True,
                 supports_streaming=True,
@@ -68,6 +66,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://api-docs.deepseek.com/quick_start/pricing/",
         verified_on=_VERIFIED_ON,
-        revision=8,
+        revision=9,
     ),
 )

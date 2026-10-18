@@ -18,7 +18,7 @@ from ouro.plugins.contributions import (
 from ouro.plugins.invocation import current_invocation
 from ouro.plugins.manifest import PluginManifest, ToolContributionSpec
 from ouro.plugins.models import PluginGenerationRecord
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 from ouro.tools import Tool
 
 

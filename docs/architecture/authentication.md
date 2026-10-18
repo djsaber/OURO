@@ -146,7 +146,7 @@ OpenAI driver 实现浏览器 PKCE 和刷新；设备码由实验探针验证，
 
 Codex 的后端契约需要实测，不能由 Platform 文档全量推导。当前采用 SSE 和无远端持久会话模式；opaque reasoning、item 标识与必要顺序保存在 Responses 自有 continuation envelope 内，Core 继续只保存不透明 blocks。无需给 Core 新增 OAuth scope 或凭据字段。
 
-continuation 的账户作用域是协议正确性信息，不是权限系统。其编码只由 Responses codec 与认证句柄协作；普通 Token 刷新不会使续接失效。服务端不支持的参数必须通过明确能力声明处理。输出上限由受信服务策略声明是否支持；不支持时保持单一 max_output_tokens 用于本地预算，使用入口明确披露没有请求级硬上限，不新增独立预留参数。温度和结构化输出等模型能力继续由 Endpoint 表达。
+continuation 的账户作用域是协议正确性信息，不是权限系统。其编码只由 Responses codec 与认证句柄协作；普通 Token 刷新不会使续接失效。服务端不支持的参数必须通过明确能力声明处理。输出上限由受信服务策略声明是否支持；max_output_tokens 缺失或 null 时不配置输出上限；不支持上限时，有限配置仅用于本地预算，使用入口明确披露没有请求级硬上限，不新增独立预留参数。温度和结构化输出等模型能力继续由 Endpoint 表达。
 
 Responses 的事件与 Chat Completions 不同，需要独立 codec；加密 reasoning 不能由公开摘要替代。[Responses 流式文档](https://developers.openai.com/api/docs/guides/streaming-responses)、[Reasoning 文档](https://developers.openai.com/api/docs/guides/reasoning)
 

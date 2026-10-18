@@ -40,13 +40,7 @@ class ModelGenerationService:
             else request.reasoning
         )
         adapter = adapter.with_reasoning(reasoning)
-        if request.max_output_tokens is not None:
-            if request.max_output_tokens > adapter.model.max_output_tokens:
-                raise ValueError("Requested output exceeds the configured model limit")
-            adapter = RuntimeAdapter(
-                adapter.provider,
-                adapter.model.model_copy(update={"max_output_tokens": request.max_output_tokens}),
-            )
+        adapter = adapter.with_output_limit(request.max_output_tokens)
         return model_route_key(adapter.model), adapter
 
     async def generate(
@@ -65,8 +59,7 @@ class ModelGenerationService:
             ],
             tools=[],
             system_prompt=request.system_prompt,
-            context_window_tokens=adapter.model.context_window,
-            reserved_output_tokens=adapter.model.max_output_tokens,
+            budget=adapter.model.context_budget,
         )
         if context.metrics.over_budget:
             raise ValueError("Independent model input exceeds the configured context budget")

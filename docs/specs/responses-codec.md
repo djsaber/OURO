@@ -30,7 +30,7 @@ adapter 借用 `RequestAuthenticator`，每次尝试重新 acquire；用同次�
 
 请求固定携带完整本地 input、store=false、include=[reasoning.encrypted_content]，不使用远程 conversation/previous_response_id 或 background。request_options 不能覆盖上述字段、model、tools、stream、instructions、temperature 或输出上限字段。truncation 不发送，沿用标准协议的 disabled 默认行为；该字段仍由协议拥有，禁止 request_options 启用自动截断。用户实测订阅后端拒绝显式 truncation，省略该冗余字段不需要厂商分支；后端实际超限行为仍须验收。
 
-max_output_tokens 保持端点配置的正整数和本地上下文预算语义。adapter 依据注入的 ProviderRequestPolicy.supports_output_limit 决定是否将其发送为请求输出上限，默认 true。明确声明 false 的服务不发送该字段，实际输出可能超过本地预算，使用入口必须披露限制。该能力不由认证方式、计费类型、URL 或模型名推断；request_options 不能覆盖，HTTP 失败后不自动调整。Codex 探针基于实测参数拒绝声明 false，省略后的正式路径已在 Windows/browser/gpt-5.5 真实实验中通过文本、刷新及工具续接；标准 Responses 继续支持发送上限。
+max_output_tokens 是可空正整数，完整配置缺失和 null 均表示 OURO 不配置输出上限，本地输出预留为 0。有限值等额预留。adapter 仅在最终请求值非空且 ProviderRequestPolicy.supports_output_limit 为 true（默认值）时发送该字段。明确声明 false 的服务不发送该字段，实际输出可能超过本地预算，使用入口必须披露限制。该能力不由认证方式、计费类型、URL 或模型名推断；request_options 不能覆盖，HTTP 失败后不自动调整。Codex 探针基于实测参数拒绝声明 false，省略后的正式路径已在 Windows/browser/gpt-5.5 真实实验中通过文本、刷新及工具续接；标准 Responses 继续支持发送上限。
 
 reasoning profile 只能声明原生 reasoning 对象，不能复用 Chat Completions 的 reasoning_effort。text.format 需要结构化输出能力；原生图片需 Endpoint 声明 `supports_image_input`。未声明工具能力时拒绝工具输入及工具输出。展示层可隐藏 reasoning_delta，但隐藏发生在共享重试边界之后，已收到思考输出仍禁止重放。完整 reasoning item 的保存不受展示开关影响。
 

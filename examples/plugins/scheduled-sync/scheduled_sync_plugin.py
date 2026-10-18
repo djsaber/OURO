@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 from ouro.sdk.plugins.scheduling import PluginScheduler, ScheduledService, TaskSchedule, TaskSpec
 from ouro.sdk.plugins.services import ServiceCall, ServiceContribution
 

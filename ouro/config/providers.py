@@ -7,12 +7,12 @@ from contextlib import AbstractContextManager
 from copy import deepcopy
 from pathlib import Path
 from threading import Event
-from typing import Any, Literal
+from typing import Any, Literal, Unpack
 
 from pydantic import ValidationError
 
 from ouro.config.credentials import CredentialRef
-from ouro.config.endpoints import ProviderEndpointConfig
+from ouro.config.endpoints import EndpointChanges, ProviderEndpointConfig
 from ouro.config.file import JsonConfigFile, atomic_config_update
 from ouro.config.provider_codec import (
     provider_config_from_mapping,
@@ -825,68 +825,47 @@ class ProviderConfigManager:
         request_options: Mapping[str, Any] | None = None,
         make_default: bool = False,
     ) -> ProviderEndpointConfig:
-        return self._save_endpoint(
-            provider_id,
-            None,
-            display_name=display_name,
-            model_id=model_id,
-            base_url=base_url,
-            api_path=api_path,
-            temperature=temperature,
-            context_window=context_window,
-            max_output_tokens=max_output_tokens,
-            supports_tools=supports_tools,
-            supports_image_input=supports_image_input,
-            supports_audio_input=supports_audio_input,
-            supports_video_input=supports_video_input,
-            supports_streaming=supports_streaming,
-            supports_structured_output=supports_structured_output,
-            reasoning=reasoning,
-            request_options=request_options,
-            make_default=make_default,
-        )
+        changes: EndpointChanges = {"model_id": model_id}
+        if display_name is not None:
+            changes["display_name"] = display_name
+        if base_url is not None:
+            changes["base_url"] = base_url
+        if api_path is not None:
+            changes["api_path"] = api_path
+        if temperature is not None:
+            changes["temperature"] = temperature
+        if context_window is not None:
+            changes["context_window"] = context_window
+        if max_output_tokens is not None:
+            changes["max_output_tokens"] = max_output_tokens
+        if supports_tools is not None:
+            changes["supports_tools"] = supports_tools
+        if supports_image_input is not None:
+            changes["supports_image_input"] = supports_image_input
+        if supports_audio_input is not None:
+            changes["supports_audio_input"] = supports_audio_input
+        if supports_video_input is not None:
+            changes["supports_video_input"] = supports_video_input
+        if supports_streaming is not None:
+            changes["supports_streaming"] = supports_streaming
+        if supports_structured_output is not None:
+            changes["supports_structured_output"] = supports_structured_output
+        if reasoning is not None:
+            changes["reasoning"] = reasoning
+        if request_options is not None:
+            changes["request_options"] = request_options
+        return self._save_endpoint(provider_id, None, changes=changes, make_default=make_default)
 
     def update_endpoint(
         self,
         provider_id: str,
         endpoint_id: str,
         *,
-        display_name: str | None,
-        model_id: str | None = None,
-        base_url: str | None = None,
-        api_path: str | None = None,
-        temperature: float | None = None,
-        context_window: int | None = None,
-        max_output_tokens: int | None = None,
-        supports_tools: bool | None = None,
-        supports_image_input: bool | None = None,
-        supports_audio_input: bool | None = None,
-        supports_video_input: bool | None = None,
-        supports_streaming: bool | None = None,
-        supports_structured_output: bool | None = None,
-        reasoning: EndpointReasoningConfig | None = None,
-        request_options: Mapping[str, Any] | None = None,
         make_default: bool = False,
+        **changes: Unpack[EndpointChanges],
     ) -> ProviderEndpointConfig:
         return self._save_endpoint(
-            provider_id,
-            endpoint_id,
-            display_name=display_name,
-            model_id=model_id,
-            base_url=base_url,
-            api_path=api_path,
-            temperature=temperature,
-            context_window=context_window,
-            max_output_tokens=max_output_tokens,
-            supports_tools=supports_tools,
-            supports_image_input=supports_image_input,
-            supports_audio_input=supports_audio_input,
-            supports_video_input=supports_video_input,
-            supports_streaming=supports_streaming,
-            supports_structured_output=supports_structured_output,
-            reasoning=reasoning,
-            request_options=request_options,
-            make_default=make_default,
+            provider_id, endpoint_id, changes=changes, make_default=make_default
         )
 
     @atomic_config_update
@@ -895,89 +874,25 @@ class ProviderConfigManager:
         provider_id: str,
         endpoint_id: str | None,
         *,
-        display_name: str | None,
-        model_id: str | None,
-        base_url: str | None,
-        api_path: str | None,
-        temperature: float | None,
-        context_window: int | None,
-        max_output_tokens: int | None,
-        supports_tools: bool | None,
-        supports_image_input: bool | None,
-        supports_audio_input: bool | None,
-        supports_video_input: bool | None,
-        supports_streaming: bool | None,
-        supports_structured_output: bool | None,
-        reasoning: EndpointReasoningConfig | None,
-        request_options: Mapping[str, Any] | None,
+        changes: EndpointChanges,
         make_default: bool,
     ) -> ProviderEndpointConfig:
         provider_id = provider_id.strip()
-
         raw = self.load_raw()
         configured = self._configured_providers(raw)
         provider = configured.get(provider_id)
         if provider is None:
             raise ConfigError(f"provider not found: {provider_id}")
-
+        if endpoint_id is None:
+            endpoint_id = new_id("endpoint")
+            values: dict[str, Any] = {"endpoint_id": endpoint_id}
+        else:
+            existing = provider.endpoint(endpoint_id)
+            if existing is None:
+                raise ConfigError(f"endpoint not found: {provider_id}/{endpoint_id}")
+            values = existing.model_dump()
         try:
-            if endpoint_id is None:
-                endpoint_id = new_id("endpoint")
-                if model_id is None:
-                    raise ConfigError("model is required for a new endpoint")
-                current = ProviderEndpointConfig(
-                    endpoint_id=endpoint_id,
-                    display_name=display_name,
-                    model_id=model_id,
-                    base_url=base_url,
-                )
-            else:
-                existing = provider.endpoint(endpoint_id)
-                if existing is None:
-                    raise ConfigError(f"endpoint not found: {provider_id}/{endpoint_id}")
-                current = existing
-        except ValidationError as exc:
-            raise ConfigError(f"invalid endpoint config: {exc}") from exc
-
-        try:
-            updated = current.model_copy(
-                update={
-                    "display_name": display_name,
-                    "model_id": model_id if model_id is not None else current.model_id,
-                    "base_url": base_url if base_url is not None else current.base_url,
-                    "api_path": api_path if api_path is not None else current.api_path,
-                    "temperature": temperature if temperature is not None else current.temperature,
-                    "context_window": context_window
-                    if context_window is not None
-                    else current.context_window,
-                    "max_output_tokens": max_output_tokens
-                    if max_output_tokens is not None
-                    else current.max_output_tokens,
-                    "supports_tools": supports_tools
-                    if supports_tools is not None
-                    else current.supports_tools,
-                    "supports_image_input": supports_image_input
-                    if supports_image_input is not None
-                    else current.supports_image_input,
-                    "supports_audio_input": supports_audio_input
-                    if supports_audio_input is not None
-                    else current.supports_audio_input,
-                    "supports_video_input": supports_video_input
-                    if supports_video_input is not None
-                    else current.supports_video_input,
-                    "supports_streaming": supports_streaming
-                    if supports_streaming is not None
-                    else current.supports_streaming,
-                    "supports_structured_output": supports_structured_output
-                    if supports_structured_output is not None
-                    else current.supports_structured_output,
-                    "reasoning": reasoning if reasoning is not None else current.reasoning,
-                    "request_options": dict(request_options)
-                    if request_options is not None
-                    else current.request_options,
-                }
-            )
-            updated = ProviderEndpointConfig.model_validate(updated.model_dump())
+            updated = ProviderEndpointConfig.model_validate({**values, **changes})
         except ValidationError as exc:
             raise ConfigError(f"invalid endpoint config: {exc}") from exc
 

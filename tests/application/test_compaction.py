@@ -4,11 +4,11 @@ import asyncio
 
 import pytest
 
-import ouro.application.compaction as compaction_module
-from ouro.application.compaction import LLMSummaryCompactionStrategy
+import ouro.application.summary_compaction as compaction_module
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_configuration import RuntimeConfigurationResolver
+from ouro.application.summary_compaction import LLMSummaryCompactionStrategy
 from ouro.config.compaction import CompactionConfig, CompactionConfigManager, CompactionModelConfig
 from ouro.config.prompts import PromptConfigManager, PromptDraft
 from ouro.core.adapter import RuntimeAdapter
@@ -20,10 +20,10 @@ from ouro.core.compaction import (
     CompactionStrategyError,
     CompactionStrategyRegistry,
 )
-from ouro.core.context import estimate_text_tokens
+from ouro.core.context import ContextBuilder
+from ouro.core.context_budget import ContextBudget
 from ouro.core.errors import CompactionError
-from ouro.core.message_semantics import render_semantic_envelope
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
@@ -351,8 +351,6 @@ def _summary_request() -> CompactionRequest:
             MessageRecord.text(session_id="ses_route", role="user", text="old question"),
             MessageRecord.text(session_id="ses_route", role="assistant", text="old answer"),
         ],
-        input_token_budget=20_000,
-        summary_output_tokens=1024,
     )
 
 
@@ -370,7 +368,7 @@ def _summary_adapter(
             provider_id=provider_id,
             endpoint_id=endpoint_id,
             context_window=context_window,
-            max_output_tokens=min(2048, context_window),
+            max_output_tokens=min(2048, context_window - 1),
             temperature=0.8,
             reasoning=ReasoningCapability(
                 activation="toggle",
@@ -382,6 +380,53 @@ def _summary_adapter(
             reasoning_request=ReasoningRequest(mode="enabled", effort="low"),
         ),
     )
+
+
+@pytest.mark.parametrize("main_limit", [None, 256, 4096])
+@pytest.mark.parametrize("summary_limit", [None, 512])
+@pytest.mark.parametrize("route", ["runtime", "configured", "runtime_fallback"])
+async def test_summary_uses_its_own_limit_on_every_route(main_limit, summary_limit, route):
+    runtime_provider = SummaryRouteProvider()
+    configured_provider = SummaryRouteProvider(
+        error="unavailable" if route == "runtime_fallback" else None
+    )
+    runtime = _summary_adapter(
+        runtime_provider, provider_id="runtime", endpoint_id="main"
+    ).with_output_limit(main_limit)
+    configured = _summary_adapter(configured_provider, provider_id="summary", endpoint_id="summary")
+    strategy = LLMSummaryCompactionStrategy(
+        runtime,
+        configured_adapter=configured if route != "runtime" else None,
+        model_config=CompactionModelConfig(
+            provider_id="summary" if route != "runtime" else None,
+            endpoint_id="summary" if route != "runtime" else None,
+            max_output_tokens=summary_limit,
+        ),
+    )
+    artifact = await strategy.compact(_summary_request())
+    used = configured_provider if route == "configured" else runtime_provider
+    assert used.models[-1].max_output_tokens == summary_limit
+    assert artifact.model_outputs[-1].requested_output_tokens == summary_limit
+    assert runtime.model.max_output_tokens == main_limit
+    assert configured.model.max_output_tokens == 2048
+
+
+async def test_closed_summary_with_length_finish_reason_is_still_rejected():
+    class TruncatedProvider(SummaryRouteProvider):
+        async def stream(self, **kwargs):
+            yield ProviderStreamEvent(type="text_delta", text="<summary>closed</summary>")
+            yield ProviderStreamEvent(
+                type="done", completion=ProviderCompletion(finish_reason="length")
+            )
+
+    strategy = LLMSummaryCompactionStrategy(
+        _summary_adapter(TruncatedProvider(), provider_id="runtime", endpoint_id="chat")
+    )
+    with pytest.raises(CompactionStrategyError, match="output limit") as raised:
+        await strategy.compact(_summary_request())
+    assert len(raised.value.model_outputs) == 1
+    assert raised.value.model_outputs[0].raw_text == "<summary>closed</summary>"
+    assert raised.value.model_outputs[0].status == "failed"
 
 
 def test_summary_chunk_selection_serializes_each_message_once_and_preserves_budget(
@@ -407,25 +452,25 @@ def test_summary_chunk_selection_serializes_each_message_once_and_preserves_budg
     ]
     previous_summary = "earlier summary"
     summary_output_tokens = 512
-    capacity = adapter.model.context_window - summary_output_tokens
+    adapter = adapter.with_output_limit(summary_output_tokens)
+    capacity = adapter.model.context_budget.input_tokens
     expected: list[MessageRecord] = []
     expected_frames = 0
-    prompt_tokens = estimate_text_tokens(
-        compaction_module.render_summarization_prompt(strategy.prompt, summary_output_tokens)
-    )
     for frame in frames:
         candidate = [*expected, *frame]
-        if (
-            prompt_tokens
-            + estimate_text_tokens(
-                render_semantic_envelope(
-                    compaction_module._summary_payload(previous_summary, candidate),
-                    "conversation-to-summarize",
+        view = ContextBuilder().build(
+            system_prompt=strategy.prompt,
+            messages=[
+                ModelMessage.text(
+                    role="user",
+                    text=compaction_module._summary_payload(previous_summary, candidate),
+                    semantic_tag="conversation-to-summarize",
                 )
-            )
-            + 8
-            > capacity
-        ):
+            ],
+            tools=[],
+            budget=ContextBudget(context_window=capacity),
+        )
+        if view.metrics.over_budget:
             break
         expected = candidate
         expected_frames += 1
@@ -448,7 +493,6 @@ def test_summary_chunk_selection_serializes_each_message_once_and_preserves_budg
         frames,
         adapter=adapter,
         previous_summary=previous_summary,
-        summary_output_tokens=summary_output_tokens,
     )
 
     assert selected == expected
@@ -507,7 +551,7 @@ async def test_dedicated_compaction_endpoint_uses_isolated_model_parameters() ->
 
 
 @pytest.mark.asyncio
-async def test_dedicated_compaction_endpoint_inherits_unspecified_model_parameters() -> None:
+async def test_dedicated_compaction_endpoint_uses_unlimited_output_by_default() -> None:
     runtime_provider = SummaryRouteProvider()
     configured_provider = SummaryRouteProvider()
     configured_adapter = _summary_adapter(
@@ -527,7 +571,7 @@ async def test_dedicated_compaction_endpoint_inherits_unspecified_model_paramete
     await strategy.compact(_summary_request())
 
     assert runtime_provider.models == []
-    assert configured_provider.models[0] == configured_adapter.model
+    assert configured_provider.models[0] == configured_adapter.with_output_limit(None).model
     assert configured_provider.models[0].reasoning_request == ReasoningRequest(
         mode="enabled", effort="low"
     )
@@ -556,7 +600,7 @@ async def test_invalid_compaction_response_retains_raw_model_output() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_compaction_inherits_complete_session_model_configuration() -> None:
+async def test_runtime_compaction_reuses_route_without_inheriting_output_limit() -> None:
     provider = SummaryRouteProvider()
     strategy = LLMSummaryCompactionStrategy(
         _summary_adapter(provider, provider_id="runtime", endpoint_id="chat")
@@ -565,13 +609,13 @@ async def test_runtime_compaction_inherits_complete_session_model_configuration(
     artifact = await strategy.compact(_summary_request())
 
     assert provider.models[0].temperature == 0.8
-    assert provider.models[0].max_output_tokens == 2048
+    assert provider.models[0].max_output_tokens is None
     assert provider.models[0].reasoning_request == ReasoningRequest(mode="enabled", effort="low")
     assert artifact.metadata["model_reasoning"] == {
         "mode": "enabled",
         "effort": "low",
     }
-    assert "2,048 output tokens" in provider.system_prompts[0]
+    assert "{{ max_output_tokens }}" not in provider.system_prompts[0]
     assert "<example>" not in provider.system_prompts[0]
 
 
@@ -689,9 +733,8 @@ async def test_unclosed_length_summary_retries_once_with_half_the_frames() -> No
     assert [output.input_message_count for output in artifact.model_outputs] == [4, 2, 2]
     first = artifact.model_outputs[0]
     assert first.finish_reason == "length"
-    assert first.summary_opened is True
-    assert first.summary_closed is False
-    assert first.requested_output_tokens == 2048
+    assert "<summary>" in first.raw_text and "</summary>" not in first.raw_text
+    assert first.requested_output_tokens is None
     assert first.estimated_input_tokens > 0
     assert artifact.usage["input_tokens"] == 30
     assert artifact.usage["output_tokens"] == 1044
@@ -750,7 +793,7 @@ async def test_unclosed_length_summary_stops_after_one_binary_retry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_compaction_provider_error_retries_with_session_model_parameters() -> None:
+async def test_compaction_provider_error_applies_summary_parameters_to_fallback() -> None:
     configured_provider = SummaryRouteProvider(error="dedicated unavailable")
     runtime_provider = SummaryRouteProvider()
     runtime_adapter = _summary_adapter(
@@ -779,9 +822,9 @@ async def test_compaction_provider_error_retries_with_session_model_parameters()
     assert len(configured_provider.models) == 1
     assert len(runtime_provider.models) == 1
     fallback_model = runtime_provider.models[0]
-    assert fallback_model.temperature == 0.8
-    assert fallback_model.max_output_tokens == 2048
-    assert fallback_model.reasoning_request == ReasoningRequest(mode="enabled", effort="low")
+    assert fallback_model.temperature == 0.2
+    assert fallback_model.max_output_tokens == 700
+    assert fallback_model.reasoning_request == ReasoningRequest(mode="disabled")
     assert runtime_adapter.model.temperature == 0.8
     assert runtime_adapter.model.reasoning_request == ReasoningRequest(mode="enabled", effort="low")
     assert artifact.metadata["model_route"] == "runtime_fallback"
@@ -911,7 +954,7 @@ async def test_runtime_persists_compaction_endpoint_and_route_metadata(tmp_path)
     assert output_events[0].payload["attempt_index"] == 1
     assert output_events[0].payload["requested_output_tokens"] == 512
     assert output_events[0].payload["finish_reason"] == "stop"
-    assert output_events[0].payload["summary_closed"] is True
+    assert output_events[0].payload["status"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -1056,6 +1099,37 @@ async def test_manual_compaction_uses_same_pipeline_without_adding_messages(tmp_
         result.compaction.context_metrics_after.model_dump(mode="json")
     )
     assert completed.payload["duration_seconds"] == result.compaction.duration_seconds
+
+
+@pytest.mark.parametrize("summary", ["   ", "oversized " * 10_000], ids=["empty", "oversized"])
+async def test_rejected_summary_preserves_active_record_and_canonical_history(tmp_path, summary):
+    class SummaryStrategy(RecordingStrategy):
+        text = "## Continuation\nA plain Markdown summary."
+
+        async def compact(self, request, *, signal=None):
+            return CompactionArtifact(summary=self.text)
+
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Summary acceptance")
+    store.create_session(session)
+    _append_turns(store, session.session_id, 3)
+    strategy = SummaryStrategy()
+    runtime = _runtime(store, RecordingProvider(), strategy, strategy_id=strategy.strategy_id)
+    first = await runtime.compact(session_id=session.session_id)
+    assert first.compaction is not None
+    assert first.compaction.summary == strategy.text
+    _append_turns(store, session.session_id, 3, offset=100)
+    before = store.load_session(session.session_id)
+    strategy.text = summary
+
+    with pytest.raises(CompactionError, match="empty summary|exceed the model input budget"):
+        await runtime.compact(session_id=session.session_id)
+
+    after = store.load_session(session.session_id)
+    assert after.active_compaction == before.active_compaction
+    assert after.compactions == before.compactions
+    assert after.messages == before.messages
 
 
 @pytest.mark.asyncio

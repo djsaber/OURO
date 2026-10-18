@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, TypedDict
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ouro.config.reasoning import EndpointReasoningConfig
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id
+from ouro.core.context_budget import ContextBudget
 from ouro.core.errors import UnsupportedConfigVersionError
 
 _SENSITIVE_PUBLIC_KEYS = frozenset(
@@ -42,8 +43,30 @@ _ENDPOINT_FIELDS = frozenset(
 )
 
 
+class EndpointChanges(TypedDict, total=False):
+    """Fields explicitly submitted by an endpoint editor."""
+
+    display_name: str | None
+    model_id: str
+    base_url: str | None
+    api_path: str | None
+    temperature: float | None
+    context_window: int
+    max_output_tokens: int | None
+    supports_tools: bool
+    supports_image_input: bool
+    supports_audio_input: bool
+    supports_video_input: bool
+    supports_streaming: bool
+    supports_structured_output: bool
+    reasoning: EndpointReasoningConfig
+    request_options: Mapping[str, Any]
+
+
 class ProviderEndpointConfig(OuroModel):
     """Configuration and capabilities for one callable model endpoint."""
+
+    model_config = ConfigDict(extra="forbid")
 
     endpoint_id: str = Field(default_factory=lambda: new_id("endpoint"))
     display_name: str | None = None
@@ -52,7 +75,7 @@ class ProviderEndpointConfig(OuroModel):
     api_path: str | None = None
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     context_window: int = Field(default=1_000_000, ge=1)
-    max_output_tokens: int = Field(default=32_768, ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1, strict=True)
     supports_tools: bool = True
     supports_image_input: bool = False
     supports_audio_input: bool = False
@@ -99,8 +122,7 @@ class ProviderEndpointConfig(OuroModel):
 
     @model_validator(mode="after")
     def _validate_capabilities(self) -> ProviderEndpointConfig:
-        if self.max_output_tokens > self.context_window:
-            raise ValueError("max_output_tokens must not exceed context_window")
+        ContextBudget(context_window=self.context_window, max_output_tokens=self.max_output_tokens)
         self.reasoning.validate_request_options(self.request_options)
         return self
 
@@ -127,7 +149,7 @@ def endpoint_config_from_mapping(
         api_path=_optional_str(raw.get("api_path")),
         temperature=raw.get("temperature"),
         context_window=raw.get("context_window", 1_000_000),
-        max_output_tokens=raw.get("max_output_tokens", 32_768),
+        max_output_tokens=raw.get("max_output_tokens"),
         supports_tools=raw.get("supports_tools", True),
         supports_image_input=raw.get("supports_image_input", False),
         supports_audio_input=raw.get("supports_audio_input", False),

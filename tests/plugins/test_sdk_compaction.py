@@ -15,7 +15,7 @@ from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
 from ouro.core.state import SessionRecord
 from ouro.plugins.api import adapt_sdk_contributions
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
 
@@ -62,9 +62,18 @@ def _request() -> CompactionRequest:
                 text="old context",
             )
         ],
-        input_token_budget=2_000,
-        summary_output_tokens=200,
     )
+
+
+async def test_plugin_summary_format_is_owned_by_the_plugin():
+    def handler(call: sdk.CompactionCall) -> sdk.CompactionOutput:
+        assert call.messages
+        return sdk.CompactionOutput(
+            summary="## Continue\nThe plugin uses Markdown without XML tags."
+        )
+
+    artifact = await _strategy(handler).compact(_request())
+    assert artifact.summary == "## Continue\nThe plugin uses Markdown without XML tags."
 
 
 @pytest.mark.asyncio

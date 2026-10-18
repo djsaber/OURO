@@ -11,7 +11,7 @@ from ouro.plugins import worker as worker_module
 from ouro.plugins.harness_calls import PluginStateView
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.worker import WorkerPluginInstance, WorkerProtocolError
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 
 CALLS = {
     "tool": sdk.ToolCall("call", "session", "run", "echo", {}),
@@ -24,7 +24,7 @@ CALLS = {
     "session_controller": sdk.SessionControllerCall(
         "session", "primary", "activation", "mode", "activate"
     ),
-    "compaction": sdk.CompactionCall("session", "run", "", (), 100, 20),
+    "compaction": sdk.CompactionCall("session", "run", "", ()),
     "continuation": sdk.RunOutcome("session", "run", "completed", "user"),
     "tool_policy": sdk.ToolPolicyCall("session", "run", "call", "echo", "echo", "owner"),
     "prompt_policy": sdk.PromptPolicyCall("session", "run", "hello"),

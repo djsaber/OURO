@@ -9,6 +9,7 @@ from pydantic import Field, model_validator
 from ouro.core.base import Metadata, MetadataField, OuroModel
 from ouro.core.billing import BillingMode
 from ouro.core.content import MediaModality, input_modalities
+from ouro.core.context_budget import ContextBudget
 from ouro.core.messages import ModelMessage, ProviderContinuationArtifact
 from ouro.core.reasoning import (
     ReasoningCapability,
@@ -42,7 +43,7 @@ class ModelMetadata(OuroModel):
     endpoint_id: str | None = None
     display_name: str | None = None
     context_window: int = Field(default=128_000, ge=1)
-    max_output_tokens: int = Field(default=8192, ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1, strict=True)
     temperature: float | None = None
     supports_tools: bool = True
     supports_image_input: bool = False
@@ -58,10 +59,15 @@ class ModelMetadata(OuroModel):
 
     @model_validator(mode="after")
     def _validate_token_limits(self) -> ModelMetadata:
-        if self.max_output_tokens > self.context_window:
-            raise ValueError("max_output_tokens must not exceed context_window")
+        ContextBudget(context_window=self.context_window, max_output_tokens=self.max_output_tokens)
         resolve_reasoning(self.reasoning, self.reasoning_request)
         return self
+
+    @property
+    def context_budget(self) -> ContextBudget:
+        return ContextBudget(
+            context_window=self.context_window, max_output_tokens=self.max_output_tokens
+        )
 
     @property
     def input_modalities(self) -> frozenset[MediaModality]:

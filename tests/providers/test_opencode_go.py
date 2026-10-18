@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 
 import httpx
 import pytest
@@ -37,7 +36,7 @@ async def test_go_template_reaches_its_protocol_with_session_headers(
     saved = ProviderConfigManager(tmp_path).get_provider(created.provider_id)
     assert saved.protocol == protocol
     options = runtime_options_from_config(saved, endpoint_id=None)
-    adapter = build_runtime_adapter(replace(options, supports_streaming=streaming))
+    adapter = build_runtime_adapter(options.model_copy(update={"supports_streaming": streaming}))
     received = []
 
     def respond(request):
@@ -114,7 +113,6 @@ def test_go_limits_and_capabilities_follow_the_gateway_and_local_codecs():
     chat = get_provider_template("opencode-go")
     assert chat.endpoint("kimi-k2.6").context_window == 262_144
     assert chat.endpoint("hy4-preview").context_window == 1_024_000
-    assert chat.endpoint("deepseek-v4.1-flash").metadata["provider_output_limit"] == 384_000
     assert chat.endpoint("deepseek-v4.1-flash").supports_image_input
     assert not chat.endpoint("deepseek-v4-pro").supports_image_input
     assert not chat.endpoint("mimo-v2.5-pro").supports_image_input
@@ -127,8 +125,10 @@ def test_go_limits_and_capabilities_follow_the_gateway_and_local_codecs():
         template = get_provider_template(template_id)
         for endpoint in template.endpoints:
             assert endpoint.supports_tools and endpoint.supports_streaming
-            assert endpoint.max_output_tokens == 32_768
-            assert endpoint.max_output_tokens <= endpoint.metadata["provider_output_limit"]
+            if template.protocol == "anthropic-messages":
+                assert endpoint.max_output_tokens == 32_768
+            else:
+                assert endpoint.max_output_tokens is None
             assert not endpoint.supports_audio_input and not endpoint.supports_video_input
             if template.protocol == "anthropic-messages":
                 assert not endpoint.supports_structured_output

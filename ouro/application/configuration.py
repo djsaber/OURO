@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Unpack
 
 from ouro.application.configuration_models import (
     AgentRuntimeConfigView,
@@ -73,14 +73,17 @@ from ouro.config import (
     RunBudgetConfigManager,
     ToolExecutionConfigManager,
 )
+from ouro.config.compaction import CompactionRequestChanges
+from ouro.config.endpoints import EndpointChanges
 from ouro.config.prompts import PromptConfigSnapshot, PromptDraft, PromptKind
 from ouro.config.skills import SKILL_DISCOVERY_SOURCE_IDS, SkillInstallScope
 from ouro.core.agents import ExecutionMode, LifecycleBinding
 from ouro.core.compaction import CompactionPolicy
 from ouro.core.context import compose_system_prompt
+from ouro.core.context_budget import ContextBudget
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ProviderRetryPolicy
-from ouro.core.reasoning import ReasoningRequest, resolve_reasoning
+from ouro.core.reasoning import resolve_reasoning
 from ouro.core.redaction import redact_text
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode
@@ -699,42 +702,11 @@ class ConfigurationFacade:
         provider_id: str,
         endpoint_id: str,
         *,
-        display_name: str | None,
-        model: str | None = None,
-        base_url: str | None = None,
-        api_path: str | None = None,
-        temperature: float | None = None,
-        context_window: int | None = None,
-        max_output_tokens: int | None = None,
-        supports_tools: bool | None = None,
-        supports_image_input: bool | None = None,
-        supports_audio_input: bool | None = None,
-        supports_video_input: bool | None = None,
-        supports_streaming: bool | None = None,
-        supports_structured_output: bool | None = None,
-        reasoning: EndpointReasoningConfig | None = None,
-        request_options: Mapping[str, Any] | None = None,
         make_default: bool = False,
+        **changes: Unpack[EndpointChanges],
     ) -> ProviderEndpointCatalogView:
         updated = self.providers.update_endpoint(
-            provider_id,
-            endpoint_id,
-            display_name=display_name,
-            model_id=model,
-            base_url=base_url,
-            api_path=api_path,
-            temperature=temperature,
-            context_window=context_window,
-            max_output_tokens=max_output_tokens,
-            supports_tools=supports_tools,
-            supports_image_input=supports_image_input,
-            supports_audio_input=supports_audio_input,
-            supports_video_input=supports_video_input,
-            supports_streaming=supports_streaming,
-            supports_structured_output=supports_structured_output,
-            reasoning=reasoning,
-            request_options=request_options,
-            make_default=make_default,
+            provider_id, endpoint_id, make_default=make_default, **changes
         )
         return endpoint_catalog_view(
             self._require_provider(provider_id),
@@ -1029,20 +1001,16 @@ class ConfigurationFacade:
         endpoint_id: str | None = None,
         use_runtime_endpoint: bool = False,
         use_default_model: bool = False,
-        temperature: float | None = None,
-        max_output_tokens: int | None = None,
-        reasoning: ReasoningRequest | None = None,
         clear: bool = False,
+        **request: Unpack[CompactionRequestChanges],
     ) -> CompactionConfigView:
         config = self.compaction.update_model(
             provider_id=provider_id,
             endpoint_id=endpoint_id,
             use_runtime_endpoint=use_runtime_endpoint,
             use_default_model=use_default_model,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            reasoning=reasoning,
             clear=clear,
+            **request,
             validate=self._validate_compaction_model_capabilities,
         )
         return compaction_view(
@@ -1094,13 +1062,12 @@ class ConfigurationFacade:
         endpoint = self.providers.get_endpoint(provider_id, endpoint_id)
         if endpoint is None:
             return
-        if (
-            model.max_output_tokens is not None
-            and model.max_output_tokens > endpoint.max_output_tokens
-        ):
-            raise ConfigError(
-                "compaction max_output_tokens exceed the selected endpoint output limit"
+        try:
+            ContextBudget(
+                context_window=endpoint.context_window, max_output_tokens=model.max_output_tokens
             )
+        except ValueError as exc:
+            raise ConfigError(f"invalid compaction request budget: {exc}") from exc
         if model.reasoning is None:
             return
         try:

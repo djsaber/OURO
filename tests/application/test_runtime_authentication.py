@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from ouro.application.compaction import LLMSummaryCompactionStrategy
+from ouro.application.summary_compaction import LLMSummaryCompactionStrategy
 from ouro.auth.contracts import AuthError, CredentialGrant
 from ouro.auth.credentials import CredentialService
 from ouro.auth.managed_requests import RequestTarget

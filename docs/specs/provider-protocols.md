@@ -29,7 +29,7 @@ Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它�
 `openai` 默认使用 Responses + static，支持 Chat Completions + static 备选组合。
 三个 OpenCode Go 类型分别使用 Chat Completions、Responses 和 Anthropic Messages，均通过静态 API Key 认证。
 `openai-codex` 仅声明 Responses + 同名浏览器认证驱动及服务策略。模型目录与后端能力见
-[预置供应商配置](provider-presets.md)。订阅上下文和 max_output_tokens 为本地预算，
+[预置供应商配置](provider-presets.md)。订阅上下文和有限的 max_output_tokens 用于本地预算；空上限不预留输出空间，
 服务限制通过连接 notice 和模板描述披露；两套模板均通过 Responses adapter 支持图像输入。
 默认组合自然属于允许集合；组合不能重复，也不能将两组独立允许列表作笛卡尔积。有默认连接的产品在创建时，
 省略的协议/认证选择取各自默认值，再验证完整组合。持久化读取中省略 auth_driver 固定表示 static，不根据产品猜测其他认证。

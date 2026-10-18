@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Literal, Protocol
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
 from ouro.core.cancellation import AbortSignal
@@ -26,6 +26,8 @@ CompactionTrigger = Literal["auto", "manual"]
 
 
 class CompactionPolicy(OuroModel):
+    model_config = ConfigDict(extra="forbid")
+
     auto_enabled: bool = True
     trigger_ratio: float = Field(default=0.8, gt=0.0, le=1.0)
     target_ratio: float = Field(default=0.2, gt=0.0, lt=1.0)
@@ -38,6 +40,8 @@ class CompactionPolicy(OuroModel):
 
 
 class CompactionRequest(OuroModel):
+    model_config = ConfigDict(extra="forbid")
+
     harness: HarnessCallSnapshot | None = None
     session_id: str
     run_id: str | None = None
@@ -45,8 +49,6 @@ class CompactionRequest(OuroModel):
     trigger: CompactionTrigger
     previous_summary: str | None = None
     messages: list[MessageRecord] = Field(default_factory=list)
-    input_token_budget: int = Field(ge=1)
-    summary_output_tokens: int = Field(ge=1)
 
 
 class CompactionModelOutput(OuroModel):
@@ -57,14 +59,12 @@ class CompactionModelOutput(OuroModel):
     chunk_index: int = Field(ge=1)
     attempt_index: int = Field(ge=1)
     status: Literal["completed", "failed"]
-    requested_output_tokens: int = Field(ge=1)
+    requested_output_tokens: int | None = Field(default=None, ge=1, strict=True)
     estimated_input_tokens: int = Field(ge=0)
     input_message_count: int = Field(ge=0)
     input_frame_count: int = Field(ge=1)
     finish_reason: ProviderFinishReason
     provider_finish_reason: str | None = None
-    summary_opened: bool
-    summary_closed: bool
     raw_text: str = ""
     raw_reasoning: str = ""
     model_provider: str = Field(min_length=1)
@@ -76,14 +76,10 @@ class CompactionModelOutput(OuroModel):
 
     @model_validator(mode="after")
     def _validate_status(self) -> CompactionModelOutput:
-        if self.summary_closed and not self.summary_opened:
-            raise ValueError("closed compaction summary requires an opening tag")
         if self.status == "failed" and (not self.error_type or self.error is None):
             raise ValueError("failed compaction model output requires error details")
         if self.status == "completed" and (self.error_type is not None or self.error is not None):
             raise ValueError("completed compaction model output cannot contain an error")
-        if self.status == "completed" and not self.summary_closed:
-            raise ValueError("completed compaction model output requires a closed summary")
         return self
 
 
@@ -122,6 +118,7 @@ class CompactionAbortedError(CompactionStrategyError):
 
 
 class CompactionRecord(VersionedOuroModel):
+    schema_version: int = 2
     compaction_id: str = Field(default_factory=lambda: new_id("cmp"))
     session_id: str
     previous_compaction_id: str | None = None

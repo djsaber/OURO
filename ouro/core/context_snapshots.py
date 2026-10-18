@@ -18,7 +18,7 @@ _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 class ContextSnapshotRecord(VersionedOuroModel):
     """Lossless latest-request snapshot retaining text and native media bytes."""
 
-    schema_version: int = 4
+    schema_version: int = 5
 
     context_id: str = Field(default_factory=lambda: new_id("ctx"))
     session_id: str

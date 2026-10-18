@@ -77,7 +77,12 @@ async def test_protocols_send_and_persist_the_same_host_tool_contract(tmp_path, 
                     base_url="https://provider.invalid",
                     transport=HttpxProviderHTTPTransport(client),
                 ),
-                ModelMetadata(model_id="test", provider_id="test", supports_streaming=False),
+                ModelMetadata(
+                    max_output_tokens=8192,
+                    model_id="test",
+                    provider_id="test",
+                    supports_streaming=False,
+                ),
             ),
             tools=registry,
         )

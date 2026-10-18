@@ -11,7 +11,7 @@ from ouro.core.content import ImageContent, TextContent
 from ouro.core.interactions import AnswerResolution
 from ouro.core.tools import ToolInputRequest, ToolInvocation
 from ouro.plugins.api import adapt_sdk_contributions
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 from ouro.tools import ToolExecutionContext, ToolExecutor, ToolRegistry
 
 

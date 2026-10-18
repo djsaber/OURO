@@ -12,7 +12,6 @@ from pydantic import JsonValue
 from ouro.application.agent_definitions import AgentDefinitionService
 from ouro.application.compaction import (
     ContextPreparationService,
-    LLMSummaryCompactionStrategy,
 )
 from ouro.application.dto import Diagnostic
 from ouro.application.events import (
@@ -69,6 +68,7 @@ from ouro.application.session_models import SessionUndoResult
 from ouro.application.session_recovery import SessionRecoveryService
 from ouro.application.sessions import SessionService
 from ouro.application.skill_activations import SkillActivationService, SkillInvocationRequest
+from ouro.application.summary_compaction import LLMSummaryCompactionStrategy
 from ouro.application.supervisor_models import HostInputReceipt
 from ouro.application.tool_calls import ToolCallCoordinator
 from ouro.application.usage import UsageService
@@ -942,10 +942,7 @@ class RuntimeService:
             model = self.current_model(session_id)
         except ConfigError:
             return metrics
-        return metrics.with_model_limits(
-            context_window_tokens=model.context_window,
-            reserved_output_tokens=model.max_output_tokens,
-        )
+        return metrics.with_budget(model.context_budget)
 
     def resolve_model(self, selector: str) -> AvailableModel:
         """Resolve and validate a model route before it is attached to a session."""

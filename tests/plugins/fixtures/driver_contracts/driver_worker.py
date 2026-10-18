@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from review_driver_plugin import ReviewPlugin
 
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 from ouro.sdk.plugins.worker import WorkerPeer
 from ouro.sdk.plugins.worker_drivers import WorkerRunDrivers
 from ouro.sdk.plugins.worker_services import WorkerServices

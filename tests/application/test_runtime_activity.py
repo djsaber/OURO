@@ -13,6 +13,7 @@ from ouro.application.supervisor_models import (
     RuntimeToolCallActivity,
 )
 from ouro.core.context import ContextMetrics
+from ouro.core.context_budget import ContextBudget
 from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
@@ -461,19 +462,9 @@ def test_runtime_activity_publishes_post_compaction_context_immediately() -> Non
     before = ContextMetrics(
         estimated_input_tokens=800,
         estimated_fixed_tokens=100,
-        context_window_tokens=1_000,
-        reserved_output_tokens=100,
-        input_budget_tokens=900,
-        estimated_remaining_tokens=100,
-        estimated_utilization_ratio=800 / 900,
+        budget=ContextBudget(context_window=1000, max_output_tokens=100),
     )
-    after = before.model_copy(
-        update={
-            "estimated_input_tokens": 250,
-            "estimated_remaining_tokens": 650,
-            "estimated_utilization_ratio": 250 / 900,
-        }
-    )
+    after = before.model_copy(update={"estimated_input_tokens": 250})
     activity = queued_runtime_activity("ses_1").model_copy(
         update={"effective_context_metrics": before}
     )
@@ -548,12 +539,7 @@ def test_runtime_activity_tracks_live_context_estimate_and_provider_usage() -> N
                 "context_metrics": {
                     "estimated_input_tokens": 123,
                     "estimated_fixed_tokens": 10,
-                    "context_window_tokens": 1_000,
-                    "reserved_output_tokens": 100,
-                    "input_budget_tokens": 900,
-                    "estimated_remaining_tokens": 777,
-                    "estimated_utilization_ratio": 123 / 900,
-                    "over_budget": False,
+                    "budget": {"context_window": 1_000, "max_output_tokens": 100},
                 },
             },
         ),

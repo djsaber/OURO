@@ -662,7 +662,7 @@ def test_endpoint_defaults_match_mapping_defaults() -> None:
     mapped = endpoint_config_from_mapping("chat", {"model_id": "chat-model"})
 
     assert endpoint.context_window == mapped.context_window == 1_000_000
-    assert endpoint.max_output_tokens == mapped.max_output_tokens == 32_768
+    assert endpoint.max_output_tokens is mapped.max_output_tokens is None
     assert endpoint.supports_tools is True
     assert endpoint.supports_image_input is False
     assert endpoint.supports_streaming is True

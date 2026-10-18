@@ -47,7 +47,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 display_name="Doubao Seed 2.1 Pro",
                 model_id="doubao-seed-2-1-pro-260915",
                 context_window=1_048_576,
-                max_output_tokens=32_768,
                 supports_tools=True,
                 supports_image_input=True,
                 supports_video_input=True,
@@ -60,7 +59,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 display_name="Doubao Seed 2.1 Lite",
                 model_id="doubao-seed-2-1-lite-260915",
                 context_window=1_048_576,
-                max_output_tokens=32_768,
                 supports_tools=True,
                 supports_image_input=True,
                 supports_audio_input=True,
@@ -72,6 +70,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://docs.volcengine.com/docs/ark/model-list?lang=zh",
         verified_on=_VERIFIED_ON,
-        revision=4,
+        revision=5,
     ),
 )

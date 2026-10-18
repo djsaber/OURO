@@ -6,7 +6,7 @@ from dataclasses import replace
 from dynamic_records_plugin import record_group
 from worker import Worker
 
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 
 
 class Probe(Worker):

@@ -2,7 +2,7 @@ import asyncio
 
 from model_review_plugin import ModelReview
 
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 from ouro.sdk.plugins.worker import WorkerPeer
 from ouro.sdk.plugins.worker_models import WorkerModels
 

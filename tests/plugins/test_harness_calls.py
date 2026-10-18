@@ -16,7 +16,7 @@ from ouro.core.session_controls import (
 )
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.plugins.harness_calls import PluginStateView, invoke_plugin_callback
-from ouro.sdk.plugins import v3 as sdk
+from ouro.sdk.plugins import v4 as sdk
 
 
 @pytest.fixture

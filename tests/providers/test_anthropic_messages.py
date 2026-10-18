@@ -70,6 +70,21 @@ class FakeStreamingTransport(FakeTransport):
             yield chunk
 
 
+async def test_messages_requires_output_limit_before_transport() -> None:
+    transport = FakeTransport({})
+    provider = AnthropicMessagesProvider(base_url="https://example.test", transport=transport)
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="test", provider_id="test"), messages=[]
+        )
+    ]
+    assert len(events) == 1
+    assert events[0].type == "error"
+    assert "requires an explicit max_output_tokens" in events[0].error
+    assert transport.requests == []
+
+
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize(
     ("reason", "normalized_reason", "thinking"),
@@ -112,6 +127,7 @@ async def test_anthropic_terminal_facts_survive_empty_or_hidden_output(
         event
         async for event in provider.stream(
             model=ModelMetadata(
+                max_output_tokens=1024,
                 model_id="test",
                 provider_id="test",
                 reasoning=ReasoningCapability(output="none", continuation="opaque"),
@@ -136,7 +152,8 @@ async def test_anthropic_empty_stream_without_terminal_is_an_interruption() -> N
     events = [
         event
         async for event in provider.stream(
-            model=ModelMetadata(model_id="test", provider_id="test"), messages=[]
+            model=ModelMetadata(max_output_tokens=1024, model_id="test", provider_id="test"),
+            messages=[],
         )
     ]
     assert [event.type for event in events] == ["error"]
@@ -210,6 +227,7 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
         ],
     )
     model = ModelMetadata(
+        max_output_tokens=1024,
         model_id="claude-test",
         provider_id="anthropic",
         supports_streaming=False,
@@ -374,6 +392,7 @@ async def test_anthropic_provider_streams_text_tool_deltas_and_usage() -> None:
         event
         async for event in provider.stream(
             model=ModelMetadata(
+                max_output_tokens=1024,
                 model_id="claude-test",
                 provider_id="anthropic",
                 reasoning=ReasoningCapability(output="none", continuation="opaque"),
@@ -432,7 +451,9 @@ async def test_anthropic_stream_rejects_tool_input_without_a_started_tool_block(
     events = [
         event
         async for event in provider.stream(
-            model=ModelMetadata(model_id="claude-test", provider_id="anthropic"),
+            model=ModelMetadata(
+                max_output_tokens=1024, model_id="claude-test", provider_id="anthropic"
+            ),
             messages=[MessageRecord.text(session_id="ses_1", role="user", text="read")],
         )
     ]
@@ -516,6 +537,7 @@ async def test_anthropic_stream_preserves_signed_thinking_for_same_route_only() 
         reasoning_encoder=ReasoningPayloadEncoder(reasoning.profile),
     )
     model = ModelMetadata(
+        max_output_tokens=1024,
         model_id="claude-opus-5-5",
         provider_id="anthropic",
         reasoning=reasoning.capability,
@@ -602,6 +624,7 @@ async def test_anthropic_provider_rejects_unsupported_image_without_request() ->
         event
         async for event in provider.stream(
             model=ModelMetadata(
+                max_output_tokens=1024,
                 model_id="claude-test",
                 provider_id="anthropic",
                 supports_image_input=False,

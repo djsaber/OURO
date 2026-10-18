@@ -92,8 +92,8 @@ from ouro.plugins.store import PluginPackageStore, PluginStateConflictError
 from ouro.plugins.tasks import PluginTaskBinding, bind_plugin_task
 from ouro.plugins.tool_groups import PluginToolGroups, ToolGroupPublication, ToolGroupVersion
 from ouro.plugins.worker import WorkerPluginInstance
-from ouro.sdk.plugins import v3 as sdk
-from ouro.sdk.plugins.v3 import StopReason
+from ouro.sdk.plugins import v4 as sdk
+from ouro.sdk.plugins.v4 import StopReason
 from ouro.sessions.base import SessionRepository
 from ouro.skills import SkillMetadata
 

@@ -44,19 +44,19 @@ Context Provider 注入、压缩/恢复后的 messages、tools、metrics、路�
 
 `ContextSnapshotRecord` 只保存实际 Provider 请求的单一当前投影。语义包络完全由 source message/fragment 上是否
 存在 `semantic_tag` 决定；Store 不猜测旧投影方式。
-schema 4 固定实际发送的文本、状态、图片、音频和视频内容，以及当时端点的三种输入能力；查询不重新读取文件，
+schema 5 固定实际发送的文本、状态、图片、音频和视频内容，以及当时端点的三种输入能力；查询不重新读取文件，
 不依据当前模型或阈值重新投影。文件预览和原生媒体直接保存在骨架 content 中，文件变化不修改过去的内容；
 工具读取结果保存在各自的 tool_result 中。附件骨架和正文按共享输入批次进入同一压缩帧，详见[附件规格](attachments.md)。
 
 ## Token 预算
 
-- 输入预算来自 Endpoint context window 减去 max output tokens。
-- 估算覆盖 system prompt、message content、typed tool fields 和 tool definitions。
-- 默认 estimator 是 Provider 无关的保守近似。
-- 原生协议附件先按当前 provider/model 和执行 history_epoch 筛选，再进入估算；不遍历或解码私有 blocks。
-  不匹配附件从请求投影移除，canonical 正文、工具帧和持久化附件保持完整。协议及认证 scope 的兼容性由 codec
-  在实际请求边界判断，因此剩余附件的 token 估算保持保守。
-- 上下文超预算时不能静默截断 message 或拆开工具交换。
+`ContextBudget` 只保存一次请求的 `context_window` 与可空 `max_output_tokens`。输出预留为有限上限或 0，输入容量为窗口减预留；容量必须大于 0。主会话、独立生成、摘要及 TUI 消费同一模型，不另设预留配置。空值只表示 OURO 不配置输出上限。
+
+`ContextMetrics` 保存 `estimated_input_tokens`、`estimated_fixed_tokens`、可选 `budget` 及 estimator 身份。输入预算、剩余容量、利用率和 `over_budget` 是派生属性，不重复持久化。请求快照中的 `budget` 保存当时最终请求的窗口和上限；无预算的纯投影可以仅记录输入估算。
+
+估算覆盖 system prompt、message content、typed tool fields 和 tool definitions。默认 estimator 是 Provider 无关的保守近似。原生协议附件先按当前 provider/model 和执行 history_epoch 筛选，再进入估算；不遍历或解码私有 blocks。不匹配附件从请求投影移除，canonical 正文、工具帧和持久化附件保持完整。协议及认证 scope 的兼容性由 codec 在实际请求边界判断。
+
+`over_budget` 只判断本次输入估算是否超过输入容量，不预测生成长度。上下文超预算时不能静默截断 message 或拆开工具交换。`RunBudgetPolicy` 负责整个 Run 的累计软额度，用实际用量记账；其输出额度不作为单次请求或摘要的输出参数。
 
 ## 原子上下文帧
 
@@ -74,34 +74,33 @@ schema 4 固定实际发送的文本、状态、图片、音频和视频内容�
 不切换模型、账户或 fallback strategy；managed 未分类传输/响应失败也提供通用错误码。
 相应契约见[请求认证规格](request-authentication.md)。
 
-`CompactionConfig` 包含：primary/fallback strategy、触发与目标比例、summary 输出预算，以及可选专用
-Provider/Endpoint 和请求参数。启动时专用 endpoint 尚未解析成功可回退到当前 Session runtime endpoint，并在
-metadata 中记录原因；这是当前运行策略，不是配置格式兼容。
+`CompactionConfig` 包含 primary/fallback strategy、触发与目标比例，以及内置摘要策略的模型路由与请求参数。摘要的 `max_output_tokens` 缺失或为 `null` 均表示不限制，可以在当前 Session 模型、默认模型或专用端点上配置。专用端点在启动时尚未解析成功可回退当前 Session runtime endpoint，并在 metadata 中记录原因。
+
+所有摘要路由应用同一份摘要请求配置。端点输出配置不是摘要上限的能力边界；摘要空值不继承端点或主请求上限。路由选定后创建独立 adapter 副本，不修改共享模型。有限上限必须为该路由留下输入空间，协议负责拒绝无法编码的请求。
 
 ## 摘要执行
 
-内置 `builtin.llm_summary` 策略：
+框架与生成策略的契约是输入材料和规范化的摘要正文。`CompactionRequest` 提供会话/运行身份、Harness 视图、触发方式、已有摘要及本次材料；不传入主请求预算或生成额度。策略返回 `CompactionArtifact.summary`，可附带用量、请求审计与策略 metadata。插件可自行选择提示词、模型和响应格式，再将结果转换为摘要正文。
 
-1. 验证已有 active compaction lineage；
-2. 计算可覆盖前缀和保留帧；
-3. 将已有摘要与新增 messages 序列化为独立摘要请求；
-4. 必要时按输入容量分块滚动摘要；
-5. 累加 usage；
-6. 生成 `CompactionArtifact`；
-7. application 写入 `CompactionRecord` 并激活；
-8. 通过统一 `ContextBuilder` 路径重新构建 ContextView，验证压缩后的请求预算。
+框架执行顺序：
 
-摘要请求不携带普通工具定义，不把摘要文本写回 canonical messages。
-其输入材料显式声明 `role=user, scaffold=true, semantic_tag=conversation-to-summarize`，通过统一语义包络
-与直接用户请求区分；分块预算和请求 token 估算均包含标签及正文转义后的长度。
+1. 验证 active compaction lineage，选择可覆盖的 canonical 前缀并保留受保护帧。
+2. 按 `输入预算 × target_ratio - 固定内容估算 - 已有摘要投影估算` 规划尾部容量，最低为 0；目标比例是软目标。
+3. 调用生成策略，得到非空摘要正文。
+4. 将实际摘要和保留内容重新投影为完整主上下文，校验输入容量。
+5. 校验历史前缀和代次后原子提交并激活 `CompactionRecord`。
 
-滚动摘要选块对每个候选 frame 的模型可见内容最多序列化一次；summarization prompt 和已有摘要包络只度量一次，
-随后用与默认 token estimator 精确一致的可加字符度量累计容量。一次选块对已检查 frame/message 数保持线性复杂度，
-不能通过放宽预算、拆开 frame 或改变 `ContextOverflowError` 边界换取性能。
+提示词、原始输出格式、解析、分块和格式相关重试由生成策略负责。框架不检查 `<summary>` 标签，不依据输出参数预测摘要正文大小，不要求插件沿用内置提示词。
+
+内置 `builtin.llm_summary` 位于 `application/summary_compaction.py`，将已有摘要与新增材料序列化为独立模型请求，不进入主 agent 循环，不创建持久化 Session，不携带普通工具。输入使用 `role=user, semantic_tag=conversation-to-summarize`；估算包括提示词、标签、转义后的正文及已有摘要。其提示词要求完整简洁的摘要，不依赖数值输出预算模板。当前内置解析器提取非空 `<summary>` 正文，格式规则与提示词一起维护。
+
+每次滚动摘要使用自身请求的输入容量。选块按完整 frame 进行，对候选内容最多序列化一次，用与默认 estimator 一致的可加字符度量累计容量，保持线性复杂度。单帧或提示词与已有摘要无法容纳时明确失败。内置策略仅对现有可识别的未闭合、被截断摘要执行一次缩块重试，不循环扩大额度。
+
+公共模型执行负责完成判定：`length`、过滤、缺少完成事件等失败不能因摘要标签闭合而视为成功。通用请求审计记录输出参数（可以为 `None`）、原始正文和思考、完成原因、用量及错误；不包含标签开闭状态。已发生的用量仍归属原 Session/Run 并只记账一次；取消和失败不激活摘要。
 
 ## CompactionRecord
 
-记录至少包含：
+当前记录 schema 为 2。记录至少包含：
 
 - compaction/session/previous identity；
 - strategy id/version 和 prompt version；

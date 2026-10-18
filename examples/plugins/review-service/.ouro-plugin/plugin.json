@@ -4,7 +4,7 @@
   "namespace": "review_service",
   "name": "Native Review Service",
   "version": "0.1.0",
-  "engines": {"ouro": "^0.3.0", "plugin_api": "^3.0.0"},
+  "engines": {"ouro": "^0.3.0", "plugin_api": "^4.0.0"},
   "runtime": {"kind": "python-inprocess", "entrypoint": "review_service_plugin:create_plugin"},
   "permissions": [{"id": "sessions.write", "reason": "Review and act within the caller's native Run."}],
   "exports": [{

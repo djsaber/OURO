@@ -18,6 +18,15 @@
 当前实现只接受现行结构：读取主文件时发现 `providers`、`mcp`、`agents` 或 `prompts` 会明确报错，
 不自动迁移；使用新 home 或显式修复失效配置。托管凭据继续保存在独立的 `credentials/`。
 
+输出上限 `max_output_tokens` 可以省略或设为 `null`，均表示 OURO 不限制输出；正整数设置有限上限。TUI 的端点与摘要设置使用英文标签 `Max output tokens`，空值标为 `Optional`，清空输入即可恢复不限制。CLI 清空示例：
+
+```bash
+ouro provider endpoint update <provider_id> <endpoint_id> --max-output-tokens none
+ouro config compaction --max-output-tokens none
+```
+
+摘要上限是独立配置，默认不限制，选择当前会话模型也不会继承主请求或端点的输出数值。Messages 协议要求显式有限值，需要分别为使用它的主请求和摘要请求配置。请求与输入预算见[Provider 规格](../specs/provider-configuration.md)，摘要采用条件见[上下文与压缩](../specs/context-and-compaction.md)。
+
 个性化提示词通过 `ouro config prompt` 或 TUI `Actions > Personal prompts` 管理。替换项最多启用一项；
 启用另一项会原子关闭原项，全部关闭时使用默认系统提示词。追加项可独立启停，按数组顺序在基础提示词之后、
 Skills 和请求级上下文之前追加。描述可省略，仅用于列表展示和用户标注，模型只接收正文。

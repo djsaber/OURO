@@ -203,7 +203,7 @@ class OpenAIResponsesProvider:
                 "include": ["reasoning.encrypted_content"],
             }
         )
-        if self.request_policy.supports_output_limit:
+        if self.request_policy.supports_output_limit and model.max_output_tokens is not None:
             payload["max_output_tokens"] = model.max_output_tokens
         # Omit truncation: Responses defaults to disabled. Sending that redundant
         # field is rejected by some compatible services; overrides remain forbidden.

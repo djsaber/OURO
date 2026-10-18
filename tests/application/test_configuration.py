@@ -240,8 +240,10 @@ def test_compaction_overrides_are_validated_against_fixed_endpoint_capabilities(
     )
 
     assert saved.model.max_output_tokens == 1024
-    with pytest.raises(ConfigError, match="output limit"):
-        facade.update_compaction_model(max_output_tokens=4096)
+    saved = facade.update_compaction_model(max_output_tokens=4096)
+    assert saved.model.max_output_tokens == 4096
+    with pytest.raises(ConfigError, match="context_window"):
+        facade.update_compaction_model(max_output_tokens=32_000)
     with pytest.raises(ConfigError, match="is not supported"):
         facade.update_compaction_model(reasoning=ReasoningRequest(mode="enabled", effort="medium"))
     assert facade.compaction_config() == saved.model_copy(update={"change": None})

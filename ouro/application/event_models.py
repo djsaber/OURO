@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from ouro.application.dto import ApplicationDTO
+from ouro.core.compaction import CompactionModelOutput
 from ouro.core.events import EventRecord
 from ouro.core.redaction import redact_data
 
@@ -137,23 +138,7 @@ def validate_runtime_event_payload(event_type: str, payload: dict[str, Any]) -> 
             "runtime event agent_spawned requires nullable string payload field parent_tool_call_id"
         )
     if event_type == "compaction_model_output":
-        for field in (
-            "chunk_index",
-            "attempt_index",
-            "requested_output_tokens",
-            "estimated_input_tokens",
-            "input_message_count",
-            "input_frame_count",
-        ):
-            if not isinstance(payload.get(field), int) or isinstance(payload.get(field), bool):
-                raise ValueError(
-                    f"runtime event {event_type} requires integer payload field {field}"
-                )
-        for field in ("summary_opened", "summary_closed"):
-            if not isinstance(payload.get(field), bool):
-                raise ValueError(
-                    f"runtime event {event_type} requires boolean payload field {field}"
-                )
+        CompactionModelOutput.model_validate(payload)
 
 
 def _event_category(event_type: str) -> RuntimeEventCategory:

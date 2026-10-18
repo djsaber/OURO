@@ -4528,10 +4528,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if projection is not None:
             metrics = projection.activity.effective_context_metrics
             if metrics is not None:
-                metrics = metrics.with_model_limits(
-                    context_window_tokens=model.context_window,
-                    reserved_output_tokens=model.max_output_tokens,
-                )
+                metrics = metrics.with_budget(model.context_budget)
                 projection.activity = projection.activity.model_copy(
                     update={"effective_context_metrics": metrics}
                 )

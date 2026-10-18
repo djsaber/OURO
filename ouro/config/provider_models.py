@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -165,7 +165,7 @@ _PROVIDER_TYPE_SPECS: dict[ProviderType, ProviderTypeSpec] = {
             "openai-codex",
             notice=(
                 "ChatGPT subscription compatibility integration; browser login required. "
-                "max_output_tokens is a local planning budget, not a request output limit. "
+                "A configured output limit provides a local planning budget only. "
                 "Actual output may exceed this budget."
             ),
         ),
@@ -618,9 +618,12 @@ class ProviderTemplateUpdateResult(OuroModel):
     preserved_fields: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True)
-class ProviderRuntimeOptions:
-    protocol: ProviderProtocol | None = None
+class ProviderRuntimeOptions(OuroModel):
+    """Construction options; explicit fields identify a runtime edit before resolution."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    protocol: str | None = None
     auth_driver: str | None = None
     service_policy: str | None = None
     provider_id: str | None = None
@@ -634,7 +637,7 @@ class ProviderRuntimeOptions:
     timeout: float | None = None
     temperature: float | None = None
     context_window: int | None = None
-    max_output_tokens: int | None = None
+    max_output_tokens: int | None = Field(default=None, ge=1, strict=True)
     supports_tools: bool | None = None
     supports_image_input: bool | None = None
     supports_audio_input: bool | None = None
@@ -644,7 +647,7 @@ class ProviderRuntimeOptions:
     reasoning: EndpointReasoningConfig | None = None
     reasoning_request: ReasoningRequest | None = None
     retry_policy: ProviderRetryPolicy | None = None
-    headers: dict[str, ProviderHeaderValue] | None = field(default=None, repr=False)
+    headers: dict[str, ProviderHeaderValue] | None = Field(default=None, repr=False)
     extra: dict[str, Any] | None = None
 
 

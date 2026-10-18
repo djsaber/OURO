@@ -42,7 +42,7 @@ def test_config_compaction_command_persists_and_displays_model_options(
     assert restored.model.reasoning.mode == "disabled"
 
 
-def test_config_compaction_runtime_endpoint_clears_parameter_overrides(
+def test_config_compaction_runtime_endpoint_preserves_request_settings(
     tmp_path,
     capsys,
 ) -> None:
@@ -83,13 +83,13 @@ def test_config_compaction_runtime_endpoint_clears_parameter_overrides(
     assert code == 0
     assert model.provider_id is None
     assert model.endpoint_id is None
-    assert model.temperature is None
-    assert model.reasoning is None
+    assert model.temperature == 0.2
+    assert model.reasoning.mode == "enabled"
     assert "provider_id" not in payload["compaction"]["model"]
-    assert "reasoning" not in payload["compaction"]["model"]
+    assert payload["compaction"]["model"]["reasoning"]["mode"] == "enabled"
 
 
-def test_config_compaction_rejects_request_overrides_for_runtime_route(
+def test_config_compaction_accepts_output_limit_for_runtime_route(
     tmp_path,
     capsys,
 ) -> None:
@@ -105,8 +105,8 @@ def test_config_compaction_rejects_request_overrides_for_runtime_route(
     )
     captured = capsys.readouterr()
 
-    assert code != 0
-    assert "dedicated model endpoint" in captured.err
+    assert code == 0
+    assert not captured.err
 
 
 def test_config_compaction_rejects_partial_endpoint(tmp_path, capsys) -> None:
@@ -126,7 +126,7 @@ def test_config_compaction_rejects_partial_endpoint(tmp_path, capsys) -> None:
     assert "configured together" in captured.err
 
 
-def test_config_compaction_rejects_reasoning_for_runtime_route(tmp_path, capsys) -> None:
+def test_config_compaction_accepts_reasoning_for_runtime_route(tmp_path, capsys) -> None:
     code = main(
         [
             "config",
@@ -139,17 +139,18 @@ def test_config_compaction_rejects_reasoning_for_runtime_route(tmp_path, capsys)
     )
     captured = capsys.readouterr()
 
-    assert code != 0
-    assert "dedicated model endpoint" in captured.err
+    assert code == 0
+    assert not captured.err
 
 
-def test_config_compaction_displays_inherited_session_reasoning(tmp_path, capsys) -> None:
+def test_config_compaction_displays_default_reasoning(tmp_path, capsys) -> None:
     code = main(["config", "compaction", "--home", str(tmp_path)])
     captured = capsys.readouterr()
 
     assert code == 0
-    assert "Thinking mode: inherited from Session" in captured.out
-    assert "Thinking effort: inherited from Session" in captured.out
+    assert "Max output tokens: unlimited" in captured.out
+    assert "Thinking mode: Endpoint default" in captured.out
+    assert "Thinking effort: Endpoint default" in captured.out
 
 
 def test_config_compaction_default_model_requires_a_selected_system_endpoint(

@@ -55,7 +55,6 @@ from ouro.prompts import (
     DEFAULT_SYSTEM_PROMPT,
     SUMMARIZATION_PROMPT,
     render_agent_skills_prompt,
-    render_summarization_prompt,
 )
 from ouro.providers import FauxProvider
 from ouro.resources import LocalResourceStore
@@ -3395,7 +3394,7 @@ async def test_runtime_automatically_compacts_and_persists_context_projection(tm
         ):
             del model, tools
             self.calls += 1
-            if system_prompt == render_summarization_prompt(SUMMARIZATION_PROMPT, 4_000):
+            if system_prompt == SUMMARIZATION_PROMPT:
                 self.summary_calls += 1
                 yield ProviderStreamEvent(
                     type="text_delta",
