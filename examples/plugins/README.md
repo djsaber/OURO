@@ -9,6 +9,7 @@ These packages are focused examples and validate against the current development
 - `inprocess-command`: trusted Python in-process command contribution.
 - `inprocess-observer`: non-blocking typed observation of a completed Run.
 - `inprocess-prompt-policy`: fail-closed rejection before a user prompt is persisted.
+- [`deepseek-search`](deepseek-search/README.md): read-only web Search and Fetch tools backed by the DeepSeek APIs, with configurable endpoint, credentials, retries, and result limits.
 - `memory-service` and `memory-client`: SQLite-backed memory sharing through declared dependencies and scoped filters across two workers. Both peers run at a root concurrency limit of one.
 - `worker-exec`: permission-bound Python execution through the Host process port, with ordered output callbacks.
 - `review-service`: native model review and tool execution inside the caller's Run; the in-process and worker entries share the same service implementation.

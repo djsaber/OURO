@@ -1,0 +1,61 @@
+{
+  "schema_version": 3,
+  "plugin_id": "dev.ouro.examples.deepseek_search",
+  "name": "Deepseek Search",
+  "version": "0.1.0",
+  "description": "Read-only web search and fetch tools backed by the DeepSeek Search and Fetch APIs.",
+  "namespace": "deepseek_search",
+  "engines": {
+    "ouro": ">=0.3.0,<0.4.0",
+    "plugin_api": "^5.0.0"
+  },
+  "runtime": {
+    "kind": "python-inprocess",
+    "entrypoint": "deepseek_search_plugin:create_plugin"
+  },
+  "configuration": {
+    "schema": "./configuration.schema.json",
+    "version": 1,
+    "credentials": {
+      "deepseek_api_key": {
+        "title": "DeepSeek API key",
+        "description": "Bearer key used for DeepSeek Search and Fetch. It is sent only to the configured base URL.",
+        "required": true
+      }
+    }
+  },
+  "permissions": [
+    {
+      "id": "credentials.use",
+      "scopes": ["deepseek_api_key"],
+      "reason": "Read the DeepSeek API key to authenticate Search and Fetch requests."
+    },
+    {
+      "id": "network.outbound",
+      "scopes": [],
+      "reason": "Connect to the user-configured DeepSeek API base URL for read-only search and fetch requests."
+    }
+  ],
+  "contributes": {
+    "tools": [
+      {
+        "id": "search",
+        "exposed_name": "deepseek__search",
+        "description": "Search the web with DeepSeek Search and return ranked results with titles, URLs, publication dates, summaries, and optional page content. Queries support site:, -site:, -term, \"exact phrase\", lang:, after:, and before: operators. Use deepseek__fetch to read a specific URL in full.",
+        "permission_mode": "auto",
+        "effect": "read_only"
+      },
+      {
+        "id": "fetch",
+        "exposed_name": "deepseek__fetch",
+        "description": "Fetch one public HTTP(S) page with DeepSeek Fetch and return its title and Markdown content. The URL must include a host and cannot contain embedded credentials.",
+        "permission_mode": "auto",
+        "effect": "read_only"
+      }
+    ]
+  },
+  "dependencies": {
+    "plugins": []
+  },
+  "metadata": {}
+}

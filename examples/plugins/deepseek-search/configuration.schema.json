@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Deepseek Search configuration",
+  "type": "object",
+  "properties": {
+    "base_url": {
+      "type": "string",
+      "title": "API base URL",
+      "description": "DeepSeek API root used for both tools, for example https://api.deepseek.com. Do not include /v1 or endpoint paths.",
+      "minLength": 1,
+      "format": "uri",
+      "default": "https://api.deepseek.com"
+    },
+    "timeout_seconds": {
+      "type": "number",
+      "title": "Call timeout",
+      "description": "Total time budget in seconds for one Search or Fetch call, including retries.",
+      "minimum": 1,
+      "maximum": 120,
+      "default": 30
+    },
+    "max_retries": {
+      "type": "integer",
+      "title": "Retry count",
+      "description": "Additional attempts for HTTP 408, 429, and 5xx responses or network failures.",
+      "minimum": 0,
+      "maximum": 5,
+      "default": 2
+    },
+    "default_count": {
+      "type": "integer",
+      "title": "Default result count",
+      "description": "Number of results used when the search tool omits count.",
+      "minimum": 1,
+      "maximum": 50,
+      "default": 10
+    },
+    "default_need_content": {
+      "type": "boolean",
+      "title": "Return content by default",
+      "description": "Whether search returns page content when the tool omits need_content.",
+      "default": false
+    },
+    "max_content_chars": {
+      "type": "integer",
+      "title": "Per-result content limit",
+      "description": "Maximum characters of each search result's content included in the model-visible output. Fetch output is bounded by the Host tool result limit.",
+      "minimum": 500,
+      "maximum": 20000,
+      "default": 4000
+    }
+  },
+  "additionalProperties": false
+}
