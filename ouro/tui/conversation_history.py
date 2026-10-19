@@ -241,9 +241,9 @@ def _reasoning_label_text(
     if duration is not None:
         text.append(
             theme.inline_separator,
-            style=Style(color=theme.separator_tone),
+            style=Style(color=theme.text_lowlight),
         )
-        text.append(duration, style=Style(color=theme.text_faint))
+        text.append(duration, style=Style(color=theme.text_lowlight))
     return text
 
 
@@ -303,7 +303,7 @@ class _MessageContent:
         )
         content = ProseText(
             self.text,
-            style=self.theme.text_lowlight if self.lowlight else self.theme.text_highlight,
+            style=self.theme.text_lowlight if self.lowlight else self.theme.text_primary,
         )
         lines = console.render_lines(content, content_options, pad=False)
         if self.created_at is not None:
@@ -312,7 +312,7 @@ class _MessageContent:
                     self.created_at,
                     separator=self.theme.inline_separator,
                 ),
-                style=self.theme.text_faint,
+                style=self.theme.text_lowlight,
             )
             lines.extend(console.render_lines(timestamp, content_options, pad=False))
         border = Segment(
@@ -712,9 +712,9 @@ def _summary_line(
 ) -> Text:
     summary = Text()
     summary.append(f"{theme.brand_mark} ", style=marker_tone)
-    summary.append(title, style=theme.text_secondary)
+    summary.append(title, style=theme.text_primary)
     for value, tone in details:
-        summary.append(theme.section_separator, style=theme.separator_tone)
+        summary.append(theme.section_separator, style=theme.text_lowlight)
         summary.append(value, style=tone)
     return summary
 
@@ -724,21 +724,21 @@ def _compaction_summary(compaction: CompactionPresentation, theme: TuiTheme) -> 
     details = [
         (
             f"{compaction.covered_message_count} {noun}",
-            theme.text_metadata,
+            theme.text_lowlight,
         )
     ]
     if compaction.tokens_reduced is not None:
         details.append(
             (
                 f"{format_compact_count(compaction.tokens_reduced)} tokens",
-                theme.text_metadata,
+                theme.text_lowlight,
             )
         )
     if compaction.duration_seconds is not None:
         details.append(
             (
                 format_duration(compaction.duration_seconds),
-                theme.text_metadata,
+                theme.text_lowlight,
             )
         )
     return _summary_line(
@@ -755,13 +755,13 @@ def _run_summary(run: RunPresentation, theme: TuiTheme) -> Text:
         if run.status == "failed"
         else theme.accent
         if run.status == "completed"
-        else theme.text_muted
+        else theme.text_primary
     )
     details: list[tuple[str, str]] = []
     if run.duration_seconds is not None:
-        details.append((format_duration(run.duration_seconds), theme.text_metadata))
+        details.append((format_duration(run.duration_seconds), theme.text_lowlight))
     if run.status not in {"completed", "failed"}:
-        details.append((run.status, theme.text_metadata))
+        details.append((run.status, theme.text_lowlight))
     if run.status == "failed" and run.error:
         details.append((" ".join(run.error.split()), theme.failure))
     return _summary_line(

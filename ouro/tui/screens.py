@@ -28,7 +28,7 @@ from textual.worker import Worker, WorkerCancelled
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import REFERENCE_COMMANDS, TUI_COMMANDS, TuiCommand
 from ouro.tui.text_inputs import TuiInput
-from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
+from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, label_text, theme_for
 
 
 @dataclass(frozen=True)
@@ -253,7 +253,9 @@ def _choice_option(
         row.add_row(
             palette,
             "",
-            Text(choice.label, style=choice.trailing_accent or choice.accent or ""),
+            label_text(
+                choice.label, theme=theme, style=choice.trailing_accent or choice.accent or ""
+            ),
         )
         return Option(row, id=choice.value, disabled=choice.disabled)
 
@@ -262,7 +264,7 @@ def _choice_option(
     markers = tuple(value for value in (choice.selection_marker, marker) if value)
     if markers:
         label.append(f"{' '.join(markers)} ", style=f"bold {group_accent}")
-    label.append(choice.label, style=choice.accent or "")
+    label.append(label_text(choice.label, theme=theme, style=choice.accent or ""))
     if choice.trailing or choice.trailing_badge:
         row = cast(_ChoiceRowTable, _ChoiceRowTable.grid(expand=True, padding=0))
         # Let Rich shrink the wider content column first; the Text cells keep
@@ -275,22 +277,29 @@ def _choice_option(
         if choice.trailing_badge:
             trailing.append(choice.trailing_badge, style=theme.accent)
             if choice.trailing:
-                trailing.append(theme.inline_separator, style=theme.separator_tone)
-        trailing.append(choice.trailing, style=choice.trailing_accent or theme.text_choice)
+                trailing.append(theme.inline_separator, style=theme.text_lowlight)
+        trailing.append(
+            label_text(
+                choice.trailing, theme=theme, style=choice.trailing_accent or theme.text_lowlight
+            )
+        )
         if choice.trailing_swatch is not None:
-            trailing.append(theme.inline_separator, style=theme.separator_tone)
+            trailing.append(theme.inline_separator, style=theme.text_lowlight)
             trailing.append(theme.session_node_mark, style=choice.trailing_swatch)
         row.add_row(label, "", "", trailing)
         row.content_height = max(label.plain.count("\n"), trailing.plain.count("\n")) + 1
         return Option(row, id=choice.value, disabled=choice.disabled)
     if choice.description:
         label.append(
-            f"\n{choice.description}",
-            style=(
-                theme.danger
-                if choice.destructive
-                else choice.description_accent or theme.text_choice
-            ),
+            label_text(
+                f"\n{choice.description}",
+                theme=theme,
+                style=(
+                    theme.danger
+                    if choice.destructive
+                    else choice.description_accent or theme.text_lowlight
+                ),
+            )
         )
     return Option(label, id=choice.value, disabled=choice.disabled)
 
@@ -305,7 +314,7 @@ def grouped_choice_options(
     """Render choices with the shared TUI group headers and row treatment."""
 
     options: list[Option] = []
-    resolved_group_accent = theme.text_choice if group_accent is None else group_accent
+    resolved_group_accent = theme.text_heading if group_accent is None else group_accent
     previous_group: object = object()
     for choice in choices:
         if choice.group != previous_group:
@@ -318,8 +327,10 @@ def grouped_choice_options(
                     row.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
                     row.add_column(justify="right", no_wrap=True)
                     row.add_row(
-                        Text(choice.group, style=f"bold {resolved_group_accent}"),
-                        Text(choice.group_trailing, style=theme.text_choice),
+                        label_text(
+                            choice.group, theme=theme, style=f"bold {resolved_group_accent}"
+                        ),
+                        label_text(choice.group_trailing, theme=theme, style=theme.text_lowlight),
                     )
                     row.content_height = (
                         max(choice.group.count("\n"), choice.group_trailing.count("\n")) + 1
@@ -439,7 +450,7 @@ class ChoiceScreen(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-panel"):
-            yield Static(self._title, id="choice-title")
+            yield Static(label_text(self._title, theme=theme_for(self)), id="choice-title")
             description = Static(self._description, id="choice-description", markup=False)
             description_height = self._description_height(self.app.size.height)
             description.styles.max_height = description_height
@@ -596,7 +607,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._navigation_id = navigation_id
         self._retain_for_switching = retain_for_switching
         self._interaction_hint = interaction_hint
-        self.query_one("#choice-title", Static).update(title)
+        self.query_one("#choice-title", Static).update(label_text(title, theme=theme_for(self)))
         self._update_description(description)
         filter_input = self.query_one("#choice-filter", Input)
         filter_input.placeholder = placeholder
@@ -780,7 +791,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._choices = choices
         if title is not None:
             self._title = title
-            self.query_one("#choice-title", Static).update(title)
+            self.query_one("#choice-title", Static).update(label_text(title, theme=theme_for(self)))
         self._refresh_options(
             needle=self.query_one("#choice-filter", Input).value,
             preferred_value=preferred_value,
@@ -1389,6 +1400,8 @@ class ChoiceScreen(ModalScreen[str | None]):
         )
 
     def refresh_theme(self) -> None:
+        title = self.query_one("#choice-title", Static)
+        title.update(label_text(cast(Text, title.content).plain, theme=theme_for(self)))
         self._spinner_frame = 0
         self._sync_loading_timer(force=True)
         self._refresh_options(
@@ -1781,7 +1794,7 @@ class EditableChoiceScreen(ChoiceScreen):
             if placeholder:
                 prompt.append(
                     " ".join(placeholder.splitlines()),
-                    style=f"not bold {theme.text_choice} italic",
+                    style=f"not bold {theme.text_lowlight} italic",
                 )
             prompt.truncate(self._editor_width(), overflow="ellipsis")
             options.replace_option_prompt_at_index(option_index, self._editor_prompt(prompt))
@@ -1789,7 +1802,7 @@ class EditableChoiceScreen(ChoiceScreen):
         editor_width = self._editor_width()
         view_start, view_end = self._editor_view_bounds(display_text, editor_width)
         if view_start:
-            prompt.append("…", style=f"not bold {theme.text_choice}")
+            prompt.append("…", style=f"not bold {theme.text_lowlight}")
         prompt.append(display_text[view_start : self._edit_cursor], style="not bold")
         if self._edit_cursor < len(display_text):
             prompt.append(
@@ -1803,7 +1816,7 @@ class EditableChoiceScreen(ChoiceScreen):
         else:
             prompt.append(" ", style=cursor_style)
         if view_end < len(display_text):
-            prompt.append("…", style=f"not bold {theme.text_choice}")
+            prompt.append("…", style=f"not bold {theme.text_lowlight}")
         options.replace_option_prompt_at_index(option_index, self._editor_prompt(prompt))
 
     def _editor_placeholder(self) -> str:
@@ -1996,7 +2009,9 @@ class MultiChoiceScreen(ChoiceScreen):
                 destructive=self._destructive,
             ),
         )
-        self.query_one("#choice-title", Static).update(f"CONFIRM {self._title}")
+        self.query_one("#choice-title", Static).update(
+            label_text(f"CONFIRM {self._title}", theme=theme_for(self))
+        )
         self._show_hint(self.CONFIRM_HINT)
         filter_input.value = ""
         self._refresh_options(needle="", preferred_value="__multi_cancel__")
@@ -2006,7 +2021,9 @@ class MultiChoiceScreen(ChoiceScreen):
         remaining = {choice.value for choice in choices}
         self._selected.intersection_update(remaining)
         self._choices = self._project_markers(choices)
-        self.query_one("#choice-title", Static).update(self._title)
+        self.query_one("#choice-title", Static).update(
+            label_text(self._title, theme=theme_for(self))
+        )
         self._show_hint()
         filter_input = self.query_one("#choice-filter", Input)
         filter_input.value = self._catalog_filter

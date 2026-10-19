@@ -316,7 +316,7 @@ async def test_message_hover_and_right_click_copy_preserve_selection_priority(ki
         assert hovered.style.bgcolor.triplet.hex == DEFAULT_TUI_THEME.highlight
         assert hovered.style.color == before.style.color
         assert hovered.style.color.triplet.hex == (
-            DEFAULT_TUI_THEME.text_highlight if kind == "user" else DEFAULT_TUI_THEME.text_lowlight
+            DEFAULT_TUI_THEME.text_primary if kind == "user" else DEFAULT_TUI_THEME.text_lowlight
         )
 
         await pilot.click(history, offset=(message_x, message_y))

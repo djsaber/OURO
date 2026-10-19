@@ -77,7 +77,7 @@ def test_single_tool_entry_uses_background_rendering() -> None:
     ("seconds", "expected"),
     [(2.5, "2.5s"), (3_661.2, "1h 1m 01.2s"), (93_784.5, "1d 2h 3m 04.5s")],
 )
-def test_reasoning_label_uses_lowlight_title_and_faint_timing(
+def test_reasoning_label_uses_lowlight_title_and_timing(
     title: str, seconds: float, expected: str
 ) -> None:
     label = _reasoning_label_text(title, seconds, expanded=False)
@@ -92,7 +92,7 @@ def test_reasoning_label_uses_lowlight_title_and_faint_timing(
     assert title_style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
     assert duration_style.color is not None
     assert duration_style.color.triplet is not None
-    assert duration_style.color.triplet.hex == DEFAULT_TUI_THEME.text_faint
+    assert duration_style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
 
 
 def test_user_message_timestamp_uses_local_date_only_before_today() -> None:
@@ -115,7 +115,7 @@ def test_user_message_timestamp_uses_local_date_only_before_today() -> None:
     )
 
 
-def test_user_message_timestamp_is_a_separate_faint_line() -> None:
+def test_user_message_timestamp_is_a_separate_lowlight_line() -> None:
     theme = DEFAULT_TUI_THEME
     console = Console(force_terminal=True, color_system="truecolor", width=60)
     rendered_lines = console.render_lines(
@@ -140,7 +140,7 @@ def test_user_message_timestamp_is_a_separate_faint_line() -> None:
     assert message_line is not timestamp_line
     assert timestamp_segment.style is not None
     assert timestamp_segment.style.color is not None
-    assert timestamp_segment.style.color.triplet.hex == theme.text_faint
+    assert timestamp_segment.style.color.triplet.hex == theme.text_lowlight
 
 
 def test_assistant_markdown_and_user_message_share_custom_theme_tokens() -> None:
@@ -177,7 +177,7 @@ plain value
     unknown = next(segment for segment in markdown_segments if "plain value" in segment.text)
     assert heading.style is not None and heading.style.bold
     assert heading.style.color is not None
-    assert heading.style.color.triplet.hex == theme.text_primary
+    assert heading.style.color.triplet.hex == theme.text_heading
     assert inline.style is not None and inline.style.color is not None
     assert inline.style.color.triplet.hex == theme.accent
     assert keyword.style is not None and keyword.style.color is not None
@@ -1130,7 +1130,7 @@ def test_compaction_and_run_summaries_share_visual_structure_and_failure_semanti
     assert not _style_at(failed, DEFAULT_TUI_THEME.brand_mark).bold
     assert _style_at(compaction, "Context compacted").color is not None
     assert _style_at(compaction, "Context compacted").color.triplet.hex == (
-        DEFAULT_TUI_THEME.text_secondary
+        DEFAULT_TUI_THEME.text_primary
     )
     compaction_separator = compaction.plain.index(DEFAULT_TUI_THEME.section_separator_mark)
     failed_separator = failed.plain.index(DEFAULT_TUI_THEME.section_separator_mark)

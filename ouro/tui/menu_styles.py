@@ -55,9 +55,15 @@ MENU_CSS = """
         width: 100%;
         height: 3;
         padding: 1 2;
+        color: $ouro-text-primary;
         background: transparent;
         border: none;
         border-left: solid $ouro-theme;
+    }
+
+    #choice-filter .input--placeholder,
+    #choice-filter .input--suggestion {
+        color: $ouro-text-lowlight;
     }
 
     #choice-list {
@@ -71,9 +77,10 @@ MENU_CSS = """
     /* Shared grouped-menu treatment. Choice and inline-edit screens use the
        same rows, group headers, focus color, and hidden chrome. */
     .grouped-menu-list {
+        color: $ouro-text-primary;
         background: transparent;
         border: none;
-        border-left: solid $ouro-separator;
+        border-left: solid $ouro-border-subtle;
         /* The menu is keyboard-first: arrow navigation keeps the highlighted
            option in view, so the scrollbar is pure chrome and is hidden to
            match the flat panels used elsewhere. */
@@ -102,7 +109,7 @@ MENU_CSS = """
         color: $ouro-text-lowlight;
         background: transparent;
         border: none;
-        border-left: solid $ouro-separator;
+        border-left: solid $ouro-border-subtle;
     }
 
 """

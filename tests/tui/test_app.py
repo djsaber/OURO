@@ -2153,7 +2153,9 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
         context = context_detail.render()
         assert context.plain == "48.0K █████▒▒▒▒▒▒ 40%"
         percentage_offset = context.plain.index("40%")
-        assert context.get_style_at_offset(percentage_offset).foreground == Color.parse("#6f7a87")
+        assert context.get_style_at_offset(percentage_offset).foreground == Color.parse(
+            app.tui_theme.text_lowlight
+        )
 
         at_warning_boundary = ContextMetrics(
             estimated_input_tokens=96000,
@@ -2164,7 +2166,7 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
         boundary = context_detail.render()
         assert boundary.plain == "96.0K █████████▒▒ 80%"
         assert boundary.get_style_at_offset(boundary.plain.index("80%")).foreground == Color.parse(
-            "#6f7a87"
+            app.tui_theme.text_lowlight
         )
 
         above_warning_boundary = ContextMetrics(
@@ -3328,7 +3330,7 @@ async def test_queued_input_rows_use_single_line_tokenized_previews(tmp_path: Pa
         assert not label_style.bold
         assert separator_style.color is not None
         assert separator_style.color.triplet is not None
-        assert separator_style.color.triplet.hex == DEFAULT_TUI_THEME.separator_tone
+        assert separator_style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
         assert message_style.color is not None
         assert message_style.color.triplet is not None
         assert message_style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
@@ -3712,7 +3714,14 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         assert app.query_one(Composer).disabled is True
         assert app._projection is not None
         assert app._projection.assistant_text == provider.child_prefixes["first child task"]
-        assert app.query_one(AssistantTurn).source == provider.child_prefixes["first child task"]
+        child_history = app.query_one(ConversationHistory)
+        frozen_text = "".join(
+            entry.text for entry in child_history.entries if entry.kind == "assistant"
+        )
+        assert (
+            frozen_text + app.query_one(AssistantTurn).source
+            == provider.child_prefixes["first child task"]
+        )
         child_header = app.query_one(BrandHeader).render()
         assert "read-only" not in child_header.plain
         assert app.query_one(BrandHeader)._session_detail == first.task_description
@@ -8306,7 +8315,7 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
         assert any(
             "reasoning" in segment.text
             and segment.style is not None
-            and segment.style.color == Style(color=app.tui_theme.text_choice).color
+            and segment.style.color == Style(color=app.tui_theme.text_lowlight).color
             for y in range(options.size.height)
             for segment in options.render_line(y)
         )
@@ -12451,6 +12460,7 @@ async def test_plan_status_keeps_its_conversation_notice(tmp_path: Path) -> None
         await pilot.pause()
         await pilot.press("slash", *"plan status", "enter")
         await _wait_for_worker_group(app, pilot, group="plugin-command")
+        await app.query_one(ConversationHistory).wait_until_rendered()
 
         notices = tuple(
             entry.text

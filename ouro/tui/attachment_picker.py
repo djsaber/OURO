@@ -94,7 +94,7 @@ class AttachmentPicker:
             accent: str | None
             if entry.is_directory:
                 label = entry.path.name
-                accent = theme.text_secondary
+                accent = theme.text_primary
             else:
                 selected = entry.path in self.selected
                 label = entry.path.name

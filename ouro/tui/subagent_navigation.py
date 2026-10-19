@@ -270,7 +270,7 @@ class SubagentNavigationPanel(Static):
             root_mark,
             style=self._node_style(self._root_status, self._root_session_id),
         )
-        nodes.append(" | ", style=theme.text_faint)
+        nodes.append(" | ", style=theme.text_lowlight)
         previous_run_id: str | None = None
         for agent in self._visible_agents():
             if previous_run_id is not None and agent.parent_run_id != previous_run_id:

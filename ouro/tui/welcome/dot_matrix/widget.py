@@ -195,6 +195,6 @@ class DotWelcomePage(CenteredWelcomePage):
 
     def refresh_theme(self) -> None:
         theme = theme_for(self)
-        caption = Text("O U R O", style=theme.text_primary)
-        caption.append(f"  /  {self.artwork.label.upper()}", style=theme.text_faint)
+        caption = Text("O U R O", style=theme.text_heading)
+        caption.append(f"  /  {self.artwork.label.upper()}", style=theme.text_lowlight)
         self._caption.update(caption)

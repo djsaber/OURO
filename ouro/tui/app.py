@@ -476,7 +476,7 @@ _OURO_TUI_CSS = """
         height: auto;
         margin: 0;
         padding: 0;
-        color: $ouro-text-secondary;
+        color: $ouro-text-primary;
         background: $ouro-background;
     }
 
@@ -586,7 +586,7 @@ _OURO_TUI_CSS = """
         border-top: none;
         border-right: solid $ouro-progress-track;
         border-bottom: none;
-        border-left: solid $ouro-separator;
+        border-left: solid $ouro-border-subtle;
     }
 
     .approval-panel:focus {
@@ -628,7 +628,7 @@ _OURO_TUI_CSS = """
         border-top: none;
         border-right: solid $ouro-progress-track;
         border-bottom: none;
-        border-left: solid $ouro-separator;
+        border-left: solid $ouro-border-subtle;
     }
 
     #ask-user-panel:focus {
@@ -676,7 +676,7 @@ _OURO_TUI_CSS = """
         border-top: none;
         border-right: solid $ouro-progress-track;
         border-bottom: none;
-        border-left: solid $ouro-separator;
+        border-left: solid $ouro-border-subtle;
         overflow-y: hidden;
         scrollbar-gutter: auto;
     }
@@ -703,12 +703,12 @@ _OURO_TUI_CSS = """
         max-height: $composer-max-height;
         margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         padding: 1 2;
-        color: $ouro-text-highlight;
+        color: $ouro-text-primary;
         background: $ouro-panel;
         border-top: none;
         border-right: solid $ouro-progress-track;
         border-bottom: none;
-        border-left: solid $ouro-separator;
+        border-left: solid $ouro-border-subtle;
         scrollbar-background: transparent;
         scrollbar-color: transparent;
         scrollbar-color-hover: transparent;
@@ -743,7 +743,7 @@ _OURO_TUI_CSS = """
         border-top: none;
         border-right: solid $ouro-progress-track;
         border-bottom: none;
-        border-left: solid $ouro-separator;
+        border-left: solid $ouro-border-subtle;
     }
 
     #queued-input-content {

@@ -73,6 +73,7 @@ from ouro.tui.subagent_navigation import SubagentNavigationPanel
 from ouro.tui.theme import (
     DEFAULT_TUI_THEME,
     TuiTheme,
+    label_text,
     theme_for,
 )
 from ouro.tui.tool_presentations import ToolLineState, ToolTextTone, present_tool
@@ -144,7 +145,7 @@ _ACTIVITY_LABELS = {
 }
 _TRANSCRIPT_BACKGROUND_ENTRY_THRESHOLD = 64
 _TRANSCRIPT_BACKGROUND_TEXT_THRESHOLD = 8 * 1024
-_PlaceholderTone = Literal["text", "separator", "key"]
+_PlaceholderTone = Literal["text", "key"]
 _PlaceholderPart = tuple[str, _PlaceholderTone]
 _SUBAGENT_ACTIVITY_LABELS = {
     **_ACTIVITY_LABELS,
@@ -236,15 +237,15 @@ def _brand_header_content(
 
     content = Text()
     content.append(f" {theme.brand_mark} OURO ", style=f"bold {theme.accent}")
-    title = Text(session_title, style=theme.text_primary)
+    title = label_text(session_title, theme=theme, style=theme.text_heading)
     if session_detail:
-        title.append(theme.inline_separator, style=theme.separator_tone)
+        title.append(theme.inline_separator, style=theme.text_lowlight)
         title.append(session_detail, style=theme.text_lowlight)
     if width <= 0:
         content.append_text(title)
         if workspace:
             content.append(" " * _HEADER_MIN_GAP)
-            content.append(workspace, style=theme.accent)
+            content.append(workspace, style=theme.text_lowlight)
         return content
 
     content.truncate(width, overflow="ellipsis")
@@ -263,12 +264,12 @@ def _brand_header_content(
         title.truncate(title_width, overflow="ellipsis")
         content.append_text(title)
         content.append(" " * (width - content.cell_len - workspace_width))
-        content.append(workspace, style=theme.accent)
+        content.append(workspace, style=theme.text_lowlight)
         return content
 
     # When both fields cannot fit, omit the title before shortening the workspace.
     workspace_gap = min(_HEADER_MIN_GAP, max(1, remaining - workspace_width))
-    workspace_text = Text(workspace, style=theme.accent)
+    workspace_text = Text(workspace, style=theme.text_lowlight)
     workspace_text.truncate(max(0, remaining - workspace_gap), overflow="ellipsis")
     content.append(" " * workspace_gap)
     content.append_text(workspace_text)
@@ -433,34 +434,34 @@ class ActivityIndicator(Static):
         content = Text()
         content.append(
             f" {mark} ",
-            style=f"bold {accent}" if busy or ready else theme.text_muted,
+            style=f"bold {accent}" if busy or ready else theme.text_primary,
         )
         for control_label in self._session_control_labels:
             content.append(control_label, style=f"bold {accent}")
             content.append(
                 theme.section_separator,
-                style=theme.separator_tone,
+                style=theme.text_lowlight,
             )
-        content.append(label, style=accent if ready else theme.text_muted)
+        content.append(label, style=accent if ready else theme.text_primary)
         content.append(
             theme.section_separator,
-            style=theme.separator_tone,
+            style=theme.text_lowlight,
         )
         approval_style = (
-            theme.danger if self._approval_mode in {"auto", "afk"} else theme.text_faint
+            theme.danger if self._approval_mode in {"auto", "afk"} else theme.text_primary
         )
         content.append(self._approval_mode, style=approval_style)
         if self._model:
             content.append(
                 theme.section_separator,
-                style=theme.separator_tone,
+                style=theme.text_lowlight,
             )
-            content.append(self._model, style=theme.text_faint)
+            content.append(self._model, style=theme.text_primary)
         if self._reasoning:
-            style = f"bold {accent}" if self._reasoning_peak else theme.text_faint
+            style = f"bold {accent}" if self._reasoning_peak else theme.text_primary
             content.append(
                 theme.section_separator,
-                style=theme.separator_tone,
+                style=theme.text_lowlight,
             )
             content.append(self._reasoning, style=style)
         # This row is constrained to the single-line remainder of StatusLine;
@@ -909,11 +910,11 @@ def _tool_activity_text(
         if tool.argument_stream_tail is not None:
             text.append(
                 theme.inline_separator,
-                style=theme.separator_tone,
+                style=theme.text_lowlight,
             )
             text.append(
                 _tool_argument_stream_window(tool.argument_stream_tail),
-                style=theme.text_faint,
+                style=theme.text_lowlight,
             )
         return text
 
@@ -933,42 +934,41 @@ def _tool_activity_text(
             style=theme.accent,
         )
     text.append(
-        title,
-        style=theme.failure if failed else theme.text_lowlight,
+        label_text(title, theme=theme, style=theme.failure if failed else theme.text_lowlight)
     )
     if presentation.summary:
         text.append(
             f" {theme.inline_separator}{presentation.summary}",
-            style=theme.text_detail,
+            style=theme.text_lowlight,
         )
     if subagent is not None:
         status_label = _subagent_task_status(subagent)
         text.append(
             f"  {status_label}",
-            style=(theme.failure if status_label == "failed" else theme.text_metadata),
+            style=(theme.failure if status_label == "failed" else theme.text_lowlight),
         )
     elif is_spawn_agent:
         status_label = _spawn_agent_preview_status(tool)
         text.append(
             f"  {status_label}",
-            style=(theme.failure if status_label == "failed" else theme.text_metadata),
+            style=(theme.failure if status_label == "failed" else theme.text_lowlight),
         )
     elapsed = _tool_elapsed_seconds(tool)
     elapsed_label = format_duration(elapsed) if elapsed is not None else None
     if elapsed_label is not None and elapsed_label != "0ms":
         text.append(
             f"{theme.inline_separator}{elapsed_label}",
-            style=theme.text_faint,
+            style=theme.text_lowlight,
         )
     line_styles: dict[ToolLineState, str] = {
-        "pending": theme.text_detail,
+        "pending": theme.text_lowlight,
         "active": theme.accent,
         "done": theme.accent,
-        "muted": theme.text_faint,
+        "muted": theme.text_lowlight,
     }
     part_styles: dict[ToolTextTone, str] = {
-        "default": theme.text_faint,
-        "muted": theme.text_faint,
+        "default": theme.text_lowlight,
+        "muted": theme.text_lowlight,
         "added": theme.success,
         "removed": theme.failure,
     }
@@ -2063,7 +2063,7 @@ class ApprovalPanel(Vertical):
 
     def _render_approval_title(self, title: str) -> None:
         theme = theme_for(self)
-        self._title.update(Text(title, style=f"bold {theme.accent_bright}"))
+        self._title.update(Text(title, style=f"bold {theme.text_heading}"))
 
     def _append_approval_option(
         self,
@@ -2079,12 +2079,12 @@ class ApprovalPanel(Vertical):
         content.append("› " if active else "  ", style=theme.accent if active else "")
         content.append(
             label,
-            style=f"bold {tone}" if active else f"bold {theme.text_primary}",
+            style=f"bold {tone}" if active else theme.text_primary,
         )
         if description:
             content.append(
                 f"  {description}",
-                style=(theme.text_primary if active else theme.text_lowlight),
+                style=theme.text_lowlight,
             )
         content.append("\n")
 
@@ -2462,11 +2462,11 @@ class AskUserPanel(Static):
         content = Text()
         content.append(
             f"{question.header.upper()}  {self._question_index + 1}/{total}\n",
-            style=f"bold {theme.accent_bright}",
+            style=f"bold {theme.text_heading}",
         )
         content.append(
             f"{question.prompt}\n\n",
-            style=f"bold {theme.text_primary}",
+            style=theme.text_primary,
         )
         for index, option in enumerate(question.options):
             active = index == self._cursor
@@ -2482,14 +2482,14 @@ class AskUserPanel(Static):
             )
             content.append(
                 f"  {option.description}\n",
-                style=(theme.text_primary if active else theme.text_lowlight),
+                style=theme.text_lowlight,
             )
         other_index = len(question.options)
         other_active = self._cursor == other_index
         content.append("› " if other_active else "  ", style=theme.accent if other_active else "")
         content.append(
             f"{other_index + 1}. Other…",
-            style=(f"bold {theme.accent_bright}" if other_active else f"bold {theme.text_primary}"),
+            style=(f"bold {theme.accent_bright}" if other_active else theme.text_primary),
         )
         navigation = ("←/→ questions",) if total > 1 else ()
         controls = (
@@ -2681,7 +2681,7 @@ class PlanConfirmationPanel(ApprovalPanel):
         if self._stage == "action":
             content.append(
                 "Choose how to respond to this plan\n\n",
-                style=theme.text_secondary,
+                style=theme.text_lowlight,
             )
             presentations = {
                 "accept": ("Accept", "Accept the proposed plan", theme.success),
@@ -2708,7 +2708,7 @@ class PlanConfirmationPanel(ApprovalPanel):
         elif self._stage == "option":
             content.append(
                 "Choose an implementation approach\n\n",
-                style=theme.text_secondary,
+                style=theme.text_lowlight,
             )
             for index, option in enumerate(request.options):
                 self._append_approval_option(
@@ -2724,7 +2724,7 @@ class PlanConfirmationPanel(ApprovalPanel):
                 trailing=("Esc back",),
             )
         else:
-            content.append("REVISION FEEDBACK\n", style=f"bold {theme.accent_bright}")
+            content.append("REVISION FEEDBACK\n", style=f"bold {theme.text_heading}")
             content.append(
                 "Type the requested plan changes below, then press Enter",
                 style=theme.text_lowlight,
@@ -2962,7 +2962,7 @@ class CommandPopup(VerticalScroll):
             return
         width = self.scrollable_content_region.width
         theme = theme_for(self)
-        heading = Text(self._heading, style=theme.text_lowlight)
+        heading = Text(self._heading, style=f"bold {theme.text_heading}")
         if self._selection_count is not None:
             heading = _trailing_badge(
                 heading, str(self._selection_count), width, theme.text_lowlight
@@ -2975,7 +2975,7 @@ class CommandPopup(VerticalScroll):
         theme = theme_for(self)
         marker = f"{theme.spinner_frames[self._spinner_frame]} " if self._loading else "› "
         if self._hint and index == self._content.row_count - 1:
-            return Text(self._hint, style=theme.text_faint)
+            return Text(self._hint, style=theme.text_lowlight)
         if self._argument_command is not None and not self._arguments:
             return Text.assemble(
                 (marker, theme.accent), (self._argument_command.title, theme.text_primary)
@@ -3016,7 +3016,7 @@ class CommandPopup(VerticalScroll):
             row.append(" " * max(0, self._label_width - cell_len(label)))
             row.append(
                 "  " + argument.description,
-                style=theme.text_secondary if selected else theme.text_lowlight,
+                style=theme.text_primary if selected else theme.text_lowlight,
             )
         if argument.trailing_badge:
             row = _trailing_badge(row, argument.trailing_badge, width, theme.accent)
@@ -3080,7 +3080,7 @@ class QueuedInputPanel(VerticalScroll):
                 row = Text(f"{index}. {label}", style=tone)
                 row.append(
                     theme.inline_separator,
-                    style=theme.separator_tone,
+                    style=theme.text_lowlight,
                 )
                 row.append(prompt, style=theme.text_lowlight)
                 badge = file_count_label(item.attachments, item.resource_refs)
@@ -3240,17 +3240,17 @@ class Composer(AttachmentTextArea):
             parts: tuple[_PlaceholderPart, ...] = (
                 ("Enter", "key"),
                 (" queues a follow-up", "text"),
-                (theme.inline_separator, "separator"),
+                (theme.inline_separator, "text"),
                 ("Ctrl+G", "key"),
                 (" guides the active run…", "text"),
             )
         else:
             parts = (
                 ("Subagent view is read-only", "text"),
-                (theme.inline_separator, "separator"),
+                (theme.inline_separator, "text"),
                 ("Alt+↑", "key"),
                 (" main", "text"),
-                (theme.inline_separator, "separator"),
+                (theme.inline_separator, "text"),
                 ("Alt+←/→", "key"),
                 (" switch", "text"),
             )
@@ -3277,10 +3277,8 @@ class Composer(AttachmentTextArea):
             bold=False,
         )
         lowlight_style = Style(foreground=Color.parse(theme.text_lowlight))
-        separator_style = Style(foreground=Color.parse(theme.separator_tone))
         styles = {
             "text": lowlight_style,
-            "separator": separator_style,
             "key": key_style,
         }
         return Content.assemble(

@@ -16,6 +16,7 @@ from pygments.token import Token  # type: ignore[import-untyped]
 from rich.cells import cell_len
 from rich.style import Style
 from rich.syntax import SyntaxTheme, TokenType
+from rich.text import Text
 from rich.theme import Theme as RichTheme
 
 _HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}\Z")
@@ -80,20 +81,15 @@ class TuiTheme:
     input_highlight: str = "#2a2a2a"
     progress_track: str = "#34373d"
     border_focus: str = "#3f4650"
-    separator_tone: str = "#4d5560"
+    border_subtle: str = "#4d5560"
     border: str = "#505967"
     text_disabled: str = "#626b78"
-    text_faint: str = "#647180"
     scrollbar_hover: str = "#6a7482"
-    text_lowlight: str = "#6f7a87"
-    text_metadata: str = "#777f8b"
-    text_detail: str = "#788492"
-    text_choice: str = "#7d8794"
-    text_muted: str = "#8f9aa8"
+    text_lowlight: str = "#5f6975"
     warning: str = "#968264"
-    text_secondary: str = "#aeb5bf"
     danger: str = "#b97878"
-    text_primary: str = "#d6d9df"
+    text_primary: str = "#a3adb9"
+    text_heading: str = "#d6d9df"
     failure: str = "#d87575"
     critical: str = "#e08a8a"
     text_highlight: str = "#e5e7eb"
@@ -106,7 +102,7 @@ class TuiTheme:
     syntax_string: str = "#77b083"
     syntax_number: str = "#968264"
     syntax_operator: str = "#8f9aa8"
-    syntax_name: str = "#d6d9df"
+    syntax_name: str = "#a3adb9"
     syntax_error: str = "#d87575"
 
     section_separator_mark: str = "•"
@@ -150,18 +146,13 @@ class TuiTheme:
         "input_highlight",
         "progress_track",
         "border_focus",
-        "separator_tone",
+        "border_subtle",
         "border",
         "text_disabled",
-        "text_faint",
         "scrollbar_hover",
         "text_lowlight",
-        "text_metadata",
-        "text_detail",
-        "text_choice",
-        "text_muted",
-        "text_secondary",
         "text_primary",
+        "text_heading",
         "text_highlight",
         "syntax_comment",
         "syntax_keyword",
@@ -329,18 +320,13 @@ class TuiTheme:
             "ouro-input-highlight": self.input_highlight,
             "ouro-progress-track": self.progress_track,
             "ouro-border-focus": self.border_focus,
-            "ouro-separator": self.separator_tone,
+            "ouro-border-subtle": self.border_subtle,
             "ouro-border": self.border,
             "ouro-text-disabled": self.text_disabled,
-            "ouro-text-faint": self.text_faint,
             "ouro-scrollbar-hover": self.scrollbar_hover,
             "ouro-text-lowlight": self.text_lowlight,
-            "ouro-text-metadata": self.text_metadata,
-            "ouro-text-detail": self.text_detail,
-            "ouro-text-choice": self.text_choice,
-            "ouro-text-muted": self.text_muted,
-            "ouro-text-secondary": self.text_secondary,
             "ouro-text-primary": self.text_primary,
+            "ouro-text-heading": self.text_heading,
             "ouro-text-highlight": self.text_highlight,
             "ouro-running": self.running,
             "ouro-success": self.success,
@@ -370,28 +356,28 @@ def _rich_theme(theme: TuiTheme) -> RichTheme:
             "markdown.text": Style(color=theme.text_primary),
             "markdown.em": Style(italic=True),
             "markdown.emph": Style(italic=True),
-            "markdown.strong": Style(bold=True),
+            "markdown.strong": Style(color=theme.text_heading, bold=True),
             "markdown.code": Style(color=theme.accent),
             "markdown.code_block": Style(color=theme.syntax_name, bgcolor=theme.panel),
-            "markdown.block_quote": Style(color=theme.text_muted),
-            "markdown.list": Style(color=theme.text_muted),
+            "markdown.block_quote": Style(color=theme.text_lowlight),
+            "markdown.list": Style(color=theme.text_lowlight),
             "markdown.item": Style(color=theme.text_primary),
-            "markdown.item.bullet": Style(color=theme.text_muted),
-            "markdown.item.number": Style(color=theme.text_muted),
-            "markdown.hr": Style(color=theme.separator_tone, dim=True),
-            "markdown.h1.border": Style(color=theme.separator_tone),
-            "markdown.h1": Style(color=theme.text_primary, bold=True),
-            "markdown.h2": Style(color=theme.text_primary, bold=True),
-            "markdown.h3": Style(color=theme.text_primary, bold=True),
-            "markdown.h4": Style(color=theme.text_secondary, bold=True),
-            "markdown.h5": Style(color=theme.text_secondary, bold=True),
-            "markdown.h6": Style(color=theme.text_secondary, bold=True),
-            "markdown.h7": Style(color=theme.text_secondary, dim=True),
+            "markdown.item.bullet": Style(color=theme.text_lowlight),
+            "markdown.item.number": Style(color=theme.text_lowlight),
+            "markdown.hr": Style(color=theme.border_subtle, dim=True),
+            "markdown.h1.border": Style(color=theme.border_subtle),
+            "markdown.h1": Style(color=theme.text_heading, bold=True),
+            "markdown.h2": Style(color=theme.text_heading, bold=True),
+            "markdown.h3": Style(color=theme.text_heading, bold=True),
+            "markdown.h4": Style(color=theme.text_heading, bold=True),
+            "markdown.h5": Style(color=theme.text_heading, bold=True),
+            "markdown.h6": Style(color=theme.text_heading, bold=True),
+            "markdown.h7": Style(color=theme.text_heading, bold=True),
             "markdown.link": Style(color=theme.accent, underline=True),
             "markdown.link_url": Style(color=theme.accent, underline=True),
             "markdown.s": Style(strike=True),
-            "markdown.table.border": Style(color=theme.separator_tone),
-            "markdown.table.header": Style(color=theme.text_primary, bold=True),
+            "markdown.table.border": Style(color=theme.border_subtle),
+            "markdown.table.header": Style(color=theme.text_heading, bold=True),
             "markdown.kbd": Style(color=theme.accent_bright, bold=True),
         },
         inherit=True,
@@ -571,6 +557,20 @@ def theme_for(node: object) -> TuiTheme:
     return initial if isinstance(initial, TuiTheme) else DEFAULT_TUI_THEME
 
 
+def label_text(value: str, *, theme: TuiTheme, style: str = "") -> Text:
+    """Style generated UI labels, keeping separators independent of their fields.
+
+    Literal messages, code, and editable values keep their own rendering path.
+    """
+
+    text = Text(value, style=style)
+    text.highlight_words(
+        (theme.inline_separator, theme.section_separator),
+        Style(color=theme.text_lowlight, bold=False, italic=False, dim=False),
+    )
+    return text
+
+
 __all__ = [
     "DEFAULT_THEME_SATURATION_MAX",
     "DEFAULT_THEME_SATURATION_MIN",
@@ -578,5 +578,6 @@ __all__ = [
     "THEME_SATURATION_LEVELS",
     "TUI_THEMES",
     "TuiTheme",
+    "label_text",
     "theme_for",
 ]

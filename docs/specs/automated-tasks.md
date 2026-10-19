@@ -181,7 +181,7 @@ Supervisor 容量约束。原子领取与防重复派发不等于外部工具副
 - 动态项顺序固定为 `waiting`、`running`、`approval`，计数为零时隐藏，完成统计始终位于前方。
 - `waiting` 和 `running` 按任务当前状态计数；`approval` 只统计确实在等待审批的活动执行。
 - 等待使用低亮色 `text_lowlight`，运行使用主题色 `accent`，审批使用提醒色 `warning`；
-  连接符采用共用 `inline_separator` 和欢迎页其他项目的 `text_faint` 颜色。
+  连接符采用共用 `inline_separator` 和欢迎页其他项目的 `text_lowlight` 颜色。
 
 重复任务从运行转为完成后，如果仍有后续计划，首页应从 `0/0 completed • 1 running` 收敛为
 `1/1 completed • 1 waiting`。这由应用层持久化状态与执行统计共同产生，TUI 不另建状态机。

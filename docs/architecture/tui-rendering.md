@@ -153,8 +153,8 @@ TranscriptEntry + TuiTheme + render width
 |---|---|
 | identity | `theme_id`、`label`、`description` |
 | surface | `background`、`panel`、`highlight`、`input_highlight` |
-| border | `progress_track`、`border_focus`、`separator_tone`、`border`、`scrollbar_hover` |
-| text | `text_disabled`、`text_faint`、`text_lowlight`、`text_metadata`、`text_detail`、`text_choice`、`text_muted`、`text_secondary`、`text_primary`、`text_highlight` |
+| border | `progress_track`、`border_focus`、`border_subtle`、`border`、`scrollbar_hover` |
+| text | `text_heading`、`text_primary`、`text_lowlight`、`text_highlight`、`text_disabled` |
 | accent | `accent`、`accent_bright` |
 | status | `running`、`success`、`warning`、`warning_bright`、`danger`、`failure`、`critical` |
 | syntax | `syntax_comment`、`syntax_keyword`、`syntax_string`、`syntax_number`、`syntax_operator`、`syntax_name`、`syntax_error` |
@@ -164,7 +164,22 @@ TranscriptEntry + TuiTheme + render width
 每个字段使用组件无关的语义名称。组件专用名称、特定语言 token 和渲染器实现名称不进入 TuiTheme。
 `accent` 用于操作、链接、inline code 和活动状态，`accent_bright` 用于焦点和高亮操作。
 
-会话栏中的思考标记、思考正文和普通工具名称统一使用 `text_lowlight`；思考正文保留 italic，不叠加 dim。
+静态文字按信息职责分为三个层次，组件不另建相近亮度的文字色：
+
+| 层次 | Token / 默认值 | 使用范围 |
+|---|---|---|
+| 标题 | `text_heading` / `#d6d9df` | 页面与区块标题、会话标题、Markdown 标题；区块标题使用 bold |
+| 常规 | `text_primary` / `#a3adb9` | 正文、用户输入、普通选项与汇总值、审批模式、模型名称、思考强度；默认常规字重 |
+| 辅助 | `text_lowlight` / `#5f6975` | 工具消息整体、思考标记与正文、路径、耗时、时间戳、说明、延展列表、快捷键说明和分隔符 |
+
+欢迎页 USAGE、SYSTEM、TIPS 共用标题层；内部选项名和主要值共用常规层，详情与统计拆分使用辅助层。
+工具名称、命令、路径及耗时统一低亮，让出正文的视觉重点。思考正文保留 italic，低亮文字不叠加 dim。
+section 和 inline separator 均复用低亮色，不继承相邻字段的颜色或字重；组合标签通过 `label_text`
+投影为 Rich Text。该投影只用于 UI 标签，不处理消息正文、代码或编辑值。
+
+状态与交互独立于静态文字层次：自动审批保留 `danger`，最高思考强度保留主题色与 bold，错误和增删行
+保留对应语义色；选中项与焦点使用主题色，`text_highlight` 用于悬停反馈，`text_disabled` 表示不可用内容。
+`border_subtle` 只用于结构边界，如菜单边栏、Markdown 表格边框和水平线，不承担文本分隔符职责。
 模型正文使用 `text_primary`，Markdown 内容保留各自的语义样式。失败状态继续使用错误色，悬浮高亮与点击语义保持一致。
 压缩摘要与运行摘要使用常规字重。短命令反馈复用 `brand_mark` 加消息文本的提醒结构；多行命令内容与用户消息、
 脚手架共用字面文本容器。命令和脚手架正文及左边栏使用 `text_lowlight`，容器共用 `panel` 背景、内外边距、
@@ -198,8 +213,9 @@ custom_theme = replace(
     theme_id="graphite",
     label="Graphite",
     description="Low-noise neutral palette",
-    text_primary="#e2e8f0",
-    text_muted="#94a3b8",
+    text_heading="#e2e8f0",
+    text_primary="#a3adb9",
+    text_lowlight="#647180",
     accent="#67b7d1",
     syntax_keyword="#7aa2c7",
     brand_mark="◆",
@@ -298,16 +314,15 @@ ConversationView 持有稳定的历史组件和 AssistantTurn。AssistantTurn �
 | Markdown 语义 | 样式 |
 |---|---|
 | paragraph | `text_primary`，无额外背景 |
-| h1/h2/h3 | `text_primary` + bold |
-| h4/h5/h6 | `text_secondary` + bold |
-| strong | bold，继承当前前景色 |
+| h1/h2/h3/h4/h5/h6 | `text_heading` + bold |
+| strong | `text_heading` + bold |
 | emphasis | italic，继承当前前景色 |
 | inline code | `accent`，无独立背景 |
-| block quote | `text_muted`，使用 OURO 定义的引用结构 |
-| list marker | `text_muted` |
+| block quote | `text_lowlight`，使用 OURO 定义的引用结构 |
+| list marker | `text_lowlight` |
 | list body | 继承 paragraph |
 | link | `accent` + underline，保留 hyperlink metadata |
-| horizontal rule | `separator_tone` + dim |
+| horizontal rule | `border_subtle` + dim |
 
 `TuiTheme.rich_theme()` 提供以上映射。bold、italic、underline 和 block 结构是固定投影规则，主题不接受任意 Rich style
 string 或对应开关。

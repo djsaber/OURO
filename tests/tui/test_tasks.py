@@ -348,7 +348,7 @@ async def test_welcome_task_counts_show_only_actionable_activity_in_semantic_col
             ("waiting", theme.text_lowlight),
             ("running", theme.accent),
             ("approval", theme.warning),
-            ("•", theme.text_faint),
+            ("•", theme.text_lowlight),
         ):
             style = content.get_style_at_offset(app.console, content.plain.index(label))
             assert style.color is not None and style.color.triplet.hex == color

@@ -13,7 +13,7 @@ from textual.widgets import Static
 from ouro import __version__
 from ouro.tui.controller import TuiSystemStatus
 from ouro.tui.state import format_compact_count
-from ouro.tui.theme import TuiTheme, theme_for
+from ouro.tui.theme import TuiTheme, label_text, theme_for
 
 
 def _compact_names(names: tuple[str, ...], *, limit: int = 3) -> str:
@@ -37,7 +37,7 @@ class WelcomeInformation(Vertical):
     WelcomeInformation .welcome-title {
         width: auto;
         height: 1;
-        color: $ouro-text-detail;
+        color: $ouro-text-heading;
         text-style: bold;
     }
 
@@ -50,7 +50,7 @@ class WelcomeInformation(Vertical):
     WelcomeInformation .welcome-label {
         width: 11;
         height: 1;
-        color: $ouro-text-detail;
+        color: $ouro-text-primary;
     }
 
     WelcomeInformation .welcome-value {
@@ -70,13 +70,13 @@ class WelcomeInformation(Vertical):
     WelcomeInformation .welcome-tip-key {
         width: 8;
         height: 1;
-        color: $ouro-text-detail;
+        color: $ouro-text-primary;
     }
 
     WelcomeInformation .welcome-tip-description {
         width: auto;
         height: 1;
-        color: $ouro-text-muted;
+        color: $ouro-text-lowlight;
     }
 
     """
@@ -142,7 +142,7 @@ class WelcomeSystem(WelcomeInformation):
         self._mcp = Static(classes="welcome-value")
 
     def compose(self) -> ComposeResult:
-        yield Static("SYSTEM", classes="welcome-title welcome-label")
+        yield Static("SYSTEM", classes="welcome-title")
         for label, value in (
             ("Workspace", self._workspace),
             ("Providers", self._providers),
@@ -210,7 +210,7 @@ class WelcomeSystem(WelcomeInformation):
         tasks = Text(
             f"{counts.completed_executions}/"
             f"{counts.completed_executions + counts.failed_executions} completed",
-            style=theme.text_muted,
+            style=theme.text_primary,
         )
         for label, count, color in (
             ("waiting", counts.waiting, theme.text_lowlight),
@@ -219,50 +219,49 @@ class WelcomeSystem(WelcomeInformation):
         ):
             if not count:
                 continue
-            tasks.append(theme.inline_separator, style=theme.text_faint)
+            tasks.append(theme.inline_separator, style=theme.text_lowlight)
             tasks.append(f"{count} {label}", style=color)
         self._tasks.update(tasks)
         self._render_mcp_label()
         if status.task_error:
             self._tasks.update(
-                Text(
+                label_text(
                     theme.inline_separator.join(("Unavailable", status.task_error)),
-                    style=theme.text_muted,
+                    theme=theme,
+                    style=theme.text_primary,
                 )
             )
         self._workspace.update(Text(status.workspace or "not set", style=theme.text_primary))
 
         providers = Text()
-        providers.append(f"{status.model_count} model(s)", style=theme.text_muted)
+        providers.append(f"{status.model_count} model(s)", style=theme.text_primary)
         if status.model_names:
             providers.append(
                 f"{theme.section_separator}{_compact_names(status.model_names)}",
-                style=theme.text_faint,
+                style=theme.text_lowlight,
             )
         self._providers.update(providers)
 
-        skills = Text(f"{status.skill_count} available", style=theme.text_muted)
+        skills = Text(f"{status.skill_count} available", style=theme.text_primary)
         if status.skill_names:
             skills.append(
                 f"{theme.section_separator}{_compact_names(status.skill_names)}",
-                style=theme.text_faint,
+                style=theme.text_lowlight,
             )
         self._skills.update(skills)
 
         plugins = Text(
             f"{status.plugin_active_count}/{status.plugin_total_count} active",
-            style=theme.text_muted,
+            style=theme.text_primary,
         )
         if status.plugin_active_names:
             plugins.append(
                 f"{theme.section_separator}{_compact_names(status.plugin_active_names)}",
-                style=theme.text_faint,
+                style=theme.text_lowlight,
             )
         if status.plugin_issue_count:
-            plugins.append(
-                f"{theme.section_separator}{status.plugin_issue_count} need attention",
-                style=theme.critical,
-            )
+            plugins.append(theme.section_separator, style=theme.text_lowlight)
+            plugins.append(f"{status.plugin_issue_count} need attention", style=theme.critical)
         self._plugins.update(plugins)
 
         mcp = Text()
@@ -271,22 +270,16 @@ class WelcomeSystem(WelcomeInformation):
                 f"{status.mcp_connected_count}/{status.mcp_total_count} connected",
                 style=theme.accent,
             )
-            mcp.append(
-                f"{theme.section_separator}{status.mcp_tool_count} tool(s)",
-                style=theme.text_muted,
-            )
+            mcp.append(theme.section_separator, style=theme.text_lowlight)
+            mcp.append(f"{status.mcp_tool_count} tool(s)", style=theme.text_primary)
             if status.mcp_connecting_count:
-                mcp.append(
-                    f"{theme.section_separator}{status.mcp_connecting_count} connecting",
-                    style=theme.accent,
-                )
+                mcp.append(theme.section_separator, style=theme.text_lowlight)
+                mcp.append(f"{status.mcp_connecting_count} connecting", style=theme.accent)
             if status.mcp_failed_count:
-                mcp.append(
-                    f"{theme.section_separator}{status.mcp_failed_count} failed",
-                    style=theme.critical,
-                )
+                mcp.append(theme.section_separator, style=theme.text_lowlight)
+                mcp.append(f"{status.mcp_failed_count} failed", style=theme.critical)
         else:
-            mcp.append("not configured", style=theme.text_faint)
+            mcp.append("not configured", style=theme.text_lowlight)
         self._mcp.update(mcp)
 
     def refresh_theme(self) -> None:
@@ -359,24 +352,24 @@ class WelcomeUsage(WelcomeInformation):
             )
             chart.append(mark, style=RichStyle(color=color, meta={_USAGE_DAY_META: day.date}))
         if daily:
-            chart.append(theme.section_separator, style=theme.separator_tone)
+            chart.append(theme.section_separator, style=theme.text_lowlight)
             if selected is not None:
-                chart.append(selected.date, style=theme.text_faint)
+                chart.append(selected.date, style=theme.text_lowlight)
             else:
                 days = len(daily)
                 chart.append(
                     f"last {days} day{'s' if days != 1 else ''}",
-                    style=theme.text_faint,
+                    style=theme.text_lowlight,
                 )
         else:
             chart.append(
                 theme.session_node_mark,
                 style=_usage_block_colors((), theme)[0],
             )
-            chart.append(theme.section_separator, style=theme.separator_tone)
+            chart.append(theme.section_separator, style=theme.text_lowlight)
             chart.append(
                 "no records",
-                style=theme.text_faint,
+                style=theme.text_lowlight,
             )
         self._chart.update(chart)
 
@@ -385,7 +378,7 @@ class WelcomeUsage(WelcomeInformation):
         )
         requests = Text(
             f"{request_count} request(s)",
-            style=theme.text_muted,
+            style=theme.text_primary,
         )
         self._requests.update(requests)
         input_tokens = selected.input_tokens if selected is not None else status.usage_input_tokens
@@ -395,13 +388,13 @@ class WelcomeUsage(WelcomeInformation):
         cache_read_tokens = (
             selected.cache_read_tokens if selected is not None else status.usage_cache_read_tokens
         )
-        tokens = Text(f"{format_compact_count(input_tokens)} in", style=theme.text_faint)
+        tokens = Text(f"{format_compact_count(input_tokens)} in", style=theme.text_lowlight)
         for value in (
             f"{format_compact_count(output_tokens)} out",
             f"{_cache_hit_rate(cache_read_tokens, input_tokens):.2f}% cache",
         ):
-            tokens.append(theme.inline_separator, style=theme.separator_tone)
-            tokens.append(value, style=theme.text_faint)
+            tokens.append(theme.inline_separator, style=theme.text_lowlight)
+            tokens.append(value, style=theme.text_lowlight)
         self._tokens.update(tokens)
 
 
@@ -412,7 +405,6 @@ def _cache_hit_rate(cache_read_tokens: int, input_tokens: int) -> float:
 class WelcomeTips(WelcomeInformation):
     DEFAULT_CSS = """
     WelcomeTips { width: auto; min-width: 20; }
-    WelcomeTips .welcome-title { color: $ouro-theme; }
     """
 
     def __init__(self) -> None:
@@ -432,7 +424,7 @@ class WelcomeTips(WelcomeInformation):
         self.refresh_theme()
 
     def refresh_theme(self) -> None:
-        self._title.update(f"{theme_for(self).section_separator_mark} TIPS")
+        self._title.update("TIPS")
 
 
 class WelcomeVersion(Static):
@@ -443,7 +435,7 @@ class WelcomeVersion(Static):
         width: 100%;
         height: 1;
         padding: 0 2;
-        color: $ouro-text-faint;
+        color: $ouro-text-lowlight;
         text-style: none;
         text-align: right;
     }

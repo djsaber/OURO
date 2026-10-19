@@ -44,7 +44,7 @@ def test_scaffold_frame_uses_lowlight_body_and_border_without_changing_layout(th
         for normal_segment, internal_segment in zip(normal[1:], internal[1:], strict=True):
             assert normal_segment.text == internal_segment.text
             expected_style = normal_segment.style
-            if expected_style.color == Style(color=theme.text_highlight).color:
+            if expected_style.color == Style(color=theme.text_primary).color:
                 expected_style += Style(color=theme.text_lowlight)
                 body_segments += 1
             assert internal_segment.style == expected_style
@@ -316,14 +316,15 @@ async def test_toggle_during_stream_preserves_tail_draft_and_event_handoff(tmp_p
         finally:
             provider.finish("Work")
             await worker.wait()
+        history = app.query_one(ConversationHistory)
         await wait_until(
-            lambda: app._projection.activity.status == "completed",
+            lambda: (
+                app._projection.activity.status == "completed"
+                and bool(history.entries)
+                and history.entries[-1].kind == "run"
+            ),
             pilot,
-            description="stream completion",
+            description="stream completion committed to history",
         )
-        text = "".join(
-            entry.text
-            for entry in app.query_one(ConversationHistory).entries
-            if entry.kind == "assistant"
-        )
+        text = "".join(entry.text for entry in history.entries if entry.kind == "assistant")
         assert text == "Work prefix. Continued after toggle."

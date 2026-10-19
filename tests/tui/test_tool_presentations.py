@@ -140,7 +140,7 @@ def test_command_presentation_keeps_full_flattened_command_for_layout_time() -> 
     assert rendered.overflow == "ellipsis"
     assert command_style.color is not None
     assert command_style.color.triplet is not None
-    assert command_style.color.triplet.hex == DEFAULT_TUI_THEME.text_faint
+    assert command_style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
 
 
 def test_todolist_presentation_exposes_progress_and_item_states() -> None:
@@ -305,7 +305,7 @@ def test_streaming_tool_uses_lowlight_left_filled_window_without_execution_detai
     tool_style = rendered_text.get_style_at_offset(Console(), rendered.index("Write"))
     preview_style = rendered_text.get_style_at_offset(Console(), rendered.index(preview))
     assert preview_style.color is not None
-    assert preview_style.color.get_truecolor().hex == DEFAULT_TUI_THEME.text_faint
+    assert preview_style.color.get_truecolor().hex == DEFAULT_TUI_THEME.text_lowlight
     assert tool_style.color is not None
     assert tool_style.color.triplet is not None
     assert tool_style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
