@@ -280,14 +280,15 @@ async def test_history_right_click_copies_only_the_dragged_text() -> None:
 
 
 @pytest.mark.asyncio
-async def test_user_message_hover_and_right_click_copy_preserve_selection_priority() -> None:
+@pytest.mark.parametrize("kind", ["user", "scaffold", "command"])
+async def test_message_hover_and_right_click_copy_preserve_selection_priority(kind) -> None:
     copied: list[str] = []
     app = HistorySelectionApp(copied.append)
-    source = "copy this exact\nuser message"
+    source = 'copy this exact\n    "literal": "**中文**"\n\nlast line  '
 
     async with app.run_test(size=(40, 10), notifications=True) as pilot:
         history = app.query_one(ConversationHistory)
-        history.replace((TranscriptEntry(kind="user", text=source),))
+        history.replace((TranscriptEntry(kind=kind, text=source, scaffold=kind == "scaffold"),))
         await history.wait_until_rendered()
         await pilot.pause()
 
@@ -313,6 +314,10 @@ async def test_user_message_hover_and_right_click_copy_preserve_selection_priori
         )
         assert hovered.style is not None and hovered.style.bgcolor is not None
         assert hovered.style.bgcolor.triplet.hex == DEFAULT_TUI_THEME.highlight
+        assert hovered.style.color == before.style.color
+        assert hovered.style.color.triplet.hex == (
+            DEFAULT_TUI_THEME.text_highlight if kind == "user" else DEFAULT_TUI_THEME.text_lowlight
+        )
 
         await pilot.click(history, offset=(message_x, message_y))
         await pilot.pause()

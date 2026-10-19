@@ -21,9 +21,9 @@ from ouro.tui.conversation_history import (
     TranscriptEntry,
     _compaction_summary,
     _format_user_message_timestamp,
+    _MessageContent,
     _reasoning_label_text,
     _run_summary,
-    _UserMessageContent,
     split_markdown_blocks,
 )
 from ouro.tui.state import RunPresentation
@@ -119,7 +119,7 @@ def test_user_message_timestamp_is_a_separate_faint_line() -> None:
     theme = DEFAULT_TUI_THEME
     console = Console(force_terminal=True, color_system="truecolor", width=60)
     rendered_lines = console.render_lines(
-        _UserMessageContent(
+        _MessageContent(
             "user message",
             theme,
             created_at=datetime.now().astimezone(),
@@ -191,7 +191,7 @@ plain value
 
     user_segments = list(
         console.render(
-            _UserMessageContent("user message", theme),
+            _MessageContent("user message", theme),
             console.options.update_width(60),
         )
     )
@@ -320,6 +320,65 @@ class _ConversationApp(App[None]):
     def compose(self) -> ComposeResult:
         yield ConversationView()
         yield Input()
+
+
+@pytest.mark.parametrize("show_scaffolds", [False, True])
+@pytest.mark.parametrize("width", [32, 100])
+async def test_command_output_shares_lowlight_frame_and_preserves_literal_content(
+    show_scaffolds, width
+):
+    app = _ConversationApp()
+    source = 'Goal: active\n\n{\n    "value": "**中文**"\n}\n```literal```'
+    async with app.run_test(size=(width, 30)) as pilot:
+        conversation = app.query_one(ConversationView)
+        conversation.show_scaffold_messages = show_scaffolds
+        await conversation.add_user("Real input")
+        await conversation.append_assistant("Answer before command")
+        await conversation.add_command_output(source)
+        await conversation.add_command_output("Done")
+        history = app.query_one(ConversationHistory)
+        await history.wait_until_rendered()
+        assert [entry.kind for entry in history.entries] == [
+            "user",
+            "assistant",
+            "command",
+            "notice",
+        ]
+        command = history.entries[2]
+        assert command.text == source
+        assert command.created_at is None and not command.scaffold
+        assert history.user_turns == ("Real input",)
+        assert len(history.user_lines) == 1
+        assert "▣ Done" in history.rendered_text
+        command_text = "".join(
+            segment.text
+            for piece in history._pieces
+            if piece.entry_index == 2
+            for line in piece.strips
+            for segment in line
+            if segment.text != "│"
+            and segment.style is not None
+            and segment.style.color is not None
+            and segment.style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
+        )
+        assert command_text == source.replace("\n", "")
+        assert "```literal```" in history.rendered_text
+        body = next(
+            segment for line in history.lines for segment in line if "Goal: active" in segment.text
+        )
+        assert body.style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
+        assert body.style.bgcolor.triplet.hex == DEFAULT_TUI_THEME.panel
+        assert not body.style.bold and not body.style.italic
+
+        # Both types use the same frame geometry; commands keep their own semantics.
+        await history.load((command, replace(command, kind="scaffold", scaffold=True)))
+        pieces = history._pieces
+        assert len(pieces) == 2
+        assert [line.text for line in pieces[0].strips] == [line.text for line in pieces[1].strips]
+        await pilot.resize_terminal(width + 12, 30)
+        await history.wait_until_rendered()
+        assert history.entries[0].text == source
+        assert '    "value": "**中文**"' in history.rendered_text
 
 
 @pytest.mark.parametrize("finish", [False, True])
@@ -539,9 +598,10 @@ async def test_same_session_history_reuse_renders_only_the_changed_suffix(
         assert "new tail" in app.history.rendered_text
 
 
-async def test_prepend_reuses_existing_strips_and_remaps_user_click_targets(monkeypatch):
+@pytest.mark.parametrize("kind", ["user", "command"])
+async def test_prepend_reuses_existing_strips_and_remaps_message_click_targets(monkeypatch, kind):
     app = _HistoryApp()
-    entries = tuple(TranscriptEntry(kind="user", text=f"recent {i}") for i in range(30))
+    entries = tuple(TranscriptEntry(kind=kind, text=f"recent {i}") for i in range(30))
     older = tuple(TranscriptEntry(kind="assistant", text=f"older {i}") for i in range(12))
     rendered = []
     original = conversation_history._render_entry_requests
@@ -563,14 +623,14 @@ async def test_prepend_reuses_existing_strips_and_remaps_user_click_targets(monk
             TranscriptEntry(kind="assistant", text="live tail"),
         )
         assert rendered == [*(entry.text for entry in older), "recent 0", "live tail"]
-        # This user frame was retained, including its remapped right-click target.
+        # This message frame was retained, including its remapped right-click target.
         indexes = {
-            segment.style.meta.get("ouro_user_message")
+            segment.style.meta.get("ouro_message")
             for piece in app.history._pieces
             if piece.entry_index == 17
             for strip in piece.strips
             for segment in strip
-            if segment.style is not None and "ouro_user_message" in segment.style.meta
+            if segment.style is not None and "ouro_message" in segment.style.meta
         }
         assert indexes == {17}
         assert app.history.rendered_text.index("older 0") < app.history.rendered_text.index(

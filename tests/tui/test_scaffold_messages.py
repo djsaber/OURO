@@ -13,7 +13,7 @@ from ouro.core.events import EventRecord
 from ouro.core.input_content import InputAttachment
 from ouro.core.messages import MessageRecord
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.conversation_history import ConversationHistory, _UserMessageContent
+from ouro.tui.conversation_history import ConversationHistory, _MessageContent
 from ouro.tui.preferences import TuiPreferencesStore
 from ouro.tui.screens import ChoiceScreen
 from ouro.tui.state import TuiSessionProjection
@@ -36,8 +36,8 @@ def test_scaffold_frame_uses_lowlight_body_and_border_without_changing_layout(th
         entry_index=2,
         highlighted=highlighted,
     )
-    user = console.render_lines(_UserMessageContent(**options))
-    scaffold = console.render_lines(_UserMessageContent(**options, scaffold=True))
+    user = console.render_lines(_MessageContent(**options))
+    scaffold = console.render_lines(_MessageContent(**options, lowlight=True))
     assert len(user) == len(scaffold)
     body_segments = 0
     for normal, internal in zip(user, scaffold, strict=True):

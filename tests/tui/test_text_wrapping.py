@@ -10,7 +10,7 @@ from textual.document._document import Document
 from textual.expand_tabs import expand_text_tabs_from_widths
 from textual.geometry import Offset
 
-from ouro.tui.conversation_history import AssistantTailLines, _UserMessageContent
+from ouro.tui.conversation_history import AssistantTailLines, _MessageContent
 from ouro.tui.markdown import assistant_markdown
 from ouro.tui.text_inputs import TuiTextArea
 from ouro.tui.text_wrapping import ProseText, wrap_offsets
@@ -22,7 +22,7 @@ _CHINESE = "资质审核结果中触发的规则其实是模块内部的"
 
 def test_user_message_fills_space_after_number_before_wrapping_chinese() -> None:
     console = Console(width=25)
-    lines = console.render_lines(_UserMessageContent("1. " + _CHINESE, DEFAULT_TUI_THEME))
+    lines = console.render_lines(_MessageContent("1. " + _CHINESE, DEFAULT_TUI_THEME))
     body = ["".join(segment.text for segment in line) for line in lines]
 
     # Five cells belong to the frame; 3 + 8 * 2 cells fit in the first content row.

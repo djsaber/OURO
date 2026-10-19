@@ -25,7 +25,7 @@ from textual.worker import Worker
 
 from ouro.application.agent_models import AgentTreeNode
 from ouro.application.supervisor_models import RuntimeToolCallActivity
-from ouro.tui.markdown import assistant_markdown, plain_code_block
+from ouro.tui.markdown import assistant_markdown
 from ouro.tui.selection import RangeSelectionOnly
 from ouro.tui.state import (
     RunPresentation,
@@ -54,7 +54,7 @@ TranscriptEntryKind = Literal[
 
 _REASONING_ENTRY_META = "ouro_reasoning_entry"
 _TOOL_NAVIGATION_META = "ouro_tool_navigation"
-_USER_MESSAGE_META = "ouro_user_message"
+_MESSAGE_META = "ouro_message"
 
 
 class ToolNavigationRequested(Message):
@@ -66,8 +66,8 @@ class ToolNavigationRequested(Message):
         self.parent_tool_call_id = parent_tool_call_id
 
 
-class UserMessageCopyRequested(Message):
-    """A user message was clicked and should be copied verbatim."""
+class MessageCopyRequested(Message):
+    """A message frame requested a verbatim copy of its source text."""
 
     def __init__(self, text: str) -> None:
         super().__init__()
@@ -273,15 +273,15 @@ class TranscriptEntry:
 
 
 @dataclass(frozen=True)
-class _UserMessageContent:
-    """Render the original user-turn frame without adding a Textual widget."""
+class _MessageContent:
+    """Share a literal text frame across user, scaffold and command messages."""
 
     text: str
     theme: TuiTheme
     created_at: datetime | None = None
     entry_index: int = -1
     highlighted: bool = False
-    scaffold: bool = False
+    lowlight: bool = False
 
     def __rich_console__(
         self,
@@ -295,7 +295,7 @@ class _UserMessageContent:
         right_width = min(right, interior_width - left_width)
         content_width = interior_width - left_width - right_width
         content_options = options.update_width(max(1, content_width))
-        interaction_meta = {_USER_MESSAGE_META: self.entry_index}
+        interaction_meta = {_MESSAGE_META: self.entry_index}
         interaction_style = Style(meta=interaction_meta)
         panel_style = Style(
             bgcolor=self.theme.highlight if self.highlighted else self.theme.panel,
@@ -303,7 +303,7 @@ class _UserMessageContent:
         )
         content = ProseText(
             self.text,
-            style=self.theme.text_lowlight if self.scaffold else self.theme.text_highlight,
+            style=self.theme.text_lowlight if self.lowlight else self.theme.text_highlight,
         )
         lines = console.render_lines(content, content_options, pad=False)
         if self.created_at is not None:
@@ -317,7 +317,7 @@ class _UserMessageContent:
             lines.extend(console.render_lines(timestamp, content_options, pad=False))
         border = Segment(
             "│",
-            Style(color=self.theme.text_lowlight if self.scaffold else self.theme.accent)
+            Style(color=self.theme.text_lowlight if self.lowlight else self.theme.accent)
             + interaction_style,
         )
 
@@ -648,7 +648,7 @@ def _shift_piece_indexes(pieces: list[_Piece], offset: int) -> None:
                     metadata = {
                         key: value + offset
                         for key, value in style.meta.items()
-                        if key in {_REASONING_ENTRY_META, _TOOL_NAVIGATION_META, _USER_MESSAGE_META}
+                        if key in {_REASONING_ENTRY_META, _TOOL_NAVIGATION_META, _MESSAGE_META}
                         and isinstance(value, int)
                     }
                     if metadata:
@@ -670,7 +670,7 @@ class _EntryRenderRequest:
     entry_index: int
     theme: TuiTheme
     reasoning_expanded: bool
-    user_highlighted: bool = False
+    message_highlighted: bool = False
     tool_highlighted: bool = False
     reasoning_highlighted: bool = False
 
@@ -814,17 +814,17 @@ def _entry_renderables(
 
     entry = request.entry
     theme = request.theme
-    if entry.kind in {"user", "scaffold"}:
+    if entry.kind in {"user", "scaffold", "command"}:
         return [
             (
                 Padding(
-                    _UserMessageContent(
+                    _MessageContent(
                         entry.text,
                         theme,
                         created_at=entry.created_at,
                         entry_index=request.entry_index,
-                        highlighted=request.user_highlighted,
-                        scaffold=entry.scaffold,
+                        highlighted=request.message_highlighted,
+                        lowlight=entry.scaffold or entry.kind in {"scaffold", "command"},
                     ),
                     (1, 2, 2, 2),
                 ),
@@ -851,9 +851,6 @@ def _entry_renderables(
         if entry.error:
             summary.stylize(theme.critical)
         return [(Padding(summary, (top, 1, 1, 2)), "body")]
-    if entry.kind == "command":
-        top = 1 if request.previous_kind == "tool" else 0
-        return [(Padding(plain_code_block(entry.text, theme), (top, 2, 1, 2)), "body")]
     if entry.kind == "compaction":
         assert entry.compaction is not None
         top = 1 if request.previous_kind == "tool" else 0
@@ -998,7 +995,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._render_width = 0
         self._reasoning_expanded = reasoning_expanded
         self._reasoning_expanded_by_entry: dict[int, bool] = {}
-        self._hovered_user_entry_index: int | None = None
+        self._hovered_message_entry_index: int | None = None
         self._hovered_tool_entry_index: int | None = None
         self._hovered_reasoning_entry_index: int | None = None
         self._rendered_count = 0
@@ -1085,36 +1082,38 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
     def on_mouse_down(self, event: events.MouseDown) -> None:
         if event.button != 3 or event.style is None or self.screen.get_selected_text() is not None:
             return
-        user_entry_index = event.style.meta.get(_USER_MESSAGE_META)
-        if not isinstance(user_entry_index, int) or not 0 <= user_entry_index < len(self._entries):
+        message_entry_index = event.style.meta.get(_MESSAGE_META)
+        if not isinstance(message_entry_index, int) or not 0 <= message_entry_index < len(
+            self._entries
+        ):
             return
-        entry = self._entries[user_entry_index]
-        if entry.kind not in {"user", "scaffold"}:
+        entry = self._entries[message_entry_index]
+        if entry.kind not in {"user", "scaffold", "command"}:
             return
         event.prevent_default()
         event.stop()
-        self.post_message(UserMessageCopyRequested(entry.text))
+        self.post_message(MessageCopyRequested(entry.text))
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
-        hovered_user = None
+        hovered_message = None
         hovered_tool = None
         hovered_reasoning = None
         if event.style is not None:
-            user_entry_index = event.style.meta.get(_USER_MESSAGE_META)
-            if isinstance(user_entry_index, int):
-                hovered_user = user_entry_index
+            message_entry_index = event.style.meta.get(_MESSAGE_META)
+            if isinstance(message_entry_index, int):
+                hovered_message = message_entry_index
             tool_entry_index = event.style.meta.get(_TOOL_NAVIGATION_META)
             if isinstance(tool_entry_index, int):
                 hovered_tool = tool_entry_index
             reasoning_entry_index = event.style.meta.get(_REASONING_ENTRY_META)
             if isinstance(reasoning_entry_index, int):
                 hovered_reasoning = reasoning_entry_index
-        self._set_hovered_entry("_hovered_user_entry_index", hovered_user)
+        self._set_hovered_entry("_hovered_message_entry_index", hovered_message)
         self._set_hovered_entry("_hovered_tool_entry_index", hovered_tool)
         self._set_hovered_entry("_hovered_reasoning_entry_index", hovered_reasoning)
 
     def on_leave(self, _event: events.Leave) -> None:
-        self._set_hovered_entry("_hovered_user_entry_index", None)
+        self._set_hovered_entry("_hovered_message_entry_index", None)
         self._set_hovered_entry("_hovered_tool_entry_index", None)
         self._set_hovered_entry("_hovered_reasoning_entry_index", None)
 
@@ -1128,7 +1127,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 self._rerender_entry(changed)
 
     def replace(self, entries: Iterable[TranscriptEntry]) -> None:
-        self._hovered_user_entry_index = None
+        self._hovered_message_entry_index = None
         self._hovered_tool_entry_index = None
         self._hovered_reasoning_entry_index = None
         self._reasoning_expanded_by_entry.clear()
@@ -1145,13 +1144,13 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         hovered_indexes = {
             index
             for index in (
-                self._hovered_user_entry_index,
+                self._hovered_message_entry_index,
                 self._hovered_tool_entry_index,
                 self._hovered_reasoning_entry_index,
             )
             if index is not None
         }
-        self._hovered_user_entry_index = None
+        self._hovered_message_entry_index = None
         self._hovered_tool_entry_index = None
         self._hovered_reasoning_entry_index = None
         if hovered_indexes and not all(self._rerender_entry(index) for index in hovered_indexes):
@@ -1199,7 +1198,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._content_revision += 1
         self._prefix_pending = 0
         self._render_failed = False
-        self._hovered_user_entry_index = None
+        self._hovered_message_entry_index = None
         self._hovered_tool_entry_index = None
         self._hovered_reasoning_entry_index = None
         materialized = list(entries)
@@ -1343,7 +1342,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             return
         self._content_revision += 1
         for attribute in (
-            "_hovered_user_entry_index",
+            "_hovered_message_entry_index",
             "_hovered_tool_entry_index",
             "_hovered_reasoning_entry_index",
         ):
@@ -1843,7 +1842,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                         entry_index,
                         self._reasoning_expanded,
                     ),
-                    user_highlighted=self._hovered_user_entry_index == entry_index,
+                    message_highlighted=self._hovered_message_entry_index == entry_index,
                     tool_highlighted=self._hovered_tool_entry_index == entry_index,
                     reasoning_highlighted=(self._hovered_reasoning_entry_index == entry_index),
                 )

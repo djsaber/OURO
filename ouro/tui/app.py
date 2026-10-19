@@ -98,9 +98,9 @@ from ouro.tui.conversation_history import (
     AssistantMarkdownStream,
     ConversationHistory,
     ConversationHistoryState,
+    MessageCopyRequested,
     ToolNavigationRequested,
     TranscriptEntry,
-    UserMessageCopyRequested,
 )
 from ouro.tui.draft_recovery import recover_input_drafts, release_unused_draft_resources
 from ouro.tui.input_drafts import TuiInputDrafts, TuiInputDraftStore, TuiPendingInput
@@ -332,7 +332,7 @@ class _OuroHostScreen(Screen):
         if await self._copy_to_clipboard(selected_text):
             self.clear_selection()
 
-    async def on_user_message_copy_requested(self, message: UserMessageCopyRequested) -> None:
+    async def on_message_copy_requested(self, message: MessageCopyRequested) -> None:
         message.stop()
         await self._copy_to_clipboard(message.text)
 

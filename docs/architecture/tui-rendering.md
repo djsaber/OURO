@@ -166,8 +166,10 @@ TranscriptEntry + TuiTheme + render width
 
 会话栏中的思考标记、思考正文和普通工具名称统一使用 `text_lowlight`；思考正文保留 italic，不叠加 dim。
 模型正文使用 `text_primary`，Markdown 内容保留各自的语义样式。失败状态继续使用错误色，悬浮高亮与点击语义保持一致。
-压缩摘要与运行摘要使用常规字重。短命令反馈复用 `brand_mark` 加消息文本的提醒结构；多行命令内容使用纯文本代码块，
-复用 Markdown 代码块的 SyntaxTheme、panel 背景、换行与内边距，内容中的 Markdown 标记按原文显示。
+压缩摘要与运行摘要使用常规字重。短命令反馈复用 `brand_mark` 加消息文本的提醒结构；多行命令内容与用户消息、
+脚手架共用字面文本容器。命令和脚手架正文及左边栏使用 `text_lowlight`，容器共用 `panel` 背景、内外边距、
+悬停和右键复制交互，保留换行、缩进及字面 Markdown 标记。命令条目不附加时间戳，保持独立类型和可见性，
+只有用户条目参与消息导航及分叉编号。Markdown/SyntaxTheme 继续只负责 assistant 的 Markdown 和代码块呈现。
 
 颜色只接受规范化 `#RRGGBB`。透明度、ANSI 名称、渐变和任意 Rich style string 不属于主题契约。bold、italic、
 underline、dim 等渲染样式由 OURO 根据主题语义建立，不作为可执行字符串存入主题。

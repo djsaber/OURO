@@ -1989,7 +1989,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self._history.append(TranscriptEntry(kind="notice", text=message, error=error))
 
     async def add_command_output(self, output: str) -> None:
-        """Present short feedback as a notice and multiline content as literal code."""
+        """Present short feedback as a notice and multiline content in a message frame."""
         if len(output.splitlines()) <= 1:
             await self.add_notice(output)
             return

@@ -11275,6 +11275,9 @@ async def test_plugin_commands_complete_and_execute_through_controller_boundary(
         assert not content_segment.style.bold
         if expected_kind == "command":
             assert content_segment.style.bgcolor == Style(bgcolor=app.tui_theme.panel).bgcolor
+            assert content_segment.style.color == Style(color=app.tui_theme.text_lowlight).color
+            assert history.entries[-1].created_at is None
+            assert history.user_turns == ()
 
 
 @pytest.mark.asyncio
