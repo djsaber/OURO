@@ -1,0 +1,75 @@
+{
+  "schema_version": 3,
+  "plugin_id": "dev.ouro.examples.tavily_search",
+  "name": "Tavily Search",
+  "version": "0.1.0",
+  "description": "Read-only web search, extraction, crawling and mapping tools backed by the Tavily Search, Extract, Crawl and Map APIs.",
+  "namespace": "tavily_search",
+  "engines": {
+    "ouro": ">=0.3.0,<0.4.0",
+    "plugin_api": "^5.0.0"
+  },
+  "runtime": {
+    "kind": "python-inprocess",
+    "entrypoint": "tavily_search_plugin:create_plugin"
+  },
+  "configuration": {
+    "schema": "./configuration.schema.json",
+    "version": 1,
+    "credentials": {
+      "tavily_api_key": {
+        "title": "Tavily API key",
+        "description": "Bearer key used for Tavily Search and Extract. It is sent only to the configured base URL.",
+        "required": true
+      }
+    }
+  },
+  "permissions": [
+    {
+      "id": "credentials.use",
+      "scopes": ["tavily_api_key"],
+      "reason": "Read the Tavily API key to authenticate Search and Extract requests."
+    },
+    {
+      "id": "network.outbound",
+      "scopes": [],
+      "reason": "Connect to the user-configured Tavily API base URL for read-only search and extraction requests."
+    }
+  ],
+  "contributes": {
+    "tools": [
+      {
+        "id": "search",
+        "exposed_name": "tavily__search",
+        "description": "Search the web with Tavily and return ranked results with titles, URLs, relevance scores, publication dates, and content snippets. Supports search depth, topic, time range, domain filters, and an optional LLM-generated answer. Use tavily__extract to retrieve full page content.",
+        "permission_mode": "auto",
+        "effect": "read_only"
+      },
+      {
+        "id": "extract",
+        "exposed_name": "tavily__extract",
+        "description": "Extract page content from one or more public HTTP(S) URLs with Tavily. Accepts up to 20 URLs per call, returns Markdown or plain text, and reports per-URL failures.",
+        "permission_mode": "auto",
+        "effect": "read_only"
+      },
+      {
+        "id": "crawl",
+        "exposed_name": "tavily__crawl",
+        "description": "Crawl a website from a root URL with Tavily and return extracted page content for discovered pages. Supports depth, breadth, page limits, path and domain regex filters, optional natural-language instructions, and Markdown or plain text. Use tavily__map to discover URLs without extracting content.",
+        "permission_mode": "auto",
+        "effect": "read_only"
+      },
+      {
+        "id": "map",
+        "exposed_name": "tavily__map",
+        "description": "Map a website from a root URL with Tavily and return discovered URLs without page content. Supports depth, breadth, page limits, path and domain regex filters, optional natural-language instructions, and external-link control.",
+        "permission_mode": "auto",
+        "effect": "read_only"
+      }
+    ]
+  },
+  "dependencies": {
+    "plugins": []
+  },
+  "metadata": {}
+}

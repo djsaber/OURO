@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tavily Search configuration",
+  "type": "object",
+  "properties": {
+    "base_url": {
+      "type": "string",
+      "title": "API base URL",
+      "description": "Tavily API root used by both tools, for example https://api.tavily.com. Do not append /search or /extract.",
+      "minLength": 1,
+      "format": "uri",
+      "default": "https://api.tavily.com"
+    },
+    "timeout_seconds": {
+      "type": "number",
+      "title": "Search and Extract timeout",
+      "description": "Total time budget in seconds for one Search or Extract call, including retries.",
+      "minimum": 1,
+      "maximum": 120,
+      "default": 30
+    },
+    "site_timeout_seconds": {
+      "type": "number",
+      "title": "Crawl and Map timeout",
+      "description": "Total client-side time budget in seconds for one Crawl or Map call, including retries. Tavily's server-side default is 150 seconds.",
+      "minimum": 10,
+      "maximum": 300,
+      "default": 180
+    },
+    "max_retries": {
+      "type": "integer",
+      "title": "Retry count",
+      "description": "Additional attempts for HTTP 408, 429, and 5xx responses or network failures.",
+      "minimum": 0,
+      "maximum": 5,
+      "default": 2
+    },
+    "default_max_results": {
+      "type": "integer",
+      "title": "Default result count",
+      "description": "Maximum number of results used when the search tool omits max_results.",
+      "minimum": 1,
+      "maximum": 20,
+      "default": 10
+    },
+    "default_search_depth": {
+      "type": "string",
+      "title": "Default search depth",
+      "description": "Search depth used when the search tool omits search_depth. Advanced uses more credits and latency.",
+      "enum": ["advanced", "basic", "fast", "ultra-fast"],
+      "default": "basic"
+    },
+    "chunks_per_source": {
+      "type": "integer",
+      "title": "Chunks per result",
+      "description": "Maximum content chunks returned per search result. Basic and fast chunks are about 500 characters; advanced chunks are about 800.",
+      "minimum": 1,
+      "maximum": 3,
+      "default": 3
+    },
+    "default_extract_depth": {
+      "type": "string",
+      "title": "Default extraction depth",
+      "description": "Extraction depth used when the extract tool omits extract_depth. Advanced uses more credits and latency.",
+      "enum": ["basic", "advanced"],
+      "default": "basic"
+    },
+    "default_format": {
+      "type": "string",
+      "title": "Default extraction format",
+      "description": "Format used when the extract tool omits format.",
+      "enum": ["markdown", "text"],
+      "default": "markdown"
+    }
+  },
+  "additionalProperties": false
+}
